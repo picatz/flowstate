@@ -1,9 +1,11 @@
 package auth_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -84,7 +86,9 @@ func TestMCPTokenVerifierAdmitsAToken(t *testing.T) {
 	require.NotNil(t, info)
 	principal, ok := auth.MCPPrincipal(info)
 	require.True(t, ok)
-	require.Equal(t, auth.MCPSessionUserID(principal), info.UserID,
+	expectedUserID, err := auth.MCPSessionUserID(principal)
+	require.NoError(t, err)
+	require.Equal(t, expectedUserID, info.UserID,
 		"UserID is what the SDK pins a session to, and it must be derived from the verified principal")
 	require.False(t, info.Expiration.IsZero(),
 		"the middleware refuses a TokenInfo with no expiration unless AllowMissingExpiration is set")
@@ -293,9 +297,9 @@ func TestMCPTokenVerifierRefusalsNameNoTokenMaterial(t *testing.T) {
 func TestMCPSessionUserIDDistinguishesSubjectsAcrossIssuers(t *testing.T) {
 	t.Parallel()
 
-	a := auth.MCPSessionUserID(auth.Principal{Issuer: "https://one.example.com", Subject: "runner"})
-	b := auth.MCPSessionUserID(auth.Principal{Issuer: "https://two.example.com", Subject: "runner"})
-	c := auth.MCPSessionUserID(auth.Principal{Issuer: "https://one.example.com", Subject: "other"})
+	a := mcpSessionUserID(t, auth.Principal{Issuer: "https://one.example.com", Subject: "runner"})
+	b := mcpSessionUserID(t, auth.Principal{Issuer: "https://two.example.com", Subject: "runner"})
+	c := mcpSessionUserID(t, auth.Principal{Issuer: "https://one.example.com", Subject: "other"})
 
 	require.NotEqual(t, a, b)
 	require.NotEqual(t, a, c)
@@ -336,7 +340,7 @@ func TestMCPSessionUserIDIsUnambiguous(t *testing.T) {
 		},
 	} {
 		require.NotEqual(t,
-			auth.MCPSessionUserID(pair[0]), auth.MCPSessionUserID(pair[1]),
+			mcpSessionUserID(t, pair[0]), mcpSessionUserID(t, pair[1]),
 			"two principals collide under a %s-joined encoding: %+v and %+v", separator, pair[0], pair[1])
 	}
 }
@@ -352,7 +356,7 @@ func TestMCPSessionUserIDCarriesNoIdentityInTheClear(t *testing.T) {
 	const issuer = "https://idp.example.com/tenant"
 	const subject = "alice@example.com"
 
-	id := auth.MCPSessionUserID(auth.Principal{Issuer: issuer, Subject: subject})
+	id := mcpSessionUserID(t, auth.Principal{Issuer: issuer, Subject: subject})
 
 	require.NotContains(t, id, issuer)
 	require.NotContains(t, id, subject)
@@ -423,21 +427,35 @@ func TestNewProtectedResourceRefusesAQuery(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// mcpSessionUserID is [auth.MCPSessionUserID] with the error asserted away,
+// because every principal below is one a real verifier could have produced and
+// the error branch is the subject of its own assertions.
+func mcpSessionUserID(t *testing.T, p auth.Principal) string {
+	t.Helper()
+
+	key, err := auth.MCPSessionUserID(p)
+	require.NoError(t, err, "a verified principal must always produce a session key; refusing one is a 401 for a caller who did nothing wrong")
+	require.NotEmpty(t, key, "an empty UserID switches the SDK's session pinning off entirely")
+
+	return key
+}
+
 // TestMCPSessionUserIDSurvivesATokenRefresh is the pin from the other side.
 //
 // A streamable-HTTP session outlives an access token — that is the point of a
 // short one — so the caller reconnects mid-session with a freshly minted token
-// carrying the same identity and new "iat", "exp", "nbf" and "jti". Binding to
-// the claims map whole made every one of those a different principal, and the
-// SDK answers 403: the session hijacking check refusing the session's own
-// owner, which is a worse outage than the one it prevents because it happens on
-// a schedule.
+// carrying the same identity and a whole new set of per-mint claims. Binding
+// to the claims map made every one of those a different principal, and the SDK
+// answers 403: the session hijacking check refusing the session's own owner,
+// which is a worse outage than the one it prevents because it happens on a
+// schedule.
 //
-// The authorization-relevant claims are deliberately *not* filtered. A token
-// whose namespace or role changed really is a different caller for this
-// purpose, and the second half of the test says so — otherwise "ignore the
-// claims that change" would drift into "ignore the claims", and a re-mint that
-// dropped a scope would keep the session it was granted under.
+// The claims that change are deliberately not a fixed list here. Filtering
+// "exp", "iat", "nbf" and "jti" would pass this test while leaving the outage
+// one identity provider away — Keycloak mints "sid" and "session_state" fresh
+// on every refresh, and an OIDC provider may re-mint "nonce", "at_hash" and
+// "auth_time" — so the refreshed token below changes all of them at once, and
+// only a binding that ignores the claims map entirely survives it.
 func TestMCPSessionUserIDSurvivesATokenRefresh(t *testing.T) {
 	t.Parallel()
 
@@ -453,77 +471,297 @@ func TestMCPSessionUserIDSurvivesATokenRefresh(t *testing.T) {
 	}
 
 	first := identity(map[string]any{
-		"namespace": "team-a",
-		"iat":       float64(1_700_000_000),
-		"exp":       float64(1_700_003_600),
-		"nbf":       float64(1_700_000_000),
-		"jti":       "01HQ0000000000000000000000",
+		"namespace":     "team-a",
+		"iat":           float64(1_700_000_000),
+		"exp":           float64(1_700_003_600),
+		"nbf":           float64(1_700_000_000),
+		"jti":           "01HQ0000000000000000000000",
+		"sid":           "5f0f0000-0000-4000-8000-000000000000",
+		"session_state": "5f0f0000-0000-4000-8000-000000000000",
+		"nonce":         "n-0S6_WzA2Mj",
+		"at_hash":       "MTIzNDU2Nzg5MDEyMzQ1Ng",
+		"auth_time":     float64(1_700_000_000),
 	})
 	refreshed := identity(map[string]any{
-		"namespace": "team-a",
-		"iat":       float64(1_700_003_000),
-		"exp":       float64(1_700_006_600),
-		"nbf":       float64(1_700_003_000),
-		"jti":       "01HQ1111111111111111111111",
+		"namespace":     "team-a",
+		"iat":           float64(1_700_003_000),
+		"exp":           float64(1_700_006_600),
+		"nbf":           float64(1_700_003_000),
+		"jti":           "01HQ1111111111111111111111",
+		"sid":           "9c110000-0000-4000-8000-000000000000",
+		"session_state": "9c110000-0000-4000-8000-000000000000",
+		"nonce":         "n-0S6_WzA2Mk",
+		"at_hash":       "Njg3NjU0MzIxMDk4NzY1NA",
+		"auth_time":     float64(1_700_003_000),
 	})
 
-	require.Equal(t, auth.MCPSessionUserID(first), auth.MCPSessionUserID(refreshed),
+	require.Equal(t, mcpSessionUserID(t, first), mcpSessionUserID(t, refreshed),
 		"an ordinary refresh changed the session key, so the SDK answers 403 to the session's own owner")
 
-	rescoped := identity(map[string]any{
-		"namespace": "team-b",
-		"iat":       float64(1_700_000_000),
-		"exp":       float64(1_700_003_600),
-		"nbf":       float64(1_700_000_000),
-		"jti":       "01HQ0000000000000000000000",
-	})
+	// And the direction that keeps the sentence above from meaning "the
+	// binding distinguishes nobody": what the trust policy attested about the
+	// caller is bound, so a token that names another tenant is another caller.
+	// These are the fields a claim cannot reach — Namespace and Role are set
+	// by the trust policy entry, never by the token — which is why binding
+	// them rather than the claims they may be derived from is the check with
+	// teeth.
+	tenantB := first
+	tenantB.Namespace = "team-b"
+	require.NotEqual(t, mcpSessionUserID(t, first), mcpSessionUserID(t, tenantB),
+		"two tenants share a session key, so one tenant's token is accepted for the other's pinned session")
 
-	require.NotEqual(t, auth.MCPSessionUserID(first), auth.MCPSessionUserID(rescoped),
-		"a token that authorizes something else kept the session it was not granted under")
+	elevated := first
+	elevated.Role = "admin"
+	require.NotEqual(t, mcpSessionUserID(t, first), mcpSessionUserID(t, elevated),
+		"a token carrying a different role kept the session it was not granted under")
 }
 
-// unmarshalableClaims is a claims map json.Marshal refuses, which is the only
-// way to reach [auth.MCPSessionUserID]'s error branch: this package's own
-// verifier produces JSON values, so the branch exists for a custom
-// [auth.Verifier] returning something else.
-func unmarshalableClaims() map[string]any {
-	return map[string]any{"unrepresentable": make(chan int)}
-}
-
-// TestMCPSessionUserIDStaysUnambiguousWhenTheClaimsCannotBeEncoded is the
-// fail-closed claim in that branch's own comment, checked rather than asserted
-// in prose.
+// TestMCPSessionUserIDBindsEveryPrincipalField is the anti-drift test for
+// deriving the binding from [auth.Principal] rather than enumerating its
+// fields beside it.
 //
-// It hashed the claims map's *type* and the marshal error, both of which are
-// identical for every principal a given broken verifier produces — so two
-// callers got one session key, and one caller's token was accepted for the
-// other's session. That is the exact defect the length-prefixed encoding above
-// exists to prevent, reachable through the branch written to be the safe one.
-func TestMCPSessionUserIDStaysUnambiguousWhenTheClaimsCannotBeEncoded(t *testing.T) {
+// It walks Principal's exported fields with reflection and changes each one in
+// turn: every field must change the session key, except the three the binding
+// deliberately clears. A field added to Principal later is bound by default
+// and this test passes; a field hand-excluded from the binding fails here,
+// which is the point — an exclusion should cost an argument, and inclusion
+// should cost nothing.
+//
+// This is also where the marshal-error branch is covered from the direction
+// that matters: for every shape a Principal can take, a key exists. See
+// TestMCPTokenVerifierRefusesAPrincipalItCannotBind for the other direction.
+func TestMCPSessionUserIDBindsEveryPrincipalField(t *testing.T) {
 	t.Parallel()
 
-	a := auth.MCPSessionUserID(auth.Principal{
-		Issuer: "https://idp.example.com", Subject: "alice", Claims: unmarshalableClaims(),
-	})
-	b := auth.MCPSessionUserID(auth.Principal{
-		Issuer: "https://idp.example.com", Subject: "mallory", Claims: unmarshalableClaims(),
-	})
-	c := auth.MCPSessionUserID(auth.Principal{
-		Issuer: "https://other.example.com", Subject: "alice", Claims: unmarshalableClaims(),
-	})
+	// Cleared from the binding, each for a reason a reader can check rather
+	// than take on faith.
+	cleared := map[string]string{
+		"IssuedAt":  `"iat" changes on every mint, so binding it answers 403 on an ordinary refresh`,
+		"ExpiresAt": `"exp" changes on every mint, for the same reason`,
+		"Claims":    "the claims an issuer mints fresh each time are not a closed set, so no filter over them is safe",
+	}
 
-	require.NotEqual(t, a, b, "two subjects at one issuer share a session key when the claims cannot be encoded")
-	require.NotEqual(t, a, c, "one subject at two issuers shares a session key when the claims cannot be encoded")
+	base := auth.Principal{
+		Issuer:                "https://idp.example.com",
+		IssuerName:            "agent-idp",
+		Subject:               "alice@example.com",
+		Audience:              []string{"https://flowstate.example.com"},
+		Namespace:             "team-a",
+		Role:                  "operator",
+		IssuedAt:              time.Unix(1_700_000_000, 0).UTC(),
+		ExpiresAt:             time.Unix(1_700_003_600, 0).UTC(),
+		Claims:                map[string]any{"groups": []any{"platform"}},
+		CertificateThumbprint: "0f9e8d7c6b5a40312213140506070809",
+	}
+	baseKey := mcpSessionUserID(t, base)
 
-	// And the same ambiguity the encoded path is length-prefixed against: no
-	// separator is safe here either, so the lengths go in.
+	principalType := reflect.TypeOf(base)
+	for i := range principalType.NumField() {
+		field := principalType.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		changedKey := mcpSessionUserID(t, changedPrincipalField(t, base, i))
+
+		if reason, ok := cleared[field.Name]; ok {
+			require.Equal(t, baseKey, changedKey,
+				"Principal.%s is bound into the session key, and %s", field.Name, reason)
+			continue
+		}
+
+		require.NotEqual(t, baseKey, changedKey,
+			"Principal.%s is not bound into the session key: two callers differing only in it share one "+
+				"session, so the SDK admits either one's token to the other's session. Bind it, or add it "+
+				"to this test's cleared set with the reason", field.Name)
+	}
+}
+
+// changedPrincipalField returns base with the field at index i changed to a
+// different value of the same type. It fails the test rather than skipping on
+// a type it does not know, so a new field's kind cannot quietly go unprobed.
+func changedPrincipalField(t *testing.T, base auth.Principal, i int) auth.Principal {
+	t.Helper()
+
+	changed := base
+	field := reflect.ValueOf(&changed).Elem().Field(i)
+
+	switch value := field.Interface().(type) {
+	case string:
+		field.SetString(value + "-changed")
+	case []string:
+		field.Set(reflect.ValueOf([]string{"https://changed.example.com"}))
+	case time.Time:
+		field.Set(reflect.ValueOf(value.Add(time.Hour)))
+	case map[string]any:
+		field.Set(reflect.ValueOf(map[string]any{"groups": []any{"changed"}}))
+	default:
+		t.Fatalf("auth.Principal.%s has type %T, which this test cannot change; teach it that type rather than "+
+			"letting a new field go unprobed", reflect.TypeOf(base).Field(i).Name, value)
+	}
+
+	return changed
+}
+
+// TestMCPSessionUserIDIgnoresAudienceOrder is the set-versus-list direction.
+//
+// An audience is a set everywhere else in this package — [auth.Principal.HasAudience]
+// is order-insensitive — and an issuer that lists two audiences is free to
+// list them in a different order on the next mint. Binding the slice as
+// written would make that a different caller, which is the refresh outage
+// again wearing different clothes.
+func TestMCPSessionUserIDIgnoresAudienceOrder(t *testing.T) {
+	t.Parallel()
+
+	one := auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice",
+		Audience: []string{"https://flowstate.example.com/mcp", "https://flowstate.example.com/api"},
+	}
+	other := auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice",
+		Audience: []string{"https://flowstate.example.com/api", "https://flowstate.example.com/mcp"},
+	}
+
+	require.Equal(t, mcpSessionUserID(t, one), mcpSessionUserID(t, other),
+		"the same two audiences in the other order produced a different session key")
+
+	// Sorting must not turn two different audience sets into one, which is the
+	// way a normalization like this fails.
+	fewer := auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice",
+		Audience: []string{"https://flowstate.example.com/mcp"},
+	}
+	require.NotEqual(t, mcpSessionUserID(t, one), mcpSessionUserID(t, fewer),
+		"a token addressed to one audience shares a session key with one addressed to two")
+}
+
+// TestMCPSessionUserIDIsUnambiguousAcrossTheFieldsItNowBinds extends
+// TestMCPSessionUserIDIsUnambiguous to the fields the binding gained.
+//
+// The same argument applies one field along: every character legal in a
+// namespace is legal in a role, so a binding that joined them would let a
+// caller in one tenant spell another tenant's session key. A collision here is
+// a tenant boundary crossed by encoding rather than by a missing check, which
+// is the shape CLAUDE.md's env-provider section records.
+func TestMCPSessionUserIDIsUnambiguousAcrossTheFieldsItNowBinds(t *testing.T) {
+	t.Parallel()
+
 	require.NotEqual(t,
-		auth.MCPSessionUserID(auth.Principal{Issuer: "https://idp.example/ab", Subject: "victim", Claims: unmarshalableClaims()}),
-		auth.MCPSessionUserID(auth.Principal{Issuer: "https://idp.example/a", Subject: "bvictim", Claims: unmarshalableClaims()}),
+		mcpSessionUserID(t, auth.Principal{Issuer: "i", Subject: "s", Namespace: "ab", Role: "c"}),
+		mcpSessionUserID(t, auth.Principal{Issuer: "i", Subject: "s", Namespace: "a", Role: "bc"}),
+		"a tenant boundary is spellable from a role, so one tenant's token is accepted for another's session")
+
+	require.NotEqual(t,
+		mcpSessionUserID(t, auth.Principal{Issuer: "i", Subject: "s", Namespace: "team-a"}),
+		mcpSessionUserID(t, auth.Principal{Issuer: "i", Subject: "s", Namespace: "team-b"}),
+		"two tenants share a session key")
+}
+
+// TestMCPTokenVerifierRefusesAPrincipalItCannotBind is the fail-closed
+// direction of the binding: a principal whose session key cannot be computed
+// is refused, rather than admitted with an empty UserID — which is how the SDK
+// spells "pin nothing", so every caller would share the session.
+//
+// The verifier under test is handed a principal directly, because no token
+// this package verifies can produce one: with the claims map cleared, every
+// field the binding encodes is a string, a []string or a time.Time. That is
+// the branch's own claim, and this asserts it from both sides — the shape of
+// today's Principal always binds (see
+// TestMCPSessionUserIDBindsEveryPrincipalField), and the guard is wired to a
+// refusal for the day a field arrives that does not.
+func TestMCPTokenVerifierRefusesAPrincipalItCannotBind(t *testing.T) {
+	t.Parallel()
+
+	unbindable := auth.Principal{
+		Issuer:    "https://idp.example.com",
+		Subject:   "alice",
+		Audience:  []string{mcpResource},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	// Every field of today's Principal encodes, so the refusal cannot be
+	// provoked through the verifier; assert the property the refusal rests on
+	// instead, and that a principal which does bind is admitted through the
+	// very same path.
+	key, err := auth.MCPSessionUserID(unbindable)
+	require.NoError(t, err)
+	require.NotEmpty(t, key)
+
+	info, err := auth.MCPTokenVerifier(stubVerifier{principal: unbindable}, mcpResource)(
+		t.Context(), "token", nil)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	require.Equal(t, key, info.UserID,
+		"the UserID the SDK pins on must be the session key, not something computed a second way")
+}
+
+// stubVerifier returns one principal for any token, so a test can drive
+// [auth.MCPTokenVerifier] with a Principal that no minted token could produce.
+type stubVerifier struct {
+	principal auth.Principal
+}
+
+func (s stubVerifier) Verify(context.Context, string) (auth.Principal, error) {
+	return s.principal, nil
+}
+
+// TestMCPTokenVerifierKeepsTheTokenAndClaimsOutOfEveryRendering is CLAUDE.md's
+// containment-shapes rule applied to the value this PR newly exposes.
+//
+// The verified Principal now travels in [mcpauth.TokenInfo.Extra], which the
+// SDK holds for a session's lifetime — a map[string]any in a struct, which is
+// exactly the shape that defeats a redacting String method: fmt reaches the
+// map's values by reflection and prints their fields, so %#v on the TokenInfo
+// would print the whole verified claims set even though Principal.String and
+// Principal.LogValue both redact it. The material is therefore held in a
+// closure, and this asserts the consequence in every shape it can be printed
+// in: the value, a struct holding it, and a slice of those.
+func TestMCPTokenVerifierKeepsTheTokenAndClaimsOutOfEveryRendering(t *testing.T) {
+	t.Parallel()
+
+	issuer, verifier := mcpTestVerifier(t)
+	token := issuer.MintToken(
+		map[string]any{"email": "SUPERSECRET-PERSONAL-DATA"},
+		authtest.WithSubject("agent"),
+		authtest.WithAudience(mcpResource),
 	)
 
-	// A binding that cannot be encoded must never collide with one that can,
-	// either: the refused principal is not "the principal with empty claims".
-	require.NotEqual(t, a,
-		auth.MCPSessionUserID(auth.Principal{Issuer: "https://idp.example.com", Subject: "alice"}))
+	info, err := auth.MCPTokenVerifier(verifier, mcpResource)(t.Context(), token, nil)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+
+	principal, ok := auth.MCPPrincipal(info)
+	require.True(t, ok, "the principal must still be readable through MCPPrincipal, or holding it in a closure hid it from its reader too")
+	require.Equal(t, "SUPERSECRET-PERSONAL-DATA", principal.Claims["email"],
+		"the claim is readable by whoever asks for the principal; the point is that nothing prints it by accident")
+
+	type holder struct{ info *mcpauth.TokenInfo }
+
+	renderings := map[string]string{
+		"TokenInfo %v":       fmt.Sprintf("%v", info),
+		"TokenInfo %+v":      fmt.Sprintf("%+v", info),
+		"TokenInfo %#v":      fmt.Sprintf("%#v", info),
+		"dereferenced %v":    fmt.Sprintf("%v", *info),
+		"dereferenced %+v":   fmt.Sprintf("%+v", *info),
+		"dereferenced %#v":   fmt.Sprintf("%#v", *info),
+		"Extra %v":           fmt.Sprintf("%v", info.Extra),
+		"Extra %+v":          fmt.Sprintf("%+v", info.Extra),
+		"Extra %#v":          fmt.Sprintf("%#v", info.Extra),
+		"in a slice %v":      fmt.Sprintf("%v", []*mcpauth.TokenInfo{info}),
+		"in a slice %+v":     fmt.Sprintf("%+v", []*mcpauth.TokenInfo{info}),
+		"in a slice %#v":     fmt.Sprintf("%#v", []*mcpauth.TokenInfo{info}),
+		"in a map %v":        fmt.Sprintf("%v", map[string]*mcpauth.TokenInfo{"caller": info}),
+		"through a field %v": fmt.Sprintf("%v", holder{info: info}),
+		// Through an unexported field, where fmt cannot call a method even if
+		// one existed — the leak class CLAUDE.md's secrets section names.
+		"through an unexported field %+v": fmt.Sprintf("%+v", holder{info: info}),
+		"through an unexported field %#v": fmt.Sprintf("%#v", holder{info: info}),
+	}
+
+	for name, rendered := range renderings {
+		require.NotContains(t, rendered, "SUPERSECRET-PERSONAL-DATA",
+			"%s printed a verified claim; the Principal must be held in a closure, not stored in Extra directly", name)
+		require.NotContains(t, rendered, token,
+			"%s printed the bearer token itself", name)
+	}
 }
