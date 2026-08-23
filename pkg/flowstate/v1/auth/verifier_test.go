@@ -857,6 +857,26 @@ func TestOIDCVerifierPrime(t *testing.T) {
 	require.Equal(t, 1, jwks, "verification should use the primed keys")
 }
 
+// TestOIDCVerifierIgnoresMTLSIssuers checks that the certificate-only half of
+// a mixed trust policy never becomes a bearer-token issuer or an OIDC discovery
+// target, even when its operator-chosen label happens to look like a URL.
+func TestOIDCVerifierIgnoresMTLSIssuers(t *testing.T) {
+	issuer := newTestIssuer(t)
+	verifier := newVerifier(t, auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:         "mesh",
+		Kind:         auth.IssuerKindMTLS,
+		Issuer:       issuer.URL(),
+		ClientCAFile: newTestCA(t, "test-ca").clientCAFile(t),
+		SubjectFrom:  auth.SubjectFromURISAN,
+	}}})
+
+	require.NoError(t, verifier.Prime(t.Context()))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithoutAudience()))
+	require.ErrorIs(t, err, auth.ErrUntrustedIssuer)
+	require.Zero(t, issuer.Requests().Discovery)
+	require.Zero(t, issuer.Requests().JWKS)
+}
+
 // TestOIDCVerifierConcurrent checks that many simultaneous first requests share
 // one key set fetch rather than each starting their own, and that the verifier
 // holds up under the race detector.

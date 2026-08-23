@@ -220,6 +220,13 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 	}
 
 	for _, entry := range policy.Issuers {
+		// A kind: mtls issuer is an operator-chosen label, not an OIDC URL. It is
+		// consumed only by PeerVerifier and must never become a discovery target
+		// or a bearer-token trust entry here.
+		if entry.kind() != IssuerKindOIDC {
+			continue
+		}
+
 		// Copied, not aliased: the live trust policy is read from many goroutines
 		// on every request, and must not be something a caller can still change.
 		entry = entry.clone()
