@@ -209,7 +209,18 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 		return nil, err
 	}
 
-	client := transportProtectedClient(cfg.httpClient)
+	var client *http.Client
+	if cfg.httpClient == nil {
+		var err error
+		client, err = NewIdentityHTTPClient(IdentityTransportConfig{})
+		if err != nil {
+			return nil, fmt.Errorf("building identity transport: %w", err)
+		}
+	} else {
+		// Explicit clients are primarily the injection seam for an in-process
+		// issuer. Keep their transport, while retaining redirect protection.
+		client = transportProtectedClient(cfg.httpClient)
+	}
 
 	verifier := &OIDCVerifier{
 		entries:    make(map[string][]TrustedIssuer),

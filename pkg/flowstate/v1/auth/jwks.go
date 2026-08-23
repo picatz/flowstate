@@ -380,6 +380,10 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 // controls.
 func discoverJWKSURL(ctx context.Context, client *http.Client, issuer string) (string, error) {
 	discoveryURL := strings.TrimSuffix(issuer, "/") + discoveryPath
+	ctx = ContextWithIdentityEndpoint(ctx, IdentityEndpoint{
+		Purpose: EndpointOIDCDiscovery, Provider: issuer, Issuer: issuer,
+		OriginalURL: discoveryURL,
+	})
 
 	var document struct {
 		Issuer  string `json:"issuer"`
@@ -414,6 +418,9 @@ func discoverJWKSURL(ctx context.Context, client *http.Client, issuer string) (s
 // github.com/picatz/jose's [jwk.Set], and its keys are parsed with that
 // package's key accessors.
 func fetchJWKS(ctx context.Context, client *http.Client, jwksURL string) (*jwk.Set, error) {
+	ctx = ContextWithIdentityEndpoint(ctx, IdentityEndpoint{
+		Purpose: EndpointJWKS, OriginalURL: jwksURL,
+	})
 	var set jwk.Set
 	if err := fetchJSON(ctx, client, jwksURL, maxJWKSBytes, &set); err != nil {
 		return nil, err

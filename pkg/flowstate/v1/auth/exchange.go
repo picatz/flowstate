@@ -488,8 +488,21 @@ func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClie
 	if timeout <= 0 {
 		timeout = DefaultExchangeTimeout
 	}
+	if client == nil {
+		var err error
+		client, err = NewIdentityHTTPClient(IdentityTransportConfig{Timeout: timeout, MaxRedirects: 1})
+		if err != nil {
+			// Construction with these constants cannot fail. Preserve a client
+			// whose first request fails closed if that invariant changes.
+			client = &http.Client{Transport: roundTripError{err}}
+		}
+	}
 	return &exchangeClient{client: unredirectedClient(client), timeout: timeout}
 }
+
+type roundTripError struct{ err error }
+
+func (r roundTripError) RoundTrip(*http.Request) (*http.Response, error) { return nil, r.err }
 
 // unredirectedClient returns a client that refuses to follow any redirect,
 // applied to a copy so a caller's own client is never modified.
@@ -577,6 +590,9 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 		return nil, fmt.Errorf("%w: building %s request: %w", ErrExchangeFailed, provider, err)
 	}
 	request.Header.Set("Content-Type", contentType)
+	request = request.WithContext(ContextWithIdentityEndpoint(request.Context(), IdentityEndpoint{
+		Purpose: EndpointToken, Provider: provider, OriginalURL: endpoint, Credentials: true,
+	}))
 	request.Header.Set("Accept", "application/json")
 	if authorize != nil {
 		authorize(request)
