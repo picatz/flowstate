@@ -7,11 +7,68 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+func TestSuggestedRunArgumentsRedactSensitiveInputs(t *testing.T) {
+	cmd := &cobra.Command{}
+	addInputFlags(cmd)
+	addRevealSensitiveFlag(cmd)
+	require.NoError(t, cmd.Flags().Set("input", "token=private-value"))
+	require.NoError(t, cmd.Flags().Set("input", "region=eu-west-1"))
+
+	workflow := &v1.Workflow{DeclaredInputs: []*v1.InputDeclaration{
+		{Name: "token", Sensitive: true},
+		{Name: "region"},
+	}}
+	arguments, redacted := runArgumentFlags(cmd, workflow)
+	assert.Equal(t, []string{
+		`--input='token=[redacted: token]'`,
+		"--input=region=eu-west-1",
+	}, arguments)
+	assert.True(t, redacted, "a withheld value has to be reported, or the offer reads as runnable")
+
+	require.NoError(t, cmd.Flags().Set(revealSensitiveFlagName, "true"))
+	arguments, redacted = runArgumentFlags(cmd, workflow)
+	assert.Equal(t, []string{
+		"--input=token=private-value",
+		"--input=region=eu-west-1",
+	}, arguments, "the explicit reveal opt-in must preserve the failed invocation")
+	assert.False(t, redacted, "nothing was withheld, so nothing needs supplying again")
+}
+
+// TestSuggestedRunArgumentsRedactSpacedInputNames pins the direction this
+// redaction fails in.
+//
+// [parseInputFlag] trims the name before it binds the value, so `--input
+// " token=..."` binds `token` and is sensitive. A renderer that looks the
+// declaration up under the untrimmed name finds nothing, and a nil
+// [v1.InputDeclaration] answers false to GetSensitive — so a lookup that misses
+// prints the secret. The assertion is therefore that the value is absent from
+// the whole rendering, not that some particular string is present.
+func TestSuggestedRunArgumentsRedactSpacedInputNames(t *testing.T) {
+	workflow := &v1.Workflow{DeclaredInputs: []*v1.InputDeclaration{
+		{Name: "token", Sensitive: true},
+	}}
+
+	for _, flag := range []string{" token=private-value", "token =private-value", "  token  =private-value"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			addInputFlags(cmd)
+			addRevealSensitiveFlag(cmd)
+			require.NoError(t, cmd.Flags().Set("input", flag))
+
+			arguments, redacted := runArgumentFlags(cmd, workflow)
+			assert.True(t, redacted)
+			assert.NotContains(t, strings.Join(arguments, " "), "private-value",
+				"a name the parser trims must be redacted under the name the parser bound")
+		})
+	}
+}
 
 // What a run is started with, from a command line.
 //
