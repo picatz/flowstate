@@ -178,7 +178,39 @@ steps:
         # of.
         - id: observed
           timeout: 10s
+          # A read, so it is safe to retry: nothing on the far side changes
+          # because this ran twice, and a control plane having a bad second
+          # should not end a reconciler. Note what this retry is *not* for -
+          # see `expect:` below.
+          retry:
+            attempts: 3
+            interval: 1s
+            backoff: 2.0
+            max_interval: 10s
           http:
+            # An HTTP response is untyped until something says otherwise, and
+            # every step below treats these two values as a number and a
+            # boolean. A control plane answering `{"retired": "false"}` - a
+            # string, from a flaky serializer or a proxy's error page - would
+            # otherwise satisfy this step and then fail in `retiring`'s boolean
+            # context or in the loop's `until:`, ending the reconciler with a
+            # CEL type error several steps away from the thing that was wrong.
+            # So the shape is checked at the boundary, in the same spirit as the
+            # guards on the signal payload: this is the other untrusted input,
+            # and it was left unchecked when retirement moved from the payload
+            # to the world.
+            #
+            # `expect:` rather than a defaulting expression in `outputs:`,
+            # deliberately. A wrong-typed reading is not a missing one: coercing
+            # it would invent a `replicas` this reconciler then converges
+            # toward, which is a wrong write rather than a refused read. A failed
+            # expectation is permanent by design - the author has said what a
+            # correct answer looks like, and repeating the request will not
+            # change the endpoint's mind - so this fails the step by name and
+            # does not spend the retries above on it.
+            expect: |-
+              ${response.status_code == 200 && has(response.json.replicas) && type(response.json.replicas) == type(0) &&
+              has(response.json.retired) && type(response.json.retired) == type(true)}
             method: GET
             outputs:
               replicas: ${response.json.replicas}

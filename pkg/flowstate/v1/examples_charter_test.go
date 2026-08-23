@@ -73,6 +73,20 @@ var constructsWithoutAnExample = map[string]string{
 	"schedule.end_at":              "a schedule's activation window end — tracked in #969",
 	"signal_policy_rule.subject":   "a signals rule matching an exact subject; the enterprise examples gate on `claims:` — tracked in #969",
 	"signal_policy_rule.namespace": "a signals rule matching a namespace — tracked in #969",
+
+	// Per-*value* enum coverage, added because a key per field stays satisfied by
+	// whichever value some example happened to use, so a new policy would land
+	// unnoticed. These are the values nothing selects today.
+	//
+	// `input.type.TYPE_ENUM` is the same gap as `input.values` above, seen from
+	// the other side: an enum-constrained input needs the type and the values
+	// together, and one example closes both.
+	"input.type.TYPE_ENUM":                     "an enum-constrained input; the same gap as input.values — tracked in #969",
+	"schedule.overlap.OVERLAP_BUFFER_ONE":      "an overlap policy no example selects; scheduled-report shows one policy — tracked in #969",
+	"schedule.overlap.OVERLAP_BUFFER_ALL":      "the same — tracked in #969",
+	"schedule.overlap.OVERLAP_CANCEL_OTHER":    "the same — tracked in #969",
+	"schedule.overlap.OVERLAP_TERMINATE_OTHER": "the same — tracked in #969",
+	"schedule.overlap.OVERLAP_ALLOW_ALL":       "the same — tracked in #969",
 }
 
 // The required set is derived from the schema three ways: the two `kind` oneofs
@@ -334,6 +348,25 @@ func writableRequired(required map[string]string, desc protoreflect.MessageDescr
 		if _, excluded := spec.exclude[string(field.Name())]; excluded {
 			continue
 		}
+
+		// An enum field is not one construct, it is one per value an author may
+		// select: a new `overlap:` policy or a new input type is a new capability,
+		// and a key per *field* would stay satisfied by whichever value some
+		// example already happened to use (Codex, #901). The zero value is
+		// excluded because it spells "unset" rather than a choice.
+		if field.Kind() == protoreflect.EnumKind {
+			values := field.Enum().Values()
+			for v := range values.Len() {
+				value := values.Get(v)
+				if value.Number() == 0 {
+					continue
+				}
+				required[spec.prefix+"."+string(field.Name())+"."+string(value.Name())] = "an example selecting that value"
+			}
+
+			continue
+		}
+
 		required[spec.prefix+"."+string(field.Name())] = "an example setting that field"
 	}
 }
@@ -525,6 +558,13 @@ func reportWritableFields(msg protoreflect.Message, report func(string)) {
 			return true
 		}
 		if _, excluded := spec.exclude[string(field.Name())]; excluded {
+			return true
+		}
+		if field.Kind() == protoreflect.EnumKind {
+			if value := field.Enum().Values().ByNumber(msg.Get(field).Enum()); value != nil && value.Number() != 0 {
+				report(spec.prefix + "." + string(field.Name()) + "." + string(value.Name()))
+			}
+
 			return true
 		}
 		report(spec.prefix + "." + string(field.Name()))
