@@ -37,7 +37,7 @@ func TestARunRecordingNoTriggerReadsEmptyRatherThanFailing(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskV2)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	// No Trigger field: exactly the state a run started before this field existed
@@ -76,7 +76,7 @@ func TestARunRecordingAnUnknownTriggerKindIsRefused(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskV2)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{

@@ -104,7 +104,7 @@ func TestRegisterInstallsEverythingHistoryCanName(t *testing.T) {
 	// type" instead of a sentence naming the plugin, which reads as a broken
 	// worker rather than a rollout that is half done.
 	require.ElementsMatch(t,
-		[]string{"Task", "TaskInScope", "TaskV2", "TaskInScopeV2", "TaskWithPrev", "TaskAuthorized", "TaskInScopeAuthorized", "TaskAuthorizedV2", "TaskInScopeAuthorizedV2", "WorkflowVars", "CheckPlugins"}, registry.activities)
+		[]string{"Task", "TaskInScope", "TaskWithPrev", "TaskAuthorized", "TaskInScopeAuthorized", "WorkflowVars", "CheckPlugins"}, registry.activities)
 }
 
 // TestRegisterPinsTheInterpreter is the assertion the whole versioning posture

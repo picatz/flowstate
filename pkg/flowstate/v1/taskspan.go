@@ -66,9 +66,13 @@ const (
 	// the caller knows it.
 	SpanAttributeStepID = "flowstate.step.id"
 
-	// SpanAttributeAttempt is the substrate's attempt number.
+	// SpanAttributeAttempt is which attempt at this task the span covers,
+	// counting from 1.
 	//
-	// Durable-only, deliberately: see [StartTaskSpan]'s doc.
+	// Written by both drivers, and set by the caller rather than by
+	// [StartTaskSpan] — see that function's doc for why the number cannot come
+	// from here, and for what the two drivers' counters do and do not have in
+	// common.
 	SpanAttributeAttempt = "flowstate.attempt"
 
 	// SpanAttributeSecretRefs names the secrets a task will resolve, by scheme
@@ -90,6 +94,15 @@ const (
 // parses a protovalidate error, so a bound that lives only in the schema is not
 // a bound that path has.
 const MaxTaskNameLen = 128
+
+// MaxStepIDLen is the longest step id the schema permits, in characters.
+//
+// The twin of `Node.id`'s protovalidate rule
+// (`proto/flowstate/v1/workflow.proto:900-908`, `max_len: 128`), standing in
+// the same relationship to it that [MaxTaskNameLen] stands in to `Task.name`'s
+// and for the same reason: the bound belongs where the value is used, and the
+// paths that reach a span do not all validate first.
+const MaxStepIDLen = 128
 
 // boundedSpanName is what telemetry may say a thing is called.
 //
@@ -168,14 +181,45 @@ func TaskSpanName(taskName string) string {
 // is not recording, and the attribute walk below never happens, which is how
 // zero-config stays literally silent.
 //
-// stepID is empty on the entry points that do not carry one — the durable
-// driver's two pre-scope activities take the task alone — so the attribute is
-// omitted rather than written blank. An empty attribute is worse than a missing
-// one: it reads as a step whose id is the empty string.
+// stepID is empty only where no id is known, and then the attribute is omitted
+// rather than written blank — an empty attribute is worse than a missing one,
+// since it reads as a step whose id *is* the empty string. Both drivers now
+// know it for every task they run, so in current code the empty case is the one
+// history produces: an activity task scheduled by an older interpreter carries
+// no payload for the parameter and it decodes to "". That is the appended-
+// parameter rule in engine/versioning.go working as intended, and the omission
+// here is the half of it that keeps the trace honest.
 //
-// The caller adds [SpanAttributeAttempt], because the attempt counter belongs to
-// the execution driver: Temporal supplies it durably and the local retry loop
-// supplies the rehearsal's corresponding number.
+// # The attempt is the caller's to set, and it is not the same number twice
+//
+// [SpanAttributeAttempt] is deliberately not written here, because this function
+// cannot know it: the durable driver reads it from `activity.GetInfo`, which is
+// only meaningful inside an activity, and the local driver reads it from the
+// retry loop's own counter in `runStepWithPolicy`. One function reached from two
+// places that each hold a different source for the value has no business
+// guessing at it.
+//
+// That the two sources differ is worth being plain about, since an earlier
+// version of this comment concluded from it that the local driver should write
+// nothing. Temporal's number survives a worker crash; the local loop's is an
+// in-process integer that a crash discards along with the run. But a local run
+// *is* the process — there is no crash it outlives and no attempt it could
+// misreport — so the number it writes is a true answer to the question the key
+// asks, which is "which attempt at this task is this". Withholding it did not
+// make the vocabulary more honest, it made the rehearsal quieter than the thing
+// it rehearses, which is invariant 5 failing in the direction this package
+// exists to prevent.
+//
+// What the old reasoning was right about is that the two numbers are not
+// interchangeable for every question, and the span vocabulary does not today
+// carry anything that tells them apart: `flowstate.driver` exists, but it is a
+// *metric* label (metricschema.Driver), and the five keys above are the whole
+// closed set a task span may carry. So a consumer separates them by where the
+// span sits — a durable attempt is a child of Temporal's own activity span and
+// a local one is not — rather than by an attribute. Adding the key to this
+// vocabulary is a defensible follow-up and is deliberately not done here:
+// it would oblige both drivers to write it on every task span, which is a
+// change to the shared vocabulary rather than to this one's plumbing.
 func StartTaskSpan(ctx context.Context, task *Task, stepID string) (context.Context, trace.Span) {
 	ctx, span := otel.GetTracerProvider().Tracer(taskTracerName).Start(ctx,
 		TaskSpanName(task.GetName()), trace.WithSpanKind(trace.SpanKindInternal))
@@ -195,7 +239,12 @@ func StartTaskSpan(ctx context.Context, task *Task, stepID string) (context.Cont
 	}
 
 	if stepID != "" {
-		attrs = append(attrs, attribute.String(SpanAttributeStepID, stepID))
+		// Bounded for the identical reason the name above it is, and it is not
+		// redundant with the schema's rule: an embedder that builds a [Workflow]
+		// in Go rather than compiling a Flowfile never runs protovalidate, so an
+		// id of any length whatever reaches this attribute and is exported. The
+		// bound belongs where the value is used.
+		attrs = append(attrs, attribute.String(SpanAttributeStepID, boundedSpanName(stepID, MaxStepIDLen)))
 	}
 
 	attrs = append(attrs, SecretReferenceAttributes(task)...)

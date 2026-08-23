@@ -23,7 +23,7 @@ func TestRunIdentityShapeDurable(t *testing.T) {
 	env := suite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskV2)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
 		Workflow: conformance.RunIdentityWorkflow(),
@@ -55,7 +55,7 @@ func TestRunIdentityShapePredatesTheField(t *testing.T) {
 	env := suite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskV2)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 	// No Identity at all — the wire shape of a RunState written before this
 	// field existed, decoded by a build that now reads it.

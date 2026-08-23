@@ -125,18 +125,16 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 // runs here on the worker. It only ever categorizes the *Temporal* error this
 // activity returns — see [activityError]'s own doc for why that is a
 // heuristic and not a correctness signal.
-func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
-	return runTaskActivity(ctx, task, identity, "", continueOnError)
-}
-
-// TaskV2 is the activity entry point for newly scheduled, pre-resolved tasks.
-// Task remains registered with its historical signature for replay; this
-// version adds the step identity required by attempt-level tracing.
-func TaskV2(ctx context.Context, in *v1.Task, identity *v1.WorkloadIdentity, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
-	return runTaskActivity(ctx, in, identity, stepID, continueOnError)
-}
-
-func runTaskActivity(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
+//
+// stepID is the id of the step this dispatch is for, carried so the task span
+// this activity opens names it — the same fact
+// [taskActivities.TaskAuthorized] has always received, now on this arm too.
+// It is *last* rather than beside the other identity-ish parameters, and that
+// position is load-bearing: see the appended-parameter rule in versioning.go.
+// An activity task scheduled by an older interpreter carries no payload for it
+// and arrives here as the empty string, which [v1.StartTaskSpan] already
+// treats as "no id known" and omits.
+func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool, stepID string) (*v1.Node_Outputs, error) {
 	// The whole activity runs inside the observation, so that every way out —
 	// a policy refusal, a task failure, and a panic that returns nothing at all
 	// — is recorded once and recorded honestly. See [v1.ObserveTask] for why it
@@ -230,17 +228,9 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 //
 // continueOnError carries the step's `continue_on_error:` across the activity
 // boundary the same way it does on [Task] — see that parameter's doc.
-func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOnError bool) (*v1.Node_Outputs, error) {
-	return taskInScope(ctx, task, scope, "", continueOnError)
-}
-
-// TaskInScopeV2 is the activity entry point for newly scheduled scope-carrying
-// tasks. The legacy entry point remains available to recorded histories.
-func TaskInScopeV2(ctx context.Context, task *v1.Task, scope *v1.Scope, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
-	return taskInScope(ctx, task, scope, stepID, continueOnError)
-}
-
-func taskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
+//
+// stepID is appended for the reason, and under the rule, [Task]'s is.
+func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOnError bool, stepID string) (*v1.Node_Outputs, error) {
 	out, err := observeTask(ctx, task, stepID, func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
 		// The deployment's task-shape policy (#187), checked once per activity
 		// entry against the run's real attested identity — this entry point is

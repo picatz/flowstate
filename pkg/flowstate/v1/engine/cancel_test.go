@@ -48,17 +48,17 @@ func newCancelEnv(t *testing.T) (*testsuite.TestWorkflowEnvironment, func() []st
 	var mu sync.Mutex
 	var ran []string
 
-	record := func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
+	record := func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool, stepID string) (*v1.Node_Outputs, error) {
 		mu.Lock()
 		ran = append(ran, task.GetInputs()["message"].GetLiteral().GetStringValue())
 		mu.Unlock()
 
-		return engine.Task(ctx, task, identity, continueOnError)
+		return engine.Task(ctx, task, identity, continueOnError, stepID)
 	}
 
-	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(record)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(record)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
-	env.OnActivity(engine.TaskInScopeV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScopeV2)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 	return env, func() []string {
 		mu.Lock()

@@ -61,9 +61,9 @@ func newLoopStateEnv(t *testing.T) *testsuite.TestWorkflowEnvironment {
 	env := suite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(Run)
-	env.OnActivity(TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskV2)
+	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(Task)
 	env.OnActivity(TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(TaskWithPrev)
-	env.OnActivity(TaskInScopeV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScopeV2)
+	env.OnActivity(TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScope)
 	env.RegisterActivity(WorkflowVars)
 
 	return env

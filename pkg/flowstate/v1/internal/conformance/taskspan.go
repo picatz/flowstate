@@ -32,16 +32,47 @@ import (
 // same workflow.
 //
 // The durable driver has spans this one cannot: Temporal's own workflow and
-// activity spans, when its tracing interceptor is installed, and
-// [v1.SpanAttributeAttempt], which the substrate owns. Those are *extra*, and
-// the assertion is written to permit them — everything outside the `flowstate.`
-// namespace is ignored entirely, and a driver-only attribute key is permitted
-// as long as it is one of the shared vocabulary's.
+// activity spans, when its tracing interceptor is installed. Those are *extra*,
+// and the assertion is written to permit them — everything outside the
+// `flowstate.` namespace is ignored entirely, and a driver-only attribute key is
+// permitted as long as it is one of the shared vocabulary's.
 //
-// Every newly scheduled activity uses a versioned entry point carrying its step
-// id, while the local retry loop carries the same id directly. The assertion
-// below therefore requires both drivers' attempt spans to name the step and the
-// attempt, rather than preserving the former historical-signature asymmetry.
+// # The asymmetry this case used to record, and what closed it
+//
+// Two of the five attributes were one-sided, and the comment that stood here
+// described why rather than fixing it. [v1.SpanAttributeStepID] was written by
+// the local driver for every step and by the durable driver only for the two
+// activity entry points that already received a step id — `TaskAuthorized` and
+// `TaskInScopeAuthorized`, the arms `executor.dispatch` selects for a task
+// needing authority. `Task` and `TaskInScope` had no parameter to carry one.
+// [v1.SpanAttributeAttempt] was one-sided the other way: durable only, from
+// `activity.GetInfo`.
+//
+// Neither was a difference of meaning, and both are now closed, by different
+// moves that are worth keeping apart.
+//
+// The step id was plumbing, and the plumbing was avoided because giving a
+// registered activity another parameter looked like a versioned change. It is
+// not one, as long as the parameter is appended and the activity keeps its
+// name: replay compares the activity *type name*, never the inputs, and a
+// payload list shorter than the parameter list decodes the remainder to zero
+// values. `Task` and `TaskInScope` therefore take a trailing `stepID` under
+// their existing names, exactly as #756 gave them a trailing `continueOnError`,
+// and the replay corpus — every entry of which predates both — still replays.
+// engine/versioning.go carries the rule and the reasoning.
+//
+// The attempt was a judgement, and the judgement was reversed. It was withheld
+// from the local driver on the grounds that the substrate owns the number and
+// an in-process counter is not the same fact. But a local run is the process:
+// there is no crash for its counter to misreport across, so the number is a
+// true answer to what the key asks. Withholding it made the rehearsal quieter
+// than the thing it rehearses. [v1.StartTaskSpan]'s doc has the full argument
+// and the one thing the old reasoning was right about.
+//
+// So the assertion below requires both, on every task-attempt span, from both
+// drivers — which is the only form in which either fix stays fixed. An
+// assertion that merely permits an attribute cannot tell a driver that stopped
+// writing it from one that never did.
 
 // TaskSpanSecret is the value this case hides in a task input, distinctive
 // enough that a substring search cannot match it by accident.

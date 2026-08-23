@@ -103,9 +103,9 @@ func TestTaskSpanParentsUnderTemporalActivitySpan(t *testing.T) {
 		Interceptors: []interceptor.WorkerInterceptor{temporalTracing(t)},
 	})
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskV2)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
-	env.OnActivity(engine.TaskInScopeV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScopeV2)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: conformance.TaskSpanWorkflow()})
 	require.True(t, env.IsWorkflowCompleted())
