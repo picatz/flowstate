@@ -415,16 +415,23 @@ func jsonKindName(decoded any) string {
 // for a shell, so a suggested recovery command starts the workload that was
 // asked for. A workflow with required inputs refuses the flagless spelling
 // outright, and optional inputs silently start a different workload, which is
-// worse. The `--flag=value` form is used because a value with a leading dash
-// would otherwise read as the next flag.
-func runArgumentFlags(cmd *cobra.Command) []string {
+// worse. Values the workflow declared sensitive are replaced with the same
+// marker as every other CLI display surface unless --reveal-sensitive was
+// explicitly requested. The `--flag=value` form is used because a value with a
+// leading dash would otherwise read as the next flag.
+func runArgumentFlags(cmd *cobra.Command, workflow *v1.Workflow) []string {
 	var arguments []string
 
 	if file, _ := cmd.Flags().GetString("input-file"); file != "" {
 		arguments = append(arguments, "--input-file="+shellArgument(file))
 	}
 	flags, _ := cmd.Flags().GetStringArray("input")
+	declared := declaredInputs(workflow)
+	reveal := revealSensitiveRequested(cmd)
 	for _, flag := range flags {
+		if name, _, ok := strings.Cut(flag, "="); ok && declared[name].GetSensitive() && !reveal {
+			flag = name + "=" + redactedMarker(name)
+		}
 		arguments = append(arguments, "--input="+shellArgument(flag))
 	}
 

@@ -7,12 +7,36 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+func TestSuggestedRunArgumentsRedactSensitiveInputs(t *testing.T) {
+	cmd := &cobra.Command{}
+	addInputFlags(cmd)
+	addRevealSensitiveFlag(cmd)
+	require.NoError(t, cmd.Flags().Set("input", "token=private-value"))
+	require.NoError(t, cmd.Flags().Set("input", "region=eu-west-1"))
+
+	workflow := &v1.Workflow{DeclaredInputs: []*v1.InputDeclaration{
+		{Name: "token", Sensitive: true},
+		{Name: "region"},
+	}}
+	assert.Equal(t, []string{
+		`--input='token=[redacted: token]'`,
+		"--input=region=eu-west-1",
+	}, runArgumentFlags(cmd, workflow))
+
+	require.NoError(t, cmd.Flags().Set(revealSensitiveFlagName, "true"))
+	assert.Equal(t, []string{
+		"--input=token=private-value",
+		"--input=region=eu-west-1",
+	}, runArgumentFlags(cmd, workflow), "the explicit reveal opt-in must preserve the failed invocation")
+}
 
 // What a run is started with, from a command line.
 //
