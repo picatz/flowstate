@@ -1,74 +1,160 @@
-package flowstatev1
+package flowstatev1_test
 
 import (
-	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-func TestAuthorizationRegistryIsUnambiguous(t *testing.T) {
-	seenActions := map[string]bool{}
-	seenOperations := map[string]string{}
-	for _, action := range ActionRegistry() {
-		require.NotEmpty(t, action.Name)
-		require.NotEmpty(t, action.ResourceType)
-		require.False(t, seenActions[action.Name], "duplicate action %q", action.Name)
-		seenActions[action.Name] = true
-		for surface, operations := range map[string][]string{"rpc": action.RPCs, "mcp": action.MCPTools, "plugin": action.PluginOperations, "lsp": action.LSPCapabilities, "internal": action.InternalOperations} {
-			for _, operation := range operations {
-				key := surface + ":" + operation
-				require.Empty(t, seenOperations[key], "%s maps to both %s and %s", key, seenOperations[key], action.Name)
-				seenOperations[key] = action.Name
-				mapped, err := ActionForSurface(surface, operation)
-				require.NoError(t, err)
-				require.Equal(t, action.Name, mapped.Name)
-			}
-		}
-		if action.Parent != "" {
-			_, ok := LookupAction(action.Parent)
-			require.True(t, ok, "%s has unknown parent %s", action.Name, action.Parent)
-		}
-	}
-}
+// TestEveryRPCHasExactlyOneAuthorizationAction is what keeps the vocabulary
+// attached to the surface it is a vocabulary of.
+//
+// It walks flowstate.v1.WorkflowService's own descriptor rather than any list
+// of RPC names, in both directions: an RPC the schema declares and no binding
+// names fails, and a binding naming an RPC the schema no longer declares fails.
+// That is the whole reason the bindings may be hand-written — the judgement
+// about which RPCs share an action is recorded once, and the thing it is a
+// judgement about is read from the source of truth.
+func TestEveryRPCHasExactlyOneAuthorizationAction(t *testing.T) {
+	t.Parallel()
 
-func TestEveryRegisteredRPCAndDerivedMCPToolHasOneTypedAction(t *testing.T) {
-	services := File_flowstate_v1_service_proto.Services()
-	require.Equal(t, 1, services.Len())
+	services := v1.File_flowstate_v1_service_proto.Services()
+	require.Equal(t, 1, services.Len(), "the schema declares more than one service; this test names one")
+
+	declared := map[string]bool{}
 	methods := services.Get(0).Methods()
-	for i := 0; i < methods.Len(); i++ {
-		name := string(methods.Get(i).Name())
-		action, err := ActionForSurface("rpc", name)
-		require.NoError(t, err, name)
-		require.NotEmpty(t, action.ResourceType, name)
-		mcpAction, err := ActionForSurface("mcp", "flowstate_"+camelToSnake(name))
-		require.NoError(t, err, name)
-		require.Equal(t, action.Name, mcpAction.Name)
+	require.NotZero(t, methods.Len(), "the service declares no methods; the lookup is broken")
+
+	for i := range methods.Len() {
+		declared[string(methods.Get(i).Name())] = true
+	}
+
+	bound := map[string]v1.AuthorizationAction{}
+	for _, binding := range v1.AuthorizationActionBindings() {
+		for _, rpc := range binding.GetRpcs() {
+			previous, seen := bound[rpc]
+			require.False(t, seen, "rpc %s is bound to both %s and %s; an operation has one action",
+				rpc, previous, binding.GetAction())
+			bound[rpc] = binding.GetAction()
+
+			require.True(t, declared[rpc],
+				"a binding names the rpc %s, which flowstate.v1.WorkflowService no longer declares", rpc)
+		}
+	}
+
+	for rpc := range declared {
+		action, err := v1.AuthorizationActionForRPC(rpc)
+		require.NoError(t, err,
+			"the schema declares rpc %s and no authorization action names it", rpc)
+		require.Equal(t, bound[rpc], action)
+		require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
 	}
 }
 
-func TestAuthorizationCELHasExactlyFourTypedRoots(t *testing.T) {
-	_, _, err := CompileAuthorizationPolicy(`principal.principal_id != "" && action.name == "secret.read" && resource.type == "secret" && context.deployment == "prod"`)
-	require.NoError(t, err)
-	for _, forbidden := range []string{"request", "headers", "token", "assertion", "claims", "workflow", "plugin"} {
-		_, _, err := CompileAuthorizationPolicy(forbidden + ` == null`)
-		require.Error(t, err, forbidden)
+// TestEveryAuthorizationActionIsBoundExactlyOnce closes the other direction:
+// an action in the schema that no binding mentions is a scope this deployment
+// publishes and no operation reaches.
+func TestEveryAuthorizationActionIsBoundExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	bound := map[v1.AuthorizationAction]bool{}
+	for _, binding := range v1.AuthorizationActionBindings() {
+		require.NoError(t, v1.Validate(binding),
+			"binding for %s does not satisfy the schema's own bounds", binding.GetAction())
+
+		require.False(t, bound[binding.GetAction()], "%s is bound twice", binding.GetAction())
+		bound[binding.GetAction()] = true
+
+		require.NotEmpty(t, append(binding.GetRpcs(), binding.GetMcpTools()...),
+			"%s names no operation at all, so nothing can ever be authorized as it", binding.GetAction())
+
+		if parent := binding.GetParent(); parent != v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED {
+			require.NotEqual(t, binding.GetAction(), parent, "%s is its own parent", binding.GetAction())
+		}
+	}
+
+	values := v1.AuthorizationAction(0).Descriptor().Values()
+	for i := range values.Len() {
+		action := v1.AuthorizationAction(values.Get(i).Number())
+		if action == v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED {
+			continue
+		}
+
+		require.True(t, bound[action],
+			"the schema declares %s and no binding names an operation for it", action)
 	}
 }
 
-func TestAuthorizationEvaluationFailsClosedAndChecksResourceType(t *testing.T) {
-	request := &AuthorizationRequest{
-		Principal: &AuthorizationPrincipal{Issuer: "https://issuer.example", Subject: "runner", PrincipalId: "https://issuer.example#runner", Kind: AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_WORKLOAD},
-		Action:    &AuthorizationAction{Name: "secret.read", Group: "secret"},
-		Resource:  &AuthorizationResource{Type: "secret", Id: "env:DEPLOY_TOKEN"},
-		Context:   &AuthorizationContext{Deployment: "prod"},
-	}
-	decision, err := EvaluateAuthorizationPolicy(context.Background(), `principal.kind == 2 && resource.type == "secret"`, request)
-	require.NoError(t, err)
-	require.True(t, decision.Allowed)
+// TestAuthorizationActionScopesAreDerivedFromTheSchema pins the derivation the
+// schema's comment states, because it is what lets the metadata document
+// publish this list without a second copy of it existing.
+func TestAuthorizationActionScopesAreDerivedFromTheSchema(t *testing.T) {
+	t.Parallel()
 
-	request.Resource.Type = "run"
-	decision, err = EvaluateAuthorizationPolicy(context.Background(), `true`, request)
+	require.Equal(t, "workload.run",
+		v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN))
+	require.Equal(t, "mcp.run_local",
+		v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL))
+	require.Empty(t,
+		v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED),
+		"the absence of an action is not an operation and has no scope")
+
+	scopes := v1.AuthorizationActionScopes()
+	require.Len(t, scopes, v1.AuthorizationAction(0).Descriptor().Values().Len()-1,
+		"every action but UNSPECIFIED is a scope")
+	require.Equal(t, "workload.run", scopes[0], "the schema's order is the published order")
+
+	seen := map[string]bool{}
+	for _, scope := range scopes {
+		require.False(t, seen[scope], "%q is published twice", scope)
+		seen[scope] = true
+
+		// RFC 6749 section 3.3: a scope value is space-delimited, so a space
+		// in one would silently become two scopes. The quoting characters go
+		// with it because a scope reaches a client through a JSON document and
+		// may yet reach a WWW-Authenticate header.
+		require.False(t, strings.ContainsAny(scope, " \"\\,"),
+			"%q cannot be spelled as an OAuth scope value", scope)
+		require.Equal(t, 1, strings.Count(scope, "."),
+			"%q is not group.verb; the derivation turns exactly the first underscore into a dot", scope)
+	}
+}
+
+// TestAuthorizationActionLookupsFailClosed pins that an unknown operation is
+// an error rather than a permissive zero value, since a caller's next move is
+// a decision about authority.
+func TestAuthorizationActionLookupsFailClosed(t *testing.T) {
+	t.Parallel()
+
+	action, err := v1.AuthorizationActionForRPC("Undeclare")
+	require.Error(t, err)
+	require.ErrorContains(t, err, "Undeclare")
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
+
+	action, err = v1.AuthorizationActionForMCPTool("flowstate_not_a_tool")
+	require.Error(t, err)
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
+
+	// The two tools no RPC projects resolve, which is the whole reason they
+	// are in the vocabulary separately.
+	action, err = v1.AuthorizationActionForMCPTool("flowstate_run_local")
 	require.NoError(t, err)
-	require.False(t, decision.Allowed)
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL, action)
+}
+
+// TestAuthorizationActionBindingsAreCopied keeps a caller ranging over the
+// vocabulary from editing it.
+func TestAuthorizationActionBindingsAreCopied(t *testing.T) {
+	t.Parallel()
+
+	bindings := v1.AuthorizationActionBindings()
+	require.NotEmpty(t, bindings)
+	bindings[0].Rpcs = []string{"Tampered"}
+
+	action, err := v1.AuthorizationActionForRPC("Run")
+	require.NoError(t, err)
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN, action)
 }

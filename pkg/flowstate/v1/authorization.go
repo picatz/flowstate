@@ -1,182 +1,193 @@
 package flowstatev1
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
-	"github.com/google/cel-go/cel"
+	"google.golang.org/protobuf/proto"
 )
 
-// AuthorizationRootNames is the complete authorization CEL activation. Keep
-// this list closed: boundary-specific data must first be normalized into one
-// of these typed protobuf messages.
-var AuthorizationRootNames = []string{"principal", "action", "resource", "context"}
-
-// ActionDefinition is one entry in the central authorization vocabulary.
-// Every surface mapping, audit name, CEL action value, and generated policy
-// reference reads this registry rather than maintaining another string list.
-type ActionDefinition struct {
-	Name, Group, Parent, ResourceType                                     string
-	RPCs, MCPTools, PluginOperations, LSPCapabilities, InternalOperations []string
+// authorizationActionBindings attaches every action in the schema's closed
+// vocabulary to the operations it covers.
+//
+// Written out rather than derived, for the same reason
+// mcp.WorkflowServiceMethods is: nothing in the descriptor says which RPCs
+// share an authorization action, and grouping them is the judgement this list
+// exists to record. What keeps a hand-written list honest is the test beside
+// it — TestEveryRPCHasExactlyOneAuthorizationAction walks the service
+// descriptor in both directions, so an RPC added to the schema without a
+// binding fails, and a binding naming an RPC the service dropped fails too.
+//
+// The order is the enum's, and [AuthorizationActionScopes] publishes it, so a
+// reader comparing the metadata document to this file sees the same sequence.
+var authorizationActionBindings = []*AuthorizationActionBinding{
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		Rpcs:   []string{"Run", "SignalWithStart"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ,
+		Rpcs:   []string{"Get", "List"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		Rpcs:   []string{"Signal"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_CANCEL,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		Rpcs:   []string{"Cancel"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_TERMINATE,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_CANCEL,
+		Rpcs:   []string{"Terminate"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE,
+		Rpcs:   []string{"Validate"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_COMPILE,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE,
+		Rpcs:   []string{"Compile"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_CATALOG_READ,
+		Rpcs:   []string{"GetCatalog"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_CREATE,
+		Rpcs:   []string{"CreateSchedule"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_READ,
+		Rpcs:   []string{"ListSchedules", "DescribeSchedule"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_DELETE,
+		Rpcs:   []string{"DeleteSchedule"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_PAUSE,
+		Rpcs:   []string{"PauseSchedule"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_RESUME,
+		Rpcs:   []string{"ResumeSchedule"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_TRIGGER,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		Rpcs:   []string{"TriggerSchedule"},
+	},
+	{
+		Action:   AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL,
+		Parent:   AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		McpTools: []string{"flowstate_run_local"},
+	},
+	{
+		Action:   AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST,
+		Parent:   AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		McpTools: []string{"flowstate_test"},
+	},
 }
 
-var actionRegistry = []ActionDefinition{
-	{Name: "workload.run", Group: "workload", ResourceType: "workload", RPCs: []string{"Run", "SignalWithStart"}},
-	{Name: "workload.read", Group: "workload", ResourceType: "run", RPCs: []string{"Get", "List"}},
-	{Name: "workload.signal", Group: "workload", Parent: "workload.run", ResourceType: "run", RPCs: []string{"Signal"}},
-	{Name: "workload.cancel", Group: "workload", Parent: "workload.run", ResourceType: "run", RPCs: []string{"Cancel"}},
-	{Name: "workload.terminate", Group: "workload", Parent: "workload.cancel", ResourceType: "run", RPCs: []string{"Terminate"}},
-	{Name: "workload.validate", Group: "workload", ResourceType: "flowfile", RPCs: []string{"Validate"}},
-	{Name: "workload.compile", Group: "workload", Parent: "workload.validate", ResourceType: "flowfile", RPCs: []string{"Compile"}},
-	{Name: "catalog.read", Group: "catalog", ResourceType: "catalog", RPCs: []string{"GetCatalog"}},
-	{Name: "schedule.create", Group: "schedule", ResourceType: "schedule", RPCs: []string{"CreateSchedule"}},
-	{Name: "schedule.read", Group: "schedule", ResourceType: "schedule", RPCs: []string{"ListSchedules", "DescribeSchedule"}},
-	{Name: "schedule.delete", Group: "schedule", ResourceType: "schedule", RPCs: []string{"DeleteSchedule"}},
-	{Name: "schedule.pause", Group: "schedule", ResourceType: "schedule", RPCs: []string{"PauseSchedule"}},
-	{Name: "schedule.resume", Group: "schedule", ResourceType: "schedule", RPCs: []string{"ResumeSchedule"}},
-	{Name: "schedule.trigger", Group: "schedule", Parent: "workload.run", ResourceType: "schedule", RPCs: []string{"TriggerSchedule"}},
-	{Name: "mcp.run_local", Group: "mcp", Parent: "workload.run", ResourceType: "flowfile", MCPTools: []string{"flowstate_run_local"}},
-	{Name: "mcp.test", Group: "mcp", Parent: "workload.run", ResourceType: "flowfile", MCPTools: []string{"flowstate_test"}},
-	{Name: "plugin.execute", Group: "plugin", ResourceType: "plugin_operation", PluginOperations: []string{"execute", "check", "describe"}},
-	{Name: "lsp.read", Group: "lsp", ResourceType: "document", LSPCapabilities: []string{"initialize", "textDocument/hover", "textDocument/completion", "textDocument/definition", "textDocument/documentSymbol"}},
-	{Name: "lsp.validate", Group: "lsp", Parent: "workload.validate", ResourceType: "document", LSPCapabilities: []string{"textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"}},
-	{Name: "credential.assume", Group: "credential", ResourceType: "credential_target", InternalOperations: []string{"credential.assume"}},
-	{Name: "secret.read", Group: "secret", ResourceType: "secret", InternalOperations: []string{"secret.read"}},
-	{Name: "egress.connect", Group: "egress", ResourceType: "network_endpoint", InternalOperations: []string{"egress.connect"}},
-	{Name: "compute.execute", Group: "compute", ResourceType: "compute", InternalOperations: []string{"task.dispatch"}},
-	{Name: "storage.read", Group: "storage", ResourceType: "storage_object", InternalOperations: []string{"storage.read"}},
-	{Name: "storage.write", Group: "storage", ResourceType: "storage_object", InternalOperations: []string{"storage.write"}},
-	{Name: "federation.call", Group: "federation", ResourceType: "flowstate_peer", InternalOperations: []string{"federation.call"}},
+// authorizationActionScopePrefix is what an enum value name carries in front
+// of the scope it spells. See [AuthorizationActionScope].
+const authorizationActionScopePrefix = "AUTHORIZATION_ACTION_"
+
+// AuthorizationActionScope renders an action as the OAuth scope value that
+// names it, by the rule the schema's own comment states: strip the enum's
+// prefix, lowercase, and turn the first underscore into a dot.
+//
+// Derived rather than tabulated so that the scope a client requests and the
+// action a policy names cannot become two spellings — the failure #567's D1
+// exists to prevent. AUTHORIZATION_ACTION_UNSPECIFIED has no scope: it is the
+// absence of an action, not an operation, and it answers "".
+func AuthorizationActionScope(action AuthorizationAction) string {
+	if action == AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED {
+		return ""
+	}
+
+	name := strings.TrimPrefix(action.String(), authorizationActionScopePrefix)
+	if name == action.String() {
+		// An enum value whose name does not carry the prefix cannot be spelled
+		// by this rule, and guessing would publish a scope nothing agrees on.
+		return ""
+	}
+
+	return strings.ToLower(strings.Replace(name, "_", ".", 1))
 }
 
-// ActionRegistry returns a defensive copy of the canonical registry.
-func ActionRegistry() []ActionDefinition { return slices.Clone(actionRegistry) }
+// AuthorizationActionScopes is the whole vocabulary as scope values, in the
+// schema's own order.
+//
+// This is what RFC 9728 protected-resource metadata publishes — see
+// auth.WithScopesSupported, and pkg/flowstate/v1/auth/protectedresource.go for
+// why the auth package is handed the list rather than reading it (that package
+// sits below this one in the import graph).
+func AuthorizationActionScopes() []string {
+	values := AuthorizationAction(0).Descriptor().Values()
 
-// LookupAction returns the registered action named name.
-func LookupAction(name string) (ActionDefinition, bool) {
-	for _, action := range actionRegistry {
-		if action.Name == name {
-			return action, true
+	scopes := make([]string, 0, values.Len())
+	for i := range values.Len() {
+		if scope := AuthorizationActionScope(AuthorizationAction(values.Get(i).Number())); scope != "" {
+			scopes = append(scopes, scope)
 		}
 	}
-	return ActionDefinition{}, false
+
+	return scopes
 }
 
-// ActionForSurface maps one boundary operation to exactly one action.
-func ActionForSurface(surface, operation string) (ActionDefinition, error) {
-	for _, action := range actionRegistry {
-		var names []string
-		switch surface {
-		case "rpc":
-			names = action.RPCs
-		case "mcp":
-			names = action.MCPTools
-		case "plugin":
-			names = action.PluginOperations
-		case "lsp":
-			names = action.LSPCapabilities
-		case "internal":
-			names = action.InternalOperations
-		default:
-			return ActionDefinition{}, fmt.Errorf("unknown authorization surface %q", surface)
-		}
-		if slices.Contains(names, operation) {
-			return action, nil
-		}
-		// Ordinary MCP tools are descriptor-derived RPC mirrors. Derive their
-		// scope here too instead of copying all RPC names into a second list.
-		if surface == "mcp" && strings.HasPrefix(operation, "flowstate_") {
-			for _, rpc := range action.RPCs {
-				if operation == "flowstate_"+camelToSnake(rpc) {
-					return action, nil
-				}
-			}
+// AuthorizationActionBindings returns a defensive copy of the bindings, so a
+// caller ranging over the vocabulary cannot edit it.
+func AuthorizationActionBindings() []*AuthorizationActionBinding {
+	bindings := make([]*AuthorizationActionBinding, 0, len(authorizationActionBindings))
+	for _, binding := range authorizationActionBindings {
+		bindings = append(bindings, proto.CloneOf(binding))
+	}
+
+	return bindings
+}
+
+// AuthorizationActionForRPC answers which action authorizes one
+// flowstate.v1.WorkflowService method.
+//
+// Fails closed: an RPC no binding names is an error rather than a permissive
+// default, because the caller's next move is a decision about authority and
+// "no action" is not an answer it can act on. The descriptor-walking test
+// makes reaching this branch a build-time failure rather than a runtime one.
+func AuthorizationActionForRPC(rpc string) (AuthorizationAction, error) {
+	for _, binding := range authorizationActionBindings {
+		if slices.Contains(binding.GetRpcs(), rpc) {
+			return binding.GetAction(), nil
 		}
 	}
-	return ActionDefinition{}, fmt.Errorf("no authorization action for %s operation %q", surface, operation)
+
+	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED,
+		fmt.Errorf("no authorization action names the rpc %q; add it to a binding in "+
+			"pkg/flowstate/v1/authorization.go, or add an action to "+
+			"proto/flowstate/v1/authorization.proto when none of them fits", rpc)
 }
 
-func camelToSnake(name string) string {
-	var b strings.Builder
-	for i, r := range name {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			b.WriteByte('_')
+// AuthorizationActionForMCPTool answers which action authorizes one MCP tool,
+// whether the tool is an RPC's projection or one of the two that are not.
+//
+// The projection rule lives with the surface that owns it (mcp.ToolName), so
+// what this takes is the RPC name a caller already resolved plus the tool name
+// itself; see cmd/flow's TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction,
+// which is where registration can be seen and therefore where the pairing is
+// held honest.
+func AuthorizationActionForMCPTool(tool string) (AuthorizationAction, error) {
+	for _, binding := range authorizationActionBindings {
+		if slices.Contains(binding.GetMcpTools(), tool) {
+			return binding.GetAction(), nil
 		}
-		b.WriteRune(r)
 	}
-	return strings.ToLower(b.String())
-}
 
-// AuthorizationActionFor returns the wire value used by CEL and audit output.
-func AuthorizationActionFor(surface, operation string) (*AuthorizationAction, error) {
-	entry, err := ActionForSurface(surface, operation)
-	if err != nil {
-		return nil, err
-	}
-	return &AuthorizationAction{Name: entry.Name, Group: entry.Group, Parent: entry.Parent}, nil
-}
-
-// AuthorizationPolicyReference renders registry-derived policy documentation.
-func AuthorizationPolicyReference() string {
-	var b strings.Builder
-	for _, action := range actionRegistry {
-		fmt.Fprintf(&b, "- `%s` (%s; resource `%s`)\n", action.Name, action.Group, action.ResourceType)
-	}
-	return b.String()
-}
-
-var authorizationEnv = sync.OnceValues(func() (*cel.Env, error) {
-	return cel.NewEnv(
-		cel.Types(&AuthorizationPrincipal{}, &AuthorizationAction{}, &AuthorizationResource{}, &AuthorizationContext{}),
-		cel.Variable("principal", cel.ObjectType("flowstate.v1.AuthorizationPrincipal")),
-		cel.Variable("action", cel.ObjectType("flowstate.v1.AuthorizationAction")),
-		cel.Variable("resource", cel.ObjectType("flowstate.v1.AuthorizationResource")),
-		cel.Variable("context", cel.ObjectType("flowstate.v1.AuthorizationContext")),
-	)
-})
-
-// CompileAuthorizationPolicy type-checks a boolean rule against exactly the
-// four typed roots. Requests are checked against the registry before evaluation.
-func CompileAuthorizationPolicy(expression string) (*cel.Env, *cel.Ast, error) {
-	env, err := authorizationEnv()
-	if err != nil {
-		return nil, nil, err
-	}
-	ast, issues := env.Compile(expression)
-	if issues.Err() != nil {
-		return nil, nil, issues.Err()
-	}
-	if !ast.OutputType().IsExactType(cel.BoolType) {
-		return nil, nil, fmt.Errorf("authorization policy evaluates to %s, want bool", ast.OutputType())
-	}
-	return env, ast, nil
-}
-
-// EvaluateAuthorizationPolicy uses the repository's single cost-bounded CEL
-// evaluator. Evaluation errors are denials, never permission.
-func EvaluateAuthorizationPolicy(ctx context.Context, expression string, request *AuthorizationRequest) (*AuthorizationDecision, error) {
-	if request == nil || request.Principal == nil || request.Action == nil || request.Resource == nil || request.Context == nil {
-		return &AuthorizationDecision{Reason: "incomplete authorization request"}, nil
-	}
-	entry, ok := LookupAction(request.Action.Name)
-	if !ok || entry.ResourceType != request.Resource.Type {
-		return &AuthorizationDecision{Action: request.Action.Name, Resource: request.Resource.Id, Reason: "unregistered action or resource type"}, nil
-	}
-	env, ast, err := CompileAuthorizationPolicy(expression)
-	if err != nil {
-		return nil, err
-	}
-	activation := map[string]any{"principal": request.Principal, "action": request.Action, "resource": request.Resource, "context": request.Context}
-	value, err := DefaultEvaluator().Eval(ctx, env, ast, activation)
-	if err != nil {
-		return &AuthorizationDecision{Action: request.Action.Name, Resource: request.Resource.Id, Reason: "policy evaluation failed"}, nil
-	}
-	allowed, ok := value.Value().(bool)
-	if !ok {
-		return nil, fmt.Errorf("authorization policy returned %T", value.Value())
-	}
-	return &AuthorizationDecision{Allowed: allowed, Action: request.Action.Name, Resource: request.Resource.Id}, nil
+	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED,
+		fmt.Errorf("no authorization action names the mcp tool %q", tool)
 }

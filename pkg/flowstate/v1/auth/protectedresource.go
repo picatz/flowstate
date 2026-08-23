@@ -59,10 +59,27 @@ type ProtectedResourceConfig struct {
 // configured resource, and carries the metadata URL an [Authenticator]'s
 // 401 challenge points a caller at.
 //
-// Per D1's deferral (picatz/flowstate#567), the metadata document omits
-// "scopes_supported" entirely: this slice does not define a scope
-// vocabulary, and a document that named scopes here would need renaming the
-// day one exists.
+// The document publishes "scopes_supported" when the caller supplies a
+// vocabulary with [WithScopesSupported], and omits the key entirely when it
+// does not — an empty list would itself be a claim ("this resource supports
+// zero scopes"), which is not the same statement as saying nothing.
+//
+// This is where picatz/flowstate#567's D1 arrives. That decision — one
+// proto-owned action list, read by policy, by this metadata, and by
+// ceremonies — is answered in proto/flowstate/v1/authorization.proto, and
+// flowstatev1.AuthorizationActionScopes is the list. The deferral this type
+// used to record ("no scope vocabulary yet, and a document that named scopes
+// here would need renaming the day one exists") is resolved: there is a
+// vocabulary, `buf breaking` guards its spelling, and cmd/flow's
+// resolveProtectedResource is the one place that hands it here.
+//
+// The vocabulary is passed in rather than read, and the reason is the import
+// graph rather than taste: pkg/flowstate/v1 imports this package, so this
+// package cannot import it back to read the list. An option is what keeps the
+// derivation single-sited anyway — TestFlowServerPublishesTheActionVocabulary
+// in cmd/flow pins that the production path supplies it — and it stays off
+// [ProtectedResourceConfig], which is what an *operator* says: which scopes
+// exist is the schema's answer, never a deployment's.
 type ProtectedResource struct {
 	resource     string
 	resourcePath string
@@ -89,8 +106,18 @@ type ProtectedResource struct {
 //     exactly [TrustedIssuer.Audiences], so a token minted for the resource
 //     this document advertises would still be rejected — the same failure,
 //     one policy field further in.
-func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*ProtectedResource, error) {
+func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy, opts ...ProtectedResourceOption) (*ProtectedResource, error) {
 	resourceURL, err := validateResourceURI(cfg.Resource)
+	if err != nil {
+		return nil, err
+	}
+
+	var settings protectedResourceSettings
+	for _, opt := range opts {
+		opt(&settings)
+	}
+
+	scopes, err := validateScopesSupported(settings.scopesSupported)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +161,10 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		Resource:               cfg.Resource,
 		AuthorizationServers:   cfg.AuthorizationServers,
 		BearerMethodsSupported: []string{"header"},
-		// ScopesSupported deliberately omitted: see [ProtectedResource]'s doc.
+		// Nil when no vocabulary was supplied, which is what omits the key:
+		// see [ProtectedResource]'s doc for why an empty list is not the same
+		// statement.
+		ScopesSupported: scopes,
 	}
 
 	// The resource's own path, kept for the same reason the metadata path is
@@ -156,6 +186,83 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		path:         metadataPath,
 		handler:      protectedResourceHandler(metadata),
 	}, nil
+}
+
+// ProtectedResourceOption adjusts what [NewProtectedResource] publishes about
+// a resource, as distinct from [ProtectedResourceConfig], which is what an
+// operator configures about it.
+type ProtectedResourceOption func(*protectedResourceSettings)
+
+type protectedResourceSettings struct {
+	scopesSupported []string
+}
+
+// WithScopesSupported publishes an action vocabulary as the metadata
+// document's "scopes_supported" (RFC 9728 section 2).
+//
+// The list every caller passes is flowstatev1.AuthorizationActionScopes — the
+// schema-owned action list picatz/flowstate#567's D1 asked for. It arrives as
+// a parameter because pkg/flowstate/v1 imports this package and so this one
+// cannot read it; see [ProtectedResource]'s doc.
+//
+// What it publishes is a *vocabulary*, not a capability list: a scope named
+// here says this deployment knows what that action is, not that every surface
+// serving this resource registers a tool for it. The reduced tool list
+// docs/MCP_AUTHORIZATION.md describes is unchanged by this, and is discovered
+// where a client actually discovers tools — MCP's own tools/list — rather
+// than from an OAuth metadata document its authorization layer reads.
+func WithScopesSupported(scopes []string) ProtectedResourceOption {
+	return func(settings *protectedResourceSettings) {
+		settings.scopesSupported = slices.Clone(scopes)
+	}
+}
+
+// maxScopesSupported bounds the published vocabulary. The schema's list is
+// closed and two dozen long; a document an order of magnitude past that is a
+// wiring mistake rather than a vocabulary, and this endpoint is served to
+// unauthenticated clients.
+const maxScopesSupported = 256
+
+// validateScopesSupported refuses a vocabulary that cannot be spelled as
+// OAuth scope values, rather than emitting one that would be read as
+// something other than what it says.
+//
+// RFC 6749 section 3.3 delimits scope values with spaces, so a value holding
+// one is silently two; the quoting characters go with it because this list
+// reaches a client through a JSON document and the same vocabulary is what a
+// later "scope" challenge parameter would carry, where [quotedString] already
+// refuses what has no quoted-string spelling. Returns nil for an empty input,
+// which is what omits the key.
+func validateScopesSupported(scopes []string) ([]string, error) {
+	if len(scopes) == 0 {
+		return nil, nil
+	}
+
+	if len(scopes) > maxScopesSupported {
+		return nil, fmt.Errorf("scopes_supported: %d scopes is past the %d this document will publish; "+
+			"the schema's action vocabulary is closed and far smaller, so a list this long is a wiring "+
+			"mistake rather than a vocabulary", len(scopes), maxScopesSupported)
+	}
+
+	seen := make(map[string]bool, len(scopes))
+	for _, scope := range scopes {
+		if scope == "" {
+			return nil, fmt.Errorf("scopes_supported: an empty scope value names no action")
+		}
+
+		if strings.ContainsAny(scope, " \t\r\n\"\\,") {
+			return nil, fmt.Errorf("scopes_supported: %q cannot be spelled as an OAuth scope value "+
+				"(RFC 6749 section 3.3 delimits them with spaces, so one holding a space, quote, "+
+				"backslash or comma is read as something other than what it says)", scope)
+		}
+
+		if seen[scope] {
+			return nil, fmt.Errorf("scopes_supported: %q is listed twice", scope)
+		}
+		seen[scope] = true
+	}
+
+	return slices.Clone(scopes), nil
 }
 
 // ValidateResourceAudience validates a serving surface's canonical resource

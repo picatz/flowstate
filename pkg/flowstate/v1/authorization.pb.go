@@ -22,94 +22,184 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type AuthorizationPrincipalKind int32
+// AuthorizationAction is the closed list itself. Each value is one operation
+// a caller may be authorized to perform.
+//
+// The OAuth scope value for an action is derived from the value's own name and
+// written down nowhere else: strip the AUTHORIZATION_ACTION_ prefix, lowercase
+// it, and turn the first underscore into a dot, so
+// AUTHORIZATION_ACTION_WORKLOAD_RUN is the scope `workload.run` and
+// AUTHORIZATION_ACTION_MCP_RUN_LOCAL is `mcp.run_local`. Everything before the
+// first underscore is therefore the group, and the derivation is what lets
+// RFC 9728 metadata publish this list without a second copy of it existing
+// anywhere (see AuthorizationActionScope in pkg/flowstate/v1/authorization.go).
+//
+// The names are bare rather than URI- or `flowstate:`-prefixed. A scope value
+// is global within an authorization server, so a bare `schedule.read` can
+// collide with another resource server's scope at a shared IdP; the cost is
+// accepted because every token this deployment accepts is already bound by
+// RFC 8707 to this resource's own identifier, so a colliding scope cannot
+// arrive on a token that is admitted here anyway — and a prefix would put a
+// second spelling between the scope a client requests and the action a CEL
+// rule names, which is precisely the split D1 exists to prevent.
+//
+// Internal enforcement points — secret access, egress, credential assumption —
+// have their own policy surfaces already (auth.SecretAccessPolicy,
+// netpolicy, auth.assume) and are deliberately not named here. An action with
+// no place that consults it is a spelling nothing reads, and this list is the
+// one place that must not accumulate those.
+type AuthorizationAction int32
 
 const (
-	AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_UNSPECIFIED AuthorizationPrincipalKind = 0
-	AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_HUMAN       AuthorizationPrincipalKind = 1
-	AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_WORKLOAD    AuthorizationPrincipalKind = 2
-	AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_AGENT       AuthorizationPrincipalKind = 3
-	AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_SERVICE     AuthorizationPrincipalKind = 4
-	AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_PLUGIN      AuthorizationPrincipalKind = 5
+	AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED AuthorizationAction = 0
+	// Starting work: Run and SignalWithStart, which starts a run.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN AuthorizationAction = 1
+	// Reading a run: Get and List.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ AuthorizationAction = 2
+	// Signaling a run that is already going.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL AuthorizationAction = 3
+	// Asking a run to stop, letting its compensation run.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_CANCEL AuthorizationAction = 4
+	// Stopping a run without letting it wind down.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_TERMINATE AuthorizationAction = 5
+	// Checking a Flowfile. Reaches no run and no tenant.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE AuthorizationAction = 6
+	// Compiling a Flowfile to the execution plan it describes.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_COMPILE AuthorizationAction = 7
+	// Reading what this deployment can execute.
+	AuthorizationAction_AUTHORIZATION_ACTION_CATALOG_READ    AuthorizationAction = 8
+	AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_CREATE AuthorizationAction = 9
+	AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_READ   AuthorizationAction = 10
+	AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_DELETE AuthorizationAction = 11
+	AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_PAUSE  AuthorizationAction = 12
+	AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_RESUME AuthorizationAction = 13
+	// Running a schedule's workflow now, out of band.
+	AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_TRIGGER AuthorizationAction = 14
+	// Executing a submitted workflow in the process serving the tool. No RPC
+	// has this effect, which is why the action exists separately.
+	AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL AuthorizationAction = 15
+	// Rehearsing a submitted workflow against stubs. No RPC either.
+	AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST AuthorizationAction = 16
 )
 
-// Enum value maps for AuthorizationPrincipalKind.
+// Enum value maps for AuthorizationAction.
 var (
-	AuthorizationPrincipalKind_name = map[int32]string{
-		0: "AUTHORIZATION_PRINCIPAL_KIND_UNSPECIFIED",
-		1: "AUTHORIZATION_PRINCIPAL_KIND_HUMAN",
-		2: "AUTHORIZATION_PRINCIPAL_KIND_WORKLOAD",
-		3: "AUTHORIZATION_PRINCIPAL_KIND_AGENT",
-		4: "AUTHORIZATION_PRINCIPAL_KIND_SERVICE",
-		5: "AUTHORIZATION_PRINCIPAL_KIND_PLUGIN",
+	AuthorizationAction_name = map[int32]string{
+		0:  "AUTHORIZATION_ACTION_UNSPECIFIED",
+		1:  "AUTHORIZATION_ACTION_WORKLOAD_RUN",
+		2:  "AUTHORIZATION_ACTION_WORKLOAD_READ",
+		3:  "AUTHORIZATION_ACTION_WORKLOAD_SIGNAL",
+		4:  "AUTHORIZATION_ACTION_WORKLOAD_CANCEL",
+		5:  "AUTHORIZATION_ACTION_WORKLOAD_TERMINATE",
+		6:  "AUTHORIZATION_ACTION_WORKLOAD_VALIDATE",
+		7:  "AUTHORIZATION_ACTION_WORKLOAD_COMPILE",
+		8:  "AUTHORIZATION_ACTION_CATALOG_READ",
+		9:  "AUTHORIZATION_ACTION_SCHEDULE_CREATE",
+		10: "AUTHORIZATION_ACTION_SCHEDULE_READ",
+		11: "AUTHORIZATION_ACTION_SCHEDULE_DELETE",
+		12: "AUTHORIZATION_ACTION_SCHEDULE_PAUSE",
+		13: "AUTHORIZATION_ACTION_SCHEDULE_RESUME",
+		14: "AUTHORIZATION_ACTION_SCHEDULE_TRIGGER",
+		15: "AUTHORIZATION_ACTION_MCP_RUN_LOCAL",
+		16: "AUTHORIZATION_ACTION_MCP_TEST",
 	}
-	AuthorizationPrincipalKind_value = map[string]int32{
-		"AUTHORIZATION_PRINCIPAL_KIND_UNSPECIFIED": 0,
-		"AUTHORIZATION_PRINCIPAL_KIND_HUMAN":       1,
-		"AUTHORIZATION_PRINCIPAL_KIND_WORKLOAD":    2,
-		"AUTHORIZATION_PRINCIPAL_KIND_AGENT":       3,
-		"AUTHORIZATION_PRINCIPAL_KIND_SERVICE":     4,
-		"AUTHORIZATION_PRINCIPAL_KIND_PLUGIN":      5,
+	AuthorizationAction_value = map[string]int32{
+		"AUTHORIZATION_ACTION_UNSPECIFIED":        0,
+		"AUTHORIZATION_ACTION_WORKLOAD_RUN":       1,
+		"AUTHORIZATION_ACTION_WORKLOAD_READ":      2,
+		"AUTHORIZATION_ACTION_WORKLOAD_SIGNAL":    3,
+		"AUTHORIZATION_ACTION_WORKLOAD_CANCEL":    4,
+		"AUTHORIZATION_ACTION_WORKLOAD_TERMINATE": 5,
+		"AUTHORIZATION_ACTION_WORKLOAD_VALIDATE":  6,
+		"AUTHORIZATION_ACTION_WORKLOAD_COMPILE":   7,
+		"AUTHORIZATION_ACTION_CATALOG_READ":       8,
+		"AUTHORIZATION_ACTION_SCHEDULE_CREATE":    9,
+		"AUTHORIZATION_ACTION_SCHEDULE_READ":      10,
+		"AUTHORIZATION_ACTION_SCHEDULE_DELETE":    11,
+		"AUTHORIZATION_ACTION_SCHEDULE_PAUSE":     12,
+		"AUTHORIZATION_ACTION_SCHEDULE_RESUME":    13,
+		"AUTHORIZATION_ACTION_SCHEDULE_TRIGGER":   14,
+		"AUTHORIZATION_ACTION_MCP_RUN_LOCAL":      15,
+		"AUTHORIZATION_ACTION_MCP_TEST":           16,
 	}
 )
 
-func (x AuthorizationPrincipalKind) Enum() *AuthorizationPrincipalKind {
-	p := new(AuthorizationPrincipalKind)
+func (x AuthorizationAction) Enum() *AuthorizationAction {
+	p := new(AuthorizationAction)
 	*p = x
 	return p
 }
 
-func (x AuthorizationPrincipalKind) String() string {
+func (x AuthorizationAction) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (AuthorizationPrincipalKind) Descriptor() protoreflect.EnumDescriptor {
+func (AuthorizationAction) Descriptor() protoreflect.EnumDescriptor {
 	return file_flowstate_v1_authorization_proto_enumTypes[0].Descriptor()
 }
 
-func (AuthorizationPrincipalKind) Type() protoreflect.EnumType {
+func (AuthorizationAction) Type() protoreflect.EnumType {
 	return &file_flowstate_v1_authorization_proto_enumTypes[0]
 }
 
-func (x AuthorizationPrincipalKind) Number() protoreflect.EnumNumber {
+func (x AuthorizationAction) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use AuthorizationPrincipalKind.Descriptor instead.
-func (AuthorizationPrincipalKind) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use AuthorizationAction.Descriptor instead.
+func (AuthorizationAction) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{0}
 }
 
-// AuthorizationAttribute is the deliberately small value vocabulary that may
-// cross the authorization boundary. It cannot carry request objects, tokens,
-// headers, or arbitrary workflow/plugin values.
-type AuthorizationAttribute struct {
+// AuthorizationActionBinding says which operations one action covers.
+//
+// The bindings are what keep the vocabulary attached to the surfaces it is a
+// vocabulary of: TestEveryRPCHasExactlyOneAuthorizationAction walks
+// flowstate.v1.WorkflowService's descriptor and fails when an RPC is named by
+// no binding or by two, so an RPC added to the schema cannot arrive without an
+// action, and a binding cannot name an RPC the service no longer declares.
+//
+// rpcs holds RPC names only. The MCP tool projected from an RPC is derived
+// from the RPC name and is deliberately not listed: which tools a given MCP
+// surface registers is a registration decision (`flow mcp serve` serves a
+// deliberately reduced list — see docs/MCP_AUTHORIZATION.md), not a
+// vocabulary one, and a column asserting an MCP path per RPC would be
+// asserting a fact about registration that this file cannot see.
+type AuthorizationActionBinding struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Kind:
-	//
-	//	*AuthorizationAttribute_StringValue
-	//	*AuthorizationAttribute_IntValue
-	//	*AuthorizationAttribute_BoolValue
-	//	*AuthorizationAttribute_StringList_
-	Kind          isAuthorizationAttribute_Kind `protobuf_oneof:"kind"`
+	// The action being bound. Never UNSPECIFIED: a binding with no action is a
+	// mapping to nothing.
+	Action AuthorizationAction `protobuf:"varint,1,opt,name=action,proto3,enum=flowstate.v1.AuthorizationAction" json:"action,omitempty"`
+	// The action whose authority this one escalates, when it escalates one:
+	// terminate is a harder cancel, compile goes further than validate, and
+	// triggering a schedule starts a run. UNSPECIFIED means the action stands
+	// alone. Nothing enforces the lineage yet; it is recorded here so that the
+	// step-up challenge and the policy that provokes it read one relation.
+	Parent AuthorizationAction `protobuf:"varint,2,opt,name=parent,proto3,enum=flowstate.v1.AuthorizationAction" json:"parent,omitempty"`
+	// The WorkflowService methods this action covers, by their schema names.
+	Rpcs []string `protobuf:"bytes,3,rep,name=rpcs,proto3" json:"rpcs,omitempty"`
+	// The MCP tools this action covers that no RPC projects, by their full tool
+	// names. Held to the tools actually registered by a test in cmd/flow, which
+	// is where registration happens and therefore the only place that can tell.
+	McpTools      []string `protobuf:"bytes,4,rep,name=mcp_tools,json=mcpTools,proto3" json:"mcp_tools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AuthorizationAttribute) Reset() {
-	*x = AuthorizationAttribute{}
+func (x *AuthorizationActionBinding) Reset() {
+	*x = AuthorizationActionBinding{}
 	mi := &file_flowstate_v1_authorization_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AuthorizationAttribute) String() string {
+func (x *AuthorizationActionBinding) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AuthorizationAttribute) ProtoMessage() {}
+func (*AuthorizationActionBinding) ProtoMessage() {}
 
-func (x *AuthorizationAttribute) ProtoReflect() protoreflect.Message {
+func (x *AuthorizationActionBinding) ProtoReflect() protoreflect.Message {
 	mi := &file_flowstate_v1_authorization_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -121,650 +211,35 @@ func (x *AuthorizationAttribute) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AuthorizationAttribute.ProtoReflect.Descriptor instead.
-func (*AuthorizationAttribute) Descriptor() ([]byte, []int) {
+// Deprecated: Use AuthorizationActionBinding.ProtoReflect.Descriptor instead.
+func (*AuthorizationActionBinding) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *AuthorizationAttribute) GetKind() isAuthorizationAttribute_Kind {
-	if x != nil {
-		return x.Kind
-	}
-	return nil
-}
-
-func (x *AuthorizationAttribute) GetStringValue() string {
-	if x != nil {
-		if x, ok := x.Kind.(*AuthorizationAttribute_StringValue); ok {
-			return x.StringValue
-		}
-	}
-	return ""
-}
-
-func (x *AuthorizationAttribute) GetIntValue() int64 {
-	if x != nil {
-		if x, ok := x.Kind.(*AuthorizationAttribute_IntValue); ok {
-			return x.IntValue
-		}
-	}
-	return 0
-}
-
-func (x *AuthorizationAttribute) GetBoolValue() bool {
-	if x != nil {
-		if x, ok := x.Kind.(*AuthorizationAttribute_BoolValue); ok {
-			return x.BoolValue
-		}
-	}
-	return false
-}
-
-func (x *AuthorizationAttribute) GetStringList() *AuthorizationAttribute_StringList {
-	if x != nil {
-		if x, ok := x.Kind.(*AuthorizationAttribute_StringList_); ok {
-			return x.StringList
-		}
-	}
-	return nil
-}
-
-type isAuthorizationAttribute_Kind interface {
-	isAuthorizationAttribute_Kind()
-}
-
-type AuthorizationAttribute_StringValue struct {
-	StringValue string `protobuf:"bytes,1,opt,name=string_value,json=stringValue,proto3,oneof"`
-}
-
-type AuthorizationAttribute_IntValue struct {
-	IntValue int64 `protobuf:"varint,2,opt,name=int_value,json=intValue,proto3,oneof"`
-}
-
-type AuthorizationAttribute_BoolValue struct {
-	BoolValue bool `protobuf:"varint,3,opt,name=bool_value,json=boolValue,proto3,oneof"`
-}
-
-type AuthorizationAttribute_StringList_ struct {
-	StringList *AuthorizationAttribute_StringList `protobuf:"bytes,4,opt,name=string_list,json=stringList,proto3,oneof"`
-}
-
-func (*AuthorizationAttribute_StringValue) isAuthorizationAttribute_Kind() {}
-
-func (*AuthorizationAttribute_IntValue) isAuthorizationAttribute_Kind() {}
-
-func (*AuthorizationAttribute_BoolValue) isAuthorizationAttribute_Kind() {}
-
-func (*AuthorizationAttribute_StringList_) isAuthorizationAttribute_Kind() {}
-
-type AuthorizationDelegation struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	Issuer        string                     `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Subject       string                     `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
-	PrincipalId   string                     `protobuf:"bytes,3,opt,name=principal_id,json=principalId,proto3" json:"principal_id,omitempty"`
-	Kind          AuthorizationPrincipalKind `protobuf:"varint,4,opt,name=kind,proto3,enum=flowstate.v1.AuthorizationPrincipalKind" json:"kind,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AuthorizationDelegation) Reset() {
-	*x = AuthorizationDelegation{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationDelegation) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationDelegation) ProtoMessage() {}
-
-func (x *AuthorizationDelegation) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationDelegation.ProtoReflect.Descriptor instead.
-func (*AuthorizationDelegation) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *AuthorizationDelegation) GetIssuer() string {
-	if x != nil {
-		return x.Issuer
-	}
-	return ""
-}
-
-func (x *AuthorizationDelegation) GetSubject() string {
-	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *AuthorizationDelegation) GetPrincipalId() string {
-	if x != nil {
-		return x.PrincipalId
-	}
-	return ""
-}
-
-func (x *AuthorizationDelegation) GetKind() AuthorizationPrincipalKind {
-	if x != nil {
-		return x.Kind
-	}
-	return AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_UNSPECIFIED
-}
-
-// AuthorizationPrincipal contains only verified, issuer-normalized policy
-// data. principal_id is issuer-qualified and stable across credential refresh.
-type AuthorizationPrincipal struct {
-	state           protoimpl.MessageState             `protogen:"open.v1"`
-	Issuer          string                             `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Subject         string                             `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
-	PrincipalId     string                             `protobuf:"bytes,3,opt,name=principal_id,json=principalId,proto3" json:"principal_id,omitempty"`
-	Kind            AuthorizationPrincipalKind         `protobuf:"varint,4,opt,name=kind,proto3,enum=flowstate.v1.AuthorizationPrincipalKind" json:"kind,omitempty"`
-	Tenants         []string                           `protobuf:"bytes,5,rep,name=tenants,proto3" json:"tenants,omitempty"`
-	Roles           []string                           `protobuf:"bytes,6,rep,name=roles,proto3" json:"roles,omitempty"`
-	Groups          []string                           `protobuf:"bytes,7,rep,name=groups,proto3" json:"groups,omitempty"`
-	Attributes      map[string]*AuthorizationAttribute `protobuf:"bytes,8,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	DelegationChain []*AuthorizationDelegation         `protobuf:"bytes,9,rep,name=delegation_chain,json=delegationChain,proto3" json:"delegation_chain,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *AuthorizationPrincipal) Reset() {
-	*x = AuthorizationPrincipal{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationPrincipal) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationPrincipal) ProtoMessage() {}
-
-func (x *AuthorizationPrincipal) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationPrincipal.ProtoReflect.Descriptor instead.
-func (*AuthorizationPrincipal) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *AuthorizationPrincipal) GetIssuer() string {
-	if x != nil {
-		return x.Issuer
-	}
-	return ""
-}
-
-func (x *AuthorizationPrincipal) GetSubject() string {
-	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *AuthorizationPrincipal) GetPrincipalId() string {
-	if x != nil {
-		return x.PrincipalId
-	}
-	return ""
-}
-
-func (x *AuthorizationPrincipal) GetKind() AuthorizationPrincipalKind {
-	if x != nil {
-		return x.Kind
-	}
-	return AuthorizationPrincipalKind_AUTHORIZATION_PRINCIPAL_KIND_UNSPECIFIED
-}
-
-func (x *AuthorizationPrincipal) GetTenants() []string {
-	if x != nil {
-		return x.Tenants
-	}
-	return nil
-}
-
-func (x *AuthorizationPrincipal) GetRoles() []string {
-	if x != nil {
-		return x.Roles
-	}
-	return nil
-}
-
-func (x *AuthorizationPrincipal) GetGroups() []string {
-	if x != nil {
-		return x.Groups
-	}
-	return nil
-}
-
-func (x *AuthorizationPrincipal) GetAttributes() map[string]*AuthorizationAttribute {
-	if x != nil {
-		return x.Attributes
-	}
-	return nil
-}
-
-func (x *AuthorizationPrincipal) GetDelegationChain() []*AuthorizationDelegation {
-	if x != nil {
-		return x.DelegationChain
-	}
-	return nil
-}
-
-type AuthorizationAction struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Group         string                 `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
-	Parent        string                 `protobuf:"bytes,3,opt,name=parent,proto3" json:"parent,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AuthorizationAction) Reset() {
-	*x = AuthorizationAction{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationAction) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationAction) ProtoMessage() {}
-
-func (x *AuthorizationAction) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationAction.ProtoReflect.Descriptor instead.
-func (*AuthorizationAction) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *AuthorizationAction) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *AuthorizationAction) GetGroup() string {
-	if x != nil {
-		return x.Group
-	}
-	return ""
-}
-
-func (x *AuthorizationAction) GetParent() string {
-	if x != nil {
-		return x.Parent
-	}
-	return ""
-}
-
-type AuthorizationResource struct {
-	state         protoimpl.MessageState             `protogen:"open.v1"`
-	Type          string                             `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Id            string                             `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
-	Tenant        string                             `protobuf:"bytes,3,opt,name=tenant,proto3" json:"tenant,omitempty"`
-	Owner         string                             `protobuf:"bytes,4,opt,name=owner,proto3" json:"owner,omitempty"`
-	Parent        string                             `protobuf:"bytes,5,opt,name=parent,proto3" json:"parent,omitempty"`
-	Attributes    map[string]*AuthorizationAttribute `protobuf:"bytes,6,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AuthorizationResource) Reset() {
-	*x = AuthorizationResource{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationResource) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationResource) ProtoMessage() {}
-
-func (x *AuthorizationResource) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationResource.ProtoReflect.Descriptor instead.
-func (*AuthorizationResource) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *AuthorizationResource) GetType() string {
-	if x != nil {
-		return x.Type
-	}
-	return ""
-}
-
-func (x *AuthorizationResource) GetId() string {
-	if x != nil {
-		return x.Id
-	}
-	return ""
-}
-
-func (x *AuthorizationResource) GetTenant() string {
-	if x != nil {
-		return x.Tenant
-	}
-	return ""
-}
-
-func (x *AuthorizationResource) GetOwner() string {
-	if x != nil {
-		return x.Owner
-	}
-	return ""
-}
-
-func (x *AuthorizationResource) GetParent() string {
-	if x != nil {
-		return x.Parent
-	}
-	return ""
-}
-
-func (x *AuthorizationResource) GetAttributes() map[string]*AuthorizationAttribute {
-	if x != nil {
-		return x.Attributes
-	}
-	return nil
-}
-
-// AuthorizationContext contains bounded, normalized environmental facts, not
-// transport requests or their headers.
-type AuthorizationContext struct {
-	state         protoimpl.MessageState             `protogen:"open.v1"`
-	Deployment    string                             `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
-	RequestId     string                             `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Attributes    map[string]*AuthorizationAttribute `protobuf:"bytes,3,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AuthorizationContext) Reset() {
-	*x = AuthorizationContext{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationContext) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationContext) ProtoMessage() {}
-
-func (x *AuthorizationContext) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationContext.ProtoReflect.Descriptor instead.
-func (*AuthorizationContext) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *AuthorizationContext) GetDeployment() string {
-	if x != nil {
-		return x.Deployment
-	}
-	return ""
-}
-
-func (x *AuthorizationContext) GetRequestId() string {
-	if x != nil {
-		return x.RequestId
-	}
-	return ""
-}
-
-func (x *AuthorizationContext) GetAttributes() map[string]*AuthorizationAttribute {
-	if x != nil {
-		return x.Attributes
-	}
-	return nil
-}
-
-type AuthorizationRequest struct {
-	state         protoimpl.MessageState  `protogen:"open.v1"`
-	Principal     *AuthorizationPrincipal `protobuf:"bytes,1,opt,name=principal,proto3" json:"principal,omitempty"`
-	Action        *AuthorizationAction    `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
-	Resource      *AuthorizationResource  `protobuf:"bytes,3,opt,name=resource,proto3" json:"resource,omitempty"`
-	Context       *AuthorizationContext   `protobuf:"bytes,4,opt,name=context,proto3" json:"context,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AuthorizationRequest) Reset() {
-	*x = AuthorizationRequest{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationRequest) ProtoMessage() {}
-
-func (x *AuthorizationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationRequest.ProtoReflect.Descriptor instead.
-func (*AuthorizationRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *AuthorizationRequest) GetPrincipal() *AuthorizationPrincipal {
-	if x != nil {
-		return x.Principal
-	}
-	return nil
-}
-
-func (x *AuthorizationRequest) GetAction() *AuthorizationAction {
+func (x *AuthorizationActionBinding) GetAction() AuthorizationAction {
 	if x != nil {
 		return x.Action
 	}
-	return nil
+	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED
 }
 
-func (x *AuthorizationRequest) GetResource() *AuthorizationResource {
+func (x *AuthorizationActionBinding) GetParent() AuthorizationAction {
 	if x != nil {
-		return x.Resource
+		return x.Parent
+	}
+	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED
+}
+
+func (x *AuthorizationActionBinding) GetRpcs() []string {
+	if x != nil {
+		return x.Rpcs
 	}
 	return nil
 }
 
-func (x *AuthorizationRequest) GetContext() *AuthorizationContext {
+func (x *AuthorizationActionBinding) GetMcpTools() []string {
 	if x != nil {
-		return x.Context
-	}
-	return nil
-}
-
-type AuthorizationDecision struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Allowed       bool                   `protobuf:"varint,1,opt,name=allowed,proto3" json:"allowed,omitempty"`
-	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
-	Policy        string                 `protobuf:"bytes,3,opt,name=policy,proto3" json:"policy,omitempty"`
-	Action        string                 `protobuf:"bytes,4,opt,name=action,proto3" json:"action,omitempty"`
-	Resource      string                 `protobuf:"bytes,5,opt,name=resource,proto3" json:"resource,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AuthorizationDecision) Reset() {
-	*x = AuthorizationDecision{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationDecision) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationDecision) ProtoMessage() {}
-
-func (x *AuthorizationDecision) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationDecision.ProtoReflect.Descriptor instead.
-func (*AuthorizationDecision) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *AuthorizationDecision) GetAllowed() bool {
-	if x != nil {
-		return x.Allowed
-	}
-	return false
-}
-
-func (x *AuthorizationDecision) GetReason() string {
-	if x != nil {
-		return x.Reason
-	}
-	return ""
-}
-
-func (x *AuthorizationDecision) GetPolicy() string {
-	if x != nil {
-		return x.Policy
-	}
-	return ""
-}
-
-func (x *AuthorizationDecision) GetAction() string {
-	if x != nil {
-		return x.Action
-	}
-	return ""
-}
-
-func (x *AuthorizationDecision) GetResource() string {
-	if x != nil {
-		return x.Resource
-	}
-	return ""
-}
-
-type AuthorizationAttribute_StringList struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Values        []string               `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AuthorizationAttribute_StringList) Reset() {
-	*x = AuthorizationAttribute_StringList{}
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuthorizationAttribute_StringList) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuthorizationAttribute_StringList) ProtoMessage() {}
-
-func (x *AuthorizationAttribute_StringList) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_authorization_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AuthorizationAttribute_StringList.ProtoReflect.Descriptor instead.
-func (*AuthorizationAttribute_StringList) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_authorization_proto_rawDescGZIP(), []int{0, 0}
-}
-
-func (x *AuthorizationAttribute_StringList) GetValues() []string {
-	if x != nil {
-		return x.Values
+		return x.McpTools
 	}
 	return nil
 }
@@ -773,95 +248,32 @@ var File_flowstate_v1_authorization_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"\n" +
-	" flowstate/v1/authorization.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xa1\x02\n" +
-	"\x16AuthorizationAttribute\x12-\n" +
-	"\fstring_value\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\bH\x00R\vstringValue\x12\x1d\n" +
-	"\tint_value\x18\x02 \x01(\x03H\x00R\bintValue\x12\x1f\n" +
-	"\n" +
-	"bool_value\x18\x03 \x01(\bH\x00R\tboolValue\x12R\n" +
-	"\vstring_list\x18\x04 \x01(\v2/.flowstate.v1.AuthorizationAttribute.StringListH\x00R\n" +
-	"stringList\x1a5\n" +
-	"\n" +
-	"StringList\x12'\n" +
-	"\x06values\x18\x01 \x03(\tB\x0f\xbaH\f\x92\x01\t\x10 \"\x05r\x03(\x80\bR\x06valuesB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xda\x01\n" +
-	"\x17AuthorizationDelegation\x12\"\n" +
-	"\x06issuer\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\x04R\x06issuer\x12$\n" +
-	"\asubject\x18\x02 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\x04R\asubject\x12-\n" +
-	"\fprincipal_id\x18\x03 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\bR\vprincipalId\x12F\n" +
-	"\x04kind\x18\x04 \x01(\x0e2(.flowstate.v1.AuthorizationPrincipalKindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\"\x96\x05\n" +
-	"\x16AuthorizationPrincipal\x12\"\n" +
-	"\x06issuer\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\x04R\x06issuer\x12$\n" +
-	"\asubject\x18\x02 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\x04R\asubject\x12-\n" +
-	"\fprincipal_id\x18\x03 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\bR\vprincipalId\x12H\n" +
-	"\x04kind\x18\x04 \x01(\x0e2(.flowstate.v1.AuthorizationPrincipalKindB\n" +
-	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12-\n" +
-	"\atenants\x18\x05 \x03(\tB\x13\xbaH\x10\x92\x01\r\x10 \x18\x01\"\ar\x05 \x01(\x80\x01R\atenants\x12)\n" +
-	"\x05roles\x18\x06 \x03(\tB\x13\xbaH\x10\x92\x01\r\x10 \x18\x01\"\ar\x05 \x01(\x80\x01R\x05roles\x12+\n" +
-	"\x06groups\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05 \x01(\x80\x02R\x06groups\x12l\n" +
-	"\n" +
-	"attributes\x18\b \x03(\v24.flowstate.v1.AuthorizationPrincipal.AttributesEntryB\x16\xbaH\x13\x9a\x01\x10\x10 \"\ar\x05 \x01(\x80\x01*\x03\xc8\x01\x01R\n" +
-	"attributes\x12_\n" +
-	"\x10delegation_chain\x18\t \x03(\v2%.flowstate.v1.AuthorizationDelegationB\r\xbaH\n" +
-	"\x92\x01\a\x10\x10\"\x03\xc8\x01\x01R\x0fdelegationChain\x1ac\n" +
-	"\x0fAttributesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
-	"\x05value\x18\x02 \x01(\v2$.flowstate.v1.AuthorizationAttributeR\x05value:\x028\x01\"w\n" +
-	"\x13AuthorizationAction\x12\x1e\n" +
-	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\x01R\x04name\x12\x1e\n" +
-	"\x05group\x18\x02 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x05group\x12 \n" +
-	"\x06parent\x18\x03 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x06parent\"\x89\x03\n" +
-	"\x15AuthorizationResource\x12\x1e\n" +
-	"\x04type\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\x01R\x04type\x12\x1a\n" +
-	"\x02id\x18\x02 \x01(\tB\n" +
-	"\xbaH\ar\x05 \x01(\x80\bR\x02id\x12 \n" +
-	"\x06tenant\x18\x03 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x06tenant\x12\x1e\n" +
-	"\x05owner\x18\x04 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\x05owner\x12 \n" +
-	"\x06parent\x18\x05 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\x06parent\x12k\n" +
-	"\n" +
-	"attributes\x18\x06 \x03(\v23.flowstate.v1.AuthorizationResource.AttributesEntryB\x16\xbaH\x13\x9a\x01\x10\x10 \"\ar\x05 \x01(\x80\x01*\x03\xc8\x01\x01R\n" +
-	"attributes\x1ac\n" +
-	"\x0fAttributesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
-	"\x05value\x18\x02 \x01(\v2$.flowstate.v1.AuthorizationAttributeR\x05value:\x028\x01\"\xba\x02\n" +
-	"\x14AuthorizationContext\x12(\n" +
-	"\n" +
-	"deployment\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\n" +
-	"deployment\x12'\n" +
-	"\n" +
-	"request_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\trequestId\x12j\n" +
-	"\n" +
-	"attributes\x18\x03 \x03(\v22.flowstate.v1.AuthorizationContext.AttributesEntryB\x16\xbaH\x13\x9a\x01\x10\x10 \"\ar\x05 \x01(\x80\x01*\x03\xc8\x01\x01R\n" +
-	"attributes\x1ac\n" +
-	"\x0fAttributesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
-	"\x05value\x18\x02 \x01(\v2$.flowstate.v1.AuthorizationAttributeR\x05value:\x028\x01\"\xb4\x02\n" +
-	"\x14AuthorizationRequest\x12J\n" +
-	"\tprincipal\x18\x01 \x01(\v2$.flowstate.v1.AuthorizationPrincipalB\x06\xbaH\x03\xc8\x01\x01R\tprincipal\x12A\n" +
-	"\x06action\x18\x02 \x01(\v2!.flowstate.v1.AuthorizationActionB\x06\xbaH\x03\xc8\x01\x01R\x06action\x12G\n" +
-	"\bresource\x18\x03 \x01(\v2#.flowstate.v1.AuthorizationResourceB\x06\xbaH\x03\xc8\x01\x01R\bresource\x12D\n" +
-	"\acontext\x18\x04 \x01(\v2\".flowstate.v1.AuthorizationContextB\x06\xbaH\x03\xc8\x01\x01R\acontext\"\xbd\x01\n" +
-	"\x15AuthorizationDecision\x12\x18\n" +
-	"\aallowed\x18\x01 \x01(\bR\aallowed\x12 \n" +
-	"\x06reason\x18\x02 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\x06reason\x12 \n" +
-	"\x06policy\x18\x03 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x06policy\x12 \n" +
-	"\x06action\x18\x04 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x06action\x12$\n" +
-	"\bresource\x18\x05 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\bresource*\x98\x02\n" +
-	"\x1aAuthorizationPrincipalKind\x12,\n" +
-	"(AUTHORIZATION_PRINCIPAL_KIND_UNSPECIFIED\x10\x00\x12&\n" +
-	"\"AUTHORIZATION_PRINCIPAL_KIND_HUMAN\x10\x01\x12)\n" +
-	"%AUTHORIZATION_PRINCIPAL_KIND_WORKLOAD\x10\x02\x12&\n" +
-	"\"AUTHORIZATION_PRINCIPAL_KIND_AGENT\x10\x03\x12(\n" +
-	"$AUTHORIZATION_PRINCIPAL_KIND_SERVICE\x10\x04\x12'\n" +
-	"#AUTHORIZATION_PRINCIPAL_KIND_PLUGIN\x10\x05B\xb1\x01\n" +
+	" flowstate/v1/authorization.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xa9\x02\n" +
+	"\x1aAuthorizationActionBinding\x12E\n" +
+	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12C\n" +
+	"\x06parent\x18\x02 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06parent\x12;\n" +
+	"\x04rpcs\x18\x03 \x03(\tB'\xbaH$\x92\x01!\x10\b\x18\x01\"\x1br\x19\x10\x01\x18@2\x13^[A-Z][A-Za-z0-9]*$R\x04rpcs\x12B\n" +
+	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools*\xce\x05\n" +
+	"\x13AuthorizationAction\x12$\n" +
+	" AUTHORIZATION_ACTION_UNSPECIFIED\x10\x00\x12%\n" +
+	"!AUTHORIZATION_ACTION_WORKLOAD_RUN\x10\x01\x12&\n" +
+	"\"AUTHORIZATION_ACTION_WORKLOAD_READ\x10\x02\x12(\n" +
+	"$AUTHORIZATION_ACTION_WORKLOAD_SIGNAL\x10\x03\x12(\n" +
+	"$AUTHORIZATION_ACTION_WORKLOAD_CANCEL\x10\x04\x12+\n" +
+	"'AUTHORIZATION_ACTION_WORKLOAD_TERMINATE\x10\x05\x12*\n" +
+	"&AUTHORIZATION_ACTION_WORKLOAD_VALIDATE\x10\x06\x12)\n" +
+	"%AUTHORIZATION_ACTION_WORKLOAD_COMPILE\x10\a\x12%\n" +
+	"!AUTHORIZATION_ACTION_CATALOG_READ\x10\b\x12(\n" +
+	"$AUTHORIZATION_ACTION_SCHEDULE_CREATE\x10\t\x12&\n" +
+	"\"AUTHORIZATION_ACTION_SCHEDULE_READ\x10\n" +
+	"\x12(\n" +
+	"$AUTHORIZATION_ACTION_SCHEDULE_DELETE\x10\v\x12'\n" +
+	"#AUTHORIZATION_ACTION_SCHEDULE_PAUSE\x10\f\x12(\n" +
+	"$AUTHORIZATION_ACTION_SCHEDULE_RESUME\x10\r\x12)\n" +
+	"%AUTHORIZATION_ACTION_SCHEDULE_TRIGGER\x10\x0e\x12&\n" +
+	"\"AUTHORIZATION_ACTION_MCP_RUN_LOCAL\x10\x0f\x12!\n" +
+	"\x1dAUTHORIZATION_ACTION_MCP_TEST\x10\x10B\xb1\x01\n" +
 	"\x10com.flowstate.v1B\x12AuthorizationProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -877,42 +289,19 @@ func file_flowstate_v1_authorization_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_authorization_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_flowstate_v1_authorization_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_flowstate_v1_authorization_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_flowstate_v1_authorization_proto_goTypes = []any{
-	(AuthorizationPrincipalKind)(0),           // 0: flowstate.v1.AuthorizationPrincipalKind
-	(*AuthorizationAttribute)(nil),            // 1: flowstate.v1.AuthorizationAttribute
-	(*AuthorizationDelegation)(nil),           // 2: flowstate.v1.AuthorizationDelegation
-	(*AuthorizationPrincipal)(nil),            // 3: flowstate.v1.AuthorizationPrincipal
-	(*AuthorizationAction)(nil),               // 4: flowstate.v1.AuthorizationAction
-	(*AuthorizationResource)(nil),             // 5: flowstate.v1.AuthorizationResource
-	(*AuthorizationContext)(nil),              // 6: flowstate.v1.AuthorizationContext
-	(*AuthorizationRequest)(nil),              // 7: flowstate.v1.AuthorizationRequest
-	(*AuthorizationDecision)(nil),             // 8: flowstate.v1.AuthorizationDecision
-	(*AuthorizationAttribute_StringList)(nil), // 9: flowstate.v1.AuthorizationAttribute.StringList
-	nil, // 10: flowstate.v1.AuthorizationPrincipal.AttributesEntry
-	nil, // 11: flowstate.v1.AuthorizationResource.AttributesEntry
-	nil, // 12: flowstate.v1.AuthorizationContext.AttributesEntry
+	(AuthorizationAction)(0),           // 0: flowstate.v1.AuthorizationAction
+	(*AuthorizationActionBinding)(nil), // 1: flowstate.v1.AuthorizationActionBinding
 }
 var file_flowstate_v1_authorization_proto_depIdxs = []int32{
-	9,  // 0: flowstate.v1.AuthorizationAttribute.string_list:type_name -> flowstate.v1.AuthorizationAttribute.StringList
-	0,  // 1: flowstate.v1.AuthorizationDelegation.kind:type_name -> flowstate.v1.AuthorizationPrincipalKind
-	0,  // 2: flowstate.v1.AuthorizationPrincipal.kind:type_name -> flowstate.v1.AuthorizationPrincipalKind
-	10, // 3: flowstate.v1.AuthorizationPrincipal.attributes:type_name -> flowstate.v1.AuthorizationPrincipal.AttributesEntry
-	2,  // 4: flowstate.v1.AuthorizationPrincipal.delegation_chain:type_name -> flowstate.v1.AuthorizationDelegation
-	11, // 5: flowstate.v1.AuthorizationResource.attributes:type_name -> flowstate.v1.AuthorizationResource.AttributesEntry
-	12, // 6: flowstate.v1.AuthorizationContext.attributes:type_name -> flowstate.v1.AuthorizationContext.AttributesEntry
-	3,  // 7: flowstate.v1.AuthorizationRequest.principal:type_name -> flowstate.v1.AuthorizationPrincipal
-	4,  // 8: flowstate.v1.AuthorizationRequest.action:type_name -> flowstate.v1.AuthorizationAction
-	5,  // 9: flowstate.v1.AuthorizationRequest.resource:type_name -> flowstate.v1.AuthorizationResource
-	6,  // 10: flowstate.v1.AuthorizationRequest.context:type_name -> flowstate.v1.AuthorizationContext
-	1,  // 11: flowstate.v1.AuthorizationPrincipal.AttributesEntry.value:type_name -> flowstate.v1.AuthorizationAttribute
-	1,  // 12: flowstate.v1.AuthorizationResource.AttributesEntry.value:type_name -> flowstate.v1.AuthorizationAttribute
-	1,  // 13: flowstate.v1.AuthorizationContext.AttributesEntry.value:type_name -> flowstate.v1.AuthorizationAttribute
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	0, // 0: flowstate.v1.AuthorizationActionBinding.action:type_name -> flowstate.v1.AuthorizationAction
+	0, // 1: flowstate.v1.AuthorizationActionBinding.parent:type_name -> flowstate.v1.AuthorizationAction
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_authorization_proto_init() }
@@ -920,19 +309,13 @@ func file_flowstate_v1_authorization_proto_init() {
 	if File_flowstate_v1_authorization_proto != nil {
 		return
 	}
-	file_flowstate_v1_authorization_proto_msgTypes[0].OneofWrappers = []any{
-		(*AuthorizationAttribute_StringValue)(nil),
-		(*AuthorizationAttribute_IntValue)(nil),
-		(*AuthorizationAttribute_BoolValue)(nil),
-		(*AuthorizationAttribute_StringList_)(nil),
-	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_authorization_proto_rawDesc), len(file_flowstate_v1_authorization_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
