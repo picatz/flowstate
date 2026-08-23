@@ -1167,6 +1167,26 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		return failRun(err)
 	}
 
+	// A task may finish successfully *after* the run was cancelled, and the
+	// durable driver's policy.go says so in writing: WaitForCancellation lets an
+	// activity win that race, "which is the outcome a saga wants: the step
+	// registers its compensation, and the compensation then takes it back."
+	//
+	// The second clause was only true when the winning task was not the last
+	// one. Nothing between here and the end observed the cancellation — a
+	// workflow declaring no outputs evaluates none, and cel-go polls its
+	// interrupt every DefaultInterruptCheckFrequency steps, which a short
+	// expression never reaches — so the run closed COMPLETED with a full undo
+	// log nobody ran. The world keeps whatever that last step created, and the
+	// operator who asked for a stop is told it finished.
+	//
+	// One line, and it has to be here rather than inside runNodes: the race is
+	// between the cancellation and the *last* step's success, so the only place
+	// it is decidable is after every step has reported.
+	if err := ctx.Err(); err != nil {
+		return failRun(err)
+	}
+
 	// Evaluated once, after the last step, against the scope the run finished in —
 	// the same moment and the same scope the durable driver uses. See
 	// [EvalRunOutputs] and engine.Run, where the reason that moment is safe in
@@ -1542,7 +1562,19 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 	// the path where it is not tolerated, ending the run before anything is built on
 	// top of an effect that has no way back. The durable driver registers at the
 	// identical point, in its own runNodeWithVars.
-	entry, err := UndoRegistrationFor(ctx, node, inner, outputs)
+	//
+	// On a context that survives cancellation, because registering is not the
+	// step's work — the step has already succeeded, and this is recording how to
+	// take it back. UndoRegistrationFor resolves the compensation's inputs, which
+	// evaluates CEL, which a cancelled context refuses; a task that wins the
+	// cancellation race would then have its compensation fail to register, and the
+	// run would compensate everything except the effect that was just created.
+	// The durable driver has always registered on context.Background() (see
+	// engine/execute.go), so this is the two drivers agreeing rather than a new
+	// rule; WithoutCancel rather than Background because the values on ctx — the
+	// secret runtime, the rehearsal identity — are ones a compensation's inputs
+	// may legitimately read.
+	entry, err := UndoRegistrationFor(context.WithoutCancel(ctx), node, inner, outputs)
 	if err != nil {
 		return nil, err
 	}

@@ -670,6 +670,19 @@ func joins(id, base, token, step string) *v1.Node {
 // parameter. What every case does share is that the run is parked on a long wait
 // when it happens, so the cancellation lands at a known point rather than racing
 // the steps.
+// What this corpus deliberately does not cover, and cannot without a new hook:
+// a cancellation that arrives while the *last* step is in flight and that step
+// then succeeds anyway. Every case here parks, so the cancellation lands at a
+// known point and the run is certainly not mid-step.
+//
+// That other window is real — the durable driver's WaitForCancellation exists to
+// let an activity win that race — and it is not expressible here, because the
+// two drivers disagree about whether a step can survive a cancellation at all.
+// Durably it can, by design. Locally a cancelled context fails the step's own
+// request, so the same shape produces a *failed* last step, which compensates
+// through the ordinary path and is indistinguishable from the case under test.
+// Distinguishing them needs the driver to supply "cancel once the last step has
+// completed", which is a third timing alongside the two this type documents.
 type UndoCancellationCase struct {
 	// Name of the case, used for test identification.
 	Name string
