@@ -104,7 +104,19 @@ inputs:
     # a finite reconcile on both drivers rather than a run whose only path is
     # consuming a retirement.
     description: end the run after this many reconcile passes; 0 watches until the control plane reports the workload retired
-    must: this >= 0 && this <= 1000
+    # Capped an order of magnitude below the loop's own ceiling, and the gap is
+    # the point rather than a round number. `max_iterations: 1000` is the safety
+    # net that stops a runaway; this is a request. Unreadable wakeups spend an
+    # iteration without spending a pass, so a request that could equal the
+    # ceiling would make its own promise unkeepable at the boundary - ask for
+    # 1000 passes, meet one garbled answer, and the run ends at the net having
+    # made 999. Nine hundred iterations of slack (1000 - 100) is what keeps
+    # "an unreadable pass spends nothing" true for any legal request.
+    #
+    # A watch that wants to run longer than a hundred passes wants `0`, which is
+    # the unbounded mode this input exists alongside rather than a bigger number
+    # here.
+    must: this >= 0 && this <= 100
 steps:
   - id: opened
     description: A step before the loop, so a run that suspends before its first deadline has something to have carried across the handover.

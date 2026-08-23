@@ -561,3 +561,20 @@ tests:
         passes_that_acted: 0
         final_desired_replicas: 5
         final_observed_replicas: 5
+
+  - name: a pass budget that could reach the loop ceiling is refused
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1000
+    # The boundary this cap exists for. `max_iterations` is 1000, and an
+    # unreadable wakeup spends an iteration without spending a pass - so a
+    # request for 1000 passes could only be met if every single wakeup was
+    # readable, and one garbled answer would end the run at the ceiling having
+    # made 999. Refusing the request keeps "an unreadable pass spends nothing"
+    # true for every budget this workflow accepts, rather than true up to a
+    # boundary nobody would find until it mattered.
+    expect:
+      failed: true
+      error_contains: "must satisfy"
