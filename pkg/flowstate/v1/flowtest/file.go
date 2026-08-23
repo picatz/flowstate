@@ -636,6 +636,33 @@ type Stub struct {
 	// succeeding, so a case can exercise `continue_on_error:`, `retry:`, and
 	// `undo:` without a real dependency ever having to be down on purpose.
 	Fails *StubFailure `yaml:"fails"`
+
+	// Times bounds how many invocations this stub answers before it retires
+	// and the list falls through to the next matcher (#927). Absent means
+	// unbounded — every stub before this field existed answers forever, and
+	// still does. It is what makes a stub list a *script* rather than only a
+	// switch: the canonical retry test, fail once and then succeed, is two
+	// stubs for one step, the first carrying `times: 1` and `fails:`, the
+	// second answering the recovery — inexpressible before this existed,
+	// because the first match answered every attempt and `retry:` was
+	// testable only to exhaustion.
+	//
+	// Consumption is counted per answer, `returns:` and `fails:` alike, and
+	// the budget is per case: every case (and every seeded schedule of one)
+	// starts the count over. A drained stub shows up in an unmatched-stub
+	// failure with its spent budget, so an invocation that fell past it is
+	// explained rather than mysterious.
+	//
+	// One caution, and the schedule explorer enforces it rather than this
+	// package hiding it: two `parallel:` branches invoking one task drain a
+	// shared `times:` budget in whichever order the schedule runs them, which
+	// is a real observable `--seeds` will legitimately flag. Scope such a
+	// stub with `step:`, which already tells steps sharing a task apart.
+	//
+	// A pointer so an explicit `times: 0` is told apart from the field being
+	// absent, and refused when the file loads: a stub that can answer nothing
+	// asserts nothing.
+	Times *int `yaml:"times"`
 }
 
 // StubFailure is a canned failure a [Stub] reports instead of outputs.
@@ -1067,6 +1094,17 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 				return nil, fmt.Errorf(
 					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
 					test.Name, j+1, stubTarget(&stub))
+			}
+			// `times: 0` is refused rather than read as "never answers": a
+			// stub that can answer nothing asserts nothing, and an author who
+			// wrote 0 meant something — most likely deleting the stub, or the
+			// unbounded default they get by writing no `times:` at all.
+			// Negative is the same mistake with less ambiguity.
+			if stub.Times != nil && *stub.Times <= 0 {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares times: %d, which is a stub that never answers; "+
+						"delete the stub, or drop `times:` for the unbounded default",
+					test.Name, j+1, stubTarget(&stub), *stub.Times)
 			}
 		}
 		if err := checkOthers(&test); err != nil {

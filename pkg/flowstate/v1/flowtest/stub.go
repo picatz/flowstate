@@ -54,6 +54,15 @@ type compiledStub struct {
 	// whole case, so nothing here survives into another run.
 	answered bool
 
+	// times is the stub's declared answer budget, 0 for unbounded; remaining
+	// counts it down per answer, under the same lock and with the same
+	// per-case lifetime as answered. A drained matcher (times > 0, remaining
+	// 0) is skipped with a verdict that says so, and the list falls through —
+	// which is the whole mechanism of [Stub.Times]: the matcher sequence
+	// becomes a script.
+	times     int
+	remaining int
+
 	where *expr.ParsedExpr // nil matches unconditionally
 
 	// whereSource is the `where:` clause exactly as the author wrote it, kept
@@ -126,6 +135,11 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 			return nil, fmt.Errorf("stub %d for %s: returns: %w", i+1, stubTarget(&s), err)
 		}
 
+		times := 0
+		if s.Times != nil {
+			times = *s.Times
+		}
+
 		compiled = append(compiled, compiledStub{
 			task:         s.Task,
 			step:         s.Step,
@@ -136,6 +150,8 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 			returns:      returns,
 			hasReturns:   s.Returns != nil,
 			fails:        s.Fails,
+			times:        times,
+			remaining:    times,
 		})
 	}
 
@@ -436,6 +452,15 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 				}
 			}
 
+			// A drained `times:` stub retires: the list falls through to the
+			// next matcher, which is the scripting [Stub.Times] promises. The
+			// verdict is recorded so an invocation that then matches nothing
+			// is explained by the budget it fell past, not left mysterious.
+			if m.times > 0 && m.remaining == 0 {
+				verdicts = append(verdicts, stubVerdict{whereSource: m.whereSource, drained: m.times})
+				continue
+			}
+
 			ok, matchErr := m.matches(ctx, scope.GetProfile(), activation)
 			verdicts = append(verdicts, stubVerdict{whereSource: m.whereSource, matched: ok, err: matchErr})
 			if matchErr != nil {
@@ -453,8 +478,12 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 
 			if m.fails != nil {
 				// A `fails:` answer is an answer: the stub did its job, so the
-				// unused-stub report must not name it (#926).
+				// unused-stub report must not name it (#926), and it spends
+				// `times:` budget exactly as a `returns:` answer does.
 				m.answered = true
+				if m.times > 0 {
+					m.remaining--
+				}
 				kind := v1.ErrorKind(m.fails.Kind)
 				if kind == "" {
 					kind = v1.ErrorKindUpstream
@@ -463,6 +492,9 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			}
 
 			m.answered = true
+			if m.times > 0 {
+				m.remaining--
+			}
 			returns, err := m.answer(ctx, scope.GetProfile(), activation)
 			if err != nil {
 				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
@@ -589,6 +621,11 @@ type stubVerdict struct {
 	whereSource string // empty for a stub with no `where:`
 	matched     bool
 	err         error
+
+	// drained is the stub's spent `times:` budget when the matcher was
+	// skipped as retired rather than tried at all — the one verdict where the
+	// clause is not what decided (#927). Zero otherwise.
+	drained int
 }
 
 // maxUnmatchedStubValueLen bounds how much of one input's rendered value an
@@ -927,6 +964,8 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 				where = "(no where:)"
 			}
 			switch {
+			case v.drained > 0:
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> drained (times: %d spent)", i+1, where, v.drained)
 			case v.matched:
 				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> true", i+1, where)
 			case v.err != nil:
