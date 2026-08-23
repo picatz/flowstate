@@ -271,6 +271,18 @@ func RecordTaskOutcome(span trace.Span, err error) {
 // wraps spans the SDK opens for every workflow and activity it runs, including
 // ones this repository knows nothing about, so there is no classification it is
 // entitled to claim. What it can say honestly is that the operation failed.
+//
+// The considered alternative was to read the classification back off the error
+// when it is a *temporal.ApplicationError, whose Type() this repository builds
+// from [ClassifyError] at engine/activities.go and is therefore safe by
+// construction. Two costs, and both are paid here rather than there. This
+// package does not import Temporal at all — `go list -deps ./pkg/flowstate/v1`
+// names nothing under go.temporal.io — and one description string is a poor
+// price for that edge, given the engine already exports the classification on
+// the first-party `flowstate.task` span an operator reads next. The
+// import-free spelling, a structural check for `interface{ Type() string }`,
+// fails open on every unrelated error type that happens to have that method,
+// which is the direction this repository refuses to fail.
 const TemporalSpanErrorDescription = "operation failed"
 
 // SanitizedTemporalSpanStarter is [opentelemetry.TracerOptions.SpanStarter] for

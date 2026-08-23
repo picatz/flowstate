@@ -697,15 +697,21 @@ func renderedTemporalSpans(recorder *tracetest.SpanRecorder) []string {
 // that a wrapper wraps, and say nothing about whether the interceptor installs
 // it or whether Finish reaches the span some other way. This is the path the
 // leak actually took.
+//
+// And it takes [temporalTracerOptions] rather than writing the options out,
+// overriding only the tracer so spans land in a recorder instead of the global
+// provider. Written out, deleting `SpanStarter` from what the worker builds
+// would leave this test green while the leak came back — the wiring is the fix,
+// so the wiring is what has to be under the assertion.
 func TestTemporalSpanErrorsAreContained(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
-	tracer, err := opentelemetry.NewTracer(opentelemetry.TracerOptions{
-		Tracer:      provider.Tracer("test"),
-		SpanStarter: v1.SanitizedTemporalSpanStarter,
-	})
+	options := temporalTracerOptions()
+	options.Tracer = provider.Tracer("test")
+
+	tracer, err := opentelemetry.NewTracer(options)
 	require.NoError(t, err)
 
 	span, err := tracer.StartSpan(&interceptor.TracerStartSpanOptions{

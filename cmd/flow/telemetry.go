@@ -432,13 +432,7 @@ func temporalTracingInterceptor() interceptor.Interceptor {
 		return nil
 	}
 
-	// Tracer comes from the global provider this package has already configured,
-	// and the propagator defaults to W3C trace context plus baggage — the same
-	// composite [initTelemetry] registers globally. Span creation is wrapped so
-	// the SDK cannot export the full text of an activity failure.
-	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{
-		SpanStarter: v1.SanitizedTemporalSpanStarter,
-	})
+	tracing, err := opentelemetry.NewTracingInterceptor(temporalTracerOptions())
 	if err != nil {
 		log.Printf("WARNING: telemetry is configured but the Temporal tracing interceptor "+
 			"could not be built, so workflow and activity spans will not join the caller's "+
@@ -448,6 +442,28 @@ func temporalTracingInterceptor() interceptor.Interceptor {
 	}
 
 	return tracing
+}
+
+// temporalTracerOptions is how this binary configures Temporal's tracer, in one
+// place because a test that writes its own copy of these options tests its copy.
+//
+// Tracer comes from the global provider this package has already configured, and
+// the propagator defaults to W3C trace context plus baggage — the same composite
+// [initTelemetry] registers globally, so the header Temporal carries and the
+// header otelconnect injects speak the same format. Span creation is wrapped so
+// the SDK cannot export the full text of an activity failure.
+//
+// A function rather than a package variable so nothing can mutate what the next
+// interceptor is built from, and so [TestTemporalSpanErrorsAreContained] can
+// take the same value the worker takes and then override only the tracer. That
+// override is why the field is left zero here rather than named: zero means the
+// global provider *at construction time*, which is the ordering the doc comment
+// above depends on, and a test that has to set its own recorder can set that one
+// field without inheriting a decision about the rest.
+func temporalTracerOptions() opentelemetry.TracerOptions {
+	return opentelemetry.TracerOptions{
+		SpanStarter: v1.SanitizedTemporalSpanStarter,
+	}
 }
 
 // temporalClientInterceptors is what a Temporal client should be dialed with.
