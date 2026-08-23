@@ -357,12 +357,16 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			Subject: "examples",
 			Issuer:  "flowstate:test",
 		},
-		Federation: &conformance.Federation{Target: "partner-api", Token: "example-jit-token"},
 	}
 	secretStore, err := secrets.NewStore(exampleSecretProviders()...)
 	require.NoError(t, err)
+	// The broker is [conformance.ExamplesBroker] rather than this Authority's,
+	// for the reason the store above is built here: that helper configures
+	// exactly one target and this corpus names two, so a target registered on
+	// one driver's harness and not the other's is precisely the disagreement
+	// this test exists to catch rather than to cause.
 	runtime, err := engine.NewTaskRuntimeConfig(
-		secretStore, authority.Policy(t), authority.Broker(t))
+		secretStore, authority.Policy(t), conformance.ExamplesBroker(t))
 	require.NoError(t, err)
 
 	temporal := newTemporalNamespace(t)
@@ -764,7 +768,7 @@ func runExampleLocally(
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store:    secretStore,
 		Policy:   authority.Policy(t),
-		Broker:   authority.Broker(t),
+		Broker:   conformance.ExamplesBroker(t),
 		Identity: authority.Identity,
 		Step:     auth.StepRef{Workflow: spec.GetName(), Run: "example-run"},
 	})
@@ -1220,7 +1224,7 @@ func runFailingExampleLocally(
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store:    secretStore,
 		Policy:   authority.Policy(t),
-		Broker:   authority.Broker(t),
+		Broker:   conformance.ExamplesBroker(t),
 		Identity: authority.Identity,
 		Step:     auth.StepRef{Workflow: spec.GetName(), Run: "example-run"},
 	})
