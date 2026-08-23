@@ -532,6 +532,14 @@ func (d *TriggerDelivery) Context() *v1.TriggerContext {
 //   - Sender fills in only where a case's signal omits its own `sender:`.
 //     Explicit beats inherited, so a signal that names a sender keeps it.
 type Defaults struct {
+	// Workflow is the Flowfile every case runs against unless it names its
+	// own (#924 slice 1) — resolved exactly as a case's own `workflow:` is,
+	// relative to the test file's directory, because it becomes the case's
+	// value before anything resolves. The one fact 151 of the corpus's 151
+	// cases restated identically, now stated once; a case that does name a
+	// workflow keeps it, per the merge rules' one direction.
+	Workflow string `yaml:"workflow"`
+
 	// Inputs are the base bindings every case starts from, before its own
 	// `inputs:` are merged over them one key at a time.
 	Inputs map[string]any `yaml:"inputs"`
@@ -1441,6 +1449,15 @@ func checkNoExpressions(where string, v any, depth int) error {
 // slices are the author's, and a second case merging the same defaults must see
 // them untouched.
 func mergeDefaults(d *Defaults, test Test) Test {
+	// Workflow: explicit beats inherited, the same one direction Sender
+	// takes. Merged before anything resolves, so the inherited path is
+	// resolved relative to the test file exactly as a stated one would be —
+	// and idempotently, since a merged case carries the value and never
+	// takes it again.
+	if d.Workflow != "" && test.Workflow == "" {
+		test.Workflow = d.Workflow
+	}
+
 	// Inputs: one level. Start from the defaults, then let the case replace
 	// whole keys. A nested map under a key is replaced wholesale by the case's,
 	// not deep-merged, which is the "one level" the rules promise.
