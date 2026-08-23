@@ -9,6 +9,21 @@
 # delivered twice, or arrived while the process was down changes how *soon* the
 # next pass happens and never what that pass decides.
 #
+# One boundary on that claim, stated rather than implied, because the desired
+# count itself arrives in a `spec-changed` payload. That is not a notification
+# in the sentence above's sense: a signal through the server is a durable,
+# attested *write* to the state this run holds — accepted or refused at the
+# `signals:` gate, queued, and consumed exactly once in arrival order — so
+# "never delivered" is a refusal the sender saw, not a loss the run absorbs,
+# and two changes sent in order apply in order. The run is the spec store here,
+# the same durable-entity shape `entity-order` shows; the control plane owns
+# only the *observed* side (`replicas`, `retired`), which is why retirement is
+# read from it every pass and a spec change is not. A deployment whose desired
+# state lives in the control plane instead inverts one step: read it in
+# `observed` beside `replicas`, and the signal carries no payload at all — a
+# pure wake-up. Same loop, one fewer guard, and the choice is whose database
+# the spec is.
+#
 # The wait at the *top* of the body is the whole scheduler, and its position is
 # load-bearing rather than stylistic (see the retirement note below):
 #
