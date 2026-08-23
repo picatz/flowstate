@@ -4,11 +4,8 @@ import (
 	"context"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 )
 
@@ -324,54 +321,6 @@ func activityError(taskName string, err error, continueOnError bool) error {
 	// on the constructor that cannot also carry Category.
 	return temporal.NewApplicationErrorWithOptions(message, kind.String(),
 		temporal.ApplicationErrorOptions{Cause: err, NonRetryable: true, Category: category})
-}
-
-// The first-party task span is [v1.StartTaskSpan], two packages up, and what is
-// left here is the one thing only this driver can say.
-//
-// It lived in this file until #523's gap 3, which is precisely why a local run
-// produced no `flowstate.*` span at all: the span and the driver were the same
-// code. The vocabulary — the span's name, its attribute keys, and the rule that
-// no value ever becomes one of them — now lives in `pkg/flowstate/v1`, which
-// both drivers import, so neither can drift from the other's spelling. Read
-// [v1.StartTaskSpan]'s doc for the two rules that decide the shape; the
-// activity-side-only one still binds every caller in this package (invariant 4:
-// a span minted during replay is minted again on every replay).
-
-// observeTask runs one activity's work inside the task span and the duration
-// measurement, and adds the attempt, which is this driver's alone.
-//
-// The span and the instruments both come from [v1.ObserveTask], the one call
-// the local driver makes too, so the two drivers cannot end up naming an
-// instrument or an attribute key differently — invariant 5 for a measurement
-// rather than for an outcome. What is added here is the attempt attribute and
-// the driver label, both of which only this side can supply.
-//
-// It takes the work rather than returning something to defer, so that an
-// activity whose task panics is recorded as the failure Temporal is about to
-// report rather than as a success. [v1.ObserveTask]'s doc has the whole
-// argument, including why nothing on this path recovers the panic.
-//
-// The attempt is the substrate's, so it is asked of the substrate rather than
-// threaded through: a retried activity is a second span, and without this they
-// are indistinguishable in a trace. Guarded because [v1.StartTaskSpan] is an
-// ordinary Go function the local driver does call, and activity.GetInfo panics
-// outside an activity context — and because the local driver deliberately does
-// *not* write this key from its own retry counter, which counts something else.
-// See [v1.StartTaskSpan]'s note on it.
-//
-// The attempt is deliberately *not* a metric attribute, only a span one: it is
-// bounded by a retry policy nobody promises to keep small, and a label whose
-// bound is somebody's configuration is the shape [metricschema] refuses.
-func observeTask(ctx context.Context, task *v1.Task, stepID string, run func(context.Context, trace.Span) (*v1.Node_Outputs, error)) (*v1.Node_Outputs, error) {
-	return v1.ObserveTask(ctx, task, stepID, metricschema.DriverDurable,
-		func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
-			if span.IsRecording() && activity.IsActivity(ctx) {
-				span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, int(activity.GetInfo(ctx).Attempt)))
-			}
-
-			return run(ctx, span)
-		})
 }
 
 // recordTaskOutcome marks a failed span with what kind of failure it was, through
