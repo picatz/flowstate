@@ -77,6 +77,8 @@ func RunFile(path string) *v1.TestReport {
 // file's own directory when one exists; empty refuses any case that needs a
 // path resolved, exactly as [RunSourceContext]'s byte-born cases are refused.
 func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult {
+	file = file.withDefaultsApplied()
+
 	return runSuite(ctx, file, opts, func(test *Test) (loader, string) {
 		identity := workflowPathIn(dir, test)
 
@@ -182,6 +184,33 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Schedules = out.Schedules.Report()
 	}
 	return out
+}
+
+// withDefaultsApplied folds the file's `defaults:` into every case, exactly
+// as [Load] folds them for a parsed file (#416) — the normalization a [File]
+// built in Go otherwise never receives, which made the same logical suite
+// behave differently depending on whether it was constructed or parsed:
+// inherited inputs, stubs and signal senders were silently absent from the
+// built one. Reported by Codex on picatz/flowstate#1015.
+//
+// A shallow copy with merged Tests, never a mutation of the caller's File — a
+// caller may hold and re-run it. On a file [Load] already merged, folding
+// again changes nothing, which is a property of [mergeDefaults]'s own rules
+// rather than luck: inputs re-copy to the values the first fold chose, a
+// default stub whose target key is already present is skipped (and the
+// inherited copies carry those keys), and a sender fills only signals that
+// have none. TestRunDoesNotDoubleMergeALoadedFile pins it.
+func (f *File) withDefaultsApplied() *File {
+	if f.Defaults == nil {
+		return f
+	}
+
+	merged := *f
+	merged.Tests = make([]Test, len(f.Tests))
+	for i := range f.Tests {
+		merged.Tests[i] = mergeDefaults(f.Defaults, f.Tests[i])
+	}
+	return &merged
 }
 
 // pathlessRefusal is what stops one case from running under [Run] with no
