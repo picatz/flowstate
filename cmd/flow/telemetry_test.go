@@ -29,6 +29,8 @@ import (
 	noopLog "go.opentelemetry.io/otel/log/noop"
 	noopMetric "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -109,6 +111,9 @@ func telemetryOff(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	t.Setenv("OTEL_TRACES_EXPORTER", "")
+	t.Setenv("OTEL_METRICS_EXPORTER", "")
+	t.Setenv("OTEL_LOGS_EXPORTER", "")
 	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
 }
@@ -149,6 +154,49 @@ func TestTelemetryIsConfiguredBySignalSpecificEndpoints(t *testing.T) {
 
 			assert.Equal(t, test.want, telemetryConfigured(),
 				"%s decides whether an exporter is built at all", test.variable)
+		})
+	}
+}
+
+func TestTelemetrySignalEnvironmentMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name                            string
+		endpoint, traces, metrics, logs string
+		want                            telemetryConfig
+		wantPropagation                 bool
+	}{
+		{name: "all disabled", endpoint: "http://collector", traces: "none", metrics: "none", logs: "none"},
+		{name: "general endpoint", endpoint: "http://collector", want: telemetryConfig{true, true, true}, wantPropagation: true},
+		{name: "traces only", traces: "otlp", metrics: "none", logs: "none", want: telemetryConfig{traces: true}, wantPropagation: true},
+		{name: "metrics only", traces: "none", metrics: "otlp", logs: "none", want: telemetryConfig{metrics: true}, wantPropagation: true},
+		{name: "logs only", traces: "none", metrics: "none", logs: "otlp", want: telemetryConfig{logs: true}, wantPropagation: true},
+		{name: "general with traces disabled", endpoint: "http://collector", traces: "none", want: telemetryConfig{metrics: true, logs: true}, wantPropagation: true},
+		// The SDK environment-variable specification defines these enum values
+		// as case-insensitive, and an exact match refused to start a server
+		// over a capital letter — reported by Codex on picatz/flowstate#991.
+		// Surrounding space goes the same way: invisible in a compose file,
+		// meaningless here, and a refusal nobody can see the cause of.
+		{name: "uppercase selectors", traces: "OTLP", metrics: "None", logs: "NONE", want: telemetryConfig{traces: true}, wantPropagation: true},
+		{name: "mixed case and surrounding space", traces: " Otlp ", metrics: " nOnE", logs: "None ", want: telemetryConfig{traces: true}, wantPropagation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			telemetryOff(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", test.endpoint)
+			t.Setenv("OTEL_TRACES_EXPORTER", test.traces)
+			t.Setenv("OTEL_METRICS_EXPORTER", test.metrics)
+			t.Setenv("OTEL_LOGS_EXPORTER", test.logs)
+
+			got, err := telemetryConfigFromEnv()
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+			// Propagation and "did anyone ask for telemetry" are the same
+			// question, deliberately: correlated logs and metrics still need an
+			// incoming trace id even when local spans are not exported. The
+			// column stays so a future divergence has to be written down here
+			// rather than discovered in a collector.
+			assert.Equal(t, test.wantPropagation, telemetryConfigured())
+			base := slog.NewTextHandler(io.Discard, nil)
+			assert.Equal(t, test.want.logs, telemetryLogHandler(base) != base)
 		})
 	}
 }
@@ -1135,4 +1183,183 @@ func TestSecretsAreRedactedOnTheOTLPPathToo(t *testing.T) {
 	// dropped: a record that lost the attribute entirely would also pass the
 	// assertion above, and would be a different bug.
 	require.Contains(t, exported, secrets.Redacted)
+}
+
+// TestOneSignalLeavesTheOthersNoOp is the negative direction, and it is the
+// claim this change actually makes.
+//
+// TestTracesOnlyBuildsATracerProvider above asserts that configuring traces
+// installs a tracer provider — which was already true when all three signals
+// were built together, so it passes just as happily against the all-or-nothing
+// version this replaces. What was never asserted is the *separation*: that a
+// deployment asking for one signal does not get SDK providers for the other
+// two, quietly batching and dropping records nobody asked to export.
+//
+// Written as "A cannot reach B" per CLAUDE.md rather than "A reaches A",
+// because the first shape is the one that fails when the separation regresses.
+func TestOneSignalLeavesTheOthersNoOp(t *testing.T) {
+	for _, test := range []struct {
+		name                           string
+		endpoint                       string
+		wantTracer, wantMeter, wantLog bool
+	}{
+		{name: "traces only", endpoint: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", wantTracer: true},
+		{name: "metrics only", endpoint: "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", wantMeter: true},
+		{name: "logs only", endpoint: "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", wantLog: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			isolateTelemetry(t)
+			telemetryOff(t)
+
+			collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(collector.Close)
+			t.Setenv(test.endpoint, collector.URL)
+
+			_, shutdown, err := initTelemetry(t.Context())
+			require.NoError(t, err)
+			t.Cleanup(func() { shutdown(context.Background()) })
+
+			_, gotTracer := otel.GetTracerProvider().(*sdktrace.TracerProvider)
+			assert.Equal(t, test.wantTracer, gotTracer,
+				"tracer provider installed=%v, want %v — a signal nobody configured must stay no-op",
+				gotTracer, test.wantTracer)
+
+			_, gotMeter := otel.GetMeterProvider().(*sdkmetric.MeterProvider)
+			assert.Equal(t, test.wantMeter, gotMeter,
+				"meter provider installed=%v, want %v", gotMeter, test.wantMeter)
+
+			_, gotLog := logglobal.GetLoggerProvider().(*sdklog.LoggerProvider)
+			assert.Equal(t, test.wantLog, gotLog,
+				"logger provider installed=%v, want %v", gotLog, test.wantLog)
+		})
+	}
+}
+
+// stubSpanExporter is a span exporter that keeps nothing and remembers whether
+// it was shut down, which is the observable half of "the provider built before
+// the failure is not still running".
+type stubSpanExporter struct {
+	mu       sync.Mutex
+	shutdown bool
+}
+
+func (e *stubSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error { return nil }
+
+func (e *stubSpanExporter) Shutdown(context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.shutdown = true
+
+	return nil
+}
+
+func (e *stubSpanExporter) wasShutDown() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return e.shutdown
+}
+
+// TestAFailedSignalPublishesNothingAndLeavesNothingRunning is the partial
+// initialization Codex reported on picatz/flowstate#991.
+//
+// Signals are built in order, and publishing each provider as it was built made
+// a later exporter's failure the worst of both answers: initTelemetry returns an
+// error and no shutdown, the client commands deliberately continue past that
+// error and warn that nothing will be emitted — and the earlier provider is
+// installed globally with its batch processor running, holding a connection,
+// reachable by every instrumented call site in the process and flushed by
+// nobody. A binary told it has no telemetry must not be exporting.
+//
+// Both halves are asserted, because either alone passes for the wrong reason: a
+// global that was never published (nothing can reach it) and an exporter that
+// was shut down (nothing is still running behind it).
+func TestAFailedSignalPublishesNothingAndLeavesNothingRunning(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+	telemetryTo(t)
+
+	traces := &stubSpanExporter{}
+	realTraceExporter, realLogExporter := newTraceExporter, newLogExporter
+	newTraceExporter = func(context.Context) (sdktrace.SpanExporter, error) { return traces, nil }
+	newLogExporter = func(context.Context) (sdklog.Exporter, error) {
+		return nil, errors.New("the collector refused the log stream")
+	}
+	t.Cleanup(func() { newTraceExporter, newLogExporter = realTraceExporter, realLogExporter })
+
+	handler, shutdown, err := initTelemetry(t.Context())
+	require.Error(t, err)
+	assert.Nil(t, handler)
+	assert.Nil(t, shutdown)
+
+	_, publishedTracer := otel.GetTracerProvider().(*sdktrace.TracerProvider)
+	assert.False(t, publishedTracer, "a tracer provider is installed globally after telemetry failed to start")
+	_, publishedMeter := otel.GetMeterProvider().(*sdkmetric.MeterProvider)
+	assert.False(t, publishedMeter, "a meter provider is installed globally after telemetry failed to start")
+	_, publishedLogger := logglobal.GetLoggerProvider().(*sdklog.LoggerProvider)
+	assert.False(t, publishedLogger, "a logger provider is installed globally after telemetry failed to start")
+
+	// The propagator is the global with an effect on the wire, and it is
+	// published in the same place: a process that failed to start telemetry must
+	// not begin writing traceparent onto its outgoing requests either.
+	carrier := propagation.HeaderCarrier{}
+	otel.GetTextMapPropagator().Inject(
+		trace.ContextWithSpanContext(t.Context(), trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    trace.TraceID{0x01},
+			SpanID:     trace.SpanID{0x02},
+			TraceFlags: trace.FlagsSampled,
+		})),
+		carrier,
+	)
+	assert.Empty(t, carrier.Get("traceparent"))
+
+	assert.True(t, traces.wasShutDown(),
+		"the trace exporter built before the failure is still running, unreachable and never flushed")
+}
+
+// TestTheDevBannerNamesTelemetryExactlyWhenItIsOn is the disagreement Codex
+// reported on picatz/flowstate#991: once a signal can be selected without an
+// endpoint and disabled with one, "is an endpoint variable set" stops being an
+// answer to "is telemetry on", and it is wrong in both directions.
+//
+// A banner is read as the truth about what the process is doing, so both are
+// pinned: a collector named for a deployment sending nothing, and silence from
+// one holding an open exporter.
+func TestTheDevBannerNamesTelemetryExactlyWhenItIsOn(t *testing.T) {
+	for _, test := range []struct {
+		name                            string
+		endpoint, traces, metrics, logs string
+		want                            string
+	}{
+		{name: "nothing configured"},
+		{name: "a general endpoint", endpoint: "http://collector:4318", want: "http://collector:4318"},
+		{
+			name:     "every signal disabled, endpoint or not",
+			endpoint: "http://collector:4318",
+			traces:   "none", metrics: "none", logs: "none",
+		},
+		{
+			name:   "a selector with no endpoint anywhere",
+			traces: "otlp", metrics: "none", logs: "none",
+			want: "http://localhost:4318",
+		},
+		{
+			name:     "one signal left on under a general endpoint",
+			endpoint: "http://collector:4318",
+			traces:   "none", metrics: "none",
+			want: "http://collector:4318",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			telemetryOff(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", test.endpoint)
+			t.Setenv("OTEL_TRACES_EXPORTER", test.traces)
+			t.Setenv("OTEL_METRICS_EXPORTER", test.metrics)
+			t.Setenv("OTEL_LOGS_EXPORTER", test.logs)
+
+			assert.Equal(t, test.want, devOTLPEndpoint())
+		})
+	}
 }
