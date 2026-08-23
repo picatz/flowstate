@@ -251,7 +251,8 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	// and propagator at construction, so an interceptor built ahead of this
 	// captures the no-op ones and keeps them for the life of the process.
 	//
-	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere. Started
+	// Off unless the operator asked for a signal — an OTEL_EXPORTER_OTLP_*
+	// endpoint or an OTEL_*_EXPORTER selector, per [telemetryConfigured]. Started
 	// rather than initialized, because `flow server` reaches here twice when
 	// the trust policy maps tenants onto namespaces, and the flush this
 	// registers has to reach one set of providers rather than the last of
