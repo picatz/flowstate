@@ -336,8 +336,35 @@ const maxReducedTranscriptBytes = MaxResultBytes / 2
 // nothing keepable, the transcript is returned exactly as it arrived: it is not
 // this function's business to repair a document that was already invalid.
 func ReduceTranscript(outputs *v1.Workflow_StepOutputs) (kept, total int) {
-	steps := outputs.GetStepValues()
-	total = len(steps)
+	reduced, kept, total := reducedStepValues(outputs.GetStepValues())
+	if reduced != nil {
+		outputs.StepValues = reduced
+	}
+
+	return kept, total
+}
+
+// ReducedTranscript is [ReduceTranscript] for a transcript the caller may not
+// mutate: the same selection, answered as a new arm that shares the kept
+// steps' messages and the declared outputs rather than cloning either. The
+// local-run preflight uses it to bound a response *before* anything marshals
+// or clones it, without writing into the response the engine handed over —
+// one selection policy, two spellings, so the two venues cannot drift.
+func ReducedTranscript(outputs *v1.Workflow_StepOutputs) (*v1.Workflow_StepOutputs, int, int) {
+	reduced, kept, total := reducedStepValues(outputs.GetStepValues())
+	if reduced == nil {
+		reduced = outputs.GetStepValues()
+	}
+
+	return &v1.Workflow_StepOutputs{StepValues: reduced, RunOutputs: outputs.GetRunOutputs()}, kept, total
+}
+
+// reducedStepValues is the selection both spellings share: smallest steps
+// first under the byte budget, at least one kept whatever it costs. A nil map
+// answer means there was nothing to select over (no step carries values), and
+// the caller keeps what it had.
+func reducedStepValues(steps map[string]*v1.Node_Outputs) (map[string]*v1.Node_Outputs, int, int) {
+	total := len(steps)
 
 	type entry struct {
 		name string
@@ -355,7 +382,7 @@ func ReduceTranscript(outputs *v1.Workflow_StepOutputs) (kept, total int) {
 	}
 
 	if len(entries) == 0 {
-		return total, total
+		return nil, total, total
 	}
 
 	slices.SortFunc(entries, func(a, b entry) int {
@@ -380,7 +407,5 @@ func ReduceTranscript(outputs *v1.Workflow_StepOutputs) (kept, total int) {
 		budget -= e.size
 	}
 
-	outputs.StepValues = reduced
-
-	return len(reduced), total
+	return reduced, len(reduced), total
 }

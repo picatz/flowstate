@@ -845,35 +845,53 @@ func shallowGetResponse(response *v1.GetResponse) *v1.GetResponse {
 
 // answers on this surface run.
 func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([]byte, error) {
-	// protojson builds its answer in memory. Preflight the binary representation
-	// before asking it to do so: JSON can expand one byte to six (for example a
-	// control character), hence the conservative divisor. This is a resource
-	// bound, not the answer's shrinking ladder; preserve declared outputs when
-	// possible, then fall through to the same notes the ordinary size checks use.
+	// protojson builds its answer in memory, and proto.Clone below duplicates
+	// its input, so both must be bounded BEFORE they run: a workflow-sized
+	// transcript is exactly the allocation this preflight exists to refuse.
+	// The preflight is only the trigger, though — the semantics stay the
+	// ladder's below. On overflow the response is reduced in proto space by
+	// the ladder's own selector ([flowmcp.ReducedTranscript]: a new arm
+	// sharing the kept steps, the caller's response untouched), the declared
+	// outputs and the failure message take the ladder's own rungs where the
+	// transcript alone was not the weight, and the *reduced* response then
+	// walks the ordinary ladder, whose FitResult measures real JSON against
+	// the real cap. One trimming policy, one place; the note rides every
+	// rung, because a reduced answer must never be a silent one.
+	var preflightNotes []string
 	if proto.Size(response) > maxRunLocalProtoBytes {
-		// A shallow copy is intentional: cloning would duplicate the very
-		// attacker-sized transcript this preflight exists to avoid retaining.
-		// Copied field by field through protoreflect rather than by value —
-		// `*response` copies the message's internal state (vet: a lock) —
-		// and Range/Set shares each field's pointer instead of cloning it,
-		// which is the whole point. Field-list-free, so a schema addition
-		// cannot silently stop being carried.
 		trimmed := shallowGetResponse(response)
-		if trimmed.GetOutputs() != nil {
-			trimmed.Kind = nil
+		if outputs := trimmed.GetOutputs(); outputs != nil {
+			arm, kept, total := flowmcp.ReducedTranscript(outputs)
+			if kept < total {
+				trimmed.Kind = &v1.GetResponse_Outputs{Outputs: arm}
+				preflightNotes = append(preflightNotes, fmt.Sprintf(
+					"the step outputs were reduced to %d of their %d steps before rendering", kept, total))
+			}
 		}
-		if proto.Size(trimmed) <= maxRunLocalProtoBytes {
-			return renderTrimmedRun(trimmed, fmt.Sprintf(
-				"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
-					"Have the workflow carry less, or read the values it needs in a step of its own",
-				flowmcp.MaxResultBytes))
+		// The transcript was not the whole weight: declared outputs and the
+		// failure message are workload-sized too, each taken by its own
+		// ladder rung here in proto space, through values the caller does not
+		// share (the arm above is this preflight's own; the error is cloned
+		// small before capping).
+		if proto.Size(trimmed) > flowmcp.MaxResultBytes {
+			flowmcp.DropDeclaredOutputs(trimmed)
+			preflightNotes = append(preflightNotes, "the declared outputs were dropped before rendering")
 		}
-
-		trimmed.RunOutputs = nil
-		return renderTrimmedRun(trimmed, fmt.Sprintf(
-			"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
-				"Read what the run produced with `flow get`, or have the workflow answer with less",
-			flowmcp.MaxResultBytes))
+		if runError := trimmed.GetError(); runError != nil && proto.Size(trimmed) > flowmcp.MaxResultBytes {
+			cloned, _ := proto.Clone(runError).(*v1.RunResponse_Error)
+			if flowmcp.CapErrorMessage(cloned) {
+				preflightNotes = append(preflightNotes, "this run's failure message was truncated before rendering")
+			}
+			trimmed.Kind = &v1.GetResponse_Error{Error: cloned}
+		}
+		response = trimmed
+	}
+	preflightNote := strings.Join(preflightNotes, "; ")
+	withPreflight := func(note string) string {
+		if preflightNote == "" {
+			return note
+		}
+		return preflightNote + "; " + note
 	}
 
 	run, err := marshalJSON(response, false)
@@ -888,7 +906,7 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 
 	encoded, _, err := flowmcp.FitResult(
 		func() ([]byte, error) {
-			encoded, err := json.Marshal(runLocalResult{Run: run, Logs: logs})
+			encoded, err := json.Marshal(runLocalResult{Run: run, Logs: logs, Note: preflightNote})
 			if err != nil {
 				return nil, fmt.Errorf("rendering the answer: %w", err)
 			}
@@ -900,7 +918,7 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		func() ([]byte, error) {
 			encoded, err := json.Marshal(runLocalResult{
 				Run:  run,
-				Note: fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", flowmcp.MaxResultBytes),
+				Note: withPreflight(fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", flowmcp.MaxResultBytes)),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("rendering the answer: %w", err)
@@ -930,10 +948,10 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 					kept, total)
 			}
 
-			return renderTrimmedRun(trimmed, fmt.Sprintf(
+			return renderTrimmedRun(trimmed, withPreflight(fmt.Sprintf(
 				"%s: the answer exceeded %d bytes. "+
 					"Have the workflow carry less, or read the values it needs in a step of its own",
-				note, flowmcp.MaxResultBytes))
+				note, flowmcp.MaxResultBytes)))
 		},
 
 		// Last, what the workflow declared it answers with. This is the most
@@ -951,10 +969,10 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 			// clearing the arm outright.
 			flowmcp.DropDeclaredOutputs(trimmed)
 
-			return renderTrimmedRun(trimmed, fmt.Sprintf(
+			return renderTrimmedRun(trimmed, withPreflight(fmt.Sprintf(
 				"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
 					"Read what the run produced with `flow get`, or have the workflow answer with less",
-				flowmcp.MaxResultBytes))
+				flowmcp.MaxResultBytes)))
 		},
 
 		// The floor, and the rung that says "possibly a failure message" was not
@@ -974,11 +992,11 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		func() ([]byte, error) {
 			flowmcp.CapErrorMessage(trimmed.GetError())
 
-			return renderTrimmedRun(trimmed, fmt.Sprintf(
+			return renderTrimmedRun(trimmed, withPreflight(fmt.Sprintf(
 				"the declared outputs, step outputs and logs were dropped and this run's failure "+
 					"message truncated: the answer exceeded %d bytes. Read the run in full with "+
 					"`flow get`, or have the workflow answer with less",
-				flowmcp.MaxResultBytes))
+				flowmcp.MaxResultBytes)))
 		},
 	)
 	if err != nil {
