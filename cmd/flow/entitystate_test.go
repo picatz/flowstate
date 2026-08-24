@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -254,4 +255,50 @@ func TestTheGetToolWithholdsCarriedStateOverTheWire(t *testing.T) {
 	require.NotContains(t, whole.String(), carriedLoopSecret)
 	require.Contains(t, whole.String(), entityStateMarkerUnverified,
 		"the state is withheld rather than dropped, so the answer still says the run carries some")
+}
+
+// TestWithholdingCarriedStateCannotInflateABoundedAnswer is Codex's finding on PR #1067.
+//
+// [v1.EntityState] is bounded on purpose — `entityStateMaxBytes`, 256 KiB, in
+// pkg/flowstate/v1/engine/progress.go — because a query answer is its own
+// resource and how many keys a run carries is the workload's choice. The marker
+// is around eighty bytes and a `vars:` entry can be two, so replacing every
+// value with a sentence is a multiplier the peer controls the input to: a
+// message that passed the server's bound arrives at a reader several times over
+// it. What is asserted is the rule this function can check by itself, which
+// preserves the server's bound without naming it: the withheld answer is no
+// larger than the arrived one or than [redactedEntityStateAllowance], whichever
+// is larger.
+//
+// The fixture is a thousand two-byte vars, which is a legal shape the server's
+// bound allows several times over and which this function used to inflate by
+// roughly eight.
+func TestWithholdingCarriedStateCannotInflateABoundedAnswer(t *testing.T) {
+	t.Parallel()
+
+	many := &v1.EntityState{Vars: make(map[string]*v1.Value, 1000)}
+	for i := range 1000 {
+		many.Vars[fmt.Sprintf("v%d", i)] = v1.NewLiteral("ab")
+	}
+
+	arrived := proto.Size(many)
+	response := &v1.GetResponse{
+		Status:      v1.RunResponse_STATUS_RUNNING,
+		EntityState: many,
+	}
+
+	state := redactGetResponse(response, nil, false).GetEntityState()
+
+	require.LessOrEqual(t, proto.Size(state), max(arrived, redactedEntityStateAllowance),
+		"redaction must never hand a reader more bytes than the server's bounded answer held")
+	require.True(t, state.GetTruncated(),
+		"the schema's own spelling for 'the keys are not all here' is the fallback, not silence")
+	require.Empty(t, state.GetVars(),
+		"a truncated answer omits vars entirely rather than reporting a partial map")
+
+	// The ordinary case still gets the marker: the fallback is for the shape a
+	// workload can weaponize, not for every running run.
+	few := redactGetResponse(runningEntityResponse(), nil, false).GetEntityState()
+	require.False(t, few.GetTruncated())
+	require.Contains(t, few.GetVars(), "token")
 }
