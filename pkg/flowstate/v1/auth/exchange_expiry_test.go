@@ -105,10 +105,11 @@ func TestAWSExchangerBoundsSessionExpiration(t *testing.T) {
 			})
 
 			exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-				RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
-				Endpoint: party.url + "/",
-				Duration: duration,
-				Clock:    clock.Now,
+				RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+				Endpoint:     party.url + "/",
+				Duration:     duration,
+				Clock:        clock.Now,
+				EgressPolicy: authtest.EgressPolicy(),
 			})
 			require.NoError(t, err)
 
@@ -177,6 +178,7 @@ func TestGCPExchangerBoundsServiceAccountExpiry(t *testing.T) {
 				ServiceAccountEmail: "flowstate@project.iam.gserviceaccount.com",
 				Lifetime:            lifetime,
 				Clock:               clock.Now,
+				EgressPolicy:        authtest.EgressPolicy(),
 			})
 			require.NoError(t, err)
 
@@ -268,6 +270,7 @@ func TestGCPExchangerLifetimePolicy(t *testing.T) {
 				Audience:            pool,
 				ServiceAccountEmail: test.serviceAccount,
 				Lifetime:            test.lifetime,
+				EgressPolicy:        authtest.EgressPolicy(),
 			})
 
 			if test.wantErr {
@@ -328,7 +331,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now))
+		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 
 		return broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
@@ -376,7 +379,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now))
+		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 
 		_, err = broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")

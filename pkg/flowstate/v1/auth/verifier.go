@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
@@ -66,6 +67,7 @@ const numericDateLimit = 1 << 36 // seconds, roughly the year 4147
 // config holds the tunable behavior of an [OIDCVerifier].
 type config struct {
 	httpClient   *http.Client
+	egress       *netpolicy.Policy
 	clock        func() time.Time
 	skew         time.Duration
 	cacheTTL     time.Duration
@@ -77,17 +79,41 @@ type config struct {
 type Option func(*config)
 
 // WithHTTPClient sets the HTTP client used to fetch issuer metadata and keys.
-// Use it to supply a client with a proxy, custom root certificates, or
-// instrumentation. Per-fetch timeouts are applied through the context, so the
-// client does not need its own.
 //
-// The client is copied and its redirect policy replaced, so that a redirect
-// cannot move a key set fetch onto an unprotected transport. A nil client is
-// ignored.
+// It replaces the egress boundary rather than configuring it: the client owns
+// the transport, so none of what [DefaultEgressPolicy] enforces — address
+// classification at dial time, the TLS floor, the phase timeouts, the body cap,
+// the redirect rules — applies to anything it sends. Combining it with
+// [WithEgressPolicy], or with an egress section in the trust policy, is refused
+// rather than resolved by precedence.
+//
+// Prefer [WithEgressPolicy]: a proxy, custom roots, a longer timeout, and a
+// private issuer are all named [netpolicy] options, and reaching for one of them
+// no longer means turning the rest of the boundary off. A nil client is ignored.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) {
 		if client != nil {
 			c.httpClient = client
+		}
+	}
+}
+
+// WithEgressPolicy sets the egress policy applied to every discovery and key set
+// fetch this verifier makes: where it may connect, over what, and how much it
+// may read. Unset means [DefaultEgressPolicy].
+//
+// This is how a deployment reaches an issuer the default policy denies — an
+// in-cluster Kubernetes API server, a sidecar — without giving up the rest of
+// the boundary:
+//
+//	policy, err := netpolicy.New(netpolicy.WithAllowPrivateNetworks())
+//
+// A nil policy is ignored. The same policy may be shared by any number of
+// verifiers; it is immutable and carries the connection pool.
+func WithEgressPolicy(policy *netpolicy.Policy) Option {
+	return func(c *config) {
+		if policy != nil {
+			c.egress = policy
 		}
 	}
 }
@@ -209,7 +235,25 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 		return nil, err
 	}
 
-	client := transportProtectedClient(cfg.httpClient)
+	// The trust policy's own egress section is the file spelling of
+	// [WithEgressPolicy]; naming both is a contradiction rather than a
+	// precedence question, so it is refused here where both are in hand.
+	filePolicy, err := egressPolicyFromConfig(policy.Egress)
+	if err != nil {
+		return nil, err
+	}
+	if filePolicy != nil && cfg.egress != nil {
+		return nil, fmt.Errorf("%w: WithEgressPolicy and the trust policy's egress section both configure "+
+			"outbound identity HTTP: keep the one the deployment reads", ErrInvalidPolicy)
+	}
+	if cfg.egress == nil {
+		cfg.egress = filePolicy
+	}
+
+	client, err := identityHTTPClient("WithHTTPClient", cfg.httpClient, cfg.egress)
+	if err != nil {
+		return nil, err
+	}
 
 	verifier := &OIDCVerifier{
 		entries:    make(map[string][]TrustedIssuer),

@@ -33,7 +33,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key)
+		broker, err := policy.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 		require.Equal(t, []string{"aws-prod"}, broker.Targets())
 		require.Equal(t, "https://flowstate.example.com", broker.Issuer().URL())
@@ -53,7 +53,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key)
+		broker, err := policy.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 		require.Equal(t, []string{"partner"}, broker.Targets())
 	})
@@ -117,7 +117,7 @@ targets:
 	key, err := auth.GenerateSigningKey("k", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key)
+	broker, err := policy.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"aws-prod", "gcp-analytics", "internal", "partner"}, broker.Targets())
@@ -301,7 +301,7 @@ federation:
 	key, err := auth.GenerateSigningKey("k", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Federation.Broker(key)
+	broker, err := policy.Federation.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 	require.Equal(t, []string{"aws-prod"}, broker.Targets())
 
@@ -393,6 +393,7 @@ func TestFederationRoundTrip(t *testing.T) {
 				}},
 			},
 			auth.WithClock(clock.Now),
+			auth.WithEgressPolicy(authtest.EgressPolicy()),
 		)
 		require.NoError(t, err)
 
@@ -434,7 +435,7 @@ targets:
 	key, err := auth.GenerateSigningKey("2026-07", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now))
+	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	mu.Lock()
@@ -481,7 +482,7 @@ targets:
 `))
 		require.NoError(t, err)
 
-		permissiveBroker, err := permissive.Broker(key, auth.WithFederationClock(clock.Now))
+		permissiveBroker, err := permissive.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 
 		mu.Lock()

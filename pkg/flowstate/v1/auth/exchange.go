@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // Named values a [Credential] can carry. Which ones are present depends on the
@@ -560,11 +563,17 @@ type exchangeClient struct {
 // newExchangeClient returns a client for talking to a relying party. It follows
 // no redirect at all, which is not the same rule the key fetcher needs and is the
 // reason these are two clients.
-func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClient {
+func newExchangeClient(field string, client *http.Client, policy *netpolicy.Policy, timeout time.Duration) (*exchangeClient, error) {
 	if timeout <= 0 {
 		timeout = DefaultExchangeTimeout
 	}
-	return &exchangeClient{client: unredirectedClient(client), timeout: timeout}
+
+	resolved, err := identityHTTPClient(field, client, policy)
+	if err != nil {
+		return nil, err
+	}
+
+	return &exchangeClient{client: unredirectedClient(resolved), timeout: timeout}, nil
 }
 
 // unredirectedClient returns a client that refuses to follow any redirect,
@@ -573,7 +582,7 @@ func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClie
 // An exchange carries the assertion in the request *body*, and that is the whole
 // difference from fetching an issuer's keys, which shares almost all of this code.
 // A key set is a GET carrying nothing, so following a redirect anywhere is
-// ordinary and [transportProtectedClient]'s scheme check is the right rule for it.
+// ordinary and the egress policy's per-hop check is the right rule for it.
 //
 // A body is not covered by anything. net/http drops the Authorization header when
 // a redirect crosses to another host, and has no equivalent notion for a body —
@@ -588,6 +597,11 @@ func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClie
 // 302 and 303 on a POST into a bodyless GET — so an exchange meeting one of those
 // was already failing. What was reachable was exactly the pair that leaks, and
 // nothing that works today is being taken away.
+// The copy keeps the transport, so an egress policy's address checks, TLS floor
+// and body cap all still apply: what is replaced is the redirect decision, which
+// is the only part of the boundary this path wants to be stricter about.
+// [netpolicy.Policy.Client] hands out a distinct value for exactly this, so
+// replacing CheckRedirect here cannot affect another holder of the same policy.
 func unredirectedClient(client *http.Client) *http.Client {
 	unredirected := &http.Client{}
 	if client != nil {
@@ -664,12 +678,23 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 	}
 	defer response.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxExchangeResponseBytes+1))
+	// Read under the egress policy's own reader rather than a second spelling of
+	// it here. The cap the policy installs on the body applies to *this* read
+	// too, and to the error path in particular: this reads the body of a non-200
+	// answer as well, which is where a bound configured through a library option
+	// classically goes missing (see plugin/transport.go), and where a hostile
+	// relying party would put a large one.
+	raw, err := netpolicy.ReadLimited(response.Body, maxExchangeResponseBytes)
 	if err != nil {
+		// The limit named is the one that actually fired, which is not always
+		// this package's: an operator's policy may cap bodies lower, and a
+		// refusal quoting the wrong number sends them looking for a setting
+		// they did not write.
+		var tooLarge *netpolicy.BodyTooLargeError
+		if errors.As(err, &tooLarge) {
+			return nil, fmt.Errorf("%w: %s returned more than %d bytes", ErrExchangeFailed, provider, tooLarge.Limit)
+		}
 		return nil, fmt.Errorf("%w: %w: reading %s response: %v", ErrExchangeFailed, ErrExchangeUnavailable, provider, err)
-	}
-	if len(raw) > maxExchangeResponseBytes {
-		return nil, fmt.Errorf("%w: %s returned more than %d bytes", ErrExchangeFailed, provider, maxExchangeResponseBytes)
 	}
 
 	if response.StatusCode != http.StatusOK {

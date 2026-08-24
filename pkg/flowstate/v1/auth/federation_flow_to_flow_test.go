@@ -87,6 +87,7 @@ func TestFlowstateToFlowstateFederation(t *testing.T) {
 				}},
 			},
 			auth.WithClock(clock.Now),
+			auth.WithEgressPolicy(authtest.EgressPolicy()),
 		)
 		require.NoError(t, err)
 
@@ -124,7 +125,7 @@ targets:
 	key, err := auth.GenerateSigningKey("2026-08", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now))
+	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	mu.Lock()
@@ -191,7 +192,7 @@ targets:
 `))
 		require.NoError(t, err)
 
-		misdirected, err := elsewhere.Broker(key, auth.WithFederationClock(clock.Now))
+		misdirected, err := elsewhere.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 
 		mu.Lock()

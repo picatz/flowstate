@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // FederationPolicy is the outbound half of federation as data: the identity
@@ -105,6 +107,20 @@ type FederationPolicy struct {
 	// Deny are CEL rules refusing credential assumption. A request matching any of
 	// them is refused, whatever Allow says.
 	Deny []string `json:"deny,omitempty" yaml:"deny,omitempty"`
+
+	// Egress governs the outbound HTTP every exchange this policy performs
+	// makes, in netpolicy's own file form and with the same meaning
+	// [Policy.Egress] has: absent means [DefaultEgressPolicy], and the section
+	// only ever loosens.
+	//
+	//	federation:
+	//	  egress:
+	//	    allow: ['host == "sts.amazonaws.com"']
+	//
+	// A relying party is an endpoint an operator wrote down, reached carrying an
+	// assertion, so narrowing where an exchange may go is worth having a place
+	// to write.
+	Egress *netpolicy.EgressConfig `json:"egress,omitempty" yaml:"egress,omitempty"`
 
 	// Targets are the systems workloads may obtain credentials for.
 	Targets []FederationTarget `json:"targets,omitempty" yaml:"targets,omitempty"`
@@ -279,6 +295,7 @@ func (p FederationPolicy) Validate() error {
 // federationConfig collects the options for building from a policy.
 type federationConfig struct {
 	client *http.Client
+	egress *netpolicy.Policy
 	clock  func() time.Time
 
 	// verifyOnly are extra public keys to publish beside the signing key. They
@@ -286,6 +303,32 @@ type federationConfig struct {
 	// because the issuer is the thing that publishes a key set and this type
 	// only has to carry them to it.
 	verifyOnly []IssuerOption
+}
+
+// egressPolicy resolves the egress policy every exchanger this policy builds
+// will use: the one a caller named, else the one the policy file's own egress
+// section describes, else nil for [DefaultEgressPolicy].
+//
+// Naming both is refused rather than resolved by precedence, for the reason
+// [identityHTTPClient] refuses its own pair: a deployment that has written the
+// answer down twice has not said which one it means, and the one that loses
+// would be silently unenforced.
+func (p FederationPolicy) egressPolicy(cfg federationConfig) (*netpolicy.Policy, error) {
+	filePolicy, err := egressPolicyFromConfig(p.Egress)
+	if err != nil {
+		return nil, err
+	}
+
+	if filePolicy != nil && cfg.egress != nil {
+		return nil, fmt.Errorf("%w: WithFederationEgressPolicy and the federation policy's egress section "+
+			"both configure outbound identity HTTP: keep the one the deployment reads", ErrInvalidPolicy)
+	}
+
+	if cfg.egress != nil {
+		return cfg.egress, nil
+	}
+
+	return filePolicy, nil
 }
 
 // A FederationOption configures how a [FederationPolicy] is built into a [Broker].
@@ -297,6 +340,21 @@ func WithFederationHTTPClient(client *http.Client) FederationOption {
 	return func(c *federationConfig) {
 		if client != nil {
 			c.client = client
+		}
+	}
+}
+
+// WithFederationEgressPolicy sets the egress policy applied to every relying
+// party this broker reaches: where it may connect, over what, and how much it
+// may read. Unset means [DefaultEgressPolicy].
+//
+// It is [WithEgressPolicy] for the outbound direction, and the same rule holds:
+// prefer it to [WithFederationHTTPClient], which replaces the boundary instead
+// of configuring it, and which cannot be combined with this.
+func WithFederationEgressPolicy(policy *netpolicy.Policy) FederationOption {
+	return func(c *federationConfig) {
+		if policy != nil {
+			c.egress = policy
 		}
 	}
 }
@@ -395,6 +453,15 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger, error) {
 	exchangers := make(map[string]Exchanger, len(p.Targets))
 
+	// One policy for every target, built once: relying parties are reached from
+	// one process under one deployment's egress rules, and they share the
+	// connection pool that comes with it. A nil policy here means "the default",
+	// which each exchanger resolves for itself.
+	egress, err := p.egressPolicy(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, target := range p.Targets {
 		var (
 			exchanger Exchanger
@@ -413,6 +480,7 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				RequestedTokenType:    target.TokenExchange.RequestedTokenType,
 				MaxCredentialLifetime: target.TokenExchange.MaxCredentialLifetime,
 				HTTPClient:            cfg.client,
+				EgressPolicy:          egress,
 				Clock:                 cfg.clock,
 			})
 		case target.AWS != nil:
@@ -426,6 +494,7 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				SessionPolicy:     target.AWS.SessionPolicy,
 				SessionPolicyARNs: target.AWS.SessionPolicyARNs,
 				HTTPClient:        cfg.client,
+				EgressPolicy:      egress,
 				Clock:             cfg.clock,
 			})
 		case target.GCP != nil:
@@ -439,6 +508,7 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				Endpoint:            target.GCP.Endpoint,
 				IAMEndpoint:         target.GCP.IAMEndpoint,
 				HTTPClient:          cfg.client,
+				EgressPolicy:        egress,
 				Clock:               cfg.clock,
 			})
 		case target.ClientCredentials != nil:
@@ -450,6 +520,7 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				Scopes:                target.ClientCredentials.Scopes,
 				MaxCredentialLifetime: target.ClientCredentials.MaxCredentialLifetime,
 				HTTPClient:            cfg.client,
+				EgressPolicy:          egress,
 				Clock:                 cfg.clock,
 			})
 		case target.Assertion != nil:

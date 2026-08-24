@@ -53,7 +53,7 @@ func verifiedTokenInfo(t *testing.T, claims map[string]any) (*mcp.CallToolReques
 			Issuer:    issuer.URL(),
 			Audiences: []string{principalTestResource},
 		}},
-	})
+	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	token := issuer.MintToken(claims,

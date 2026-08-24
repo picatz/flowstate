@@ -145,7 +145,7 @@ func TestWrongIssuerTokenHasExactlyOneDefect(t *testing.T) {
 		Name:      "trusted",
 		Issuer:    trusted.URL(),
 		Audiences: []string{"flowstate"},
-	}}}, auth.WithClock(clock.Now))
+	}}}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	token, foreign := authtest.WrongIssuerToken(
@@ -207,7 +207,7 @@ func TestWrongIssuerTokenForcesItsOwnIssuerClaim(t *testing.T) {
 		Name:      "trusted",
 		Issuer:    trusted.URL(),
 		Audiences: []string{"flowstate"},
-	}}}, auth.WithClock(clock.Now))
+	}}}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	// Claims copied from an existing token, "iss" included — the shape a

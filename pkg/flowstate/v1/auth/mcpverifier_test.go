@@ -55,7 +55,7 @@ func mcpTestVerifier(t *testing.T) (*authtest.Issuer, auth.Verifier) {
 			// surface knows which one it is.
 			Audiences: []string{mcpResource, mcpOtherResource},
 		}},
-	})
+	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	return issuer, verifier
@@ -377,7 +377,7 @@ func TestMCPTokenVerifierIsDeterministicOnAClock(t *testing.T) {
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{{Name: "idp", Issuer: issuer.URL(), Audiences: []string{mcpResource}}},
-	}, auth.WithClock(clock.Now))
+	}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	token, foreign := authtest.WrongIssuerToken(nil,

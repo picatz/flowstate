@@ -94,7 +94,7 @@ func newMCPServeFixtureWith(
 		Audiences: []string{mcpServeTestResource, mcpServeTestOtherResource},
 	}}}
 
-	verifier, err := auth.NewOIDCVerifier(*policy)
+	verifier, err := auth.NewOIDCVerifier(*policy, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	// Through the command's own resolution rather than around it: the scope
@@ -737,7 +737,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{bareOrigin},
 	}}}
 
-	verifier, err := auth.NewOIDCVerifier(*policy)
+	verifier, err := auth.NewOIDCVerifier(*policy, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	protectedResource, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{

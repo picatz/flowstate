@@ -137,10 +137,11 @@ func TestOutboundValuesNeverLogSecrets(t *testing.T) {
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		Name:     "partner",
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		Name:         "partner",
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 	require.Equal(t, "partner", exchanger.Name())

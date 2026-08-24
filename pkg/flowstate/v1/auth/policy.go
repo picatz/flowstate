@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
 )
 
@@ -51,6 +53,29 @@ type Policy struct {
 	//
 	// Compile it with [SecretAccessPolicy.Compile].
 	Secrets *SecretAccessPolicy `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+
+	// Egress governs the outbound HTTP this deployment's identity fetches make:
+	// discovery, key sets, and token exchange. Optional, and absent means
+	// [DefaultEgressPolicy] — https to public addresses only, bounded in every
+	// dimension [netpolicy] bounds.
+	//
+	// It is netpolicy's own file form ([netpolicy.EgressConfig]), the same
+	// section `flow worker --egress-policy` reads for the http task, so an
+	// operator writes one language for both directions of egress rather than
+	// two. It is a separate section from that file, not the same one, because
+	// these are different trust domains: what a workflow may reach is not what
+	// this process may fetch its callers' signing keys from.
+	//
+	// The section only ever loosens. It starts from the same safe default, with
+	// schemes narrowed to https unless the section names schemes itself:
+	//
+	//	egress:
+	//	  allow_private_networks: true
+	//
+	// is how an in-cluster issuer becomes reachable while every other bound
+	// stays in force. Every CEL rule in it is compiled by [Policy.Validate], so
+	// a malformed one refuses start-up rather than the first fetch.
+	Egress *netpolicy.EgressConfig `json:"egress,omitempty" yaml:"egress,omitempty"`
 
 	// Tenancy maps Flowstate namespaces onto the Temporal namespaces that isolate
 	// their history and visibility. Optional: a single-team deployment needs none
@@ -556,6 +581,13 @@ func (p Policy) Validate() error {
 		if err := p.Tenancy.Validate(); err != nil {
 			return fmt.Errorf("tenancy: %w", err)
 		}
+	}
+
+	// Built rather than inspected: building is what compiles and type-checks the
+	// CEL rules and parses the CIDRs, which is the whole reason this is checked
+	// at load rather than at the first fetch.
+	if _, err := egressPolicyFromConfig(p.Egress); err != nil {
+		return err
 	}
 
 	return nil

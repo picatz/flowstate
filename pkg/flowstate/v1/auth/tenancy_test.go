@@ -202,7 +202,7 @@ func TestPolicyTenancyIsAllOrNothing(t *testing.T) {
 
 			require.ErrorIs(t, err, auth.ErrInvalidPolicy)
 
-			verifier, err := auth.NewOIDCVerifier(test.policy)
+			verifier, err := auth.NewOIDCVerifier(test.policy, auth.WithEgressPolicy(authtest.EgressPolicy()))
 			require.Error(t, err)
 			require.Nil(t, verifier)
 		})

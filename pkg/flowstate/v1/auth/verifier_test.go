@@ -28,6 +28,18 @@ var referenceTime = time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
 func newVerifier(t *testing.T, policy auth.Policy, opts ...auth.Option) *auth.OIDCVerifier {
 	t.Helper()
 
+	verifier, err := auth.NewOIDCVerifier(policy, append([]auth.Option{auth.WithEgressPolicy(authtest.EgressPolicy())}, opts...)...)
+	require.NoError(t, err)
+
+	return verifier
+}
+
+// newVerifierWithClient builds a verifier whose caller supplies the HTTP client,
+// which replaces the egress boundary rather than loosening it — so unlike
+// [newVerifier] it names no egress policy, and combining the two is refused.
+func newVerifierWithClient(t *testing.T, policy auth.Policy, opts ...auth.Option) *auth.OIDCVerifier {
+	t.Helper()
+
 	verifier, err := auth.NewOIDCVerifier(policy, opts...)
 	require.NoError(t, err)
 
@@ -1138,7 +1150,7 @@ func TestNewOIDCVerifierRejectsBadConfiguration(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			verifier, err := auth.NewOIDCVerifier(test.policy, test.opts...)
+			verifier, err := auth.NewOIDCVerifier(test.policy, append([]auth.Option{auth.WithEgressPolicy(authtest.EgressPolicy())}, test.opts...)...)
 			require.Error(t, err)
 			require.ErrorIs(t, err, auth.ErrInvalidPolicy)
 			require.Nil(t, verifier)

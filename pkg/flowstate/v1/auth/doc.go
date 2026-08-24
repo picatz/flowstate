@@ -109,6 +109,24 @@
 //		Role: "runner",
 //	}
 //
+// That last one is inside the cluster, and outbound identity HTTP is bounded by
+// an egress policy whose default permits public addresses only — so a
+// ClusterIP issuer is refused until the deployment says it wants to reach one:
+//
+//	verifier, err := auth.NewOIDCVerifier(policy, auth.WithEgressPolicy(
+//		must(netpolicy.New(netpolicy.WithAllowPrivateNetworks()))))
+//
+// or, in the policy file, the same thing as configuration:
+//
+//	egress:
+//	  allow_private_networks: true
+//
+// That is a loosening rather than an escape: the TLS floor, the phase timeouts,
+// the body cap, the redirect rules and the denial of every other internal range
+// stay in force. See [DefaultEgressPolicy] for what the default is and why an
+// issuer-supplied jwks_uri is the reason it is not simply the issuer URL that
+// gets checked.
+//
 // The claim rules are the point. An issuer with no rules trusts every workload
 // that platform will ever mint a token for, which for a public CI provider means
 // everyone. Rules match exactly, never by prefix or pattern, so a policy cannot

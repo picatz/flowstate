@@ -114,7 +114,7 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 		}},
 	}
 
-	verifier, err := auth.NewOIDCVerifier(policy, auth.WithClock(clock.Now))
+	verifier, err := auth.NewOIDCVerifier(policy, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	t.Run("admits the workload the rules name", func(t *testing.T) {
@@ -173,7 +173,7 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 		token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
 
 		aged := authtest.NewClock(clock.Now().Add(11 * time.Minute))
-		agedVerifier, err := auth.NewOIDCVerifier(policy, auth.WithClock(aged.Now))
+		agedVerifier, err := auth.NewOIDCVerifier(policy, auth.WithClock(aged.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 
 		_, err = agedVerifier.Verify(context.Background(), token)
@@ -209,7 +209,7 @@ func TestCIIssuerWithPathDiscovers(t *testing.T) {
 			Audiences: []string{"flowstate"},
 			Namespace: "platform",
 		}},
-	}, auth.WithClock(clock.Now))
+	}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
@@ -245,7 +245,7 @@ func TestCITenantFromClaim(t *testing.T) {
 				Audiences:      []string{"flowstate"},
 				NamespaceClaim: claim,
 			}},
-		}, auth.WithClock(clock.Now))
+		}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 
 		return verifier
@@ -321,7 +321,7 @@ func TestCITenantFromNamespaceMap(t *testing.T) {
 				"acme-org/service-a-canary": "team-a",
 			},
 		}},
-	}, auth.WithClock(clock.Now))
+	}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	verify := func(t *testing.T, owner, repo string) (auth.Principal, error) {
@@ -474,7 +474,7 @@ func TestNamespaceMapValidation(t *testing.T) {
 			issuer := base()
 			test.mutate(&issuer)
 
-			_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{issuer}})
+			_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{issuer}}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), test.wantErr)
 		})
@@ -572,7 +572,7 @@ issuers:
 //
 // Before the fix, both encoding/json's `omitempty` and goccy/go-yaml's
 // `omitempty` decided whether to omit the field by reflecting on len(m) --
-// which a non-nil empty map satisfies exactly as a nil map does -- before
+// which a non-nil empty map satisfies exactly as a nil map does — before
 // ever calling [auth.NamespaceMap]'s MarshalJSON/MarshalYAML method. So the
 // field vanished from the wire exactly as if it had never been set, and
 // re-parsing decoded it back as nil (absent, unrestricted): the marshal
@@ -657,7 +657,7 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 			Audiences: []string{"flowstate"},
 			Namespace: "platform",
 		}},
-	}, auth.WithClock(clock.Now))
+	}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	claims := ciClaims("octo-org", "octo-repo", "main")

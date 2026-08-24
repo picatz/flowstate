@@ -70,9 +70,10 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -95,6 +96,7 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 		ClientID:     "leak-test-client",
 		ClientSecret: "SUPERSECRET-CLIENT-SECRET",
 		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 

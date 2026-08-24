@@ -141,6 +141,7 @@ func TestTokenExchanger(t *testing.T) {
 		TargetAudience: "https://api.partner.example.com",
 		Scopes:         []string{"read", "write"},
 		Clock:          clock.Now,
+		EgressPolicy:   authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -240,9 +241,10 @@ func TestTokenExchangerRejects(t *testing.T) {
 			})
 
 			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-				TokenURL: party.url + "/token",
-				Audience: "https://as.example.com",
-				Clock:    clock.Now,
+				TokenURL:     party.url + "/token",
+				Audience:     "https://as.example.com",
+				Clock:        clock.Now,
+				EgressPolicy: authtest.EgressPolicy(),
 			})
 			require.NoError(t, err)
 
@@ -268,9 +270,10 @@ func TestTokenExchangerRejects(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-			TokenURL: party.url + "/token",
-			Audience: "https://as.example.com",
-			Clock:    clock.Now,
+			TokenURL:     party.url + "/token",
+			Audience:     "https://as.example.com",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -324,6 +327,7 @@ func TestTokenExchangeStrictProfileVectors(t *testing.T) {
 			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
 				TokenURL: party.url + "/token", Audience: "https://as.example.com",
 				Scopes: []string{"read"}, Clock: clock.Now,
+				EgressPolicy: authtest.EgressPolicy(),
 			})
 			require.NoError(t, err)
 			credential, err := exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
@@ -340,6 +344,7 @@ func TestTokenExchangeStrictProfileVectors(t *testing.T) {
 		_, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
 			TokenURL: "https://as.example.com/token", Audience: "https://as.example.com",
 			RequestedTokenType: tokenType,
+			EgressPolicy:       authtest.EgressPolicy(),
 		})
 		require.ErrorIs(t, err, auth.ErrInvalidPolicy)
 	}
@@ -364,6 +369,7 @@ func TestTokenExchangeStrictProfileAcceptsConformingServers(t *testing.T) {
 		cfg.TokenURL = party.url + "/token"
 		cfg.Audience = "https://as.example.com"
 		cfg.Clock = clock.Now
+		cfg.EgressPolicy = authtest.EgressPolicy()
 
 		exchanger, err := auth.NewTokenExchanger(cfg)
 		require.NoError(t, err)
@@ -467,6 +473,7 @@ func TestTokenExchangeScopeOmissionIsNotAnEmptyGrant(t *testing.T) {
 		exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
 			TokenURL: party.url + "/token", Audience: "https://as.example.com",
 			Scopes: scopes, Clock: clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -535,10 +542,11 @@ func TestClientCredentialsExchanger(t *testing.T) {
 
 	t.Run("authenticated by the assertion", func(t *testing.T) {
 		exchanger, err := auth.NewClientCredentialsExchanger(auth.ClientCredentialsConfig{
-			TokenURL: party.url + "/token",
-			ClientID: "flowstate-prod",
-			Scopes:   []string{"api.read"},
-			Clock:    clock.Now,
+			TokenURL:     party.url + "/token",
+			ClientID:     "flowstate-prod",
+			Scopes:       []string{"api.read"},
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -570,6 +578,7 @@ func TestClientCredentialsExchanger(t *testing.T) {
 			ClientID:     "flowstate-prod",
 			ClientSecret: "hunter2",
 			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -615,9 +624,10 @@ func TestAWSExchanger(t *testing.T) {
 	})
 
 	exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-		RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
-		Endpoint: party.url + "/",
-		Clock:    clock.Now,
+		RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+		Endpoint:     party.url + "/",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -681,9 +691,10 @@ func TestAWSExchangerRejects(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-			RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
-			Endpoint: party.url + "/",
-			Clock:    clock.Now,
+			RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+			Endpoint:     party.url + "/",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -701,9 +712,10 @@ func TestAWSExchangerRejects(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-			RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
-			Endpoint: party.url + "/",
-			Clock:    clock.Now,
+			RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+			Endpoint:     party.url + "/",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -745,8 +757,9 @@ func TestAWSExchangerRejects(t *testing.T) {
 
 	t.Run("a region selects the regional endpoint", func(t *testing.T) {
 		exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-			RoleARN: "arn:aws:iam::123456789012:role/flowstate",
-			Region:  "us-east-1",
+			RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+			Region:       "us-east-1",
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 		require.NotNil(t, exchanger)
@@ -772,9 +785,10 @@ func TestGCPExchanger(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewGCPExchanger(auth.GCPConfig{
-			Audience: pool,
-			Endpoint: party.url + "/v1/token",
-			Clock:    clock.Now,
+			Audience:     pool,
+			Endpoint:     party.url + "/v1/token",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -825,6 +839,7 @@ func TestGCPExchanger(t *testing.T) {
 			ServiceAccountEmail: "flowstate@project.iam.gserviceaccount.com",
 			Lifetime:            30 * time.Minute,
 			Clock:               clock.Now,
+			EgressPolicy:        authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -856,6 +871,7 @@ func TestGCPExchanger(t *testing.T) {
 			config: auth.GCPConfig{
 				Audience:            pool,
 				ServiceAccountEmail: "flowstate",
+				EgressPolicy:        authtest.EgressPolicy(),
 			},
 		},
 	}
@@ -897,6 +913,7 @@ func TestExchangerRejectsUnprotectedEndpoints(t *testing.T) {
 		Audience:       "a",
 		TargetAudience: "https://api.partner.example.com",
 		Resource:       "https://resource.example.com/api",
+		EgressPolicy:   authtest.EgressPolicy(),
 	})
 	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
 }
@@ -918,9 +935,10 @@ func TestCredentialNeverRevealsItself(t *testing.T) {
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 

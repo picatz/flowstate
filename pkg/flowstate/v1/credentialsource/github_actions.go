@@ -221,9 +221,9 @@ func (s *githubActionsSource) mint(ctx context.Context) (Token, error) {
 // (net/http's shouldCopyHeaderOnRedirect), so the naive disclosure is handled —
 // but that comparison is by hostname and not by scheme, so `https://host/a` to
 // `http://host/b` keeps the header and sends it in the clear. This mirrors
-// auth's unredirectedClient rather than its transportProtectedClient: a token
-// endpoint does not redirect, so refusing outright is both stricter and simpler
-// than validating each hop.
+// auth's unredirectedClient rather than the per-hop check its egress policy
+// applies to a key set fetch: a token endpoint does not redirect, so refusing
+// outright is both stricter and simpler than validating each hop.
 //
 // Copying preserves a caller's transport, timeout, cookie jar and
 // instrumentation without mutating a client it may also use elsewhere.
