@@ -164,7 +164,66 @@ func boundPrompt(text string) (string, bool) {
 // Exported so a caller assembling a specification by hand can ask the question
 // the submit boundary asks rather than discovering the refusal at submit.
 func CheckWaitPromptsAreAskable(wf *Workflow) error {
-	return checkNodePrompts(wf.GetSteps(), sensitiveInputNames(wf), 0)
+	problems := WaitPromptProblems(wf, DescendCalls)
+	if len(problems) == 0 {
+		return nil
+	}
+
+	// The first, so the submit boundary refuses with one sentence about one step.
+	// Every problem is reported to a caller that positions them; see
+	// [WaitPromptProblems].
+	return problems[0].Err
+}
+
+// WaitPromptProblem is one gate prompt this rule refuses, and the step it was
+// written in.
+type WaitPromptProblem struct {
+	// StepID is the id of the step whose `prompt:` is refused, which is what a
+	// surface holding positions resolves a line and a column from.
+	//
+	// Empty only where the refusal is not about a particular prompt at all - the
+	// depth bound, which is refused before the walk can say what is down there.
+	StepID string
+
+	// Err is the refusal, worded once so the sentence an author reads in their
+	// editor and the sentence a submitted specification is refused with are the
+	// same sentence.
+	Err error
+}
+
+// CallDescent says whether a walk follows an inlined `call:`.
+//
+// Named rather than a bare bool because the two callers want opposite answers
+// for reasons neither would recover from reading `false` at a call site. The
+// submit boundary descends: by then the callee is inlined into the specification
+// being run and there is no separate file left to have been validated. `flow
+// validate` does not: a callee is a different workflow with its own declared
+// inputs, validated in its own right, and `inputs.` inside it names the callee's
+// arguments rather than the caller's.
+type CallDescent bool
+
+const (
+	// DescendCalls follows an inlined callee, checking its prompts against its
+	// own declared inputs.
+	DescendCalls CallDescent = true
+
+	// SkipCalls leaves a callee to its own validation.
+	SkipCalls CallDescent = false
+)
+
+// WaitPromptProblems reports every gate prompt this rule refuses, with the names
+// the *grammar* bound around each one resolved.
+//
+// A list rather than the first refusal, because `flowfile` positions every
+// diagnostic a file earns. It used to get that by asking
+// [CheckWaitPromptsAreAskable] about one rebuilt single-step workflow at a time,
+// and a step in isolation is exactly what cannot see the bindings written around
+// it - which is the hole this walk closes (#976).
+func WaitPromptProblems(wf *Workflow, calls CallDescent) []WaitPromptProblem {
+	walk := &promptWalk{calls: calls}
+	walk.nodes(wf.GetSteps(), sensitiveInputNames(wf), nil, 0, "")
+
+	return walk.problems
 }
 
 // SensitiveInputNames is the set of a workflow's inputs declared `sensitive:`.
@@ -194,147 +253,325 @@ func sensitiveInputNames(wf *Workflow) map[string]bool {
 	return names
 }
 
-// checkNodePrompts walks every node that can hold a wait, and every node that
-// can hold one inside it.
+// promptReach is what one value reaches: which of the workflow's inputs it names,
+// and whether it reaches the `inputs` root in some way this walk cannot name.
 //
-// A callee is descended into with *its own* declared inputs, not the caller's.
-// A call is inlined in the caller's specification, so a submission carries the
-// callee's prompts too - but `inputs.` inside a callee names the callee's
-// arguments, so checking those references against the caller's declarations
-// would ask the wrong file's question and get the wrong answer in both
-// directions.
-func checkNodePrompts(nodes []*Node, sensitive map[string]bool, depth int) error {
+// The unit the bindings map carries, which is what makes a use site one lookup
+// rather than a traversal: a binding is resolved where the *engine* evaluates it,
+// so by the time a prompt reads the name, the answer for that name is already the
+// whole answer. That is #953's one-level completeness argument, restated for a
+// walk that now crosses several scopes rather than one - see [promptWalk.nodes].
+type promptReach struct {
+	// named are the input keys the value reaches by a name this walk could read.
+	named map[string]bool
+
+	// opaque is set where the value reaches `inputs` in a way that names no key -
+	// `inputs[whicheverKey]`, or `inputs` passed whole to a function - which
+	// [promptWalk.check] answers as a refusal rather than as silence.
+	opaque bool
+}
+
+// merge folds another reach into this one, which is what a name bound from two
+// places (a loop's `initial:` and its `update:`) needs.
+func (r promptReach) merge(other promptReach) promptReach {
+	if len(other.named) > 0 && r.named == nil {
+		r.named = make(map[string]bool, len(other.named))
+	}
+	maps.Copy(r.named, other.named)
+	r.opaque = r.opaque || other.opaque
+
+	return r
+}
+
+// resolveReach reports what a value reaches, following every bare name it reads
+// into whatever the grammar bound that name to.
+//
+// Free, in the CEL sense: [collectFreeIdentifiers] binds a comprehension's own
+// iteration and accumulator variables, so `list.map(x, x)` does not send this
+// walk looking up `x` among the bindings and finding an unrelated one of the same
+// name. That is the same rule `flow fix` had to learn twice about the names the
+// grammar binds.
+//
+// A name that is bound to nothing here is left alone, which is what keeps a step
+// id, `now`, and a wait's own shaping names from being looked up as though they
+// were bindings: this walk knows what it bound and claims nothing about the rest.
+func resolveReach(value *Value, bindings map[string]promptReach) promptReach {
+	named, opaque := promptInputReach(value)
+	reach := promptReach{named: named, opaque: opaque}
+
+	if len(bindings) == 0 {
+		return reach
+	}
+
+	for name := range promptFreeIdentifiers(value) {
+		if bound, ok := bindings[name]; ok {
+			reach = reach.merge(bound)
+		}
+	}
+
+	return reach
+}
+
+// bind returns bindings with one more name in them, leaving the caller's map
+// alone - an inner scope must not leak a binding back out to its siblings.
+func bind(bindings map[string]promptReach, name string, reach promptReach) map[string]promptReach {
+	if name == "" {
+		return bindings
+	}
+
+	inner := make(map[string]promptReach, len(bindings)+1)
+	maps.Copy(inner, bindings)
+	// Assigned rather than merged, so an inner binding shadows an outer one of the
+	// same name the way the engine's scope does. `flow validate` refuses that
+	// collision outright, but a specification built in Go never met the validator,
+	// and answering it by unioning the two would report a reach the run cannot have.
+	inner[name] = reach
+
+	return inner
+}
+
+// unbind returns bindings without one name in them, leaving the caller's map
+// alone for [bind]'s reason.
+func unbind(bindings map[string]promptReach, name string) map[string]promptReach {
+	if _, bound := bindings[name]; !bound {
+		return bindings
+	}
+
+	inner := make(map[string]promptReach, len(bindings)-1)
+	maps.Copy(inner, bindings)
+	delete(inner, name)
+
+	return inner
+}
+
+// promptWalk walks every node that can hold a wait, and every node that can hold
+// one inside it, carrying what the grammar bound on the way down.
+type promptWalk struct {
+	calls    CallDescent
+	problems []WaitPromptProblem
+}
+
+// nodes walks a body of steps in the scope bindings describes.
+//
+// # What the grammar binds, and where
+//
+// The bindings are the four bare names the language introduces around a step,
+// taken from where the *engine* evaluates each one rather than from where it is
+// written - CLAUDE.md's rule, and the one `flow fix` had to learn twice:
+//
+//   - A step's own `vars:` are bound for that step's inputs and its body, by
+//     [EvalStepVars] on the local driver and the scope swap in engine/execute.go
+//     on the durable one. They are resolved against the scope *without* their
+//     siblings, which both drivers do and which is why one lookup is the whole
+//     answer for one of them.
+//   - A `for_each` binds [IteratorName] - the `as:`, or `item` when none is
+//     written - for the body only, to an element of `items:`. The reach of an
+//     element is the reach of the list, so the binding carries the reach of the
+//     `items:` expression, resolved in the scope the loop node sits in.
+//   - A `loop:` binds its `state:` bare for the body, `until:` and `update:`, to
+//     `initial:` on the first iteration and to whatever `update:` computed on
+//     every one after.
+//   - `now` is bound inside a wait, to a clock reading, which reaches no input -
+//     so a wait's prompt is checked with that name *removed* from the scope
+//     rather than merely not added to it. [evalWaitExpr] overlays it onto the
+//     activation last, so it wins over anything an enclosing loop or `vars:`
+//     block bound under that spelling, and following the enclosing binding would
+//     report a reach the run cannot have. `flow validate` refuses the collision
+//     outright, but a specification built in Go never met the validator, which is
+//     the whole reason this check exists separately from it.
+//
+// A step's `if:` is deliberately not among them, and the omission is the reason
+// to say so: both drivers evaluate a condition *before* installing the step's own
+// `vars:`, so the vars are not in scope there. Nothing in this walk reads an
+// `if:`, so the distinction costs nothing today and is what anyone extending it
+// has to know first.
+//
+// A callee is descended into with *its own* declared inputs and with no bindings
+// at all, not the caller's. A call is inlined in the caller's specification, so a
+// submission carries the callee's prompts too - but `inputs.` inside a callee
+// names the callee's arguments, and no bare name the caller bound is in scope
+// across that boundary.
+func (w *promptWalk) nodes(nodes []*Node, sensitive map[string]bool, bindings map[string]promptReach, depth int, enclosing string) {
 	if depth > maxVarScanDepth {
 		// Refused rather than returned clean, per fail closed and for
 		// [checkNodeVars]'s reason: past this the walk cannot say there is no
 		// prompt down there reaching something private, and a check that cannot
 		// decide must not allow.
-		return fmt.Errorf("steps nest more than %d deep, past what a specification is checked to; "+
-			"nothing this deep can be confirmed to keep private values out of a gate's `prompt:`", maxVarScanDepth)
+		w.problems = append(w.problems, WaitPromptProblem{
+			StepID: enclosing,
+			Err: fmt.Errorf("steps nest more than %d deep, past what a specification is checked to; "+
+				"nothing this deep can be confirmed to keep private values out of a gate's `prompt:`", maxVarScanDepth),
+		})
+
+		return
 	}
 
+	// A workflow that declared nothing private is one no prompt can reach anything
+	// in, so the bindings are never consulted and are not built: the walk still
+	// descends, because a `call:` brings its own declarations with it and a prompt
+	// holding a secret reference is refused whatever a file declared. That keeps
+	// the common submit - which is every workflow with no `sensitive:` input at
+	// all - reading nothing but the prompts, as it did before this walk carried a
+	// scope.
+	binding := len(sensitive) > 0
+
 	for _, node := range nodes {
+		// The step's own `vars:`, in scope for everything below except the `if:`
+		// this walk never reads.
+		inner := bindings
+		if binding {
+			inner = w.bindVars(node, bindings)
+		}
+
 		if signal := node.GetWait().GetSignal(); signal != nil {
-			if err := checkPrompt(signal.GetPrompt(), node.GetVars(), node.GetId(), sensitive); err != nil {
-				return err
-			}
+			// Without whatever the enclosing scope bound as `now`: a wait binds that
+			// name over anything above it. See [promptWalk.check].
+			w.check(signal.GetPrompt(), unbind(inner, NowIdentifier), node.GetId(), sensitive)
 		}
 
 		if loop := node.GetForEach(); loop != nil {
-			if err := checkNodePrompts(loop.GetBody(), sensitive, depth+1); err != nil {
-				return err
+			body := inner
+			if binding {
+				body = bind(inner, IteratorName(loop), resolveReach(loop.GetItems(), inner))
 			}
+			w.nodes(loop.GetBody(), sensitive, body, depth+1, node.GetId())
 		}
 		if loop := node.GetLoop(); loop != nil {
-			if err := checkNodePrompts(loop.GetBody(), sensitive, depth+1); err != nil {
-				return err
+			body := inner
+			if binding {
+				body = w.bindLoopState(loop, inner)
 			}
+			w.nodes(loop.GetBody(), sensitive, body, depth+1, node.GetId())
 		}
-		if callee := node.GetCall().GetWorkflow(); callee != nil {
-			if err := checkNodePrompts(callee.GetSteps(), sensitiveInputNames(callee), depth+1); err != nil {
-				return err
-			}
+		if callee := node.GetCall().GetWorkflow(); callee != nil && w.calls == DescendCalls {
+			w.nodes(callee.GetSteps(), sensitiveInputNames(callee), nil, depth+1, node.GetId())
 		}
 		if sw := node.GetSwitch(); sw != nil {
 			for _, body := range SwitchBodies(sw) {
-				if err := checkNodePrompts(body, sensitive, depth+1); err != nil {
-					return err
-				}
+				w.nodes(body, sensitive, inner, depth+1, node.GetId())
 			}
 		}
 		if parallel := node.GetParallel(); parallel != nil {
 			for _, branch := range parallel.GetBranches() {
-				if err := checkNodePrompts(branch.GetSteps(), sensitive, depth+1); err != nil {
-					return err
-				}
+				w.nodes(branch.GetSteps(), sensitive, inner, depth+1, node.GetId())
 			}
 		}
 	}
-
-	return nil
 }
 
-// checkPrompt reports what is wrong with one gate's prompt, by step id.
-func checkPrompt(value *Value, vars map[string]*Value, stepID string, sensitive map[string]bool) error {
+// bindVars returns the scope inside a step: the enclosing bindings plus the
+// step's own `vars:`.
+//
+// Each var is resolved against the enclosing bindings rather than against the
+// block being built, because that is what both drivers do - [EvalStepVars]
+// evaluates a block against the scope without its siblings, so
+// `vars: {a: ${inputs.token}, b: ${a}}` is not expressible and there is no
+// sibling chain left to follow.
+func (w *promptWalk) bindVars(node *Node, bindings map[string]promptReach) map[string]promptReach {
+	declared := node.GetVars()
+	if len(declared) == 0 {
+		return bindings
+	}
+
+	inner := make(map[string]promptReach, len(bindings)+len(declared))
+	maps.Copy(inner, bindings)
+	for name, value := range declared {
+		inner[name] = resolveReach(value, bindings)
+	}
+
+	return inner
+}
+
+// bindLoopState returns the scope inside a `loop:` body: the enclosing bindings
+// plus the carried state, under its bare name.
+//
+// The state holds `initial:` on the first iteration and whatever `update:`
+// computed on each one after, so it reaches whatever either of them reaches.
+// `initial:` is evaluated in the scope the loop node sits in ([LoopInitialState]);
+// `update:` is evaluated in the scope the body finished in, where the state is
+// already bound - so it is resolved with the state bound to what `initial:`
+// reached, and the union is the answer.
+//
+// Two passes are not needed and one is not a first cut. Substituting again could
+// only add the state's own reach to itself, which the union already holds:
+// `reach(update)` is some fixed set plus, where `update:` reads the state, the
+// state's reach, and that has been folded in by the time this returns.
+//
+// What is deliberately absent is the body's step outputs, which `update:` may
+// also read. This rule follows `inputs.` and the bare names the grammar binds; a
+// value that has been through a step's outputs is the whole-program taint
+// question sensitive_log.go's doc declines, and it is out of scope here for the
+// same reason (#976 asks about the grammar's names).
+func (w *promptWalk) bindLoopState(loop *Loop, bindings map[string]promptReach) map[string]promptReach {
+	if !LoopCarriesState(loop) {
+		return bindings
+	}
+
+	name := loop.GetState()
+	reach := resolveReach(loop.GetInitial(), bindings)
+	reach = reach.merge(resolveReach(loop.GetUpdate(), bind(bindings, name, reach)))
+
+	return bind(bindings, name, reach)
+}
+
+// check records what is wrong with one gate's prompt, by step id.
+func (w *promptWalk) check(value *Value, bindings map[string]promptReach, stepID string, sensitive map[string]bool) {
 	if value == nil {
-		return nil
+		return
 	}
 
 	if holdsSecretRef(value, 0) {
-		return fmt.Errorf("step %q asks for approval with a `prompt:` that is a secret reference, "+
-			"which a prompt may not hold: a prompt is rendered to whoever is being asked to approve, "+
-			"so write the question without the secret in it", stepID)
+		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
+			Err: fmt.Errorf("step %q asks for approval with a `prompt:` that is a secret reference, "+
+				"which a prompt may not hold: a prompt is rendered to whoever is being asked to approve, "+
+				"so write the question without the secret in it", stepID)})
+
+		return
 	}
 
 	if len(sensitive) == 0 {
 		// Nothing this workflow declared is private, so there is nothing for a
 		// prompt to reach. The common case, and it costs one length check.
-		return nil
+		return
 	}
 
-	reached, opaque := promptInputReach(value)
+	// Follow the prompt into whatever the grammar bound around it, because that is
+	// where the engine evaluates it from: a bare name would otherwise be a way to
+	// launder a sensitive input past a check that only read the prompt expression.
+	// An opaque reach found through a binding is carried out the same way one found
+	// in the prompt is - the refusal is what "could not tell" means here, not
+	// silence.
+	reach := resolveReach(value, bindings)
 
-	// Follow the prompt into the step's own `vars:`, because that is where the
-	// engine evaluates it from. Both drivers install a step's vars and then run
-	// the node against the inner scope - [EvalStepVars] on the local side,
-	// engine/execute.go's scope swap on the durable one - so `prompt:
-	// ${question}` reads a name this walk would otherwise see as naming nothing
-	// at all, and a bare name would be a way to launder a sensitive input past
-	// a check that only read the prompt expression.
-	//
-	// One level is the whole answer rather than a first cut: [EvalStepVars]
-	// evaluates a step's vars against the scope *without* its siblings, so
-	// `vars: {a: ${inputs.token}, b: ${a}}` is not expressible and there is no
-	// transitive case left to miss. An opaque reach found through a var is
-	// carried out the same way one found in the prompt is - the refusal is what
-	// "could not tell" means here, not silence.
-	for name := range promptFreeIdentifiers(value) {
-		declared, ok := vars[name]
-		if !ok {
+	for _, name := range slices.Sorted(maps.Keys(reach.named)) {
+		if !sensitive[name] {
 			continue
 		}
 
-		varReached, varOpaque := promptInputReach(declared)
-		maps.Copy(reached, varReached)
-		opaque = opaque || varOpaque
-	}
-
-	if named := slices.Sorted(maps.Keys(reached)); len(named) > 0 {
-		for _, name := range named {
-			if !sensitive[name] {
-				continue
-			}
-
-			return fmt.Errorf("step %q asks for approval with a `prompt:` that reads input %q, "+
+		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
+			Err: fmt.Errorf("step %q asks for approval with a `prompt:` that reads input %q, "+
 				"which is declared `sensitive:`: a prompt is rendered to whoever is being asked, "+
 				"who is not this run's author and was given a run id rather than this file, "+
 				"so a prompt may not reach it even to derive from it. "+
 				"Ask the question without it, or drop the `sensitive:` declaration if the value was never private",
-				stepID, name)
-		}
+				stepID, name)})
+
+		return
 	}
 
-	if opaque {
-		return fmt.Errorf("step %q asks for approval with a `prompt:` that reads `%s` by a name this check "+
-			"cannot resolve, and this workflow declares an input `sensitive:`, so whether the prompt reaches it "+
-			"cannot be decided here. A prompt is rendered to whoever is being asked, so an undecidable reach is "+
-			"refused rather than allowed: index `%s` with a literal name",
-			stepID, InputsRoot, InputsRoot)
+	if reach.opaque {
+		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
+			Err: fmt.Errorf("step %q asks for approval with a `prompt:` that reads `%s` by a name this check "+
+				"cannot resolve, and this workflow declares an input `sensitive:`, so whether the prompt reaches it "+
+				"cannot be decided here. A prompt is rendered to whoever is being asked, so an undecidable reach is "+
+				"refused rather than allowed: index `%s` with a literal name",
+				stepID, InputsRoot, InputsRoot)})
 	}
-
-	return nil
 }
 
-// promptFreeIdentifiers returns the bare names a prompt reads. A step's own
-// `vars:` are installed under bare names before its prompt is evaluated, so the
-// sensitivity walk must follow any such name into its declaration rather than
-// treating the prompt expression in isolation.
-//
-// Free, in the CEL sense: [collectFreeIdentifiers] binds a comprehension's own
-// iteration and accumulator variables, so `list.map(x, x)` does not send this
-// walk looking up `x` in a step's vars and finding an unrelated declaration of
-// the same name. That is the same rule `flow fix` had to learn twice about the
-// names the grammar binds.
+// promptFreeIdentifiers returns the bare names a prompt reads. See
+// [resolveReach], which is the only caller and which says what they are followed
+// into.
 func promptFreeIdentifiers(value *Value) map[string]struct{} {
 	free := make(map[string]struct{})
 	for _, e := range promptExpressions(value, 0) {

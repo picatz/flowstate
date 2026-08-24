@@ -215,3 +215,90 @@ func TestAPromptReachingASensitiveInputThroughAStepVarIsRefused(t *testing.T) {
 		return false
 	}, "a step var hid a prompt's reach into a sensitive input: %v", ds)
 }
+
+// TestAPromptReachingASensitiveInputThroughALoopBindingIsRefused is #976's
+// example, through a file, with a position.
+//
+// The compile layer used to check one rebuilt single-step workflow per node,
+// which structurally discarded every binding written around the step: the loop's
+// `as:` is not part of the gate, so the rule was asked about `${cust}` with
+// nothing bound and answered, correctly for the question it was asked, that the
+// prompt reaches nothing.
+func TestAPromptReachingASensitiveInputThroughALoopBindingIsRefused(t *testing.T) {
+	t.Parallel()
+
+	src := strings.Join([]string{
+		"edition: v2026.3",
+		"name: asking",
+		"inputs:",
+		"  customers:",
+		"    type: list",
+		"    sensitive: true",
+		"steps:",
+		"  - id: review",
+		"    for_each:",
+		"      items: ${inputs.customers}",
+		"      as: cust",
+		"      steps:",
+		"        - id: approve",
+		"          wait_for_signal:",
+		"            name: approved",
+		"            prompt: ${cust}",
+		"",
+	}, "\n")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	var refusal *flowfile.Diagnostic
+	for i, d := range ds {
+		if d.Code == v1.DiagnosticCodeSensitiveInPrompt {
+			refusal = &ds[i]
+		}
+	}
+	require.NotNil(t, refusal,
+		"a prompt reading a `for_each`'s binding over a `sensitive:` input was accepted: %v", ds)
+	assert.Contains(t, refusal.Error(), "customers")
+	assert.Equal(t, "approve", refusal.Step,
+		"the refusal was positioned on the loop rather than on the gate that asks the question")
+	assert.Positive(t, refusal.Line, "the refusal carries no line, so an editor has nowhere to put it")
+}
+
+// TestAPromptReadingALoopBindingOverAnOrdinaryInputIsAccepted is the control for
+// it: the same shape over an input nobody declared `sensitive:`, in a file that
+// declares one so the rule is running. False diagnostics are worse than missing
+// ones, and this is the file every author writing a loop of approvals has.
+func TestAPromptReadingALoopBindingOverAnOrdinaryInputIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	src := strings.Join([]string{
+		"edition: v2026.3",
+		"name: asking",
+		"inputs:",
+		"  hosts:",
+		"    type: list",
+		"  token:",
+		"    type: string",
+		"    sensitive: true",
+		"steps:",
+		"  - id: review",
+		"    for_each:",
+		"      items: ${inputs.hosts}",
+		"      as: host",
+		"      steps:",
+		"        - id: approve",
+		"          wait_for_signal:",
+		"            name: approved",
+		`            prompt: '${"deploy to " + host + "?"}'`,
+		"",
+	}, "\n")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	for _, d := range ds {
+		assert.NotEqual(t, v1.DiagnosticCodeSensitiveInPrompt, d.Code,
+			"a prompt reading a loop binding over an ordinary input was refused because some "+
+				"*other* input is sensitive: %v", d)
+	}
+}
