@@ -22,11 +22,13 @@ func countedSigning(t *testing.T) (calls, bytes *int) {
 
 	var c, b int
 	original := signWebhookPayload
-	signWebhookPayload = func(key secrets.Secret, payload []byte) []byte {
+	signWebhookPayload = func(key secrets.Secret, parts ...[]byte) []byte {
 		c++
-		b += len(payload)
+		for _, part := range parts {
+			b += len(part)
+		}
 
-		return original(key, payload)
+		return original(key, parts...)
 	}
 	t.Cleanup(func() { signWebhookPayload = original })
 
@@ -111,4 +113,61 @@ func TestStripeVerificationDoesNotHashASenderSizedTimestamp(t *testing.T) {
 	require.Less(t, *hashed, len(huge),
 		"the signed payload grew with a value the sender chose")
 	require.LessOrEqual(t, *hashed, len(body)+32)
+}
+
+// TestWebhookVerificationHashesTheBodyWithoutCopyingIt pins the half of the
+// uniformity claim that counting bytes cannot see.
+//
+// Both schemes hash the same number of bytes they always did — the counting
+// test above says so — but Stripe used to reach that number by building
+// `timestamp + "." + body` first, a second body-sized pass spent copying bytes
+// the hash was about to read anyway. Against the decoy an unrouted request
+// spends, which signs the body alone, that is a real difference in the same
+// shape as the present/absent signal #955 removed: smaller, and the kind that
+// grows back once nobody is looking (#973).
+//
+// Asserted by identity rather than by timing or by allocation count. A slice
+// sharing its backing array with the caller's body was not copied, which is
+// exactly the claim; `testing.AllocsPerRun` answers a nearby question flakily,
+// and a timing assertion on a shared runner answers none of them.
+func TestWebhookVerificationHashesTheBodyWithoutCopyingIt(t *testing.T) {
+	key := secrets.NewSecret(secrets.NewRef("env", "WEBHOOK_SECRET"), "shh")
+	body := []byte(`{"id":"evt_1","data":"a body long enough to be worth not copying"}`)
+	now := time.Now()
+
+	hashedTheBodyItself := func(t *testing.T) *bool {
+		t.Helper()
+
+		var seen bool
+		original := signWebhookPayload
+		signWebhookPayload = func(key secrets.Secret, parts ...[]byte) []byte {
+			for _, part := range parts {
+				if len(part) == len(body) && &part[0] == &body[0] {
+					seen = true
+				}
+			}
+
+			return original(key, parts...)
+		}
+		t.Cleanup(func() { signWebhookPayload = original })
+
+		return &seen
+	}
+
+	t.Run("hmac-sha256", func(t *testing.T) {
+		seen := hashedTheBodyItself(t)
+		require.NoError(t, verifyHMACSHA256(key,
+			map[string]string{WebhookSignatureHeader: "sha256=" + SignWebhookBody(key, body)}, body))
+
+		require.True(t, *seen, "the body reached the hash as a copy")
+	})
+
+	t.Run("stripe", func(t *testing.T) {
+		seen := hashedTheBodyItself(t)
+		require.NoError(t, verifyStripe(key,
+			map[string]string{StripeSignatureHeader: SignStripeBody(key, body, now)}, body, now))
+
+		require.True(t, *seen,
+			"the body reached the hash as a copy, so this delivery paid a second body-sized pass the decoy does not")
+	})
 }

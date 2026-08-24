@@ -219,11 +219,13 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	// Spend the body-sized authentication work before any header-shape refusal.
 	// Unknown routes do the same under a decoy key, so a missing or malformed
 	// header must not turn a configured Stripe route into a timing oracle.
-	signed := make([]byte, 0, len(signingTimestamp)+1+len(body))
-	signed = append(signed, signingTimestamp...)
-	signed = append(signed, '.')
-	signed = append(signed, body...)
-	expected := signWebhookPayload(key, signed)
+	//
+	// Written into the hash in pieces rather than joined first. Joining copied
+	// the whole body to hash bytes it already had, which cost a second
+	// body-sized pass on every delivery — small beside a full HMAC of the same
+	// bytes, but the same *shape* of signal as the one this ordering removes,
+	// and measurable against the decoy, which signs the body alone (#973).
+	expected := signWebhookPayload(key, []byte(signingTimestamp), stripeSignedSeparator, body)
 
 	if supplied == "" {
 		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
@@ -278,6 +280,11 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 // about work that nothing measures is one the next tidy-up silently repeals by
 // restoring an early return. This is the same instrument, and the same reason,
 // as pathChecker.ownerOf in cmd/flow.
+// stripeSignedSeparator is the byte between Stripe's timestamp and the body in
+// the payload it signs. A package-level slice so that hashing it allocates
+// nothing per delivery.
+var stripeSignedSeparator = []byte{'.'}
+
 var signWebhookPayload = signHMACSHA256
 
 // signHMACSHA256 is the one place a key is revealed, and it reveals it into an
@@ -287,9 +294,11 @@ var signWebhookPayload = signHMACSHA256
 // [hmac.New] within one statement, so there is no variable holding it for a later
 // log line or error to reach. What comes back is a digest, which is safe to
 // compare, print and return.
-func signHMACSHA256(key secrets.Secret, payload []byte) []byte {
+func signHMACSHA256(key secrets.Secret, parts ...[]byte) []byte {
 	mac := hmac.New(sha256.New, []byte(key.Reveal()))
-	mac.Write(payload)
+	for _, part := range parts {
+		mac.Write(part)
+	}
 
 	return mac.Sum(nil)
 }
