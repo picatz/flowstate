@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/cel-go/common/types/ref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -441,7 +442,7 @@ func TestTheAutopsyAnswersFromTheFinishedRun(t *testing.T) {
 		"build": {NamedValues: map[string]*v1.Value{"ok": v1.NewLiteral("built")}},
 	}}}
 
-	session.Autopsy(t.Context(), scope, []string{`expect.check[0]: check failed: steps.build.ok == 'shipped'`})
+	session.Autopsy(t.Context(), scope, nil, []string{`expect.check[0]: check failed: steps.build.ok == 'shipped'`})
 
 	joined := ""
 	for _, f := range fragments {
@@ -475,7 +476,7 @@ func TestTheAutopsyMovementVerbsAllLeave(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
-			session.Autopsy(t.Context(), &v1.Scope{}, nil)
+			session.Autopsy(t.Context(), &v1.Scope{}, nil, nil)
 			close(done)
 		}()
 		select {
@@ -484,4 +485,58 @@ func TestTheAutopsyMovementVerbsAllLeave(t *testing.T) {
 			t.Fatalf("autopsy did not leave on %q", strings.TrimSpace(verb))
 		}
 	}
+}
+
+// TestQuitAtABreakpointSuppressesTheAutopsy: quit is the one command
+// advertised as leaving, so a session that quit mid-run is never re-opened
+// for the autopsy — abandoning the run fails the case, and answering `quit`
+// with another prompt would make it a lie (Codex, #1107).
+func TestQuitAtABreakpointSuppressesTheAutopsy(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{In: strings.NewReader("quit\n"), Out: &console})
+	require.NoError(t, err)
+
+	ran := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, ran))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	workflow := &v1.Workflow{Name: "debugged", Steps: []*v1.Node{markStep("build")}}
+	_, runErr := v1.Run(ctx, workflow)
+	require.Error(t, runErr, "quit abandons the run")
+	assert.Empty(t, ran.ids, "quit at the first breakpoint runs nothing")
+
+	before := console.String()
+	session.Autopsy(t.Context(), &v1.Scope{}, nil, []string{"expect.ran: build never ran"})
+	assert.Equal(t, before, console.String(), "a session that quit is not prompted again")
+	assert.NotContains(t, console.String(), "autopsy:")
+}
+
+// TestTheAutopsyAnswersWithTheChecksOwnBindings: an inspection at the autopsy
+// binds what the failing check was judged under — the file's `vars` and the
+// extended `run` root ride in through extra — so `inspect vars.want` asks the
+// same question the check asked, not one over a scope missing half its names
+// (Codex, #1107).
+func TestTheAutopsyAnswersWithTheChecksOwnBindings(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("inspect vars.want\ninspect run.failed\ninspect run.error\nquit\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+
+	extra := map[string]ref.Val{
+		"vars": v1.TypeAdapter.NativeToValue(map[string]any{"want": "shipped"}),
+		"run":  v1.TypeAdapter.NativeToValue(map[string]any{"failed": true, "error": "step build: exploded"}),
+	}
+	session.Autopsy(t.Context(), &v1.Scope{}, extra,
+		[]string{"expect.check[0]: check failed: steps.build.ok == vars.want"})
+
+	out := console.String()
+	assert.Contains(t, out, `"shipped"`, "vars answers as the check read it")
+	assert.Contains(t, out, "true", "run.failed answers")
+	assert.Contains(t, out, "exploded", "run.error answers")
 }

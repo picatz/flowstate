@@ -651,6 +651,37 @@ steps:
 		"a value the source did not mark sensitive must render unchanged")
 }
 
+// TestTheRunLocalToolBoundsBeforeItRedacts pins the composition the handler's
+// ordering has to keep: the preflight bound runs first (redaction clones its
+// input outright, so a bound behind it re-pays the workflow-sized allocation
+// it exists to refuse — Codex, #1083), and redaction still masks everything
+// that survives the reduction. A transcript big enough to trigger the bound
+// beside a `sensitive: true` declaration exercises both at once, which is the
+// join a page-shaped test of either cannot see.
+func TestTheRunLocalToolBoundsBeforeItRedacts(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	const secret = "sk-live-0123456789abcdef"
+
+	var source strings.Builder
+	fmt.Fprintf(&source, "edition: v2026.3\nname: big-and-secret\noutputs:\n  token:\n    value: ${\"%s\"}\n    sensitive: true\nsteps:\n", secret)
+	for i := range 40 {
+		fmt.Fprintf(&source, "  - id: s%d\n    value: ${\"%s\"}\n", i, strings.Repeat("x", 4<<10))
+	}
+
+	result, answer := callRunLocal(t, session, map[string]any{"source": source.String()})
+	require.False(t, result.IsError, "the workflow failed: %s", result.Content[0].(*mcp.TextContent).Text)
+
+	require.NotContains(t, result.Content[0].(*mcp.TextContent).Text, secret,
+		"the actual secret string must be absent from the rendered bytes, not merely covered by a marker")
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"],
+		"redaction stopped applying once the answer was big enough to bound")
+	assert.Contains(t, answer.Note, "reduced",
+		"the transcript was big enough to trigger the bound and the answer does not say so")
+}
+
 // TestTheRunLocalToolRevealSensitiveShowsValues checks the escape hatch on this
 // surface: --reveal-sensitive on the `flow mcp` process, decided once at
 // start-up, shows what the tool would otherwise withhold.
@@ -917,9 +948,9 @@ func TestTheRunLocalAnswerIsBounded(t *testing.T) {
 		}
 	}
 
-	response := localRun(outputs, nil, nil, time.Now(), time.Now())
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
 
-	encoded, err := renderRunLocalResult(response, []runLocalLogRecord{{Level: "INFO", Message: "hi"}})
+	encoded, err := renderRunLocalResult(response, []runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
 		"a run's outputs are the workflow's choice, and this one spent %d bytes of a model's context",
@@ -956,10 +987,9 @@ func TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs(t *testing.T) {
 		}},
 	}
 
-	encoded, err := renderRunLocalResult(
-		localRun(outputs, nil, nil, time.Now(), time.Now()),
-		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
-	)
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 
 	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
@@ -998,10 +1028,9 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 		}
 	}
 
-	encoded, err := renderRunLocalResult(
-		localRun(outputs, nil, nil, time.Now(), time.Now()),
-		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
-	)
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes)
 
@@ -1023,6 +1052,43 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 		"the transcript is still whole, so nothing was actually reduced")
 }
 
+// TestASingleOversizedStepCannotDefeatTheBound: every reduction keeps at
+// least one real step, because an empty transcript arm is a document the
+// schema rejects — so a run whose one step alone exceeds the cap used to walk
+// every rung as a no-op and ride the floor's "returned whether or not it
+// fits" contract straight past it (Codex, #1083). The preflight's last resort
+// replaces that step's values with size markers: the shape survives, the
+// weight does not, and the note names the step.
+func TestASingleOversizedStepCannotDefeatTheBound(t *testing.T) {
+	t.Parallel()
+
+	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"scrape": {NamedValues: map[string]*v1.Value{
+			"body": v1.NewValue(strings.Repeat("x", 2<<20)),
+		}},
+	}}
+
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"one step's outputs are the workflow's choice too, and this one spent %d bytes of a model's context",
+		len(encoded))
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	require.Contains(t, answer.Run.Outputs.StepValues, "scrape",
+		"the transcript arm lost its one step, which is a GetResponse the schema rejects")
+	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+		"[omitted:", "the oversized value survived as itself rather than as a size marker")
+	assert.Contains(t, answer.Note, `step "scrape"`,
+		"the note does not name the step that carried the weight")
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
+}
+
 // TestARunThatFitsIsNotTrimmed is the other side of that bound: an ordinary run
 // keeps its outputs and its logs, so the trimming path cannot quietly become the
 // normal one.
@@ -1033,10 +1099,9 @@ func TestARunThatFitsIsNotTrimmed(t *testing.T) {
 		"greet": {NamedValues: map[string]*v1.Value{"body": v1.NewValue("hello")}},
 	}}
 
-	encoded, err := renderRunLocalResult(
-		localRun(outputs, nil, nil, time.Now(), time.Now()),
-		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
-	)
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 
 	var answer runLocalAnswer

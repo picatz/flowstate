@@ -171,6 +171,8 @@ steps:
 outputs: {}
 `), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+vars:
+  flavor: carrot-cake
 defaults:
   workflow: ./workflow.yaml
   stubs:
@@ -185,11 +187,17 @@ tests:
         - 1 == 2
 `), 0o600))
 
-	res := runFlowStdin(t, "continue\ninspect 1 + 1\nquit\n", "test", "--debug", "--run", "claims the wrong", dir)
+	res := runFlowStdin(t,
+		"continue\ninspect 1 + 1\ninspect vars.flavor\ninspect run.failed ? 'red-run' : 'green-run'\nquit\n",
+		"test", "--debug", "--run", "claims the wrong", dir)
 	require.Error(t, res.Err, "the autopsy must not turn a red case green")
 
 	assert.Contains(t, res.Stdout, "autopsy: the case failed 1 expectation(s)")
 	assert.Contains(t, res.Stdout, "check failed: 1 == 2")
 	assert.Contains(t, res.Stdout, "2", "the autopsy's inspect answers")
+	assert.Contains(t, res.Stdout, "carrot-cake",
+		"the file's vars bind at the autopsy exactly as the check read them")
+	assert.Contains(t, res.Stdout, "green-run",
+		"the run root answers too — the run passed; the check is what failed")
 	assert.Contains(t, res.Stdout, "FAIL", "and the report still says what it said")
 }

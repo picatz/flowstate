@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/cel-go/common/types/ref"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -92,6 +94,12 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 	case "quit", "q":
 		s.record("quit")
+		// Remembered, so the autopsy stays shut: quit is the one command
+		// advertised as leaving, and it must not be answered with another
+		// prompt (Codex, #1107).
+		s.mu.Lock()
+		s.ended = true
+		s.mu.Unlock()
 
 		return false, errQuit
 
@@ -128,6 +136,13 @@ func split(line string) (verb, rest string) {
 // this point — including reaching a `${secret(...)}` reference and getting
 // back the refusal an activation always gives one.
 func (s *Session) inspect(ctx context.Context, expression string, scope *v1.Scope) {
+	s.inspectWith(ctx, expression, scope, nil)
+}
+
+// inspectWith is inspect with extra bare bindings layered over the scope —
+// the autopsy's door, where the post-run `vars` and extended `run` root must
+// answer exactly as the failing check read them (Codex, #1107).
+func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.Scope, extra map[string]ref.Val) {
 	libs, err := v1.ProfileLibraries(scope.GetProfile())
 	if err != nil {
 		s.printfTone(ToneWarning, "cannot inspect: %v\n", err)
@@ -135,7 +150,11 @@ func (s *Session) inspect(ctx context.Context, expression string, scope *v1.Scop
 		return
 	}
 
-	out, err := v1.DefaultEvaluator().EvalString(ctx, expression, libs, scope.Activation(ctx))
+	activation := scope.Activation(ctx)
+	if len(extra) > 0 {
+		activation = scope.ActivationWith(ctx, extra)
+	}
+	out, err := v1.DefaultEvaluator().EvalString(ctx, expression, libs, activation)
 	if err != nil {
 		// An author's expression failing is an ordinary event at a debugger
 		// prompt, not a session-ending one: they are asking questions, and

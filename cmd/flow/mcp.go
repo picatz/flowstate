@@ -425,6 +425,13 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 		// this context expiring means the call ran out of time.
 		response := localRun(outputs, runErr, ctx.Err(), started, time.Now())
 
+		// Bounded before redaction, deliberately: redactGetResponse clones its
+		// input outright, so handing it the raw response re-pays exactly the
+		// workflow-sized allocation the preflight refuses (Codex, #1083). The
+		// order is safe because bounding only drops and marks values —
+		// redaction below still masks everything that survived.
+		response, preflightNotes := boundRunLocalResponse(response)
+
 		// An agent's context is an untrusted-consumer surface exactly like a
 		// terminal — a leaked credential in a transcript is a leaked credential —
 		// so this tool result honours `sensitive:` the same way `flow run local`
@@ -433,7 +440,7 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 		// fail-closed case a spec-less renderer falls back to; see sensitive.go.
 		response = redactGetResponse(response, workflow, revealSensitiveRequested(posture))
 
-		encoded, err := renderRunLocalResult(response, logs.records())
+		encoded, err := renderRunLocalResult(response, logs.records(), preflightNotes)
 		if err != nil {
 			return flowmcp.ToolError(err), nil
 		}
@@ -817,17 +824,6 @@ type runLocalResult struct {
 	Note string              `json:"note,omitempty"`
 }
 
-// renderRunLocalResult assembles the answer and brings it under the cap.
-//
-// Shrinking is in order of what a reader can most afford to lose, and it stops
-// at a document that still parses. Cutting the JSON at the limit would produce
-// bytes no caller can read, which converts a large answer into no answer at all;
-// dropping a part and *saying so* leaves the status and the reason — the two
-// things a model needs to decide what to do next — intact.
-// The rungs, and the floor's own reason for being returned whether or not it
-// fits, are unchanged; what left is [flowmcp.FitResult] doing the measuring, so
-// the "re-encode, re-measure, stop at the first that fits" discipline this
-// function used to spell out by hand is the same code the other two shrinking
 // shallowGetResponse copies a response one field at a time through
 // protoreflect: every set shares the source field's pointer, so nothing the
 // size of the transcript is duplicated, and no hand-kept field list exists to
@@ -843,49 +839,136 @@ func shallowGetResponse(response *v1.GetResponse) *v1.GetResponse {
 	return trimmed
 }
 
-// answers on this surface run.
-func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([]byte, error) {
-	// protojson builds its answer in memory, and proto.Clone below duplicates
-	// its input, so both must be bounded BEFORE they run: a workflow-sized
-	// transcript is exactly the allocation this preflight exists to refuse.
-	// The preflight is only the trigger, though — the semantics stay the
-	// ladder's below. On overflow the response is reduced in proto space by
-	// the ladder's own selector ([flowmcp.ReducedTranscript]: a new arm
-	// sharing the kept steps, the caller's response untouched), the declared
-	// outputs and the failure message take the ladder's own rungs where the
-	// transcript alone was not the weight, and the *reduced* response then
-	// walks the ordinary ladder, whose FitResult measures real JSON against
-	// the real cap. One trimming policy, one place; the note rides every
-	// rung, because a reduced answer must never be a silent one.
-	var preflightNotes []string
-	if proto.Size(response) > maxRunLocalProtoBytes {
-		trimmed := shallowGetResponse(response)
-		if outputs := trimmed.GetOutputs(); outputs != nil {
-			arm, kept, total := flowmcp.ReducedTranscript(outputs)
-			if kept < total {
-				trimmed.Kind = &v1.GetResponse_Outputs{Outputs: arm}
-				preflightNotes = append(preflightNotes, fmt.Sprintf(
-					"the step outputs were reduced to %d of their %d steps before rendering", kept, total))
-			}
-		}
-		// The transcript was not the whole weight: declared outputs and the
-		// failure message are workload-sized too, each taken by its own
-		// ladder rung here in proto space, through values the caller does not
-		// share (the arm above is this preflight's own; the error is cloned
-		// small before capping).
-		if proto.Size(trimmed) > flowmcp.MaxResultBytes {
-			flowmcp.DropDeclaredOutputs(trimmed)
-			preflightNotes = append(preflightNotes, "the declared outputs were dropped before rendering")
-		}
-		if runError := trimmed.GetError(); runError != nil && proto.Size(trimmed) > flowmcp.MaxResultBytes {
-			cloned, _ := proto.Clone(runError).(*v1.RunResponse_Error)
-			if flowmcp.CapErrorMessage(cloned) {
-				preflightNotes = append(preflightNotes, "this run's failure message was truncated before rendering")
-			}
-			trimmed.Kind = &v1.GetResponse_Error{Error: cloned}
-		}
-		response = trimmed
+// boundRunLocalResponse bounds a local run's response in proto space, before
+// anything downstream copies or marshals it.
+//
+// protojson builds its answer in memory, [redactGetResponse] clones its input
+// outright, and [renderRunLocalResult]'s ladder clones once more — so the
+// bound has to run before all three: a workflow-sized transcript is exactly
+// the allocation this preflight exists to refuse, and a bound that runs after
+// the first full copy has already paid for it. That is why the run_local
+// handler calls this ahead of redaction rather than leaving it to the
+// renderer, which used to hold this code after the redacting clone (Codex,
+// #1083). The order is safe in the direction that matters: bounding drops and
+// marks values, and redaction then masks whatever survived.
+//
+// The preflight is only the trigger, though — the semantics stay the ladder's
+// ([renderRunLocalResult]). On overflow the response is reduced by the
+// ladder's own selector ([flowmcp.ReducedTranscript]: a new arm sharing the
+// kept steps, the caller's response untouched), and the declared outputs and
+// the failure message take the ladder's own rungs where the transcript alone
+// was not the weight. The arm is replaced even when every step was kept,
+// because the steps below write into it ([flowmcp.DropDeclaredOutputs]'s
+// nested half) and the shallow copy's own arm is still the caller's message.
+//
+// The last resort is this preflight's own, because no rung can reach it: one
+// step whose outputs alone exceed [flowmcp.MaxResultBytes] survives every
+// reduction — a transcript arm must keep at least one real step to stay
+// schema-valid, and that step is the whole weight — and then rides the
+// floor's "returned whether or not it fits" contract straight past the cap
+// (Codex, #1083). Its values are therefore replaced with size markers; see
+// [hollowedStepValues].
+//
+// The returned notes ride every rung of the rendered answer, because a
+// reduced answer must never be a silent one.
+func boundRunLocalResponse(response *v1.GetResponse) (*v1.GetResponse, []string) {
+	if proto.Size(response) <= maxRunLocalProtoBytes {
+		return response, nil
 	}
+
+	var notes []string
+
+	trimmed := shallowGetResponse(response)
+	if outputs := trimmed.GetOutputs(); outputs != nil {
+		arm, kept, total := flowmcp.ReducedTranscript(outputs)
+		trimmed.Kind = &v1.GetResponse_Outputs{Outputs: arm}
+		if kept < total {
+			notes = append(notes, fmt.Sprintf(
+				"the step outputs were reduced to %d of their %d steps before rendering", kept, total))
+		}
+	}
+	if proto.Size(trimmed) > flowmcp.MaxResultBytes && flowmcp.DropDeclaredOutputs(trimmed) {
+		notes = append(notes, "the declared outputs were dropped before rendering")
+	}
+	if runError := trimmed.GetError(); runError != nil && proto.Size(trimmed) > flowmcp.MaxResultBytes {
+		cloned, _ := proto.Clone(runError).(*v1.RunResponse_Error)
+		if flowmcp.CapErrorMessage(cloned) {
+			notes = append(notes, "this run's failure message was truncated before rendering")
+		}
+		trimmed.Kind = &v1.GetResponse_Error{Error: cloned}
+	}
+	if outputs := trimmed.GetOutputs(); outputs != nil && proto.Size(trimmed) > flowmcp.MaxResultBytes {
+		if hollowed, note := hollowedStepValues(outputs.GetStepValues()); hollowed != nil {
+			trimmed.Kind = &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{
+				StepValues: hollowed,
+				RunOutputs: outputs.GetRunOutputs(),
+			}}
+			notes = append(notes, note)
+		}
+	}
+
+	return trimmed, notes
+}
+
+// hollowedStepValues keeps a transcript's shape — real step ids, real output
+// names, both the author's own spelling — and replaces every value with an
+// `[omitted: <n> bytes]` marker naming how big the real one was. It is
+// [redactStepValues]'s shape for [boundRunLocalResponse]'s reason: a
+// bracketed annotation is unmistakably this surface's own note rather than
+// something the workflow produced, and keeping the names keeps the answer
+// diagnosable — a reader learns which step and which output carried the
+// weight, which is exactly what they need to have the workflow carry less.
+//
+// A nil answer means no step carries values at all, which is a document that
+// arrived invalid; it is left alone rather than repaired here, the same
+// answer [flowmcp.ReduceTranscript] gives.
+func hollowedStepValues(steps map[string]*v1.Node_Outputs) (map[string]*v1.Node_Outputs, string) {
+	hollowed := make(map[string]*v1.Node_Outputs, len(steps))
+	for id, outputs := range steps {
+		named := outputs.GetNamedValues()
+		if len(named) == 0 {
+			continue
+		}
+		values := make(map[string]*v1.Value, len(named))
+		for name, value := range named {
+			values[name] = v1.NewValue(fmt.Sprintf("[omitted: %d bytes]", proto.Size(value)))
+		}
+		hollowed[id] = &v1.Node_Outputs{NamedValues: values}
+	}
+	if len(hollowed) == 0 {
+		return nil, ""
+	}
+
+	subject := fmt.Sprintf("the %d kept steps' outputs", len(hollowed))
+	if len(hollowed) == 1 {
+		for id := range hollowed {
+			subject = fmt.Sprintf("step %q's outputs", id)
+		}
+	}
+
+	return hollowed, fmt.Sprintf("%s still exceeded %d bytes after every reduction, so each value was "+
+		"replaced with an \"[omitted: <n> bytes]\" marker before rendering (the step ids and output "+
+		"names are real; the values were this large)", subject, flowmcp.MaxResultBytes)
+}
+
+// renderRunLocalResult assembles the answer and brings it under the cap.
+//
+// Shrinking is in order of what a reader can most afford to lose, and it stops
+// at a document that still parses. Cutting the JSON at the limit would produce
+// bytes no caller can read, which converts a large answer into no answer at all;
+// dropping a part and *saying so* leaves the status and the reason — the two
+// things a model needs to decide what to do next — intact.
+// The rungs, and the floor's own reason for being returned whether or not it
+// fits, are unchanged; what left is [flowmcp.FitResult] doing the measuring, so
+// the "re-encode, re-measure, stop at the first that fits" discipline this
+// function used to spell out by hand is the same code the other two shrinking
+// answers on this surface run.
+//
+// The response arrives already bounded in proto space by
+// [boundRunLocalResponse] — the handler runs that first, before redaction —
+// and preflightNotes are that bound's account, riding every rung below so a
+// reduced answer is never a silent one.
+func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord, preflightNotes []string) ([]byte, error) {
 	preflightNote := strings.Join(preflightNotes, "; ")
 	withPreflight := func(note string) string {
 		if preflightNote == "" {

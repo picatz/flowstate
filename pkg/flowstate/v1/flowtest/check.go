@@ -136,6 +136,42 @@ func postRunScope(spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Wor
 	return &v1.Scope{Profile: spec.GetProfile(), Outputs: outputs, Inputs: bound, Local: true}
 }
 
+// postRunExtras is the other half of [postRunScope]: the bare bindings a
+// finished case is questioned under. The `run` root is the engine's own,
+// read through the unshadowed activation and extended with failed/error —
+// derived, never restated, so no hand-kept key list exists to stop being
+// complete — and the file's `vars` bind beside it (nothing to shadow: this
+// scope carries no workflow ambient vars, and the day they join, #1072's
+// per-case collision refusal lands with them). One construction, shared by
+// `expect.check:` evaluation and the debugger's autopsy (Codex, #1107): an
+// inspection at the autopsy must answer exactly as the failing check read,
+// and two builders would eventually answer differently.
+func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, runErr error) map[string]ref.Val {
+	errText := ""
+	if runErr != nil {
+		errText = runErr.Error()
+	}
+	root := map[string]any{"local": true}
+	if out, err := v1.DefaultEvaluator().EvalString(ctx, "run", nil, scope.Activation(ctx)); err == nil {
+		if lit, err := cel.RefValueToValue(out); err == nil {
+			if native, err := literalToGo(lit); err == nil {
+				if m, ok := native.(map[string]any); ok {
+					root = m
+				}
+			}
+		}
+	}
+	root["failed"] = runErr != nil
+	root["error"] = errText
+
+	extra := map[string]ref.Val{"run": v1.TypeAdapter.NativeToValue(root)}
+	if len(vars) > 0 {
+		extra["vars"] = v1.TypeAdapter.NativeToValue(vars)
+	}
+
+	return extra
+}
+
 // assertChecks evaluates a case's claims against the finished run, returning
 // one diagnostic per claim that did not hold — with the values the claim read,
 // so a red check arrives with its evidence rather than only its text.
@@ -159,23 +195,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 	// carries `local` as well as the two fields checks exist for — dropping
 	// it would make `run.local` unreadable inside a check while every other
 	// expression in the run reads it true.
-	errText := ""
-	if runErr != nil {
-		errText = runErr.Error()
-	}
-	extra := map[string]ref.Val{"run": v1.TypeAdapter.NativeToValue(map[string]any{
-		"failed": runErr != nil,
-		"error":  errText,
-		"local":  true,
-	})}
-	// The file's `vars:` (#1072), bound the way `run` is. This scope carries
-	// no workflow ambient vars — the check scope's `vars` is the file's, one
-	// meaning per position (see vars.go's asymmetry note) — so there is
-	// nothing here to shadow; the day workflow vars join this scope, the
-	// per-case collision refusal recorded on #1072 lands with them.
-	if len(vars) > 0 {
-		extra["vars"] = v1.TypeAdapter.NativeToValue(vars)
-	}
+	extra := postRunExtras(ctx, scope, vars, runErr)
 	activation := scope.ActivationWith(ctx, extra)
 
 	libs, err := v1.ProfileLibraries(spec.GetProfile())

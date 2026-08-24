@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -805,13 +806,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// here can change the verdict — it was reached above.
 	if !result.Passed {
 		if examiner, ok := v1.DebuggerFromContext(ctx).(interface {
-			Autopsy(context.Context, *v1.Scope, []string)
+			Autopsy(context.Context, *v1.Scope, map[string]ref.Val, []string)
 		}); ok {
 			rendered := make([]string, 0, len(result.Failures))
 			for _, failure := range result.Failures {
 				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
 			}
-			examiner.Autopsy(ctx, postRunScope(workflow, bound, outputs), rendered)
+			scope := postRunScope(workflow, bound, outputs)
+			examiner.Autopsy(ctx, scope, postRunExtras(ctx, scope, vars, runErr), rendered)
 		}
 	}
 

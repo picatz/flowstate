@@ -167,6 +167,11 @@ type Session struct {
 	// closed is set once the command stream ended, so the session stops
 	// trying to read from it.
 	closed bool
+	// ended is set when the session itself abandoned the run (`quit` at a
+	// breakpoint): the one command advertised as leaving must not be
+	// answered with another prompt, so the autopsy checks it and stays shut
+	// (Codex, #1107).
+	ended bool
 }
 
 // New returns a session configured by opts.
@@ -509,6 +514,13 @@ func capRunes(text string, limit int) string {
 // craft the claim with `inspect`, and leave with the `expect.check:` entry
 // the file was missing.
 //
+// extra carries the post-run bindings the case's own `expect.check:` was
+// judged under — the file's `vars` and the `run` root extended with
+// failed/error — so an inspection here answers exactly as the failing check
+// read (Codex, #1107): diagnosing `vars.x == ...` with a prompt that cannot
+// see `vars` would be an autopsy of a different body. Nil binds nothing
+// extra, which is every caller outside flowtest.
+//
 // failures are the rendered verdicts, printed as the failures they are. The
 // commands are the session's ordinary ones; the movement verbs (`step`,
 // `continue`, `until`) and `quit` all just leave, because there is no run
@@ -520,7 +532,17 @@ func capRunes(text string, limit int) string {
 // flowtest calls this only for a failing case under `--debug`, discovering
 // it by capability the way it discovers a session that observes — a
 // [v1.Debugger] that does not implement it simply ends when the run ends.
-func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, failures []string) {
+func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string]ref.Val, failures []string) {
+	// A session that quit at a breakpoint said it was done: the case fails
+	// (abandoning a run is a verdict), and answering the command advertised
+	// as leaving with another prompt would make `quit` a lie (Codex, #1107).
+	s.mu.Lock()
+	ended := s.ended
+	s.mu.Unlock()
+	if ended {
+		return
+	}
+
 	s.printfTone(ToneBreak, "autopsy: the case failed %d expectation(s); the run is over, but its scope is still here\n", len(failures))
 	for _, failure := range failures {
 		s.printfTone(ToneDanger, "  %s\n", failure)
@@ -547,7 +569,7 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, failures []strin
 				continue
 			}
 			s.record("inspect " + expression)
-			s.inspect(ctx, expression, scope)
+			s.inspectWith(ctx, expression, scope, extra)
 
 		case "scope":
 			s.record("scope")
