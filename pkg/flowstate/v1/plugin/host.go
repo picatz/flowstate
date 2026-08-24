@@ -387,17 +387,48 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 	catalog := &flowstatev1.PluginCatalog{
 		Plugins:    make([]*flowstatev1.PluginDescription, 0, len(plugins)),
 		SearchPath: slices.Clone(h.cfg.SearchPath),
+
+		// Same presence signal as TaskCatalog.ClaimsSchemaVersion, populated
+		// for the same reason: `flow plugins -o json` serializes this message
+		// directly, and that output outlives this process. See the field's
+		// doc comment in catalog.proto.
+		ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
 	}
 
 	for _, p := range plugins {
 		manifest := p.Manifest()
 		tasks := byPlugin[p.Name()]
 
-		// The task schema digest is over the descriptors as this host reconstructed
-		// them, deterministically marshaled, because that is what a worker will
-		// actually type-check a step against: a plugin whose descriptors changed
-		// shape while its version stood still is the case the digest exists to catch.
-		schemaBytes, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&flowstatev1.PluginDescription{Tasks: tasks})
+		// The task schema digest is over the descriptors as this host
+		// reconstructed them — name, summary, inputs, outputs — deterministically
+		// marshaled, because that is what a worker will actually type-check a
+		// step against: a plugin whose descriptors changed shape while its
+		// version stood still is the case the digest exists to catch.
+		//
+		// Deliberately excludes the five claim fields (#712), even though they
+		// live on the same TaskDescription: this digest is embedded in every
+		// in-flight run's ResolvedPlugin at submission and compared exactly at
+		// every segment boundary a run passes through, so it must stay stable
+		// across a change to what it hashes or a routine worker upgrade turns
+		// into a non-retryable failure for every durable run pinned to an
+		// unchanged plugin (#763 review). TaskDescriptionSansClaims is the
+		// projection that leaves it out.
+		schemaOnly := make([]*flowstatev1.TaskDescription, len(tasks))
+		for i, t := range tasks {
+			schemaOnly[i] = flowstatev1.TaskDescriptionSansClaims(t)
+		}
+		schemaBytes, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&flowstatev1.PluginDescription{Tasks: schemaOnly})
+
+		// The claims digest is the five security-weight fields alone, hashed
+		// apart from the descriptor shape precisely so it is free to change —
+		// a plugin flipping needs_scope moves this digest and leaves
+		// task_schema_digest untouched. See ResolvedPlugin.claims_digest for
+		// how a worker treats a pin recorded before this field existed.
+		claimsOnly := make([]*flowstatev1.TaskDescription, len(tasks))
+		for i, t := range tasks {
+			claimsOnly[i] = flowstatev1.TaskDescriptionClaimsOnly(t)
+		}
+		claimsBytes, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&flowstatev1.PluginDescription{Tasks: claimsOnly})
 
 		catalog.Plugins = append(catalog.Plugins, &flowstatev1.PluginDescription{
 			Name:        p.Name(),
@@ -413,6 +444,7 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 			Tasks:            tasks,
 			ProtocolVersion:  uint32(p.ProtocolVersion()),
 			TaskSchemaDigest: flowstatev1.ContentDigest(schemaBytes),
+			ClaimsDigest:     flowstatev1.ContentDigest(claimsBytes),
 
 			// Retained from the launch rather than re-read from the path here: see
 			// [Plugin.distribution]. Reading it now would hash whatever answers to

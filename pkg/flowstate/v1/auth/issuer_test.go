@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwa"
+	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,7 +69,18 @@ func newIssuer(t *testing.T, clock *authtest.Clock, opts ...auth.IssuerOption) (
 	key, err := auth.GenerateSigningKey("test-key", jwa.ES256)
 	require.NoError(t, err)
 
-	issuer, err := auth.NewIssuer(server.URL, key, append([]auth.IssuerOption{auth.WithIssuerClock(clock.Now)}, opts...)...)
+	// The claim set is closed, so an issuer these tests mint through has to
+	// declare what [testIdentity] carries. Derived from that identity rather
+	// than spelled again, so adding a claim there does not silently start
+	// failing every mint in the package. A test about the allowlist itself
+	// declares its own set — see TestMintRefusesAnUndeclaredClaim.
+	declared := slices.Sorted(maps.Keys(testIdentity().Claims))
+
+	issuer, err := auth.NewIssuer(server.URL, key,
+		append([]auth.IssuerOption{
+			auth.WithIssuerClock(clock.Now),
+			auth.WithDeclaredClaims(declared...),
+		}, opts...)...)
 	require.NoError(t, err)
 
 	mu.Lock()
@@ -297,6 +311,27 @@ func TestIssuerRoundTrip(t *testing.T) {
 	}
 }
 
+// TestIssuerDiscoveryAdvertisesMintedClaims keeps the assertion and discovery
+// surfaces on the same contract. Registered JWT protocol claims are not carried
+// into Principal.Claims by verification, but they are still claims in the minted
+// token and are therefore intentionally advertised by claims_supported.
+func TestIssuerDiscoveryAdvertisesMintedClaims(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "sts.amazonaws.com")
+	require.NoError(t, err)
+
+	token, err := jwt.Parse(assertion.Token())
+	require.NoError(t, err)
+
+	minted := slices.Sorted(maps.Keys(token.Claims))
+	advertised := slices.Clone(issuer.Discovery().ClaimsSupported)
+	slices.Sort(advertised)
+	require.Equal(t, minted, advertised,
+		"claims_supported must describe every built-in and declared claim the issuer can mint")
+}
+
 // TestIssuerAssertionIsAudienceScoped is the replay test: an assertion minted for
 // one relying party must be useless at another. Without this, one compromised or
 // merely careless relying party could present a Flowstate assertion to every other
@@ -388,6 +423,11 @@ func TestNewIssuerRejectsBadConfiguration(t *testing.T) {
 			name: "a key set path that shadows the discovery document",
 			url:  "https://flowstate.example.com",
 			opts: []auth.IssuerOption{auth.WithJWKSPath(auth.DiscoveryPath)},
+		},
+		{
+			name: "a key set path that shadows workload metadata",
+			url:  "https://flowstate.example.com",
+			opts: []auth.IssuerOption{auth.WithJWKSPath(auth.WorkloadIssuerMetadataPath)},
 		},
 	}
 
@@ -574,6 +614,26 @@ func TestIssuerHandler(t *testing.T) {
 		require.Contains(t, document.ClaimsSupported, auth.ClaimOnBehalfOf)
 	})
 
+	t.Run("workload issuer metadata", func(t *testing.T) {
+		response, err := server.Client().Get(server.URL + auth.WorkloadIssuerMetadataPath)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = response.Body.Close() })
+
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		require.Equal(t, "application/json", response.Header.Get("Content-Type"))
+		require.Contains(t, response.Header.Get("Cache-Control"), "max-age=")
+
+		var document auth.WorkloadIssuerMetadata
+		require.NoError(t, json.NewDecoder(response.Body).Decode(&document))
+
+		require.Equal(t, server.URL, document.Issuer)
+		require.Equal(t, server.URL+auth.DefaultJWKSPath, document.JWKSURI)
+		require.Equal(t, []string{auth.WorkloadAssertionProfile}, document.AssertionProfilesSupported)
+		require.Equal(t, []jwa.Algorithm{jwa.ES256}, document.SigningAlgValuesSupported)
+		require.Equal(t, []string{"EC"}, document.KeyTypesSupported)
+		require.Contains(t, document.ClaimsSupported, auth.ClaimOnBehalfOf)
+	})
+
 	t.Run("key set", func(t *testing.T) {
 		response, err := server.Client().Get(server.URL + issuer.JWKSPath())
 		require.NoError(t, err)
@@ -610,6 +670,114 @@ func TestIssuerHandler(t *testing.T) {
 		require.Equal(t, http.StatusMethodNotAllowed, response.StatusCode)
 		require.Equal(t, "GET, HEAD", response.Header.Get("Allow"))
 	})
+}
+
+// TestTheOIDCDocumentKeepsEveryFieldAStrictConsumerReads pins the four fields
+// that are the difference between an issuer a cloud IdP will accept and one it
+// will silently refuse.
+//
+// It reads the wire, not the Go struct: what a relying party gets is the JSON,
+// and a field that stops being serialized — renamed, dropped, given a
+// different tag — is invisible to a test that decodes into the type that
+// produced it. AWS IAM OIDC providers, Google Cloud Workload Identity
+// Federation configured by discovery, and Vault/OpenBao's `oidc_discovery_url`
+// all require "id_token_signing_alg_values_supported"; OpenID Connect
+// Discovery requires the response and subject types. None of that breaks in
+// this repository when it goes: Flowstate-to-Flowstate federation reads only
+// "issuer" and "jwks_uri" (see [auth.OIDCVerifier]'s key fetching), so the
+// only thing that notices is a third party, at their end, after a deploy.
+func TestTheOIDCDocumentKeepsEveryFieldAStrictConsumerReads(t *testing.T) {
+	_, server := newIssuer(t, authtest.NewClock(referenceTime))
+
+	response, err := server.Client().Get(server.URL + auth.DiscoveryPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = response.Body.Close() })
+	require.Equal(t, http.StatusOK, response.StatusCode)
+
+	var document map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&document))
+
+	for _, required := range []string{
+		"issuer",
+		"jwks_uri",
+		"response_types_supported",
+		"subject_types_supported",
+		"id_token_signing_alg_values_supported",
+		"claims_supported",
+		"scopes_supported",
+	} {
+		require.Contains(t, document, required,
+			"%s is what a strict OpenID Connect consumer reads; removing it breaks federation "+
+				"at the consumer, with nothing in this repository to notice", required)
+	}
+
+	require.Equal(t, []any{"id_token"}, document["response_types_supported"])
+	require.Equal(t, []any{"public"}, document["subject_types_supported"])
+	require.Equal(t, []any{"ES256"}, document["id_token_signing_alg_values_supported"])
+	require.Equal(t, []any{"openid"}, document["scopes_supported"])
+}
+
+// TestWorkloadMetadataNeverClaimsAnUnimplementedProtocol is the negative half
+// of the workload document, and the reason it exists as a second document
+// rather than as edits to the first.
+//
+// These names have standardized OAuth and OpenID Connect meanings that
+// Flowstate does not implement: there is no authorization endpoint, no token
+// endpoint, no registration endpoint, and no grant. The document at
+// [auth.DiscoveryPath] carries the OpenID Connect subset it must in order to
+// be accepted at all — that is the compatibility this repository pays for
+// deliberately, pinned by the test above. This one is under no such obligation,
+// so anything it advertised would be a capability claim, and a false one.
+func TestWorkloadMetadataNeverClaimsAnUnimplementedProtocol(t *testing.T) {
+	_, server := newIssuer(t, authtest.NewClock(referenceTime))
+
+	response, err := server.Client().Get(server.URL + auth.WorkloadIssuerMetadataPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = response.Body.Close() })
+	require.Equal(t, http.StatusOK, response.StatusCode)
+
+	var document map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&document))
+
+	for _, forbidden := range []string{
+		"authorization_endpoint",
+		"token_endpoint",
+		"registration_endpoint",
+		"userinfo_endpoint",
+		"grant_types_supported",
+		"response_types_supported",
+		"token_endpoint_auth_methods_supported",
+		"scopes_supported",
+	} {
+		require.NotContains(t, document, forbidden,
+			"the workload document must not advertise %s: Flowstate implements no such thing, "+
+				"and a consumer that reads it would attempt a protocol this server cannot finish", forbidden)
+	}
+}
+
+// TestWorkloadMetadataIsTheMintingContract proves the advertised vocabulary and
+// cryptography describe an assertion this issuer actually mints, rather than a
+// parallel list that agreed with the mint on the day it was written.
+func TestWorkloadMetadataIsTheMintingContract(t *testing.T) {
+	issuer, _ := newIssuer(t, authtest.NewClock(referenceTime))
+
+	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "sts.example")
+	require.NoError(t, err)
+	token, err := jwt.Parse(assertion.Token())
+	require.NoError(t, err)
+
+	algorithm, err := token.Header.Algorithm()
+	require.NoError(t, err)
+
+	metadata := issuer.WorkloadMetadata()
+	for claim := range token.Claims {
+		require.Contains(t, metadata.ClaimsSupported, claim, "minted claim omitted from metadata")
+	}
+	for _, claim := range metadata.ClaimsSupported {
+		require.Contains(t, token.Claims, claim, "metadata claim is not mintable by the complete fixture")
+	}
+	require.Contains(t, metadata.SigningAlgValuesSupported, algorithm)
+	require.Equal(t, []string{"EC"}, metadata.KeyTypesSupported)
 }
 
 // TestAssertionNeverRevealsItsToken checks that the one value in an assertion that

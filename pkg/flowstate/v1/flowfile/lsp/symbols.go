@@ -79,6 +79,8 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 // Only a reference to an earlier step resolves. A forward reference is a mistake
 // the diagnostics already report, and jumping to it would suggest it works.
 func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
+	pos = clampPosition(pos) // see [clampPosition]
+
 	if doc.parsed == nil {
 		return nil
 	}
@@ -188,8 +190,11 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 		return nil
 	}
 
-	target := from.callEntry.valueText()
-	if target == "" {
+	target, err := flowfile.LiteralText(from.callEntry.valueText())
+	if target == "" || err != nil {
+		// The compiler reads a call target as literal text and refuses any
+		// expression or interpolation. Navigating to a literal filename matching
+		// rejected source would claim that an invalid call works.
 		return nil
 	}
 

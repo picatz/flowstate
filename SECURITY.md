@@ -4,6 +4,13 @@ Flowstate runs other people's workloads under other people's policies, so a
 security report here is a report about a boundary somebody is depending on.
 This document says how to make one and what happens next.
 
+[THREAT_MODEL.md](THREAT_MODEL.md) is the design document behind this policy:
+what each boundary below is meant to hold against, and — in its "Non-goals and
+honest gaps" section — what it deliberately does not cover yet. Check that
+section before reporting: a gap named there is a documented, accepted
+limitation rather than a new finding. A report showing one of those gaps is
+worse in practice than the model assumed is still very much wanted.
+
 ## Reporting a vulnerability
 
 Report privately through GitHub's private vulnerability reporting on this
@@ -32,6 +39,15 @@ and therefore most wants to hear about breaking:
   is that it is safe to run on anything.
 - Plugin sandbox assumptions: a plugin exceeding what its manifest and the
   operator's base configuration grant it.
+- Prompt-injection-driven agent misuse: the stdio agent surface (`flow mcp`)
+  authenticates the process it is talking to, not each individual request, so
+  a report showing how untrusted content reaching an agent can make it act
+  outside what the operator who launched that process intended is in scope.
+- Issuer-key compromise or workload-assertion forgery: anything that lets a
+  caller mint or accept a workload identity assertion the issuer never
+  signed, or that widens what an assertion can claim beyond what
+  `THREAT_MODEL.md` §7 ("The issuer as a single point of failure") says is
+  bounded.
 
 Reports about the documented development postures are appreciated but are not
 vulnerabilities: `--insecure-no-auth`, `flow run local`'s rehearsal

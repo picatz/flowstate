@@ -40,9 +40,14 @@ $ mkdir -p ./plugins
 $ go -C plugins/vcs build -o ../../plugins/flowstate-plugin-vcs .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/vcs/workflow.yaml
 ```
+
+`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
+the server authenticates every caller as anonymous, which is only ever right on
+a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
+`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
 
 This one makes a real, unauthenticated request to `github.com` to clone
 `octocat/Hello-World` (chosen because it is small, public, and has existed
@@ -69,6 +74,13 @@ plugin directory provides
 That is the correct answer from a process that has not been told about this
 plugin, and it is worth keeping correct rather than growing an exception for
 this directory.
+
+Telling it is the other half, and it is a flag rather than an exception:
+`flow validate --plugin-dir <dir> examples/plugins/vcs/workflow.yaml` launches
+the plugins there and checks this file against the tasks and input schemas they
+provide, and `flow tasks --plugin-dir <dir>` lists them with the plugin each one
+came from (#724, #710). Build this plugin first — see
+[`plugins/vcs`](../../../plugins/vcs), which is a module of its own.
 
 ## What proves this file is reachable
 

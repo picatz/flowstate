@@ -146,11 +146,13 @@ func negationDrift(a, b *expr.Expr) (onlyA, onlyB *expr.Expr, drifted bool) {
 
 // singleClauseDrift checks whether negated is a single `!(...)` clause whose
 // operand, flattened the same way a top-level `&&` chain is, has exactly the
-// same number of clauses as other — and if so, whether every clause matches
-// (a healthy exact negation, reported as no drift) or exactly one does not (the
-// drift this lint exists to catch).
+// same number (at least two) of clauses as other — and if so, whether every
+// clause matches (a healthy exact negation, reported as no drift) or exactly
+// one does not (the drift this lint exists to catch).
 //
-// The length requirement is deliberate and narrow: it is what keeps this
+// Requiring at least two clauses is deliberate: for a one-clause pair, `x`
+// versus `!y` provides no evidence that the unrelated conditions were ever an
+// exact-negation pair. The length requirement also keeps this
 // silent on `examples/enterprise-fund-transfer/`'s `debit` vs
 // `refused_unauthorized` (four clauses negated against one) and on any other
 // pair where the shapes do not actually correspond, rather than guessing at a
@@ -166,7 +168,7 @@ func singleClauseDrift(negated, other []*expr.Expr) (onlyNegated, onlyOther *exp
 	}
 
 	innerClauses := flattenAnd(inner)
-	if len(innerClauses) != len(other) {
+	if len(innerClauses) < 2 || len(innerClauses) != len(other) {
 		return nil, nil, false
 	}
 

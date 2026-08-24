@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,8 +135,7 @@ func runInit(cmd *cobra.Command, dir string, opts initOptions) error {
 		path := filepath.Join(dir, f.name)
 		switch _, err := os.Lstat(path); {
 		case err == nil:
-			return fmt.Errorf("%s exists already, and `flow init` never overwrites: "+
-				"scaffold into an empty directory, or move that file aside first", path)
+			return errScaffoldExists(path)
 		case !os.IsNotExist(err):
 			return fmt.Errorf("error reading %s: %w", path, err)
 		}
@@ -144,17 +145,94 @@ func runInit(cmd *cobra.Command, dir string, opts initOptions) error {
 		return fmt.Errorf("error creating %s: %w", dir, err)
 	}
 
-	for _, f := range files {
-		path := filepath.Join(dir, f.name)
-		if err := os.WriteFile(path, []byte(f.contents), 0o644); err != nil {
-			return fmt.Errorf("error writing %s: %w", path, err)
-		}
+	reserved, err := reserveScaffoldFiles(dir, files)
+	if err != nil {
+		return err
+	}
+
+	if err := fillScaffoldFiles(reserved, files); err != nil {
+		return err
 	}
 
 	surface := newSurface(cmd)
 	printScaffold(surface, dir, files, note)
 
 	return nil
+}
+
+// errScaffoldExists is the refusal this command gives for a path it will not
+// overwrite, and it is one sentence because two spellings of one refusal drift.
+// runInit's preflight says it about a file that was already there; the
+// exclusive create says it about a file that appeared in between.
+func errScaffoldExists(path string) error {
+	return fmt.Errorf("%s exists already, and `flow init` never overwrites: "+
+		"scaffold into an empty directory, or move that file aside first", path)
+}
+
+// scaffoldWrite is a destination this invocation created and therefore owns.
+// The handle is held rather than the path reopened, so nothing appearing
+// between the create and the write can substitute the file the bytes land in.
+type scaffoldWrite struct {
+	path string
+	file *os.File
+}
+
+// reserveScaffoldFiles creates every destination before any of them is written.
+//
+// O_EXCL is what makes the no-overwrite promise authoritative: runInit's
+// preflight observes the directory and then writes, and a directory entry can
+// appear in between — a symlink there would otherwise be followed and its
+// target truncated. Reserving all the destinations first keeps the other half
+// of that promise, the one the preflight was written for: a collision on the
+// second file must not leave the first one behind.
+func reserveScaffoldFiles(dir string, files []scaffoldFile) ([]scaffoldWrite, error) {
+	reserved := make([]scaffoldWrite, 0, len(files))
+	for _, f := range files {
+		path := filepath.Join(dir, f.name)
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			discardScaffoldFiles(reserved)
+			if errors.Is(err, fs.ErrExist) {
+				return nil, errScaffoldExists(path)
+			}
+			return nil, fmt.Errorf("error writing %s: %w", path, err)
+		}
+		reserved = append(reserved, scaffoldWrite{path: path, file: file})
+	}
+	return reserved, nil
+}
+
+// fillScaffoldFiles writes the reserved destinations, and removes all of them
+// if any write or close fails, so that an error arriving mid-scaffold leaves
+// the directory as it found it rather than half-written.
+func fillScaffoldFiles(reserved []scaffoldWrite, files []scaffoldFile) error {
+	for i, f := range files {
+		if _, err := reserved[i].file.Write([]byte(f.contents)); err != nil {
+			discardScaffoldFiles(reserved)
+			return fmt.Errorf("error writing %s: %w", reserved[i].path, err)
+		}
+	}
+
+	// Close is checked rather than deferred and dropped: on a networked or
+	// full filesystem this is where the write actually fails, and a scaffold
+	// reported as created has to be one that reached the disk.
+	for _, r := range reserved {
+		if err := r.file.Close(); err != nil {
+			discardScaffoldFiles(reserved)
+			return fmt.Errorf("error writing %s: %w", r.path, err)
+		}
+	}
+	return nil
+}
+
+// discardScaffoldFiles removes the destinations this invocation exclusively
+// created, and only those: O_EXCL is what makes the removal safe to do without
+// a second look, since nothing else can own a path this reservation opened.
+func discardScaffoldFiles(reserved []scaffoldWrite) {
+	for _, r := range reserved {
+		_ = r.file.Close()
+		_ = os.Remove(r.path)
+	}
 }
 
 // printScaffold reports what was written and what to type next.
@@ -342,7 +420,8 @@ func plainYAMLString(name string) bool {
 //
 // It is written in the formatter's own canonical shape, so `flow fmt` on a fresh
 // scaffold is a byte-for-byte no-op (#451): the description is one unfolded line,
-// list entries sit at the mapping's own indent, the CEL string is double-quoted,
+// list entries sit indented under the key that holds them (#850), the CEL string
+// is double-quoted,
 // and the blank lines are the ones Marshal keeps. A scaffold the CLI's own
 // formatter would rewrite is the CLI disagreeing with itself about canonical form,
 // and it teaches the shape `flow fmt` was about to undo. TestFmtOnTheScaffoldIsANoOp
@@ -360,15 +439,15 @@ inputs:
     default: world
     description: who to greet
 steps:
-# Every step declares an id. It is how a later step, a test case, and
-# ` + "`flow get`" + ` all refer to this one.
-- id: greet
-  log:
-    # ${...} is CEL, and an expression is the whole value rather than a
-    # fragment spliced into text, so a greeting is built in CEL. A run's
-    # inputs, earlier steps' outputs, and anything enclosing control flow
-    # bound are all in scope.
-    message: ${"hello, " + inputs.name}
+  # Every step declares an id. It is how a later step, a test case, and
+  # ` + "`flow get`" + ` all refer to this one.
+  - id: greet
+    log:
+      # ${...} is CEL, and an expression is the whole value rather than a
+      # fragment spliced into text, so a greeting is built in CEL. A run's
+      # inputs, earlier steps' outputs, and anything enclosing control flow
+      # bound are all in scope.
+      message: ${"hello, " + inputs.name}
 `
 }
 
@@ -398,5 +477,9 @@ tests:
         returns: {}
     expect:
       ran: [greet]
+      # The closed claim: every step ` + "`ran:`" + ` does not name must have been
+      # skipped, so adding a step to the workflow fails this case loudly
+      # instead of passing silently around the new step.
+      others: skipped
 `
 }

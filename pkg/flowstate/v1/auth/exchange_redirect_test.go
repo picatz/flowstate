@@ -41,9 +41,10 @@ func TestAnExchangeDoesNotReplayTheAssertionToAnotherHost(t *testing.T) {
 
 	elsewhere := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "a token the operator never asked anyone for",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "a token the operator never asked anyone for",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 

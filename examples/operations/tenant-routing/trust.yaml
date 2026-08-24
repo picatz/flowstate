@@ -20,10 +20,14 @@
 # `Policy.validateTenancy` refuses a file where one issuer determines a namespace
 # and another does not, because callers admitted without one would share a
 # namespace with tenants meant to be kept apart.
+# The RPC audience appears in every entry: `flow server --rpc-resource` requires
+# the exact string it is started with to be listed by at least one kind: oidc
+# issuer, so that a resource no trusted issuer can mint for is refused at
+# start-up rather than discovered as a wall of 401s.
 issuers:
   - name: github-actions
     issuer: https://token.actions.githubusercontent.com
-    audiences: [flowstate]
+    audiences: [https://flowstate.example.com/rpc]
     algorithms: [RS256]
     # The tenant, read off a claim the issuer signed. The value read must be
     # lowercase letters, digits, and dashes, at most 63 characters; an org
@@ -41,7 +45,7 @@ issuers:
   # neither.
   - name: internal-ci
     issuer: https://ci.internal.example.com
-    audiences: [flowstate]
+    audiences: [https://flowstate.example.com/rpc]
     algorithms: [RS256]
     namespace: team-a
 

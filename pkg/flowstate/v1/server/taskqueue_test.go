@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -44,7 +45,7 @@ func TestRunsGoToTheSharedQueueWhenNothingIsRouted(t *testing.T) {
 	spec := &v1.Workflow{Name: "routing", Steps: []*v1.Node{bulky("only", 1)}}
 
 	for _, tenant := range []string{"", "team-a", "team-b"} {
-		flowstate := server.New(temporal, server.WithNamespace(tenant))
+		flowstate := mustNew(t, temporal, server.WithNamespace(tenant))
 
 		response, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: spec}))
 		require.NoError(t, err)
@@ -83,7 +84,7 @@ func TestRunsGoToTheirOwnTenantsQueueWhenRouted(t *testing.T) {
 		"":        "flowstate-run__default",
 		"default": "flowstate-run_default",
 	} {
-		flowstate := server.New(temporal, server.WithNamespace(tenant), server.WithTaskQueues(queues))
+		flowstate := mustNew(t, temporal, server.WithNamespace(tenant), server.WithTaskQueues(queues))
 
 		response, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: spec}))
 		require.NoError(t, err)
@@ -102,6 +103,15 @@ func TestRunsGoToTheirOwnTenantsQueueWhenRouted(t *testing.T) {
 // uses". That fallback is precisely what temporalclient.Pool.For refuses to make
 // for the Temporal namespace, for the same reason: a refusal is a
 // misconfiguration someone fixes, a fallback is a tenancy breach nobody notices.
+//
+// The ungrammatical tenant arrives on the *caller*, which is the only way it can
+// now: [server.WithNamespace] validates what a deployment configures (see
+// TestNewRefusesANamespaceOutsideTheGrammar), so the deployment's own fallback
+// can no longer be one. An identity carrying a namespace from before that
+// grammar existed still can, and is exactly what this refusal is for — which is
+// also why writing this test through the option was always the weaker version of
+// it: it proved the handler refuses a value only a misconfigured process could
+// hold, rather than one a request can actually arrive with.
 func TestRoutingRefusesATenantItCannotPlace(t *testing.T) {
 	t.Parallel()
 
@@ -109,11 +119,16 @@ func TestRoutingRefusesATenantItCannotPlace(t *testing.T) {
 
 	spec := &v1.Workflow{Name: "routing", Steps: []*v1.Node{bulky("only", 1)}}
 
-	flowstate := server.New(temporal,
-		server.WithNamespace("Prod Team"),
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Subject:   "someone@example.com",
+		Issuer:    "https://issuer.example.com",
+		Namespace: "Prod Team",
+	})
+
+	flowstate := mustNew(t, temporal,
 		server.WithTaskQueues(engine.TaskQueues{Prefix: "flowstate-run"}))
 
-	_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: spec}))
+	_, err := flowstate.Run(ctx, connect.NewRequest(&v1.RunRequest{Workflow: spec}))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	require.ErrorContains(t, err, "cannot be placed on one")
@@ -122,8 +137,8 @@ func TestRoutingRefusesATenantItCannotPlace(t *testing.T) {
 	// unconfigured path never looks at the namespace at all. Asserted here and
 	// not only in the engine's unit test, because "the default path did not
 	// change" is a claim about this handler.
-	unrouted := server.New(temporal, server.WithNamespace("Prod Team"))
-	response, err := unrouted.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: spec}))
+	unrouted := mustNew(t, temporal)
+	response, err := unrouted.Run(ctx, connect.NewRequest(&v1.RunRequest{Workflow: spec}))
 	require.NoError(t, err)
 	require.Equal(t, engine.RunTaskQueueName, taskQueueOf(t, temporal, response.Msg.GetWorkflowId()))
 }

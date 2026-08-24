@@ -8,13 +8,13 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // runPluginIdentityLocal installs a plugin task's context the way the local
 // driver's production seam does — cmd/flow/secrets.go's withLocalTaskRuntime —
-// and runs [tests.PluginIdentityStep] against it, registered on a private
+// and runs [conformance.PluginIdentityStep] against it, registered on a private
 // [v1.Registry] rather than the process-global one so this test needs no
 // coordination with anything else that registers a task for the life of the
 // binary.
@@ -22,7 +22,7 @@ func runPluginIdentityLocal(t *testing.T, identity auth.WorkloadIdentity) (subje
 	t.Helper()
 
 	registry := v1.NewRegistry()
-	require.NoError(t, registry.Register(tests.PluginIdentityTaskDef(false)))
+	require.NoError(t, registry.Register(conformance.PluginIdentityTaskDef(false)))
 
 	ctx := v1.NewContextWithRegistry(context.Background(), registry)
 
@@ -32,7 +32,7 @@ func runPluginIdentityLocal(t *testing.T, identity auth.WorkloadIdentity) (subje
 	ctx = plugin.NewContextWithIdentity(ctx, v1.ProtoWorkloadIdentity(identity))
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{Identity: identity})
 
-	out, err := v1.Run(ctx, tests.PluginIdentityStep("plugin-identity-local", "call"))
+	out, err := v1.Run(ctx, conformance.PluginIdentityStep("plugin-identity-local", "call"))
 	require.NoError(t, err)
 
 	values := out.GetStepValues()["call"].GetNamedValues()

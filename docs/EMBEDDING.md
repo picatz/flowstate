@@ -25,12 +25,21 @@ have to. Prefer it even where `v1` could do the same thing more directly.
 ```go
 import (
 	"context"
+	"log"
 
 	"github.com/picatz/flowstate/pkg/flowstate/embed"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"go.temporal.io/sdk/worker"
 )
 
-// 1. Register a custom task.
+// 1. Register a custom task. No Input/Output message is given here, which is
+// [embed.Task]'s nil-descriptor escape hatch: `flow validate`, a language
+// server, and generated reference docs can then check and document nothing
+// about this task's shape beyond its name. That is a reasonable trade-off for
+// a task used in one program by its own author, and the wrong choice for a
+// task anyone else will write a step against — see
+// examples/embedding/main.go's registerGreetTask for a task that takes it.
 tasks := embed.NewTasks()
 tasks.Register(embed.Task{
 	Name: "greet",
@@ -48,18 +57,26 @@ if err != nil {
 }
 defer uninstall()
 
-// 2. Compile a Flowfile from bytes.
+// 2. Compile a Flowfile from bytes. data is the Flowfile's contents,
+// however the embedding program obtained them — go:embed, os.ReadFile, ...
 workflow, diags, err := embed.Compile(data)
 
 // 3. Run it locally.
+ctx := context.Background()
 outputs, err := embed.RunLocal(ctx, workflow, embed.RunOptions{
 	Inputs: map[string]any{"name": "world"},
 	Tasks:  tasks,
 })
 
 // 4. Or run it durably, against a Temporal worker the program owns.
+// temporalClient is a *client.Client the embedding program dialed itself.
 err = embed.RunDurable(worker.New(temporalClient, engine.RunTaskQueueName, worker.Options{}), tasks)
 ```
+
+`data` and `temporalClient` are elided above — they are the two values an
+embedding program supplies from its own setup, not something this package
+provides. [examples/embedding](../examples/embedding) is the runnable version
+with both filled in.
 
 ## Compile vs. validate
 
@@ -143,6 +160,47 @@ only the one `RunLocal` call it is passed to. The CLI flag mutates
 fresh, run-scoped registry and installs the policy's `http` task into that,
 so two concurrent `RunLocal` calls with different policies never interfere
 with each other.
+
+## Testing the workflows you embed
+
+An embedded workflow is code your program ships, and its `*.test.yaml` suite
+belongs in the same CI that tests the rest of the program.
+`pkg/flowstate/v1/flowtest/flowtesting` pins a suite into `go test` with one
+call:
+
+```go
+func TestWorkflows(t *testing.T) {
+	flowtesting.RunFile(t, "workflows/deploy.test.yaml")
+}
+```
+
+Each case in the file becomes a real Go subtest named by the case's own
+`name:`, so everything that addresses a Go test addresses a Flowfile case —
+`go test -run 'TestWorkflows/rolls_back_on_a_500'` reruns one case, `-v`
+shows per-case timing and the suite's warnings, an IDE's per-test rerun works,
+and a CI failure names the case rather than the file. Because the name is the
+address, a file whose cases share one is refused before anything runs; `flow
+test` itself accepts duplicates, since it never addresses a case by name.
+
+A suite built or loaded in Go rather than read from disk goes through
+`flowtesting.Run(t, file, flowtesting.WithDir(dir))`, where `WithDir` supplies
+the directory the cases' relative `workflow:` paths resolve against — the fact
+a file on disk carries in its own path. Two more options match the CLI's two
+opt-in bars: `WithCoverageRequired()` holds the suite to
+`flow test --coverage-required` (every step and switch arm reached or
+recorded, no stale records), and `WithSchedules(budget)` explores each case
+under seeded schedules the way `flow test --seeds N` does, failing the case's
+subtest with the seed to replay when an ordering changed what it observed.
+
+The verdicts are `flow test`'s own, spelled the same way: the harness runs
+each case through the same engine, stubbing and virtual clock the CLI uses,
+so a case passing under `go test` and failing under `flow test` (or the
+reverse) would be a bug in the harness, not a property of your suite.
+
+Each case logs its transcript — what every step produced and when virtual
+time moved, which stub answered it, scripted signals with their sender, the
+`switch:` arm taken — through the subtest's own log, so `go test` shows it
+exactly when the CLI would: on a failing case, and under `-v` for every case.
 
 ## What is not curated here
 

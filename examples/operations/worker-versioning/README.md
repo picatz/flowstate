@@ -29,9 +29,14 @@ a shipped capability depends on the guarantee rather than merely benefiting from
 ## Run it
 
 ```console
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
+
+`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
+the server authenticates every caller as anonymous, which is only ever right on
+a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
+`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
 
 The build id is what has to be unique per build; the commit is the obvious source
 and the one the flag's own help suggests. The startup line echoes both:

@@ -9,10 +9,10 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
-// TestRunWorkflowEgressIdentity runs [tests.EgressIdentityCases] against the
+// TestRunWorkflowEgressIdentity runs [conformance.EgressIdentityCases] against the
 // durable driver — the same cases [flowstatev1_test.TestRunWorkflowEgressIdentity]
 // runs against the local one. Two verified callers, which is what makes this
 // set able to see a disagreement at all: #295 was exactly a disagreement here,
@@ -24,21 +24,21 @@ import (
 // different route, which is the whole point of comparing answers rather than
 // plumbing.
 func TestRunWorkflowEgressIdentity(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
-	for _, tc := range tests.EgressIdentityCases() {
+	for _, tc := range conformance.EgressIdentityCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			tests.InstallEgressIdentityPolicy(t)
+			conformance.InstallEgressIdentityPolicy(t)
 
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
-			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{
-				Workflow: tests.EgressIdentityWorkflow(baseURL),
+				Workflow: conformance.EgressIdentityWorkflow(baseURL),
 				Identity: tc.Identity,
 			})
 			require.True(t, env.IsWorkflowCompleted())
@@ -51,7 +51,7 @@ func TestRunWorkflowEgressIdentity(t *testing.T) {
 				require.NoError(t, env.GetWorkflowResult(outputs))
 			}
 
-			tests.AssertEgressIdentityOutcome(t, tc, outputs, err)
+			conformance.AssertEgressIdentityOutcome(t, tc, outputs, err)
 		})
 	}
 }

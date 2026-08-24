@@ -2,9 +2,12 @@ package auth_test
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -282,6 +285,358 @@ func TestCITenantFromClaim(t *testing.T) {
 		_, err := verifier.Verify(context.Background(), token)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, auth.ErrNoNamespace)
+	})
+}
+
+// TestCITenantFromNamespaceMap covers the answer to TestCITenantFromClaim's
+// gap: NamespaceMap maps the raw "repository" claim (which always contains "/"
+// and so can never satisfy the namespace grammar on its own) to a namespace
+// through an exact, operator-authored table rather than a derived grammar.
+//
+// The load-bearing property is isolation, not round-tripping: a claim value
+// with an entry must land in exactly that tenant, a claim value without one
+// must be refused rather than falling back to anything, and no verified token
+// — however it is shaped — may reach a namespace its entry does not name. See
+// CLAUDE.md's "test the traversal, not just the step": a tenancy boundary that
+// only proves "team-a reads team-a" is a functionality test wearing a security
+// test's clothes.
+func TestCITenantFromNamespaceMap(t *testing.T) {
+	t.Parallel()
+
+	key := authtest.GenerateKey("gha-key-1", jwa.RS256)
+	clock := authtest.NewClock(time.Now())
+	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{
+		Issuers: []auth.TrustedIssuer{{
+			Name:           "ci",
+			Issuer:         issuer.URL(),
+			Audiences:      []string{"flowstate"},
+			NamespaceClaim: "repository",
+			NamespaceMap: map[string]string{
+				"acme-org/service-a": "team-a",
+				"acme-org/service-b": "team-b",
+				// Two different claim values sharing one namespace is a
+				// deliberate, supported shape, not a collision.
+				"acme-org/service-a-canary": "team-a",
+			},
+		}},
+	}, auth.WithClock(clock.Now))
+	require.NoError(t, err)
+
+	verify := func(t *testing.T, owner, repo string) (auth.Principal, error) {
+		t.Helper()
+		token := ciToken(issuer, owner, repo, "main", "flowstate")
+		return verifier.Verify(context.Background(), token)
+	}
+
+	t.Run("a mapped repository lands in its own tenant", func(t *testing.T) {
+		principal, err := verify(t, "acme-org", "service-a")
+		require.NoError(t, err)
+		assert.Equal(t, "team-a", principal.Namespace)
+	})
+
+	t.Run("a different mapped repository lands in the other tenant", func(t *testing.T) {
+		principal, err := verify(t, "acme-org", "service-b")
+		require.NoError(t, err)
+		assert.Equal(t, "team-b", principal.Namespace)
+	})
+
+	t.Run("two repositories may share a tenant on purpose", func(t *testing.T) {
+		principal, err := verify(t, "acme-org", "service-a-canary")
+		require.NoError(t, err)
+		assert.Equal(t, "team-a", principal.Namespace)
+	})
+
+	t.Run("an unmapped repository is refused, not admitted to any tenant", func(t *testing.T) {
+		// A verified token from the same trusted issuer, same organization,
+		// signed the same way — the only difference is the repository has no
+		// entry. Fail closed: it must not land in team-a, team-b, or a "" default.
+		principal, err := verify(t, "acme-org", "service-c")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, auth.ErrNoNamespace)
+		assert.True(t, principal.IsZero(), "an unmapped claim must not authenticate as anyone")
+	})
+
+	t.Run("a repository from another organization entirely cannot spoof a mapped entry", func(t *testing.T) {
+		// Same repository *name* as a mapped tenant, different owner: the map key
+		// is the whole "<owner>/<name>" claim, so this must not collide with
+		// "acme-org/service-a".
+		principal, err := verify(t, "other-org", "service-a")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, auth.ErrNoNamespace)
+		assert.True(t, principal.IsZero())
+	})
+
+	t.Run("no token, however shaped, reaches a namespace absent from the map", func(t *testing.T) {
+		// The exhaustive negative: sweep every repository this fixture did not
+		// map, plus values chosen to probe the lookup itself (empty-looking,
+		// case variants, and a value equal to a mapped namespace rather than a
+		// mapped key), and confirm every one is refused and none is silently
+		// admitted into "team-a" or "team-b".
+		unmapped := []string{
+			"acme-org/service-c",
+			"acme-org/Service-A",  // case differs from the mapped key
+			"acme-org/service-a ", // trailing space
+			"team-a/service-a",    // owner equals a namespace, not a mapped key
+			"acme-org/team-a",     // repo equals a namespace, not a mapped key
+			"other-org/other-repo",
+		}
+		for _, repository := range unmapped {
+			owner, repo, ok := strings.Cut(repository, "/")
+			require.True(t, ok, repository)
+
+			principal, err := verify(t, owner, repo)
+			require.Errorf(t, err, "expected %q to be refused", repository)
+			assert.ErrorIs(t, err, auth.ErrNoNamespace)
+			assert.Truef(t, principal.IsZero(), "%q must not authenticate as anyone", repository)
+		}
+	})
+}
+
+// TestNamespaceMapValidation covers the policy-load-time checks: a
+// namespace_map is refused at configuration time, not left to fail
+// opaquely (or worse, permissively) at the first token it sees.
+func TestNamespaceMapValidation(t *testing.T) {
+	t.Parallel()
+
+	base := func() auth.TrustedIssuer {
+		return auth.TrustedIssuer{
+			Name:      "ci",
+			Issuer:    "https://token.actions.githubusercontent.com",
+			Audiences: []string{"flowstate"},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*auth.TrustedIssuer)
+		wantErr string
+	}{
+		{
+			name: "requires namespace_claim",
+			mutate: func(i *auth.TrustedIssuer) {
+				i.NamespaceMap = map[string]string{"acme-org/repo": "team-a"}
+			},
+			wantErr: "namespace_map requires namespace_claim",
+		},
+		{
+			name: "an empty map is refused",
+			mutate: func(i *auth.TrustedIssuer) {
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{}
+			},
+			wantErr: "empty",
+		},
+		{
+			name: "a mapped value that fails the namespace grammar is refused at load, not at verification",
+			mutate: func(i *auth.TrustedIssuer) {
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{"acme-org/repo": "Team-A"}
+			},
+			wantErr: "lowercase letters, digits, and dashes",
+		},
+		{
+			name: "a mapped value that is empty is refused",
+			mutate: func(i *auth.TrustedIssuer) {
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{"acme-org/repo": ""}
+			},
+			wantErr: "empty namespace",
+		},
+		{
+			// Namespace and NamespaceClaim are already mutually exclusive, and a
+			// namespace_map with no namespace_claim is refused before this policy
+			// is ever consulted, so combining Namespace with NamespaceMap alone
+			// (no NamespaceClaim) is refused for the latter reason first — which
+			// is itself the point: there is no path that admits a namespace_map
+			// without the claim it maps.
+			name: "cannot be combined with a fixed namespace and no claim",
+			mutate: func(i *auth.TrustedIssuer) {
+				i.Namespace = "platform"
+				i.NamespaceMap = map[string]string{"acme-org/repo": "team-a"}
+			},
+			wantErr: "namespace_map requires namespace_claim",
+		},
+		{
+			name: "namespace and namespace_claim remain alternatives even with a map",
+			mutate: func(i *auth.TrustedIssuer) {
+				i.Namespace = "platform"
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{"acme-org/repo": "team-a"}
+			},
+			wantErr: "alternatives",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			issuer := base()
+			test.mutate(&issuer)
+
+			_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{issuer}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.wantErr)
+		})
+	}
+}
+
+// TestNamespaceMapExplicitNullIsRefused is the regression for the finding
+// Codex raised on PR #744: constructing a TrustedIssuer directly in Go can
+// never produce a NamespaceMap that is present-but-null, because a Go map
+// literal has no such state — only decoding a document that spells the key
+// out can. So this goes through [auth.ParsePolicy] with literal YAML, the
+// only path that can reproduce the bug: namespace_map: null (or a bare
+// namespace_map: with nothing after the colon, YAML's other spelling of the
+// same null) must be refused at load, not silently treated the same as the
+// key never having been written — which would fall the entry back to
+// namespace_claim's raw-value grammar check with no map involved at all.
+func TestNamespaceMapExplicitNullIsRefused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "namespace_map: null",
+			yaml: `
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository_owner
+    namespace_map: null
+`,
+		},
+		{
+			name: "namespace_map: with nothing after the colon",
+			yaml: `
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository_owner
+    namespace_map:
+`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := auth.ParsePolicy([]byte(test.yaml))
+			require.Error(t, err, "a null namespace_map must be refused at load")
+			assert.ErrorIs(t, err, auth.ErrInvalidPolicy)
+			assert.Contains(t, err.Error(), "namespace_map")
+		})
+	}
+
+	t.Run("a genuinely absent namespace_map is unaffected", func(t *testing.T) {
+		// The control: namespace_claim alone, with no namespace_map key
+		// anywhere in the document, is the pre-existing, supported,
+		// grammar-checked mode and must keep loading cleanly.
+		policy, err := auth.ParsePolicy([]byte(`
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository_owner
+`))
+		require.NoError(t, err)
+		require.Len(t, policy.Issuers, 1)
+		assert.Nil(t, policy.Issuers[0].NamespaceMap)
+	})
+
+	t.Run("a populated namespace_map still loads and resolves through the map", func(t *testing.T) {
+		policy, err := auth.ParsePolicy([]byte(`
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository
+    namespace_map:
+      acme-org/service-a: team-a
+`))
+		require.NoError(t, err)
+		require.Len(t, policy.Issuers, 1)
+		assert.Equal(t, map[string]string{"acme-org/service-a": "team-a"}, map[string]string(policy.Issuers[0].NamespaceMap))
+	})
+}
+
+// TestNamespaceMapEmptyRoundTripsAsPresent is the regression for the finding
+// that landed on PR #744 after TestNamespaceMapExplicitNullIsRefused: a
+// caller that builds a non-nil, empty [auth.NamespaceMap] directly in Go
+// (a deliberate deny-all, distinct from never configuring the field at all)
+// must have that emptiness survive marshal -> unmarshal, for both JSON and
+// YAML.
+//
+// Before the fix, both encoding/json's `omitempty` and goccy/go-yaml's
+// `omitempty` decided whether to omit the field by reflecting on len(m) --
+// which a non-nil empty map satisfies exactly as a nil map does -- before
+// ever calling [auth.NamespaceMap]'s MarshalJSON/MarshalYAML method. So the
+// field vanished from the wire exactly as if it had never been set, and
+// re-parsing decoded it back as nil (absent, unrestricted): the marshal
+// round trip silently turned a deny-all into no restriction at all, defeated
+// the null-rejection this same file's TestNamespaceMapExplicitNullIsRefused
+// exists to enforce, and did so without hitting [auth.ParsePolicy] at all --
+// a plain encoding/json or goccy/go-yaml round trip is enough.
+func TestNamespaceMapEmptyRoundTripsAsPresent(t *testing.T) {
+	t.Parallel()
+
+	issuer := auth.TrustedIssuer{
+		Name:           "ci",
+		Issuer:         "https://token.actions.githubusercontent.com",
+		Audiences:      []string{"flowstate"},
+		NamespaceClaim: "repository",
+		NamespaceMap:   auth.NamespaceMap{}, // non-nil, empty: deliberate deny-all.
+	}
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{issuer}}
+
+	t.Run("JSON", func(t *testing.T) {
+		data, err := json.Marshal(policy)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"namespace_map":{}`,
+			"an empty NamespaceMap must be written, not omitted")
+
+		var back auth.Policy
+		require.NoError(t, json.Unmarshal(data, &back))
+		require.Len(t, back.Issuers, 1)
+		assert.NotNil(t, back.Issuers[0].NamespaceMap,
+			"an empty namespace_map must decode as present, not absent")
+		assert.Empty(t, map[string]string(back.Issuers[0].NamespaceMap))
+	})
+
+	t.Run("YAML", func(t *testing.T) {
+		data, err := yaml.Marshal(policy)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "namespace_map: {}",
+			"an empty NamespaceMap must be written, not omitted")
+
+		var back auth.Policy
+		require.NoError(t, yaml.Unmarshal(data, &back))
+		require.Len(t, back.Issuers, 1)
+		assert.NotNil(t, back.Issuers[0].NamespaceMap,
+			"an empty namespace_map must decode as present, not absent")
+		assert.Empty(t, map[string]string(back.Issuers[0].NamespaceMap))
+	})
+
+	t.Run("nil NamespaceMap is still omitted, both formats", func(t *testing.T) {
+		nilPolicy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:           "ci",
+			Issuer:         "https://token.actions.githubusercontent.com",
+			Audiences:      []string{"flowstate"},
+			NamespaceClaim: "repository",
+		}}}
+
+		jdata, err := json.Marshal(nilPolicy)
+		require.NoError(t, err)
+		assert.NotContains(t, string(jdata), "namespace_map",
+			"a never-configured NamespaceMap must not appear on the wire at all")
+
+		ydata, err := yaml.Marshal(nilPolicy)
+		require.NoError(t, err)
+		assert.NotContains(t, string(ydata), "namespace_map",
+			"a never-configured NamespaceMap must not appear on the wire at all")
 	})
 }
 

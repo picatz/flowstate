@@ -730,3 +730,38 @@ func Test_secretRefInHeaderStaysAReference(t *testing.T) {
 	require.NotContains(t, err.Error(), "X-Forged",
 		"the refusal repeats the value it refused, which is the value it must not say")
 }
+
+// Test_httpTask_defaultOutputsDoubleCarryIsOverTheSizeBound pins the answer to
+// #787's acceptance question about the http task's default-outputs shape: with
+// `parse_json: true` and no `outputs:` declared, the result carries the body
+// twice — Body as the raw string and Json as the parsed structure — so a JSON
+// response at the 1 MiB body cap produces a result *over*
+// [MaxTaskOutputBytes], and the choice pinned here is that it gets the
+// diagnosis rather than being squeezed under the bound. The remedy is in the
+// diagnosis itself: declare `outputs:` and select, instead of carrying the
+// whole response twice.
+//
+// The check itself is applied at [Task.EvalInScope] — the conformance cases
+// hold both drivers to that — so this test composes the task's own default
+// shape with [CheckTaskOutputSize] directly rather than re-running a driver.
+func Test_httpTask_defaultOutputsDoubleCarryIsOverTheSizeBound(t *testing.T) {
+	// A JSON string just under the 1 MiB response cap
+	// (netpolicy.DefaultMaxResponseBytes), so the read succeeds and the
+	// double-carry is what crosses the bound.
+	body := `"` + strings.Repeat("x", (1<<20)-1024) + `"`
+	server, _ := httpTaskServer(t, http.StatusOK, body, http.Header{"Content-Type": []string{"application/json"}})
+
+	out, err := runHTTPTask(t, map[string]any{
+		"method":     http.MethodGet,
+		"url":        server.URL,
+		"parse_json": true,
+	})
+	require.NoError(t, err, "the body is under the response cap; reading it must succeed")
+
+	err = CheckTaskOutputSize(out)
+	require.Error(t, err,
+		"a maximal parsed JSON body carried twice (Body + Json) must be over the output size bound")
+	require.Contains(t, err.Error(), "byte limit")
+	require.Contains(t, err.Error(), "outputs: input",
+		"the diagnosis must point at the remedy: select fields instead of carrying the whole response")
+}

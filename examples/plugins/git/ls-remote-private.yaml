@@ -17,22 +17,21 @@ description: Reads a private repository's branch refs using the "git" plugin's g
 # has. See commit-push.yaml and plugins/git/README.md, "Authentication," for
 # the secret's shape - this task's token input takes exactly the same kind
 # of reference, ${secret('git:name')}, that commit-push.yaml's does.
-
 inputs:
   url:
     type: string
     required: true
-    description: "the private repository to read, e.g. https://github.com/your-org/your-private-repo.git"
-
+    description: the private repository to read, e.g. https://github.com/your-org/your-private-repo.git
 steps:
   - id: refs
     git.ls_remote:
-      url: ${inputs.url}
-      prefix: "refs/heads/"
+      prefix: refs/heads/
       # A secret reference, resolved inside the task, never a literal - the
       # only line that differs from workflow.yaml's own call to this same
       # task. See plugins/git/README.md, "Authentication," for what
-      # GIT_SECRET_<NAME> this resolves to, and "Which git server?" for why
+      # GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME> variable this
+      # resolves to - GIT_SECRET_0__TOKEN in the default namespace - and
+      # "Which git server?" for why
       # the same shape (an HTTPS Basic-auth password) works unchanged across
       # every provider this plugin has been asked to work with.
       token: ${secret('git:token')}
@@ -44,7 +43,7 @@ steps:
       # Bitbucket Cloud repository) to read one instead - see
       # plugins/git/README.md, "Choosing the username."
       # username: x-bitbucket-api-token-auth
-
+      url: ${inputs.url}
 outputs:
   branch_count:
     value: ${steps.refs.refs.size()}

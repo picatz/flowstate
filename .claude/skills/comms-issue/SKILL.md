@@ -54,6 +54,40 @@ block, that it is illustrative and not the landed shape. Do not paste a
 sketch large enough that the reader skims it; three tight blocks beat one
 exhaustive one.
 
+### Cite the spelling that already exists, before sketching a new one
+
+The recurring, expensive failure is not a wrong sketch — it is a sketch
+written without reading what it proposes to change. It reads well, so it
+gets discussed and sometimes built, and only later does someone notice it
+re-invents an answer three files away. That arrives as invariant 1's
+violation *in new work*: two hand-maintained shapes of one thing, both
+current.
+
+So grep before you sketch, and put the result in the comment:
+
+- Name how the repo already spells this, with `file:line`. If nothing
+  does, say so — that is a checkable claim, where an uncited sketch is a
+  claim of novelty nobody can falsify.
+- Where several surfaces answer one question, say which you are matching.
+  The odd one out is usually the oldest, not the best; do not mirror it.
+- State the cost the design pays. A sketch with no stated cost has not
+  been compared against anything.
+- Prefer a derived view to a parallel declaration. Derivation cannot
+  drift; a second copy of the same facts always eventually does.
+
+Worked example: a `ClaimRequirement` message proposed for #726 mirrored
+`auth.ClaimRule` (`auth/policy.go:215`), one of three existing spellings
+of "this claim must carry this value" — the other two being
+`SignalPolicyRule.claims` (`proto/flowstate/v1/signal.proto:95`), a
+schema-defined structured claims map already gating an RPC, and CEL,
+where `SecretAccessPolicy` (`auth/secretpolicy.go:61`) and `netpolicy`
+(`netpolicy/identity.go:27-30`) both live. The first draft of this very
+example missed `SignalPolicyRule` and undercounted by one — the mistake
+this section warns against, made while writing the warning. It would have
+canonized the legacy spelling into the schema as a fourth copy. Five
+minutes of grep before the sketch, rather than after it, produces the
+better design and skips the discussion.
+
 An attribute-schema issue, in the shape #537 wants:
 
     // Illustrative, not the landed shape.

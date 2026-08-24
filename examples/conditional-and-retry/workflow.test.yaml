@@ -1,4 +1,4 @@
-# Three things this file teaches, and none of them is visible from a list of
+# Four things this file teaches, and none of them is visible from a list of
 # step ids:
 #
 #   * a false `if:` skips the step, so `rollback` must be *absent* — the branch
@@ -8,7 +8,11 @@
 #     `notify` ran, the run did not fail, and `carry_on` after it did run;
 #   * the tolerated failure is a *value*, readable as `${steps.notify.error}` —
 #     pinned by the `where:` on `carry_on`, which requires the text the stub
-#     failed with to have arrived in that field.
+#     failed with to have arrived in that field;
+#   * `retry:` is testable to *recovery*, not only to exhaustion: `times: 1`
+#     retires a failing stub after one answer, so the second attempt falls
+#     through to the stub that succeeds — the fail-once-then-succeed script
+#     no stateless stub list could write (#927).
 #
 # The second case pins the distinction that makes the third of those real: a
 # tolerated step's `error` is *absent* when the step succeeded, not empty. So
@@ -42,6 +46,32 @@ tests:
       ran: [deploy, notify, carry_on]
       # The whole of what a false `if:` means. A step that ran and did nothing
       # would still be present here.
+      skipped: [rollback]
+
+  - name: a transient failure on the first attempt is retried into a success
+    workflow: ./workflow.yaml
+    stubs:
+      # The budget is the script: one failing answer, then this stub retires
+      # and `deploy`'s second attempt reaches the recovery below. `deploy`'s
+      # own `retry:` runs for real — the virtual clock resolves its interval —
+      # so what this case exercises is the engine's retry loop, not a stub
+      # pretending one happened.
+      - step: deploy
+        times: 1
+        fails:
+          kind: Upstream
+          message: control plane briefly unreachable
+      - step: deploy
+        returns: {}
+      - task: http
+        fails:
+          kind: Upstream
+          message: dial tcp 127.0.0.1:1 connect refused by egress policy
+      - task: log
+        where: inputs.message == 'notification failed, continuing anyway'
+        returns: {}
+    expect:
+      ran: [deploy, notify, carry_on]
       skipped: [rollback]
 
   - name: a tolerated step's error is absent when it succeeded, not empty

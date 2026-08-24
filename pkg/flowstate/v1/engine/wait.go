@@ -25,6 +25,12 @@ import (
 // network. Timers and signal channels are the substrate's own, so they replay
 // correctly; `time.Now` would not.
 
+// cancelSignalWaitTimerChange is the [workflow.GetVersion] changeID guarding
+// the #770 fix: cancelling a bounded wait_for_signal's timeout timer once a
+// signal (or the run's own cancellation) answers the gate first. See the
+// comment where it is used, in [executor.waitForSignal].
+const cancelSignalWaitTimerChange = "engine.wait.cancelSignalTimeoutTimer"
+
 // runWait blocks until what the node waits for happens, then records the
 // outcome as the step's outputs.
 func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
@@ -214,10 +220,56 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		received = c.Receive(e.ctx, &delivery)
 	})
 	selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
+
+	// The timer, when there is one, is built on its own cancellable child
+	// context rather than on e.ctx directly, so that whichever branch wins the
+	// race can free it. Left uncancelled, an answered or cancelled gate leaves
+	// a durable timer running: the server fires it into a run that no longer
+	// cares, appending a TimerFired event and a whole workflow task to process
+	// a no-op. See #770 and
+	// https://docs.temporal.io/design-patterns/updatable-timer, the exact SDK
+	// caveat this shape runs into.
+	//
+	// Gated behind [workflow.GetVersion] rather than done unconditionally,
+	// because this is workflow code: an in-flight run may already have a
+	// WorkflowTaskCompleted event recording exactly this decision — "the
+	// signal won, and nothing was cancelled" — written by an engine that
+	// never issued a CancelTimer here. Replaying that already-committed task
+	// with code that now issues one is a different command sequence at a
+	// point history has already fixed, which is a non-determinism error, not
+	// a graceful upgrade: the run would wedge the first time a worker picked
+	// it up after this deploys. GetVersion returns [workflow.DefaultVersion]
+	// on exactly that replay — no marker for this changeID exists in that
+	// history — so an old run keeps leaking its timer for the rest of its
+	// life rather than failing to resume. Every run that starts, or reaches
+	// this point for the first time, after the fix deploys records the
+	// marker once and gets the cancelling behaviour from then on, including
+	// its own later replays.
+	var cancelTimer workflow.CancelFunc
 	if bounded {
-		selector.AddFuture(workflow.NewTimer(e.ctx, timeout), func(workflow.Future) {})
+		timerCtx := e.ctx
+		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
+		}
+		selector.AddFuture(workflow.NewTimer(timerCtx, timeout), func(workflow.Future) {})
 	}
 	selector.Select(e.ctx)
+
+	// Freed as soon as the selector resolves, whichever way it resolved. This
+	// is a no-op when the timer branch itself is what woke the selector: the
+	// SDK's own cancellation callback for a timer's context only issues
+	// RequestCancelTimer when the timer's future is not already ready (see
+	// NewTimerWithOptions in the SDK), so cancelling an already-fired timer
+	// adds no command and changes nothing about the "timer wins" path — the
+	// one case #770 says was already correct. It is also a no-op when the run
+	// itself was cancelled: e.ctx.Done() closing already cancelled this timer
+	// context too, as any context derived from e.ctx via [workflow.WithCancel]
+	// does. What is left, and the only case this line changes, is a signal
+	// that answered the gate before the timer did — where it is what stops
+	// the abandoned timer from later firing into a run that no longer cares.
+	if cancelTimer != nil {
+		cancelTimer()
+	}
 
 	// Cancellation has to be distinguished from the timer before `received` is
 	// read, because the two look identical here: a cancelled wait leaves

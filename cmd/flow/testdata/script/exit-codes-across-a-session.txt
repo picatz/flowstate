@@ -1,0 +1,39 @@
+# docs/CLI.md's three-value contract, walked in one session rather than asserted
+# one verb at a time: the same command line is a 0, a 1 and a 2 depending only
+# on what is wrong, and the boundary between the last two is the one that keeps
+# being got wrong (#393) — a file that is wrong is a finding, a flag that is
+# wrong is an invocation error.
+-- write clean.yaml --
+edition: v2026.3
+name: clean
+steps:
+  - id: hello
+    log:
+      message: hello
+$ flow validate clean.yaml
+-- exit --
+0
+
+# A file that is wrong is a finding: it ran, and the answer is a refusal.
+-- write broken.yaml --
+edition: v2026.3
+name: broken
+stepz:
+  - id: hello
+    log:
+      message: hello
+$ flow validate broken.yaml
+-- exit --
+1
+
+# The flag does not exist, which is wrong before anything was read.
+$ flow validate --this-flag-does-not-exist clean.yaml
+-- exit --
+2
+
+# And two flags that each exist but cannot be asked for together is the same
+# kind of wrong, reached through the command's own validation rather than
+# cobra's — the distinction #393 found being made two different ways.
+$ flow fix --stdout --check clean.yaml
+-- exit --
+2

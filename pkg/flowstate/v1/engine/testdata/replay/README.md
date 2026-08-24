@@ -20,7 +20,11 @@ never happen quietly.
 ## What is here
 
 One directory per recording, named for the date the engine was recorded on — the
-directory is the version, the file name is the path covered.
+directory is the version, the file name is the path covered. A scenario recorded
+from a later engine appears again under that engine's own date rather than
+replacing what an earlier one wrote.
+
+### `2026-08-08`
 
 | File | What it covers |
 | --- | --- |
@@ -30,11 +34,28 @@ directory is the version, the file name is the path covered.
 | `parallel-branches.json` | Two `parallel:` branches. Both branches' commands come out of one workflow task, in an order the interpreter alone decides. |
 | `continue-as-new-carryover-run{1,2,3}.json` | One Continue-As-New chain, one file per execution. Runs 2 and 3 start from the state compaction chose to carry, which no other suite in this repository can produce: examples CI runs the local driver, and the local driver never suspends. |
 
+### `2026-08-21`
+
+The waits. Every entry above schedules activities and nothing else, so nothing in
+the corpus crossed a *timer* — while `versioning.go`'s own list of determinism
+inputs names how a wait computes its deadline and how a wait consumes a carried
+signal. These three cover the three ways a wait ends.
+
+| File | What it covers |
+| --- | --- |
+| `wait-sleep.json` | `sleep: 1s`. A durable timer between two ordinary steps, which is the whole footprint a `sleep:` has in history: it schedules no activity at all. |
+| `wait-for-signal.json` | A `wait_for_signal:` with `timeout: 1h`, parked and then answered. The signal wins the selector, so history holds the timeout timer being started and then *cancelled* — the #770 path, issued only behind a `workflow.GetVersion` marker this history records. |
+| `wait-for-signal-timeout.json` | The same gate with `timeout: 2s` and nobody answering. The timer wins instead, and the run walks on with `timed_out` rather than failing. |
+
 ## Adding one
 
 1. Add a scenario to `replayScenarios` in `../../replay_record_test.go`. Prefer a
    seam nothing else crosses over another arrangement of steps already covered —
-   every event here is bytes this repository carries forever.
+   every event here is bytes this repository carries forever. A scenario that
+   cannot finish on its own — a `wait_for_signal:` — says who answers it with
+   `release`, and `signalWhenParked` is what makes the run actually park first: a
+   signal sent before the gate is reached is consumed without the run ever
+   blocking, which records a history missing the seam the scenario is for.
 2. Record it:
 
    ```

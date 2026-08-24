@@ -153,11 +153,14 @@ func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secr
 // from the signed one for reasons nobody can see.
 func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte) error {
 	supplied := webhookHeader(headers, WebhookSignatureHeader)
+	// Compute the digest before inspecting the attacker-controlled header. An
+	// unrouted request spends this same body-sized work under a decoy key; an
+	// early return here would therefore reveal that this route exists.
+	expected := signWebhookPayload(key, body)
 	if supplied == "" {
 		return fmt.Errorf("the delivery carried no %s header", WebhookSignatureHeader)
 	}
 
-	expected := signHMACSHA256(key, body)
 	for _, candidate := range splitSignatures(strings.TrimPrefix(supplied, hmacPrefix)) {
 		digest, err := hex.DecodeString(candidate)
 		if err != nil {
@@ -180,9 +183,6 @@ func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte
 // hash — which is why this is written down once here rather than configured.
 func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
 	supplied := webhookHeader(headers, StripeSignatureHeader)
-	if supplied == "" {
-		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
-	}
 
 	var (
 		timestamp  string
@@ -203,12 +203,39 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 		}
 	}
 
+	seconds, secondsErr := strconv.ParseInt(timestamp, 10, 64)
+	// The signed payload is built from the *parsed* seconds, so a padded or
+	// oddly-spelled timestamp cannot make the payload something other than what
+	// the window was checked against. When it does not parse there is no such
+	// number, and the header's own text must not stand in for one: `t=` carries
+	// whatever a sender wrote, bounded only by MaxHeaderBytes, so hashing it
+	// would make this route's work scale with a value the sender chooses — a
+	// larger and more precise oracle than the one this ordering removes.
+	var signingTimestamp string
+	if secondsErr == nil {
+		signingTimestamp = strconv.FormatInt(seconds, 10)
+	}
+
+	// Spend the body-sized authentication work before any header-shape refusal.
+	// Unknown routes do the same under a decoy key, so a missing or malformed
+	// header must not turn a configured Stripe route into a timing oracle.
+	//
+	// Written into the hash in pieces rather than joined first. Joining copied
+	// the whole body to hash bytes it already had, which cost a second
+	// body-sized pass on every delivery — small beside a full HMAC of the same
+	// bytes, but the same *shape* of signal as the one this ordering removes,
+	// and measurable against the decoy, which signs the body alone (#973).
+	expected := signWebhookPayload(key, []byte(signingTimestamp), stripeSignedSeparator, body)
+
+	if supplied == "" {
+		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
+	}
+
 	if timestamp == "" || len(signatures) == 0 {
 		return fmt.Errorf("the %s header is not `t=<unix seconds>,v1=<hex>`", StripeSignatureHeader)
 	}
 
-	seconds, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil {
+	if secondsErr != nil {
 		return fmt.Errorf("the %s header's timestamp is not a whole number of seconds", StripeSignatureHeader)
 	}
 
@@ -226,16 +253,9 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 			StripeSignatureHeader, skew.Round(time.Second), WebhookReplayWindow)
 	}
 
-	// The signed payload Stripe documents: the timestamp, a period, then the raw
-	// body. Built from the *parsed* seconds rather than from the header's text so
-	// that a padded or oddly-spelled timestamp cannot make the payload something
-	// other than what the window was checked against.
-	signed := make([]byte, 0, len(timestamp)+1+len(body))
-	signed = append(signed, strconv.FormatInt(seconds, 10)...)
-	signed = append(signed, '.')
-	signed = append(signed, body...)
-
-	expected := signHMACSHA256(key, signed)
+	// signingTimestamp was built from the parsed seconds rather than from the
+	// header's text so that a padded or oddly-spelled timestamp cannot make the
+	// payload something other than what the window was checked against.
 	for _, candidate := range signatures {
 		digest, err := hex.DecodeString(candidate)
 		if err != nil {
@@ -250,6 +270,23 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 		StripeSignatureHeader)
 }
 
+// signWebhookPayload is [signHMACSHA256], reached through a variable so that
+// one internal test can count what a verification hashes.
+//
+// The ordering in [verifyHMACSHA256] and [verifyStripe] is load-bearing rather
+// than incidental: every refusal spends the same body-sized work an unrouted
+// delivery spends under the receiver's decoy key, so that "no such webhook" and
+// "wrong signature" cost the same. That is a claim about *work*, and a claim
+// about work that nothing measures is one the next tidy-up silently repeals by
+// restoring an early return. This is the same instrument, and the same reason,
+// as pathChecker.ownerOf in cmd/flow.
+// stripeSignedSeparator is the byte between Stripe's timestamp and the body in
+// the payload it signs. A package-level slice so that hashing it allocates
+// nothing per delivery.
+var stripeSignedSeparator = []byte{'.'}
+
+var signWebhookPayload = signHMACSHA256
+
 // signHMACSHA256 is the one place a key is revealed, and it reveals it into an
 // HMAC and nothing else.
 //
@@ -257,9 +294,11 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 // [hmac.New] within one statement, so there is no variable holding it for a later
 // log line or error to reach. What comes back is a digest, which is safe to
 // compare, print and return.
-func signHMACSHA256(key secrets.Secret, payload []byte) []byte {
+func signHMACSHA256(key secrets.Secret, parts ...[]byte) []byte {
 	mac := hmac.New(sha256.New, []byte(key.Reveal()))
-	mac.Write(payload)
+	for _, part := range parts {
+		mac.Write(part)
+	}
 
 	return mac.Sum(nil)
 }

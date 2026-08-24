@@ -12,7 +12,6 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	"github.com/picatz/flowstate/cmd/flow/internal/reference"
@@ -154,7 +153,7 @@ func TestTheDSLResourceServesTheWholeReference(t *testing.T) {
 func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 	t.Parallel()
 
-	response, err := server.New(nil).GetCatalog(t.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
+	response, err := mustNewFlowstateServer(t, nil).GetCatalog(t.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
 	require.NoError(t, err)
 
 	want, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response.Msg)
