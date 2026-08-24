@@ -167,7 +167,7 @@ type multiRootCommitIter struct {
 	emitted map[plumbing.Hash]bool // already returned in an earlier page
 	seen    map[plumbing.Hash]bool // visited already during this call
 	stack   []plumbing.Hash        // DFS stack; last element pops next
-	since   *time.Time             // exclude, and decline to expand, anything older
+	since   *time.Time             // exclude from results, without pruning traversal
 }
 
 // newMultiRootCommitIter builds the iterator, pushing roots so the FIRST
@@ -175,14 +175,10 @@ type multiRootCommitIter struct {
 // its last element first, so roots are pushed in reverse order.
 //
 // since, when non-nil, is the same cutoff LogInputs.since produces
-// (logParams.since) - carried into the iterator itself, rather than left to
-// a wrapping object.NewCommitLimitIterFromIter, so the walk can decline to
-// expand a commit's parents the moment it discovers that commit is out of
-// range, instead of resolving it, paying [multiRootCommitIter.Next]'s own
-// per-commit parent-count bound, pushing every parent, and only THEN having
-// an outer filter discard the result. See Next's own comment on why this is
-// required for correctness under the parent-count bound, not merely an
-// optimization.
+// (logParams.since). It is carried here rather than in an outer iterator so
+// filtering and traversal share the same resumable frontier. Next still
+// expands an excluded commit because repository-controlled timestamps are
+// not a safe traversal boundary.
 func newMultiRootCommitIter(repo *git.Repository, roots []plumbing.Hash, emitted map[plumbing.Hash]bool, since *time.Time) *multiRootCommitIter {
 	stack := make([]plumbing.Hash, 0, len(roots))
 	for i := len(roots) - 1; i >= 0; i-- {
@@ -231,28 +227,6 @@ func (it *multiRootCommitIter) Next() (*object.Commit, error) {
 		}
 		it.seen[h] = true
 
-		// A commit older than since is excluded from the page - the same
-		// test object.NewCommitLimitIterFromIter's own commitLimitIter
-		// applies - but here it is checked BEFORE the parent bound below
-		// and before any parent is pushed, not after. Git history is
-		// walked assuming committer dates do not increase moving toward a
-		// parent, so nothing reachable ONLY through a too-old commit is
-		// something this call would ever emit either; declining to expand
-		// it is what keeps a since window from still paying to resolve,
-		// bound-check, and push the parents of a commit whose own answer
-		// was always going to be "excluded." Without this, an outer
-		// since-filter wrapped around this iterator only discards the
-		// commit AFTER Next() already fully expanded it - so an octopus
-		// merge (more than maxLogParents parents) anywhere in history,
-		// including one since's own cutoff would have excluded outright,
-		// still fails the walk with errCommitMetadataTooLarge. That defeats
-		// the diagnostic's own suggested remedy ("narrow with since"): the
-		// cutoff never got a chance to prevent the expansion it was meant
-		// to avoid paying for (see issue #717).
-		if it.since != nil && c.Committer.When.Before(*it.since) {
-			continue
-		}
-
 		// The parent bound is enforced here, before the list below expands
 		// it, because expanding it *is* the allocation the bound exists to
 		// refuse: every parent is appended to it.stack, and a later
@@ -281,6 +255,15 @@ func (it *multiRootCommitIter) Next() (*object.Commit, error) {
 			if !it.emitted[p] && !it.seen[p] {
 				it.stack = append(it.stack, p)
 			}
+		}
+
+		// Commit timestamps are repository-controlled and need not decrease
+		// along parent links. Filter this commit only after expanding its
+		// parents so an in-range ancestor behind an old commit remains
+		// reachable. An oversized old commit is therefore still refused:
+		// silently pruning all of its parents would make the result incomplete.
+		if it.since != nil && c.Committer.When.Before(*it.since) {
+			continue
 		}
 
 		return c, nil

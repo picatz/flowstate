@@ -341,13 +341,9 @@ func doLogWithBounds(ctx context.Context, p logParams, cloneDepthSteps []int, ma
 // because Frontier() itself is computed later, after the caller decides
 // whether the result is usable.
 func walkPage(repo *git.Repository, roots []plumbing.Hash, emittedSet map[plumbing.Hash]bool, p logParams) ([]*gitv1.Commit, bool, *multiRootCommitIter, error) {
-	// since is passed into the iterator itself, not applied by a wrapping
-	// object.NewCommitLimitIterFromIter, so the walk can decline to expand
-	// a too-old commit's parents rather than merely discard the commit
-	// after fully resolving it - see multiRootCommitIter.Next's own
-	// comment, and issue #717, for why applying since only as an outer
-	// filter lets an octopus merge past maxLogParents fail the walk even
-	// when since's own cutoff would have excluded it.
+	// Pass since into the base iterator so it can filter returned commits
+	// while retaining direct control of parent expansion and the resumable
+	// frontier. Commit dates are not assumed to be monotonic; see Next.
 	var since *time.Time
 	if !p.since.IsZero() {
 		s := p.since
