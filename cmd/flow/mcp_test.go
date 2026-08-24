@@ -91,6 +91,54 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 	}
 }
 
+// TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction is the MCP half
+// of picatz/flowstate#567's D1's derive-don't-duplicate property, and it lives
+// here rather than beside the vocabulary because registration is what makes a
+// tool real and this is the only package that can see it.
+//
+// The direction that matters is the second loop. A schema whose action
+// bindings named an MCP tool nothing registers would be asserting a path a
+// caller cannot take — the mistake picatz/flowstate#1036 was closed for — and
+// the vocabulary cannot tell on its own, because which tools a surface
+// registers is a decision this package makes (`flow mcp serve` serves a
+// deliberately reduced list; see docs/MCP_AUTHORIZATION.md). The RPC-projected
+// tools are checked through flowmcp.ToolName's own inverse rather than through
+// a second copy of the projection rule, which is why the schema's bindings
+// list no RPC's tool at all.
+func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
+	t.Parallel()
+
+	registered := registeredToolNames(t)
+	require.NotEmpty(t, registered)
+
+	for name := range registered {
+		if documentedLocalTools[name] {
+			action, err := v1.AuthorizationActionForMCPTool(name)
+			require.NoError(t, err,
+				"%q is registered and no authorization action names it", name)
+			require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
+
+			continue
+		}
+
+		action, err := v1.AuthorizationActionForRPC(rpcNameOfTool(name))
+		require.NoError(t, err,
+			"%q projects an rpc that no authorization action names", name)
+		require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
+	}
+
+	for _, binding := range v1.AuthorizationActionBindings() {
+		for _, tool := range binding.GetMcpTools() {
+			require.True(t, registered[tool],
+				"the schema binds %s to the mcp tool %q, which `flow mcp` does not register: "+
+					"the vocabulary would be asserting a path no caller can take", binding.GetAction(), tool)
+			require.True(t, documentedLocalTools[tool],
+				"%q is an rpc's projection, and the schema lists only the tools no rpc projects — "+
+					"listing it here is a second spelling of flowmcp.ToolName", tool)
+		}
+	}
+}
+
 // documentedLocalTools names every tool on this surface that is not the
 // projection of an RPC.
 //

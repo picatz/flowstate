@@ -85,7 +85,7 @@ func TestTaskActivityRecordsHeartbeatWhileRunning(t *testing.T) {
 	})
 
 	started = time.Now()
-	_, err := env.ExecuteActivity(Task, &v1.Task{Name: taskName}, (*v1.WorkloadIdentity)(nil), false)
+	_, err := env.ExecuteActivity(Task, &v1.Task{Name: taskName}, (*v1.WorkloadIdentity)(nil), false, "beat")
 	require.NoError(t, err)
 
 	require.GreaterOrEqual(t, heartbeats.Load(), int32(1),
@@ -167,7 +167,7 @@ func TestTaskActivityStopsPromptlyWhenContextIsCancelled(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := env.ExecuteActivity(Task, &v1.Task{Name: taskName}, (*v1.WorkloadIdentity)(nil), false)
+		_, err := env.ExecuteActivity(Task, &v1.Task{Name: taskName}, (*v1.WorkloadIdentity)(nil), false, "beat")
 		done <- err
 	}()
 

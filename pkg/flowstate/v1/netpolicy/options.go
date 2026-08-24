@@ -452,8 +452,9 @@ func WithRuleCostLimit(limit uint64) Option {
 // WithProxyFromEnvironment routes requests through the proxy named by the
 // HTTP_PROXY, HTTPS_PROXY, and NO_PROXY environment variables. Proxies are
 // disabled by default because the address policy can only see the address that
-// is actually dialed: with a proxy in front, that is the proxy, and the real
-// target is enforced only by the scheme, port, and request-scoped rules.
+// is actually dialed: with a proxy in front, that is the proxy. The real target
+// is resolved and checked before it is sent to the proxy, but the proxy may
+// resolve it differently or observe a later DNS answer.
 func WithProxyFromEnvironment() Option {
 	return func(c *config) error {
 		c.proxy = http.ProxyFromEnvironment

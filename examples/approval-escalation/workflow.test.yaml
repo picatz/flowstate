@@ -1,0 +1,297 @@
+# The cadence is the thing this file asserts, and it asserts it as arithmetic
+# rather than as prose.
+#
+# Every `at:` below is read against the same virtual clock the workflow's own
+# `timeout:` is ([v1.VirtualClock]), so which ask a signal lands in is something
+# anybody can compute from the file: the cadence is 1h and the first ask goes
+# out at the epoch, so the deadlines are at 1h, 2h, 3h and 4h. A signal at
+# `2h30m` is therefore inside the *third* ask — two reminders have already gone
+# out, and the second of them went to the backup approver. `reminders_sent: 2`
+# is that sentence written as a number, and it changes the moment the cadence
+# does: at a 2h cadence the same signal would arrive during the second ask and
+# the answer would be 1.
+#
+# That exactness is the point, and the reason no case here asserts a bound.
+# "At least one reminder" is satisfied by a chase that collapsed every ask onto
+# one instant, which is precisely the defect #278 fixed in the harness and
+# precisely what a cadence example must not be blind to.
+#
+# The escalation is asserted the same way, on the stubs rather than on an
+# output: each case pairs an ask number with the recipient that ask must have
+# been addressed to, so a chase that escalated one ask early or one ask late
+# produces a `log` invocation no stub matches and fails the case. No case
+# carries a catch-all `log` stub, which is what makes that bound hold from
+# above as well — an ask nobody was due gets asked here and there is nothing
+# for it to match.
+#
+# `flow test` checks a scripted signal's `sender:` against this workflow's
+# `signals:` policy through the same `v1.SignalPolicyCheck`
+# `FlowstateServer.Signal` calls, so the two approvers below are admitted
+# because the file's own policy admits them, and the third party in the last
+# case is refused here for the reason production would refuse them.
+edition: v2026.3
+defaults:
+  inputs:
+    change: deploy v1.4.2 to production
+    primary_approver: sre-lead@example.com
+    backup_approver: sre-manager@example.com
+  # The approver most cases name. A case answering after the escalation
+  # overrides this with the backup, which is the point of that case.
+  sender:
+    subject: sre-lead@example.com
+    issuer: https://issuer.example.com
+    claims:
+      team: release-managers
+tests:
+  - name: an approval on the first ask ends the chase with nothing escalated
+    workflow: ./workflow.yaml
+    signals:
+      # 30m is inside the first ask's own period, so the very first wait is
+      # answered rather than lapsing and no reminder is ever sent.
+      - name: approval-decision
+        at: 30m
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        where: inputs.message == "an unattested caller requested deploy v1.4.2 to production, and needs an approval"
+        returns: {}
+      # Exactly one ask, addressed to the primary. There is no second ask stub
+      # and no catch-all, so a chase that reminded anybody here fails.
+      - task: log
+        where: 'inputs.message == "ask %d of 4 to sre-lead@example.com: approve deploy v1.4.2 to production".format([asks + 1])'
+        returns: {}
+      - task: log
+        where: inputs.message == "sre-lead@example.com approved deploy v1.4.2 to production after 0 reminders"
+        returns: {}
+    expect:
+      ran: [requested, chase, asks_made, reminders, last_verdict, unapproved, outcome, approver, settle, apply]
+      others: skipped
+      outputs:
+        decision: approved
+        reminders_sent: 0
+        escalated: false
+        approver_subject: sre-lead@example.com
+
+  # The case the example exists for. It differs from the one above in one
+  # number — when the signal arrives — and everything else about it follows
+  # from the cadence.
+  - name: two reminders go out, the second to the backup, and the backup approves
+    workflow: ./workflow.yaml
+    signals:
+      # 2h30m is thirty minutes into the third ask's period. The deadlines at
+      # 1h and 2h both lapse, so asks two and three go out — the second of them
+      # after the escalation, since `asks_before_escalation` is 2 — and this
+      # answers the third.
+      - name: approval-decision
+        at: 2h30m
+        payload:
+          approved: true
+        # The backup, admitted by the second rule in the workflow's own
+        # `signals:` block. Escalation changed who was *asked*; this is the
+        # proof it did not have to change who is *allowed*, because the policy
+        # already named them.
+        sender:
+          subject: sre-manager@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        where: inputs.message == "an unattested caller requested deploy v1.4.2 to production, and needs an approval"
+        returns: {}
+      # The two halves of the escalation, split so that each ask has to agree
+      # with the recipient its own iteration chose. An ask numbered 1 or 2 must
+      # name the primary; an ask numbered 3 or later must name the backup. A
+      # chase that escalated a period early or a period late produces a message
+      # neither of these matches.
+      - task: log
+        where: >-
+          asks < 2 &&
+          inputs.message == "ask %d of 4 to sre-lead@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      - task: log
+        where: >-
+          asks >= 2 &&
+          inputs.message == "ask %d of 4 to sre-manager@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      # The escalation notice itself, on the one iteration that crosses the
+      # threshold. Two of these would mean the `if:` was reading "at or after"
+      # rather than "at".
+      - task: log
+        where: inputs.message == "sre-lead@example.com has not answered after 2 asks; escalating to sre-manager@example.com"
+        returns: {}
+      - task: log
+        where: inputs.message == "sre-manager@example.com approved deploy v1.4.2 to production after 2 reminders"
+        returns: {}
+    expect:
+      ran: [requested, chase, asks_made, reminders, last_verdict, unapproved, outcome, approver, settle, apply]
+      others: skipped
+      outputs:
+        decision: approved
+        # Two, exactly: not one (a chase whose asks collapsed onto one instant)
+        # and not three (the answered ask is not a reminder nobody replied to).
+        reminders_sent: 2
+        escalated: true
+        approver_subject: sre-manager@example.com
+
+  - name: nobody ever answers, the budget of asks runs out, and the request is auto-rejected
+    workflow: ./workflow.yaml
+    # No `signals:` at all: all four deadlines lapse. The run *completes* —
+    # this is the whole reason the budget lives in `until:` rather than in
+    # `max_iterations:`, which would have failed the run instead of deciding.
+    stubs:
+      - task: log
+        where: inputs.message == "an unattested caller requested deploy v1.4.2 to production, and needs an approval"
+        returns: {}
+      - task: log
+        where: >-
+          asks < 2 &&
+          inputs.message == "ask %d of 4 to sre-lead@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      - task: log
+        where: >-
+          asks >= 2 &&
+          inputs.message == "ask %d of 4 to sre-manager@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      - task: log
+        where: inputs.message == "sre-lead@example.com has not answered after 2 asks; escalating to sre-manager@example.com"
+        returns: {}
+      - task: log
+        where: inputs.message == "nobody decided deploy v1.4.2 to production in 4 asks; rejecting it"
+        returns: {}
+    expect:
+      # `approver` is skipped rather than empty: a lapsed wait has no attested
+      # sender to report, and the `if:` is what keeps the run from reading one.
+      ran: [requested, chase, asks_made, reminders, last_verdict, unapproved, outcome, settle, auto_reject]
+      others: skipped
+      outputs:
+        decision: auto_rejected
+        # Four asks, so three of them were reminders. The bound is asserted as
+        # reached rather than as not exceeded.
+        reminders_sent: 3
+        escalated: true
+        approver_subject: ""
+
+  - name: an explicit rejection ends the chase on the ask that carried it
+    workflow: ./workflow.yaml
+    signals:
+      - name: approval-decision
+        at: 30m
+        payload:
+          approved: false
+    stubs:
+      - task: log
+        where: inputs.message == "an unattested caller requested deploy v1.4.2 to production, and needs an approval"
+        returns: {}
+      - task: log
+        where: 'inputs.message == "ask %d of 4 to sre-lead@example.com: approve deploy v1.4.2 to production".format([asks + 1])'
+        returns: {}
+      - task: log
+        where: inputs.message == "sre-lead@example.com declined deploy v1.4.2 to production"
+        returns: {}
+    expect:
+      ran: [requested, chase, asks_made, reminders, last_verdict, unapproved, outcome, approver, settle, decline]
+      others: skipped
+      outputs:
+        decision: rejected
+        reminders_sent: 0
+        escalated: false
+        approver_subject: sre-lead@example.com
+
+  # The negative direction, which is the one an isolation test has to write:
+  # not "an approver this run named can answer" but "somebody this run did not
+  # name cannot". The sender below satisfies the literal `claims:` constraint
+  # exactly and is distinct from the starter — what they are not is either of
+  # the two subjects this run's `signals:` rules resolved to, so
+  # `FlowstateServer.Signal` refuses the delivery and the workflow is never
+  # told anything was sent. The chase therefore runs to its budget and
+  # auto-rejects, which is the same answer nobody answering at all produces.
+  - name: a release manager the run named neither of never reaches the chase
+    workflow: ./workflow.yaml
+    signals:
+      - name: approval-decision
+        at: 30m
+        payload:
+          approved: true
+        sender:
+          subject: someone-else@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        where: inputs.message == "an unattested caller requested deploy v1.4.2 to production, and needs an approval"
+        returns: {}
+      - task: log
+        where: >-
+          asks < 2 &&
+          inputs.message == "ask %d of 4 to sre-lead@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      - task: log
+        where: >-
+          asks >= 2 &&
+          inputs.message == "ask %d of 4 to sre-manager@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      - task: log
+        where: inputs.message == "sre-lead@example.com has not answered after 2 asks; escalating to sre-manager@example.com"
+        returns: {}
+      - task: log
+        where: inputs.message == "nobody decided deploy v1.4.2 to production in 4 asks; rejecting it"
+        returns: {}
+    expect:
+      ran: [requested, chase, asks_made, reminders, last_verdict, unapproved, outcome, settle, auto_reject]
+      others: skipped
+      outputs:
+        decision: auto_rejected
+        reminders_sent: 3
+        escalated: true
+        approver_subject: ""
+
+  # The cost the workflow's own `until:` comment names, made visible: an answer
+  # carrying no `approved` field is not a decision, so the chase continues —
+  # but it continues *immediately*, because the wait was resolved rather than
+  # lapsed. The acknowledgement at 30m therefore spends an ask without buying a
+  # period, and the four asks are used up half an hour early.
+  - name: an acknowledgement is not a decision, and it costs an ask rather than a period
+    workflow: ./workflow.yaml
+    signals:
+      - name: approval-decision
+        at: 30m
+        payload:
+          note: looking into it
+    stubs:
+      - task: log
+        where: inputs.message == "an unattested caller requested deploy v1.4.2 to production, and needs an approval"
+        returns: {}
+      - task: log
+        where: >-
+          asks < 2 &&
+          inputs.message == "ask %d of 4 to sre-lead@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      - task: log
+        where: >-
+          asks >= 2 &&
+          inputs.message == "ask %d of 4 to sre-manager@example.com: approve deploy v1.4.2 to production".format([asks + 1])
+        returns: {}
+      - task: log
+        where: inputs.message == "sre-lead@example.com has not answered after 2 asks; escalating to sre-manager@example.com"
+        returns: {}
+      - task: log
+        where: inputs.message == "nobody decided deploy v1.4.2 to production in 4 asks; rejecting it"
+        returns: {}
+    expect:
+      ran: [requested, chase, asks_made, reminders, last_verdict, unapproved, outcome, settle, auto_reject]
+      others: skipped
+      outputs:
+        decision: auto_rejected
+        reminders_sent: 3
+        escalated: true
+        approver_subject: ""
+
+  - name: an approver address that is not an address is refused before the first ask
+    workflow: ./workflow.yaml
+    inputs: {primary_approver: nobody}
+    expect:
+      failed: true
+      error_contains: 'must satisfy'

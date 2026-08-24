@@ -166,6 +166,24 @@ func TestSubmitRefusesAPromptThatReachesASensitiveInput(t *testing.T) {
 	assert.Contains(t, err.Error(), "salary")
 }
 
+// TestSubmitRefusesAPromptReachingASensitiveInputThroughAStepVar pins the
+// evaluation order at the privacy boundary: step vars are installed before the
+// prompt runs, so checking only the prompt's own expression would let a bare
+// name conceal its reach into a sensitive input.
+func TestSubmitRefusesAPromptReachingASensitiveInputThroughAStepVar(t *testing.T) {
+	t.Parallel()
+
+	wf := promptGate(v1.NewExpr(`question`),
+		&v1.InputDeclaration{Name: "token", Sensitive: true})
+	wf.Steps[0].Vars = map[string]*v1.Value{
+		"question": v1.NewExpr(`"approve " + inputs.token`),
+	}
+
+	err := v1.CheckWaitPromptsAreAskable(wf)
+	require.Error(t, err, "a step var hid a prompt's reach into a sensitive input")
+	assert.Contains(t, err.Error(), "token")
+}
+
 // TestSubmitRefusesAPromptWhoseReachCannotBeDecided is fail-closed for a lint:
 // `inputs[someComputedKey]` names no key statically, so whether it reaches the
 // sensitive one cannot be answered, and a check that cannot decide must not

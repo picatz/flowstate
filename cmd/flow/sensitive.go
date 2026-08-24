@@ -73,6 +73,22 @@ import (
 // than a corner one. [redactStepValues] is the fix, and its own comment argues
 // for redacting the whole transcript rather than tracing which step fed which
 // sensitive output — read it before assuming a narrower fix would do.
+//
+// # The carried state, which is not the transcript either
+//
+// A third projection of the workload's own values travels on the same response
+// and was reached by neither of the above: [v1.GetResponse.EntityState], the
+// bounded snapshot of a RUNNING run's top-level `vars:` and of the value each
+// active `loop:` is carrying between iterations (#975). It is the same data by
+// another route — a loop's `state:` binding is what a step reads back as
+// `${...}` on the next iteration, and `vars:` is routinely `${inputs.<name>}` —
+// so a value withheld from the transcript of a finished run was legible in the
+// clear the whole time the run was still going. [redactEntityState] closes it,
+// on [decideCarriedValues], the single decision it now shares with the
+// transcript.
+//
+// What deliberately keeps travelling in the clear, and why, is written down in
+// [redactGetResponse]'s own comment rather than left to the absence of a line.
 const redactedMarkerFormat = "[redacted: %s]"
 
 // redactedMarker is the text a redacted value renders as — [v1.InputDeclaration]'s
@@ -230,9 +246,99 @@ func redactRunOutputs(outputs *v1.RunOutputs, sensitive map[string]bool, reveal 
 	return &v1.RunOutputs{Values: redactRunOutputsValues(outputs.GetValues(), sensitive, reveal)}
 }
 
-// stepTranscriptMarker is what every named value in the step transcript renders
-// as once it is withheld — see [redactStepValues] for when that is.
-const stepTranscriptMarker = "step transcript withheld: workflow declares a sensitive output"
+// The two reasons a step transcript is withheld, which are not the same reason
+// and must not read as though they were — see [redactStepValues] for when each
+// applies.
+//
+// A reader who is told the workflow declared something sensitive goes and looks
+// at the file. On the fail-closed path there is no file to look at: `flow get`
+// deliberately holds no specification, and a follow whose specification the
+// server did not attest has one it is not entitled to redact against. Telling
+// that reader about a declaration is telling them about something this process
+// never saw.
+const (
+	stepTranscriptMarkerDeclared   = "step transcript withheld: this run's workflow declares sensitive data"
+	stepTranscriptMarkerUnverified = "step transcript withheld: this view holds no specification to check against"
+)
+
+// The same two reasons, said about [v1.EntityState] instead of about the
+// transcript. Two vocabularies for one decision, deliberately: the sentence a
+// reader needs names the thing that went missing, and "step transcript
+// withheld" in a `vars:` map would send them looking at the wrong part of their
+// file. The *decision* is not duplicated — see [decideCarriedValues].
+const (
+	entityStateMarkerDeclared   = "carried state withheld: this run's workflow declares sensitive data"
+	entityStateMarkerUnverified = "carried state withheld: this view holds no specification to check against"
+)
+
+// carriedValues is what one call site may do with an unnamed projection of a
+// workload's own values — the step transcript, and the carried state of a
+// running run. Neither can be redacted by name (see [redactStepValues] for why
+// a per-name trace is not attempted), so the answer is the whole of it or none
+// of it, and the two withholding answers differ only in what they may honestly
+// tell the reader.
+type carriedValues int
+
+const (
+	// carriedValuesShown: a real specification that declared nothing
+	// sensitive, or --reveal-sensitive typed on purpose.
+	carriedValuesShown carriedValues = iota
+
+	// carriedValuesDeclared: a specification is in hand and it declares
+	// sensitive data.
+	carriedValuesDeclared
+
+	// carriedValuesUnverified: there is no specification to consult, which is
+	// CLAUDE.md's fail-closed case.
+	carriedValuesUnverified
+)
+
+// decideCarriedValues is the one decision the step transcript and the carried
+// state share. It exists so that they cannot come to disagree about what a
+// specification says, which is CLAUDE.md's "a value with one meaning, written
+// down twice" applied to a policy answer rather than to a constant.
+//
+// # Why this reads declared inputs as well as declared outputs
+//
+// [sensitiveOutputNames] is the right question for [v1.RunOutputs], which is
+// keyed by declared output name and can therefore be redacted precisely. It is
+// the wrong question here. `vars:` is very often just `${inputs.<name>}`, and a
+// loop's `state:` carries whatever the body computed from it, so a workflow
+// that declares one sensitive *input* and no sensitive outputs at all puts that
+// input's value into [v1.EntityState.Vars] — and, by the same route, into a
+// step's own outputs. Deciding on outputs alone answered "nothing sensitive
+// here" for exactly that file.
+//
+// So the question both blunt surfaces ask is the specification-level one: does
+// this file declare *anything* sensitive. The cost is stated rather than
+// hidden, and it is a real one: a run whose workflow marks a single input
+// sensitive now has its whole transcript withheld too, where before only a
+// sensitive output did that. That is the same trade [redactStepValues] already
+// argues for at length — blunt and honest beats precise-looking and leaky — and
+// `--reveal-sensitive` is the escape hatch for the author who wants it back.
+func decideCarriedValues(workflow *v1.Workflow, reveal bool) carriedValues {
+	if reveal {
+		return carriedValuesShown
+	}
+
+	if workflow == nil {
+		return carriedValuesUnverified
+	}
+
+	for _, declared := range workflow.GetDeclaredInputs() {
+		if declared.GetSensitive() {
+			return carriedValuesDeclared
+		}
+	}
+
+	for _, declared := range workflow.GetDeclaredOutputs() {
+		if declared.GetSensitive() {
+			return carriedValuesDeclared
+		}
+	}
+
+	return carriedValuesShown
+}
 
 // redactStepValues implements this file's answer to the gap Codex found on PR
 // #212: a declared output computed from a step's output — `outputs.token.value:
@@ -274,9 +380,11 @@ const stepTranscriptMarker = "step transcript withheld: workflow declares a sens
 // Codex finding itself ("most outputs are computed from steps").
 //
 // So: this redacts the *whole* step transcript — every named value on every
-// step — the moment any declared output is marked `sensitive: true` (or the
-// fail-closed case: no specification to consult at all, same as
-// [redactRunOutputsValues]). It does not attempt to say which step actually fed
+// step — the moment the specification declares anything `sensitive: true` (or
+// the fail-closed case: no specification to consult at all, same as
+// [redactRunOutputsValues]). "Anything", input or output: that widening is
+// #975's, and [decideCarriedValues] — which now makes this call and the carried
+// state's — carries the argument for it. It does not attempt to say which step actually fed
 // the sensitive output, because that is exactly the claim the traced version
 // could not keep honestly. The cost is real and stated here rather than
 // papered over: a caller reading `.outputs.stepValues` loses the transcript of
@@ -285,22 +393,17 @@ const stepTranscriptMarker = "step transcript withheld: workflow declares a sens
 // ran, and which named outputs each produced — because that information is
 // already implied by the workflow specification itself (an author who wrote the
 // file already knows its step ids and output names); only the values change,
-// to [stepTranscriptMarker], so `flow watch`'s step-progress display still shows
+// to one of the two markers above, so `flow watch`'s step-progress display still shows
 // a run advancing rather than going dark the moment a workflow declares anything
 // sensitive.
-func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]bool, reveal bool) map[string]*v1.Node_Outputs {
-	if reveal || len(values) == 0 {
+func redactStepValues(values map[string]*v1.Node_Outputs, decision carriedValues) map[string]*v1.Node_Outputs {
+	if len(values) == 0 || decision == carriedValuesShown {
 		return values
 	}
 
-	// sensitive == nil is the fail-closed case: withhold everything. A non-nil,
-	// non-empty set means at least one declared output is sensitive: withhold
-	// everything anyway, on purpose — see this function's own comment for why a
-	// per-name trace is not attempted. Only a non-nil, *empty* set — a real
-	// specification that declared nothing sensitive — leaves the transcript
-	// untouched.
-	if sensitive != nil && len(sensitive) == 0 {
-		return values
+	marker := stepTranscriptMarkerDeclared
+	if decision == carriedValuesUnverified {
+		marker = stepTranscriptMarkerUnverified
 	}
 
 	redacted := make(map[string]*v1.Node_Outputs, len(values))
@@ -308,7 +411,7 @@ func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]b
 		named := outputs.GetNamedValues()
 		redactedNamed := make(map[string]*v1.Value, len(named))
 		for name := range named {
-			redactedNamed[name] = redactedValue(stepTranscriptMarker)
+			redactedNamed[name] = redactedValue(marker)
 		}
 		redacted[stepID] = &v1.Node_Outputs{NamedValues: redactedNamed}
 	}
@@ -320,21 +423,80 @@ func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]b
 // leaving [v1.Workflow_StepOutputs.RunOutputs] to its own caller — see
 // [redactGetResponse], which redacts that field separately so both places
 // [v1.RunOutputs] travels stay in agreement.
-func redactStepOutputs(outputs *v1.Workflow_StepOutputs, sensitive map[string]bool, reveal bool) *v1.Workflow_StepOutputs {
+func redactStepOutputs(outputs *v1.Workflow_StepOutputs, decision carriedValues) *v1.Workflow_StepOutputs {
 	if outputs == nil {
 		return nil
 	}
 
-	outputs.StepValues = redactStepValues(outputs.GetStepValues(), sensitive, reveal)
+	outputs.StepValues = redactStepValues(outputs.GetStepValues(), decision)
 
 	return outputs
 }
 
+// redactEntityState withholds the carried state of a RUNNING run — its
+// top-level `vars:` and the value each active `loop:` is carrying into the next
+// iteration — on [decideCarriedValues], the decision it shares with the step
+// transcript.
+//
+// # Why the whole of it, and not by name
+//
+// For [v1.EntityState.LoopState] there is no name to redact by that means
+// anything to an author: the keys are loop step ids, and the value under one is
+// whatever that loop's `state:` expression last evaluated to, which the schema
+// does not describe and no declaration names. For [v1.EntityState.Vars] there
+// is a name — the `vars:` key — and still no declaration attached to it:
+// `sensitive:` exists on [v1.InputDeclaration] and [v1.OutputDeclaration] and
+// nowhere else, so a var is not something a file can mark. Redacting the subset
+// of vars whose names happen to match a sensitive input would be precise-looking
+// and wrong in both directions: it would miss `vars: {auth: "Bearer ${inputs.token}"}`,
+// and it would blank an unrelated var that shares a name.
+//
+// What survives is the shape, for [redactStepValues]'s reason: the keys stay, so
+// a reader still sees which vars exist and which loops are carrying state, and
+// only the values become the marker. [v1.EntityState.Truncated] is left alone —
+// it is a fact about this projection's own byte bound, not a value the workload
+// produced.
+func redactEntityState(state *v1.EntityState, decision carriedValues) *v1.EntityState {
+	if state == nil || decision == carriedValuesShown {
+		return state
+	}
+
+	marker := entityStateMarkerDeclared
+	if decision == carriedValuesUnverified {
+		marker = entityStateMarkerUnverified
+	}
+
+	withheld := func(values map[string]*v1.Value) map[string]*v1.Value {
+		if len(values) == 0 {
+			return values
+		}
+
+		redacted := make(map[string]*v1.Value, len(values))
+		for name := range values {
+			redacted[name] = redactedValue(marker)
+		}
+
+		return redacted
+	}
+
+	state.Vars = withheld(state.GetVars())
+	state.LoopState = withheld(state.GetLoopState())
+
+	return state
+}
+
 // redactGetResponse returns a [*v1.GetResponse] with every declared run output this
 // call site cannot vouch for replaced by its marker, in both places the answer
-// travels, and with the step transcript withheld entirely when any of them
-// applies — see [redactStepValues] for why the transcript gets the blunt
-// treatment rather than a precise one.
+// travels, and with the step transcript and the carried state of a running run
+// withheld entirely when [decideCarriedValues] says so — see [redactStepValues]
+// for why those two get the blunt treatment rather than a precise one, and
+// [redactEntityState] for why the carried state cannot be redacted by name at
+// all.
+//
+// Every field of this message that can carry a workload's own values goes
+// through one of those decisions. The fields that deliberately pass through
+// untouched are named in the body below, with the reason, rather than left to
+// the absence of a line.
 //
 // Both places the answer travels, because server.go sets [v1.GetResponse.RunOutputs]
 // and the nested [v1.Workflow_StepOutputs.RunOutputs] inside the completed-run oneof
@@ -354,11 +516,24 @@ func redactStepOutputs(outputs *v1.Workflow_StepOutputs, sensitive map[string]bo
 // message), and both must see the redacted answer rather than one of them racing
 // ahead of a mutation to the original.
 func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal bool) *v1.GetResponse {
-	if response == nil || response.GetRunOutputs() == nil || reveal {
+	// No field-presence guard, on purpose, and this is the second time that
+	// lesson has been paid for. The guard here used to read "return early
+	// unless there are run outputs", which made the fail-closed path in
+	// [redactStepValues] unreachable for a run that declared no outputs; it was
+	// widened to "run outputs or a transcript", and then #975 found the third
+	// field — a RUNNING entity has neither of those and a full
+	// [v1.EntityState], so the guard returned the response untouched and the
+	// carried state rendered in the clear. A guard that lists the fields
+	// carrying values is the same list of facts written down twice, in the one
+	// place nothing checks it, and it fails open every time somebody adds a
+	// field and does not extend it. So the only early returns left are the two
+	// that are about this call rather than about the message.
+	if response == nil || reveal {
 		return response
 	}
 
 	sensitive := sensitiveOutputNames(workflow)
+	carried := decideCarriedValues(workflow, reveal)
 
 	clone, ok := proto.Clone(response).(*v1.GetResponse)
 	if !ok {
@@ -377,6 +552,12 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 
 	clone.RunOutputs = redactRunOutputs(clone.RunOutputs, sensitive, false)
 
+	// The carried state of a running run: the third place a workload's own
+	// values travel on this message, and the one #975 found. Redacted on the
+	// same decision as the transcript below, because it is the same data
+	// reached by another route.
+	clone.EntityState = redactEntityState(clone.GetEntityState(), carried)
+
 	// [v1.GetResponse.Starter] passes through untouched, deliberately, and it is
 	// worth saying so rather than leaving it to the absence of a line.
 	//
@@ -394,10 +575,40 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 	// reason it carries the raw `issuer#subject` rather than a display form is so
 	// a surface can check it against a policy rule. Redacting it would leave a
 	// field that exists to be compared and cannot be.
+	//
+	// # The two failure texts pass through as well, and that is a decision (#975)
+	//
+	// [v1.RunResponse.Error.Message] — the arm of the oneof a failed run
+	// carries — and [v1.PendingActivity.LastFailure] are both workload-chosen
+	// text that can quote what a task was given: an http task's error names the
+	// URL it called, which may carry a query parameter, and a plugin's error is
+	// whatever that plugin decided to say. `taskspan.go` refuses to export
+	// either to a collector for exactly that reason, and the question of whether
+	// this file should follow it was asked here rather than left implicit.
+	//
+	// The answer is no, and the audiences are why. A collector is a third party
+	// outside the tenancy boundary this service enforces, receiving telemetry
+	// nobody asked it for; a reader of this response is inside that boundary,
+	// authorized for the run, and asking one question — why did this fail. There
+	// is no other field that answers it. Withholding the message would silence
+	// that answer on *every* `flow get`, since `flow get` holds no specification
+	// and so takes the fail-closed path unconditionally: a run reported FAILED,
+	// with a marker where the reason goes, and nothing left in the response to
+	// look at. CLAUDE.md's "diagnostics are a feature" is the standard the rest
+	// of this binary is held to, and this would be the one place a value was
+	// removed that no other field replaces.
+	//
+	// The rest of what travels here carries no workload values to decide about,
+	// and is listed so a reader can check that rather than infer it: the two
+	// ids, the status, the two timestamps, [v1.RunProgress] (step ids, signal
+	// names and deadlines — the shape of the file its author already has, not
+	// values it computed), and the metadata beside [v1.PendingActivity.LastFailure]
+	// on the same message (an attempt count, a schedule, a phase word the engine
+	// chose).
 
 	if outs, ok := clone.Kind.(*v1.GetResponse_Outputs); ok && outs.Outputs != nil {
 		outs.Outputs.RunOutputs = redactRunOutputs(outs.Outputs.RunOutputs, sensitive, false)
-		outs.Outputs = redactStepOutputs(outs.Outputs, sensitive, false)
+		outs.Outputs = redactStepOutputs(outs.Outputs, carried)
 	}
 
 	return clone

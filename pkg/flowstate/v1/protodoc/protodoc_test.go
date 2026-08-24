@@ -39,18 +39,19 @@ func TestEmbeddedDescriptorSetCarriesSourceInfo(t *testing.T) {
 	// silently lost it would cost the documentation of every message in it and
 	// nothing would say so.
 	want := map[string]bool{
-		"flowstate/v1/catalog.proto":     false,
-		"flowstate/v1/diagnostics.proto": false,
-		"flowstate/v1/identity.proto":    false,
-		"flowstate/v1/reports.proto":     false,
-		"flowstate/v1/run.proto":         false,
-		"flowstate/v1/schedule.proto":    false,
-		"flowstate/v1/service.proto":     false,
-		"flowstate/v1/signal.proto":      false,
-		"flowstate/v1/task.proto":        false,
-		"flowstate/v1/trigger.proto":     false,
-		"flowstate/v1/value.proto":       false,
-		"flowstate/v1/workflow.proto":    false,
+		"flowstate/v1/authorization.proto": false,
+		"flowstate/v1/catalog.proto":       false,
+		"flowstate/v1/diagnostics.proto":   false,
+		"flowstate/v1/identity.proto":      false,
+		"flowstate/v1/reports.proto":       false,
+		"flowstate/v1/run.proto":           false,
+		"flowstate/v1/schedule.proto":      false,
+		"flowstate/v1/service.proto":       false,
+		"flowstate/v1/signal.proto":        false,
+		"flowstate/v1/task.proto":          false,
+		"flowstate/v1/trigger.proto":       false,
+		"flowstate/v1/value.proto":         false,
+		"flowstate/v1/workflow.proto":      false,
 	}
 
 	for _, file := range set.GetFile() {

@@ -532,6 +532,14 @@ func (d *TriggerDelivery) Context() *v1.TriggerContext {
 //   - Sender fills in only where a case's signal omits its own `sender:`.
 //     Explicit beats inherited, so a signal that names a sender keeps it.
 type Defaults struct {
+	// Workflow is the Flowfile every case runs against unless it names its
+	// own (#924 slice 1) — resolved exactly as a case's own `workflow:` is,
+	// relative to the test file's directory, because it becomes the case's
+	// value before anything resolves. The one fact 151 of the corpus's 151
+	// cases restated identically, now stated once; a case that does name a
+	// workflow keeps it, per the merge rules' one direction.
+	Workflow string `yaml:"workflow"`
+
 	// Inputs are the base bindings every case starts from, before its own
 	// `inputs:` are merged over them one key at a time.
 	Inputs map[string]any `yaml:"inputs"`
@@ -554,6 +562,14 @@ type Defaults struct {
 // run for real through the actual local driver, and only the effect —
 // whatever the task would have done outside the process — is replaced.
 type Stub struct {
+	// fromDefaults records that this stub reached the case through the file's
+	// `defaults:` rather than being written on the case itself — set by
+	// [mergeDefaults], invisible to the YAML form, and read by the
+	// unused-stub report (#926): a file-level catch-all is *expected* to go
+	// unanswered by cases that never invoke its task, so it is exempt from
+	// the warning a case's own idle stub earns.
+	fromDefaults bool
+
 	// Task is the task name this replaces, exactly as a step's own task key
 	// names it: `http`, `log`, a plugin task's name. Mutually exclusive with
 	// Step; a stub names one or the other, never both and never neither.
@@ -628,6 +644,57 @@ type Stub struct {
 	// succeeding, so a case can exercise `continue_on_error:`, `retry:`, and
 	// `undo:` without a real dependency ever having to be down on purpose.
 	Fails *StubFailure `yaml:"fails"`
+
+	// Times bounds how many invocations this stub answers before it retires
+	// and the list falls through to the next matcher (#927). Absent means
+	// unbounded — every stub before this field existed answers forever, and
+	// still does. It is what makes a stub list a *script* rather than only a
+	// switch: the canonical retry test, fail once and then succeed, is two
+	// stubs for one step, the first carrying `times: 1` and `fails:`, the
+	// second answering the recovery — inexpressible before this existed,
+	// because the first match answered every attempt and `retry:` was
+	// testable only to exhaustion.
+	//
+	// Consumption is counted per answer, `returns:` and `fails:` alike, and
+	// the budget is per case: every case (and every seeded schedule of one)
+	// starts the count over. A drained stub shows up in an unmatched-stub
+	// failure with its spent budget, so an invocation that fell past it is
+	// explained rather than mysterious.
+	//
+	// One caution, and the schedule explorer enforces it rather than this
+	// package hiding it: two `parallel:` branches invoking one task drain a
+	// shared `times:` budget in whichever order the schedule runs them, which
+	// is a real observable `--seeds` will legitimately flag. Scope such a
+	// stub with `step:`, which already tells steps sharing a task apart.
+	//
+	// A pointer so an explicit `times: 0` is told apart from the field being
+	// absent, and refused when the file loads: a stub that can answer nothing
+	// asserts nothing.
+	Times *int `yaml:"times"`
+
+	// Response answers the invocation with a raw *response* instead of shaped
+	// outputs, and the task then evaluates its own deferred inputs over it —
+	// for `http`, the step's `outputs:` and `expect:` run for real against
+	// `status_code`, `headers`, `body` (and `response.json` under
+	// `parse_json: true`) exactly as they would against a live response
+	// (#925). That is the difference from Returns, which supplies the
+	// post-shaping outputs and leaves the mapping — the exact expression a
+	// path typo lives in — unexercised by every green case.
+	//
+	// The fields and their meanings are the task's own: `http` takes
+	// `status_code` (200 when omitted), `body` (a string verbatim, or a map
+	// or list encoded as its JSON), and `headers` (name to string value), and
+	// refuses a name it does not define. A task that defines no raw-response
+	// semantics — `log`, or a plugin task this harness knows only by name —
+	// refuses the stanza when the case binds, naming `returns:` as the
+	// spelling that exists. Values follow the Flowfile fence rule at any
+	// depth, exactly as Returns documents, so one stub can answer a loop's
+	// iterations differently.
+	//
+	// Mutually exclusive with Returns and with Fails: a stub answers with a
+	// response the task interprets, with outputs already shaped, or with a
+	// failure — one of the three, said once.
+	Response map[string]any `yaml:"response"`
 }
 
 // StubFailure is a canned failure a [Stub] reports instead of outputs.
@@ -1060,6 +1127,30 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
 					test.Name, j+1, stubTarget(&stub))
 			}
+			if stub.Response != nil && stub.Returns != nil {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares both response and returns; a stub answers with a raw "+
+						"response the task interprets, or with outputs already shaped, not both",
+					test.Name, j+1, stubTarget(&stub))
+			}
+			if stub.Response != nil && stub.Fails != nil {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares both response and fails; a failing response is a "+
+						"response — write the status the failure would carry, and let the step's own "+
+						"expect: decide",
+					test.Name, j+1, stubTarget(&stub))
+			}
+			// `times: 0` is refused rather than read as "never answers": a
+			// stub that can answer nothing asserts nothing, and an author who
+			// wrote 0 meant something — most likely deleting the stub, or the
+			// unbounded default they get by writing no `times:` at all.
+			// Negative is the same mistake with less ambiguity.
+			if stub.Times != nil && *stub.Times <= 0 {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares times: %d, which is a stub that never answers; "+
+						"delete the stub, or drop `times:` for the unbounded default",
+					test.Name, j+1, stubTarget(&stub), *stub.Times)
+			}
 		}
 		if err := checkOthers(&test); err != nil {
 			return nil, err
@@ -1249,6 +1340,9 @@ func checkDefaults(d *Defaults) error {
 	if len(d.Stubs) > MaxDefaultStubs {
 		return fmt.Errorf("defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
 	}
+	if err := checkNoExpressions("defaults.workflow", d.Workflow, 0); err != nil {
+		return err
+	}
 	for name, v := range d.Inputs {
 		if err := checkNoExpressions("defaults.inputs."+name, v, 0); err != nil {
 			return err
@@ -1358,6 +1452,15 @@ func checkNoExpressions(where string, v any, depth int) error {
 // slices are the author's, and a second case merging the same defaults must see
 // them untouched.
 func mergeDefaults(d *Defaults, test Test) Test {
+	// Workflow: explicit beats inherited, the same one direction Sender
+	// takes. Merged before anything resolves, so the inherited path is
+	// resolved relative to the test file exactly as a stated one would be —
+	// and idempotently, since a merged case carries the value and never
+	// takes it again.
+	if d.Workflow != "" && test.Workflow == "" {
+		test.Workflow = d.Workflow
+	}
+
 	// Inputs: one level. Start from the defaults, then let the case replace
 	// whole keys. A nested map under a key is replaced wholesale by the case's,
 	// not deep-merged, which is the "one level" the rules promise.
@@ -1393,7 +1496,12 @@ func mergeDefaults(d *Defaults, test Test) Test {
 			if replaced[stubTargetKey(&d.Stubs[i])] {
 				continue
 			}
-			merged = append(merged, d.Stubs[i])
+			inherited := d.Stubs[i]
+			// Marked on the appended copy, never on the file's own entry: a
+			// second case merging the same defaults must see them untouched,
+			// per this function's contract above.
+			inherited.fromDefaults = true
+			merged = append(merged, inherited)
 		}
 		test.Stubs = merged
 	}
@@ -1418,10 +1526,7 @@ func mergeDefaults(d *Defaults, test Test) Test {
 // WorkflowPath resolves a test's `workflow:` relative to the *.test.yaml file
 // that declared it.
 func WorkflowPath(testFile string, test *Test) string {
-	if filepath.IsAbs(test.Workflow) {
-		return test.Workflow
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Workflow)
+	return workflowPathIn(filepath.Dir(testFile), test)
 }
 
 // DeliveryPath resolves a trigger case's `payload:` the same way [WorkflowPath]
@@ -1430,11 +1535,5 @@ func WorkflowPath(testFile string, test *Test) string {
 //
 // Empty for a case that replays nothing.
 func DeliveryPath(testFile string, test *Test) string {
-	if test.Trigger == nil || test.Trigger.Payload == "" {
-		return ""
-	}
-	if filepath.IsAbs(test.Trigger.Payload) {
-		return test.Trigger.Payload
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Trigger.Payload)
+	return deliveryPathIn(filepath.Dir(testFile), test)
 }

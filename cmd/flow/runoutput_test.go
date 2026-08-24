@@ -163,17 +163,28 @@ func TestATerminalKeepsTheDocumentWhenTheSummaryIsLossy(t *testing.T) {
 
 	for _, test := range []struct {
 		name  string
-		value *expr.Value
+		value *v1.Value
 	}{
 		{
-			name:  "bytes",
-			value: &expr.Value{Kind: &expr.Value_BytesValue{BytesValue: []byte{0x01, 0x02}}},
+			name: "bytes",
+			value: &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
+				Kind: &expr.Value_BytesValue{BytesValue: []byte{0x01, 0x02}},
+			}}},
 		},
 		{
 			// Nested, because a lossy value hides just as well inside a list.
 			name: "bytes inside a list",
-			value: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
-				Values: []*expr.Value{{Kind: &expr.Value_BytesValue{BytesValue: []byte{0x03}}}},
+			value: &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
+				Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
+					Values: []*expr.Value{{Kind: &expr.Value_BytesValue{BytesValue: []byte{0x03}}}},
+				}},
+			}}},
+		},
+		{
+			// A non-literal Value has no CEL kind for the summary to render.
+			name: "outer structure",
+			value: &v1.Value{Kind: &v1.Value_Structure_{Structure: &v1.Value_Structure{
+				Kind: &v1.Value_Structure_List_{List: &v1.Value_Structure_List{}},
 			}}},
 		},
 	} {
@@ -183,7 +194,7 @@ func TestATerminalKeepsTheDocumentWhenTheSummaryIsLossy(t *testing.T) {
 			response := runForOutput(t)
 			response.RunOutputs = &v1.RunOutputs{
 				Values: map[string]*v1.Value{
-					"blob": {Kind: &v1.Value_Literal{Literal: test.value}},
+					"blob": test.value,
 				},
 			}
 

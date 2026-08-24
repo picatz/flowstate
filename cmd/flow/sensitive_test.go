@@ -131,13 +131,87 @@ func TestRedactGetResponsePrecisionWithSpec(t *testing.T) {
 }
 
 // TestRedactGetResponseNilAndEmptyPassThrough checks the boring paths a fail-open
-// mistake likes to hide in: a nil response, and a response with no run outputs at
-// all, must pass through unchanged rather than panic or fabricate a document.
+// mistake likes to hide in: a nil response, and a response with nothing in it to
+// withhold, must come back unchanged rather than panic or fabricate a document.
+//
+// It used to assert pointer identity here, on the strength of a field-presence
+// guard that returned the input when it saw no run outputs and no transcript.
+// That guard is gone (#975): it did not know about [v1.GetResponse.EntityState],
+// so it returned a RUNNING entity's carried state untouched, and a guard that
+// lists the fields carrying values fails open every time somebody adds one. What
+// is asserted instead is the property the identity was standing in for — the
+// answer says the same thing — which is also the property that survives the next
+// field being added.
 func TestRedactGetResponseNilAndEmptyPassThrough(t *testing.T) {
 	require.Nil(t, redactGetResponse(nil, nil, false))
 
 	response := &v1.GetResponse{Status: v1.RunResponse_STATUS_RUNNING}
-	require.Same(t, response, redactGetResponse(response, nil, false))
+	require.True(t, proto.Equal(response, redactGetResponse(response, nil, false)),
+		"a response with nothing to withhold must come back saying exactly what it said")
+}
+
+// TestRedactGetResponseWithholdsATranscriptItCannotCheck is the fail-closed
+// path, and it is the one this guard made unreachable.
+//
+// `flow get <id>` passes a nil workflow deliberately (see get.go) — it holds no
+// specification, so it cannot know which names are sensitive and must withhold
+// all of them. A run that declares no outputs has nil RunOutputs and a full step
+// transcript, so an early return keyed on RunOutputs alone skipped redaction
+// entirely for exactly those runs, and the transcript printed in the clear.
+//
+// The assertion is the negative direction: the value is *absent*, not that some
+// marker is present. A test written the other way passes against a redaction
+// that fired for the wrong reason.
+func TestRedactGetResponseWithholdsATranscriptItCannotCheck(t *testing.T) {
+	response := &v1.GetResponse{
+		Kind: &v1.GetResponse_Outputs{
+			Outputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"process": {NamedValues: map[string]*v1.Value{
+						"results": v1.NewLiteral(secretString),
+					}},
+				},
+			},
+		},
+	}
+
+	redacted := redactGetResponse(response, nil, false)
+
+	require.Nil(t, redacted.GetRunOutputs(), "redaction must not fabricate run outputs")
+	result := redacted.GetOutputs().GetStepValues()["process"].GetNamedValues()["results"].GetLiteral().GetStringValue()
+	require.NotEqual(t, secretString, result, "a transcript nothing could check was rendered in the clear")
+	require.Equal(t, redactedMarker(stepTranscriptMarkerUnverified), result,
+		"withholding because there is no specification must not claim the workflow declared something")
+
+	require.Equal(t, secretString,
+		response.GetOutputs().GetStepValues()["process"].GetNamedValues()["results"].GetLiteral().GetStringValue(),
+		"redaction must not mutate the response shared by another renderer")
+}
+
+// TestRedactGetResponseWithholdsATranscriptWhenAnOutputIsSensitive is the other
+// branch of the same guard: here there *is* a specification, and it declares
+// something sensitive, so the transcript is withheld under the wording that
+// sends a reader to the file.
+func TestRedactGetResponseWithholdsATranscriptWhenAnOutputIsSensitive(t *testing.T) {
+	workflow := &v1.Workflow{
+		DeclaredOutputs: []*v1.OutputDeclaration{{Name: "token", Sensitive: true}},
+	}
+	response := &v1.GetResponse{
+		Kind: &v1.GetResponse_Outputs{
+			Outputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"process": {NamedValues: map[string]*v1.Value{
+						"results": v1.NewLiteral(secretString),
+					}},
+				},
+			},
+		},
+	}
+
+	result := redactGetResponse(response, workflow, false).
+		GetOutputs().GetStepValues()["process"].GetNamedValues()["results"].GetLiteral().GetStringValue()
+	require.NotEqual(t, secretString, result)
+	require.Equal(t, redactedMarker(stepTranscriptMarkerDeclared), result)
 }
 
 // TestRedactedMarkerIsHonestAndUnmistakable checks requirement 4: the marker must

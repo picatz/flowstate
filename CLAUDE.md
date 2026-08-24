@@ -69,6 +69,42 @@ explodes:
 `-fuzztime` bounds time, not memory. Eight parallel workers on a parser with an
 unbounded expansion path consumed 23 GB and 32 GB of swap in one afternoon.
 
+### `gofmt` on `PATH` is not the pinned toolchain's
+
+`go` re-execs into the toolchain `go.mod` pins; the `gofmt` sitting beside it
+does not. So `/usr/local/go/bin/gofmt` can be an older build while the
+`go version` next to it prints the pin — and the obvious sanity check ("which
+Go is this? the same as CI") confirms the wrong thing. The two disagree about
+real files: 1.24.7 and 1.27.0 indent a composite literal in a multi-value
+return differently, which is why three separate agents reported
+`pkg/flowstate/v1/auth/vocabulary_test.go` as unformatted on a green `main`,
+one of them concluding CI would be red for every PR until somebody fixed it
+(#1061). CI installs the pin through `go-version-file: go.mod`, so its `gofmt`
+is the right one and it was never wrong.
+
+Reach for `make fmt` or `make check`, which resolve the right one through the
+`GOFMT` variable. By hand it is:
+
+    "$(GOTOOLCHAIN=go$(awk '$1 == "go" { print $2; exit }' go.mod) go env GOROOT)"/bin/gofmt -l ./cmd ./pkg
+
+which is a mouthful because two separate things have to be right. `go env
+GOROOT` alone answers with the *selected* toolchain, and the `go` directive is
+a minimum rather than a pin — selection keeps a local default that is new
+enough — so on a machine whose Go is newer than the directive it answers with
+that newer toolchain, while CI's `go-version-file: go.mod` installs the
+directive's version exactly. That is this same disagreement with the versions
+swapped, and it is why `GOTOOLCHAIN` names an exact release. And the version is
+read out of `go.mod` rather than typed, because a version typed anywhere else
+is a second copy of a number CI already reads. Run it from inside the module:
+outside it there is no `go.mod`, `go env GOROOT` answers with the host default,
+and that is the original false positive again — which is how one of those
+investigations confirmed the wrong answer twice.
+
+`tools/gate` never had the problem: its gofmt leg calls `go/format`, the
+library face of the same printer, compiled with the toolchain that builds the
+gate. Reach for a bare `gofmt` and you are the only thing in the loop without
+the pin.
+
 A `go test` command that returns does not mean the test binary exited. If a run
 behaves oddly, check:
 
@@ -271,6 +307,26 @@ docs leg too. More generally the docs leg fires whenever `cmd/flow` is in the
 affected set, because that command *is* the generator and its real source set
 is its own dependency closure.
 
+The gate finds its own merge-base, which is not a detail — it is the difference
+between a gate that runs and one that does not. A clone made with
+`--single-branch` has no `origin/main` ref; one made with `--depth` has the ref
+and none of the history it shares with the branch under review. The old code
+exited with an error naming the fix, `git fetch origin main`, which is correct
+advice that a CI job or an agent handed a checkout cannot act on: seven pull
+requests in one wave reported exactly that refusal, and all seven were opened
+with nothing verified. `resolveBase` now uses the ref, else fetches the branch,
+else deepens the clone — each step reached only because the one before produced
+no merge-base, so an ordinary checkout pays for one `git merge-base`.
+
+With no network and no remote it runs anyway, treating every tracked file as
+changed. That answer goes through `buildPlan` like any other, which sets
+`moduleWide` and `ciWide` and selects every conditional leg, so the widest plan
+comes out of the one computation rather than a second code path meaning
+"everything". The direction is the point: overrunning the true scope costs time,
+underrunning it passes commits the checks reject, and a gate that refuses to
+start protects nothing at all. Every tier prints which of those happened, so a
+wide run is never mistaken for a diff that touched everything.
+
 This inverts the old default of this section, which told everyone to run the
 full list locally before every push because a CI round trip bought nothing.
 That reasoning predates a six-minute parallel CI and a standing red-to-green
@@ -303,7 +359,7 @@ not the whole answer you want:
 
     go build ./...
     go vet ./...
-    gofmt -l ./cmd ./pkg                       # must print nothing
+    $(GOFMT) -l ./cmd ./pkg                    # must print nothing; see GOFMT in the Makefile
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
     make test-plugins                          # the plugin modules ./... cannot reach
     GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
@@ -865,6 +921,42 @@ When several agents edit interlocking packages:
   the commit step. Nothing here schedules a restart for you to plan around, so
   treat every long wait (a gate run, CI, a review round) as one: commit whatever
   is correct and complete before starting it, not after it returns.
+- **Ask the machine how many lanes it can hold, rather than picking a number.**
+  `go run ./tools/fleet` prints how many agent lanes fit right now, which
+  resource decides it, and the environment each lane must be given. Read it
+  before dispatching a wave, and again before adding to one.
+
+  The number is not a constant, and treating it as one is how this goes wrong.
+  A lane is not one process: `go test ./...` builds with `-p` workers and each
+  package's binary then runs `-parallel` tests inside itself, both defaulting to
+  the core count — so a single unbounded lane can saturate a small box, and four
+  of them on a four-core machine produced a load average above 20, with lanes
+  reporting link failures they reasonably mistook for defects in their own
+  diffs. That is why the tool prints an appetite as well as a count: the fleet
+  size is capacity divided by what a lane is allowed to spend, and the division
+  only means something if the lane is actually held to it.
+
+      eval "$(go run ./tools/fleet -env)"     # what one lane may spend
+      go run ./tools/fleet -n                 # how many fit, for a script
+
+  It emits `export` statements, and that matters: bare assignments evaluated in
+  a shell are shell-local, so a lane given them runs at exactly the unbounded
+  defaults this exists to prevent while the shell shows the value and `go test`
+  never sees it.
+
+  It reads cores, memory, disk and the current load, and the smallest bound
+  wins. Load matters as much as capacity: it counts work this process cannot
+  see — a sibling session's suite, a lane that has not reported — and a box
+  thrashing on disk reads high there even when its cores look idle, which is
+  exactly when adding a lane hurts most. Disk is reserved rather than divided,
+  because a build that meets ENOSPC halfway leaves a partial object the next
+  build reports as a corrupt cache entry, which reads like a compiler bug; this
+  machine hit that twice in one session behind a 13 GiB build cache.
+
+  The point is that it adapts. On a bigger machine it says a bigger number
+  without anybody editing this file, and on a full one it says zero and names
+  what to prune. A lane count written down here would have been right once.
+
 - **Leave a green stopping point.** A package with fewer features that compiles and
   passes beats a half-migrated one. If a migration cannot finish, back it out and
   document it rather than leaving both halves.

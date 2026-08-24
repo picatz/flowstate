@@ -451,8 +451,11 @@ configured long: `DefaultAssertionLifetime` is five minutes and
 `MaxAssertionLifetime` is one hour, so an assertion cannot become a standing grant
 (`pkg/flowstate/v1/auth/issuer.go:29-36`). Claims the issuer sets itself are reserved
 and cannot be carried from a submitting token, so a caller cannot choose the subject
-of the assertion minted for it (`:53-59`). Rotated-out keys stay published only for
-`DefaultKeyRetention`, twenty four hours (`:41-45`). Which workload may assume which
+of the assertion minted for it (`:53-59`). A key a deployment no longer signs with
+stays published only for `DefaultKeyRetention`, twenty four hours (`:41-45`), whether
+it was retired in process by `Issuer.Rotate` or named as a verify-only key at
+start-up (`auth.WithVerifyOnlyKey`), which is the form an operator can actually
+reach — see the runbook below. Which workload may assume which
 target is CEL, evaluated under a cost limit
 (`pkg/flowstate/v1/auth/assume.go:11-15`). Key custody is a PKCS#8 PEM file that
 `flow keys` writes at mode 0600 and, everywhere except Windows, verifies after
@@ -464,6 +467,70 @@ key, so the residual risk in both cases is a key on disk under whatever protecti
 the filesystem gave it, which custody procedures have to cover rather than assume
 away. Inbound, the mirrored bound is audience plus optional `MaxTokenAge`
 (`pkg/flowstate/v1/auth/policy.go:88`, `:156`).
+
+**Rotating the issuer key.** Rotation is the whole response to a suspected key
+compromise here, so it has to be a procedure someone can rehearse rather than a
+method in the library. `Issuer.Rotate` rotates in process and no deployment calls
+it; what an operator performs is a restart, and until #891 a restart published the
+new key and nothing else — every assertion the previous process signed, still valid
+for the rest of its five minutes, stopped verifying at any relying party that
+refetched the key set. `--identity-key` therefore repeats, and the order is the
+rule: **the first occurrence signs, and every later one is published for
+verification only**, without its private half being retained. Nothing is derived
+from the file name or its modification time.
+
+```sh
+# 1. Generate the new key. Naming the file names the published key id.
+flow keys generate --out /etc/flowstate/keys/2026-09.pem
+
+# 2. Restart with both, newest first. The process signs with 2026-09 and keeps
+#    publishing 2026-08, so assertions the previous process signed keep verifying.
+flow server --auth-policy /etc/flowstate/auth.yaml \
+  --rpc-resource https://flowstate.example.com/rpc \
+  --identity-key /etc/flowstate/keys/2026-09.pem \
+  --identity-key /etc/flowstate/keys/2026-08.pem
+
+# 3. After the retention window (federation.key_retention, default 24h, which has
+#    to outlast both the old assertions and every relying party's cached key set),
+#    restart with the new key alone and delete the old one.
+flow server --auth-policy /etc/flowstate/auth.yaml \
+  --rpc-resource https://flowstate.example.com/rpc \
+  --identity-key /etc/flowstate/keys/2026-09.pem
+```
+
+`--rpc-resource` appears in both restarts because the `auth.yaml` this procedure
+assumes names a `kind: oidc` issuer, and a server that verifies bearer tokens
+must say which audience its Connect RPC surface answers as. It is not part of
+rotation, and it is *refused* on a deployment whose every `issuers[]` entry is
+`kind: mtls`: a client certificate carries no audience claim, so there is
+nothing to bind and `flow server` says so rather than ignoring the flag. Such a
+deployment still rotates — the identity key signs assertions and backs the
+published JWKS regardless of how callers authenticate — with the same commands
+minus the audience:
+
+```sh
+# certificate-only deployment: every issuers[] entry is kind: mtls, so there is
+# no audience to bind and flow server refuses --rpc-resource here.
+flow server --auth-policy /etc/flowstate/auth.yaml \
+  --identity-key /etc/flowstate/keys/2026-09.pem \
+  --identity-key /etc/flowstate/keys/2026-08.pem
+```
+
+The start-up line names what was actually published (`signing_key` and
+`verify_only_keys`), so step 2 is verifiable rather than assumed. A key that cannot
+be read or parsed, and two keys publishing one key id, refuse start-up rather than
+being skipped: a key silently left out is a rotation the operator believes is
+covered and is not. A verify-only entry may be the old private key file already
+mounted, or just its public half as a PKIX PEM (`openssl pkey -in 2026-08.pem
+-pubout`), which is the narrower custody choice.
+
+Rotating is not revoking. Publishing the outgoing key for its retention is
+precisely what keeps rotation from rejecting valid assertions, so it does nothing
+about a key believed compromised. `Issuer.RevokeKey` (#897) withdraws a published
+key immediately, and is — like `Rotate` — a library verb no deployment calls today;
+the restart-shaped equivalent is to not name the suspect key at step 2 at all,
+accepting that everything it signed stops verifying as each relying party's cached
+key set expires.
 
 **What is not bounded.** There is no revocation of an already-minted assertion inside
 its lifetime, no threshold or HSM custody, and no separation between the codec keys

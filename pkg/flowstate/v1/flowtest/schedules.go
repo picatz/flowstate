@@ -101,6 +101,33 @@ type ScheduleDivergence struct {
 	Seeded       string
 }
 
+// Report renders this exploration as the schema message the machine report
+// carries ([v1.ScheduleExploration]), so `flow test -o json` emits it through
+// protojson like every other part of the report rather than through a second,
+// hand-shaped encoder that could disagree with the first — the same reasoning
+// as [Coverage.Report], which this mirrors (issue #931).
+func (s *ScheduleReport) Report() *v1.ScheduleExploration {
+	report := &v1.ScheduleExploration{
+		Schedules: int32(s.Schedules),
+		Cases:     int32(s.Cases),
+		Decisions: int32(s.Decisions),
+		Truncated: s.Truncated,
+	}
+
+	if d := s.Divergence; d != nil {
+		report.Divergence = &v1.ScheduleDivergenceReport{
+			Case:         d.Case,
+			Seed:         d.Seed,
+			Decisions:    int32(d.Decisions),
+			Truncated:    d.Truncated,
+			WrittenOrder: d.WrittenOrder,
+			Seeded:       d.Seeded,
+		}
+	}
+
+	return report
+}
+
 // scheduleAccumulator runs each of a file's cases under the schedules a budget
 // describes and keeps what the whole file's exploration found.
 //
@@ -127,7 +154,7 @@ type scheduleAccumulator struct {
 // caseRun is one invocation of a case, as [scheduleAccumulator.run] drives it:
 // the context carries whatever scheduler this schedule is, and everything else
 // about the case is already bound.
-type caseRun func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error)
+type caseRun func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error)
 
 // newScheduleAccumulator returns the accumulator for one file's run.
 func newScheduleAccumulator(budget dst.Budget) *scheduleAccumulator {
@@ -151,11 +178,11 @@ func newScheduleAccumulator(budget dst.Budget) *scheduleAccumulator {
 // they happened to draw. What a seeded schedule can do is fail the *command*, by
 // producing a divergence, which is a finding of its own kind and is reported as
 // one.
-func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs) {
+func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine) {
 	if !a.explores {
-		result, spec, transcript, _ := once(ctx)
+		result, spec, transcript, account, _ := once(ctx)
 
-		return result, spec, transcript
+		return result, spec, transcript, account
 	}
 
 	a.cases++
@@ -164,17 +191,19 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		result     *v1.TestCase
 		spec       *v1.Workflow
 		transcript *v1.Workflow_StepOutputs
+		account    []TranscriptLine
 	)
 
 	report := dst.Explore(ctx, a.budget, func(ctx context.Context) dst.Result {
-		caseResult, caseSpec, caseTranscript, runErr := once(ctx)
+		caseResult, caseSpec, caseTranscript, caseAccount, runErr := once(ctx)
 
 		// Identified by the scheduler on the context rather than by which
 		// invocation this is: [dst.Explore] documents that it runs the baseline
 		// first, and this stays correct whatever order it comes to run its
-		// schedules in.
+		// schedules in. The account kept is the written-order run's, exactly
+		// as the verdict and the coverage are.
 		if v1.SchedulerFromContext(ctx) == v1.WrittenOrder {
-			result, spec, transcript = caseResult, caseSpec, caseTranscript
+			result, spec, transcript, account = caseResult, caseSpec, caseTranscript, caseAccount
 		}
 
 		return dst.Result{Transcript: caseTranscript, Err: caseObservables(caseResult, runErr)}
@@ -200,7 +229,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		}
 	}
 
-	return result, spec, transcript
+	return result, spec, transcript, account
 }
 
 // result renders what this file's exploration found, or nil when it explored

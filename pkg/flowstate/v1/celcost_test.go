@@ -341,3 +341,67 @@ func TestCELCostAgreesWithCELGosCheckedPricing(t *testing.T) {
 			"#847 reports; this assertion exists so that removing the estimator fails a test rather than "+
 			"quietly restoring the hole")
 }
+
+// TestCELCostPricesJSONParseByItsInput pins the one call this estimator prices
+// by its argument rather than by its result.
+//
+// json_parse returns a map, which CallCost's result switch declines, so before
+// this cel-go charged it a flat unit however many bytes it decoded. The test
+// evaluates through the parsed path — no overload IDs, the way both drivers
+// actually run — and asserts the charge tracks the input's size, because an
+// assertion that merely showed "some cost" would also be satisfied by the flat
+// unit it is replacing.
+func TestCELCostPricesJSONParseByItsInput(t *testing.T) {
+	costOf := func(t *testing.T, body string) uint64 {
+		t.Helper()
+
+		env, ast := celCostTestEnv(t, `json_parse(body)`)
+		prg, err := env.Program(ast, cel.CostLimit(DefaultCostLimit), cel.CostTracking(evaluationCostEstimator))
+		require.NoError(t, err)
+
+		_, details, err := prg.ContextEval(context.Background(), map[string]any{"body": body, "items": []any{}})
+		require.NoError(t, err)
+		require.NotNil(t, details.ActualCost())
+
+		return *details.ActualCost()
+	}
+
+	small := costOf(t, `{"a":1}`)
+	large := costOf(t, `{"a":"`+strings.Repeat("x", 100_000)+`"}`)
+
+	require.Greater(t, large, small+9_000,
+		"decoding a hundred thousand characters must cost about ten thousand units more than decoding seven; "+
+			"a flat charge here means the estimator stopped recognising json_parse")
+	require.Less(t, large, small+11_000,
+		"the charge must be the same StringTraversalCostFactor every other traversal pays, not a weight invented here")
+}
+
+// TestCELCostRefusesRepeatedJSONParseBeforeItDecodes is the DoS this closes: a
+// workflow that can put a response body into an activation could decode it once
+// per iteration of a comprehension, and pay a unit each time.
+//
+// The budget is set far above what the comprehension itself costs — measured at
+// roughly 13 units an iteration in this file's sibling tests — so the refusal
+// can only come from the decoding being charged. A test whose budget the bare
+// comprehension would blow anyway would pass with the estimator deleted, which
+// is how the version of this test that shipped with the original change was
+// green for the wrong reason.
+func TestCELCostRefusesRepeatedJSONParseBeforeItDecodes(t *testing.T) {
+	body := `{"a":"` + strings.Repeat("x", 50_000) + `"}`
+	items := make([]any, 100)
+	for i := range items {
+		items[i] = int64(i)
+	}
+
+	env, ast := celCostTestEnv(t, `items.map(i, json_parse(body))`)
+
+	// 20,000 units buys about 1,500 iterations of the bare comprehension and
+	// about four of these decodes.
+	_, err := NewEvaluator(WithLimits(Limits{
+		Cost:                    20_000,
+		InterruptCheckFrequency: DefaultInterruptCheckFrequency,
+	})).Eval(context.Background(), env, ast, map[string]any{"body": body, "items": items})
+
+	require.Error(t, err, "a hundred decodes of a fifty-thousand-character body must not fit in a budget four of them exhaust")
+	require.Contains(t, err.Error(), "cost limit")
+}

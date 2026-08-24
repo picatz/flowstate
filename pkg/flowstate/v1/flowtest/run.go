@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // epoch is the moment every case's [v1.VirtualClock] starts at.
@@ -27,6 +29,55 @@ import (
 // than by accident continuing to pass.
 var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// RunOptions is what a caller may vary about a suite run. The zero value is
+// the run every door has always performed: every case, written order only,
+// report labelled by whatever the door knows.
+type RunOptions struct {
+	// Label names the report ([v1.TestReport.File]) — a path for a file on
+	// disk, "<submitted>" or similar for bytes, whatever a Go caller wants a
+	// reader to see for a built [File].
+	Label string
+
+	// Budget is the seeded-schedule exploration to run beyond the
+	// written-order pass (issue #800). The zero budget explores nothing.
+	Budget dst.Budget
+
+	// Select filters which cases run, by name; nil runs every case. A case
+	// filtered out is not run, not reported, and counted in
+	// [RunResult.Filtered] — the number a caller's own output must surface,
+	// because a green over a subset must never read as the file's green
+	// (issue #929).
+	Select func(name string) bool
+
+	// skipTranscript disables the case account entirely. Set by
+	// [RunSourceContext] and nothing else: that door discards
+	// [RunResult.Transcripts], and its callers are whoever holds a token on
+	// a serving surface — so recording there would be memory an untrusted
+	// submission shapes, retained for an account nobody will ever read. The
+	// byte and event bounds still exist for the doors that do record; this
+	// removes the resource from the one door where the submitter is not the
+	// reader.
+	skipTranscript bool
+}
+
+// RunResult is everything one suite run produced.
+type RunResult struct {
+	Report    *v1.TestReport
+	Coverage  []*Coverage
+	Schedules *ScheduleReport
+
+	// Transcripts holds each case's rendered account (#929 slice 2),
+	// parallel to Report.Cases: Transcripts[i] is what case i's run did,
+	// step by step, redacted through the same machinery the stub
+	// diagnostics use. Nil for a case that never reached a run. Rendered
+	// lines rather than a schema message on purpose — where a machine
+	// transcript lives, if anywhere, is #923's decision.
+	Transcripts [][]TranscriptLine
+
+	// Filtered is how many cases [RunOptions.Select] excluded from this run.
+	Filtered int
+}
+
 // RunFile runs every test in a `*.test.yaml`, returning one [v1.TestReport].
 //
 // Cases run sequentially and each gets its own [v1.VirtualClock] and its own
@@ -35,6 +86,203 @@ var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 func RunFile(path string) *v1.TestReport {
 	report, _ := RunFileWithCoverage(path)
 	return report
+}
+
+// Run runs a loaded [File]'s cases — the door for a suite built or loaded in
+// Go rather than named by path (issue #930; this is the [Run] the [File.Tests]
+// doc has always cited). dir is what a case's `workflow:` and a trigger case's
+// `payload:` resolve against, the way those paths resolve against the test
+// file's own directory when one exists; empty refuses any case that needs a
+// path resolved, exactly as [RunSourceContext]'s byte-born cases are refused.
+func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult {
+	file = file.withDefaultsApplied()
+
+	return runSuite(ctx, file, opts, func(test *Test) (loader, string) {
+		identity := workflowPathIn(dir, test)
+
+		// The refusal the doc above promises, made real: with no directory, a
+		// relative path would otherwise fall through [filepath.Join]'s
+		// identity on an empty prefix and resolve against the process working
+		// directory — so the same suite would silently run whatever file the
+		// caller's cwd happens to hold, or fail there, depending on where the
+		// test binary ran from. A path-shaped fact must never depend on cwd;
+		// refused per case, since a sibling case naming absolute paths is
+		// fine. Reported by Codex on picatz/flowstate#1015.
+		if dir == "" {
+			if err := pathlessRefusal(test); err != nil {
+				return loader{
+					load:      func() (*v1.Workflow, error) { return nil, err },
+					positions: func() *flowfile.Positions { return nil },
+				}, identity
+			}
+		}
+
+		var positions *flowfile.Positions
+		return loader{
+			load: func() (*v1.Workflow, error) {
+				workflow, parsed, err := flowfile.ParseFile(identity)
+				if err != nil {
+					return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
+				}
+				positions = parsed
+				return workflow, nil
+			},
+			positions:    func() *flowfile.Positions { return positions },
+			deliveryPath: deliveryPathIn(dir, test),
+		}, identity
+	})
+}
+
+// loader is one case's way of producing the workflow it runs against, plus
+// the two facts that travel with it: the parse positions (nil for bytes,
+// which have none to record) and where a trigger case's stored delivery
+// lives (empty where there is no directory to resolve one against).
+type loader struct {
+	load         func() (*v1.Workflow, error)
+	positions    func() *flowfile.Positions
+	deliveryPath string
+}
+
+// runSuite is the one loop every door shares: [Run] and
+// [RunFileUnderSchedules] for files, [RunSourceContext] for bytes. It owns
+// case selection, coverage and schedule accounting, and attaching the
+// coverage to the report — in one place, so the machine document cannot
+// disagree with the richer Go-side result about what was measured.
+func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*Test) (loader, string)) RunResult {
+	report := &v1.TestReport{File: opts.Label}
+
+	var allowUnreached map[string]string
+	if file.Coverage != nil {
+		allowUnreached = file.Coverage.AllowUnreached
+	}
+	coverage := newCoverageAccumulator(allowUnreached)
+	schedules := newScheduleAccumulator(opts.Budget)
+
+	filtered := 0
+	var transcripts [][]TranscriptLine
+	transcriptBudget := newSuiteTranscriptBudget()
+	for _, test := range file.Tests {
+		if opts.Select != nil && !opts.Select(test.Name) {
+			filtered++
+			continue
+		}
+
+		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			report.Cases = append(report.Cases, stopped)
+			transcripts = append(transcripts, nil)
+
+			continue
+		}
+
+		l, identity := loaderFor(&test)
+
+		result, spec, transcript, account := schedules.run(ctx,
+			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
+				// The account is recorded only for runs whose account is
+				// kept. Under an exploring budget, [scheduleAccumulator.run]
+				// retains the written-order baseline's and discards every
+				// seeded one, so recording through ten thousand seeds would
+				// clone and render for nothing — the discriminator is the
+				// same one schedules.run keeps the baseline by. A budget that
+				// explores nothing keeps its single run's account whatever
+				// scheduler the *caller* put on the context ([v1.AdversarialOrder],
+				// a pinned seed installed by hand), so no scheduler check
+				// applies there: suppression is only ever about exploratory
+				// invocations (Codex, #1052, twice).
+				record := !opts.skipTranscript &&
+					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
+				return runCase(ctx, &test, l.deliveryPath, l.load, record)
+			})
+		report.Cases = append(report.Cases, result)
+		transcripts = append(transcripts, transcriptBudget.take(account))
+		coverage.observe(identity, spec, transcript, l.positions())
+	}
+
+	out := RunResult{
+		Report:      report,
+		Coverage:    coverage.result(),
+		Schedules:   schedules.result(),
+		Transcripts: transcripts,
+		Filtered:    filtered,
+	}
+	// Attached here, for every door, so the whole document renders through
+	// protojson wherever it ends up — the CLI's machine modes and the MCP
+	// tool alike carry the same account (issue #931; before this, the MCP
+	// door had no accumulator at all and answered `coverage: []` forever
+	// while docs/reference/mcp.md promised the CLI's own report).
+	for _, c := range out.Coverage {
+		report.Coverage = append(report.Coverage, c.Report())
+	}
+	// The schedule account rides the same way (issue #931's other half):
+	// unset when nothing explored, so a report from a default run is the
+	// document it always was.
+	if out.Schedules != nil {
+		report.Schedules = out.Schedules.Report()
+	}
+	return out
+}
+
+// withDefaultsApplied folds the file's `defaults:` into every case, exactly
+// as [Load] folds them for a parsed file (#416) — the normalization a [File]
+// built in Go otherwise never receives, which made the same logical suite
+// behave differently depending on whether it was constructed or parsed:
+// inherited inputs, stubs and signal senders were silently absent from the
+// built one. Reported by Codex on picatz/flowstate#1015.
+//
+// A shallow copy with merged Tests, never a mutation of the caller's File — a
+// caller may hold and re-run it. On a file [Load] already merged, folding
+// again changes nothing, which is a property of [mergeDefaults]'s own rules
+// rather than luck: inputs re-copy to the values the first fold chose, a
+// default stub whose target key is already present is skipped (and the
+// inherited copies carry those keys), and a sender fills only signals that
+// have none. TestRunDoesNotDoubleMergeALoadedFile pins it.
+func (f *File) withDefaultsApplied() *File {
+	if f.Defaults == nil {
+		return f
+	}
+
+	merged := *f
+	merged.Tests = make([]Test, len(f.Tests))
+	for i := range f.Tests {
+		merged.Tests[i] = mergeDefaults(f.Defaults, f.Tests[i])
+	}
+	return &merged
+}
+
+// pathlessRefusal is what stops one case from running under [Run] with no
+// directory: a relative `workflow:` or trigger `payload:` has nothing to
+// resolve against, and the two honest answers are an absolute path or a
+// directory. Nil when every path the case names is absolute (or absent).
+func pathlessRefusal(test *Test) error {
+	if !filepath.IsAbs(test.Workflow) {
+		return fmt.Errorf("workflow %q is a relative path and this run has no directory to resolve it against; "+
+			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Workflow)
+	}
+	if test.Trigger != nil && test.Trigger.Payload != "" && !filepath.IsAbs(test.Trigger.Payload) {
+		return fmt.Errorf("trigger payload %q is a relative path and this run has no directory to resolve it against; "+
+			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Trigger.Payload)
+	}
+	return nil
+}
+
+// workflowPathIn and deliveryPathIn are [WorkflowPath] and [DeliveryPath] for
+// a caller holding the directory rather than the test file whose directory it
+// is — same rule, same one spelling, minus the Dir().
+func workflowPathIn(dir string, test *Test) string {
+	if filepath.IsAbs(test.Workflow) {
+		return test.Workflow
+	}
+	return filepath.Join(dir, test.Workflow)
+}
+
+func deliveryPathIn(dir string, test *Test) string {
+	if test.Trigger == nil || test.Trigger.Payload == "" {
+		return ""
+	}
+	if filepath.IsAbs(test.Trigger.Payload) {
+		return test.Trigger.Payload
+	}
+	return filepath.Join(dir, test.Trigger.Payload)
 }
 
 // RunFileWithCoverage is [RunFile] and, alongside the report, the branch
@@ -72,63 +320,32 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 // reason and now with a second one: a case whose virtual clock can never advance
 // has nothing to end it, and `--seeds N` multiplies whatever that costs by N.
 func RunFileUnderSchedules(ctx context.Context, path string, budget dst.Budget) (*v1.TestReport, []*Coverage, *ScheduleReport) {
-	report := &v1.TestReport{File: path}
+	result := RunPath(ctx, path, RunOptions{Budget: budget})
+	return result.Report, result.Coverage, result.Schedules
+}
+
+// RunPath is [Run] for a suite named by path rather than already loaded: load
+// the `*.test.yaml`, then run it with everything the options say, against the
+// file's own directory — which is what a case's `workflow:` and `payload:`
+// resolve against, the same rule `call:` resolves against ([WorkflowPath]'s
+// doc). An empty [RunOptions.Label] defaults to the path. A file that does not
+// load returns a refused report, the same one every path door has always
+// produced, with nil coverage and schedules — no case was ever reached.
+//
+// This is the door `flow test` walks through (with [RunOptions.Select] behind
+// `--run`, and [RunOptions.Budget] behind `--seeds`); [RunFileUnderSchedules]
+// is this with only a budget to say.
+func RunPath(ctx context.Context, path string, opts RunOptions) RunResult {
+	if opts.Label == "" {
+		opts.Label = path
+	}
 
 	file, err := Load(path)
 	if err != nil {
-		report.Refused = err.Error()
-		return report, nil, nil
+		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: err.Error()}}
 	}
 
-	var allowUnreached map[string]string
-	if file.Coverage != nil {
-		allowUnreached = file.Coverage.AllowUnreached
-	}
-	coverage := newCoverageAccumulator(allowUnreached)
-	schedules := newScheduleAccumulator(budget)
-
-	// Reads test.Workflow off disk, relative to the *.test.yaml itself — the
-	// same rule `call:` resolves against ([WorkflowPath]'s doc) — which is
-	// what makes this the bytes-vs-paths seam [runCase] shares with
-	// [RunSource]: the loader is the only part of one case's run that differs
-	// between a file on disk and a workflow submitted as bytes.
-	for _, test := range file.Tests {
-		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
-			report.Cases = append(report.Cases, stopped)
-
-			continue
-		}
-
-		// The workflow's resolved path is its coverage identity: each case names
-		// its own `workflow:`, so this is what keeps two workflows' coverage
-		// apart within one file (Finding 3).
-		identity := WorkflowPath(path, &test)
-		// Kept rather than discarded, which is the whole of issue #801's part B.
-		// [flowfile.ParseFile] has always handed these back and this loop has
-		// always thrown them away, which is why coverage was the one author-facing
-		// diagnostic in the repo that could not name a position. A `switch:` arm
-		// needs one more than anything else does: a step has an id every surface
-		// resolves, and `on_event:case[2]` has nothing but where it is written.
-		var positions *flowfile.Positions
-		load := func() (*v1.Workflow, error) {
-			workflow, parsed, err := flowfile.ParseFile(identity)
-			if err != nil {
-				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
-			}
-			positions = parsed
-			return workflow, nil
-		}
-		deliveryPath := DeliveryPath(path, &test)
-
-		result, spec, transcript := schedules.run(ctx,
-			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error) {
-				return runCase(ctx, &test, deliveryPath, load)
-			})
-		report.Cases = append(report.Cases, result)
-		coverage.observe(identity, spec, transcript, positions)
-	}
-
-	return report, coverage.result(), schedules.result()
+	return Run(ctx, file, filepath.Dir(path), opts)
 }
 
 // caseStoppedBefore reports the case a caller's context ended before it could
@@ -195,39 +412,34 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // the reason on the case; [RunSource] and [RunFile] pass a background context
 // and are unchanged by this existing.
 func RunSourceContext(ctx context.Context, label string, workflowSource, testSource []byte) *v1.TestReport {
-	report := &v1.TestReport{File: label}
-
 	file, err := LoadSource(testSource)
 	if err != nil {
-		report.Refused = err.Error()
-		return report
+		return &v1.TestReport{File: label, Refused: err.Error()}
 	}
 
-	load := func() (*v1.Workflow, error) {
-		workflow, err := flowfile.Unmarshal(workflowSource)
-		if err != nil {
-			return nil, fmt.Errorf("the submitted workflow source is not a valid Flowfile: %w", err)
-		}
-		return workflow, nil
-	}
-
-	for _, test := range file.Tests {
-		// See [caseStoppedBefore] for why the bound is checked here rather than
-		// only inside the run.
-		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
-			report.Cases = append(report.Cases, stopped)
-
-			continue
-		}
-
-		// No delivery path: bytes have no directory to resolve a fixture against,
-		// which is why [checkTrigger] refuses a trigger case in this shape rather
-		// than letting one arrive here with nowhere to read from.
-		result, _, _, _ := runCase(ctx, &test, "", load)
-		report.Cases = append(report.Cases, result)
-	}
-
-	return report
+	// The loader parses the one submitted workflow per case, with no delivery
+	// path (bytes have no directory to resolve a fixture against — which is
+	// why [checkTrigger] refuses a trigger case in this shape) and no parse
+	// positions (bytes have no file for a position to point into; a switch
+	// arm's coverage carries line zero here, as the schema documents). The
+	// label is the coverage identity, since every case runs the same
+	// submitted workflow. Coverage riding the report through [runSuite] is
+	// what makes this door answer with the same account the CLI's does
+	// (issue #931).
+	result := runSuite(ctx, file, RunOptions{Label: label, skipTranscript: true}, func(*Test) (loader, string) {
+		return loader{
+			load: func() (*v1.Workflow, error) {
+				workflow, err := flowfile.Unmarshal(workflowSource)
+				if err != nil {
+					return nil, fmt.Errorf("the submitted workflow source is not a valid Flowfile: %w", err)
+				}
+				return workflow, nil
+			},
+			positions:    func() *flowfile.Positions { return nil },
+			deliveryPath: "",
+		}, label
+	})
+	return result.Report
 }
 
 // runCase runs one test and reports its verdict. load resolves the workflow
@@ -261,11 +473,21 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
 		result.Duration = durationpb.New(time.Since(started))
+	}()
+
+	// The case's own account (#929 slice 2), rendered on every exit path
+	// once the run's clock exists — a case that never got that far has
+	// nothing to account for.
+	var recorder *runRecorder
+	defer func() {
+		if recorder != nil {
+			account = recorder.render()
+		}
 	}()
 
 	compiled, err := compileStubs(test.Stubs)
@@ -313,6 +535,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	// Refused before the run for the same reason a bad stub target is: an
+	// expectation naming a step the workflow does not have is the file
+	// disagreeing with the workflow, and a whole virtual day of execution
+	// cannot make the claim checkable. See [checkExpectationNames].
+	if err := checkExpectationNames(&test.Expect, workflow); err != nil {
+		result.Error = err.Error()
+		return
+	}
+
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
 		result.Error = err.Error()
@@ -325,6 +556,20 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// advance past. See [RunSourceContext].
 	ctx := v1.NewContextWithClock(base, clock)
 	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
+
+	// The transcript's recorder: the engine reports through [v1.RunObserver],
+	// the stub functions find the same recorder on the context, and the
+	// scripted-signal goroutines are handed it directly. Not built at all
+	// where the account would be discarded ([RunOptions].skipTranscript) —
+	// no observer on the context means the engine clones nothing either.
+	if record {
+		recorder = newRunRecorder(clock)
+		ctx = v1.NewContextWithRunObserver(ctx, recorder)
+		ctx = contextWithRunRecorder(ctx, recorder)
+		// What the transcript may honestly call a switch decision — from the
+		// spec, never inferred from an output's name. See [runRecorder.noteSwitches].
+		recorder.noteSwitches(workflow.GetSteps())
+	}
 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
@@ -400,6 +645,35 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			return
 		}
 		policies = resolved
+
+		// The transcript's redaction set, built from the same bound inputs
+		// and the same `sensitive:` declarations the stub diagnostics read
+		// ([sensitiveNativeValues]) — one set, so what one surface refuses to
+		// print no other surface prints. A case whose bind fails records no
+		// step events carrying input-derived values: the run fails at the
+		// same bind before any step runs.
+		if recorder != nil {
+			recorder.sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
+		}
+	}
+
+	// The case's own `secrets:` plaintext joins the set (Codex, #1052):
+	// [resolveSecretInputs] exposes those values to stub expressions, so a
+	// stub can echo one into a step's outputs, and the rule is absolute — a
+	// resolved secret never prints, whatever path it took (CLAUDE.md,
+	// "secrets never enter workflow history"). Both lists, the pair every
+	// declared sensitive value gets: the value comparison catches the whole,
+	// the substring backstop catches "Bearer " + secret. An empty value is
+	// skipped — replacing the empty string would mark every position in
+	// every line while protecting nothing.
+	if recorder != nil {
+		for _, value := range test.Secrets {
+			if value == "" {
+				continue
+			}
+			recorder.sensitive.values = append(recorder.sensitive.values, value)
+			recorder.sensitive.substrings = append(recorder.sensitive.substrings, value)
+		}
 	}
 
 	// Who this case runs as, for the one question a starter answers locally:
@@ -443,7 +717,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// an empty room after the fact — see [scriptSignals].
 	runFinished := make(chan struct{})
 
-	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals)
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder)
 	defer stopScripts()
 	if scriptErr != nil {
 		result.Error = scriptErr.Error()
@@ -469,6 +743,16 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
 	result.Passed = len(result.Failures) == 0
+
+	// Only for a run that completed: on one that failed, a stub the run never
+	// reached is legitimately unanswered, and the report cannot tell that
+	// apart from a genuinely idle one — the same unverifiable-claim honesty
+	// `expect.skipped` applies to parallel branches on a failed run. A case
+	// that never reached a run at all (result.Error set) returns above and
+	// never gets here.
+	if runErr == nil {
+		result.Warnings = unusedStubWarnings(stubs)
+	}
 
 	return
 }
@@ -611,7 +895,7 @@ func unstubbedTaskFn(name string) v1.TaskFunc {
 // stops waiting and delivers nothing — a signal scripted for after the
 // workflow already finished is simply never sent, matching what a sender
 // pointed at a workload that is no longer running would actually manage.
-func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript) (stop func(), err error) {
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -621,6 +905,11 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		at      time.Duration
 		payload map[string]any
 		sender  *v1.SignalSender
+
+		// senderSubject is what the transcript names a delivery as sent by —
+		// the script's own `sender.subject`, "" for a script that named
+		// nobody.
+		senderSubject string
 	}
 
 	jobs := make([]job, 0, len(scripts))
@@ -633,7 +922,11 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			}
 			at = d
 		}
-		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload, sender: scriptedSender(s.Sender)})
+		subject := ""
+		if s.Sender != nil {
+			subject = s.Sender.Subject
+		}
+		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload, sender: scriptedSender(s.Sender), senderSubject: subject})
 	}
 
 	done := make(chan struct{}, len(jobs))
@@ -665,7 +958,18 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
-			_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+			// The send and its record are one atomic decision, and the record
+			// is honest about the outcome — delivered, or refused by a
+			// declared signal policy or the queue's bound. See
+			// [runRecorder.deliverRecorded] for why both halves matter. A run
+			// recording no account delivers plainly.
+			if recorder == nil {
+				_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+				return
+			}
+			recorder.deliverRecorded(j.name, j.payload, j.senderSubject, func() error {
+				return signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+			})
 		}(j)
 	}
 
@@ -731,6 +1035,158 @@ func scriptedIdentity(s *ScriptedIdentity) *v1.WorkloadIdentity {
 		Issuer:    s.Issuer,
 		Namespace: s.Namespace,
 		Claims:    s.Claims,
+	}
+}
+
+// checkExpectationNames refuses an expectation naming a step the workflow does
+// not have, before the run ever starts (#926). Without it, `skipped:` naming a
+// ghost — a typo, or a step renamed since the case was written — asserted
+// nothing forever while reading as if it asserted something, because "absent
+// from the transcript" is satisfied by a name that never existed; and `ran:`
+// on the same typo failed with "produced no recorded outputs" and no hint that
+// the step is not merely unreached but unreal.
+//
+// Refused as a case-level error rather than a failure diagnostic, exactly as a
+// stub naming an unknown step is ([bindStubs]): both are the file disagreeing
+// with the workflow, decided before anything runs, with the same did-you-mean
+// machinery every other surface reads the compiled workflow through.
+//
+// Three name sets, because the honest refusal differs:
+//
+//   - `ran:`/`skipped:` are judged against the top-level transcript, so their
+//     names must be in [topLevelStepUniverse]. A name that exists only inside
+//     a loop body gets the specific sentence — its outputs travel inside the
+//     loop's own results, so no top-level claim about it can ever be checked —
+//     rather than a suggestion to retype what is already spelled right.
+//   - `compensated:` names any step the run could have undone, so it is
+//     checked against every id the workflow declares at any depth.
+func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
+	top := map[string]bool{}
+	topLevelStepUniverse(spec.GetSteps(), top)
+
+	all := map[string]bool{}
+	collectAllStepIDs(spec.GetSteps(), all)
+
+	candidates := func(set map[string]bool) []string {
+		names := make([]string, 0, len(set))
+		for id := range set {
+			names = append(names, id)
+		}
+		sort.Strings(names)
+		return names
+	}
+	topNames := candidates(top)
+	allNames := candidates(all)
+
+	checkTop := func(field, step string) error {
+		if top[step] {
+			return nil
+		}
+		if all[step] {
+			return fmt.Errorf("expect.%s names step %q, which is a loop body step: its outputs travel "+
+				"inside the loop's own results and never appear in the top-level transcript this claim "+
+				"is judged against; assert the loop's results through expect.outputs", field, step)
+		}
+		if suggestion, ok := nearest.Name(step, topNames); ok {
+			return fmt.Errorf("expect.%s names unknown step %q; did you mean %q?", field, step, suggestion)
+		}
+		return fmt.Errorf("expect.%s names unknown step %q, which this workflow has no step for", field, step)
+	}
+
+	for _, step := range want.Ran {
+		if err := checkTop("ran", step); err != nil {
+			return err
+		}
+	}
+	for _, step := range want.Skipped {
+		if err := checkTop("skipped", step); err != nil {
+			return err
+		}
+	}
+	// A `call:` registers its callee's own `undo:` steps onto this run's
+	// stack under the callee's step ids (see examples/progressive-rollout,
+	// whose cases name `record` and `shift` — steps of shift-traffic.yaml,
+	// not of the caller), and this checker deliberately never loads a callee,
+	// the same line [stepTasks] draws. So a workflow with a `call:` anywhere
+	// leaves `compensated:` unchecked rather than refusing a name it cannot
+	// see: a false diagnostic is worse than a missing one, the
+	// ResolvableInputs abstention CLAUDE.md's diagnostics rule names.
+	if !containsCallStep(spec.GetSteps()) {
+		for _, step := range want.Compensated {
+			if all[step] {
+				continue
+			}
+			if suggestion, ok := nearest.Name(step, allNames); ok {
+				return fmt.Errorf("expect.compensated names unknown step %q; did you mean %q?", step, suggestion)
+			}
+			return fmt.Errorf("expect.compensated names unknown step %q, which this workflow has no step for", step)
+		}
+	}
+
+	return nil
+}
+
+// containsCallStep reports whether any step at any depth is a `call:` — the
+// one node kind whose compensations run under step ids this package never
+// compiles. See [checkExpectationNames].
+func containsCallStep(nodes []*v1.Node) bool {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Call:
+			return true
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				if containsCallStep(branch.GetSteps()) {
+					return true
+				}
+			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				if containsCallStep(body) {
+					return true
+				}
+			}
+		case *v1.Node_ForEach:
+			if containsCallStep(kind.ForEach.GetBody()) {
+				return true
+			}
+		case *v1.Node_Loop:
+			if containsCallStep(kind.Loop.GetBody()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// collectAllStepIDs records every step id the workflow declares, at any depth —
+// parallel branches, switch bodies, and loop/for_each bodies included. It does
+// not descend into a `call:`, whose steps belong to the callee's own file, the
+// same line [stepTasks] draws.
+func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				collectAllStepIDs(branch.GetSteps(), out)
+			}
+			continue
+		case *v1.Node_Switch:
+			out[node.GetId()] = true
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				collectAllStepIDs(body, out)
+			}
+			continue
+		case *v1.Node_ForEach:
+			out[node.GetId()] = true
+			collectAllStepIDs(kind.ForEach.GetBody(), out)
+			continue
+		case *v1.Node_Loop:
+			out[node.GetId()] = true
+			collectAllStepIDs(kind.Loop.GetBody(), out)
+			continue
+		}
+		out[node.GetId()] = true
 	}
 }
 
@@ -932,12 +1388,21 @@ func parallelBranchSteps(nodes []*v1.Node, out map[string]bool) {
 }
 
 // collectStepIDs records every node id in nodes, recursing into parallel
-// branches, so a nested block's steps are counted too.
+// branches and switch bodies, so a nested block's steps are counted too — a
+// switch-body step inside a branch is as unknowable on a failed run as any
+// other branch step.
 func collectStepIDs(nodes []*v1.Node, out map[string]bool) {
 	for _, node := range nodes {
 		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
 			for _, branch := range parallel.Parallel.GetBranches() {
 				collectStepIDs(branch.GetSteps(), out)
+			}
+			continue
+		}
+		if sw, ok := node.GetKind().(*v1.Node_Switch); ok {
+			out[node.GetId()] = true
+			for _, body := range v1.SwitchBodies(sw.Switch) {
+				collectStepIDs(body, out)
 			}
 			continue
 		}
@@ -950,6 +1415,20 @@ func topLevelStepUniverse(nodes []*v1.Node, universe map[string]bool) {
 		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
 			for _, branch := range parallel.Parallel.GetBranches() {
 				topLevelStepUniverse(branch.GetSteps(), universe)
+			}
+			continue
+		}
+		// A switch records its own id (the `case` record coverage reads) *and*
+		// its taken arm's body steps at the top level — a body step is
+		// assertable through `ran:`, so it has to be in the universe the
+		// closed claim walks. Before this arm existed, `others: skipped` was
+		// blind to a switch-body step that ran: the id was absent from the
+		// universe, so the one claim built to catch an unnamed step passed
+		// straight over it (#926).
+		if sw, ok := node.GetKind().(*v1.Node_Switch); ok {
+			universe[node.GetId()] = true
+			for _, body := range v1.SwitchBodies(sw.Switch) {
+				topLevelStepUniverse(body, universe)
 			}
 			continue
 		}

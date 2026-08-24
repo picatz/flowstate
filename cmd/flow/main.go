@@ -2,11 +2,20 @@
 // Flowfiles locally, and serves as the control plane, worker, and operator
 // tooling for durable execution against Temporal. Run `flow --help` for the
 // command tree; docs/reference/ is generated from it.
+//
+// One rule spans every renderer's colors, and a new output surface inherits
+// it on purpose rather than by imitation: yellow (Warning) marks a fact worth
+// reading that is not a verdict — a coverage gap without
+// `--coverage-required`, an unused stub without `--fail-on-warning`, a
+// "nothing was explored" honesty line — and red (Danger) marks exactly what
+// decides an exit code. A fact promoted to the exit code by a flag changes
+// color with the flag, because the color is the claim.
 package main
 
 import (
 	"cmp"
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -36,6 +45,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
+	"github.com/picatz/jose/pkg/jwk"
 	"github.com/sourcegraph/jsonrpc2"
 	"github.com/spf13/cobra"
 	"go.temporal.io/sdk/client"
@@ -139,10 +149,25 @@ type authFlags struct {
 	policyPath string
 	insecure   bool
 
-	// identityKeyPath holds the private key Flowstate signs its own assertions
-	// with, when the trust policy configures federation. Unset means the server
-	// verifies callers but issues nothing, which is the inbound-only deployment.
-	identityKeyPath string
+	// policyPathGiven records whether policyPath was typed on this command
+	// line rather than inherited from $FLOWSTATE_AUTH_POLICY, which is the
+	// flag's default. It changes no decision — [authVerifier] refuses
+	// --insecure-no-auth beside a policy from either source — only what the
+	// refusal tells the operator to do about it, since unsetting an exported
+	// variable and deleting a flag are different actions. Same distinction,
+	// and the same spelling, as devFlags.authPolicyGiven in serverdev.go.
+	policyPathGiven bool
+
+	// identityKeyPaths holds the keys Flowstate publishes when the trust policy
+	// configures federation, in the order they were given. Empty means the
+	// server verifies callers but issues nothing, which is the inbound-only
+	// deployment.
+	//
+	// The first names the private key assertions are signed with. Any after it
+	// are published for verification only, so assertions a previous process
+	// signed keep verifying across the restart that rotation actually is — see
+	// [identityBroker].
+	identityKeyPaths []string
 
 	// identityClaims names the caller token claims carried into each run's
 	// identity, where `workload.claims[...]` rules and downstream relying parties
@@ -151,18 +176,44 @@ type authFlags struct {
 	identityClaims []string
 }
 
+// identityKeyDefault is what --identity-key holds when it is not given: the one
+// path $FLOWSTATE_IDENTITY_KEY names, or nothing.
+//
+// Nothing, rather than a list holding one empty string, which is what wrapping
+// an unset variable would produce — and which would then be read as a key path
+// of "" and refuse start-up on a deployment that never configured federation.
+// A repeated flag replaces this default outright rather than appending to it
+// (pflag's StringArray), so an operator who sets both names the whole key set on
+// the command line, which is the reading that makes rotation's order explicit.
+// The variable stays single-valued: it is the inbound-only deployment's one key,
+// and a list of paths in an environment variable would need a separator this
+// repository has no convention for.
+func identityKeyDefault() []string {
+	if path := os.Getenv("FLOWSTATE_IDENTITY_KEY"); path != "" {
+		return []string{path}
+	}
+	return nil
+}
+
+// identityKeyUsage is the help text every command that loads identity keys
+// shows for --identity-key, so the rotation rule is worded once.
+const identityKeyUsage = "PKCS#8 PEM key used to mint short-lived workload assertions for federation " +
+	"targets (repeatable: the first signs, and every later one is published for verification only, " +
+	"so assertions signed before a restart keep verifying)"
+
 // authFlagsOf reads them off the command being run.
 func authFlagsOf(cmd *cobra.Command) authFlags {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
-	identityKeyPath, _ := cmd.Flags().GetString("identity-key")
+	identityKeyPaths, _ := cmd.Flags().GetStringArray("identity-key")
 	identityClaims, _ := cmd.Flags().GetStringArray("identity-claim")
 
 	return authFlags{
-		policyPath:      policyPath,
-		insecure:        insecure,
-		identityKeyPath: identityKeyPath,
-		identityClaims:  identityClaims,
+		policyPath:       policyPath,
+		policyPathGiven:  cmd.Flags().Changed("auth-policy"),
+		insecure:         insecure,
+		identityKeyPaths: identityKeyPaths,
+		identityClaims:   identityClaims,
 	}
 }
 
@@ -218,7 +269,8 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	// and propagator at construction, so an interceptor built ahead of this
 	// captures the no-op ones and keeps them for the life of the process.
 	//
-	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere. Started
+	// Off unless the operator asked for a signal — an OTEL_EXPORTER_OTLP_*
+	// endpoint or an OTEL_*_EXPORTER selector, per [telemetryConfigured]. Started
 	// rather than initialized, because `flow server` reaches here twice when
 	// the trust policy maps tenants onto namespaces, and the flush this
 	// registers has to reach one set of providers rather than the last of
@@ -762,7 +814,8 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	started, err := client.Run(cmd.Context(),
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason}))
 	if err != nil {
-		return refusedStart(args[0], workflow.GetName(), runArgumentFlags(cmd), server, err)
+		arguments, redacted := runArgumentFlags(cmd, workflow)
+		return refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
 	}
 
 	workflowID := started.Msg.GetWorkflowId()
@@ -897,6 +950,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// --tls-acme-hosts, and a value cannot be cross-checked before it is
 	// read.
 	verifier, policy, err := authVerifier(authCfg)
+	if err != nil {
+		return err
+	}
+	warnUnreachableIssuers(logger, policy)
+
+	rpcResource, err := resolveRPCResource(rpcResourceFlagsOf(cmd), authCfg, policy)
 	if err != nil {
 		return err
 	}
@@ -1172,7 +1231,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr:    publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcMux, receiver, protectedResource),
+		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource),
 
 		// nil when no certificate was configured, which is only reachable here
 		// when publicAddr is loopback — anything else already returned above.
@@ -1212,8 +1271,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// Log the discovery URL rather than the fact of federation: an operator
 		// configuring a relying party needs this exact string, and finding it by
 		// reading source is the sort of friction that gets solved by guessing.
+		// The key ids as well, because a rotation is performed by restarting
+		// with a different --identity-key list and its whole result is which
+		// keys this process publishes and which one of them signs. An operator
+		// who cannot read that back has rehearsed nothing.
 		logger.Info("issuing workload identity assertions",
-			"discovery", broker.Issuer().URL()+auth.DiscoveryPath)
+			"discovery", broker.Issuer().URL()+auth.DiscoveryPath,
+			"signing_key", broker.Issuer().ActiveKeyID(),
+			"verify_only_keys", verifyOnlyKeyIDs(broker.Issuer()))
 	}
 	if protectedResource != nil {
 		logger.Info("serving RFC 9728 protected resource metadata",
@@ -1382,7 +1447,48 @@ const maxHeaderValueCount = 500
 // missing or unreadable policy: a server that cannot load its trust policy must
 // refuse to start rather than quietly begin accepting everyone, which is exactly
 // the failure this replaces.
+//
+// Naming both answers is refused rather than resolved by priority. This
+// function used to return the anonymous verifier before it looked at
+// flags.policyPath at all, so `flow server --insecure-no-auth --auth-policy
+// /nonexistent/policy.yaml` reached the Temporal dial: the policy was not
+// merged, not preferred and not reported, it was never opened. The deployment
+// that produces is the dangerous one — an operator who added --insecure-no-auth
+// for a local reproduction and left it in a unit file has an anonymous server
+// whose configuration still reads as authenticated, beside a trust policy every
+// reader believes is in force. A contradiction is a deployment that has not
+// said which it wants, and this repository refuses those at start-up rather
+// than picking one (see [resolveRPCResource] for --rpc-resource beside
+// --allow-issuer-wide-audiences, the same shape one surface down).
+//
+// `flow server dev` does not reach here: it builds its handler from
+// [auth.InsecureAnonymousVerifier] directly and answers the same question in
+// devCheckAuthPolicy (cmd/flow/serverdev.go), which refuses an inherited
+// FLOWSTATE_AUTH_POLICY and deliberately accepts a --auth-policy typed on its
+// own command line, for that command's secrets rules only. That is a different
+// answer on purpose and is left alone: this command has no such reading, since
+// `flow server` does not resolve secrets.
+//
+// The doc gate in documentedservers_test.go already refuses the pair in every
+// Markdown recipe in the repository, on this same reasoning. With this refusal
+// the runtime and that gate now agree: a document showing both describes a
+// server that no longer starts.
 func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
+	if flags.insecure && flags.policyPath != "" {
+		if !flags.policyPathGiven {
+			return nil, nil, fmt.Errorf("--insecure-no-auth cannot be combined with the trust policy in "+
+				"$FLOWSTATE_AUTH_POLICY (%s): that flag authenticates every caller as anonymous without a "+
+				"token, so the policy would never be read and this server would accept callers it rejects. "+
+				"Drop --insecure-no-auth to authenticate against that policy, or unset FLOWSTATE_AUTH_POLICY "+
+				"for this run to serve anonymously on purpose", flags.policyPath)
+		}
+		return nil, nil, fmt.Errorf("--insecure-no-auth and --auth-policy %s are mutually exclusive: one "+
+			"authenticates every caller against that trust policy and the other authenticates nobody at "+
+			"all, so a deployment giving both has not said which it wants. Were this resolved by priority "+
+			"the anonymous verifier would win and the policy would never be read. Pass one or the other",
+			flags.policyPath)
+	}
+
 	if flags.insecure {
 		return auth.InsecureAnonymousVerifier(), nil, nil
 	}
@@ -1407,43 +1513,181 @@ func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
 	return verifier, &policy, nil
 }
 
+// warnUnreachableIssuers reports every trust policy entry that an earlier entry
+// makes unreachable, one loud start-up line each.
+//
+// A warning rather than a refusal, the same choice and for the same kind of
+// reason as [warnUnpolledTenantQueues]: a shadowed entry is a mistake often
+// enough to be worth saying and not always — an operator mid-migration may have
+// deliberately parked a narrow entry behind a broad one they are about to
+// delete — and a server that refused to start over it would turn a lint into an
+// outage for a deployment whose authentication was working a minute ago. The
+// symptom this exists to supply is that there is no symptom: the file reads
+// correctly, every token verifies, and a workload quietly holds the broad
+// entry's namespace and role instead of the narrow entry's own. See
+// [auth.Policy.UnreachableIssuers] for what counts as unreachable and for the
+// shapes it deliberately does not report.
+func warnUnreachableIssuers(logger *slog.Logger, policy *auth.Policy) {
+	if policy == nil {
+		return
+	}
+	for _, finding := range policy.UnreachableIssuers() {
+		logger.Warn("a trust policy entry can never admit anybody; the entry above it admits every caller it would, "+
+			"so those callers get that entry's namespace and role instead",
+			"entry", finding.Name,
+			"entry_index", finding.Index,
+			"shadowed_by", finding.ShadowedByName,
+			"shadowed_by_index", finding.ShadowedByIndex,
+			"fix", "move "+finding.Name+" above "+finding.ShadowedByName+", or narrow "+finding.ShadowedByName)
+	}
+}
+
 // identityBroker builds the broker that issues Flowstate's own assertions, or
 // returns nil when the deployment does not federate outward.
 //
 // The signing key is a file rather than a policy field because a policy is
 // configuration a person edits and reads, and a private key is neither. The key
 // id is published in the JWKS and named in every assertion, so a date makes
-// rotation self-documenting: a verifier that has cached "2026-07" can be handed
-// "2026-08" without a coordinated restart.
+// rotation self-documenting: `2026-08.pem` publishes as "2026-08".
+//
+// # Rotation is a restart, so the flag repeats
+//
+// The issuer can rotate in place ([auth.Issuer.Rotate]) and nothing a deployment
+// runs ever calls it: the rotation an operator performs is to change what the
+// process is started with and restart it. A process that loaded exactly one key
+// publishes exactly that key from its first request onward, so every assertion
+// the previous process signed — still valid for the rest of its five minutes —
+// stops verifying at any relying party that refetches the key set on an unknown
+// "kid" (picatz/flowstate#891).
+//
+// So --identity-key repeats, and the order is the whole rule:
+//
+//   - **the first occurrence signs**, and
+//   - every later one is published for verification only, without its private
+//     half ever being retained.
+//
+// First rather than last because the command line then reads in the order the
+// operator thinks: the key being rotated *to* is the one they just generated and
+// the one they type first, and the older keys trail it in the order they are
+// eventually dropped. Nothing is derived from the file name or its modification
+// time — a key id is an operator-chosen file name, and a rotation that depended
+// on mtime would be decided by whichever file `cp` touched last.
+//
+// A verify-only entry may be either half: the operator's existing PKCS#8
+// private key file, whose public half is taken and whose private half is
+// dropped on the spot, or a PKIX public key PEM for a deployment that would
+// rather not mount the old private key at all. This process never signs with
+// one either way, since [auth.WithVerifyOnlyKey] takes a public key.
+//
+// Everything here fails closed: an entry that cannot be read or parsed, or two
+// entries publishing the same key id, refuses start-up rather than being
+// skipped. A key silently left out is a rotation the operator believes is
+// covered and is not.
 func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) {
 	if policy == nil || policy.Federation == nil {
-		if flags.identityKeyPath != "" {
+		if len(flags.identityKeyPaths) > 0 {
 			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
 	}
 
-	if flags.identityKeyPath == "" {
+	if len(flags.identityKeyPaths) == 0 {
 		return nil, fmt.Errorf("the trust policy configures federation but no signing key was given: " +
 			"pass --identity-key with a PKCS#8 PEM private key, since Flowstate cannot issue an " +
 			"assertion it cannot sign")
 	}
 
-	pem, err := os.ReadFile(flags.identityKeyPath)
+	signingPath, verifyOnlyPaths := flags.identityKeyPaths[0], flags.identityKeyPaths[1:]
+
+	pem, err := os.ReadFile(signingPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading identity key: %w", err)
 	}
-	key, err := parseSigningKey(flags.identityKeyPath, pem)
+	key, err := parseSigningKey(signingPath, pem)
 	if err != nil {
 		return nil, err
 	}
 
-	broker, err := policy.Federation.Broker(key)
+	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
+	for _, path := range verifyOnlyPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading verify-only identity key: %w", err)
+		}
+		id, public, err := parseVerifyOnlyKey(path, data)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
+	}
+
+	// A duplicate id is refused by [auth.NewIssuer], which is where the key set
+	// being published actually lives, so the refusal cannot be bypassed by any
+	// other caller — see [auth.WithVerifyOnlyKey].
+	broker, err := policy.Federation.Broker(key, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
 	return broker, nil
+}
+
+// verifyOnlyKeyIDs names the keys the issuer publishes that it does not sign
+// with, in the order the key set serves them.
+//
+// Read back out of the published key set rather than remembered from the flags,
+// so the line an operator reads at start-up describes what relying parties will
+// actually fetch: a key that was named but not published, for whatever reason,
+// must not appear here.
+func verifyOnlyKeyIDs(issuer *auth.Issuer) []string {
+	active := issuer.ActiveKeyID()
+
+	var ids []string
+	for _, published := range issuer.KeySet().Keys {
+		id, _ := published[jwk.KeyID].(string)
+		if id == "" || id == active {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// parseVerifyOnlyKey decodes one --identity-key entry that is not the first, as
+// the public key it will be published as, deriving the key id from the file's
+// name exactly as [parseSigningKey] does.
+//
+// Both PEM shapes are accepted because both are what an operator has in hand: a
+// rotation names the previous *private* key file, which is what is already
+// mounted, while a deployment that would rather not mount a superseded private
+// key at all can hand over just its public half (openssl pkey -pubout). A private
+// key given here is read for its public half and nothing else — no
+// [auth.SigningKey] is built from it, so no signer closure ever captures it and
+// this process cannot sign with the key however the flags are ordered.
+func parseVerifyOnlyKey(path string, data []byte) (string, crypto.PublicKey, error) {
+	id := keyIDFromPath(path)
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return "", nil, fmt.Errorf("identity key %s is not PEM-encoded", path)
+	}
+
+	if public, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+		return id, public, nil
+	}
+
+	private, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return "", nil, fmt.Errorf("identity key %s is neither a PKCS#8 private key nor a PKIX public key "+
+			"(a key named after the first --identity-key is published for verification only, so either half will do; "+
+			"extract the public half of an existing key with: openssl pkey -in %s -pubout -out %s.pub.pem)", path, path, path)
+	}
+
+	public, err := publicKeyOf(private)
+	if err != nil {
+		return "", nil, fmt.Errorf("identity key %s: %w", path, err)
+	}
+	return id, public, nil
 }
 
 // parseSigningKey decodes a PKCS#8 PEM private key, deriving the key id from the
@@ -1499,10 +1743,17 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// nowhere else. An editor asks this process a question per keystroke, and
 	// launching a binary is not an answer to a keystroke; nor may the workspace
 	// decide it, because a repository somebody cloned would then choose what
-	// their editor executes. The only thing that turns this on is --plugin-dir on
-	// the command line the person configured their editor with, which is an
-	// operator saying yes about their own machine. That is the whole of the
-	// opt-in, and it is why there is no configuration path to the same effect.
+	// their editor executes. The only thing that turns this on is an *absolute*
+	// --plugin-dir on the command line the person configured their editor with,
+	// which is an operator saying yes about their own machine. That is the whole
+	// of the opt-in, and it is why there is no configuration path to the same effect.
+	//
+	// Both halves of that — a relative path refused, and $FLOWSTATE_PLUGIN_DIR
+	// not read — are properties of how this command's flags were *registered*,
+	// by [addEditorPluginFlags], and not of this call. So the reading below is
+	// the same [startPlugins] a worker does, with the same --plugin pin refusal
+	// and the same host: a narrower trust boundary, not a second reader that
+	// can drift from the first (#958).
 	//
 	// Strict, as a worker is: a plugin that will not come up fails the command
 	// here rather than leaving an editor quietly reporting `unknown task` for
@@ -2273,19 +2524,24 @@ flow server --verbose`,
 	addLocalRehearsalFlags(runLocalCmd)
 	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize worker-side resolution")
-	workerCmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
+	workerCmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
-		"allow unauthenticated access; for local development only")
-	serverCmd.Flags().String("identity-key",
-		os.Getenv("FLOWSTATE_IDENTITY_KEY"),
+		"allow unauthenticated access; for local development only, and cannot be combined with "+
+			"--auth-policy (or an inherited FLOWSTATE_AUTH_POLICY), which authenticates every caller "+
+			"against a trust policy this flag would leave unread")
+	addRPCResourceFlags(serverCmd)
+	serverCmd.Flags().StringArray("identity-key",
+		identityKeyDefault(),
 		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
 			"required when the trust policy configures federation; the file's base name "+
-			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\"")
+			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\". "+
+			"Repeatable: the first occurrence signs and every later one is published for "+
+			"verification only, so a restart that rotates keys does not reject assertions "+
+			"the previous process signed")
 
 	// The server's deployment name is not the worker's Worker Deployment pair: it
 	// names this Flowstate installation in the identity every run carries, so an
@@ -2753,7 +3009,7 @@ flow mcp serve --listen :8617 \
 			"to it over the same stdin and stdout this process already has, so there is " +
 			"no address or port to configure. In VS Code, point a generic LSP extension " +
 			"(or an extension you write) at the command; in Neovim's built-in client, " +
-			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"./plugins\"` to the table " +
+			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"/opt/flowstate/plugins\"` to the table " +
 			"if a plugin's tasks should stop reading as unknown) with `filetypes` set to " +
 			"Flowfile's, typically YAML.",
 		RunE: runLSP,
@@ -2762,7 +3018,7 @@ flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one
 # stops reading as a mistake:
-flow lsp --plugin-dir ./plugins`,
+flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 
 	// The same flags `flow worker` takes, doing the same thing — one discovery
@@ -2778,7 +3034,13 @@ flow lsp --plugin-dir ./plugins`,
 	// author's editor runs, and it is not done per request, because a keystroke
 	// is not a moment to launch a process. Somebody types this flag for their own
 	// machine, once, in the editor configuration that starts the server.
-	addPluginFlags(lspCmd)
+	//
+	// [addEditorPluginFlags] rather than [addPluginFlags]: the same four flags,
+	// with the two things a workspace must not decide taken away — the
+	// environment default and a relative path. It carries the narrower help
+	// text with it, so what `flow lsp --help` prints and what the command does
+	// are one decision.
+	addEditorPluginFlags(lspCmd)
 
 	// Add command groups for better organization
 	rootCmd.AddGroup(&cobra.Group{

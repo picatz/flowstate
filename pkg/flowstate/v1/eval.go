@@ -13,6 +13,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/google/cel-go/cel"
@@ -973,15 +974,34 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
-	bound, err := BindRunInputs(w, inputs)
-	if err != nil {
-		return nil, err
-	}
-	if err := CheckSubmissionSize(w, bound); err != nil {
-		return nil, err
-	}
+	// The run-level span, opened at the submit boundary rather than around
+	// [eval], so that a submission this driver *refuses* — an undeclared input, a
+	// pair past its size — leaves a trace saying so. A refusal that produced no
+	// span would be the outcome an operator most wants to see and the only one
+	// invisible, which is the argument `netpolicy`'s round tripper already makes
+	// about a denied request.
+	//
+	// Through [observeRun] rather than a `defer span.End()` here, because a task
+	// that panics never returns through the assignment that would record the
+	// outcome: the span would end UNSET, and a crashed run would be
+	// indistinguishable from a successful one at the run level. [observeRun]
+	// handles that path the way [ObserveTask] handles it one level down, without
+	// recovering the panic.
+	//
+	// This is the local driver's alone. See [StartRunSpan] for why the durable
+	// driver opens no counterpart and why that is agreement rather than
+	// divergence.
+	return observeRun(ctx, w, func(ctx context.Context) (*Workflow_StepOutputs, error) {
+		bound, err := BindRunInputs(w, inputs)
+		if err != nil {
+			return nil, err
+		}
+		if err := CheckSubmissionSize(w, bound); err != nil {
+			return nil, err
+		}
 
-	return eval(ctx, w, bound)
+		return eval(ctx, w, bound)
+	})
 }
 
 func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
@@ -1148,6 +1168,26 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		return failRun(err)
 	}
 
+	// A task may finish successfully *after* the run was cancelled, and the
+	// durable driver's policy.go says so in writing: WaitForCancellation lets an
+	// activity win that race, "which is the outcome a saga wants: the step
+	// registers its compensation, and the compensation then takes it back."
+	//
+	// The second clause was only true when the winning task was not the last
+	// one. Nothing between here and the end observed the cancellation — a
+	// workflow declaring no outputs evaluates none, and cel-go polls its
+	// interrupt every DefaultInterruptCheckFrequency steps, which a short
+	// expression never reaches — so the run closed COMPLETED with a full undo
+	// log nobody ran. The world keeps whatever that last step created, and the
+	// operator who asked for a stop is told it finished.
+	//
+	// One line, and it has to be here rather than inside runNodes: the race is
+	// between the cancellation and the *last* step's success, so the only place
+	// it is decidable is after every step has reported.
+	if err := ctx.Err(); err != nil {
+		return failRun(err)
+	}
+
 	// Evaluated once, after the last step, against the scope the run finished in —
 	// the same moment and the same scope the durable driver uses. See
 	// [EvalRunOutputs] and engine.Run, where the reason that moment is safe in
@@ -1295,6 +1335,11 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 		if !run {
+			// The one fact the transcript cannot carry — a skipped step
+			// records nothing — reported here for whoever is listening
+			// ([RunObserver]).
+			observeStepSkipped(ctx, node.GetId())
+
 			continue
 		}
 
@@ -1436,7 +1481,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 			// no later step evaluates against this scope, and the successful path
 			// never reaches this line. The durable driver records at the identical
 			// point, for the identical reason.
-			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+			record := failureRecord(err)
+			scope.Outputs.StepValues[node.GetId()] = record
+			observeStepFinished(ctx, node.GetId(), record, err, false)
 
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
@@ -1447,7 +1494,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		if tolerated != nil {
 			tolerated[node.GetId()] = struct{}{}
 		}
-		scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+		record := failureRecord(err)
+		scope.Outputs.StepValues[node.GetId()] = record
+		observeStepFinished(ctx, node.GetId(), record, err, true)
 
 		return nil
 	}
@@ -1455,6 +1504,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 	if outputs != nil {
 		scope.Outputs.StepValues[node.GetId()] = outputs
 	}
+	observeStepFinished(ctx, node.GetId(), outputs, nil, false)
 
 	return nil
 }
@@ -1523,7 +1573,19 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 	// the path where it is not tolerated, ending the run before anything is built on
 	// top of an effect that has no way back. The durable driver registers at the
 	// identical point, in its own runNodeWithVars.
-	entry, err := UndoRegistrationFor(ctx, node, inner, outputs)
+	//
+	// On a context that survives cancellation, because registering is not the
+	// step's work — the step has already succeeded, and this is recording how to
+	// take it back. UndoRegistrationFor resolves the compensation's inputs, which
+	// evaluates CEL, which a cancelled context refuses; a task that wins the
+	// cancellation race would then have its compensation fail to register, and the
+	// run would compensate everything except the effect that was just created.
+	// The durable driver has always registered on context.Background() (see
+	// engine/execute.go), so this is the two drivers agreeing rather than a new
+	// rule; WithoutCancel rather than Background because the values on ctx — the
+	// secret runtime, the rehearsal identity — are ones a compensation's inputs
+	// may legitimately read.
+	entry, err := UndoRegistrationFor(context.WithoutCancel(ctx), node, inner, outputs)
 	if err != nil {
 		return nil, err
 	}
@@ -2278,8 +2340,18 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// execution instruments have to see the refused dispatch on both
 		// drivers too, or a local run's error rate would omit exactly the
 		// failures an operator most wants counted.
+		//
+		// Attempt 1, and not because there is nothing better to say: a policy
+		// refusal happens above the retry loop, so this dispatch had exactly
+		// one attempt and it was refused. The durable driver reports the same
+		// number here for the same reason — its check runs inside the activity,
+		// where `activity.GetInfo` reads 1 on a first dispatch — so the two
+		// agree without either one guessing.
 		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
-			func(context.Context, trace.Span) (*Node_Outputs, error) { return nil, err })
+			func(_ context.Context, span trace.Span) (*Node_Outputs, error) {
+				span.SetAttributes(attribute.Int(SpanAttributeAttempt, 1))
+				return nil, err
+			})
 
 		return nil, err
 	}
@@ -2314,7 +2386,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID)
+		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID, attempt)
 		if err == nil {
 			return out, nil
 		}
@@ -2472,9 +2544,17 @@ func (e *causeEnrichedError) Unwrap() error {
 // [withCancellationCause] enriches, because the enrichment adds *text* and the
 // span records only a classification — and the classification of the enriched
 // error is the same one, since it wraps rather than replaces.
-func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (*Node_Outputs, error) {
+//
+// attempt is the retry loop's own counter, passed in rather than read from
+// anywhere ambient because this function is called once per attempt and the
+// loop above is the only thing that knows which one this is. It is the local
+// driver's half of [SpanAttributeAttempt]; the durable driver's half is
+// `activity.GetInfo(ctx).Attempt`, read in engine/activities.go. See
+// [StartTaskSpan]'s doc for why one key carries both and why that is honest.
+func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string, attempt int) (*Node_Outputs, error) {
 	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
-		func(ctx context.Context, _ trace.Span) (*Node_Outputs, error) {
+		func(ctx context.Context, span trace.Span) (*Node_Outputs, error) {
+			span.SetAttributes(attribute.Int(SpanAttributeAttempt, attempt))
 			return runStepAttempt(ctx, task, timeout, scope)
 		})
 }

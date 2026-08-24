@@ -595,7 +595,7 @@ flow lsp [flags]
 
 Start a language server for Flowfile editing in text editors and IDEs, serving the Language Server Protocol over stdin and stdout. It reports Flowfile problems as diagnostics as you type.
 
-This is not something you run and watch: an editor launches it and talks to it over the same stdin and stdout this process already has, so there is no address or port to configure. In VS Code, point a generic LSP extension (or an extension you write) at the command; in Neovim's built-in client, `cmd = {"flow", "lsp"}` (add `"--plugin-dir", "./plugins"` to the table if a plugin's tasks should stop reading as unknown) with `filetypes` set to Flowfile's, typically YAML.
+This is not something you run and watch: an editor launches it and talks to it over the same stdin and stdout this process already has, so there is no address or port to configure. In VS Code, point a generic LSP extension (or an extension you write) at the command; in Neovim's built-in client, `cmd = {"flow", "lsp"}` (add `"--plugin-dir", "/opt/flowstate/plugins"` to the table if a plugin's tasks should stop reading as unknown) with `filetypes` set to Flowfile's, typically YAML.
 
 Examples:
 
@@ -605,14 +605,14 @@ flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one
 # stops reading as a mistake:
-flow lsp --plugin-dir ./plugins
+flow lsp --plugin-dir /opt/flowstate/plugins
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | absolute directory to discover plugins in, repeatable, in precedence order; a relative path is refused and $FLOWSTATE_PLUGIN_DIR is not read, because an editor starts this process in the workspace |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow mcp`
@@ -664,7 +664,7 @@ flow mcp --plugin-dir ./plugins
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize local runs served to an agent |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
-| `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -908,7 +908,7 @@ flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --sec
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
-| `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
@@ -1230,18 +1230,20 @@ flow server --verbose
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
+| `--allow-issuer-wide-audiences` | `bool` | `false` | — | migration-only: accept any audience listed for a token's trusted issuer on Connect RPC; explicitly restores the pre-resource behavior and cannot be combined with --rpc-resource |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept |
 | `--authorization-server <string,...>` | `stringArray` | — | — | an authorization server this deployment advertises as able to mint tokens for --protected-resource. Repeatable; RFC 9728 requires at least one when --protected-resource is given. Each one must already be a kind: oidc issuer in --auth-policy — an authorization server this deployment's own verifier would reject is refused at start-up rather than advertised |
 | `--deployment-name <string>` | `string` | — | `FLOWSTATE_DEPLOYMENT_NAME` | name of this Flowstate deployment, recorded in each run's workload identity and in every assertion subject it mints |
 | `--identity-claim <string,...>` | `stringArray` | — | — | caller token claim to carry into each run's workload identity (repeatable), such as repository or email; only named claims are carried, and they are what workload.claims[...] policy rules read |
-| `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | path to a PKCS#8 PEM private key Flowstate signs its own assertions with, required when the trust policy configures federation; the file's base name becomes the published key id, so 2026-07.pem publishes as "2026-07" |
-| `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access; for local development only |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | path to a PKCS#8 PEM private key Flowstate signs its own assertions with, required when the trust policy configures federation; the file's base name becomes the published key id, so 2026-07.pem publishes as "2026-07". Repeatable: the first occurrence signs and every later one is published for verification only, so a restart that rotates keys does not reject assertions the previous process signed |
+| `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access; for local development only, and cannot be combined with --auth-policy (or an inherited FLOWSTATE_AUTH_POLICY), which authenticates every caller against a trust policy this flag would leave unread |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a socket separate from the public listener; empty (the default) means no internal listener at all. Pass a loopback address, such as --internal-listen 127.0.0.1:9090, to turn it on — nothing else is accepted: this listener carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address this server listens on, as a bare host:port for net.Listen (default $FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, refusePlaintextListener requires --tls-cert-file/--tls-key-file or --tls-terminated-upstream |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--protected-resource <string>` | `string` | — | `FLOWSTATE_PROTECTED_RESOURCE` | the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as (overrides FLOWSTATE_PROTECTED_RESOURCE). No fragment, no trailing slash. Given together with one or more --authorization-server, this deployment serves RFC 9728 protected resource metadata at /.well-known/oauth-protected-resource, plus this resource's own path if it has one (RFC 9728 section 3.1's well-known-URI construction — a resource ending in /mcp serves its document at /.well-known/oauth-protected-resource/mcp, not at the bare prefix), and every 401 challenge names that exact document. Unset (the default): the route does not exist and every challenge reads exactly as it does today |
+| `--rpc-resource <string>` | `string` | — | `FLOWSTATE_RPC_RESOURCE` | canonical resource URI required in the aud claim of every bearer token spent on the Connect RPC surface (default $FLOWSTATE_RPC_RESOURCE); must be an absolute HTTPS URI with no fragment or trailing slash and appear in at least one kind: oidc issuer's audiences. Required whenever --auth-policy trusts an issuer that mints bearer tokens |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
 | `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
@@ -1322,7 +1324,7 @@ flow server dev -o json
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution. Only its secrets section is read: this command serves every caller anonymously, so the policy's issuers go unused, and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring the authentication a deployment configured |
 | `--db <string>` | `string` | — | — | persist Temporal to a sqlite file at this path, so runs survive a restart; unset keeps everything in memory and nothing outlives the process |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
-| `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); loopback only, and a port of 0 takes a free one |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
@@ -1464,7 +1466,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
-| `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
@@ -1600,6 +1602,12 @@ Per file, `flow test` reports branch coverage: the set of the workflow's steps a
 
 A `switch:` is measured a second way, per arm rather than per step, because an arm's body may hold no steps at all: `steps: []` is how a switch writes down deliberately ignoring a value, and `case: [closed, merged]` is one body two literals share. Which arm a case took is read from the step's own `case` record, so an arm no case reached is reported by the position it was written at — the only name an arm has. Record one under `coverage.allow_unreached` by the key the diagnostic prints.
 
+A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name the workflow does not have refuses the case before it runs, with a suggestion — a claim about a step that does not exist would otherwise pass vacuously forever. A stub the case declared and the run never answered through is reported as a warning: a fact about the case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle in cases that never invoke its task.
+
+A failing case prints its transcript beneath the unmet expectation: what each step produced and when virtual time moved, which stub answered it, each scripted signal with its sender, and the `switch:` arm taken — the account the expectation was judged against, with every value passing through the same redaction the stub diagnostics apply. `-v` prints every case's transcript, passing or not.
+
+`--run <pattern>` runs only the cases whose name matches the regular expression, the way `go test -run` does, and says how many cases it filtered out — beside the file and on the summary line — so a green over a subset never reads as the file's green. `--coverage-required` is refused alongside it: coverage is a property of the whole suite, and a filtered subset's gaps are not the suite's.
+
 `--output json` or `--output jsonl` reports what ran as a schema message instead of text, and carries the coverage sets under a `coverage` key so CI annotates rather than parses prose.
 
 `--seeds N` additionally runs every case under N seeded schedules and fails when a case's observables change with the schedule. It explores only the orderings the local driver is free to choose — the order a `parallel:` block advances its branches in, and whether an `async:` step's work happens where it is written or at its join — so a green says your file does not depend on those. It is not a claim about Temporal's orderings. The number of scheduling decisions is reported alongside, because a workflow with no `parallel:` and no `async:` reaches no junction and every schedule of it is written order.
@@ -1613,6 +1621,9 @@ flow test examples/
 # Run one test file:
 flow test deploy.test.yaml
 
+# Rerun just the failing case, by name:
+flow test --run 'rolls back on a 500' deploy.test.yaml
+
 # As a report CI can parse instead of scraping stderr:
 flow test -o jsonl examples/
 ```
@@ -1620,7 +1631,9 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
+| `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub the case declared and the run never answered through — instead of only printing it |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and --coverage-required is refused alongside it, because a subset's coverage gaps are not the suite's |
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
 | `--seed0 <uint64>` | `uint64` | `1` | — | the first seed --seeds walks upward from, to move the search to a different part of the seed space |
 | `--seeds <int>` | `int` | `0` | — | also run every case under N seeded schedules of the local driver's own choices (`parallel:` branch order, where an `async:` step's work happens), and fail when a case's observables depend on which one ran; 0, the default, runs written order only |
@@ -1787,7 +1800,7 @@ flow worker --temporal-namespace production --deployment-name flowstate --build-
 | `--deployment-name <string>` | `string` | — | `FLOWSTATE_DEPLOYMENT_NAME` | Worker Deployment this worker belongs to. With --build-id, pins every in-flight run to the interpreter version it started on; a run moves to the current version only at continue-as-new |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity <string>` | `string` | — | `FLOWSTATE_WORKER_IDENTITY` | how this worker identifies itself to Temporal, shown in Event History and a Task Queue's poller list (#752); a platform-native identifier (a Kubernetes pod name from the downward API, an ECS task id) is the most useful value here. Unset builds one from --deployment-name/--build-id, --tenant if set, and this process's hostname — still more specific than the SDK's own pid@hostname default, but a real platform identifier beats it |
-| `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--max-activities-per-second <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND` | maximum rate, per second, at which this worker process starts activity tasks; 0 takes the Temporal SDK default (effectively unlimited). Enforced locally, per worker process — see --task-queue-activities-per-second for the server-enforced, per-queue limit |
 | `--max-concurrent-activities <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES` | maximum number of activity tasks executing at once in this process; 0 takes the Temporal SDK default (1000). Raising this trades worker CPU/memory for throughput on a single replica; see docs/DEPLOYMENT.md's capacity section for when to raise this versus scaling out |
 | `--max-concurrent-workflow-tasks <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS` | maximum number of workflow tasks executing at once in this process; 0 takes the Temporal SDK default (1000). The value 1 is refused: a worker with a single workflow-task slot never polls its regular queue, which the SDK enforces by panicking |

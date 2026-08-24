@@ -161,6 +161,47 @@ fresh, run-scoped registry and installs the policy's `http` task into that,
 so two concurrent `RunLocal` calls with different policies never interfere
 with each other.
 
+## Testing the workflows you embed
+
+An embedded workflow is code your program ships, and its `*.test.yaml` suite
+belongs in the same CI that tests the rest of the program.
+`pkg/flowstate/v1/flowtest/flowtesting` pins a suite into `go test` with one
+call:
+
+```go
+func TestWorkflows(t *testing.T) {
+	flowtesting.RunFile(t, "workflows/deploy.test.yaml")
+}
+```
+
+Each case in the file becomes a real Go subtest named by the case's own
+`name:`, so everything that addresses a Go test addresses a Flowfile case —
+`go test -run 'TestWorkflows/rolls_back_on_a_500'` reruns one case, `-v`
+shows per-case timing and the suite's warnings, an IDE's per-test rerun works,
+and a CI failure names the case rather than the file. Because the name is the
+address, a file whose cases share one is refused before anything runs; `flow
+test` itself accepts duplicates, since it never addresses a case by name.
+
+A suite built or loaded in Go rather than read from disk goes through
+`flowtesting.Run(t, file, flowtesting.WithDir(dir))`, where `WithDir` supplies
+the directory the cases' relative `workflow:` paths resolve against — the fact
+a file on disk carries in its own path. Two more options match the CLI's two
+opt-in bars: `WithCoverageRequired()` holds the suite to
+`flow test --coverage-required` (every step and switch arm reached or
+recorded, no stale records), and `WithSchedules(budget)` explores each case
+under seeded schedules the way `flow test --seeds N` does, failing the case's
+subtest with the seed to replay when an ordering changed what it observed.
+
+The verdicts are `flow test`'s own, spelled the same way: the harness runs
+each case through the same engine, stubbing and virtual clock the CLI uses,
+so a case passing under `go test` and failing under `flow test` (or the
+reverse) would be a bug in the harness, not a property of your suite.
+
+Each case logs its transcript — what every step produced and when virtual
+time moved, which stub answered it, scripted signals with their sender, the
+`switch:` arm taken — through the subtest's own log, so `go test` shows it
+exactly when the CLI would: on a failing case, and under `-v` for every case.
+
 ## What is not curated here
 
 - **`call:` across embedder files.** Compiling from bytes has no directory to

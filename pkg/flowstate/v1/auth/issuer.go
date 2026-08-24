@@ -44,17 +44,41 @@ const (
 	// relying party's cache of the key set, or rotation would reject assertions
 	// that are still valid.
 	DefaultKeyRetention = 24 * time.Hour
+
+	// DefaultSigningTimeout is how long one signature may take. See
+	// [WithSigningTimeout] for how it is applied and how to size it.
+	//
+	// Ten seconds is far more than a local Ed25519 or ECDSA signature needs
+	// (microseconds) and more than a healthy cloud KMS round trip takes
+	// (tens of milliseconds), which is the point: the bound is not a latency
+	// target, it is the line past which a provider is not slow but stuck. A
+	// value tight enough to be a target would turn an ordinary p99 into a
+	// failed mint.
+	DefaultSigningTimeout = 10 * time.Second
 )
 
 // DiscoveryPath is where an [Issuer] publishes its OpenID Provider Metadata,
 // relative to its issuer URL. It is fixed by OpenID Connect Discovery.
 const DiscoveryPath = "/.well-known/openid-configuration"
 
-// reservedClaims are the claims an [Issuer] sets itself. A carried claim may not
-// use one of these names: a workload whose submitting token contained a claim
-// called "sub" must not be able to choose the subject of the assertion Flowstate
-// mints for it.
-var reservedClaims = []string{
+// WorkloadIssuerMetadataPath is where an [Issuer] publishes
+// [WorkloadIssuerMetadata], relative to its issuer URL.
+//
+// It is a path this project chooses, unlike [DiscoveryPath], because the
+// document served there is a contract this project defines rather than one a
+// specification fixes. Both are served: see [WorkloadIssuerMetadata] for why
+// the OpenID Provider Metadata is not replaced by it.
+const WorkloadIssuerMetadataPath = "/.well-known/workload-identity-configuration"
+
+// builtInClaimNames is the single declaration of the claims an [Issuer] mints
+// itself and advertises through discovery. A carried claim may not use one of
+// these names: a workload whose submitting token contained a claim called "sub"
+// must not be able to choose the subject of the assertion Flowstate mints for it.
+//
+// ClaimRun is included even though an assertion without a run reference omits it:
+// claims_supported describes claims the issuer can return, not claims every token
+// is required to contain.
+var builtInClaimNames = []string{
 	jwt.Issuer, jwt.Subject, jwt.Audience,
 	jwt.ExpirationTime, jwt.NotBefore, jwt.IssuedAt, jwt.JWTID,
 	ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
@@ -128,7 +152,7 @@ type SigningKey struct {
 	// cannot call a method on a value it reaches through an unexported field, so a
 	// key held in a plain field would be printed in full by %v on any struct that
 	// happened to contain it.
-	signer func(claims jwt.ClaimsSet) (string, error)
+	signer func(context.Context, jwt.ClaimsSet) (string, error)
 
 	// published is the public half rendered as a JSON Web Key, built when the key
 	// is created so that serving the key set cannot fail at request time.
@@ -165,30 +189,32 @@ func NewSigningKey(id string, private crypto.PrivateKey) (SigningKey, error) {
 			return SigningKey{}, fmt.Errorf("%w: RSA signing key is %d bits, want at least %d",
 				ErrInvalidPolicy, typed.N.BitLen(), minRSAKeyBits)
 		}
-		key.algorithm, public = jwa.RS256, &typed.PublicKey
+		public = &typed.PublicKey
 	case *ecdsa.PrivateKey:
 		if typed.Curve != elliptic.P256() {
 			return SigningKey{}, fmt.Errorf("%w: ECDSA signing keys must use P-256, got %s",
 				ErrInvalidPolicy, typed.Curve.Params().Name)
 		}
-		key.algorithm, public = jwa.ES256, &typed.PublicKey
+		public = &typed.PublicKey
 	case ed25519.PrivateKey:
-		key.algorithm, public = jwa.EdDSA, typed.Public()
+		public = typed.Public()
 	default:
 		return SigningKey{}, fmt.Errorf("%w: %T cannot sign assertions, want an RSA, P-256 ECDSA, or Ed25519 private key",
 			ErrInvalidPolicy, private)
 	}
 
-	key.signer = signerFor(key.id, key.algorithm, private)
-
-	published, err := jwk.ValueFromPublicKey(public)
+	// The algorithm and the published key come from the public half, through
+	// the same function a verify-only key goes through: a signing key and a
+	// key published for verification only differ in whether this process can
+	// sign with them, and must not differ in how they appear in the key set.
+	algorithm, published, err := publishValue(key.id, public)
 	if err != nil {
-		return SigningKey{}, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, id, err)
+		return SigningKey{}, err
 	}
-	published[jwk.KeyID] = id
-	published[jwk.Algorithm] = key.algorithm
-	published[jwk.PublicKeyUse] = "sig"
-	key.published = published
+	key.algorithm, key.published = algorithm, published
+
+	local := signerFor(key.id, key.algorithm, private)
+	key.signer = func(_ context.Context, claims jwt.ClaimsSet) (string, error) { return local(claims) }
 
 	return key, nil
 }
@@ -259,11 +285,11 @@ func (k SigningKey) LogValue() slog.Value {
 }
 
 // sign signs the given claims with this key.
-func (k SigningKey) sign(claims jwt.ClaimsSet) (string, error) {
+func (k SigningKey) sign(ctx context.Context, claims jwt.ClaimsSet) (string, error) {
 	if k.signer == nil {
 		return "", ErrNoSigningKey
 	}
-	return k.signer(claims)
+	return k.signer(ctx, claims)
 }
 
 // signerFor returns a closure that signs claims with the given private key.
@@ -391,11 +417,12 @@ func (a Assertion) LogValue() slog.Value {
 // An Issuer is safe for concurrent use, and its keys can be rotated while it is
 // serving.
 type Issuer struct {
-	url          string
-	jwksPath     string
-	lifetime     time.Duration
-	keyRetention time.Duration
-	clock        func() time.Time
+	url            string
+	jwksPath       string
+	lifetime       time.Duration
+	keyRetention   time.Duration
+	signingTimeout time.Duration
+	clock          func() time.Time
 
 	// declared is the closed set of extension claim names an assertion minted
 	// here may carry, sorted. Nil means none: a deployment that declares
@@ -403,11 +430,27 @@ type Issuer struct {
 	// [WithDeclaredClaims].
 	declared []string
 
-	// mu guards the keys. Minting takes a read lock, rotation a write lock, so
-	// signing is not serialized.
+	// verifyOnly holds the keys [WithVerifyOnlyKey] named, in the order they
+	// were given, until [NewIssuer] can turn them into retired keys. They
+	// cannot be installed by the option itself because an option cannot fail
+	// and cannot see the retention or the clock it needs, both of which other
+	// options may still change.
+	verifyOnly []verifyOnlyKey
+
+	// mu guards the keys. Minting takes a read lock twice — once to choose the
+	// key and once to check it is still published — and never holds it across
+	// the signature itself; rotation and revocation take the write lock. See
+	// [Issuer.mintFor].
 	mu      sync.RWMutex
 	active  SigningKey
 	retired []retiredKey
+}
+
+// verifyOnlyKey is a public key an operator named at start-up so that
+// assertions a previous process signed keep verifying. See [WithVerifyOnlyKey].
+type verifyOnlyKey struct {
+	id     string
+	public crypto.PublicKey
 }
 
 // retiredKey is a rotated-out key, kept published so assertions signed with it
@@ -443,6 +486,32 @@ func WithJWKSPath(path string) IssuerOption {
 // verification.
 func WithKeyRetention(retention time.Duration) IssuerOption {
 	return func(i *Issuer) { i.keyRetention = retention }
+}
+
+// WithSigningTimeout bounds how long a single signature may take, from
+// [DefaultSigningTimeout].
+//
+// Signing used to be a local Ed25519 operation measured in microseconds, and
+// needed no bound of its own: the mint's context was the only clock that could
+// matter. A [Signer] makes it a round trip to a KMS or an HSM, which is a call
+// to a machine this process does not control and which can simply stop
+// answering — so per CLAUDE.md's rule, the resource the far side controls is
+// how long it takes, and that is what this bounds.
+//
+// It is applied as a deadline on the context handed to the signer, derived
+// from the mint's own context, so whichever expires first wins: a caller with
+// a tighter deadline still gets it, and a caller with none still cannot wait
+// forever. A signer that ignores its context cannot be interrupted by anything
+// here — no caller can interrupt a call that does not look — but it can no
+// longer stall the issuer, because the signature does not run under any lock
+// (see [Issuer.mintFor]).
+//
+// It must be positive. Zero is refused rather than read as "no bound", because
+// this package fails closed and an unbounded remote call configured by leaving
+// a field unset is exactly the outage this option exists to prevent. Size it
+// generously: it is a stuck-provider detector, not a latency budget.
+func WithSigningTimeout(timeout time.Duration) IssuerOption {
+	return func(i *Issuer) { i.signingTimeout = timeout }
 }
 
 // WithDeclaredClaims declares the extension claims assertions from this issuer
@@ -484,6 +553,49 @@ func WithDeclaredClaims(names ...string) IssuerOption {
 	}
 }
 
+// WithVerifyOnlyKey publishes one more public key in the key set, without a
+// private half, so that assertions signed by a *previous process* keep
+// verifying while they live.
+//
+// # Why this exists beside [Issuer.Rotate]
+//
+// Rotate is an in-process rotation: it moves the outgoing key into the
+// published-but-not-signing set and installs a new one, with no restart. It is
+// therefore no help at all with the rotation an operator actually performs,
+// which is to change what a process is started with and restart it. A fresh
+// process builds a fresh issuer whose retired set is empty, so the key set it
+// publishes from its first request onward names the new key and nothing else —
+// and every assertion the old process signed, still valid for its remaining
+// lifetime, stops verifying against any relying party that refetches. This
+// option is how a deployment carries the old key across that boundary
+// (picatz/flowstate#891).
+//
+// The key is installed exactly where a rotated-out key goes, so there is one
+// set of published keys and one retention rule rather than two: it is dropped
+// from the key set [Issuer.KeySet] serves once the issuer's retention has
+// elapsed, measured from when the issuer was built, and it can be withdrawn
+// early by [Issuer.RevokeKey] like any other retired key.
+//
+// It is a public key, and deliberately not a [SigningKey]: a key this process
+// will never sign with has no business holding private material, and a
+// verify-only key that could sign would make the distinction a convention
+// rather than a property.
+//
+// Rotating is still not revoking. Publishing a previous key is what keeps
+// rotation from rejecting assertions that are perfectly valid; an operator
+// responding to a suspected compromise wants [Issuer.RevokeKey], or simply not
+// to name the key here.
+//
+// The id must be the one the old key published under, since it is what the
+// "kid" header of those assertions names, and it must differ from every other
+// key this issuer publishes — [NewIssuer] refuses a collision rather than
+// publishing two keys a verifier cannot tell apart.
+func WithVerifyOnlyKey(id string, public crypto.PublicKey) IssuerOption {
+	return func(i *Issuer) {
+		i.verifyOnly = append(i.verifyOnly, verifyOnlyKey{id: id, public: public})
+	}
+}
+
 // WithIssuerClock sets the clock used for assertion lifetimes and key retention.
 // It exists for tests.
 func WithIssuerClock(clock func() time.Time) IssuerOption {
@@ -507,12 +619,13 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 	}
 
 	issuer := &Issuer{
-		url:          strings.TrimSuffix(issuerURL, "/"),
-		jwksPath:     DefaultJWKSPath,
-		lifetime:     DefaultAssertionLifetime,
-		keyRetention: DefaultKeyRetention,
-		clock:        time.Now,
-		active:       key,
+		url:            strings.TrimSuffix(issuerURL, "/"),
+		jwksPath:       DefaultJWKSPath,
+		lifetime:       DefaultAssertionLifetime,
+		keyRetention:   DefaultKeyRetention,
+		signingTimeout: DefaultSigningTimeout,
+		clock:          time.Now,
+		active:         key,
 	}
 
 	for _, opt := range opts {
@@ -533,8 +646,13 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 		return nil, fmt.Errorf("%w: key set path %q must begin with %q", ErrInvalidPolicy, issuer.jwksPath, "/")
 	case issuer.jwksPath == DiscoveryPath:
 		return nil, fmt.Errorf("%w: key set path must not be the discovery path %q", ErrInvalidPolicy, DiscoveryPath)
+	case issuer.jwksPath == WorkloadIssuerMetadataPath:
+		return nil, fmt.Errorf("%w: key set path must not be the workload issuer metadata path %q", ErrInvalidPolicy, WorkloadIssuerMetadataPath)
 	case issuer.keyRetention < 0:
 		return nil, fmt.Errorf("%w: key retention must not be negative", ErrInvalidPolicy)
+	case issuer.signingTimeout <= 0:
+		return nil, fmt.Errorf("%w: signing timeout must be positive; a signature is a call to a machine this process does not control, and an unbounded one blocks the mint that made it",
+			ErrInvalidPolicy)
 	}
 
 	declared, err := validateDeclaredClaims(issuer.declared)
@@ -543,7 +661,103 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 	}
 	issuer.declared = declared
 
+	if err := issuer.installVerifyOnlyKeys(); err != nil {
+		return nil, err
+	}
+
 	return issuer, nil
+}
+
+// installVerifyOnlyKeys turns what [WithVerifyOnlyKey] collected into retired
+// keys, once every option has been applied and the retention and clock are
+// settled.
+//
+// Every failure here is a start-up error rather than a key quietly left out.
+// A deployment that named a key it cannot publish is a deployment whose
+// rotation is half-performed: the process would come up serving a key set that
+// silently rejects assertions the operator believes are covered, which is the
+// failure this option exists to prevent, arriving without a message.
+func (i *Issuer) installVerifyOnlyKeys() error {
+	now := i.clock()
+
+	for _, key := range i.verifyOnly {
+		switch {
+		case key.id == "":
+			return fmt.Errorf("%w: a verify-only key needs the id it was published under", ErrInvalidPolicy)
+		case strings.ContainsAny(key.id, " \t\n\r"):
+			return fmt.Errorf("%w: verify-only key id %q must not contain whitespace",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		case key.id == i.active.id:
+			return fmt.Errorf("%w: verify-only key id %q is the active signing key's id; a key needs its own id, or verifiers cannot tell them apart",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		}
+
+		if slices.ContainsFunc(i.retired, func(other retiredKey) bool { return other.id == key.id }) {
+			return fmt.Errorf("%w: verify-only key id %q was given twice; a key needs its own id, or verifiers cannot tell them apart",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		}
+
+		algorithm, published, err := publishValue(key.id, key.public)
+		if err != nil {
+			return err
+		}
+
+		i.retired = append(i.retired, retiredKey{
+			id:        key.id,
+			algorithm: algorithm,
+			published: published,
+			// Measured from start-up, because that is when this key stopped
+			// signing as far as this process can tell. An operator whose
+			// retention has to outlast a longer gap configures a longer
+			// key_retention rather than getting an unbounded one by default.
+			expiresAt: now.Add(i.keyRetention),
+		})
+	}
+
+	i.verifyOnly = nil
+
+	return nil
+}
+
+// publishValue renders a public key as the JSON Web Key an issuer publishes,
+// and reports the algorithm it is used with.
+//
+// The accepted key types are exactly [NewSigningKey]'s, seen from the public
+// side: a key that could not have signed for this issuer cannot verify for it
+// either, and admitting one here would publish a key set entry no assertion
+// this deployment ever minted can match.
+func publishValue(id string, public crypto.PublicKey) (jwa.Algorithm, jwk.Value, error) {
+	var algorithm jwa.Algorithm
+
+	switch typed := public.(type) {
+	case *rsa.PublicKey:
+		if typed.N.BitLen() < minRSAKeyBits {
+			return "", nil, fmt.Errorf("%w: RSA key %q is %d bits, want at least %d",
+				ErrInvalidPolicy, truncate(id, 64), typed.N.BitLen(), minRSAKeyBits)
+		}
+		algorithm = jwa.RS256
+	case *ecdsa.PublicKey:
+		if typed.Curve != elliptic.P256() {
+			return "", nil, fmt.Errorf("%w: ECDSA key %q must use P-256, got %s",
+				ErrInvalidPolicy, truncate(id, 64), typed.Curve.Params().Name)
+		}
+		algorithm = jwa.ES256
+	case ed25519.PublicKey:
+		algorithm = jwa.EdDSA
+	default:
+		return "", nil, fmt.Errorf("%w: %T cannot verify assertions, want an RSA, P-256 ECDSA, or Ed25519 public key",
+			ErrInvalidPolicy, public)
+	}
+
+	published, err := jwk.ValueFromPublicKey(public)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, truncate(id, 64), err)
+	}
+	published[jwk.KeyID] = id
+	published[jwk.Algorithm] = algorithm
+	published[jwk.PublicKeyUse] = "sig"
+
+	return algorithm, published, nil
 }
 
 // validateDeclaredClaims checks a declaration and returns it sorted and
@@ -567,7 +781,7 @@ func validateDeclaredClaims(names []string) ([]string, error) {
 		case len(name) > MaxCarriedClaimNameBytes:
 			return nil, fmt.Errorf("%w: declared claim name %q is %d bytes, and at most %d are allowed",
 				ErrInvalidPolicy, truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
-		case slices.Contains(reservedClaims, name):
+		case slices.Contains(builtInClaimNames, name):
 			// Refused rather than ignored: a carried claim of this name can
 			// never be minted, whatever the declaration says, and a
 			// declaration that silently never applies is worse than none.
@@ -675,6 +889,11 @@ func (i *Issuer) Rotate(key SigningKey) error {
 // deployment running several of them revokes on each, and a relying party stops
 // accepting the key when its own cache of the key set next refreshes — which is
 // its [DefaultKeyCacheTTL], not ours.
+//
+// This does not wait for signatures already in flight, and does not need to: a
+// mint whose signature was made with a key revoked while it was being signed
+// discards it rather than returning it. See [Issuer.mintFor] for why the
+// signature is made outside the lock, and what closes that window instead.
 func (i *Issuer) RevokeKey(keyID string) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -699,6 +918,22 @@ func (i *Issuer) RevokeKey(keyID string) error {
 	}
 
 	return nil
+}
+
+// publishedLocked reports whether the given key id is in the set [Issuer.KeySet]
+// would serve right now: the active key, or a retired key still inside its
+// retention. The caller must hold i.mu.
+//
+// Written from the same rule KeySet applies rather than from a second one,
+// because the question it answers — would a relying party fetching the key set
+// find this key — is only meaningful if the two agree.
+func (i *Issuer) publishedLocked(keyID string, now time.Time) bool {
+	if keyID == i.active.id {
+		return true
+	}
+	return slices.ContainsFunc(i.retired, func(key retiredKey) bool {
+		return key.id == keyID && !now.After(key.expiresAt)
+	})
 }
 
 // pruneLocked drops retired keys past their retention. The caller must hold i.mu
@@ -817,7 +1052,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 	// where a claim becomes a signed statement.
 	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
 		switch {
-		case slices.Contains(reservedClaims, name):
+		case slices.Contains(builtInClaimNames, name):
 			return Assertion{}, fmt.Errorf("%w: carried claim %q collides with a reserved claim", ErrInvalidIdentity, name)
 		case !slices.Contains(i.declared, name):
 			// The name, never the value: this error travels wherever the
@@ -828,35 +1063,76 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		claims[name] = identity.Claims[name]
 	}
 
-	// Choosing the key and signing with it happen under one hold of the read
-	// lock, and that is a correctness requirement rather than tidiness.
+	// The signature happens outside the lock, between two holds of it: one to
+	// choose the key, one to check that key is still published. Getting this
+	// wrong in either direction is a real failure, so both are stated.
 	//
-	// Copying i.active and releasing the lock before signing leaves a window:
-	// [Issuer.Rotate] can retire that key and [Issuer.RevokeKey] can withdraw
-	// it, both completing while this signature is still in flight, and the
-	// assertion is then minted with a key the issuer has already told the world
-	// is revoked. A relying party holding a cached key set accepts it, so
-	// revocation would report success while still emitting new assertions
-	// signed by the compromised key — the one thing RevokeKey exists to stop.
+	// Signing *under* the read lock is the obvious spelling, and this code held
+	// it that way deliberately for a while: it closes the window in which
+	// [Issuer.RevokeKey] withdraws a key while a signature made with it is in
+	// flight, so revocation could report success and this function still return
+	// an assertion signed by the key an operator was trying to kill. That was
+	// correct while signing was a local Ed25519 operation measured in
+	// microseconds. It stopped being acceptable when a [Signer] made signing a
+	// round trip to a KMS or an HSM: a provider that hangs then holds a lock
+	// [Issuer.Rotate] and [Issuer.RevokeKey] need, and Go's [sync.RWMutex]
+	// gives a waiting writer priority over later readers — so one stuck call
+	// blocks the two verbs an operator reaches for during an incident *and*
+	// every subsequent mint. A process-wide outage of the token path, caused by
+	// one slow machine somewhere else (picatz/flowstate#1055).
 	//
-	// A read lock is the right one: concurrent mints still sign in parallel,
-	// since they share it. Only Rotate and RevokeKey take the write lock, and
-	// they now wait for in-flight signatures to finish — which is exactly the
-	// guarantee RevokeKey's doc claims, that no assertion signed with the key
-	// survives its return.
+	// Releasing the lock costs nothing here as long as the window it opened is
+	// closed on the other side: this re-reads the published set afterwards and
+	// refuses to return an assertion whose key is no longer in it. The
+	// difference from holding the lock is who waits — Rotate and RevokeKey no
+	// longer wait for in-flight signatures — and not what a caller can end up
+	// holding. RevokeKey's guarantee is unchanged: no assertion signed with a
+	// revoked key is ever handed back.
+	//
+	// It is a *published* check rather than an active-key one, because rotation
+	// is not revocation: a key rotated out mid-signature is still published for
+	// its retention, assertions signed with it still verify, and discarding one
+	// would fail a mint that is perfectly valid.
 	i.mu.RLock()
 	key := i.active
+	i.mu.RUnlock()
+
 	if key.IsZero() {
-		i.mu.RUnlock()
 		return Assertion{}, ErrNoSigningKey
 	}
 
-	token, err := key.sign(claims)
+	// The bound belongs here rather than on the caller, because the caller is
+	// not the party that can be stuck. See [WithSigningTimeout].
+	signCtx, cancel := context.WithTimeout(ctx, i.signingTimeout)
+	defer cancel()
+
+	token, err := key.sign(signCtx, claims)
 	keyID := key.id
-	i.mu.RUnlock()
 
 	if err != nil {
+		// Named for what happened, and distinguished from the caller's own
+		// deadline: "the KMS did not answer in 10s" and "you cancelled" are
+		// different incidents, and an operator reading one line of log gets to
+		// know which. The signer's own error is kept, since a signer that
+		// honours its context usually says something more specific.
+		if ctx.Err() == nil && signCtx.Err() != nil {
+			return Assertion{}, fmt.Errorf("%w: signing with key %q did not finish within %s: %w",
+				context.DeadlineExceeded, truncate(keyID, 64), i.signingTimeout, err)
+		}
 		return Assertion{}, err
+	}
+
+	i.mu.RLock()
+	published := i.publishedLocked(keyID, i.clock())
+	i.mu.RUnlock()
+
+	if !published {
+		// Discarded rather than returned. The token is a real signature by a
+		// key this issuer has withdrawn, so handing it back is precisely what
+		// RevokeKey exists to prevent — a relying party with a cached key set
+		// would accept it.
+		return Assertion{}, fmt.Errorf("%w: key %q was withdrawn from this issuer's published key set while the assertion was being signed",
+			ErrUnknownKey, truncate(keyID, 64))
 	}
 
 	return Assertion{

@@ -116,6 +116,12 @@ rather than a fallback for a policy that failed to load
 (`cmd/flow/main.go`). The Local development recipe below is labelled a Tier 0/1a
 *boundary* for this reason.
 
+Naming both is refused at start-up rather than resolved by priority. A server
+given `--insecure-no-auth` alongside `--auth-policy` — or alongside an inherited
+`FLOWSTATE_AUTH_POLICY`, which is the same sentence typed somewhere else — would
+otherwise authenticate nobody while its configuration still read as Tier 1a,
+with a trust policy beside it that nothing opens. Pass one or the other.
+
 ### Tier 0 — `flow run local`
 
 No server, no Temporal, no worker process boundary. A single command runs a
@@ -322,6 +328,7 @@ worker fleet that serves only that tenant.
 # Server: route each tenant onto its own queue, tenants mapped onto Temporal
 # namespaces by the trust policy's `tenancy:` block.
 $ flow server --auth-policy /etc/flowstate/trust.yaml \
+    --rpc-resource https://flowstate.example.com/rpc \
     --task-queue-prefix flowstate-run
 
 # One fleet per tenant. Each gets that tenant's own egress policy and secrets,
@@ -340,6 +347,46 @@ $ flow worker --tenant= --task-queue-prefix flowstate-run ...
 `FLOWSTATE_TASK_QUEUE_PREFIX` sets the prefix on both sides, which is the
 convenient way to keep them equal — a worker that spelled it differently would
 poll a queue nothing submits to, do nothing forever, and report nothing.
+
+### Bearer-token audiences are per surface
+
+A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical
+Connect RPC resource URI via `--rpc-resource` or `FLOWSTATE_RPC_RESOURCE`. The
+exact string must appear in at least one such issuer's `audiences`, and every
+bearer token spent on Connect RPC must carry that exact `aud` value. It must be
+an absolute HTTPS URI (HTTP is accepted only for loopback), with no fragment or
+trailing slash.
+
+The requirement follows the bearer issuer, not the flag. A trust policy of
+nothing but `kind: mtls` entries admits callers by client certificate, which
+carries no audience claim — `kind: mtls` entries are refused an `audiences` list
+outright — so there is nothing to bind and no resource is required. Passing
+either flag on such a deployment is an error rather than a no-op, so an operator
+is never left believing an audience is being enforced on a surface that has
+none. `--insecure-no-auth` refuses both for the same reason.
+
+Do not reuse this identifier for remote MCP. A deployment might use
+`https://flowstate.example.com/rpc` for Connect RPC and
+`https://flowstate.example.com/mcp` for `flow mcp serve`; a future ordinary HTTP
+API gets its own third identifier. Even when one `TrustedIssuer` lists all of
+them, each surface's exact check prevents replay between surfaces.
+
+One consequence to expect from that split. `--protected-resource` publishes the
+RFC 9728 document for the *MCP* resource, and a 401 from Connect RPC names that
+document only when it describes the RPC surface too. Give the two flags
+different values — as recommended above — and Connect RPC's 401 challenge reads
+`Bearer error="invalid_token"` with no `resource_metadata`, because sending a
+discovery-driven client to a document advertising the MCP audience would have it
+mint precisely the token Connect RPC is configured to refuse. Discovery for the
+RPC surface therefore has no document to point at yet; RPC clients are
+configured with their audience directly.
+
+**Migration:** older deployments accepted any audience listed on the matched
+issuer. First add the RPC URI to the issuer's audience list and configure clients
+to request it, then set `--rpc-resource`. If that cannot be atomic,
+`--allow-issuer-wide-audiences` explicitly restores the old behavior for one
+migration window. It is mutually exclusive with `--rpc-resource`; remove it to
+complete migration. New deployments should never set it.
 
 ### Tier 3 — substrate isolation
 
@@ -440,6 +487,7 @@ TEMPORAL_NAMESPACE=production
 FLOWSTATE_DEPLOYMENT_NAME=flowstate
 FLOWSTATE_AUTH_POLICY=/etc/flowstate/policy.yaml
 FLOWSTATE_IDENTITY_KEY=/etc/flowstate/identity-2026-07.pem
+FLOWSTATE_RPC_RESOURCE=https://flowstate.example.com/rpc
 ```
 
 `/etc/systemd/system/flowstate-server.service`:
@@ -463,6 +511,13 @@ ProtectSystem=strict
 [Install]
 WantedBy=multi-user.target
 ```
+
+`FLOWSTATE_RPC_RESOURCE` is what this unit's `flow server` binds its Connect
+RPC audience to, and it is required because `policy.yaml` names a `kind: oidc`
+issuer — write the URI clients actually reach this deployment at, and list that
+exact string in the issuer's `audiences:`. A server started without it does not
+run degraded; it refuses to start, which on this shape is a unit that fails and
+a message in `journalctl -u flowstate-server`.
 
 `FLOWSTATE_ADDRESS=127.0.0.1:9233` above is loopback, so `flow server` needs
 no TLS configuration of its own to start — [blockers](#blockers) below is
@@ -784,11 +839,18 @@ TEMPORAL_TLS_CLIENT_KEY_PATH=/etc/flowstate/client.key
 
 ```console
 $ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
-$ flow server
+$ flow server --auth-policy /etc/flowstate/policy.yaml \
+    --rpc-resource https://flowstate.example.com/rpc
 ```
 
-Both pick these up from the environment with no Flowstate-specific
-configuration — that's the whole point of following Temporal's own
+The server's two flags are its own authentication, unrelated to Temporal Cloud
+and unchanged by it: every `flow server` either loads a trust policy or says
+`--insecure-no-auth`, and one whose policy trusts a bearer issuer names the
+audience its Connect RPC surface answers as (see
+[bearer-token audiences](#bearer-token-audiences-are-per-surface)).
+
+Both pick the Temporal settings up from the environment with no
+Flowstate-specific configuration — that's the whole point of following Temporal's own
 `envconfig` convention instead of inventing one.
 
 **Honesty check, because this is the one recipe in this document that isn't
@@ -876,9 +938,19 @@ reimplement it, and this is exactly that call.
 
 ## Metrics
 
-Telemetry is OTLP push, gated on the standard `OTEL_EXPORTER_OTLP*`
-environment variables — unset means nothing is emitted at all: no exporter,
-no goroutines, no network (`telemetryConfigured`, `cmd/flow/telemetry.go:98-103`).
+Telemetry is OTLP push, gated per signal on the standard `OTEL_*` environment
+variables (`telemetryConfigFromEnv` in `cmd/flow/telemetry.go`). An
+`OTEL_EXPORTER_OTLP_ENDPOINT`, or one of the signal-specific
+`OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`, enables the signals it
+names; `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` and `OTEL_LOGS_EXPORTER`
+select one signal each — `none` disables it whatever endpoint is set, and
+`otlp` enables it even with no endpoint anywhere, in which case the exporter
+uses its own `http://localhost:4318` default. Any other value is refused at
+startup with a message naming the variable and the value. Traces, metrics and
+logs are therefore independent: exporting metrics alone builds no tracer
+provider and no log exporter. Ask for no signal — set none of these variables,
+or set every selector to `none` — and nothing is emitted at all: no exporter,
+no goroutines, no network, no global propagator.
 There is no Prometheus-shaped `/metrics` scrape endpoint on either listener;
 [internalHandler](#health-checks-and-probes)'s own doc comment says why —
 standing one up means a second telemetry pipeline (a registry plus an

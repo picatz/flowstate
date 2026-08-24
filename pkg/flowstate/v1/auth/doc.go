@@ -130,6 +130,13 @@
 // was, so an audit log shows the rule that admitted a caller rather than only the
 // issuer that signed the token.
 //
+// Order narrowest first. A broad entry placed above a narrower one for the same
+// issuer admits every token the narrow entry was written for, under the broad
+// entry's namespace and role, and the file still reads correctly — nothing
+// fails and nothing logs. [Policy.UnreachableIssuers] is that missing symptom:
+// it reports each entry an earlier entry has made unreachable, and `flow server`
+// logs one warning per finding at start-up.
+//
 // A policy is data, and can be kept in a file next to the rest of a deployment's
 // configuration and reviewed like any other change. See [ParsePolicy]:
 //
@@ -184,6 +191,13 @@
 //
 //	mux.Handle(auth.DiscoveryPath, issuer.Handler())
 //	mux.Handle(issuer.JWKSPath(), issuer.Handler())
+//
+// A process that starts this way publishes exactly one key, which is why
+// rotating one across a restart takes [WithVerifyOnlyKey]: it publishes a
+// previous key's public half beside the signing key, so assertions the process
+// before this one signed keep verifying until the retention lapses. That is
+// what `flow`'s repeatable --identity-key builds, and [Issuer.Rotate] is its
+// in-process counterpart for a deployment that never restarts.
 //
 // The subject names the workload hierarchically, so a relying party can authorize
 // at whatever level it wants with a prefix match:

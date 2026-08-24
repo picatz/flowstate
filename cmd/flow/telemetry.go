@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,10 +43,17 @@ import (
 // server and the worker.
 //
 // This file turns both on, gated the way the ecosystem already gates it: the
-// standard OTEL_EXPORTER_OTLP_ENDPOINT variable. Unset means everything stays
-// exactly as it was — no exporter, no goroutines, no network, no global
-// propagator — which keeps invariant 8: a first run needs nothing, and
-// telemetry is a deployment's choice rather than a default phone-home.
+// standard OTEL_* variables, per signal. An OTEL_EXPORTER_OTLP_ENDPOINT — or a
+// signal's own endpoint — enables the signals it names, and
+// OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER and OTEL_LOGS_EXPORTER select or
+// disable one each, with `none` winning over any endpoint and `otlp` enabling a
+// signal that has no endpoint at all (the exporter then uses its own localhost
+// default). Set none of them and everything stays exactly as it was — no
+// exporter, no goroutines, no network, no global propagator — which keeps
+// invariant 8: a first run needs nothing, and telemetry is a deployment's
+// choice rather than a default phone-home. [telemetryConfigFromEnv] resolves
+// the whole switchboard, and it is the only place that decides whether a signal
+// is on.
 //
 // Three things here are less obvious than the exporters, and each of them was
 // a way the telemetry was on and still useless:
@@ -87,6 +95,13 @@ const telemetryFlushTimeout = 5 * time.Second
 // send things. Traces-only is the deployment that failed this way: the SDK
 // would have exported them and this said no.
 //
+// The endpoints are not the whole gate any more, and this delegates the whole
+// of it to [telemetryConfigFromEnv]: OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER
+// and OTEL_LOGS_EXPORTER can enable a signal with no endpoint set anywhere and
+// disable one with an endpoint set, so an endpoint-only reading is wrong in both
+// directions and there is one resolver rather than a predicate with a second
+// opinion.
+//
 // OTEL_EXPORTER_OTLP_LOGS_ENDPOINT used to be excluded, and the exclusion was
 // right for as long as it lasted: honouring a variable about logs would have
 // started a tracer and a meter and nothing else, because nothing here exported
@@ -95,11 +110,81 @@ const telemetryFlushTimeout = 5 * time.Second
 // ignore it is gone. Logs-only is a real deployment — a fleet whose logs go to a
 // collector and whose traces do not — and it must not be told it configured
 // nothing.
+// Any signal, not traces alone, and that is the whole of the propagation
+// decision too — which is why there is one predicate here rather than two.
+// Metrics and, especially, correlated logs still need an incoming trace id to
+// cross Connect, Temporal and plugin boundaries when local spans are not being
+// sent, so "should this process propagate" and "did anyone ask for telemetry"
+// are the same question. Two functions with identical bodies would be one
+// meaning written down twice, and the copy that drifts is the one nothing runs.
+//
+// A malformed OTEL_*_EXPORTER reads as unconfigured here, whichever signal it
+// names. That is the fail-closed direction — an unparsed setting must not
+// switch propagation on — and it takes an explicit check on the error rather
+// than a reading of the resolved config, because [telemetryConfigFromEnv]
+// returns whatever it had resolved before the bad selector alongside the
+// error: OTEL_METRICS_EXPORTER=bogus beside a working traces endpoint comes
+// back as {traces: true} with an error, so discarding the error would make
+// this sentence true only of OTEL_TRACES_EXPORTER, the first selector
+// resolved. None of this is how an operator finds out: [initTelemetry] returns
+// the same error, naming the variable and the value, and refuses to start.
 func telemetryConfigured() bool {
-	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" ||
-		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" ||
-		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != "" ||
-		os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") != ""
+	c, err := telemetryConfigFromEnv()
+	if err != nil {
+		return false
+	}
+
+	return c.traces || c.metrics || c.logs
+}
+
+// telemetryConfig is the resolved, per-signal switchboard.  An explicitly
+// selected OTLP exporter is enabled even without an endpoint (the exporter then
+// uses its standard localhost default); an endpoint enables an otherwise
+// unspecified signal, and "none" always wins over either endpoint.
+type telemetryConfig struct {
+	traces, metrics, logs bool
+}
+
+func telemetryConfigFromEnv() (telemetryConfig, error) {
+	general := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""
+	resolve := func(signal, exporter string, set, endpoint bool) (bool, error) {
+		// Folded before matching, because the SDK environment-variable
+		// specification defines these enum values as case-insensitive:
+		// OTEL_TRACES_EXPORTER=OTLP is a valid setting an operator can arrive
+		// with from any other OTLP-speaking tool, and an exact match would
+		// refuse to start a server over a capital letter. Surrounding space is
+		// dropped for the same reason — it is invisible in a compose file and
+		// means nothing here. The error still names what they wrote, not the
+		// folded form, so the message points at the line they can fix.
+		selected := strings.ToLower(strings.TrimSpace(exporter))
+		if set && selected != "" {
+			switch selected {
+			case "none":
+				return false, nil
+			case "otlp":
+				return true, nil
+			default:
+				return false, fmt.Errorf("%s=%q is unsupported (use otlp or none)", signal, exporter)
+			}
+		}
+		return general || endpoint, nil
+	}
+
+	var c telemetryConfig
+	var err error
+	tracesExporter, tracesSet := os.LookupEnv("OTEL_TRACES_EXPORTER")
+	if c.traces, err = resolve("OTEL_TRACES_EXPORTER", tracesExporter, tracesSet, os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != ""); err != nil {
+		return c, err
+	}
+	metricsExporter, metricsSet := os.LookupEnv("OTEL_METRICS_EXPORTER")
+	if c.metrics, err = resolve("OTEL_METRICS_EXPORTER", metricsExporter, metricsSet, os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != ""); err != nil {
+		return c, err
+	}
+	logsExporter, logsSet := os.LookupEnv("OTEL_LOGS_EXPORTER")
+	if c.logs, err = resolve("OTEL_LOGS_EXPORTER", logsExporter, logsSet, os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") != ""); err != nil {
+		return c, err
+	}
+	return c, nil
 }
 
 // instanceID is service.instance.id: which copy of flowstate this is, stable
@@ -205,6 +290,38 @@ func telemetryResource(ctx context.Context) (*resource.Resource, error) {
 	return res, nil
 }
 
+// The three exporter constructors, indirected so a test can make one fail.
+//
+// Not a preference for injectability: it is the only way the failure path below
+// is reachable at all. The otlp*http constructors do not return an error for
+// any environment this binary can be handed — a malformed endpoint, an
+// unparseable header list, a certificate path that does not exist are each
+// logged by the SDK and the exporter is built anyway — so no os.Setenv reaches
+// the unwind that a partially built provider set depends on. The contract these
+// constructors declare still says they can fail, and a caller that gets it
+// wrong leaks a live batch processor into a process that has been told it has
+// no telemetry, so the failure is arranged here rather than left untested.
+//
+// A package-level var a test reassigns is a data race waiting for the test that
+// runs beside it, and what keeps it from being one is not a convention: every
+// path to [initTelemetry] is decided by the OTEL_* environment, so every test
+// that reaches it sets those with t.Setenv, and t.Setenv panics in a test that
+// has called t.Parallel. A parallel test that swapped one of these could not
+// have arranged an environment to reach it in the first place. Keep it that
+// way — reaching initTelemetry from a parallel test would need a seam of its
+// own rather than this one.
+var (
+	newTraceExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return otlptracehttp.New(ctx)
+	}
+	newMetricExporter = func(ctx context.Context) (sdkmetric.Exporter, error) {
+		return otlpmetrichttp.New(ctx)
+	}
+	newLogExporter = func(ctx context.Context) (sdklog.Exporter, error) {
+		return otlploghttp.New(ctx)
+	}
+)
+
 // initTelemetry configures the global OTel providers and returns the Temporal
 // metrics handler, plus a shutdown that flushes on the way out.
 //
@@ -220,7 +337,11 @@ func telemetryResource(ctx context.Context) (*resource.Resource, error) {
 // Prefer [startTelemetry] to calling this directly: the globals it sets are
 // process-wide, and so is the flush that has to reach them.
 func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Context), error) {
-	if !telemetryConfigured() {
+	config, err := telemetryConfigFromEnv()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !config.traces && !config.metrics && !config.logs {
 		// Nil handler means the Temporal SDK keeps its no-op default, and the
 		// no-op global providers keep otelconnect silent. No propagator is
 		// registered either: an unconfigured binary must not start writing
@@ -234,48 +355,76 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		return nil, nil, err
 	}
 
-	traceExporter, err := otlptracehttp.New(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("configuring the trace exporter: %w", err)
+	// Build every enabled provider before publishing any of them.
+	//
+	// The globals are the publication: once otel.SetTracerProvider has run,
+	// otelconnect is recording into a batch processor whose goroutine and
+	// connection are live. Publishing as each one is built means a later
+	// exporter's failure returns without a shutdown — and the client commands
+	// deliberately continue past that error — leaving the earlier provider
+	// running, unreachable and never flushed, in a process that has just been
+	// told it has no telemetry. So failure here unwinds what it built, and
+	// nothing is visible outside this function until all of it succeeded.
+	var built []func(context.Context) error
+	fail := func(err error) (client.MetricsHandler, func(context.Context), error) {
+		for _, shutdown := range built {
+			_ = shutdown(ctx)
+		}
+
+		return nil, nil, err
 	}
 
-	metricExporter, err := otlpmetrichttp.New(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("configuring the metric exporter: %w", err)
+	var tracerProvider *sdktrace.TracerProvider
+	if config.traces {
+		exporter, err := newTraceExporter(ctx)
+		if err != nil {
+			return fail(fmt.Errorf("configuring the trace exporter: %w", err))
+		}
+		tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
+		built = append(built, tracerProvider.Shutdown)
+	}
+	var meterProvider *sdkmetric.MeterProvider
+	var handler client.MetricsHandler
+	if config.metrics {
+		exporter, err := newMetricExporter(ctx)
+		if err != nil {
+			return fail(fmt.Errorf("configuring the metric exporter: %w", err))
+		}
+		meterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)), sdkmetric.WithResource(res))
+		built = append(built, meterProvider.Shutdown)
+		handler = opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{Meter: meterProvider.Meter("temporal-sdk")})
+	}
+	var loggerProvider *sdklog.LoggerProvider
+	if config.logs {
+		exporter, err := newLogExporter(ctx)
+		if err != nil {
+			return fail(fmt.Errorf("configuring the log exporter: %w", err))
+		}
+		loggerProvider = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)), sdklog.WithResource(res))
+		built = append(built, loggerProvider.Shutdown)
 	}
 
-	logExporter, err := otlploghttp.New(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("configuring the log exporter: %w", err)
+	if tracerProvider != nil {
+		// The global, because that is where otelconnect looks: it was installed
+		// against the global providers all along, and this is the half that
+		// makes the installation mean something. Set only when traces are
+		// exported, so a deployment that asked for metrics alone leaves the
+		// no-op provider in place rather than building spans nothing sends.
+		otel.SetTracerProvider(tracerProvider)
 	}
-
-	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExporter),
-		sdktrace.WithResource(res),
-	)
-	meterProvider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
-		sdkmetric.WithResource(res),
-	)
-	loggerProvider := sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
-		sdklog.WithResource(res),
-	)
-
-	// The globals, because that is where otelconnect looks. It was installed
-	// against the global providers all along; this is the half that makes the
-	// installation mean something.
-	otel.SetTracerProvider(tracerProvider)
-	otel.SetMeterProvider(meterProvider)
-
-	// Logs have a global of their own, in their own package, because the log API
-	// is still pre-stable and lives outside go.opentelemetry.io/otel. Registered
-	// for the same reason as the other two and one more: a bridge built in a
-	// package that cannot see this one — the engine's activity logger, in
-	// pkg/flowstate/v1/engine — reaches an exporter only through this global.
-	// Unset, it is a no-op that discards, which is what keeps that bridge free
-	// in a binary nobody configured.
-	logglobal.SetLoggerProvider(loggerProvider)
+	if meterProvider != nil {
+		otel.SetMeterProvider(meterProvider)
+	}
+	if loggerProvider != nil {
+		// Logs have a global of their own, in their own package, because the log
+		// API is still pre-stable and lives outside go.opentelemetry.io/otel.
+		// Registered for the same reason as the other two and one more: a bridge
+		// built in a package that cannot see this one — the engine's activity
+		// logger, in pkg/flowstate/v1/engine — reaches an exporter only through
+		// this global. Unset, it is a no-op that discards, which is what keeps
+		// that bridge free in a binary nobody configured.
+		logglobal.SetLoggerProvider(loggerProvider)
+	}
 
 	// W3C trace context plus baggage, the composite everything else in the
 	// ecosystem defaults to. Trace context is what carries the span across the
@@ -288,10 +437,6 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		propagation.Baggage{},
 	))
 
-	handler := opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{
-		Meter: meterProvider.Meter("temporal-sdk"),
-	})
-
 	var once sync.Once
 	shutdown := func(ctx context.Context) {
 		// Flush rather than abandon: the spans and points most worth having are
@@ -302,13 +447,19 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		// twice is at best wasted work and at worst an error report about
 		// something that already succeeded.
 		once.Do(func() {
-			_ = tracerProvider.Shutdown(ctx)
-			_ = meterProvider.Shutdown(ctx)
+			if tracerProvider != nil {
+				_ = tracerProvider.Shutdown(ctx)
+			}
+			if meterProvider != nil {
+				_ = meterProvider.Shutdown(ctx)
+			}
 			// Logs batch exactly as spans do, so the last lines a process writes
 			// — which are the ones saying why it is leaving — are precisely the
 			// ones an unflushed provider drops. This is the same flush, not a
 			// second path: every exit already reaches here.
-			_ = loggerProvider.Shutdown(ctx)
+			if loggerProvider != nil {
+				_ = loggerProvider.Shutdown(ctx)
+			}
 		})
 	}
 
@@ -375,7 +526,8 @@ const telemetryScope = "github.com/picatz/flowstate/cmd/flow"
 // the otelconnect interceptor and the Temporal tracing interceptor both have,
 // and cheaper to avoid than to document.
 func telemetryLogHandler(next slog.Handler) slog.Handler {
-	if !telemetryConfigured() {
+	c, _ := telemetryConfigFromEnv()
+	if !c.logs {
 		return next
 	}
 
@@ -432,12 +584,7 @@ func temporalTracingInterceptor() interceptor.Interceptor {
 		return nil
 	}
 
-	// The zero options on purpose. Tracer comes from the global provider this
-	// package has already configured, and the propagator defaults to W3C trace
-	// context plus baggage — the same composite [initTelemetry] registers
-	// globally, so the header Temporal carries and the header otelconnect
-	// injects speak the same format.
-	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{})
+	tracing, err := opentelemetry.NewTracingInterceptor(temporalTracerOptions())
 	if err != nil {
 		log.Printf("WARNING: telemetry is configured but the Temporal tracing interceptor "+
 			"could not be built, so workflow and activity spans will not join the caller's "+
@@ -447,6 +594,65 @@ func temporalTracingInterceptor() interceptor.Interceptor {
 	}
 
 	return tracing
+}
+
+// temporalTracerOptions is how this binary configures Temporal's tracer, in one
+// place because a test that writes its own copy of these options tests its copy.
+//
+// Tracer comes from the global provider this package has already configured, and
+// the propagator defaults to W3C trace context plus baggage — the same composite
+// [initTelemetry] registers globally, so the header Temporal carries and the
+// header otelconnect injects speak the same format. Span creation is wrapped so
+// the SDK cannot export the full text of an activity failure.
+//
+// A function rather than a package variable so nothing can mutate what the next
+// interceptor is built from, and so [TestTemporalSpanErrorsAreContained] can
+// take the same value the worker takes and then override only the tracer. That
+// override is why the field is left zero here rather than named: zero means the
+// global provider *at construction time*, which is the ordering the doc comment
+// above depends on, and a test that has to set its own recorder can set that one
+// field without inheriting a decision about the rest.
+//
+// # Why baggage is disabled here and trace context is not
+//
+// This is the one door in the process where a caller's own key-value data
+// reached durable storage, and it reached it by default.
+//
+// otelconnect extracts the inbound `Baggage` header into the RPC handler's
+// context — it was built from the global propagator, which this file registers
+// as trace context *plus* baggage. The handler then calls into Temporal on that
+// same context, and this interceptor's tracer reads `baggage.FromContext` and
+// writes what it finds into the workflow header, which is workflow history:
+// durable, broadly readable, and the one place docs/ARCHITECTURE.md's invariant
+// says a peer's bytes must not land. An authenticated caller could therefore
+// choose several kilobytes of arbitrary text and have this server persist it
+// against a run, under keys the caller also chose.
+//
+// [opentelemetry.TracerOptions.DisableBaggage] closes it at the seam that
+// writes the header, which is where the whole of this repository already
+// answers the question. `pkg/flowstate/v1/server/webhooktrace.go` strips
+// baggage outright before starting a run and says why; `plugin/telemetry.go`
+// refuses to consult context baggage even under its own reserved keys, because
+// a caller who can seed baggage would otherwise choose what this host asserts
+// about itself; `netpolicy/tracing.go` injects trace context alone toward a
+// host a workflow named. The consistent answer is that a peer's baggage does
+// not cross a boundary — never that it crosses once filtered — and this makes
+// the RPC path say it too.
+//
+// Nothing in this repository reads Temporal-propagated baggage, so nothing is
+// given up: the plugin boundary builds its own bag from host-created values on
+// both sides, and the span vocabulary in taskspan.go never reads one.
+//
+// Trace context is deliberately left on. It is a fixed-shape identifier — a
+// trace id, a span id and a flag byte, all bounded by the format itself — and
+// carrying it is the entire reason a run can be followed from the command that
+// started it. Baggage is the arbitrary-payload half, and only that half is
+// refused.
+func temporalTracerOptions() opentelemetry.TracerOptions {
+	return opentelemetry.TracerOptions{
+		SpanStarter:    v1.SanitizedTemporalSpanStarter,
+		DisableBaggage: true,
+	}
 }
 
 // temporalClientInterceptors is what a Temporal client should be dialed with.

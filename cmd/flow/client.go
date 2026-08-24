@@ -259,7 +259,8 @@ func newWorkflowServiceClientWithSource(
 	// traceparent, so the server's own interceptor extracts it and its spans are
 	// children of the command somebody typed.
 	//
-	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere: no
+	// Off unless the operator asked for a signal — an OTEL_EXPORTER_OTLP_*
+	// endpoint or an OTEL_*_EXPORTER selector, per [telemetryConfigured]: no
 	// exporter, no propagator, no headers, and this interceptor goes on
 	// recording into the no-op provider exactly as before.
 	//
@@ -434,10 +435,10 @@ func refusedRun(verb, workflowID string, server serverFlags, err error) error {
 // can spell out rather than allude to. `flow run` is also the likeliest first
 // command anybody types, so it is the one that can least afford to report a bare
 // dial error.
-func refusedStart(file, name string, arguments []string, server serverFlags, err error) error {
+func refusedStart(file, name string, arguments []string, redacted bool, server serverFlags, err error) error {
 	switch connect.CodeOf(err) {
 	case connect.CodeUnavailable:
-		return unreachableServerWithArguments(server, file, arguments, err)
+		return unreachableServerWithArguments(server, file, arguments, redacted, err)
 	default:
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
@@ -469,6 +470,13 @@ type noServerError struct {
 	// workload that was asked for.
 	runArguments []string
 
+	// redacted says a sensitive value was withheld from runArguments, so the
+	// suggested command carries a marker where a value belongs. The offer has
+	// to say so: a command that looks runnable and is not is worse than one
+	// that admits what it is missing, and for a string input it would start a
+	// different workload rather than fail.
+	redacted bool
+
 	// err is the dial failure underneath, kept so the reason survives: a
 	// connection refused and a TLS handshake that failed are the same code and
 	// very different afternoons.
@@ -480,14 +488,20 @@ type noServerError struct {
 //
 // file names the Flowfile the caller passed, or is empty when the verb has none.
 func unreachableServer(server serverFlags, file string, err error) error {
-	return unreachableServerWithArguments(server, file, nil, err)
+	return unreachableServerWithArguments(server, file, nil, false, err)
 }
 
 // unreachableServerWithArguments is the run-shaped form: the arguments ride
 // along so the suggested command is the invocation that failed, not a flagless
 // cousin of it.
-func unreachableServerWithArguments(server serverFlags, file string, arguments []string, err error) error {
-	return &noServerError{address: server.address, workflowFile: file, runArguments: arguments, err: err}
+func unreachableServerWithArguments(server serverFlags, file string, arguments []string, redacted bool, err error) error {
+	return &noServerError{
+		address:      server.address,
+		workflowFile: file,
+		runArguments: arguments,
+		redacted:     redacted,
+		err:          err,
+	}
 }
 
 // Error is the sentence every verb that dials the server now prints, written down
@@ -533,7 +547,16 @@ func (e *noServerError) nextCommands() []commandBlock {
 		invocation := shellArgument(e.workflowFile) + e.runArgumentSuffix()
 		durable = append(durable, "flow run "+invocation)
 
-		return append([]commandBlock{{commands: durable}}, commandBlock{
+		// The one case where the first block needs a lead: an input the
+		// workflow declared sensitive was withheld, so what is offered is the
+		// shape of the invocation rather than the invocation itself.
+		var lead string
+		if e.redacted {
+			lead = "supply the values shown as " + redactedMarker("name") +
+				" again — they were withheld here:"
+		}
+
+		return append([]commandBlock{{lead: lead, commands: durable}}, commandBlock{
 			lead:     "or rehearse it here, with no server at all:",
 			commands: []string{"flow run local " + invocation},
 		})

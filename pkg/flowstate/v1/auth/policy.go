@@ -30,7 +30,10 @@ type Policy struct {
 	// grants different roles to different workloads: a GitHub Actions issuer
 	// can appear twice, once requiring repository "picatz/flowstate" with the
 	// role "deployer" and once requiring another repository with a lesser role.
-	// The first entry whose audience and claim rules a token satisfies wins.
+	// The first entry whose audience and claim rules a token satisfies wins,
+	// so order them narrowest first: a broad entry above a narrower one for
+	// the same issuer makes the narrow one unreachable, silently. See
+	// [Policy.UnreachableIssuers], which reports exactly that.
 	Issuers []TrustedIssuer `json:"issuers" yaml:"issuers"`
 
 	// Federation configures the other direction: the identity Flowstate presents
@@ -652,6 +655,51 @@ func (t TrustedIssuer) kind() string {
 	return t.Kind
 }
 
+// bearerIssuers returns the entries in policy that admit a caller by bearer
+// token — kind: oidc, and the unset kind that defaults to it.
+//
+// The one place the "not OIDC, rather than is mTLS" filter is written down for
+// the callers that only need to *ask about* the policy, so that a kind added
+// to the schema later is excluded from every one of them at once rather than
+// inheriting bearer semantics from whichever of them forgot. [NewOIDCVerifier]
+// and [NewMTLSVerifier] keep their own loops: each does per-entry work as it
+// walks, and verifier.go states the same reasoning at its own filter.
+//
+// A nil policy trusts nobody and therefore yields nothing, the same
+// fail-closed default [Policy] takes everywhere else.
+func bearerIssuers(policy *Policy) []TrustedIssuer {
+	if policy == nil {
+		return nil
+	}
+
+	var entries []TrustedIssuer
+	for _, entry := range policy.Issuers {
+		if entry.kind() == IssuerKindOIDC {
+			entries = append(entries, entry)
+		}
+	}
+
+	return entries
+}
+
+// AdmitsBearerTokens reports whether policy trusts any issuer that can mint a
+// bearer token — that is, whether this deployment has an "aud" claim to bind
+// anything to at all.
+//
+// A policy of nothing but kind: mtls entries admits callers purely by client
+// certificate, and [TrustedIssuer.validateMTLS] refuses an `audiences` list on
+// one of those outright ("a client certificate carries no audience claim"), so
+// there is no audience such a deployment could name and no token whose "aud"
+// any surface could check. A caller deciding whether to *require* a canonical
+// resource URI (see [ValidateResourceAudience] and [WithExpectedResource])
+// asks this first: requiring one where nothing mints a token refuses a
+// deployment for failing to name something nothing would ever check.
+//
+// False for a nil policy, which trusts nobody.
+func AdmitsBearerTokens(policy *Policy) bool {
+	return len(bearerIssuers(policy)) > 0
+}
+
 // validate reports whether a single trusted issuer entry is usable.
 func (t TrustedIssuer) validate() error {
 	if t.Name == "" {
@@ -720,7 +768,7 @@ func (t TrustedIssuer) validateOIDC() error {
 	}
 
 	if t.JWKSURL != "" {
-		if _, err := validateHTTPSURL(t.JWKSURL, "jwks_url"); err != nil {
+		if _, err := ValidateHTTPSURL(t.JWKSURL, "jwks_url"); err != nil {
 			return err
 		}
 	}
@@ -1063,7 +1111,7 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("issuer is required")
 	}
 
-	parsed, err := validateHTTPSURL(issuer, "issuer")
+	parsed, err := ValidateHTTPSURL(issuer, "issuer")
 	if err != nil {
 		return err
 	}
@@ -1075,18 +1123,27 @@ func validateIssuerURL(issuer string) error {
 	return nil
 }
 
-// validateHTTPSURL checks that a configured URL is absolute and transport
+// ValidateHTTPSURL checks that a configured URL is absolute and transport
 // protected. Plain http is permitted only against loopback addresses, which
 // keeps a local development issuer usable without leaving a way to configure a
 // production issuer whose tokens and keys cross the network in the clear.
-func validateHTTPSURL(rawURL, field string) (*url.URL, error) {
+//
+// Exported so that `credentialsource` holds every credential-bearing URL in this
+// repository to one rule rather than to a second implementation of it. field
+// names the setting in the caller's own vocabulary, so a refusal says what the
+// operator has to change rather than what this function is called.
+func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, rawURL, err)
 	}
 
-	if parsed.Host == "" {
-		return nil, fmt.Errorf("%s %q must include a host", field, rawURL)
+	// Hostname, not Host: Host keeps a bare port (url.Parse("https://:443/x")
+	// yields Host == ":443", Hostname() == ""), so testing Host here would
+	// accept a URL that names no host and disagree with the isLoopbackHost
+	// check below, which already uses Hostname().
+	if parsed.Hostname() == "" {
+		return nil, fmt.Errorf("%s %q must name a host, such as %q", field, rawURL, "https://example.com")
 	}
 
 	// Credentials in an issuer or key set URL would be sent on every fetch and

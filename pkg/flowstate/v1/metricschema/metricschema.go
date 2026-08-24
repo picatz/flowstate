@@ -180,6 +180,41 @@ const (
 	// TaskName is the name of a task as the deployment registered it.
 	TaskName = "flowstate.task.name"
 
+	// WorkflowName is the name of the workflow a run is executing, as the
+	// deployment's Flowfile declares it.
+	//
+	// Declared here rather than only beside the span that writes it, because
+	// this table is the one place a telemetry attribute key is declared and a
+	// key that lives in two places is a key that eventually disagrees with
+	// itself. Nothing records it on an instrument today — the run-level span
+	// (`v1.SpanAttributeWorkflowName`) is its only writer — and the
+	// classification says what would happen if something did: bounded by the
+	// deployment's own set of workflows, so it is a label a metric *may*
+	// carry, unlike the per-execution identifiers below.
+	WorkflowName = "flowstate.workflow.name"
+
+	// TriggerName is the name of the trigger that started a run, where one
+	// did: a webhook's `name:` from the Flowfile, never a value taken from the
+	// request that arrived at it.
+	TriggerName = "flowstate.trigger.name"
+
+	// DeliveryID is the digest naming one webhook delivery.
+	//
+	// Peer-controlled and therefore never permitted on an instrument — an
+	// external sender would be choosing this system's cardinality, one value
+	// per delivery — and exactly right on a span, which is where a per-event
+	// identifier is the point. It is named as a constant rather than left as a
+	// literal in [Table] because a span now writes it
+	// (`v1.SpanAttributeDeliveryID`), and a key with a writer needs a spelling
+	// that writer can read.
+	DeliveryID = "flowstate.delivery.id"
+
+	// DeliveryJoined is true when a webhook delivery joined the run its event
+	// had already started rather than starting one — what a provider's retry
+	// looks like from the receiver's side. Two values, so it is bounded by
+	// construction.
+	DeliveryJoined = "flowstate.webhook.joined"
+
 	// TaskOutcome is "success" or "error", spelled the way [PluginOutcome]
 	// spells the same idea one subject over. Values are
 	// [OutcomeSuccess]/[OutcomeError] and nothing else.
@@ -290,12 +325,15 @@ var Table = []Attribute{
 	{Key: PluginOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
 	{Key: PluginHealthStatus, Class: ClassConstruction, Chooser: "this repository's plugin health enumeration"},
 	{Key: TaskName, Class: ClassConfiguration, Chooser: "the deployment, by which tasks it registers"},
+	{Key: WorkflowName, Class: ClassConfiguration, Chooser: "the deployment, by which workflows it serves"},
+	{Key: TriggerName, Class: ClassConfiguration, Chooser: "the deployment, by the triggers its Flowfiles declare"},
+	{Key: DeliveryJoined, Class: ClassConstruction, Chooser: "this repository: whether a delivery joined a run its event had already started"},
 	{Key: TaskOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
 	{Key: Driver, Class: ClassConstruction, Chooser: "this repository: local, durable"},
 	{Key: PolicySurface, Class: ClassConstruction, Chooser: "this repository's deny-by-default surfaces"},
 	{Key: ErrorType, Class: ClassConstruction, Chooser: "this repository's error classification (v1.ErrorKind)", Convention: "OpenTelemetry semconv v1.41.0"},
 
-	{Key: "flowstate.delivery.id", Class: ClassPeerControlled, Chooser: "the external sender, one per webhook delivery"},
+	{Key: DeliveryID, Class: ClassPeerControlled, Chooser: "the external sender, one per webhook delivery"},
 	{Key: "flowstate.run.id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
 	{Key: "flowstate.execution.id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
 	{Key: "flowstate.workflow.run_id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},

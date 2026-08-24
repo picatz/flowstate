@@ -150,6 +150,24 @@ Two things, both already-familiar shapes rather than new machinery:
   not at the bare prefix, and that exact URL is what the `WWW-Authenticate`
   challenge names.
 
+The audience identifiers are intentionally not interchangeable. Connect RPC uses
+`--rpc-resource` / `FLOWSTATE_RPC_RESOURCE`; remote MCP uses
+`--protected-resource` / `FLOWSTATE_PROTECTED_RESOURCE`; and a future ordinary
+HTTP surface must receive a third identifier. Listing both RPC and MCP URIs in
+one `TrustedIssuer.audiences` entry establishes issuer trust for both, but each
+handler still requires its own exact audience. An MCP token therefore cannot be
+replayed against Connect RPC, or vice versa. `flow server` also requires its RPC
+resource at startup — whenever its trust policy has a `kind: oidc` issuer to
+bind one to — unless the migration-only `--allow-issuer-wide-audiences` flag
+explicitly restores the older issuer-wide behavior.
+
+Because they are not interchangeable, the challenge is not either. A 401 from
+Connect RPC carries `resource_metadata` naming the protected-resource document
+only when that document describes the RPC surface's own resource; where the two
+differ, it is omitted rather than pointed at the other surface, since a client
+that followed it would ask its authorization server for the MCP audience and
+come back with a token Connect RPC refuses.
+
 With both in place, the wire exchange in the diagram above is the whole of
 what a compliant MCP client needs from *flowstate* — no flowstate-specific
 client library, and no credential flowstate itself hands out. One step may
@@ -214,16 +232,27 @@ says plainly what it is missing.
   issued. Every one of those stays the operator's identity provider's job. If
   a deployment has no IdP, HTTP MCP is not available to it today —
   `--insecure-no-auth` covers loopback development only.
-- **No scope vocabulary yet.** `scopes_supported` is not advertised, and no
-  `401`/`403` challenge names a `scope` parameter. This is deferred by
-  omission rather than half-specified: the action/scope vocabulary is one
-  decision shared across the policy surface, the protected-resource metadata,
-  and MCP's own step-up challenges (#567's D1), and until that decision is
-  made, this surface names none of it rather than shipping a spelling that
-  would have to migrate later. Authorization here is coarse — a caller with a
-  verified, audience-bound token from a trusted issuer may call every tool
-  the trust policy's claim rules and role admit — the same granularity every
-  other authenticated Connect RPC already has.
+- **A scope vocabulary, and nothing that enforces it.** #567's D1 is
+  answered: the action list is in the schema
+  (`proto/flowstate/v1/authorization.proto`), one closed enum whose value
+  names spell the scopes, and the metadata document now advertises it as
+  `scopes_supported`. What has not landed is any place that *reads* a token's
+  scopes. Authorization here is still coarse — a caller with a verified,
+  audience-bound token from a trusted issuer may call every tool the trust
+  policy's claim rules and role admit — the same granularity every other
+  authenticated Connect RPC already has, and no `401`/`403` challenge names a
+  `scope` parameter, because a challenge naming one would tell a caller to
+  acquire a scope this deployment never consults.
+
+  Two things the published list does not say, worth being explicit about
+  because a scope value looks like a promise. It is a *vocabulary*, not a
+  capability list: a scope naming `mcp.run_local` says this deployment knows
+  what that action is, not that this surface registers a tool for it — the
+  reduced tool list below is unchanged, and tools are discovered where a
+  client actually discovers them, through MCP's own `tools/list`, rather than
+  from an OAuth metadata document its authorization layer reads. And a token
+  carrying one of these scopes is admitted no differently from one carrying
+  none, until the enforcement point exists.
 - **No delegation.** A token carrying an RFC 8693 `act` or `may_act` claim —
   the shape an agent acting for a human produces — is refused outright, not
   silently accepted as the bare subject and not stripped down to one. Refusal

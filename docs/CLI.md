@@ -51,7 +51,9 @@ together.
 Prefer federation to a static secret when the downstream system supports token
 exchange or workload identity. Configure `federation.targets` in the same reviewed
 auth policy, give the worker a rotating PKCS#8 signing key, and name the target in
-the HTTP task:
+the HTTP task. What the other side has to accept — the two metadata documents an
+issuer publishes and what each cloud consumer requires of them — is
+[Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md).
 
 ```yaml
 http:
@@ -65,6 +67,30 @@ flow worker \
   --auth-policy /etc/flowstate/auth.yaml \
   --identity-key /var/run/flowstate/2026-08.pem
 ```
+
+`--identity-key` repeats, and the order is the rule: **the first occurrence signs,
+and every later one is published for verification only.** That is how a key is
+rotated, because the rotation an operator performs is a restart, and a process that
+publishes only its new key rejects assertions the previous process signed while
+those are still valid. Generate the new key, restart naming it first with the
+outgoing key behind it, and after `federation.key_retention` (default 24h) restart
+with the new key alone:
+
+```sh
+flow keys generate --out /etc/flowstate/keys/2026-09.pem
+
+flow worker \
+  --auth-policy /etc/flowstate/auth.yaml \
+  --identity-key /etc/flowstate/keys/2026-09.pem \
+  --identity-key /etc/flowstate/keys/2026-08.pem
+```
+
+A verify-only entry may be the outgoing private key file or just its public half in
+a PKIX PEM (`openssl pkey -in 2026-08.pem -pubout`); either way this process never
+signs with it.
+A key that cannot be read or parsed, and two files publishing one key id, refuse
+start-up rather than being skipped. `FLOWSTATE_IDENTITY_KEY` names one key, and any
+`--identity-key` on the command line replaces it rather than adding to it.
 
 The activity evaluates the target's CEL assume policy against the authenticated
 tenant, workflow, run, and step; mints an audience-scoped Flowstate assertion;

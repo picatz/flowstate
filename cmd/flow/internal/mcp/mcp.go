@@ -40,6 +40,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -398,11 +399,26 @@ func AddLocalCapabilities(
 // wrapToolHandler applies [Deps.WrapHandler] when one was given, and is the
 // identity otherwise.
 func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHandler {
+	handler = withMCPPrincipal(handler)
 	if deps.WrapHandler == nil {
 		return handler
 	}
 
 	return deps.WrapHandler(name, handler)
+}
+
+// withMCPPrincipal installs the verified, token-free caller on the same
+// context read by the control plane. It runs for every call, independently of
+// whether tools/list previously advertised the tool.
+func withMCPPrincipal(next mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if req != nil && req.Extra != nil {
+			if principal, ok := auth.MCPPrincipal(req.Extra.TokenInfo); ok {
+				ctx = auth.ContextWithPrincipal(ctx, principal)
+			}
+		}
+		return next(ctx, req)
+	}
 }
 
 // wrapResourceHandler applies [Deps.WrapResourceHandler] when one was given,
@@ -757,7 +773,7 @@ func dispatch(
 	remote func() flowstatev1connect.WorkflowServiceClient,
 	deps Deps,
 ) mcp.ToolHandler {
-	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return withMCPPrincipal(func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		in := NewMessage(method.Input)
 
 		// DiscardUnknown stays false on purpose: the schema advertised
@@ -879,7 +895,7 @@ func dispatch(
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
 		}, nil
-	}
+	})
 }
 
 // ToolError reports a failure as the tool's result rather than a protocol
