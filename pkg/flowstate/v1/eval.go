@@ -1343,6 +1343,15 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
+		// The step boundary a debugging session holds the run at (issue #928):
+		// after the condition decided this step runs, before any of its work
+		// happens, and at the position the author wrote it — an `async:` step
+		// included, since where its result is heard is the schedule's business
+		// and not a place an author would expect to stop.
+		if err := debuggerBeforeStep(ctx, node, scope); err != nil {
+			return err
+		}
+
 		if node.GetAsync() {
 			if err := CheckAsyncWidth(len(started), node.GetId()); err != nil {
 				return err

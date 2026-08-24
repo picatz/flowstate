@@ -1631,6 +1631,7 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
+| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires --run to name exactly one case, and is refused with --output json and with seeded exploration |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub the case declared and the run never answered through — instead of only printing it |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and --coverage-required is refused alongside it, because a subset's coverage gaps are not the suite's |
