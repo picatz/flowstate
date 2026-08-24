@@ -134,8 +134,9 @@ func acmeRequested(flags acmeFlags) bool {
 // acmeSettings is the outcome of validating an operator's ACME configuration:
 // a Manager ready to hand a *tls.Config, and the watchdog's inputs.
 type acmeSettings struct {
-	hosts   []string
-	manager *autocert.Manager
+	hosts      []string
+	manager    *autocert.Manager
+	minVersion uint16
 }
 
 // resolveACMESettings validates every fail-closed rule #581 decided and, only
@@ -148,6 +149,11 @@ type acmeSettings struct {
 func resolveACMESettings(flags acmeFlags, tlsListener tlsFlags, internalListenAddr string, federationIssuer string) (*acmeSettings, error) {
 	if !acmeRequested(flags) {
 		return nil, nil
+	}
+
+	minVersion, err := tlsMinVersion(tlsListener.minVersion)
+	if err != nil {
+		return nil, err
 	}
 
 	// ACME together with an explicit certificate file is refused rather than
@@ -275,7 +281,7 @@ func resolveACMESettings(flags acmeFlags, tlsListener tlsFlags, internalListenAd
 		manager.Client = &client
 	}
 
-	return &acmeSettings{hosts: hosts, manager: manager}, nil
+	return &acmeSettings{hosts: hosts, manager: manager, minVersion: minVersion}, nil
 }
 
 // acmeClientFor builds the low-level ACME client [resolveACMESettings] hands
@@ -293,7 +299,9 @@ func acmeClientFor(directoryURL string) acme.Client {
 // this file's package comment — so this is the whole of how a certificate
 // reaches a connection.
 func (s *acmeSettings) tlsConfig() *tls.Config {
-	return s.manager.TLSConfig()
+	cfg := s.manager.TLSConfig()
+	cfg.MinVersion = s.minVersion
+	return cfg
 }
 
 // # ACME's own validation connection versus --tls-client-auth require
