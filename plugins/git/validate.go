@@ -254,20 +254,20 @@ const maxCursorEntries = maxCloneDepth
 // anything go-git's revision parser does - a branch, a tag, "HEAD~3"), this
 // is deliberately narrow: a cursor is never something a workflow author or
 // coding agent composes by hand, only ever something this task itself
-// emitted as a previous call's next_cursor - so the one shape it accepts is
-// the one shape this task ever produces: cursor.go's own frontier|emitted
-// encoding, every element a full 40-character lowercase hex commit sha.
+// emitted as a previous call's next_cursor - so it authenticates the cursor
+// against the request binding before accepting cursor.go's frontier/emitted
+// payload, whose elements are full 40-character lowercase hex commit shas.
 // Refusing anything else (a short sha, a branch name, "HEAD", a single bare
 // sha the way this field's first version accepted) closes off a second,
 // differently-validated spelling of ref that would otherwise invite the two
 // to be confused with one another - see LogInputs.cursor's own doc comment
 // for the full argument, and cursor.go's for why a bare single sha stopped
 // being enough to resume correctly at all.
-func validateCursor(raw string) (string, error) {
+func validateCursor(raw string, binding cursorBinding) (string, error) {
 	if raw == "" {
 		return "", nil
 	}
-	state, err := decodeCursor(raw)
+	state, err := decodeCursor(raw, binding)
 	if err != nil {
 		return "", fmt.Errorf("cursor is not a value this task ever emitted: %w", err)
 	}

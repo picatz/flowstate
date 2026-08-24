@@ -1,9 +1,14 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -55,15 +60,30 @@ import (
 // re-exploring it, because its own children were already pushed onto some
 // earlier page's frontier the first time it was visited.
 //
-// Both lists are ordinary full commit shas - nothing this task cannot
-// already vouch for, and nothing a caller could compose by hand and have
-// accepted: decodeCursor's own structural check (and validateCursor, which
-// calls it before this ever reaches doLog) refuses anything that does not
-// parse into exactly this shape.
+// Both lists are ordinary full commit shas. decodeCursor authenticates them
+// and the original request context before accepting either list as traversal
+// state, so caller-composed roots or suppression entries are refused.
 type cursorState struct {
 	frontier []plumbing.Hash
 	emitted  []plumbing.Hash // in the order first added; also the encode order
 }
+
+// cursorBinding is every stable part of the request whose authority or
+// filtering affects a history walk. The credential is deliberately used only
+// as the MAC key: it never enters the cursor or workflow history.
+type cursorBinding struct {
+	url       *url.URL
+	path      string
+	since     time.Time
+	username  string
+	principal string
+	token     string
+}
+
+// maxEncodedCursorBytes bounds allocation before base64 decoding. It is
+// deliberately generous: the authenticated envelope plus maxCursorEntries
+// SHA-1s is smaller than this even with separators and encoding overhead.
+const maxEncodedCursorBytes = maxCursorEntries * (fullShaHexLen + 1) * 2
 
 // emittedSet returns state's own emitted list as a lookup set - built once
 // per decoded cursor, not once per commit examined during the walk.
@@ -75,13 +95,14 @@ func (state cursorState) emittedSet() map[plumbing.Hash]bool {
 	return set
 }
 
-// encodeCursor packs frontier and emitted into the string
-// LogOutputs.next_cursor carries: two comma-joined hash lists separated by
-// "|". Every hash is rendered through plumbing.Hash.String(), which always
-// produces 40 lowercase hex characters, so anything this function writes
-// is exactly the shape decodeCursor (and validateCursor) accepts back.
-func encodeCursor(frontier, emitted []plumbing.Hash) string {
-	return joinHashes(frontier) + "|" + joinHashes(emitted)
+// encodeCursor authenticates the frontier and emitted lists together with
+// the request context. The repository credential is only the HMAC key and is
+// never included in the returned cursor.
+func encodeCursor(frontier, emitted []plumbing.Hash, binding cursorBinding) string {
+	payload := joinHashes(frontier) + "|" + joinHashes(emitted)
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	mac := cursorMAC(encoded, binding)
+	return "v1." + encoded + "." + base64.RawURLEncoding.EncodeToString(mac)
 }
 
 func joinHashes(hs []plumbing.Hash) string {
@@ -93,17 +114,30 @@ func joinHashes(hs []plumbing.Hash) string {
 }
 
 // decodeCursor is encodeCursor's inverse, and the one place that decides
-// whether a string is shaped like a value this task could ever have
-// emitted - checked structurally (exactly two "|"-separated sections, each
-// a non-empty comma-separated list of full lowercase hex shas) before a
-// single byte of it is trusted for anything else. validateCursor
+// whether a string is a value this task emitted for this request. Its MAC is
+// checked before the payload is decoded or trusted. validateCursor
 // (validate.go) is the production entry point; doLog calls decodeCursor
 // again once validation has already passed - a cheap, auditable
 // re-derivation rather than threading a decoded value through logParams,
 // the same double-parse shape this plugin's other validators accept
 // elsewhere for the same reason.
-func decodeCursor(raw string) (cursorState, error) {
-	sections := strings.Split(raw, "|")
+func decodeCursor(raw string, binding cursorBinding) (cursorState, error) {
+	if len(raw) > maxEncodedCursorBytes {
+		return cursorState{}, fmt.Errorf("cursor is %d bytes, over the %d-byte limit", len(raw), maxEncodedCursorBytes)
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 || parts[0] != "v1" {
+		return cursorState{}, fmt.Errorf("expected a v1 authenticated cursor")
+	}
+	wantMAC, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(wantMAC) != sha256.Size || !hmac.Equal(wantMAC, cursorMAC(parts[1], binding)) {
+		return cursorState{}, fmt.Errorf("authentication failed (the cursor was altered or belongs to a different request)")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return cursorState{}, fmt.Errorf("payload is not base64url: %w", err)
+	}
+	sections := strings.Split(string(payload), "|")
 	if len(sections) != 2 {
 		return cursorState{}, fmt.Errorf("expected 2 \"|\"-separated sections (frontier, emitted), got %d", len(sections))
 	}
@@ -122,6 +156,20 @@ func decodeCursor(raw string) (cursorState, error) {
 		return cursorState{}, fmt.Errorf("emitted section is empty - this task never emits a cursor before returning at least one commit")
 	}
 	return cursorState{frontier: frontier, emitted: emitted}, nil
+}
+
+func cursorMAC(payload string, binding cursorBinding) []byte {
+	mac := hmac.New(sha256.New, []byte(binding.token))
+	// Length-prefix every field so no pair of distinct requests can have the
+	// same MAC input through delimiter ambiguity.
+	for _, field := range []string{
+		payload, binding.url.String(), binding.path,
+		binding.since.UTC().Format(time.RFC3339Nano), binding.username, binding.principal,
+	} {
+		fmt.Fprintf(mac, "%d:", len(field))
+		_, _ = mac.Write([]byte(field))
+	}
+	return mac.Sum(nil)
 }
 
 // parseHashList splits s on "," and requires every piece to be a full

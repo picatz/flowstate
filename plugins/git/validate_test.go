@@ -1,8 +1,11 @@
 package main
 
 import (
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 func TestValidateRepositoryURLAcceptsHTTPS(t *testing.T) {
@@ -52,12 +55,17 @@ const (
 	full3 = "0e8a687e0ac423825196d7c8dcd7d02fe3f96f83"
 )
 
+func validationCursorBinding() cursorBinding {
+	u, _ := url.Parse("https://example.com/owner/repo.git")
+	return cursorBinding{url: u, path: "src", token: "test-secret"}
+}
+
 // TestValidateCursorAcceptsTheFrontierEmittedShape proves the one shape
 // LogInputs.cursor accepts: exactly what encodeCursor (cursor.go) produces
 // - two "|"-separated, comma-joined lists of full lowercase hex shas.
 func TestValidateCursorAcceptsTheFrontierEmittedShape(t *testing.T) {
-	raw := full1 + "," + full2 + "|" + full3
-	got, err := validateCursor(raw)
+	raw := encodeCursor([]plumbing.Hash{plumbing.NewHash(full1), plumbing.NewHash(full2)}, []plumbing.Hash{plumbing.NewHash(full3)}, validationCursorBinding())
+	got, err := validateCursor(raw, validationCursorBinding())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,7 +75,7 @@ func TestValidateCursorAcceptsTheFrontierEmittedShape(t *testing.T) {
 }
 
 func TestValidateCursorAcceptsEmpty(t *testing.T) {
-	got, err := validateCursor("")
+	got, err := validateCursor("", validationCursorBinding())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,8 +112,35 @@ func TestValidateCursorRefusesAnythingNotShapedLikeAnEncodedCursor(t *testing.T)
 		{"trailing comma in frontier", full1 + ",|" + full2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := validateCursor(tt.cursor); err == nil {
+			if _, err := validateCursor(tt.cursor, validationCursorBinding()); err == nil {
 				t.Fatalf("validateCursor(%q): got nil error, want a refusal", tt.cursor)
+			}
+		})
+	}
+}
+
+func TestValidateCursorAuthenticatesStateAndRequest(t *testing.T) {
+	binding := validationCursorBinding()
+	raw := encodeCursor([]plumbing.Hash{plumbing.NewHash(full1)}, []plumbing.Hash{plumbing.NewHash(full2)}, binding)
+
+	for _, tt := range []struct {
+		name    string
+		cursor  string
+		binding cursorBinding
+	}{
+		{name: "altered state", cursor: raw[:len(raw)-1] + "A", binding: binding},
+		{name: "different repository", cursor: raw, binding: func() cursorBinding {
+			b := binding
+			b.url, _ = url.Parse("https://example.com/other/repo.git")
+			return b
+		}()},
+		{name: "different path", cursor: raw, binding: func() cursorBinding { b := binding; b.path = "other"; return b }()},
+		{name: "different credential", cursor: raw, binding: func() cursorBinding { b := binding; b.token = "other-secret"; return b }()},
+		{name: "different principal", cursor: raw, binding: func() cursorBinding { b := binding; b.principal = "other"; return b }()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := validateCursor(tt.cursor, tt.binding); err == nil {
+				t.Fatal("forged or cross-request cursor was accepted")
 			}
 		})
 	}
@@ -121,8 +156,12 @@ func TestValidateCursorRefusesMoreEntriesThanMaxCursorEntries(t *testing.T) {
 	for i := range frontier {
 		frontier[i] = full1
 	}
-	raw := strings.Join(frontier, ",") + "|" + full2
-	if _, err := validateCursor(raw); err == nil {
+	hashes := make([]plumbing.Hash, len(frontier))
+	for i := range hashes {
+		hashes[i] = plumbing.NewHash(frontier[i])
+	}
+	raw := encodeCursor(hashes, []plumbing.Hash{plumbing.NewHash(full2)}, validationCursorBinding())
+	if _, err := validateCursor(raw, validationCursorBinding()); err == nil {
 		t.Fatal("validateCursor with more entries than maxCursorEntries: got nil error, want a refusal")
 	}
 }

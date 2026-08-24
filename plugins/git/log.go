@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -60,16 +62,27 @@ func gitLog(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowst
 			"ref and cursor must not both be set - cursor already names a position in the same " +
 				"history a resumed call would otherwise use ref to reach; a call sets one or the other")
 	}
-	cursor, err := validateCursor(in.GetCursor())
-	if err != nil {
-		return nil, sdk.InvalidInput("%v", err)
-	}
-
 	token, err := tokenFromValue(ctx, in.GetToken())
 	if err != nil {
 		return nil, err
 	}
 	username, err := resolveUsername(in.GetUsername())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
+	principal := ""
+	if caller, ok := sdk.CallerFromContext(ctx); ok {
+		principal = caller.Namespace + "\x00"
+		if caller.Identity != nil {
+			identity, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(caller.Identity)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("encode caller identity for cursor binding: %w", marshalErr)
+			}
+			principal += string(identity)
+		}
+	}
+	binding := cursorBinding{url: repoURL, path: path, since: since, username: username, principal: principal, token: token}
+	cursor, err := validateCursor(in.GetCursor(), binding)
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
@@ -83,6 +96,7 @@ func gitLog(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowst
 		cursor:     cursor,
 		token:      func() string { return token },
 		username:   username,
+		principal:  principal,
 	})
 	if err != nil {
 		return nil, err
@@ -101,9 +115,10 @@ type logParams struct {
 	maxCommits int
 	path       string
 	since      time.Time
-	cursor     string // full 40-hex commit sha, or "" - see LogInputs.cursor
+	cursor     string // authenticated resume state, or "" - see LogInputs.cursor
 	token      func() string
 	username   string
+	principal  string
 }
 
 // doLog is doLogWithBounds using this task's real ceilings - the only
@@ -149,10 +164,11 @@ var resumeCloneDepthSteps = []int{maxCloneDepth, maxCloneDepth * 2, maxResumeClo
 func doLogWithBounds(ctx context.Context, p logParams, cloneDepthSteps []int, maxCursor int) (*gitv1.LogOutputs, error) {
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
+	binding := cursorBinding{url: p.url, path: p.path, since: p.since, username: p.username, principal: p.principal, token: tokenValueOf(p.token)}
 	var cur cursorState
 	if p.cursor != "" {
 		var err error
-		cur, err = decodeCursor(p.cursor)
+		cur, err = decodeCursor(p.cursor, binding)
 		if err != nil {
 			// gitLog's own validateCursor already refused anything not
 			// shaped like this before doLog was ever reached in
@@ -161,6 +177,9 @@ func doLogWithBounds(ctx context.Context, p logParams, cloneDepthSteps []int, ma
 			// that check, so this is refused on the same grounds
 			// validateCursor itself would have refused it on.
 			return nil, sdk.InvalidInput("cursor: %v", err)
+		}
+		if n := len(cur.frontier) + len(cur.emitted); n > maxCursor {
+			return nil, sdk.InvalidInput("cursor names %d commits total, over the %d this task will track in one resume", n, maxCursor)
 		}
 	}
 
@@ -310,7 +329,7 @@ func doLogWithBounds(ctx context.Context, p logParams, cloneDepthSteps []int, ma
 				newEmitted = append(newEmitted, plumbing.NewHash(c.Sha))
 			}
 			if len(newFrontier)+len(newEmitted) <= maxCursor {
-				nextCursor = encodeCursor(newFrontier, newEmitted)
+				nextCursor = encodeCursor(newFrontier, newEmitted, binding)
 			}
 			// else: resuming further would need a cursor bigger than this
 			// task will ever track - truncated stays true (there

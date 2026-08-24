@@ -599,8 +599,8 @@ type LogInputs struct {
 	// Cursor resumes a prior, truncated call - fed back exactly as
 	// LogOutputs.next_cursor returned it. Opaque to a workflow (nothing
 	// about its contents is meant to be parsed or reasoned about beyond
-	// "pass it back as cursor"), but not a single sha: it packs two
-	// full-sha lists, "|"-separated - the walk's own FRONTIER (every
+	// "pass it back as cursor"). Its authenticated payload packs two
+	// full-sha lists - the walk's own FRONTIER (every
 	// not-yet-explored commit a resumed walk still owes an answer for) and
 	// EMITTED (every commit already returned across every earlier page of
 	// this same walk). Every filter this call sets (path, since) applies to
@@ -621,8 +621,12 @@ type LogInputs struct {
 	// against arbitrary graph shapes, not merely a linear chain.
 	//
 	// Cursor is untrusted input the moment it comes back from outside this
-	// task (a caller composes it from a prior response, or an attacker
-	// guesses at one) - so every element of both lists is required to be a
+	// task. It is HMAC-authenticated with the resolved repository credential
+	// and bound to the repository URL, filters, username, tenant, and caller
+	// identity. Altered cursors and cursors replayed into a different request
+	// are refused before their state controls a history walk. The credential
+	// itself never enters the cursor or workflow history. In addition, every
+	// element of both lists is required to be a
 	// full, 40-character lowercase hex commit sha, and nothing else: not a
 	// branch, not a tag, not "HEAD~5", not a short sha. A revision expression
 	// is exactly the ambiguity ref already owns; accepting one here would let
@@ -781,8 +785,8 @@ type LogOutputs struct {
 	//     since) so fewer pages are needed to reach the same history, or
 	//     accept this page as the practical end of what this call can walk.
 	//
-	// NextCursor is real commit shas, not a token this task invents from
-	// nothing - fed back as LogInputs.cursor, it resumes the identical walk
+	// NextCursor carries authenticated real commit shas. Fed back as
+	// LogInputs.cursor, it resumes the identical walk
 	// (same repository, same filters) exactly where this call stopped,
 	// dropping nothing and repeating nothing. It is still opaque to a
 	// workflow in every other sense: nothing about its shape or contents is
