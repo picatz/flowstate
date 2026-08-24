@@ -69,6 +69,42 @@ explodes:
 `-fuzztime` bounds time, not memory. Eight parallel workers on a parser with an
 unbounded expansion path consumed 23 GB and 32 GB of swap in one afternoon.
 
+### `gofmt` on `PATH` is not the pinned toolchain's
+
+`go` re-execs into the toolchain `go.mod` pins; the `gofmt` sitting beside it
+does not. So `/usr/local/go/bin/gofmt` can be an older build while the
+`go version` next to it prints the pin — and the obvious sanity check ("which
+Go is this? the same as CI") confirms the wrong thing. The two disagree about
+real files: 1.24.7 and 1.27.0 indent a composite literal in a multi-value
+return differently, which is why three separate agents reported
+`pkg/flowstate/v1/auth/vocabulary_test.go` as unformatted on a green `main`,
+one of them concluding CI would be red for every PR until somebody fixed it
+(#1061). CI installs the pin through `go-version-file: go.mod`, so its `gofmt`
+is the right one and it was never wrong.
+
+Reach for `make fmt` or `make check`, which resolve the right one through the
+`GOFMT` variable. By hand it is:
+
+    "$(GOTOOLCHAIN=go$(awk '$1 == "go" { print $2; exit }' go.mod) go env GOROOT)"/bin/gofmt -l ./cmd ./pkg
+
+which is a mouthful because two separate things have to be right. `go env
+GOROOT` alone answers with the *selected* toolchain, and the `go` directive is
+a minimum rather than a pin — selection keeps a local default that is new
+enough — so on a machine whose Go is newer than the directive it answers with
+that newer toolchain, while CI's `go-version-file: go.mod` installs the
+directive's version exactly. That is this same disagreement with the versions
+swapped, and it is why `GOTOOLCHAIN` names an exact release. And the version is
+read out of `go.mod` rather than typed, because a version typed anywhere else
+is a second copy of a number CI already reads. Run it from inside the module:
+outside it there is no `go.mod`, `go env GOROOT` answers with the host default,
+and that is the original false positive again — which is how one of those
+investigations confirmed the wrong answer twice.
+
+`tools/gate` never had the problem: its gofmt leg calls `go/format`, the
+library face of the same printer, compiled with the toolchain that builds the
+gate. Reach for a bare `gofmt` and you are the only thing in the loop without
+the pin.
+
 A `go test` command that returns does not mean the test binary exited. If a run
 behaves oddly, check:
 
@@ -323,7 +359,7 @@ not the whole answer you want:
 
     go build ./...
     go vet ./...
-    gofmt -l ./cmd ./pkg                       # must print nothing
+    $(GOFMT) -l ./cmd ./pkg                    # must print nothing; see GOFMT in the Makefile
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
     make test-plugins                          # the plugin modules ./... cannot reach
     GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/

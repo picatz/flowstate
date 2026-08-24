@@ -1,5 +1,55 @@
 .PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize docs docs-preview appearance appearance-update coverage coverage-plugins
 
+# gofmt from the toolchain go.mod pins, rather than whichever build sits on
+# PATH (#1061).
+#
+# `go` re-execs into the pinned toolchain and `gofmt` beside it does not, so
+# `/usr/local/go/bin/gofmt` can be an older build while the `go version` next
+# to it prints the pin — and the obvious sanity check therefore confirms the
+# wrong thing. An older gofmt disagrees with the pinned one about real files
+# (1.24.7 and 1.27.0 indent a composite literal in a multi-value return
+# differently), so it reports as unformatted what CI — which installs the pin
+# through `go-version-file: go.mod`, making its PATH gofmt the right one —
+# considers clean. Three agents investigated that false positive before it was
+# written down.
+#
+# Resolved by asking for the version go.mod names, exactly, rather than by
+# asking `go env GOROOT` what is selected. The `go` directive is a *minimum*:
+# toolchain selection keeps a local default that is new enough, so on a machine
+# whose Go is newer than the pin, plain `go env GOROOT` answers with that newer
+# toolchain — while CI's `go-version-file: go.mod` installs the directive's
+# version exactly. That would put the newer gofmt here and the pinned one there,
+# which is this whole problem again with the versions swapped.
+#
+# The version is read out of go.mod rather than written down here, so it is the
+# same single value CI reads and cannot drift from it. `GOTOOLCHAIN` naming an
+# exact release is what makes the answer that release and not merely something
+# at least as new; it downloads the toolchain if this machine lacks it, which is
+# what CI does too.
+#
+# `tools/gate` needs none of this: its gofmt leg calls `go/format`, the library
+# face of the same printer, compiled with the toolchain that builds the gate.
+GOVERSION := $(shell awk '$$1 == "go" { print $$2; exit }' go.mod)
+GOFMT := $(shell GOTOOLCHAIN=go$(GOVERSION) go env GOROOT)/bin/gofmt
+
+# Refuse to run rather than refuse to check.
+#
+# `$(shell ...)` discards the exit status of what it ran, so a toolchain that
+# cannot be resolved — offline, or a version that does not exist — leaves GOFMT
+# as the bare suffix `/bin/gofmt`. A command substitution around a binary that
+# is not there yields the empty output an "is anything unformatted?" test reads
+# as "nothing is", and on a host that does have a `/bin/gofmt` it is silently
+# the wrong formatter. Either way the check reports success because it never
+# ran, which is the one failure this repository's gate design exists to make
+# impossible. So every recipe that formats asserts the resolved path first.
+define require-gofmt
+@[ -x "$(GOFMT)" ] || { \
+	echo "make: cannot resolve the gofmt go.mod pins (go$(GOVERSION)): resolved to \"$(GOFMT)\"" >&2; \
+	echo "make: \`GOTOOLCHAIN=go$(GOVERSION) go env GOROOT\` has to answer — the toolchain must be installed or fetchable" >&2; \
+	exit 1; \
+}
+endef
+
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse
 # dependencies, and the conditional legs (buf, docs drift, examples, flowtest
@@ -12,7 +62,8 @@ gate:
 check:
 	go build ./...
 	go vet ./...
-	@fmt_out="$$(gofmt -l ./cmd ./pkg)"; \
+	$(require-gofmt)
+	@fmt_out="$$("$(GOFMT)" -l ./cmd ./pkg)" || exit 1; \
 	if [ -n "$$fmt_out" ]; then \
 		echo "gofmt -l found unformatted files:"; \
 		echo "$$fmt_out"; \
@@ -74,13 +125,14 @@ test:
 # package, not consume the job's whole budget and leave an operator guessing
 # which module hung.
 test-plugins:
+	$(require-gofmt)
 	@for module in plugins/*/; do \
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> $$module"; \
 		( cd "$$module" && go build ./... && go vet ./... && \
 			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
-		fmt_out="$$(gofmt -l $$module)"; \
+		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
 
@@ -127,7 +179,8 @@ test-fast:
 	GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 
 fmt:
-	gofmt -w ./cmd ./pkg
+	$(require-gofmt)
+	"$(GOFMT)" -w ./cmd ./pkg
 
 # Report what Go's `go fix` modernizers would change, and change nothing
 # (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
