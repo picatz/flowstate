@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -199,6 +200,34 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	surface := newSurface(cmd)
 	ctx = v1.ContextWithLogger(ctx,
 		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))
+
+	// The same session `flow test --debug` runs, attached to a real run: the
+	// engine holds at each step boundary, and `inspect` answers through the
+	// run's own evaluator and activation, so it is cost-bounded and refuses a
+	// `${secret(...)}` exactly as the file's own expressions would be.
+	//
+	// The console joins the run's account on stderr — where `log:` steps and
+	// the status pill already print — rather than taking stdout the way the
+	// test verb's does. Each verb keeps the console beside its own narration,
+	// and this one's narration was never on stdout: the answer is, and it
+	// stays a document a pipe can read under every --output, which is why
+	// none of the test verb's refusals apply here. The session observes as
+	// well as gates, so each step's own account arrives at the prompt that
+	// paused it.
+	if debugging, _ := cmd.Flags().GetBool("debug"); debugging {
+		session, err := flowdebug.New(flowdebug.Options{
+			In:   cmd.InOrStdin(),
+			Out:  surface.Err,
+			Emit: debugEmitter(surface.Err, surface.ErrTheme),
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(surface.Err, "%s\n", surface.ErrTheme.Accent.Render(
+			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+		ctx = v1.NewContextWithDebugger(ctx, session)
+		ctx = v1.NewContextWithRunObserver(ctx, session)
+	}
 
 	started := time.Now()
 

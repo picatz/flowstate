@@ -896,6 +896,10 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 
 # Rehearse a workflow whose steps use a plugin's tasks, launching the plugins here:
 flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml
+
+# Step through a rehearsal, held at each step boundary (the console lives on stderr,
+# so stdout is still the document it always was):
+flow run local examples/hello-world/workflow.yaml --debug
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -907,6 +911,7 @@ flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --sec
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
+| `--debug` | `bool` | `false` | — | hold the run before each step and read commands from the terminal — step, continue, until, break, inspect, scope, quit; the console shares stderr with the run's account, so stdout stays the answer under every --output |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
