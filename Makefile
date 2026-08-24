@@ -32,6 +32,24 @@
 GOVERSION := $(shell awk '$$1 == "go" { print $$2; exit }' go.mod)
 GOFMT := $(shell GOTOOLCHAIN=go$(GOVERSION) go env GOROOT)/bin/gofmt
 
+# Refuse to run rather than refuse to check.
+#
+# `$(shell ...)` discards the exit status of what it ran, so a toolchain that
+# cannot be resolved — offline, or a version that does not exist — leaves GOFMT
+# as the bare suffix `/bin/gofmt`. A command substitution around a binary that
+# is not there yields the empty output an "is anything unformatted?" test reads
+# as "nothing is", and on a host that does have a `/bin/gofmt` it is silently
+# the wrong formatter. Either way the check reports success because it never
+# ran, which is the one failure this repository's gate design exists to make
+# impossible. So every recipe that formats asserts the resolved path first.
+define require-gofmt
+@[ -x "$(GOFMT)" ] || { \
+	echo "make: cannot resolve the gofmt go.mod pins (go$(GOVERSION)): resolved to \"$(GOFMT)\"" >&2; \
+	echo "make: \`GOTOOLCHAIN=go$(GOVERSION) go env GOROOT\` has to answer — the toolchain must be installed or fetchable" >&2; \
+	exit 1; \
+}
+endef
+
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse
 # dependencies, and the conditional legs (buf, docs drift, examples, flowtest
@@ -44,7 +62,8 @@ gate:
 check:
 	go build ./...
 	go vet ./...
-	@fmt_out="$$($(GOFMT) -l ./cmd ./pkg)"; \
+	$(require-gofmt)
+	@fmt_out="$$($(GOFMT) -l ./cmd ./pkg)" || exit 1; \
 	if [ -n "$$fmt_out" ]; then \
 		echo "gofmt -l found unformatted files:"; \
 		echo "$$fmt_out"; \
@@ -106,13 +125,14 @@ test:
 # package, not consume the job's whole budget and leave an operator guessing
 # which module hung.
 test-plugins:
+	$(require-gofmt)
 	@for module in plugins/*/; do \
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> $$module"; \
 		( cd "$$module" && go build ./... && go vet ./... && \
 			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
-		fmt_out="$$($(GOFMT) -l $$module)"; \
+		fmt_out="$$($(GOFMT) -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
 
@@ -159,6 +179,7 @@ test-fast:
 	GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 
 fmt:
+	$(require-gofmt)
 	$(GOFMT) -w ./cmd ./pkg
 
 # Report what Go's `go fix` modernizers would change, and change nothing
