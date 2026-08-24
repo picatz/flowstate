@@ -939,6 +939,11 @@ When several agents edit interlocking packages:
       eval "$(go run ./tools/fleet -env)"     # what one lane may spend
       go run ./tools/fleet -n                 # how many fit, for a script
 
+  It emits `export` statements, and that matters: bare assignments evaluated in
+  a shell are shell-local, so a lane given them runs at exactly the unbounded
+  defaults this exists to prevent while the shell shows the value and `go test`
+  never sees it.
+
   It reads cores, memory, disk and the current load, and the smallest bound
   wins. Load matters as much as capacity: it counts work this process cannot
   see — a sibling session's suite, a lane that has not reported — and a box

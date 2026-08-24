@@ -47,9 +47,14 @@ func TestPlanForNamesTheBoundThatDecided(t *testing.T) {
 		// Cores are plentiful and memory is not, which is the shape of a
 		// many-core container with a small limit — and the -race runs this
 		// repository's gate performs are what make memory bind first.
+		// 8 GiB free, 2 reserved, and a lane budgeted at four (LaneCores
+		// processes at LaneProcessMemoryBytes, doubled for the race
+		// detector's non-Go allocations) leaves room for one. The naive
+		// per-process figure would have said three, which is the
+		// over-recommendation that correction exists to stop.
 		"a many-core box with little memory is bound by memory": {
 			machine:   Machine{Cores: 32, Load1: 0.5, MemoryFree: 8 * gib, DiskFree: 500 * gib},
-			wantLanes: 3,
+			wantLanes: 1,
 			wantBound: "memory",
 		},
 		"a full disk stops dispatch before anything else is considered": {
@@ -106,9 +111,38 @@ func TestLaneEnvIsWhatThePlanWasComputedFrom(t *testing.T) {
 
 	assert.Contains(t, env, "GOMAXPROCS=2", "a lane must be told how many cores it may use")
 	assert.Contains(t, env, "-p=2", "and how many packages it may build at once, which is the other half")
-	assert.Contains(t, env, "GOMEMLIMIT=2048MiB")
+	assert.Contains(t, env, "GOMEMLIMIT=1024MiB", "per process, not the lane's whole budget")
 
 	require.Equal(t, LaneCores, 2, "LaneEnv and the arithmetic above must not drift apart")
+}
+
+// TestLaneEnvIsExported is the whole tool in one assertion.
+//
+// `eval "$(fleet -env)"` over bare assignments sets shell variables, which no
+// child process inherits — so a lane consuming it would run at exactly the
+// unbounded defaults this exists to prevent, while the shell showed the value
+// and `go test` never saw it. Demonstrated before the fix: `GOMAXPROCS=2` in
+// the shell, and `GOMAXPROCS=[]` one `sh -c` down.
+func TestLaneEnvIsExported(t *testing.T) {
+	for _, assignment := range LaneEnv() {
+		assert.True(t, strings.HasPrefix(assignment, "export "),
+			"%q is shell-local: a lane given it runs unbounded and nothing says so", assignment)
+	}
+}
+
+// TestALanesMemoryBudgetCountsEveryProcessItMayRun pins the correction that a
+// per-process limit is not a per-lane one.
+//
+// `-p` is how many build commands or test binaries run at once, and GOMEMLIMIT
+// applies to each of them separately — so budgeting a lane at the per-process
+// figure recommends lanes a machine cannot hold. The limit is also soft and
+// covers the Go heap only, which is why the budget carries headroom for the
+// race detector's own allocations rather than matching the sum exactly.
+func TestALanesMemoryBudgetCountsEveryProcessItMayRun(t *testing.T) {
+	require.GreaterOrEqual(t, LaneMemoryBytes, LaneProcessMemoryBytes*LaneCores,
+		"a lane may run LaneCores processes at LaneProcessMemoryBytes each; budgeting less over-recommends")
+	assert.Greater(t, LaneMemoryBytes, LaneProcessMemoryBytes*LaneCores,
+		"and GOMEMLIMIT excludes the race detector's non-Go allocations, so the budget needs headroom")
 }
 
 // TestAdviceIsGivenWhereItCanBeActedOn checks the sentences rather than only

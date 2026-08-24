@@ -62,11 +62,27 @@ const (
 	// usefully fast while making the fleet arithmetic honest.
 	LaneCores = 2
 
-	// LaneMemoryBytes is one lane's GOMEMLIMIT. The repository's own test
-	// advice is 1 GiB bounded and 2 GiB under -race; this is the -race figure,
-	// because a lane that cannot run the race detector is not a lane that can
-	// finish its own gate.
-	LaneMemoryBytes = 2 << 30
+	// LaneProcessMemoryBytes is the GOMEMLIMIT handed to one Go process, and
+	// matches the repository's own bounded-test advice.
+	LaneProcessMemoryBytes = 1 << 30
+
+	// LaneMemoryBytes is what a lane is budgeted in the arithmetic below, and
+	// it is deliberately four times the per-process limit rather than equal to
+	// it. Two corrections, both of which make the naive figure recommend lanes
+	// a machine cannot hold:
+	//
+	// A lane is allowed LaneCores concurrent Go processes — `-p` is how many
+	// build commands or test binaries run at once — and GOMEMLIMIT is per
+	// process, not per lane, so the Go heap alone is LaneProcessMemoryBytes
+	// times LaneCores.
+	//
+	// And GOMEMLIMIT is a soft limit over the Go heap only: it excludes the C
+	// allocations the race detector makes for its shadow memory, which is
+	// precisely what the -race runs this repository gates on spend. The
+	// remaining factor is headroom for that, and it is a budget rather than a
+	// measurement — a lane can still exceed it, and the reserve below is what
+	// absorbs the difference.
+	LaneMemoryBytes = LaneProcessMemoryBytes * LaneCores * 2
 
 	// LaneDiskBytes is what one lane adds to the shared build cache and its own
 	// worktree before anything prunes it. Measured rather than guessed: a
@@ -169,12 +185,22 @@ func PlanFor(m Machine) Plan {
 }
 
 // LaneEnv is the appetite a lane must be given, and the reason the fleet
-// arithmetic holds. Handed to a lane verbatim.
+// arithmetic holds.
+//
+// Emitted as `export` statements, because the obvious way to consume this —
+// `eval "$(go run ./tools/fleet -env)"` — evaluates bare assignments into the
+// *shell's* variables, which no child process inherits. A lane consuming it
+// that way would run at the unbounded defaults this exists to prevent, and
+// would do so silently: the shell would show the value and `go test` would
+// never see it.
+//
+// The memory value is per process, not the lane's whole budget; see
+// [LaneMemoryBytes] for why those differ by a factor of four.
 func LaneEnv() []string {
 	return []string{
-		fmt.Sprintf("GOMAXPROCS=%d", LaneCores),
-		fmt.Sprintf("GOFLAGS=-p=%d", LaneCores),
-		fmt.Sprintf("GOMEMLIMIT=%dMiB", LaneMemoryBytes>>20),
+		fmt.Sprintf("export GOMAXPROCS=%d", LaneCores),
+		fmt.Sprintf("export GOFLAGS=-p=%d", LaneCores),
+		fmt.Sprintf("export GOMEMLIMIT=%dMiB", LaneProcessMemoryBytes>>20),
 	}
 }
 

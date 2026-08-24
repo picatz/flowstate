@@ -18,7 +18,9 @@ func main() {
 	flag.Parse()
 
 	if *env {
-		fmt.Println(strings.Join(LaneEnv(), " "))
+		// One per line: joined by spaces, `eval` reads the second `export` as
+		// a variable name rather than as a keyword.
+		fmt.Println(strings.Join(LaneEnv(), "\n"))
 		return
 	}
 
@@ -50,7 +52,7 @@ func main() {
 	}
 
 	if plan.Lanes > 0 {
-		fmt.Printf("fleet: give each lane: %s\n", strings.Join(LaneEnv(), " "))
+		fmt.Printf("fleet: give each lane: %s\n", strings.Join(LaneEnv(), "; "))
 	}
 	for _, advice := range plan.Advice {
 		fmt.Printf("fleet: %s\n", advice)
@@ -61,9 +63,9 @@ func main() {
 // guessing where it will not. A missing load average is not an idle machine.
 func readMachine() Machine {
 	machine := Machine{
-		Cores:      runtime.NumCPU(),
+		Cores:      containerCores(runtime.NumCPU()),
 		Load1:      -1,
-		MemoryFree: memoryFree(),
+		MemoryFree: containerMemoryFree(memoryFree()),
 		DiskFree:   diskFree("."),
 	}
 	if raw, err := os.ReadFile("/proc/loadavg"); err == nil {
@@ -135,4 +137,83 @@ func cacheSize() uint64 {
 	})
 
 	return total
+}
+
+// containerCores clamps the visible processor count to a cgroup CPU quota.
+//
+// [runtime.NumCPU] reports the CPUs this process may be scheduled on, which in
+// a container is usually every CPU the host has: an affinity mask is not a
+// quota. A container given two cores' worth of CPU time on a
+// sixty-four-core host would otherwise be told to dispatch thirty-one lanes.
+//
+// Go's own default GOMAXPROCS does read the quota, which is worth knowing for
+// a second reason: the lane environment sets GOMAXPROCS explicitly and thereby
+// turns that automatic adjustment off. Setting it from an unclamped count
+// would replace the runtime's correct answer with a wrong one, so this has to
+// be right for the environment to be safe.
+func containerCores(visible int) int {
+	// cgroup v2: "<quota> <period>", or "max <period>" when unlimited.
+	if raw, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
+		fields := strings.Fields(string(raw))
+		if len(fields) == 2 && fields[0] != "max" {
+			quota, qErr := strconv.ParseInt(fields[0], 10, 64)
+			period, pErr := strconv.ParseInt(fields[1], 10, 64)
+			if qErr == nil && pErr == nil && period > 0 && quota > 0 {
+				return clampCores(int((quota+period-1)/period), visible)
+			}
+		}
+	}
+
+	// cgroup v1: a negative quota means unlimited.
+	quota, qErr := readInt("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+	period, pErr := readInt("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+	if qErr == nil && pErr == nil && quota > 0 && period > 0 {
+		return clampCores(int((quota+period-1)/period), visible)
+	}
+
+	return visible
+}
+
+func clampCores(quota, visible int) int {
+	if quota < 1 {
+		quota = 1
+	}
+
+	return min(quota, visible)
+}
+
+// containerMemoryFree clamps host-wide availability to what a cgroup will
+// actually let this container have. /proc/meminfo is not namespaced, so
+// MemAvailable in a container is usually the host's — a number the container
+// would be killed for trying to use.
+func containerMemoryFree(hostFree uint64) uint64 {
+	for _, limits := range []struct{ max, current string }{
+		{"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"},
+		{"/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes"},
+	} {
+		limit, err := readInt(limits.max)
+		if err != nil || limit <= 0 {
+			continue
+		}
+		used, err := readInt(limits.current)
+		if err != nil || used < 0 {
+			continue
+		}
+		if free := uint64(limit) - min(uint64(limit), uint64(used)); free < hostFree || hostFree == 0 {
+			return free
+		}
+
+		return hostFree
+	}
+
+	return hostFree
+}
+
+func readInt(path string) (int64, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+
+	return strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
 }
