@@ -440,7 +440,8 @@ func renderLiteral(literal *expr.Value) string {
 // go looking for it.
 func everyDeclaredOutputRendersFaithfully(response *v1.GetResponse) bool {
 	for _, value := range response.GetRunOutputs().GetValues() {
-		if !literalRendersFaithfully(value.GetLiteral()) {
+		literal, ok := value.GetKind().(*v1.Value_Literal)
+		if !ok || !literalRendersFaithfully(literal.Literal) {
 			return false
 		}
 	}
