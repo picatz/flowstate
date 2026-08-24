@@ -329,7 +329,16 @@ func SwitchCaseField(caseIndex, valueCount, valueIndex int) string {
 // a few calls downstream of this one. Eight hops is far beyond any dispatch
 // the style charter's nesting-depth rule would tolerate in the first place;
 // a real chain that long is not a decomposition anyone would write by hand.
-const maxSwitchDomainDepth = 8
+const (
+	maxSwitchDomainDepth = 8
+
+	// maxSwitchDomainWork bounds the total expression nodes visited while
+	// following a switch domain. A depth bound alone does not stop a small
+	// expression from referring to the same branching step output many times
+	// at every level, multiplying the walk exponentially. Crossing this bound
+	// safely opens the domain, just like crossing the depth bound.
+	maxSwitchDomainWork = 100_000
+)
 
 // resolveStepOutputExpr reports the macro-resolved shaping expression behind
 // a `steps.<id>.<name>` select — the discriminant itself, in switchDomain's
@@ -425,7 +434,8 @@ func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
 	}
 
 	var leaves []string
-	if !totalStringLeaves(written, enclosing, 0, &leaves) {
+	work := maxSwitchDomainWork
+	if !totalStringLeaves(written, enclosing, 0, &work, &leaves) {
 		return nil, false
 	}
 
@@ -459,13 +469,19 @@ func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
 // that `optMap`/`optFlatMap` appear as the calls an author wrote rather than as
 // the comprehensions cel-go expands them into.
 //
-// enclosing and depth exist for exactly one case: a leaf that is itself a
+// enclosing and depth matter for exactly one case: a leaf that is itself a
 // `steps.<id>.<name>` select rather than a literal, which happens when a
 // discriminant's shaping expression was decomposed into its own step (#674).
 // That leaf is followed through [resolveStepOutputExpr] and walked in turn,
-// bounded by [maxSwitchDomainDepth] hops. Every other case ignores both
-// parameters and only threads them through its recursive calls.
-func totalStringLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]string) bool {
+// bounded by [maxSwitchDomainDepth] hops. work bounds the total walk across
+// both this function and [optionalLeaves], including repeatedly resolved step
+// outputs, so bounded depth cannot multiply into unbounded breadth.
+func totalStringLeaves(e *expr.Expr, enclosing refScope, depth int, work *int, into *[]string) bool {
+	if *work <= 0 {
+		return false
+	}
+	*work--
+
 	switch {
 	case e.GetCallExpr() != nil:
 		call := e.GetCallExpr()
@@ -474,8 +490,8 @@ func totalStringLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]stri
 		// two result branches contribute values; the condition itself decides
 		// which, and can be anything.
 		if call.GetFunction() == "_?_:_" && call.GetTarget() == nil && len(call.GetArgs()) == 3 {
-			return totalStringLeaves(call.GetArgs()[1], enclosing, depth, into) &&
-				totalStringLeaves(call.GetArgs()[2], enclosing, depth, into)
+			return totalStringLeaves(call.GetArgs()[1], enclosing, depth, work, into) &&
+				totalStringLeaves(call.GetArgs()[2], enclosing, depth, work, into)
 		}
 
 		// `<optional>.orValue(<string>)`: the one idiom that discharges
@@ -483,8 +499,8 @@ func totalStringLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]stri
 		// switch's own domain enumerates in the order the expression reads —
 		// the optional chain's values, then the fallback.
 		if call.GetFunction() == "orValue" && call.GetTarget() != nil && len(call.GetArgs()) == 1 {
-			return optionalLeaves(call.GetTarget(), enclosing, depth, into) &&
-				totalStringLeaves(call.GetArgs()[0], enclosing, depth, into)
+			return optionalLeaves(call.GetTarget(), enclosing, depth, work, into) &&
+				totalStringLeaves(call.GetArgs()[0], enclosing, depth, work, into)
 		}
 
 		return false
@@ -511,7 +527,7 @@ func totalStringLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]stri
 		if !ok {
 			return false
 		}
-		return totalStringLeaves(written, enclosing, depth+1, into)
+		return totalStringLeaves(written, enclosing, depth+1, work, into)
 
 	default:
 		return false
@@ -545,7 +561,12 @@ func totalStringLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]stri
 // `optFlatMap` bodies — this function adds no `steps.<id>.<name>` case of its
 // own, because a step's declared output is always a total value; the
 // decomposition case #674 adds belongs at the total tier, not here.
-func optionalLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]string) bool {
+func optionalLeaves(e *expr.Expr, enclosing refScope, depth int, work *int, into *[]string) bool {
+	if *work <= 0 {
+		return false
+	}
+	*work--
+
 	switch {
 	case e.GetCallExpr() != nil:
 		call := e.GetCallExpr()
@@ -557,20 +578,20 @@ func optionalLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]string)
 		// (`optMap(v, v)`) hits an ident in leaf position of totalStringLeaves
 		// and correctly returns false.
 		if call.GetFunction() == "optMap" && call.GetTarget() != nil && len(call.GetArgs()) == 2 {
-			return totalStringLeaves(call.GetArgs()[1], enclosing, depth, into)
+			return totalStringLeaves(call.GetArgs()[1], enclosing, depth, work, into)
 		}
 
 		// `<optional>.optFlatMap(v, body)`: the body is itself optional-typed,
 		// unlike optMap's, so it is walked with this function rather than
 		// [totalStringLeaves].
 		if call.GetFunction() == "optFlatMap" && call.GetTarget() != nil && len(call.GetArgs()) == 2 {
-			return optionalLeaves(call.GetArgs()[1], enclosing, depth, into)
+			return optionalLeaves(call.GetArgs()[1], enclosing, depth, work, into)
 		}
 
 		// A conditional choosing between two optional-typed branches.
 		if call.GetFunction() == "_?_:_" && call.GetTarget() == nil && len(call.GetArgs()) == 3 {
-			return optionalLeaves(call.GetArgs()[1], enclosing, depth, into) &&
-				optionalLeaves(call.GetArgs()[2], enclosing, depth, into)
+			return optionalLeaves(call.GetArgs()[1], enclosing, depth, work, into) &&
+				optionalLeaves(call.GetArgs()[2], enclosing, depth, work, into)
 		}
 
 		return false

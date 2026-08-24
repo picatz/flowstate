@@ -921,6 +921,36 @@ func chainedValueSteps(n int) (src string, lastID string) {
 	return b.String(), lastID
 }
 
+// TestDecomposedDiscriminantExpansionIsWorkBounded covers the breadth attack
+// that a hop-depth bound cannot stop. Each step repeats the preceding output
+// in eight leaves, so following the final output would otherwise expand the
+// same small source tree exponentially before its duplicate leaves are
+// removed. Exhausting the work budget must open the domain instead.
+func TestDecomposedDiscriminantExpansionIsWorkBounded(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nsteps:\n")
+	b.WriteString("  - id: v0\n    value: >-\n      ${true ? \"a\" : \"b\"}\n")
+	for level := 1; level <= 6; level++ {
+		ref := "steps.v" + strconv.Itoa(level-1) + ".value"
+		expression := ref
+		for leaf := 1; leaf < 8; leaf++ {
+			expression = "true ? " + ref + " : (" + expression + ")"
+		}
+		b.WriteString("  - id: v" + strconv.Itoa(level) + "\n    value: >-\n      ${" + expression + "}\n")
+	}
+	b.WriteString("  - id: decision\n    switch:\n      value: ${steps.v6.value}\n      cases:\n        - case: a\n          steps: []\n")
+
+	wf, err := Unmarshal([]byte(b.String()))
+	require.NoError(t, err)
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
+	assert.False(t, known, "an exponentially expanding domain must open when it exhausts maxSwitchDomainWork")
+}
+
 // TestDecomposedDiscriminantDomainIsInferable is the generic form of the
 // issue's own before/after: a discriminant read through a chain of `value:`
 // steps, none of which is itself a conditional over string literals at the
