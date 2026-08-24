@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/picatz/flowstate/internal/covbuild"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
@@ -195,7 +196,14 @@ func buildPlugin(t *testing.T, output string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", output, codexModule)
+	// -cover only when internal/covbuild says coverage was asked for, which
+	// is `make coverage` and nothing else. This binary is a real subprocess:
+	// without instrumentation every line it runs is invisible to the harness
+	// that launched it, and this plugin's end-to-end path runs nowhere else.
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", output, codexModule)
+
+	cmd := exec.CommandContext(ctx, "go", args...)
 	if wd, err := os.Getwd(); err == nil {
 		cmd.Dir = wd
 	}
@@ -236,6 +244,12 @@ func copyFile(src, dst string) error {
 // openHost opens a [plugin.Host] and closes it when the test ends.
 func openHost(t *testing.T, cfg plugin.Config) *plugin.Host {
 	t.Helper()
+
+	// A plugin's environment is built from scratch rather than inherited
+	// (see plugin.pluginEnv), so the coverage destination reaches the
+	// process only if it is named here. Empty unless FLOWSTATE_COVERDIR is
+	// set, which makes this a no-op outside `make coverage`.
+	cfg.Env = append(cfg.Env, covbuild.Env()...)
 
 	host, err := plugin.NewHost(cfg)
 	if err != nil {

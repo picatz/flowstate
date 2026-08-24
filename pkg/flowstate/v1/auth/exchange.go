@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // Named values a [Credential] can carry. Which ones are present depends on the
@@ -270,11 +273,17 @@ const (
 	// re-exchanged, so a credential handed to a caller has time left to be used.
 	DefaultRefreshMargin = time.Minute
 
-	// DefaultCredentialLifetime is assumed when a relying party returns a
-	// credential without saying when it expires. It is short, because guessing
-	// long about a credential's lifetime means using one after it has stopped
-	// working, or worse, believing a long-lived one is short-lived.
-	DefaultCredentialLifetime = 15 * time.Minute
+	// DefaultMaxCredentialLifetime is the ceiling applied to a target that names
+	// no `max_credential_lifetime` of its own. A provider must still report its
+	// actual lifetime: this is a bound on what Flowstate will believe, never a
+	// substitute for expiry metadata that never arrived.
+	DefaultMaxCredentialLifetime = time.Hour
+
+	// MaxCredentialLifetime is the hard bound on what a target may configure. A
+	// bearer credential that outlives a day is standing-grant shaped, and a
+	// standing grant wants a protocol designed for one rather than a knob raised
+	// until an exchange stops failing — so this one is not configurable.
+	MaxCredentialLifetime = 24 * time.Hour
 
 	// DefaultMaxCachedCredentials bounds the credential cache. Every workflow and
 	// step is a distinct identity, so an unbounded cache in a long-running worker
@@ -440,8 +449,52 @@ type tokenResponse struct {
 	ErrorDescription string `json:"error_description"`
 }
 
+// credentialLifetimeCeiling resolves a target's configured credential lifetime
+// ceiling, applied at construction so that an unusable policy is a startup error
+// rather than something an operator learns from a workload's first exchange.
+//
+// It lives here, called by every OAuth constructor, rather than being written out
+// once per constructor: the default and the two ends of the range are one rule,
+// and a rule spelled twice is a rule that eventually disagrees with itself.
+func credentialLifetimeCeiling(name string, configured time.Duration) (time.Duration, error) {
+	if configured == 0 {
+		return DefaultMaxCredentialLifetime, nil
+	}
+
+	// A sub-second ceiling is refused rather than rounded, because expires_in is
+	// counted in whole seconds: rounding down produces a target that refuses every
+	// token it is ever offered, and rounding up silently grants more than was
+	// asked for.
+	if configured < time.Second || configured > MaxCredentialLifetime {
+		return 0, fmt.Errorf("%w: %s exchanger maximum credential lifetime %s is outside the %s to %s allowed, and zero takes the %s default",
+			ErrInvalidPolicy, name, configured, time.Second, MaxCredentialLifetime, DefaultMaxCredentialLifetime)
+	}
+
+	return configured, nil
+}
+
+// withinRequestedLifetime reports whether a relying party's own expiry timestamp
+// is one Flowstate can hold: still in the future, and no further out than the
+// lifetime that was asked for.
+//
+// The two bounds are deliberately not symmetric. The provider computes that
+// timestamp against *its* clock, so a worker whose clock lags the provider sees
+// every correctly honoured response land past now+lifetime — an upper bound with
+// no slack refuses a right answer, deterministically, for as long as the clocks
+// disagree. It therefore carries the same [DefaultClockSkew] the verifier already
+// allows between this host and an issuer. The lower bound gets no such slack,
+// because slack there means accepting a credential Flowstate itself believes has
+// already expired, which is a credential no caller can use.
+//
+// None of this applies to the OAuth expires_in path, and that is worth saying
+// out loud: expires_in is a duration the provider measures on its own clock, so
+// no clock of ours enters the comparison and no skew allowance belongs in it.
+func withinRequestedLifetime(expiresAt, now time.Time, lifetime time.Duration) bool {
+	return expiresAt.After(now) && !expiresAt.After(now.Add(lifetime+DefaultClockSkew))
+}
+
 // credential converts a token endpoint response into a bearer credential.
-func (r tokenResponse) credential(provider, target string, assertion Assertion, now time.Time, fallbackLifetime time.Duration) (Credential, error) {
+func (r tokenResponse) credential(provider, target string, assertion Assertion, now time.Time, maxLifetime time.Duration) (Credential, error) {
 	if r.AccessToken == "" {
 		return Credential{}, fmt.Errorf("%w: %s returned no access token", ErrExchangeFailed, provider)
 	}
@@ -453,10 +506,36 @@ func (r tokenResponse) credential(provider, target string, assertion Assertion, 
 			ErrExchangeFailed, provider, truncate(r.TokenType, 32))
 	}
 
-	lifetime := fallbackLifetime
-	if r.ExpiresIn > 0 {
-		lifetime = time.Duration(r.ExpiresIn) * time.Second
+	// A ceiling below a second can admit nothing, because expires_in is counted
+	// in whole seconds. Refusing here rather than rejecting every token against
+	// an impossible bound keeps the error about the policy, which is the thing
+	// that is actually wrong. Every constructor applies the same one-second floor
+	// at startup, so reaching this is a caller of this method that did not.
+	if maxLifetime < time.Second {
+		return Credential{}, fmt.Errorf("%w: %s has no usable credential lifetime policy (%s)",
+			ErrExchangeFailed, provider, maxLifetime)
 	}
+
+	// Bound expires_in in seconds, before it becomes a Duration. Multiplying a
+	// relying party's number by time.Second wraps, and a wrapped product is not
+	// an obvious error — it is a plausible-looking expiry in the past or the far
+	// future. Because the ceiling is itself a Duration, no value that clears it
+	// can wrap: maxLifetime/time.Second is at most math.MaxInt64/1e9, and that
+	// many seconds is exactly what a Duration holds. So the policy check is the
+	// overflow check, rather than a second bound beside it that no input reaches.
+	maxSeconds := int64(maxLifetime / time.Second)
+	switch {
+	case r.ExpiresIn <= 0:
+		// Zero is also an omitted expires_in, which is the case worth naming: an
+		// opaque bearer token carries no expiry of its own, so a missing one
+		// leaves Flowstate nothing to check and nothing it may invent.
+		return Credential{}, fmt.Errorf("%w: %s reported no usable expires_in (%d), and an opaque bearer token carries no other expiry to check",
+			ErrExchangeFailed, provider, r.ExpiresIn)
+	case r.ExpiresIn > maxSeconds:
+		return Credential{}, fmt.Errorf("%w: %s reported expires_in %d, longer than the %s this target allows",
+			ErrExchangeFailed, provider, r.ExpiresIn, maxLifetime)
+	}
+	lifetime := time.Duration(r.ExpiresIn) * time.Second
 
 	credential, err := NewCredential(CredentialBearer, now.Add(lifetime), map[string]string{
 		CredentialAccessToken: r.AccessToken,
@@ -484,11 +563,17 @@ type exchangeClient struct {
 // newExchangeClient returns a client for talking to a relying party. It follows
 // no redirect at all, which is not the same rule the key fetcher needs and is the
 // reason these are two clients.
-func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClient {
+func newExchangeClient(field string, client *http.Client, policy *netpolicy.Policy, timeout time.Duration) (*exchangeClient, error) {
 	if timeout <= 0 {
 		timeout = DefaultExchangeTimeout
 	}
-	return &exchangeClient{client: unredirectedClient(client), timeout: timeout}
+
+	resolved, err := identityHTTPClient(field, client, policy)
+	if err != nil {
+		return nil, err
+	}
+
+	return &exchangeClient{client: unredirectedClient(resolved), timeout: timeout}, nil
 }
 
 // unredirectedClient returns a client that refuses to follow any redirect,
@@ -497,7 +582,7 @@ func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClie
 // An exchange carries the assertion in the request *body*, and that is the whole
 // difference from fetching an issuer's keys, which shares almost all of this code.
 // A key set is a GET carrying nothing, so following a redirect anywhere is
-// ordinary and [transportProtectedClient]'s scheme check is the right rule for it.
+// ordinary and the egress policy's per-hop check is the right rule for it.
 //
 // A body is not covered by anything. net/http drops the Authorization header when
 // a redirect crosses to another host, and has no equivalent notion for a body —
@@ -512,6 +597,11 @@ func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClie
 // 302 and 303 on a POST into a bodyless GET — so an exchange meeting one of those
 // was already failing. What was reachable was exactly the pair that leaks, and
 // nothing that works today is being taken away.
+// The copy keeps the transport, so an egress policy's address checks, TLS floor
+// and body cap all still apply: what is replaced is the redirect decision, which
+// is the only part of the boundary this path wants to be stricter about.
+// [netpolicy.Policy.Client] hands out a distinct value for exactly this, so
+// replacing CheckRedirect here cannot affect another holder of the same policy.
 func unredirectedClient(client *http.Client) *http.Client {
 	unredirected := &http.Client{}
 	if client != nil {
@@ -568,7 +658,7 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	if _, err := validateHTTPSURL(endpoint, "endpoint"); err != nil {
+	if _, err := ValidateHTTPSURL(endpoint, "endpoint"); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrExchangeFailed, provider, err)
 	}
 
@@ -588,12 +678,23 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 	}
 	defer response.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxExchangeResponseBytes+1))
+	// Read under the egress policy's own reader rather than a second spelling of
+	// it here. The cap the policy installs on the body applies to *this* read
+	// too, and to the error path in particular: this reads the body of a non-200
+	// answer as well, which is where a bound configured through a library option
+	// classically goes missing (see plugin/transport.go), and where a hostile
+	// relying party would put a large one.
+	raw, err := netpolicy.ReadLimited(response.Body, maxExchangeResponseBytes)
 	if err != nil {
+		// The limit named is the one that actually fired, which is not always
+		// this package's: an operator's policy may cap bodies lower, and a
+		// refusal quoting the wrong number sends them looking for a setting
+		// they did not write.
+		var tooLarge *netpolicy.BodyTooLargeError
+		if errors.As(err, &tooLarge) {
+			return nil, fmt.Errorf("%w: %s returned more than %d bytes", ErrExchangeFailed, provider, tooLarge.Limit)
+		}
 		return nil, fmt.Errorf("%w: %w: reading %s response: %v", ErrExchangeFailed, ErrExchangeUnavailable, provider, err)
-	}
-	if len(raw) > maxExchangeResponseBytes {
-		return nil, fmt.Errorf("%w: %s returned more than %d bytes", ErrExchangeFailed, provider, maxExchangeResponseBytes)
 	}
 
 	if response.StatusCode != http.StatusOK {
@@ -653,7 +754,7 @@ func requiredEndpoint(name, field, endpoint string) error {
 	if endpoint == "" {
 		return fmt.Errorf("%w: %s exchanger needs %s", ErrInvalidPolicy, name, field)
 	}
-	if _, err := validateHTTPSURL(endpoint, field); err != nil {
+	if _, err := ValidateHTTPSURL(endpoint, field); err != nil {
 		return fmt.Errorf("%w: %s exchanger: %w", ErrInvalidPolicy, name, err)
 	}
 	return nil

@@ -193,7 +193,7 @@ func TestSignalPolicySurvivesContinueAsNew(t *testing.T) {
 
 	// One step per segment, so the run continues as new before it ever
 	// reaches its gate.
-	flowstate := server.New(temporal, server.WithNamespace("team-a"), server.WithMaxStepsPerRun(1))
+	flowstate := mustNew(t, temporal, server.WithNamespace("team-a"), server.WithMaxStepsPerRun(1))
 
 	wf := gatedWorkflowRequiring("https://issuer.example.com", "release-manager@example.com")
 	// A padding step ahead of the request/gate pair, so at least one

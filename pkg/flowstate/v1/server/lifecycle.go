@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -509,64 +510,77 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// field a caller could use to set this — the schema itself is the refusal.
 	sender := &v1.SignalSender{Identity: identity, AcceptedAt: timestamppb.Now()}
 
-	// Whether this call creates or only signals is not knowable until Temporal
-	// itself decides, atomically, inside SignalWithStartWorkflow below — that
-	// atomicity is the entire reason to use it rather than a Describe-then-act
-	// sequence this handler could race against. What *is* decided here, before
-	// that call, is which of the two authorization questions applies, and both
-	// are asked whenever they can be:
+	// Resolved once, up front: every check and every write below reads this
+	// copy, never req.Msg.GetWorkflow() directly. That includes the
+	// wait-for-signal check just below — checking the caller's own submitted
+	// copy would let a caller declare a wait_for_signal: in their own copy
+	// that the deployment's trusted workflow does not have, satisfying the
+	// check against an assertion the caller controls rather than against what
+	// will actually run. [FlowstateServer.trustedWorkflow] is the same
+	// substitution [FlowstateServer.Run] and [FlowstateServer.CreateSchedule]
+	// already apply.
 	//
-	//   - If an entity already exists under this key, "may this sender signal
-	//     it" is answered by *that entity's own declared signal policy* —
-	//     [authorizeSignal], the identical rule and the identical fail-closed
-	//     defaults [FlowstateServer.Signal] enforces. A denial here is
-	//     synchronous and never reaches Temporal.
-	//   - "May this sender create an entity under this key" is answered by
-	//     [FlowstateServer.validateSubmission] below, unconditionally — not
-	//     only when the Describe just below reports absence. A concurrent
-	//     creator could win the race between that Describe and the
-	//     SignalWithStartWorkflow call a few lines down, in which case this
-	//     sender's signal reaches a workflow this handler believed did not yet
-	//     exist; validateSubmission having already run means that residual
-	//     window is bounded by "another equally-authorized creator won a tie,"
-	//     never by "an unauthorized sender's signal started a workflow."
-	created := true
-	if _, resp, err := s.authorizeRun(ctx, workflowID, ""); err == nil {
-		created = false
-		if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
-			return nil, err
-		}
-	} else if connect.CodeOf(err) != connect.CodeNotFound {
-		// Something other than "no such run" — a namespace this identity
-		// cannot even reach, for instance. Fail closed rather than fall
-		// through to the create branch on an error that says nothing about
-		// whether an entity exists.
+	// The caller's copy, kept as it arrived, so the attestation below has
+	// something to compare the executed specification against — a clone, taken
+	// here, before the first thing that can change a specification, for the
+	// reason [FlowstateServer.Run] gives at its own capture: the trusted lookup
+	// returns the request's own pointer when nothing is registered under that
+	// name, and the pin then writes onto that pointer, so a reference would be
+	// an equality that can only answer true.
+	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
+
+	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	if err != nil {
 		return nil, err
 	}
 
-	inputs, err := s.validateSubmission(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	// The name has to be one the trusted workflow actually waits for, and this
+	// RPC is the one place that has to say so out loud.
+	//
+	// [FlowstateServer.Signal] does not need this check: a signal for a name
+	// nothing waits for reaches a Temporal channel nobody reads, and is dropped
+	// at the run's next Continue-As-New — wasteful, but self-clearing, and the
+	// run it addressed was somebody else's decision. Here the delivery travels
+	// in the new run's own `RunState.PendingSignals`, which is not a channel
+	// and is not drained: [drainSignals] carries everything already pending
+	// forward unconditionally and only *adds* from the channels the
+	// specification declares. So an undeclared name would occupy one of
+	// [v1.MaxPendingSignals] slots and its share of the state budget for the
+	// entire life of the entity, across every segment, waiting for a step that
+	// does not exist.
+	//
+	// It is also, far more often, a misspelling — the same thing
+	// [v1.CheckSignalPolicies] says about a policy for a name nothing waits
+	// for, and the diagnostic says the same thing, because the alternative is
+	// an entity created and parked forever on a mutation that will never be
+	// consumed. Checked before the entity key is claimed, on purpose.
+	if !slices.Contains(v1.SignalNames(workflow), req.Msg.GetName()) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+			"no `wait_for_signal:` in this workflow waits for %q, so this mutation would be carried by "+
+				"the entity forever without ever being consumed; the name meant is one of %v",
+			req.Msg.GetName(), v1.SignalNames(workflow)))
+	}
+
+	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err
 	}
 
 	// This RPC can bring a run into existence, so it is a manual start and is
 	// held to the workflow's `manual:` block exactly as [FlowstateServer.Run] is.
-	// Unconditionally, on the same reasoning [FlowstateServer.validateSubmission]
-	// is run unconditionally here: which branch Temporal's own
-	// SignalWithStartWorkflow takes is not knowable at the moment this handler
-	// commits to it, so "may create" is the floor for every call through this
-	// RPC. A laxer answer here than at `Run` would make `manual: denied` a lock
-	// with a second door beside it.
+	// Unconditionally, because "may create" remains the floor for every call
+	// through this RPC. A laxer answer here than at `Run` would make `manual:
+	// denied` a lock with a second door beside it.
 	//
 	// No reason travels on this request, so a workflow requiring one is startable
 	// through `Run` and not through here — which is the fail-closed direction:
 	// a requirement nothing can satisfy refuses, rather than being waived by the
 	// path that has nowhere to put it.
-	if err := v1.CheckManualStart(req.Msg.GetWorkflow(), identity.GetSubject(), ""); err != nil {
+	if err := v1.CheckManualStart(workflow, identity.GetSubject(), ""); err != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied, err)
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -574,30 +588,104 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	memo[triggerMemoKey] = v1.TriggerKindManual
 	options.Memo = memo
 
-	run, err := temporal.SignalWithStartWorkflow(
-		ctx, workflowID, req.Msg.GetName(),
-		&v1.SignalDelivery{Payload: payload, Sender: sender},
-		options, engine.Run, &v1.RunState{
-			Workflow:    req.Msg.GetWorkflow(),
-			StepsBudget: int32(s.maxStepsPerRun),
-			Identity:    identity,
-			Inputs:      inputs,
+	// Claim the entity key with the conflict error enabled. The initiating
+	// delivery is part of RunState rather than a second RPC: ExecuteWorkflow
+	// persists that input atomically with creation, and the engine consumes a
+	// pending signal exactly as it consumes one that arrived before its wait.
+	// Consequently an accepted create cannot leave an entity missing the
+	// mutation that initiated it, even if this handler disappears immediately.
+	// A loser describes and authorizes the precise winning run below.
+	options.WorkflowExecutionErrorWhenAlreadyStarted = true
 
-			// A caller with a credential asked for this run, so it started the
-			// same way `flow run` starts one. Recorded here for the reason
-			// [FlowstateServer.Run] records it: the fact is known once, at the
-			// boundary, and carried rather than re-derived.
-			Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
-		},
-	)
+	// Answered last, against the specification about to be handed to the engine
+	// rather than against the one the trusted lookup returned — the same place in
+	// the same order [FlowstateServer.Run] answers it, and for the reason its
+	// comment gives at length: [FlowstateServer.validateSubmission] pins the
+	// deployment's plugin selection onto this specification above, so a question
+	// asked before that would be answered about a message that had not finished
+	// being assembled. Whole-message equality, so a transformation nobody has
+	// thought of yet costs a caller the precise view rather than costing them a
+	// secret.
+	asSubmitted := proto.Equal(submitted, workflow)
+	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
+		Workflow:    workflow,
+		StepsBudget: int32(s.maxStepsPerRun),
+		Identity:    identity,
+		Inputs:      inputs,
+		PendingSignals: []*v1.PendingSignal{{
+			Name:    req.Msg.GetName(),
+			Payload: payload,
+			Sender:  sender,
+		}},
+
+		// A caller with a credential asked for this run, so it started the
+		// same way `flow run` starts one. Recorded here for the reason
+		// [FlowstateServer.Run] records it: the fact is known once, at the
+		// boundary, and carried rather than re-derived.
+		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
+	})
+	created := err == nil
+	actualRunID := ""
+	if created {
+		actualRunID = run.GetRunID()
+	}
 	if err != nil {
-		return nil, actOnRunError("signalling (with start)", workflowID, "", err)
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if !errors.As(err, &already) {
+			return nil, actOnRunError("starting entity for signal", workflowID, "", err)
+		}
+
+		var resp *workflowservice.DescribeWorkflowExecutionResponse
+		temporal, resp, err = s.authorizeRun(ctx, workflowID, already.RunId)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+			return nil, err
+		}
+
+		// From the execution that was just described and authorized, rather than
+		// from the error, because this value is what pins the delivery below and
+		// a pin is only a pin when it names something. `already.RunId` is
+		// normally populated, but an empty one here would silently degrade the
+		// signal to "whatever is current under this key" — the unpinned
+		// behaviour this whole path exists to avoid, arrived at by accident
+		// instead of by choice. The described execution always has a concrete
+		// id.
+		actualRunID = resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+		if actualRunID == "" {
+			actualRunID = already.RunId
+		}
+	}
+
+	if !created {
+		if err := temporal.SignalWorkflow(ctx, workflowID, actualRunID, req.Msg.GetName(), &v1.SignalDelivery{
+			Payload: payload,
+			Sender:  sender,
+		}); err != nil {
+			return nil, actOnRunError("signalling (with start)", workflowID, actualRunID, err)
+		}
 	}
 
 	return connect.NewResponse(&v1.SignalWithStartResponse{
 		WorkflowId: workflowID,
-		RunId:      run.GetRunID(),
+		RunId:      actualRunID,
 		Created:    created,
+
+		// Always set, on both answers, for the reason [FlowstateServer.Run]
+		// always sets it: the field's design rests on silence meaning "this
+		// server does not say", so a server that does say must never let a
+		// deliberate answer be read as an old server's shrug.
+		//
+		// Conjoined with `created`, which is this RPC's own half of the
+		// question. A delivery to an entity that was already running executes
+		// whatever specification *that* run was created with — possibly by
+		// another caller, from another file, under a trusted copy registered
+		// since. Nothing here compared it against anything, so nothing here may
+		// attest it, and the fail-closed answer is the true one rather than a
+		// convenient one: the comparison above is about a specification this
+		// call did not hand to any engine.
+		SpecificationAsSubmitted: proto.Bool(created && asSubmitted),
 	}), nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -119,12 +120,12 @@ func TestRewriteOptionalReads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, changed := rewriteOptionalReads(tt.in)
+			got, changed := rewriteOptionalReads(tt.in, true)
 			assert.True(t, changed, "the idiom must be rewritten")
 			assert.Equal(t, tt.want, got)
 
 			// The rewrite is a fixed point: its own output holds no idiom.
-			again, changedAgain := rewriteOptionalReads(got)
+			again, changedAgain := rewriteOptionalReads(got, true)
 			assert.False(t, changedAgain)
 			assert.Equal(t, got, again)
 		})
@@ -184,7 +185,7 @@ func TestRewriteOptionalReadsLeavesNearMissesAlone(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, changed := rewriteOptionalReads(tt.in)
+			got, changed := rewriteOptionalReads(tt.in, true)
 			assert.False(t, changed, "a near miss must be left alone")
 			assert.Equal(t, tt.in, got, "left alone means byte for byte")
 		})
@@ -256,7 +257,7 @@ func TestRewriteOptionalReadsPreservesMeaning(t *testing.T) {
 		t.Run(expr, func(t *testing.T) {
 			t.Parallel()
 
-			rewritten, _ := rewriteOptionalReads(expr)
+			rewritten, _ := rewriteOptionalReads(expr, true)
 			for name, activation := range activations {
 				want, wantErr := evalForProof(t, expr, activation)
 				got, gotErr := evalForProof(t, rewritten, activation)
@@ -327,4 +328,56 @@ func TestMaskCELLiterals(t *testing.T) {
 		assert.Equal(t, tt.want, got)
 		assert.Len(t, got, len(tt.in), "masking must preserve offsets")
 	}
+}
+
+// TestGuardedReadsAreRewrittenOnlyWhereABooleanIsEnforced is the reason this
+// rewriter takes a key at all, and the defect it closes.
+//
+// `has(a.b) && a.b` and `a.?b.orValue(false)` do not agree on every input. With
+// a.b present and not a boolean the first errors and the second yields the
+// value — so the rewrite is meaning-preserving in a condition, where the engine
+// refuses a non-boolean either way, and meaning-*changing* in a value position,
+// where the file quietly starts computing something else. The "present string"
+// activation is the one that tells them apart, and none of the activations in
+// TestRewriteOptionalReadsPreservesMeaning above supplies one, which is why
+// nothing here caught this.
+//
+// The ternary shape is exempt: `has(x.y) ? x.y : d` and `x.?y.orValue(d)` agree
+// everywhere, so it is rewritten in either position.
+func TestGuardedReadsAreRewrittenOnlyWhereABooleanIsEnforced(t *testing.T) {
+	t.Parallel()
+
+	const guarded = `has(a.b) && a.b`
+
+	t.Run("a value position is left alone", func(t *testing.T) {
+		t.Parallel()
+
+		got, changed := rewriteOptionalReads(guarded, false)
+		assert.False(t, changed, "a guarded read outside a condition must not be rewritten")
+		assert.Equal(t, guarded, got)
+	})
+
+	t.Run("the two spellings disagree on a present non-boolean", func(t *testing.T) {
+		t.Parallel()
+
+		present := map[string]any{"a": map[string]any{"b": "yes"}}
+
+		_, guardedErr := evalForProof(t, guarded, present)
+		rewritten, _ := rewriteOptionalReads(guarded, true)
+		_, rewrittenErr := evalForProof(t, rewritten, present)
+
+		require.True(t, guardedErr, "the guarded read errors on a present non-boolean; if it stops, this narrowing is unnecessary")
+		require.False(t, rewrittenErr, "the optional read yields the value; if it starts erroring, this narrowing is unnecessary")
+	})
+
+	t.Run("the ternary is rewritten in either position", func(t *testing.T) {
+		t.Parallel()
+
+		const ternary = `has(a.b) ? a.b : -1`
+		for _, enforced := range []bool{false, true} {
+			got, changed := rewriteOptionalReads(ternary, enforced)
+			assert.True(t, changed, "booleanEnforced=%v", enforced)
+			assert.Equal(t, `a.?b.orValue(-1)`, got)
+		}
+	})
 }

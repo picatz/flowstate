@@ -146,9 +146,21 @@ func (e *loopbackDenialError) Unwrap() error { return e.err }
 // Neither is phrased as advice inside the error text, which stays exactly
 // what netpolicy produced (per [renderError]'s own rule): both are commands
 // an author could type verbatim, which is what this element exists for.
+//
+// "Verbatim" is the whole contract, and it was broken: this offered
+// `FLOWSTATE_ALLOW_LOOPBACK_EGRESS=1`, while the variable is read as
+// `os.Getenv(...) == "true"` (`eval_task_http_def.go`, the same spelling
+// `cmd/flow/serverdev.go` and `cmd/flow/credentials.go` read their own
+// variables with). An author who typed the suggested command got the
+// identical denial back with no indication of why, which is worse than
+// offering nothing — a diagnostic that hands out a remedy that does not
+// work teaches the reader to distrust the next one. The value is written
+// from [v1.AllowLoopbackEgressEnv] and [v1.AllowLoopbackEgressValue] rather
+// than spelled here, so the suggestion cannot drift from the variable it
+// suggests again.
 func (e *loopbackDenialError) nextCommands() []commandBlock {
 	return []commandBlock{
-		{commands: []string{"FLOWSTATE_ALLOW_LOOPBACK_EGRESS=1 flow run local <file>"}},
+		{commands: []string{v1.AllowLoopbackEgressEnv + "=" + v1.AllowLoopbackEgressValue + " flow run local <file>"}},
 		{
 			lead:     "or, in an egress policy passed with --egress-policy:",
 			commands: []string{"allow_loopback: true"},

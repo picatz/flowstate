@@ -4,7 +4,7 @@ package vcs.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/vcs/gen/vcs/v1;vcsv1";
 
-import "flowstate/v1/flowstate.proto";
+import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: version control only, and deliberately
 // forge-agnostic. Nothing here names GitHub, GitLab, or any host — a commit, a

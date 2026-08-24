@@ -105,7 +105,7 @@ tests:
 // here rather than merely asserted, must never actually reach the network to
 // find that out. Loopback is explicitly allowed on the registered `http`
 // task for the duration of this test (the same exemption
-// pkg/flowstate/v1/tests states for itself), which is what makes "zero
+// pkg/flowstate/v1/internal/conformance states for itself), which is what makes "zero
 // connections" evidence of the fix rather than of the ordinary egress
 // policy: with loopback allowed, a real dial to the listener below would
 // succeed if flow test ever let the real task run.
@@ -361,6 +361,9 @@ func TestP1LoadRejectsAnAliasBomb(t *testing.T) {
 // merely dispatchable once compiled.
 func TestP2PluginTaskStubCompilesAndRuns(t *testing.T) {
 	t.Parallel()
+	const taskName = "slack.post"
+	_, registeredBefore := v1.DefaultRegistry().Lookup(taskName)
+	require.False(t, registeredBefore, "the synthetic task name must be unique to this test")
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
@@ -388,6 +391,8 @@ tests:
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]
 	require.True(t, c.GetPassed(), "error: %s failures: %v", c.GetError(), c.GetFailures())
+	_, registeredAfter := v1.DefaultRegistry().Lookup(taskName)
+	require.False(t, registeredAfter, "a synthetic task must not escape its test case")
 }
 
 // TestPluginTaskStubByStepIdCompilesAndRuns is the step-form counterpart of

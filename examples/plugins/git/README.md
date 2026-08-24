@@ -60,9 +60,14 @@ $ mkdir -p ./plugins
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/git/workflow.yaml
 ```
+
+`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
+the server authenticates every caller as anonymous, which is only ever right on
+a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
+`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
 
 This makes a real, unauthenticated request to the GitHub API/git smart-HTTP
 endpoint - it will fail without internet access, the same as any of the
@@ -73,7 +78,7 @@ network examples one level up.
 Needs a real credential and a real private repository this token can read:
 
 ```console
-$ export GIT_SECRET_TOKEN=ghp_...
+$ export GIT_SECRET_0__TOKEN=ghp_...
 $ flow run examples/plugins/git/ls-remote-private.yaml \
     --input url=https://github.com/your-org/your-private-repo.git
 ```
@@ -90,7 +95,7 @@ $ mkdir -p ./plugins
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/git/log-and-read-file.yaml
 ```
 
@@ -109,7 +114,7 @@ $ mkdir -p ./plugins
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/git/log-resume.yaml
 ```
 
@@ -128,7 +133,7 @@ Do not run this against a repository you do not want a real commit pushed
 to. It needs a real credential and a real target:
 
 ```console
-$ export GIT_SECRET_TOKEN=ghp_...
+$ export GIT_SECRET_0__TOKEN=ghp_...
 $ flow run examples/plugins/git/commit-push.yaml \
     --input url=https://github.com/your-org/your-repo.git \
     --input branch=main \

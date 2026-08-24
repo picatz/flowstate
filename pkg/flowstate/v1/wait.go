@@ -577,6 +577,11 @@ func SignalNames(spec *Workflow) []string {
 				for _, body := range SwitchBodies(kind.Switch) {
 					walk(body)
 				}
+
+			case *Node_Call:
+				// Calls are embedded workflows, so their declared signal channels belong
+				// to this durable run and must be drained before Continue-As-New too.
+				walk(kind.Call.GetWorkflow().GetSteps())
 			}
 		}
 	}

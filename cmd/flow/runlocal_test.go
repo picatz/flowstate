@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,17 +19,17 @@ import (
 // one JSON document, nothing else, whatever the workload logged. stderr is the
 // account of it.
 
-// runLocal runs a workflow through the real command and returns its two streams
-// separately, which is the whole point: a test that merged them could not see the
-// mistake this is guarding against.
+// runLocal writes a workflow to a temp file, runs it through the real command,
+// and returns its two streams separately — which is the whole point: a test that
+// merged them could not see the mistake this file is guarding against.
 //
-// Through [execute] rather than root.Execute, because that is the entry point — it
-// is where SilenceUsage is set and where a failure is rendered. Calling Execute
-// directly tests a CLI nobody runs, and the first version of this did: it saw
-// cobra's usage block on stdout and reported it as the command's mistake.
-//
-// Serial for the reason TestBuildingTheCLITwiceBuildsTheSameCLI records: building a
-// CLI writes to package state.
+// A thin wrapper over [runFlow] rather than a harness of its own (#404). What it
+// adds is the fixture — a workflow on disk, since `run local` takes a path — and
+// the two-stream signature these tests read; the capture, the entry point and
+// the serial-execution question all belong to runflow_test.go, and the entry
+// point is the one that used to be got wrong here: an earlier version called
+// root.Execute rather than [execute], saw cobra's usage block on stdout, and
+// reported it as the command's own output.
 func runLocal(t *testing.T, body string, extra ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
@@ -45,15 +44,9 @@ func runLocalUnder(t *testing.T, ctx context.Context, body string, extra ...stri
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"run", "local", path}, extra...))
+	res := runFlowUnder(t, ctx, append([]string{"run", "local", path}, extra...)...)
 
-	err = execute(ctx, root)
-
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // A workload that logs, so the narration and the result are both present and can be
@@ -81,7 +74,7 @@ func TestALocalRunWritesOneDocumentToStdout(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &outputs),
 		"stdout is not a single JSON document:\n%s", stdout)
 
-	assert.Contains(t, outputs, "stepValues",
+	assert.Contains(t, outputs, "steps",
 		"the document on stdout is not the run's outputs")
 	assert.NotContains(t, stdout, "hello from the workload",
 		"what the workload logged reached the stream a pipe reads")

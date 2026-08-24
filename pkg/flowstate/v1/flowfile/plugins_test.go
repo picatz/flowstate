@@ -240,9 +240,9 @@ plugins:
 vars:
   region: eu-west-1
 steps:
-- id: a
-  log:
-    message: hi
+  - id: a
+    log:
+      message: hi
 `
 
 	wf, _, err := flowfile.Parse([]byte(src))

@@ -47,6 +47,7 @@ func verifierFor(t *testing.T, issuer *authtest.Issuer, clock *authtest.Clock, e
 	verifier, err := auth.NewOIDCVerifier(
 		auth.Policy{Issuers: []auth.TrustedIssuer{entry}},
 		auth.WithClock(clock.Now),
+		auth.WithEgressPolicy(authtest.EgressPolicy()),
 	)
 	require.NoError(t, err)
 

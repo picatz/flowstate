@@ -1,9 +1,6 @@
 edition: v2026.3
 name: webhook-routing
-description: >-
-  A webhook's event type is dispatched through one switch, with a default that
-  means something: a value nobody enumerated is handled, recorded, and visible.
-
+description: "A webhook's event type is dispatched through one switch, with a default that means something: a value nobody enumerated is handled, recorded, and visible."
 # The shape this example exists to show: one value, several handlers, written as
 # one `switch:` instead of a stack of sibling `if:` steps repeating the same
 # discriminant. Two things the `if:` spelling could not give:
@@ -27,19 +24,17 @@ description: >-
 # nothing, which silence could never say.
 #
 #   flow run local examples/webhook-routing/workflow.yaml --input-file examples/webhook-routing/inputs.json
-
 inputs:
   action:
     type: string
     required: true
-    example: opened
     description: the webhook event's action field, an open set the provider owns
+    example: opened
   number:
     type: int
     required: true
-    example: 101
     description: the issue or pull request number the event is about
-
+    example: 101
 steps:
   - id: on_event
     switch:
@@ -49,17 +44,17 @@ steps:
           steps:
             - id: triage
               log:
-                message: >-
-                  ${"triaging #%d".format([inputs.number])}
+                message: '${"triaging #%d".format([inputs.number])}'
         # Two spellings of "this work is finished", one body: a list case is
         # flattened into a single membership check, and the record names the
         # member that matched rather than the list.
-        - case: [closed, merged]
+        - case:
+            - closed
+            - merged
           steps:
             - id: archive
               log:
-                message: >-
-                  ${"archiving #%d".format([inputs.number])}
+                message: '${"archiving #%d".format([inputs.number])}'
         # Written-down ignoring. The provider sends `synchronize` on every
         # push, and this workflow deliberately does nothing with it - which is
         # a decision a reviewer can see, distinct from an action nobody
@@ -71,18 +66,13 @@ steps:
           - id: unhandled
             log:
               level: warn
-              message: >-
-                ${"unhandled action: %s".format([inputs.action])}
+              message: '${"unhandled action: %s".format([inputs.action])}'
 
   # The record composes: a later step dispatches on what the switch observed,
   # because `value` and `case` are ordinary outputs under the step's id.
   - id: record
     log:
-      message: >-
-        ${steps.on_event.case == null
-          ? "no handler enumerated %s".format([steps.on_event.value])
-          : "handled as %s".format([steps.on_event.case])}
-
+      message: '${(steps.on_event.case == null) ? "no handler enumerated %s".format([steps.on_event.value]) : "handled as %s".format([steps.on_event.case])}'
 outputs:
   observed:
     value: ${steps.on_event.value}

@@ -39,9 +39,14 @@ $ export FLOWSTATE_CODEX_BIN=/path/to/codex           # the real codex CLI binar
 $ export FLOWSTATE_SECRET_OPENAI_API_KEY=sk-...        # resolved via ${secret('env:OPENAI_API_KEY')}
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/codex/workflow.yaml
 ```
+
+`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
+the server authenticates every caller as anonymous, which is only ever right on
+a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
+`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
 
 This makes a real call to OpenAI through the codex CLI, and costs real
 tokens - it will fail without a configured `codex` binary, without

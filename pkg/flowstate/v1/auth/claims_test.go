@@ -182,7 +182,7 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 
 	transport := &countingTransport{next: http.DefaultTransport}
 
-	verifier := newVerifier(t,
+	verifier := newVerifierWithClient(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
@@ -200,7 +200,9 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 	// One discovery request and one key set request, both through our client.
 	require.Equal(t, int64(2), transport.requests.Load())
 
-	// A nil client is ignored rather than replacing the default with nothing.
+	// A nil client is ignored rather than replacing the boundary with nothing:
+	// the egress policy is still the one in force, so this fetch is still made
+	// under it.
 	verifier = newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{

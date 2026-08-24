@@ -39,13 +39,41 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 //     [DefaultEgressPolicy] name *netpolicy.Policy in exported signatures, so
 //     relocating the task means relocating those, which means this package no
 //     longer registers its own built-ins.
+//
 //   - auth — entity.go (the namespace grammar, for a bound checked at compile
 //     time) and taskruntime.go.
+//
 //   - secrets — taskruntime.go and webhookverify.go. secrets imports auth, so
 //     this edge carries that one with it.
+//
 //   - nearest — one did-you-mean suggestion in constraints.go. A leaf with no
 //     dependencies of its own; the cheapest edge to remove and the one that
 //     buys the least.
+//
+//   - metricschema — the metric vocabulary the task instruments record through
+//     (#526). The one edge added *after* this ratchet existed, so it owes the
+//     argument the table asks for.
+//
+//     It is here because the alternative is worse in the exact way invariant 1
+//     names. The instruments are recorded from [ObserveTask], which lives in
+//     this package for the reason [StartTaskSpan] does — both drivers import
+//     this package and neither imports the other, so it is the only place a
+//     measurement can be defined once. Their names, attribute keys, and bounded
+//     value sets are declared in metricschema, which is what makes the plugin
+//     surface and the engine surface one vocabulary; spelling them again here
+//     to avoid the edge would be the second copy of a list, which is the
+//     failure this repository has paid for four times.
+//
+//     What it costs: metricschema is a leaf whose own imports are `sort`,
+//     `sync`, go.opentelemetry.io/otel/attribute, .../otel/metric and .../otel/
+//     semconv. attribute and the OTel module are already inherited here through
+//     taskspan.go's tracing, so the marginal inheritance is the metric API
+//     (interfaces and options, no SDK) and a generated semconv constant table.
+//     It pulls in no transport, no crypto, and nothing that reaches the
+//     network. That is genuinely smaller than the four edges above, and it is
+//     still an edge: if the local interpreter ever leaves this package, this
+//     one leaves with it, since nothing about *describing* a workflow needs an
+//     instrument.
 //
 // taskruntime.go is the load-bearing one and the reason this is not a single
 // change: eval.go — the local interpreter, which lives in this package —
@@ -56,6 +84,11 @@ var allowedSelfImports = map[string][]string{
 		"entity.go",
 		"eval_task_http_run.go",
 		"taskruntime.go",
+	},
+	"metricschema": {
+		"eval.go",
+		"taskmetrics.go",
+		"taskpolicy_context.go",
 	},
 	"nearest": {
 		"constraints.go",

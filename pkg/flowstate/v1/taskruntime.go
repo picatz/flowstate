@@ -52,8 +52,9 @@ func ContextWithSecretStep(ctx context.Context, workflow, run, step string) cont
 	return ContextWithTaskRuntime(ctx, runtime)
 }
 
-// TaskStepFromContext reports the id of the step the currently executing task
-// was invoked for, when the engine recorded one on the context.
+// TaskStepRefFromContext reports the workflow, run, and step the currently
+// executing task was invoked for, when the engine recorded a step on the
+// context.
 //
 // The engine stamps the step id onto each node's context through
 // [ContextWithSecretStep] before it runs the node (see runNodes), so any task
@@ -66,12 +67,20 @@ func ContextWithSecretStep(ctx context.Context, workflow, run, step string) cont
 // answer for a compensation running off the run level context rather than a
 // node's: an undo call is not "the step it undoes" running again, so a stub
 // scoped to that step must not answer it.
-func TaskStepFromContext(ctx context.Context) (string, bool) {
+func TaskStepRefFromContext(ctx context.Context) (auth.StepRef, bool) {
 	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
 	if !ok || runtime.Step.Step == "" {
-		return "", false
+		return auth.StepRef{}, false
 	}
-	return runtime.Step.Step, true
+	return runtime.Step, true
+}
+
+// TaskStepFromContext reports only the id from [TaskStepRefFromContext].
+// Callers that need to distinguish steps in different workflows must use the
+// full reference instead.
+func TaskStepFromContext(ctx context.Context) (string, bool) {
+	ref, ok := TaskStepRefFromContext(ctx)
+	return ref.Step, ok
 }
 
 // ResolveSecret authorizes and resolves a reference from the current task's

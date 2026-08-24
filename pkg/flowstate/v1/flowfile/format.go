@@ -60,20 +60,21 @@ import (
 // beside the pin itself has something to attach to once the pin exists again in
 // the rendered tree.
 //
-// # A known gap: a pin reached only through `<<:`
+// # A pin reached through `<<:`, an `&anchor` or an `*alias`
 //
-// Both `call:` and `digest:` may legally arrive at a step via a YAML merge key
-// (fields.go resolves one for any step property), and [collectPins] does not
-// follow one to find them — it looks at the mapping's own written keys, the
-// same as [collectComments] does. A step whose `digest:` sits inside the
-// anchor a `<<: *shared` merges in, rather than written on the step itself, is
-// therefore invisible to this carve-out and formats as though it were never
-// pinned, with no diagnostic — silently, in that one specific and (nothing in
-// examples/ or DSL.md demonstrates it) unusual shape. No example, test, or
-// document in this repository writes a pin that way; closing this is tracked
-// rather than attempted here, because doing it partially — resolving one
-// level of alias and calling it done — is the shape of rewriter mistake
-// CLAUDE.md already has two entries for.
+// Both `call:` and `digest:` may legally arrive at a step through a YAML merge
+// key, and a step may be written whole as an anchor and reused through an
+// alias. The pin collector used to look at a mapping's own written keys, the
+// same as [collectComments] does, so a pin that arrived any of those ways was
+// invisible to this carve-out and formatted as though it had never been
+// written — the gap #639 documented and #640 closed. It is closed by knowing
+// what the grammar binds rather than by guessing: [pinCollector] resolves
+// anchors, aliases and merge keys exactly the way [compiler.entries] does,
+// under the same total-node bound the compiler expands under. See callpins.go.
+//
+// What [placePins] writes into does not change, because there is nothing to
+// resolve there: [Marshal] renders every step whole, so a step that reached its
+// `call:` through a merge key is written back with `call:` on it.
 
 // Format renders wf as the document [Marshal] writes, carrying across every
 // comment in source.
@@ -139,13 +140,14 @@ func Format(source []byte, wf *v1.Workflow) ([]byte, error) {
 	}
 
 	placed := make(map[commentAnchor]bool, len(comments))
+	collided := map[commentAnchor]bool{}
 	for _, doc := range rendered.Docs {
-		if err := placeComments(doc.Body, "", 0, comments, placed); err != nil {
+		if err := placeComments(doc.Body, "", 0, comments, placed, collided); err != nil {
 			return nil, err
 		}
 	}
 
-	if diagnostics := unplaced(comments, placed); len(diagnostics) > 0 {
+	if diagnostics := unplaced(comments, placed, collided); len(diagnostics) > 0 {
 		return nil, diagnostics
 	}
 
@@ -248,8 +250,13 @@ func collectComments(n ast.Node, path string, depth int, out map[commentAnchor]*
 		// silent deletion rather than a refusal.
 		record(commentContainerHead, x.GetComment())
 		record(commentContainerFoot, x.FootComment)
+		// A mapping and its entries are one level of nesting, not two: the
+		// compiler's own walk (parse.go's recordTree) goes straight from a
+		// *ast.MappingNode to each entry's value without an intermediate
+		// enter/exit, so this must not increment depth here or this walk's
+		// ceiling ends up half the compiler's (#691).
 		for _, value := range x.Values {
-			if err := collectComments(value, path, depth+1, out); err != nil {
+			if err := collectComments(value, path, depth, out); err != nil {
 				return err
 			}
 		}
@@ -270,6 +277,19 @@ func collectComments(n ast.Node, path string, depth int, out map[commentAnchor]*
 
 	case *ast.SequenceNode:
 		record(commentContainerFoot, x.FootComment)
+		if len(x.Values) == 0 {
+			// An empty sequence renders `[]`, and a comment beside it hangs off
+			// the sequence node itself. [sequenceHead] reads that same field as
+			// the block above the *first* entry, which is what it means when
+			// there is one — so this records it only where there is no entry to
+			// claim it, and no comment is recorded twice.
+			//
+			// Without this the comment is not refused, it is *deleted*: the walk
+			// simply never reaches it, so nothing knows it existed. That was
+			// live before the key-line rendering below made `steps: [] # why`
+			// something the formatter itself writes.
+			record(commentContainerHead, x.GetComment())
+		}
 		for i, value := range x.Values {
 			element := childPath(path, indexStep(i))
 			if group := sequenceHead(x, i); group != nil {
@@ -294,7 +314,7 @@ func collectComments(n ast.Node, path string, depth int, out map[commentAnchor]*
 // same walk would have found it: the two functions are one rule read in two
 // directions, and a shape one of them knows about and the other does not is a
 // comment that goes missing.
-func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast.CommentGroupNode, placed map[commentAnchor]bool) error {
+func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast.CommentGroupNode, placed, collided map[commentAnchor]bool) error {
 	if n == nil {
 		return nil
 	}
@@ -326,8 +346,10 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 		if group := take(commentContainerFoot); group != nil {
 			x.FootComment = group
 		}
+		// Same accounting as [collectComments]: a mapping and its entries are
+		// one level, not two (#691).
 		for _, value := range x.Values {
-			if err := placeComments(value, path, depth+1, in, placed); err != nil {
+			if err := placeComments(value, path, depth, in, placed, collided); err != nil {
 				return err
 			}
 		}
@@ -346,19 +368,56 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 		if group := takeAt(commentHead); group != nil {
 			x.Comment = group
 		}
-		if group := takeAt(commentKeyLine); group != nil {
-			_ = x.Key.SetComment(group)
+		// A key-line comment is the one kind whose home depends on what the
+		// *rendered* value turned out to be, so it is peeked at rather than
+		// taken: leaving it unplaced is what turns it into a refusal below.
+		keyLine := commentAnchor{path: child, kind: commentKeyLine}
+		if group, ok := in[keyLine]; ok {
+			switch {
+			case carriesKeyLineComment(x.Value):
+				_ = x.Key.SetComment(group)
+				placed[keyLine] = true
+			case carriesTrailingComment(x.Value):
+				// The value renders back on the key's line, so the key has no
+				// room for the comment — but the *line* does, after the value.
+				// See [carriesTrailingComment] for what that costs.
+				switch other, ok := valueComment(child, in); {
+				case !ok:
+					_ = x.Value.SetComment(group)
+					placed[keyLine] = true
+				case other == group:
+					// One comment the parser handed back twice — after the key
+					// and on the value it introduces, which is how an inline
+					// `{}` records the prose above it. Placing it under its
+					// other kind places this anchor too; writing it again here
+					// would be the same group written into the same slot.
+					placed[keyLine] = true
+				default:
+					// Two different comments for one slot. Recorded rather than
+					// merely left unplaced, so the refusal can say *this* is
+					// why: the entry exists in the output, which the general
+					// "its anchor is gone" wording would deny.
+					collided[keyLine] = true
+				}
+			}
 		}
 		if group := takeAt(commentFoot); group != nil {
 			x.FootComment = group
 		}
-		if err := placeComments(x.Value, child, depth+1, in, placed); err != nil {
+		if err := placeComments(x.Value, child, depth+1, in, placed, collided); err != nil {
 			return err
 		}
 
 	case *ast.SequenceNode:
 		if group := take(commentContainerFoot); group != nil {
 			x.FootComment = group
+		}
+		if len(x.Values) == 0 {
+			// The mirror of [collectComments]: with no entry to claim it, the
+			// sequence's own comment field is the container's.
+			if group := take(commentContainerHead); group != nil {
+				_ = x.SetComment(group)
+			}
 		}
 		// Written to the length the renderer requires: it only reads the head
 		// comments at all when there is exactly one per value.
@@ -372,7 +431,7 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 				setSequenceHead(x, i, group)
 				placed[anchor] = true
 			}
-			if err := placeComments(value, element, depth+1, in, placed); err != nil {
+			if err := placeComments(value, element, depth+1, in, placed, collided); err != nil {
 				return err
 			}
 		}
@@ -384,6 +443,124 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 	}
 
 	return nil
+}
+
+// carriesKeyLineComment reports whether a comment written after `key:` can be
+// rendered onto the key of an entry whose value is value.
+//
+// It can only be rendered where the value is written *below* the key, which is a
+// block mapping or a block sequence and nothing else. The encoder writes a key's
+// comment immediately after the key token, so on an entry whose value shares the
+// key's line it emits `name # why: A0` — the comment folded into the key, a
+// document that no longer parses (`non-map value is specified`) and, where it
+// does, no longer says the same thing. That is the corruption class CLAUDE.md
+// names as the worst thing this repository can do, and #860 found the fuzzer
+// hitting it from `name: #` with the value continuing on the next line.
+//
+// The shapes this excludes are every value that renders on the key's line:
+//
+//   - a scalar (`name # why: A0`);
+//   - a block scalar, whose *header* shares the line (`message # why: |-`);
+//   - a flow mapping or flow sequence (`items # why: [1, 2]`);
+//   - an empty mapping or sequence, which the encoder writes as `{}` or `[]`
+//     beside the key whatever style the node claims;
+//   - a null value, where the fold leaves `empty # why:`.
+//
+// Reporting false hands the comment to [carriesTrailingComment], which is where
+// every one of those shapes is written back today; what is left unplaced after
+// both is what [unplaced] turns into a positioned refusal.
+func carriesKeyLineComment(value ast.Node) bool {
+	switch v := value.(type) {
+	case *ast.MappingNode:
+		// An empty mapping is written `{}` beside the key by the encoder's own
+		// rule (`m.IsFlowStyle || len(m.Values) == 0`), so a node that is not
+		// flow-style but holds nothing folds exactly the way a flow one does.
+		return !v.IsFlowStyle && len(v.Values) > 0
+	case *ast.MappingValueNode:
+		// A block mapping the parser handed back as its single entry rather
+		// than as a one-entry [ast.MappingNode].
+		return true
+	case *ast.SequenceNode:
+		return !v.IsFlowStyle && len(v.Values) > 0
+	default:
+		return false
+	}
+}
+
+// carriesTrailingComment reports whether a comment written after `key:` can be
+// rendered after the *value* of an entry whose value shares the key's line.
+//
+// This is the honest placement #862 left open and #850's slice 1 closes. Where
+// the value is written back beside the key there is no room after the key for
+// prose — the encoder emits a key's comment immediately after the key token, and
+// what comes out (`name # why: A0`) does not parse. But the line the author wrote
+// the comment on still exists in the output, and it still ends in a place a
+// comment may legally sit: after the value. Each shape was driven through the
+// encoder before this shipped, since nothing in the library's own documentation
+// says which node kinds accept a trailing comment:
+//
+//	name: greeter        ->  name: greeter # why
+//	items: [1, 2]        ->  items: [1, 2] # why
+//	with: {}             ->  with: {} # why
+//	message: |-          ->  message: |- # why
+//	empty:               ->  empty: # why
+//
+// The cost, stated: for a scalar or a flow collection the comment moves from
+// immediately after the key to the end of the same line. It stays on the entry
+// it was written against, it stays verbatim, and it stays on one line — but an
+// author who wrote `name: # why` with the value indented below gets it back as
+// `name: greeter # why`, which is a column they did not choose. That is the
+// trade this makes against #862's alternative of refusing the file outright, and
+// against hoisting the comment above the key, which moves prose onto a different
+// line and reads as introducing the entry rather than annotating it.
+//
+// For the last two rows above there is no cost at all: a block scalar's header
+// and a null value already put the end of the line exactly where the author's
+// comment was, so those come back byte-identical.
+//
+// Value kinds beyond these keep refusing. An anchor, an alias or a tag never
+// appears in what [Marshal] renders, so writing a placement for one would be
+// writing a rule against no evidence; a shape that does turn up refuses with a
+// position rather than being guessed at.
+func carriesTrailingComment(value ast.Node) bool {
+	switch v := value.(type) {
+	case *ast.MappingNode:
+		return v.IsFlowStyle || len(v.Values) == 0
+	case *ast.SequenceNode:
+		return v.IsFlowStyle || len(v.Values) == 0
+	case ast.ScalarNode:
+		// Every scalar the encoder writes beside a key: a string, a number, a
+		// bool, a block scalar (whose header is what shares the line), and the
+		// null an absent value renders as.
+		return true
+	default:
+		return false
+	}
+}
+
+// valueComment returns the comment the source already wrote against the value at
+// path, rather than against the key above it.
+//
+// The trailing placement writes into the value node's own comment slot, which is
+// the same slot [commentLine] and [commentContainerHead] are placed into. Two
+// *different* comments cannot share it: placing both would keep whichever was
+// written last and delete the other, silently, which is the loss this whole file
+// exists to stop. So an entry carrying a comment after its key and a second one
+// after its value (`name: # why` over `  greeter # and also`) keeps the refusal —
+// one line of prose is the manual fix, and a deleted line is not recoverable at
+// all.
+//
+// One comment can arrive under two anchors, though, and that is not a collision:
+// the parser hangs the prose above an inline `{}` off both the key it follows and
+// the container it introduces, so the caller compares identity rather than
+// presence.
+func valueComment(path string, in map[commentAnchor]*ast.CommentGroupNode) (*ast.CommentGroupNode, bool) {
+	for _, kind := range []commentKind{commentLine, commentContainerHead} {
+		if group, ok := in[commentAnchor{path: path, kind: kind}]; ok {
+			return group, true
+		}
+	}
+	return nil, false
 }
 
 // sequenceHead returns the comment block above the i'th entry of a sequence.
@@ -415,18 +592,28 @@ func setSequenceHead(n *ast.SequenceNode, i int, group *ast.CommentGroupNode) {
 // unplaced turns every comment that found no home into a diagnostic positioned at
 // the comment itself, so an author reading the refusal is sent to the line that
 // stopped it rather than to the file in general.
-func unplaced(comments map[commentAnchor]*ast.CommentGroupNode, placed map[commentAnchor]bool) Diagnostics {
+func unplaced(comments map[commentAnchor]*ast.CommentGroupNode, placed, collided map[commentAnchor]bool) Diagnostics {
 	var out Diagnostics
 	for anchor, group := range comments {
 		if placed[anchor] {
 			continue
 		}
-		diagnostic := Diagnostic{
-			Message: "comment cannot be kept: what it is written against is not written back in the same shape " +
-				"(a mapping reached through an alias, or a block written back as one expression), so there is " +
-				"nowhere left to put it and nothing was written; move it above a key that survives, or leave " +
-				"this file unformatted",
+		message := "comment cannot be kept: what it is written against is not written back in the same shape " +
+			"(a mapping reached through an alias, or a block written back as one expression), so there is " +
+			"nowhere left to put it and nothing was written; move it above a key that survives, or leave " +
+			"this file unformatted"
+		if collided[anchor] {
+			// The reason is a different one and an author can act on it, so it
+			// says so rather than being folded into the general refusal: the
+			// key survived, and the value is written back beside it, so the
+			// only room left on that line is after the value — and something
+			// else is already written there.
+			message = "comment cannot be kept: it is written after a key whose value is written back on the " +
+				"same line, and that line already ends in a comment of its own, so keeping both would " +
+				"delete one of them; nothing was written — move this comment onto its own line above the " +
+				"key, or leave this file unformatted"
 		}
+		diagnostic := Diagnostic{Message: message}
 		if token := group.GetToken(); token != nil && token.Position != nil {
 			diagnostic.Line = token.Position.Line
 			diagnostic.Column = token.Position.Column
@@ -470,106 +657,6 @@ func indexStep(i int) string {
 	return "[" + strconv.Itoa(i) + "]"
 }
 
-// A sourcePin is a `digest:` value found beside a `call:` in source, along
-// with where it was written — for a diagnostic if it cannot be carried across.
-type sourcePin struct {
-	text         string
-	line, column int
-}
-
-// sourcePins collects every `digest:` pin in a document, keyed by the path of
-// the mapping it sits in — the same path a comment on that mapping's own
-// container gets, since a pin and a container comment are both properties of
-// the mapping rather than of one entry in it.
-//
-// Only a mapping that also has a `call:` key is recorded. The grammar refuses
-// `digest:` anywhere else (parse.go), so this is not a filter this package
-// invents; it means a hand-built AST fed to this function (which, unlike a
-// parsed Flowfile, [Format]'s exported contract does not get to assume is
-// well-formed) cannot make it write a pin that names nothing.
-func sourcePins(source []byte) (map[string]sourcePin, error) {
-	file, err := parser.ParseBytes(source, parser.ParseComments)
-	if err != nil {
-		// The caller compiled this source, so it parses. Refusing rather than
-		// carrying on is the fail-closed reading, the same one sourceComments
-		// takes: unable to see the pins is not the same as knowing there are
-		// none.
-		return nil, fmt.Errorf("the source could not be read to collect its call pins: %w", err)
-	}
-
-	out := map[string]sourcePin{}
-	for _, doc := range file.Docs {
-		if err := collectPins(doc.Body, "", 0, out); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// collectPins walks a source document exactly the way [collectComments] does —
-// same node kinds, same path arithmetic — because a pin is placed by the same
-// walk finding the same path later, and a shape one of them knows about and the
-// other does not is a pin that goes missing.
-func collectPins(n ast.Node, path string, depth int, out map[string]sourcePin) error {
-	if n == nil {
-		return nil
-	}
-	if depth > maxDepth {
-		return fmt.Errorf("nests more than %d levels deep, which is deeper than a Flowfile is meant to go", maxDepth)
-	}
-
-	switch x := n.(type) {
-	case *ast.MappingNode:
-		var hasCall bool
-		var digest *ast.MappingValueNode
-		for _, entry := range x.Values {
-			switch keyStep(entry) {
-			case "call":
-				hasCall = true
-			case "digest":
-				digest = entry
-			}
-		}
-		if hasCall && digest != nil {
-			// A digest reaching here compiled, through [compiler.text], which
-			// accepts exactly the two node kinds scalarText does — so `ok` is
-			// always true for a Flowfile Format was actually given one of.
-			// Skipped rather than recorded on the rare hand-built AST it is
-			// not: an entry this cannot read the value of is not a pin this
-			// can carry, and pretending it is one with an empty string would
-			// write `digest: ` into the mapping it lands in.
-			if text, ok := scalarText(digest.Value); ok {
-				pin := sourcePin{text: text}
-				if token := digest.Key.GetToken(); token != nil && token.Position != nil {
-					pin.line, pin.column = token.Position.Line, token.Position.Column
-				}
-				out[path] = pin
-			}
-		}
-		for _, value := range x.Values {
-			if err := collectPins(value, path, depth+1, out); err != nil {
-				return err
-			}
-		}
-
-	case *ast.MappingValueNode:
-		child := childPath(path, keyStep(x))
-		if err := collectPins(x.Value, child, depth+1, out); err != nil {
-			return err
-		}
-
-	case *ast.SequenceNode:
-		for i, value := range x.Values {
-			element := childPath(path, indexStep(i))
-			if err := collectPins(value, element, depth+1, out); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
 // placePins walks the rendered document the same way [placeComments] does,
 // and where the path matches a mapping [sourcePins] recorded, writes the pin
 // into that mapping as a real `digest:` entry rather than a comment — right
@@ -593,8 +680,10 @@ func placePins(n ast.Node, path string, depth int, in map[string]sourcePin, plac
 				placed[path] = true
 			}
 		}
+		// Same accounting as [collectComments]: a mapping and its entries are
+		// one level, not two (#691).
 		for _, value := range x.Values {
-			if err := placePins(value, path, depth+1, in, placed); err != nil {
+			if err := placePins(value, path, depth, in, placed); err != nil {
 				return err
 			}
 		}
