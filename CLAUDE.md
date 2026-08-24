@@ -921,6 +921,37 @@ When several agents edit interlocking packages:
   the commit step. Nothing here schedules a restart for you to plan around, so
   treat every long wait (a gate run, CI, a review round) as one: commit whatever
   is correct and complete before starting it, not after it returns.
+- **Ask the machine how many lanes it can hold, rather than picking a number.**
+  `go run ./tools/fleet` prints how many agent lanes fit right now, which
+  resource decides it, and the environment each lane must be given. Read it
+  before dispatching a wave, and again before adding to one.
+
+  The number is not a constant, and treating it as one is how this goes wrong.
+  A lane is not one process: `go test ./...` builds with `-p` workers and each
+  package's binary then runs `-parallel` tests inside itself, both defaulting to
+  the core count — so a single unbounded lane can saturate a small box, and four
+  of them on a four-core machine produced a load average above 20, with lanes
+  reporting link failures they reasonably mistook for defects in their own
+  diffs. That is why the tool prints an appetite as well as a count: the fleet
+  size is capacity divided by what a lane is allowed to spend, and the division
+  only means something if the lane is actually held to it.
+
+      eval "$(go run ./tools/fleet -env)"     # what one lane may spend
+      go run ./tools/fleet -n                 # how many fit, for a script
+
+  It reads cores, memory, disk and the current load, and the smallest bound
+  wins. Load matters as much as capacity: it counts work this process cannot
+  see — a sibling session's suite, a lane that has not reported — and a box
+  thrashing on disk reads high there even when its cores look idle, which is
+  exactly when adding a lane hurts most. Disk is reserved rather than divided,
+  because a build that meets ENOSPC halfway leaves a partial object the next
+  build reports as a corrupt cache entry, which reads like a compiler bug; this
+  machine hit that twice in one session behind a 13 GiB build cache.
+
+  The point is that it adapts. On a bigger machine it says a bigger number
+  without anybody editing this file, and on a full one it says zero and names
+  what to prune. A lane count written down here would have been right once.
+
 - **Leave a green stopping point.** A package with fewer features that compiles and
   passes beats a half-migrated one. If a migration cannot finish, back it out and
   document it rather than leaving both halves.
