@@ -68,9 +68,14 @@ Then the durable path, which is what production uses:
 
 ```console
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins --auth-policy auth.yaml &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/greet/workflow.yaml
 ```
+
+`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
+the server authenticates every caller as anonymous, which is only ever right on
+a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
+`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
 
 ## Why this is not `examples/<name>/workflow.yaml`
 
@@ -93,6 +98,55 @@ installed is a deployment's decision, not a property of the file — so a checke
 that has not been told about one says what it does not know rather than passing the
 file silently, and the corpus checks stay strict for everything else rather than
 growing an exception.
+
+What you can do is tell it (#724, #710). `flow validate --plugin-dir` launches the
+plugins on that path first, through the same discovery and handshake a worker uses,
+and then checks the file against what they provide:
+
+```console
+$ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
+examples/plugins/greet/workflow.yaml: ok
+```
+
+That is not the diagnostic being suppressed; it is the question being answered. The
+file is checked against `example.greet`'s real input schema, reconstructed from the
+descriptors the plugin ships, so a misspelled input here fails at your terminal
+rather than at the worker. `flow tasks --plugin-dir ./plugins` is the same fact from
+the other side: the task is in the catalog, marked with the plugin it came from, and
+the version and path it was launched from are printed underneath.
+
+Two things it deliberately is not. It is opt-in, because it executes third-party
+binaries and nothing but a command line somebody typed turns that on. And a plugin
+that will not start fails the command outright, naming it, rather than checking the
+file without it — carrying on would report every one of that plugin's tasks as an
+unknown task, which is a false statement about the file drawn from something that
+went wrong with a process.
+
+### Or without launching anything: `--plugin-catalog`
+
+`--plugin-dir` answers the question by executing the plugins, which needs the
+binaries on this machine and a machine that can execute them. The same facts
+also travel as a document (#710):
+
+```console
+$ flow plugins --plugin-dir ./plugins --output json > plugins.lock.json
+$ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow.yaml
+examples/plugins/greet/workflow.yaml: ok
+```
+
+`flow plugins --output json` is the writer and the only one; it emits the catalog
+every task's descriptors travel in, so the file checked above is checked against
+`example.greet`'s real input schema, with no process started. That is what a CI
+job with no plugin binaries in the runner needs, what an editor pointed at the
+catalog of the worker it submits to needs, and what a browser authoring surface
+(#102, #242) needs, since none of them can exec. `flow tasks --plugin-catalog`
+and `flow fix --plugin-catalog` read the same document.
+
+The two flags are refused together: they are two sources of one fact, and
+nothing in the command could decide what to do when the document and the
+binaries disagree about a task's schema. A catalog that fails to *load* fails
+the command naming the file, for the same reason a plugin that fails to launch
+does — nothing is checked against a half-read catalog.
 
 It is still run in CI, and by more than a validator: `TestAFlowfileCanNameAPluginTask`
 in `pkg/flowstate/v1/plugin` builds this plugin, launches it, registers it into the

@@ -9,7 +9,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // interpolated compiles one `log:` message and returns the expression source the
@@ -103,7 +103,7 @@ func TestInterpolationDesugarsToOneExpression(t *testing.T) {
 	}
 }
 
-// TestInterpolationDesugarsToTheSharedDriverCase keeps [tests.InterpolationSource]
+// TestInterpolationDesugarsToTheSharedDriverCase keeps [conformance.InterpolationSource]
 // honest.
 //
 // That constant is the expression both drivers are held to, and it is written
@@ -121,10 +121,10 @@ func TestInterpolationDesugarsToTheSharedDriverCase(t *testing.T) {
 	// the constant is written in the spelling an author would use and the
 	// compiler stores the normalized one. What must match is the expression,
 	// not the quoting.
-	want := exprString(t, v1.NewExpr(tests.InterpolationSource))
+	want := exprString(t, v1.NewExpr(conformance.InterpolationSource))
 
 	if got := interpolatedInputs(t, scalar); got != want {
-		t.Errorf("the compiler now produces\n  %s\nbut tests.InterpolationSource is\n  %s\n"+
+		t.Errorf("the compiler now produces\n  %s\nbut conformance.InterpolationSource is\n  %s\n"+
 			"one of the two moved; the shared driver cases are only meaningful while they agree", got, want)
 	}
 }

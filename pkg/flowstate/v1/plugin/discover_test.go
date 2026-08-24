@@ -90,6 +90,76 @@ func TestDiscoverRefusesUnsafeSearchPath(t *testing.T) {
 		}
 	})
 
+	// "Any member of group staff chooses what this worker executes" is the
+	// world-writable sentence with one word changed, and a group is a list of
+	// users this process does not curate. The refusal covers both bits.
+	t.Run("group-writable directory", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o770); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+
+		_, err := Discover(Config{SearchPath: []string{dir}})
+		if !errors.Is(err, ErrSearchPath) {
+			t.Fatalf("Discover error = %v, want one wrapping %v", err, ErrSearchPath)
+		}
+		if !strings.Contains(err.Error(), "any member of its group") {
+			t.Errorf("error = %q, want it to name who can write, which is not every user", err.Error())
+		}
+
+		if _, err := Discover(Config{SearchPath: []string{dir}, AllowInsecureSearchPath: true}); err != nil {
+			t.Errorf("Discover with AllowInsecureSearchPath: %v", err)
+		}
+	})
+
+	t.Run("group-writable binary", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, BinaryPrefix+"shared")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("writing the binary: %v", err)
+		}
+		if err := os.Chmod(path, 0o775); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+
+		_, err := Discover(Config{SearchPath: []string{dir}})
+		if !errors.Is(err, ErrSearchPath) {
+			t.Fatalf("Discover error = %v, want one wrapping %v", err, ErrSearchPath)
+		}
+	})
+
+	// The other direction, which is the one a too-wide refusal breaks: an
+	// ordinarily installed plugin is still discovered. A check that refuses
+	// every deployment is not a stricter check, it is a broken one.
+	t.Run("owner-writable only is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+
+		path := filepath.Join(dir, BinaryPrefix+"tidy")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("writing the binary: %v", err)
+		}
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+
+		found, err := Discover(Config{SearchPath: []string{dir}})
+		if err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+		if len(found) != 1 || found[0].Name != "tidy" {
+			t.Fatalf("Discover found %v, want the one plugin at mode 0755 in a 0755 directory", found)
+		}
+	})
+
 	t.Run("world-writable binary", func(t *testing.T) {
 		t.Parallel()
 

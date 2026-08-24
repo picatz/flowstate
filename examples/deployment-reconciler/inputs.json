@@ -1,0 +1,5 @@
+{
+  "target": "checkout-api",
+  "desired_replicas": 5,
+  "max_passes": 1
+}

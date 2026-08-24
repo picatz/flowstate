@@ -1,11 +1,14 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
+	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
@@ -47,11 +50,25 @@ const (
 	maxBytes = 1 << 20
 )
 
+// stepsKey is the one key a step list is ever written under.
+//
+// Every place the grammar takes a list of steps spells it the same way — the
+// workflow's own `steps:`, a `for_each:`'s, a `loop:`'s, a `parallel:` branch's,
+// and a `switch:` case's or default's — which is what makes "an element of a
+// `steps:` sequence" a complete definition of *a step* rather than a guess at
+// one. Named rather than spelled out at each site so that anything reasoning
+// about where steps live reads it from here: [pinCollector] does exactly that,
+// because a `digest:` is only a pin when the mapping holding it is a call step
+// (#833), and a collector that decided by key names alone would read
+// `vars: {call: …, digest: …}` — two ordinary variables — as a security pin.
+// TestEveryStepListIsSpelledStepsKey holds the claim this constant makes.
+const stepsKey = "steps"
+
 // The keys each part of a Flowfile accepts. Anything else is reported: a
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -403,8 +420,12 @@ func StepTaskKeys(keys []string) []string {
 //
 // A failure to compile is returned as [Diagnostics], one per problem found, so a
 // caller can report all of them at once. A failure to parse the YAML itself is
-// returned as the parser's own error, which already carries a position and an
-// excerpt of the offending line.
+// returned the same way — one [Diagnostic], translated from the parser's own
+// error so an author meets one error language regardless of which layer of the
+// file rejected it (#654). goccy's errors carry the token they failed on, which
+// is where the position comes from; an error that carries none reports with the
+// position left at zero, [Diagnostic]'s own honest answer for a problem with the
+// document as a whole.
 //
 // Compiled from bytes with no file identity, so a `call:` step in this file
 // cannot be resolved — there is no directory to resolve it relative to — and is
@@ -459,7 +480,7 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 
 	file, err := parser.ParseBytes(data, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, yamlSyntaxDiagnostics(err)
 	}
 
 	c := &compiler{
@@ -474,6 +495,64 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 		return nil, nil, c.sorted()
 	}
 	return workflow, c.pos, nil
+}
+
+// yamlCoordinate matches the `at [line:column]` goccy's parser appends to a
+// duplicate-key message to name the earlier definition — see
+// parser.go's `"mapping key %q already defined at [%d:%d]"`. It is goccy's own
+// bracket spelling, not this package's `line:column` one, so left untranslated
+// it would put a second, differently-punctuated position inside a message this
+// package otherwise renders through exactly one convention (see position.go and
+// #384's positionLine). Rewritten to prose rather than dropped, because the
+// position it names is still the information an author needs to resolve a
+// duplicate key.
+//
+// Anchored on the literal `at ` prefix and the end of the string — the exact
+// shape the parser generates — rather than matching any `[N:M]`-shaped run
+// wherever it occurs. A looser match would also rewrite a key whose own name is
+// spelled that way: goccy quotes the key verbatim into the message ahead of
+// this suffix, so a mapping key literally named `[1:2]` produces `mapping key
+// "[1:2]" already defined at [3:4]`, and only the trailing, unquoted occurrence
+// is the parser's own position rather than the author's text.
+var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
+
+// yamlSyntaxDiagnostics translates a failure from the YAML parser into the
+// [Diagnostic] grammar every other failure in this package speaks (#654).
+//
+// Before this, a YAML-level failure — a duplicate key, a tab used for
+// indentation, an unterminated quote — bypassed the grammar entirely and
+// returned goccy's own error, unpositioned as far as this package's callers
+// could tell and rendered in goccy's own format (`[3:1] mapping key already
+// defined`) rather than this tool's (`workflow.yaml:3:1: ...`). Every caller of
+// [Parse] already widens a non-[Diagnostics] error into one unpositioned
+// diagnostic naming the whole document — see cmd/flow's errDiagnosticsOf and
+// the server's Validate and Compile handlers — so a YAML syntax error used to
+// take that fallback and lose its position on the way, even though goccy had
+// one to give.
+//
+// goccy's errors implement [yaml.Error], which carries the token the parser
+// failed on, so the position is recovered from there rather than reimplemented.
+// A future error that does not implement it — there is no such case in this
+// version of goccy — still gets the standard shape, with the position left
+// unset the way [Diagnostic] already reports "a problem with the document as a
+// whole" everywhere else in this package.
+func yamlSyntaxDiagnostics(err error) Diagnostics {
+	d := Diagnostic{Message: err.Error()}
+
+	var yamlErr yaml.Error
+	if errors.As(err, &yamlErr) {
+		if msg := yamlErr.GetMessage(); msg != "" {
+			d.Message = msg
+		}
+		if tok := yamlErr.GetToken(); tok != nil && tok.Position != nil {
+			d.Line = tok.Position.Line
+			d.Column = tok.Position.Column
+		}
+	}
+
+	d.Message = yamlCoordinate.ReplaceAllString(d.Message, " at line $1, column $2")
+
+	return Diagnostics{d}
 }
 
 // A compiler walks one document tree, building the workflow and collecting every
@@ -643,6 +722,15 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		return nil
 	}
 
+	// The strict subset is enforced before anything is resolved or expanded: a
+	// document containing an anchor, alias, or merge key is refused on the
+	// presence of the construct, so a billion-laughs shape is rejected without
+	// ever following an alias. This must precede collectAnchors and every call to
+	// entries, the two places expansion happens. See strict.go.
+	if !c.refuseStrictYAML(bodies[0]) {
+		return nil
+	}
+
 	for _, doc := range file.Docs {
 		c.collectAnchors(doc.Body)
 	}
@@ -693,6 +781,19 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// Description is set only when the key is present, so that "no description"
 	// and "an empty description" stay distinguishable — which is what the schema's
 	// optional means, and what makes Marshal an exact inverse.
+	// What this workflow *is*, written where an author writes it: directly under
+	// the name, above everything the run computes. Labels say who owns this
+	// workload and what it belongs to, and every run records them so an operator
+	// can select on them later — see [v1.Workflow.Labels] and `labels` in
+	// [v1.RunFilter]'s vocabulary.
+	//
+	// Compiled through [compiler.stringMap], which is the one thing in this
+	// grammar that turns a mapping of strings into a `map<string, string>`; the
+	// other caller is a signal rule's `claims:`. A second one would drift.
+	if f, found := fields.get("labels"); found {
+		workflow.Labels = c.stringMap(f.value, "labels", ref{path: "labels", label: "labels"})
+	}
+
 	if f, found := fields.get("description"); found {
 		if description, ok := c.text(f.value, "description", ref{path: "description", label: "description"}); ok {
 			workflow.Description = proto.String(description)
@@ -731,7 +832,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		workflow.Vars = c.vars(f.value, "vars", ref{path: "vars", label: "vars"})
 	}
 
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		workflow.Steps = c.steps(f.value, "steps", ref{path: "steps", label: "steps"})
 	}
 
@@ -958,7 +1059,6 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 			declaration.Must = proto.String(v)
 		}
 	}
-
 	return declaration
 }
 
@@ -1539,7 +1639,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	}
 
 	step.Policy = c.policy(fields, path, r)
-	c.checkWaitPolicy(step, fields, path, r)
+	c.checkPolicyPlacement(step, fields, path, r)
 
 	return step
 }
@@ -1801,7 +1901,7 @@ func (c *compiler) forEach(n ast.Node, path string, r ref) *v1.ForEach {
 		loop.MaxParallel = maxParallel
 	}
 
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		loop.Body = c.steps(f.value, fieldPath(path, "steps"),
 			ref{step: r.step, path: fieldPath(path, "steps"), label: "for_each steps"})
 	} else {
@@ -1828,7 +1928,7 @@ func (c *compiler) loop(n ast.Node, path string, r ref) *v1.Loop {
 
 	loop := &v1.Loop{}
 
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		loop.Body = c.steps(f.value, fieldPath(path, "steps"),
 			ref{step: r.step, path: fieldPath(path, "steps"), label: "loop steps"})
 	} else {
@@ -1895,7 +1995,7 @@ func (c *compiler) parallel(n ast.Node, path string, r ref) *v1.Parallel {
 		branch := &v1.Parallel_Branch{}
 		fields, ok := c.fields(value, branchPath, ref{step: r.step, path: branchPath}, branchKeys)
 		if ok {
-			if f, found := fields.get("steps"); found {
+			if f, found := fields.get(stepsKey); found {
 				branch.Steps = c.steps(f.value, fieldPath(branchPath, "steps"),
 					ref{step: r.step, path: fieldPath(branchPath, "steps"), label: fmt.Sprintf("parallel branch %d steps", i+1)})
 			} else {

@@ -99,7 +99,7 @@ func TestTaskNeedsAuthorityOnAMissSeesAHeldSecretReference(t *testing.T) {
 // Handing those to a task nothing in the process can describe is granting, not
 // withholding.
 //
-// It also has a demonstrated cost. `tests.ErrorKindCases` makes "unknown task is
+// It also has a demonstrated cost. `conformance.ErrorKindCases` makes "unknown task is
 // UnknownTask" a contract both drivers keep, on the stated grounds that it is
 // permanent; a blanket `true` sends that step to an arm a worker may not have
 // registered, where it comes back as a retryable ActivityNotRegisteredError

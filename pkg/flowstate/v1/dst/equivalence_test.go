@@ -8,13 +8,14 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst/dsttest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // The schedule-equivalence property, over the corpus both drivers already
 // share.
 //
-// The cases are deliberately not new ones. pkg/flowstate/v1/tests is where a
+// The cases are deliberately not new ones. pkg/flowstate/v1/internal/conformance is where a
 // behaviour lives when both drivers owe it, and every case there already pins
 // what a run produces; what this package adds is the question those cases never
 // asked, which is whether the answer survives being reached in a different
@@ -39,12 +40,12 @@ const undoPlaceholderBase = "http://undo.invalid"
 // join. Both are legal rehearsals of the durable driver's genuinely overlapping
 // coroutine, so an author must not be able to tell which one ran.
 func TestScheduleEquivalenceOverAsyncCases(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	explored := 0
-	for _, test := range tests.AsyncCases(baseURL) {
+	for _, test := range conformance.AsyncCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
-			report := dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			report := dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				outputs, err := v1.RunWithInputs(ctx, test.Workflow, test.Inputs)
 
 				return dst.Result{Transcript: outputs, Err: err}
@@ -62,12 +63,12 @@ func TestScheduleEquivalenceOverAsyncCases(t *testing.T) {
 // TestScheduleEquivalenceOverControlFlowCases explores the shared control-flow
 // cases, which is where `parallel:` lives.
 func TestScheduleEquivalenceOverControlFlowCases(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	explored := 0
-	for _, test := range tests.ControlFlowCases(baseURL) {
+	for _, test := range conformance.ControlFlowCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
-			report := dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			report := dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				outputs, err := v1.RunWithInputs(ctx, test.Workflow, test.Inputs)
 
 				return dst.Result{Transcript: outputs, Err: err}
@@ -92,17 +93,17 @@ func TestScheduleEquivalenceOverControlFlowCases(t *testing.T) {
 // its own while the base URL — which appears in failure text — stays one string
 // the comparison is not fooled by.
 //
-// [tests.UndoCase.UnorderedPrefix] carries over unchanged and is exactly the
+// [conformance.UndoCase.UnorderedPrefix] carries over unchanged and is exactly the
 // right line: the concurrent *work* a case does is the schedule's to order, and
 // the compensations that follow it are the claim.
 func TestScheduleEquivalenceOverUndoCases(t *testing.T) {
 	explored := 0
-	for index, outline := range tests.UndoCases(undoPlaceholderBase) {
+	for index, outline := range conformance.UndoCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.UndoCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.UndoCases(base)[index]
 
-			report := dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			report := dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				before := len(recorded())
 				_, err := v1.Run(ctx, test.Workflow)
 
@@ -126,12 +127,12 @@ func TestScheduleEquivalenceOverUndoCases(t *testing.T) {
 // boundary: a callee's compensations register onto the caller's stack and unwind
 // in reverse written order whatever the schedule did.
 func TestScheduleEquivalenceOverUndoCallCases(t *testing.T) {
-	for index, outline := range tests.UndoCallCases(undoPlaceholderBase) {
+	for index, outline := range conformance.UndoCallCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.UndoCallCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.UndoCallCases(base)[index]
 
-			dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				before := len(recorded())
 				_, err := v1.Run(ctx, test.Workflow)
 

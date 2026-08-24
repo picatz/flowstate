@@ -152,6 +152,25 @@ type TaskDef struct {
 	// tasks can compose with the same target catalog.
 	CredentialInputs []string
 
+	// SecretInputs names the inputs a plugin task accepts a *host* secret
+	// reference through — a Flowfile writes `${secret('vault:prod/api#token')}`,
+	// and a name here is what tells the host it may resolve that reference into
+	// this input before the request crosses into the plugin process, rather
+	// than refusing it. See TaskManifest.secret_inputs in plugin/v1 for the wire
+	// form and the full reasoning; only [Plugin.taskDef] populates this today.
+	//
+	// Deliberately not the same list as [TaskDef.AuthorityInputs] or
+	// [TaskDef.NestedSecretInputs] — see the note on AuthorityInputs for why a
+	// plugin task's secret inputs are not folded into either: enforcement reads
+	// this list where the wire actually carries it (the manifest, closed over in
+	// the plugin's task function), and reads AuthorityInputs and
+	// NestedSecretInputs for a built-in task's own secret-accepting inputs.
+	// This field exists so a *description* of the task — DescribeTask, the
+	// catalog, `flow plugins` — has something to read: before it, a plugin's
+	// claim to receive a host secret was enforced but invisible everywhere a
+	// reviewer or an operator would look for it (#712).
+	SecretInputs []string
+
 	// ShapesOutputs declares that this task evaluates its [ShapingInput] as a
 	// replacement for the outputs it declares.
 	//
@@ -204,6 +223,23 @@ type TaskDef struct {
 	// does not evaluate itself: there is nothing to check about an expression
 	// before it has a scope to be evaluated against.
 	CheckLiteral func(input string, value *Value) error
+
+	// StubResponseFn, when non-nil, is how a test harness answers this task
+	// with a raw *response* instead of already-shaped outputs: the task
+	// evaluates its own deferred inputs over the supplied response exactly as
+	// it would over a live one, so the expressions a stub would otherwise
+	// bypass — the http task's `outputs:` and `expect:`, the exact place a
+	// path typo lives — run for real under `flow test` (#925).
+	//
+	// What "a raw response" means is the task's own business, which is why
+	// this lives here rather than in the harness: response is the stub's
+	// declared fields as named values, and the task decodes them, refusing a
+	// name it does not define. inputs is the invocation's full input map,
+	// deferred expressions included, exactly as Fn would have received it.
+	// Nil for a task with no deferred response semantics — the harness
+	// refuses a `response:` stub aimed at one, naming `returns:` as the
+	// spelling that exists.
+	StubResponseFn func(ctx context.Context, inputs map[string]*Value, scope *Scope, response map[string]*Value) (*Node_Outputs, error)
 
 	// Fn executes the task.
 	Fn TaskFunc
@@ -297,7 +333,7 @@ type TaskDef struct {
 // in flight — the activity's own unknown-task error, which names the task and
 // lists what the run's registry offers ([TaskNamesIn]).
 //
-// And a blanket `true` would damage precisely that report. `tests.ErrorKindCases`
+// And a blanket `true` would damage precisely that report. `conformance.ErrorKindCases`
 // makes "unknown task is [ErrorKindUnknownTask]" a contract both drivers keep, on
 // the stated grounds that it is permanent; routing an unknown task to an arm a
 // worker may not have registered turns it into a retryable

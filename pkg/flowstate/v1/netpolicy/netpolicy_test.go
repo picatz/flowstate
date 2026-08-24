@@ -32,6 +32,29 @@ func requireDenied(t *testing.T, err error, reason Reason, detail string) {
 	require.Contains(t, denied.Error(), detail)
 }
 
+// stdlibTransport unwraps a policy's client down to the standard library
+// transport underneath it, asserting the layering on the way through.
+//
+// The order is part of the design rather than an accident: tracing is outermost
+// so that a request the policy refuses still produces a span, and the policy
+// sits directly above the transport so nothing can reach the dialer without
+// being checked. A test that reached the transport by any route would not notice
+// the layers being reordered.
+func stdlibTransport(t *testing.T, client *http.Client) *http.Transport {
+	t.Helper()
+
+	traced, ok := client.Transport.(*tracingRoundTripper)
+	require.True(t, ok, "tracing is the outermost round tripper")
+
+	checked, ok := traced.next.(*roundTripper)
+	require.True(t, ok, "the policy sits directly above the transport")
+
+	transport, ok := checked.next.(*http.Transport)
+	require.True(t, ok)
+
+	return transport
+}
+
 // testServer starts an HTTP server on loopback that serves body, and returns the
 // server with its port.
 func testServer(t *testing.T, body string) (*httptest.Server, int) {
@@ -376,11 +399,7 @@ func Test_New_defaults(t *testing.T) {
 	// installed for every other caller in the process.
 	require.NotSame(t, http.DefaultTransport, client.Transport)
 
-	rt, ok := client.Transport.(*roundTripper)
-	require.True(t, ok)
-
-	transport, ok := rt.next.(*http.Transport)
-	require.True(t, ok)
+	transport := stdlibTransport(t, client)
 	require.Nil(t, transport.Proxy, "proxies are disabled by default")
 	require.Equal(t, DefaultTLSHandshakeTimeout, transport.TLSHandshakeTimeout)
 	require.Equal(t, DefaultResponseHeaderTimeout, transport.ResponseHeaderTimeout)
@@ -579,7 +598,7 @@ func Test_options_transportSettings(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	transport := policy.Client().Transport.(*roundTripper).next.(*http.Transport)
+	transport := stdlibTransport(t, policy.Client())
 	require.Equal(t, 4*time.Second, transport.TLSHandshakeTimeout)
 	require.Equal(t, 5*time.Second, transport.ResponseHeaderTimeout)
 	require.NotNil(t, transport.Proxy, "the proxy opt-in installs a proxy function")
@@ -589,7 +608,7 @@ func Test_options_transportSettings(t *testing.T) {
 	// A custom proxy function is used as given.
 	custom, err := New(WithProxy(func(*http.Request) (*url.URL, error) { return nil, nil }))
 	require.NoError(t, err)
-	require.NotNil(t, custom.Client().Transport.(*roundTripper).next.(*http.Transport).Proxy)
+	require.NotNil(t, stdlibTransport(t, custom.Client()).Proxy)
 }
 
 func Test_Policy_Client_tls(t *testing.T) {
@@ -644,7 +663,7 @@ func Test_Policy_Client_tls(t *testing.T) {
 		policy, err := New(WithMinTLSVersion(tls.VersionTLS13))
 		require.NoError(t, err)
 
-		transport := policy.Client().Transport.(*roundTripper).next.(*http.Transport)
+		transport := stdlibTransport(t, policy.Client())
 		require.Equal(t, uint16(tls.VersionTLS13), transport.TLSClientConfig.MinVersion)
 		require.False(t, transport.TLSClientConfig.InsecureSkipVerify, "verification is never skipped")
 	})
@@ -704,6 +723,18 @@ func Test_Policy_Client_proxy(t *testing.T) {
 
 		_, err = get(t, policy, "http://127.0.0.2:9/")
 		requireDenied(t, err, ReasonAddress, "denied network 127.0.0.2/32")
+	})
+
+	t.Run("connection rules see the target address", func(t *testing.T) {
+		policy, err := New(
+			WithAllowLoopback(),
+			WithDenyRules(`ip == "127.0.0.2"`),
+			WithProxy(proxyFor),
+		)
+		require.NoError(t, err)
+
+		_, err = get(t, policy, "http://127.0.0.2:9/")
+		requireDenied(t, err, ReasonDenyRule, `ip == "127.0.0.2"`)
 	})
 
 	t.Run("a target that cannot be resolved is refused", func(t *testing.T) {
@@ -872,4 +903,66 @@ func TestDeniedNetworkStillCatchesAnEmbeddedAddress(t *testing.T) {
 		require.Error(t, policy.CheckAddr(netip.MustParseAddrPort(addr)),
 			"a denied network was reached through %s", addr)
 	}
+}
+
+// TestAProxiedTargetWithTooManyAddressesIsDenied pins the bound on the one
+// resource this check does not otherwise bound: how many addresses the target
+// name resolves to.
+//
+// WithRuleCostLimit bounds one rule against one address. The address count comes
+// from resolving a name the workflow chose, so the far side sets the multiplier
+// on the total work, and bounding the per-address cost bounds nothing in
+// aggregate.
+//
+// Both directions are asserted, because a bound is a claim about where the line
+// is and a test that only shows a refusal is also satisfied by a check that
+// refuses everything: exactly maxProxyTargetAddrs is checked and allowed, one
+// more is refused. The refusal names the count, so an operator who legitimately
+// points at a name with a very wide record set can tell this apart from the
+// policy simply denying them.
+func TestAProxiedTargetWithTooManyAddressesIsDenied(t *testing.T) {
+	resolving := func(t *testing.T, n int) {
+		t.Helper()
+
+		original := lookupTargetAddrs
+		lookupTargetAddrs = func(_ context.Context, _, _ string) ([]netip.Addr, error) {
+			addrs := make([]netip.Addr, 0, n)
+			for i := range n {
+				addrs = append(addrs, netip.AddrFrom4([4]byte{127, 0, 0, byte(i + 1)}))
+			}
+
+			return addrs, nil
+		}
+		t.Cleanup(func() { lookupTargetAddrs = original })
+	}
+
+	// A proxy that answers, standing in for a real forward proxy: with one
+	// configured the dialer never sees the target, which is the whole reason
+	// checkProxiedTarget resolves the name itself.
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "proxied to %s", r.Host)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+
+	policy, err := New(WithAllowLoopback(), WithProxy(func(*http.Request) (*url.URL, error) {
+		return proxyURL, nil
+	}))
+	require.NoError(t, err)
+
+	t.Run("at the bound", func(t *testing.T) {
+		resolving(t, maxProxyTargetAddrs)
+
+		_, err := get(t, policy, "http://wide.example:9/")
+		require.NoError(t, err, "a name resolving to exactly the bound must still be checked, not refused")
+	})
+
+	t.Run("past the bound", func(t *testing.T) {
+		resolving(t, maxProxyTargetAddrs+1)
+
+		_, err := get(t, policy, "http://wider.example:9/")
+		requireDenied(t, err, ReasonAddress, "more than the")
+	})
 }

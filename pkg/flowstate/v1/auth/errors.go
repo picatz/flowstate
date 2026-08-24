@@ -68,6 +68,13 @@ var (
 	// by an [Authenticator] with no verifier at all.
 	ErrInvalidPolicy = errors.New("auth: invalid authentication configuration")
 
+	// ErrDelegatedToken is returned when a token carries an RFC 8693 delegation
+	// claim — "act" or "may_act" — that this deployment has nowhere to map and
+	// therefore refuses rather than ignores. See [DelegationClaimError] for the
+	// claim key, and delegation.go for why the refusal is the verifier's and
+	// not one surface's.
+	ErrDelegatedToken = errors.New("auth: token carries an unsupported delegation claim")
+
 	// ErrAmbiguousIdentity is returned when a request carries both a verified
 	// client certificate and a bearer token, and they name different
 	// principals. Per CLAUDE.md's "fail closed", this is a refusal rather than
@@ -83,6 +90,12 @@ var (
 	// ErrInvalidIdentity is returned when a [WorkloadIdentity] or [StepRef] does
 	// not describe a workload well enough to mint an assertion for it.
 	ErrInvalidIdentity = errors.New("auth: invalid workload identity")
+
+	// ErrUndeclaredClaim is returned when a mint is asked to carry a claim the
+	// issuer does not declare. The claim set an assertion may carry is a closed
+	// set, and a name absent from it is refused rather than signed: see
+	// [Issuer.mintFor] and [WithDeclaredClaims].
+	ErrUndeclaredClaim = errors.New("auth: claim is not declared by this issuer")
 
 	// ErrNoSigningKey is returned when an [Issuer] has no key able to sign, which
 	// is the fail-closed outcome of a rotation that left none active.
@@ -318,7 +331,17 @@ func PublicReason(err error) string {
 // return to an unauthenticated caller.
 //
 // It names no configured value: never an expected audience, a claim name, a
-// claim value, an issuer, or a key id. Nor does it distinguish "signed by the
+// claim value, an issuer, or a key id.
+//
+// The one claim key it does name is a delegation claim the caller's own token
+// carried ("act" or "may_act", and never the object either one holds). That is
+// not a configured value: it is one of two constants, chosen by the token in
+// the caller's hand, and it tells a client which claim to stop sending rather
+// than anything about this deployment. Without it a delegated token and a
+// wrong-audience token refuse identically, which is a client that cannot fix
+// either — see [ErrDelegatedToken].
+//
+// Nor does it distinguish "signed by the
 // wrong key" from "names a key I do not know", which would let a caller map an
 // issuer's key set.
 //
@@ -351,6 +374,14 @@ func publicReason(err error) string {
 		return "token is missing a required claim"
 	case errors.Is(err, ErrInvalidAudience):
 		return "token audience is not accepted"
+	case errors.Is(err, ErrDelegatedToken):
+		// Placed before the claim cases below because a delegation refusal is
+		// not "your issuer forgot something": the claim is present and this
+		// deployment will not act on it.
+		if claim := delegationClaimOf(err); claim != "" {
+			return fmt.Sprintf("token carries an unsupported %q delegation claim", claim)
+		}
+		return "token carries an unsupported delegation claim"
 	case errors.Is(err, ErrClaimMismatch):
 		return "token is not accepted by the trust policy"
 	case errors.Is(err, ErrIssuerUnavailable):

@@ -122,6 +122,71 @@ func SelectSwitchCase(ctx context.Context, sw *Switch, scope *Scope) ([]*Node, *
 	return nil, record(nil), nil
 }
 
+// SwitchBodyError is the failure a switch raises when the body it selected
+// fails, carrying the selection that had already been made so the switch's own
+// transcript entry still says which arm ran.
+//
+// It is [LoopExhaustedError]'s shape applied to the other container whose failure
+// used to erase its own account. A switch records the observed value and the
+// matching literal ([SwitchValueOutput], [SwitchCaseOutput]) *after* its body
+// returns, so a body step that failed left the step's entry holding the failure
+// text alone — the branch that ran was no longer anywhere in the record. That
+// cost `flow test` a true statement: a case whose whole point is
+// `expect.failed: true` on an error arm did exercise that arm, handed back a
+// [PartialTranscript] with no `case` in it, and had the arm reported unreached,
+// so `--coverage-required` rejected a suite that covered it (issue #801, and
+// #453 for the transcript half of the same argument).
+//
+// Raised by both drivers at the point each detects the body failure, and consumed
+// by each driver's own step-failure recording site — the local driver's
+// failureRecord and the durable driver's failedAt — which read it *directly*,
+// never through an unwrap chain, for the containment reason [LoopExhaustedError]
+// spells out: the selection belongs to the switch's own entry and to no other, so
+// a failure propagating out through an enclosing call or for_each records as the
+// plain failure it is at that level.
+//
+// Unwrap is present, and it is what keeps the wrapping invisible everywhere else:
+// cancellation is still recognised through it, [StepErrorText] still finds the
+// task failure inside, and the durable driver's message extraction still reads
+// the nested run failure one level down. The text a reader gets is the body
+// failure's own, unchanged.
+type SwitchBodyError struct {
+	// Err is the body's failure, exactly as it was raised.
+	Err error
+
+	// Selection is what [SelectSwitchCase] decided before the body ran: the
+	// observed value and the case literal that matched.
+	Selection *Node_Outputs
+}
+
+// Error is the body failure's own sentence, verbatim: the selection travels
+// beside the failure, never inside the text an author's tooling matches on.
+func (e *SwitchBodyError) Error() string { return e.Err.Error() }
+
+// Unwrap exposes the body failure, so every errors.Is and errors.As question
+// asked about it — cancellation, a [TaskError], a nested run failure — gets the
+// answer it would have got had the switch not wrapped it.
+func (e *SwitchBodyError) Unwrap() error { return e.Err }
+
+// Record shapes the failure into the outputs recorded under the switch's own
+// step id: the failure text under [StepErrorOutput], plus the selection the
+// switch had already made, so a failed switch's entry names its arm exactly as a
+// completed one's does.
+//
+// text is the failure sentence the calling driver has already rendered, and
+// rendering it here instead is precisely how the two drivers would disagree: the
+// durable driver's body failure arrives wrapped in this engine's own words
+// (`engine: flowstate run failed: …`), which only its own extraction sheds. See
+// [StepFailureRecord].
+func (e *SwitchBodyError) Record(text string) *Node_Outputs {
+	out := FailedStepOutputs(text)
+	for name, value := range e.Selection.GetNamedValues() {
+		out.NamedValues[name] = value
+	}
+
+	return out
+}
+
 // evalSwitchValue evaluates the discriminant to the literal that goes on the
 // record. A literal passes through, exactly as a `value:` step's does.
 func evalSwitchValue(ctx context.Context, value *Value, scope *Scope) (*expr.Value, error) {

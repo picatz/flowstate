@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -105,8 +106,9 @@ func encodePageCursor(page, skip int, fp fingerprint) string {
 // decides whether a string is shaped like a value this plugin could ever
 // have emitted - checked structurally (bounded length, valid base64,
 // exactly cursorRawLen decoded bytes, this task's own magic prefix, a page
-// number of at least 1) before a single byte of it is trusted for
-// anything else. It does not check the fingerprint against a caller's
+// number that fits this worker and a skip smaller than the largest page
+// this task requests) before a single byte of it is trusted for anything
+// else. It does not check the fingerprint against a caller's
 // current filters - that comparison needs the caller's own filters in
 // hand, so it is done by whichever list task calls this (see
 // requireCursorFingerprint below), the same "decode structurally here,
@@ -136,6 +138,35 @@ func decodePageCursor(raw string) (pageCursor, error) {
 	if page < 1 {
 		return pageCursor{}, fmt.Errorf("cursor names page %d, which this task never emits", page)
 	}
+	// A page number this worker's own int cannot hold is refused rather
+	// than silently truncated into one it can. Unreachable on a 64-bit
+	// worker - page is a uint32, so every value it can carry fits - and
+	// load-bearing only on a 32-bit one (GOARCH=386, arm), where a page at
+	// or past 1<<31 becomes a negative int. That is not a crash:
+	// paginateBounded's own "if page < 1 { page = 1 }" would clamp it. It is
+	// the worse thing, a wrong answer wearing a working call's clothes -
+	// a walk quietly restarted from page one under a cursor that named a
+	// different page. Refusing it is the fail-closed reading, and the
+	// diagnostic says which value was impossible.
+	if uint64(page) > uint64(math.MaxInt) {
+		return pageCursor{}, fmt.Errorf("cursor names page %d, which does not fit this worker's integer size", page)
+	}
+	// skip is an index into a page this task itself asked for, and no page
+	// this task asks for is larger than maxPerPage (perPage is always
+	// min(maxPerPage, max_results+1); paginateBounded clamps an
+	// over-delivering peer's response to the perPage it requested precisely
+	// so this stays true - see its own doc comment). So a skip at or past
+	// maxPerPage is not a position this plugin ever emitted, whoever
+	// produced it, and it is refused here rather than carried into
+	// paginateBounded as a slice index: the fingerprint is an unkeyed hash
+	// over filters a caller already knows, so a cursor is forgeable and
+	// every field of one is checked structurally before it is trusted, not
+	// only the fields a cooperative caller could get wrong by accident.
+	if skip >= maxPerPage {
+		return pageCursor{}, fmt.Errorf(
+			"cursor names within-page skip %d, want less than the maximum page size %d: not a value this task ever emitted",
+			skip, maxPerPage)
+	}
 	var fp fingerprint
 	copy(fp[:], rest[8:])
 	return pageCursor{page: int(page), skip: int(skip), fingerprint: fp}, nil
@@ -143,14 +174,28 @@ func decodePageCursor(raw string) (pageCursor, error) {
 
 // filterFingerprint hashes an ordered list of "key=value" filter strings a
 // list task built its walk from - order matters (callers always pass the
-// same fields in the same order) and a nul byte separates each pair so
-// that, for instance, fields "a=1" then "b=" cannot collide with "a=1b="
-// then "" the way plain concatenation could.
+// same fields in the same order), and each field is hashed length-prefixed:
+// an 8-byte big-endian length, then the field's bytes, with the field count
+// itself prefixed the same way ahead of all of them.
+//
+// Length-prefixed rather than delimiter-separated, per CLAUDE.md's own "no
+// separator fixes an ambiguous encoding": a nul byte between fields keeps
+// "a=1" then "b=" apart from "a=1b=" then "" only for as long as no field
+// can itself contain a nul, and nothing in this plugin's validation
+// promises that of every value it fingerprints - issue_list's labels are
+// bounded by count and per-entry length, not by character class (see
+// validateLabels). A length prefix needs no such promise: the encoding of
+// a field list is unique whatever bytes the fields hold, so two different
+// filter sets cannot hash alike however a caller spells them.
 func filterFingerprint(fields ...string) fingerprint {
 	h := sha256.New()
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(fields)))
+	h.Write(n[:])
 	for _, f := range fields {
+		binary.BigEndian.PutUint64(n[:], uint64(len(f)))
+		h.Write(n[:])
 		h.Write([]byte(f))
-		h.Write([]byte{0})
 	}
 	var out fingerprint
 	copy(out[:], h.Sum(nil))
@@ -172,18 +217,30 @@ func requireCursorFingerprint(cur pageCursor, current fingerprint) error {
 	return nil
 }
 
-// normalizeBaseURL is the form of base_url every list task's own fingerprint
-// hashes, rather than the raw input string - trimming only the one piece of
-// variation newClient itself introduces (a trailing slash, always appended
-// back by newClient before use, so "https://x" and "https://x/" already
-// name the identical API endpoint and must fingerprint identically too).
+// canonicalAPIBase is the one spelling of an API base this plugin uses
+// wherever two spellings must compare equal - effectiveAPIBase's own
+// comparison against the operator-configured base, and the api_base field
+// of every list task's cursor fingerprint.
+//
+// Two differences mean nothing and are erased here. A trailing slash is the
+// variation newClient itself introduces (it appends one back before use, so
+// "https://x" and "https://x/" already name the identical API endpoint).
+// And the empty string is github.com: an unset base_url reaches
+// api.github.com, so it must canonicalize to the same value an explicitly
+// spelled "https://api.github.com" does, or one endpoint would fingerprint
+// two ways depending on how a caller happened to write it.
+//
 // Deliberately not a fuller normalization (case-folding the host, resolving
 // "..", and so on): base_url is checked as a valid URL by newClient itself
-// before a request is ever made, so this only needs to erase the one
-// difference that means nothing, not defend against a malformed value -
-// that is validateRepositoryURL/newClient's job, not the fingerprint's.
-func normalizeBaseURL(raw string) string {
-	return strings.TrimSuffix(raw, "/")
+// before a request is ever made, so this only needs to erase the
+// differences that mean nothing, not defend against a malformed value -
+// that is newClient's job, not the fingerprint's.
+func canonicalAPIBase(raw string) string {
+	base := strings.TrimSuffix(raw, "/")
+	if base == "" {
+		return defaultAPIBaseURL
+	}
+	return base
 }
 
 // cursorHasResumePosition reports whether (nextPage, nextSkip) - what a

@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -135,8 +134,9 @@ func acmeRequested(flags acmeFlags) bool {
 // acmeSettings is the outcome of validating an operator's ACME configuration:
 // a Manager ready to hand a *tls.Config, and the watchdog's inputs.
 type acmeSettings struct {
-	hosts   []string
-	manager *autocert.Manager
+	hosts      []string
+	manager    *autocert.Manager
+	minVersion uint16
 }
 
 // resolveACMESettings validates every fail-closed rule #581 decided and, only
@@ -149,6 +149,11 @@ type acmeSettings struct {
 func resolveACMESettings(flags acmeFlags, tlsListener tlsFlags, internalListenAddr string, federationIssuer string) (*acmeSettings, error) {
 	if !acmeRequested(flags) {
 		return nil, nil
+	}
+
+	minVersion, err := tlsMinVersion(tlsListener.minVersion)
+	if err != nil {
+		return nil, err
 	}
 
 	// ACME together with an explicit certificate file is refused rather than
@@ -276,7 +281,7 @@ func resolveACMESettings(flags acmeFlags, tlsListener tlsFlags, internalListenAd
 		manager.Client = &client
 	}
 
-	return &acmeSettings{hosts: hosts, manager: manager}, nil
+	return &acmeSettings{hosts: hosts, manager: manager, minVersion: minVersion}, nil
 }
 
 // acmeClientFor builds the low-level ACME client [resolveACMESettings] hands
@@ -294,7 +299,9 @@ func acmeClientFor(directoryURL string) acme.Client {
 // this file's package comment — so this is the whole of how a certificate
 // reaches a connection.
 func (s *acmeSettings) tlsConfig() *tls.Config {
-	return s.manager.TLSConfig()
+	cfg := s.manager.TLSConfig()
+	cfg.MinVersion = s.minVersion
+	return cfg
 }
 
 // # ACME's own validation connection versus --tls-client-auth require
@@ -442,19 +449,7 @@ func checkACMECacheDir(path string) error {
 		return fmt.Errorf("--tls-acme-cache %s is not a directory", path)
 	}
 
-	// See cmd/flow/keys.go's identical carve-out: Windows has no POSIX
-	// permission bits, so Perm() there reflects nothing this check could act
-	// on, and enforcing it would refuse every directory rather than an
-	// actually-too-open one.
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("--tls-acme-cache %s has mode %s; this must be readable and "+
-			"writable by its owner only (0700) because it holds an ACME account key and "+
-			"issued certificates' private keys", path, info.Mode().Perm())
-	}
-	return nil
+	return checkACMECacheDirSecurity(path, info)
 }
 
 // primeACMECertificates obtains (or renews) a certificate for every

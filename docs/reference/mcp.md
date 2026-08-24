@@ -94,6 +94,8 @@ Signal delivers a signal to a run waiting for one, which is how a human approval
 
 This addresses a durable run. A local run is a process with nobody to signal it once it has started, so `flow run local` answers its gates from flags instead. What the two drivers share is the payload and everything downstream of it: the same signal name, the same outputs, the same expressions reading them. That is the part that has to match for a local run to tell an author what production will do.
 
+`SignalResponse` is empty: it says the signal was accepted, not what the run did with it. Call `Get` afterward to see whether a waiting step consumed it.
+
 ## `flowstate_signal_with_start`
 
 SignalWithStart delivers a signal to the entity holding a business key, an order id or a subscription id, creating that entity if this is the first event for the key.
@@ -112,9 +114,13 @@ So the scan is bounded instead, and the bound is on how many executions the serv
 
 Cancel asks a run to stop and lets it clean up on the way out.
 
+`CancelResponse` is empty: it says the stop request was accepted, not that the run has stopped. Call `Get` afterward to see the run's final status.
+
 ## `flowstate_terminate`
 
 Terminate stops a run immediately, running none of its cleanup. Prefer Cancel; see CancelRequest for when this is the right answer anyway.
+
+`TerminateResponse` is empty: the run is already stopped by the time this returns, so a follow-up call to `Get` confirms status rather than awaiting it.
 
 ## `flowstate_create_schedule`
 
@@ -171,6 +177,8 @@ Execute a Flowfile immediately, in this process, with no server and no Temporal,
 Fail-closed by default: network egress from `http:` steps is denied and no secret scheme is registered unless the operator started this server with the flags that permit them (--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments can widen that, so a denied request means the server was not configured for it, not that the workflow is wrong.
 
 What it does not prove: durability. A local run has no run id, nothing can watch it, it does not survive this process, Continue-As-New compaction never happens, and parallel steps are rehearsed rather than genuinely distributed. Submit the compiled specification with flowstate_run when the rehearsal is right.
+
+Bounded: `sleep: 24h` is a legal Flowfile, and this call holds this turn open for as long as the workflow runs, so the operator's --run-local-timeout (default 2m) stops execution and reports the run as timed out rather than letting an untrusted workflow hold the call forever.
 
 A source declaring `inputs:` is given them in the `inputs` object of this call, keyed by declared name and typed as declared; a required one left out, an undeclared name, or a mistyped value is refused before any step runs. What the source declares under `outputs:` comes back as `runOutputs`.
 

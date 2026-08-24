@@ -188,6 +188,30 @@ func (ix *lineIndex) offsetOfPosition(p lsp.Position) int {
 	return ix.starts[p.Line] + ix.byteOfUTF16(p.Line, p.Character)
 }
 
+// clampPosition brings a position with negative coordinates back to the
+// document's origin.
+//
+// LSP spells a position's line and character as `uinteger`, so a negative one is
+// not a position a conforming client can send — which is exactly why it is worth
+// refusing at the boundary rather than assuming. go-lsp decodes both fields into
+// `int`, so `-1` arrives intact from anything that sends it, and the analyzers
+// then carry it through their answers: every helper above clamps a negative
+// *before reading text* with it ([lineIndex.line], [lineIndex.byteOfUTF16],
+// [lineIndex.offsetOfPosition]), so nothing indexes out of range, but a position
+// that is never read from is a position that is echoed back out. [rangeBack]
+// clamps the start it computes and hands the request's own position back as the
+// end, so a character of -1 produced the range `-1:0` to `-1:-1` — a completion
+// edit running backwards, which an editor either refuses or applies to the wrong
+// text. Found by [FuzzLSPDocumentEdits].
+//
+// Clamping rather than refusing, because the request is answerable: the origin
+// is the position an out-of-range coordinate is closest to, and it is what the
+// helpers below already read as if it had been sent. This makes the answer say
+// the same thing.
+func clampPosition(p lsp.Position) lsp.Position {
+	return lsp.Position{Line: max(p.Line, 0), Character: max(p.Character, 0)}
+}
+
 // rangeOfOffsets converts a byte offset span into an LSP range.
 func (ix *lineIndex) rangeOfOffsets(start, end int) lsp.Range {
 	if end < start {

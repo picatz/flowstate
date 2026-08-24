@@ -336,3 +336,87 @@ func TestRequireClaimHelpers(t *testing.T) {
 	require.Equal(t, auth.ClaimRule{Claim: "sub", AnyOf: []string{"runner"}}, auth.RequireClaim("sub", "runner"))
 	require.Equal(t, auth.ClaimRule{Claim: "ref", AnyOf: []string{"main", "release"}}, auth.RequireClaimAnyOf("ref", "main", "release"))
 }
+
+// TestValidateHTTPSURL checks the host requirement against the shape url.Parse
+// actually produces, not the shape it looks like it produces. url.Parse keeps a
+// bare port in Host without a hostname (url.Parse("https://:443/x").Host ==
+// ":443" while Hostname() == ""), so a check against Host rather than Hostname
+// accepts a URL that names no host at all — see #971.
+func TestValidateHTTPSURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string // substring expected in the error, "" if no error expected
+	}{
+		{
+			name: "a normal https URL",
+			url:  "https://issuer.example.com",
+		},
+		{
+			name: "an https URL with a path",
+			url:  "https://issuer.example.com/.well-known/jwks.json",
+		},
+		{
+			name: "http against loopback by name",
+			url:  "http://localhost:8080",
+		},
+		{
+			name: "http against loopback by address",
+			url:  "http://127.0.0.1:8080",
+		},
+		{
+			name:    "a host-free URL with a bare port",
+			url:     "https://:443/x",
+			wantErr: "must name a host",
+		},
+		{
+			name:    "a host-free URL with credentials and a bare port",
+			url:     "https://user@:443/x",
+			wantErr: "must name a host",
+		},
+		{
+			name:    "no host at all",
+			url:     "https:///x",
+			wantErr: "must name a host",
+		},
+		{
+			name:    "http against a non-loopback host",
+			url:     "http://issuer.example.com",
+			wantErr: "must use https",
+		},
+		{
+			name:    "credentials in the URL",
+			url:     "https://user:pass@issuer.example.com",
+			wantErr: "must not include credentials",
+		},
+		{
+			name:    "an unsupported scheme",
+			url:     "ftp://issuer.example.com",
+			wantErr: "must use https",
+		},
+		{
+			name:    "not a URL at all",
+			url:     "://not a url",
+			wantErr: "is not a valid URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := auth.ValidateHTTPSURL(tt.url, "issuer")
+
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				require.NotNil(t, parsed)
+				return
+			}
+
+			require.Error(t, err)
+			require.Nil(t, parsed)
+			require.ErrorContains(t, err, tt.wantErr)
+			// The diagnostic names the field the operator configured, in the
+			// caller's own vocabulary, not the function's name.
+			require.ErrorContains(t, err, "issuer")
+		})
+	}
+}

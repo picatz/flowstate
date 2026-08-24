@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
-// TestRunWorkflowAsyncUnwind is the local half of [tests.AsyncUnwindCases]: what
+// TestRunWorkflowAsyncUnwind is the local half of [conformance.AsyncUnwindCases]: what
 // a scope owes the work it started when it is on its way out failing. The engine
 // package runs the identical set against the durable driver.
 //
@@ -42,17 +42,17 @@ func TestRunWorkflowAsyncUnwind(t *testing.T) {
 		{name: "adversarial order", scheduler: v1.AdversarialOrder},
 	} {
 		t.Run(schedule.name, func(t *testing.T) {
-			for index, outline := range tests.AsyncUnwindCases(undoPlaceholderBase) {
+			for index, outline := range conformance.AsyncUnwindCases(undoPlaceholderBase) {
 				t.Run(outline.Name, func(t *testing.T) {
-					base, recorded := tests.NewUndoServer(t)
-					test := tests.AsyncUnwindCases(base)[index]
+					base, recorded := conformance.NewUndoServer(t)
+					test := conformance.AsyncUnwindCases(base)[index]
 
 					_, err := v1.Run(scheduled(t.Context(), schedule.scheduler), test.Workflow)
 					require.Error(t, err, "the run was expected to fail")
 					require.Contains(t, err.Error(), test.Summary,
 						"the failure does not carry the account of what was compensated")
 
-					tests.AssertRecorded(t, test, recorded())
+					conformance.AssertRecorded(t, test, recorded())
 				})
 			}
 		})
@@ -69,10 +69,10 @@ func TestRunWorkflowAsyncUnwind(t *testing.T) {
 // schedule that is reached every run — and because this is the shape in which
 // the drain defect first showed up.
 func TestRunWorkflowUndoUnderAnAdversarialSchedule(t *testing.T) {
-	for index, outline := range tests.UndoCases(undoPlaceholderBase) {
+	for index, outline := range conformance.UndoCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.UndoCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.UndoCases(base)[index]
 
 			_, err := v1.Run(v1.NewContextWithScheduler(t.Context(), v1.AdversarialOrder), test.Workflow)
 			if !test.Fails {
@@ -83,7 +83,7 @@ func TestRunWorkflowUndoUnderAnAdversarialSchedule(t *testing.T) {
 					"the failure does not carry the account of what was compensated")
 			}
 
-			tests.AssertRecorded(t, test, recorded())
+			conformance.AssertRecorded(t, test, recorded())
 		})
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	"github.com/picatz/flowstate/cmd/flow/internal/watch"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -42,7 +43,7 @@ func terminalSurface(width, height int, profile colorprofile.Profile) (*ui.UI, *
 // The model is a value, so Update returns a new one each time and the sequence has
 // to be threaded — which is exactly the property that makes a bubbletea model
 // testable without a program, and exactly the one a helper like this is for.
-func fold(t *testing.T, model watchModel, msgs ...tea.Msg) watchModel {
+func fold(t *testing.T, model watch.Model, msgs ...tea.Msg) watch.Model {
 	t.Helper()
 
 	current := tea.Model(model)
@@ -50,14 +51,14 @@ func fold(t *testing.T, model watchModel, msgs ...tea.Msg) watchModel {
 		current, _ = current.Update(msg)
 	}
 
-	folded, ok := current.(watchModel)
+	folded, ok := current.(watch.Model)
 	require.True(t, ok, "Update returned a %T", current)
 
 	return folded
 }
 
 // viewOf renders a model's screen as a string.
-func viewOf(model watchModel) string {
+func viewOf(model watch.Model) string {
 	return model.View().Content
 }
 
@@ -132,10 +133,10 @@ func TestWatchViewShowsProgressAsItArrives(t *testing.T) {
 
 	require.Contains(t, drawn, "q stops watching")
 
-	final, ok := tm.FinalModel(t).(watchModel)
+	final, ok := tm.FinalModel(t).(watch.Model)
 	require.True(t, ok)
-	require.Equal(t, v1.RunResponse_STATUS_COMPLETED, final.state.status)
-	require.False(t, final.quit, "the run finishing was recorded as the person quitting")
+	require.Equal(t, v1.RunResponse_STATUS_COMPLETED, final.State().Status())
+	require.False(t, final.Quit(), "the run finishing was recorded as the person quitting")
 }
 
 // TestWatchViewShowsThePositionAdvancing is the same claim as the test above, made
@@ -169,7 +170,7 @@ func TestWatchViewShowsThePositionAdvancing(t *testing.T) {
 		{runningAt("deploy", "each", "upload"), "on deploy > each > upload",
 			"the path into the step was dropped, so a loop's iterations are indistinguishable"},
 	} {
-		model = fold(t, model, watchStateMsg{at: observed, response: step.answer.response})
+		model = fold(t, model, watch.StateMsg{At: observed, Response: step.answer.response})
 
 		drawn := viewOf(model)
 		require.Contains(t, drawn, step.want, step.why)
@@ -180,7 +181,7 @@ func TestWatchViewShowsThePositionAdvancing(t *testing.T) {
 			"more than one position on screen at once:\n%s", drawn)
 	}
 
-	finished := fold(t, model, watchStateMsg{at: observed, response: finishedPoll("checkout", "build", "deploy").response})
+	finished := fold(t, model, watch.StateMsg{At: observed, Response: finishedPoll("checkout", "build", "deploy").response})
 	require.Contains(t, viewOf(finished), "COMPLETED", "the run ended and the view did not say so")
 }
 
@@ -196,7 +197,7 @@ func TestWatchViewShowsWhatIsBeingRetried(t *testing.T) {
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: 80, Height: 24},
-		watchStateMsg{at: observed, response: retryingAt("deploy", 4, "connection refused").response},
+		watch.StateMsg{At: observed, Response: retryingAt("deploy", 4, "connection refused").response},
 	)
 
 	drawn := viewOf(folded)
@@ -208,7 +209,7 @@ func TestWatchViewShowsWhatIsBeingRetried(t *testing.T) {
 
 	// And it goes away when the run stops retrying, rather than persisting as a
 	// warning about something that has already recovered.
-	recovered := fold(t, folded, watchStateMsg{at: observed, response: runningAt("deploy").response})
+	recovered := fold(t, folded, watch.StateMsg{At: observed, Response: runningAt("deploy").response})
 	require.NotContains(t, viewOf(recovered), "attempt 4",
 		"a retry that had recovered was still on screen")
 }
@@ -266,10 +267,10 @@ func TestWatchViewStopsOnEveryKeyThatMeansStop(t *testing.T) {
 			tm.Send(key)
 			tm.WaitFinished(t, teatest.WithFinalTimeout(10*time.Second))
 
-			final, ok := tm.FinalModel(t).(watchModel)
+			final, ok := tm.FinalModel(t).(watch.Model)
 			require.True(t, ok)
-			require.True(t, final.quit, "%s did not stop the watch", name)
-			require.Equal(t, v1.RunResponse_STATUS_RUNNING, final.state.status)
+			require.True(t, final.Quit(), "%s did not stop the watch", name)
+			require.Equal(t, v1.RunResponse_STATUS_RUNNING, final.State().Status())
 		})
 	}
 }
@@ -291,11 +292,11 @@ func TestWatchViewIgnoresKeysThatMeanNothing(t *testing.T) {
 		{Code: tea.KeyEnter},
 		{Code: 'd', Mod: tea.ModCtrl},
 	} {
-		updated, cmd := model.key(key)
+		updated, cmd := model.Key(key)
 
-		folded, ok := updated.(watchModel)
+		folded, ok := updated.(watch.Model)
 		require.True(t, ok)
-		require.False(t, folded.quit, "%q stopped the watch", key.String())
+		require.False(t, folded.Quit(), "%q stopped the watch", key.String())
 		require.Nil(t, cmd, "%q produced a command", key.String())
 	}
 }
@@ -318,9 +319,9 @@ func TestWatchViewMeasuresElapsedFromItsOwnMessages(t *testing.T) {
 
 	start := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)
 	folded := fold(t, model,
-		watchPollMsg{at: start},
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING)},
-		watchPollMsg{at: start.Add(42 * time.Second)},
+		watch.PollMsg{At: start},
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING)},
+		watch.PollMsg{At: start.Add(42 * time.Second)},
 	)
 
 	require.Contains(t, viewOf(folded), "watching for 42s")
@@ -334,9 +335,9 @@ func TestWatchViewSaysWhyNothingIsMoving(t *testing.T) {
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: 80, Height: 24},
-		watchPollMsg{at: time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)},
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")},
-		watchStateMsg{err: transientRefusal()},
+		watch.PollMsg{At: time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)},
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")},
+		watch.StateMsg{Err: transientRefusal()},
 	)
 
 	drawn := viewOf(folded)
@@ -356,8 +357,8 @@ func TestWatchViewShowsAFailureMessage(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
 	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 
-	folded := fold(t, model, watchStateMsg{
-		response: failedResponse(v1.RunResponse_STATUS_FAILED, `step "deploy" could not reach the registry`),
+	folded := fold(t, model, watch.StateMsg{
+		Response: failedResponse(v1.RunResponse_STATUS_FAILED, `step "deploy" could not reach the registry`),
 	})
 
 	drawn := viewOf(folded)
@@ -382,10 +383,10 @@ func TestWatchViewCapsTheStepListAndSaysHowMany(t *testing.T) {
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: 80, Height: 24},
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, steps...)},
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, steps...)},
 	)
 
-	visible := folded.visibleSteps()
+	visible := folded.VisibleSteps()
 	require.Less(t, visible, len(steps), "the terminal was tall enough not to cap, so nothing is under test")
 
 	drawn := viewOf(folded)
@@ -408,10 +409,10 @@ func TestWatchViewFitsAShortTerminal(t *testing.T) {
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: 80, Height: 4},
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "a", "b", "c", "d", "e")},
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "a", "b", "c", "d", "e")},
 	)
 
-	require.GreaterOrEqual(t, folded.visibleSteps(), 3)
+	require.GreaterOrEqual(t, folded.VisibleSteps(), 3)
 	require.Contains(t, viewOf(folded), "5 step(s) done")
 }
 
@@ -426,7 +427,7 @@ func TestWatchViewFitsTheTerminal(t *testing.T) {
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: width, Height: 24},
-		watchStateMsg{response: failedResponse(v1.RunResponse_STATUS_FAILED, strings.Repeat("cause ", 40))},
+		watch.StateMsg{Response: failedResponse(v1.RunResponse_STATUS_FAILED, strings.Repeat("cause ", 40))},
 	)
 
 	for _, line := range strings.Split(viewOf(folded), "\n") {
@@ -448,9 +449,9 @@ func TestWatchViewFollowsTheTerminalItIsToldAbout(t *testing.T) {
 
 	narrowed := fold(t, model,
 		tea.WindowSizeMsg{Width: 30, Height: 24},
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
-	require.Equal(t, 30, narrowed.viewWidth(), "a resize narrower than the surface was ignored")
+	require.Equal(t, 30, narrowed.ViewWidth(), "a resize narrower than the surface was ignored")
 	for _, line := range strings.Split(viewOf(narrowed), "\n") {
 		require.LessOrEqual(t, len([]rune(line)), 30, "a line ran past the resized terminal: %q", line)
 	}
@@ -459,24 +460,24 @@ func TestWatchViewFollowsTheTerminalItIsToldAbout(t *testing.T) {
 	// bounded to a readable measure like every surface that prints.
 	widened := fold(t, model,
 		tea.WindowSizeMsg{Width: 300, Height: 24},
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
-	require.Equal(t, ui.ClampWidth(300), widened.viewWidth(),
+	require.Equal(t, ui.ClampWidth(300), widened.ViewWidth(),
 		"a very wide terminal was taken at its word, so this view is wider than every other")
-	require.Less(t, widened.viewWidth(), 300)
+	require.Less(t, widened.ViewWidth(), 300)
 
 	// A terminal that could not be measured at all still gets a width to lay out
 	// against, so nothing here divides by nothing or draws one line per word.
 	unmeasured := fold(t, model, tea.WindowSizeMsg{Width: 0, Height: 0})
-	require.Positive(t, unmeasured.viewWidth(), "an unmeasurable terminal left the view with no width")
-	require.Equal(t, ui.ClampWidth(0), unmeasured.viewWidth())
+	require.Positive(t, unmeasured.ViewWidth(), "an unmeasurable terminal left the view with no width")
+	require.Equal(t, ui.ClampWidth(0), unmeasured.ViewWidth())
 
 	// And the height, which decides how many steps fit.
 	tall := fold(t, model, tea.WindowSizeMsg{Width: 80, Height: 200})
-	require.Equal(t, maxVisibleSteps, tall.visibleSteps())
+	require.Equal(t, watch.MaxVisibleSteps, tall.VisibleSteps())
 
 	short := fold(t, model, tea.WindowSizeMsg{Width: 80, Height: 10})
-	require.Less(t, short.visibleSteps(), maxVisibleSteps,
+	require.Less(t, short.VisibleSteps(), watch.MaxVisibleSteps,
 		"a short terminal was told nothing about its height")
 }
 
@@ -494,7 +495,7 @@ func TestWatchViewTrimsIdentifiersAndWrapsProse(t *testing.T) {
 
 	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, id, nil),
 		tea.WindowSizeMsg{Width: width, Height: 40},
-		watchStateMsg{response: failedResponse(v1.RunResponse_STATUS_FAILED,
+		watch.StateMsg{Response: failedResponse(v1.RunResponse_STATUS_FAILED,
 			"the registry refused the push because the tag already exists")},
 	)
 
@@ -519,8 +520,8 @@ func TestWatchViewTrimsIdentifiersAndWrapsProse(t *testing.T) {
 func TestWatchViewSurvivesItsOwnStyling(t *testing.T) {
 	msgs := []tea.Msg{
 		tea.WindowSizeMsg{Width: 100, Height: 40},
-		watchPollMsg{at: time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)},
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout", "build")},
+		watch.PollMsg{At: time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)},
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout", "build")},
 	}
 
 	plainSurf, _, _ := terminalSurface(100, 40, colorprofile.NoTTY)
@@ -556,7 +557,7 @@ func TestWatchViewIsStyledForTheStreamItDrawsOn(t *testing.T) {
 	surface := ui.ForCapabilities(&out, &errOut, piped, terminal)
 
 	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w", nil),
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
 	require.Contains(t, viewOf(folded), "\x1b[",
 		"the view was drawn plain because stdout is a pipe, on a terminal that is not")
@@ -577,7 +578,7 @@ func TestWatchViewUsesASCIIWhereMarksAreNotSafe(t *testing.T) {
 	surface := ui.ForCapabilities(&out, &errOut, ascii, ascii)
 
 	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w", nil),
-		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
+		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
 	drawn := viewOf(folded)
 	require.Contains(t, drawn, ascii.Symbols().Success)
@@ -600,19 +601,19 @@ func TestWatchViewTimesEveryPollItPerforms(t *testing.T) {
 		&scriptedPoller{answers: []pollAnswer{{err: transientRefusal()}}},
 		time.Second, "flowstate-workflow-3f7c", nil)
 
-	msg, ok := model.fetch()().(watchStateMsg)
+	msg, ok := model.Fetch()().(watch.StateMsg)
 	require.True(t, ok, "a poll produced a %T", msg)
-	require.False(t, msg.at.IsZero(),
+	require.False(t, msg.At.IsZero(),
 		"a poll result carried no observation time, so the outage allowance can never advance")
 
 	// And it reaches the state machine, rather than being carried and dropped.
 	folded := fold(t, model,
-		watchStateMsg{at: observed, err: transientRefusal()},
-		watchStateMsg{at: observed.Add(outageAllowance), err: transientRefusal()})
+		watch.StateMsg{At: observed, Err: transientRefusal()},
+		watch.StateMsg{At: observed.Add(outageAllowance), Err: transientRefusal()})
 
-	require.True(t, folded.state.gaveUp,
+	require.True(t, folded.State().GaveUp(),
 		"the live view did not give up after the whole allowance had passed")
-	require.ErrorContains(t, watchEnding(surface, folded), "gave up")
+	require.ErrorContains(t, watchEnding(surface, renderingOf(FormatText), folded), "gave up")
 }
 
 // TestWatchViewTreatsAnInterruptedPollAsStopping is the live shape's half of the same
@@ -626,15 +627,15 @@ func TestWatchViewTreatsAnInterruptedPollAsStopping(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	model := newWatchModel(ctx, surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
-	model = fold(t, model, watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
+	model = fold(t, model, watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
 	cancel()
-	folded := fold(t, model, watchStateMsg{err: transientRefusal()})
+	folded := fold(t, model, watch.StateMsg{Err: transientRefusal()})
 
-	require.True(t, folded.quit, "an interrupted poll was not recognised as the watcher stopping")
-	require.False(t, folded.state.gaveUp,
+	require.True(t, folded.Quit(), "an interrupted poll was not recognised as the watcher stopping")
+	require.False(t, folded.State().GaveUp(),
 		"an interrupted watch recorded the server as having stopped answering")
-	require.NoError(t, watchEnding(surface, folded))
+	require.NoError(t, watchEnding(surface, renderingOf(FormatText), folded))
 }
 
 // TestWatchEndingReportsTheRunUnlessTheWatcherStopped is the join between the live
@@ -647,10 +648,14 @@ func TestWatchEndingReportsTheRunUnlessTheWatcherStopped(t *testing.T) {
 	t.Run("the watcher stopped", func(t *testing.T) {
 		surface, out, _ := plainSurface()
 		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
-		folded := fold(t, model, watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
-		folded.quit = true
+		folded := fold(t, model,
+			watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")},
+			// The person pressing q, rather than poking the unexported field
+			// directly — Model's fields live in another package now, so the
+			// keyboard is the only way in, which is also the more honest test.
+			tea.KeyPressMsg{Code: 'q', Text: "q"})
 
-		require.NoError(t, watchEnding(surface, folded),
+		require.NoError(t, watchEnding(surface, renderingOf(FormatText), folded),
 			"an interrupted watch was reported as a failed run")
 		require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
 	})
@@ -658,21 +663,21 @@ func TestWatchEndingReportsTheRunUnlessTheWatcherStopped(t *testing.T) {
 	t.Run("the run finished", func(t *testing.T) {
 		surface, out, _ := plainSurface()
 		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
-		folded := fold(t, model, watchStateMsg{response: response(v1.RunResponse_STATUS_COMPLETED, "greet")})
+		folded := fold(t, model, watch.StateMsg{Response: response(v1.RunResponse_STATUS_COMPLETED, "greet")})
 
-		require.NoError(t, watchEnding(surface, folded))
-		require.Contains(t, out.String(), "stepValues",
+		require.NoError(t, watchEnding(surface, renderingOf(FormatText), folded))
+		require.Contains(t, out.String(), `"steps"`,
 			"the live shape did not write the outputs a pipe would have received")
 	})
 
 	t.Run("the run failed", func(t *testing.T) {
 		surface, out, _ := plainSurface()
 		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
-		folded := fold(t, model, watchStateMsg{
-			response: failedResponse(v1.RunResponse_STATUS_TIMED_OUT, "the deploy never returned"),
+		folded := fold(t, model, watch.StateMsg{
+			Response: failedResponse(v1.RunResponse_STATUS_TIMED_OUT, "the deploy never returned"),
 		})
 
-		err := watchEnding(surface, folded)
+		err := watchEnding(surface, renderingOf(FormatText), folded)
 		require.ErrorContains(t, err, "timed out")
 		require.ErrorContains(t, err, "never returned")
 		require.Empty(t, out.String())

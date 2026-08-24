@@ -215,7 +215,7 @@ func checkNodePrompts(nodes []*Node, sensitive map[string]bool, depth int) error
 
 	for _, node := range nodes {
 		if signal := node.GetWait().GetSignal(); signal != nil {
-			if err := checkPrompt(signal.GetPrompt(), node.GetId(), sensitive); err != nil {
+			if err := checkPrompt(signal.GetPrompt(), node.GetVars(), node.GetId(), sensitive); err != nil {
 				return err
 			}
 		}
@@ -255,7 +255,7 @@ func checkNodePrompts(nodes []*Node, sensitive map[string]bool, depth int) error
 }
 
 // checkPrompt reports what is wrong with one gate's prompt, by step id.
-func checkPrompt(value *Value, stepID string, sensitive map[string]bool) error {
+func checkPrompt(value *Value, vars map[string]*Value, stepID string, sensitive map[string]bool) error {
 	if value == nil {
 		return nil
 	}
@@ -273,6 +273,31 @@ func checkPrompt(value *Value, stepID string, sensitive map[string]bool) error {
 	}
 
 	reached, opaque := promptInputReach(value)
+
+	// Follow the prompt into the step's own `vars:`, because that is where the
+	// engine evaluates it from. Both drivers install a step's vars and then run
+	// the node against the inner scope - [EvalStepVars] on the local side,
+	// engine/execute.go's scope swap on the durable one - so `prompt:
+	// ${question}` reads a name this walk would otherwise see as naming nothing
+	// at all, and a bare name would be a way to launder a sensitive input past
+	// a check that only read the prompt expression.
+	//
+	// One level is the whole answer rather than a first cut: [EvalStepVars]
+	// evaluates a step's vars against the scope *without* its siblings, so
+	// `vars: {a: ${inputs.token}, b: ${a}}` is not expressible and there is no
+	// transitive case left to miss. An opaque reach found through a var is
+	// carried out the same way one found in the prompt is - the refusal is what
+	// "could not tell" means here, not silence.
+	for name := range promptFreeIdentifiers(value) {
+		declared, ok := vars[name]
+		if !ok {
+			continue
+		}
+
+		varReached, varOpaque := promptInputReach(declared)
+		maps.Copy(reached, varReached)
+		opaque = opaque || varOpaque
+	}
 
 	if named := slices.Sorted(maps.Keys(reached)); len(named) > 0 {
 		for _, name := range named {
@@ -298,6 +323,25 @@ func checkPrompt(value *Value, stepID string, sensitive map[string]bool) error {
 	}
 
 	return nil
+}
+
+// promptFreeIdentifiers returns the bare names a prompt reads. A step's own
+// `vars:` are installed under bare names before its prompt is evaluated, so the
+// sensitivity walk must follow any such name into its declaration rather than
+// treating the prompt expression in isolation.
+//
+// Free, in the CEL sense: [collectFreeIdentifiers] binds a comprehension's own
+// iteration and accumulator variables, so `list.map(x, x)` does not send this
+// walk looking up `x` in a step's vars and finding an unrelated declaration of
+// the same name. That is the same rule `flow fix` had to learn twice about the
+// names the grammar binds.
+func promptFreeIdentifiers(value *Value) map[string]struct{} {
+	free := make(map[string]struct{})
+	for _, e := range promptExpressions(value, 0) {
+		collectFreeIdentifiers(e, map[string]struct{}{}, free)
+	}
+
+	return free
 }
 
 // promptInputReach reports which inputs a prompt names, and whether it reaches
