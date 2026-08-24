@@ -451,3 +451,21 @@ func TestReportSchedulesRendersTheFinding(t *testing.T) {
 	require.Contains(t, inMemory.errors[0], "dst.Budget{Pinned: &seed}")
 	require.NotContains(t, inMemory.errors[0], "flow test --seed")
 }
+
+// TestARowsNameSurvivesAsANestedSubtestPath: a table row reports as
+// `<entry>/<row>` (#924 slice 2), and this bridge rewrites a case name for go
+// test by replacing spaces and escaping unprintables — neither of which
+// touches `/`. That is what makes a row addressable as a nested subtest,
+// `go test -run 'TestWorkflows/the_entry/the_first_row'`, with no code here
+// aware that a table exists.
+//
+// Pinned because it is a property nothing else would notice losing: escaping
+// the slash would leave every row running and every row's -run path silently
+// wrong.
+func TestARowsNameSurvivesAsANestedSubtestPath(t *testing.T) {
+	t.Parallel()
+
+	if got := subtestName("the entry/the first row"); got != "the_entry/the_first_row" {
+		t.Errorf("subtestName rewrote a row path to %q; the `/` is what go test reads as a level", got)
+	}
+}

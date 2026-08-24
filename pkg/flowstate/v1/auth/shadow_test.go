@@ -150,7 +150,7 @@ func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 	for i := range live.Issuers {
 		live.Issuers[i].Issuer = issuer.URL()
 	}
-	verifier, err := auth.NewOIDCVerifier(live)
+	verifier, err := auth.NewOIDCVerifier(live, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	principal, err := verifier.Verify(context.Background(), issuer.MintToken(
