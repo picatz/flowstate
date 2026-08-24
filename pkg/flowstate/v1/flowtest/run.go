@@ -795,6 +795,26 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
 	result.Passed = len(result.Failures) == 0
 
+	// The autopsy (#1072 decision 4's follow-on): a failing case under a
+	// debugging session stops once more, after the verdict, with the
+	// failures printed and the finished run's scope still questionable —
+	// the same [postRunScope] the checks were judged against, so what an
+	// author inspects here and what a check would have read are one thing.
+	// Capability-discovered the way an observing session is: a debugger
+	// that does not implement it simply ends when the run ends, and nothing
+	// here can change the verdict — it was reached above.
+	if !result.Passed {
+		if examiner, ok := v1.DebuggerFromContext(ctx).(interface {
+			Autopsy(context.Context, *v1.Scope, []string)
+		}); ok {
+			rendered := make([]string, 0, len(result.Failures))
+			for _, failure := range result.Failures {
+				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
+			}
+			examiner.Autopsy(ctx, postRunScope(workflow, bound, outputs), rendered)
+		}
+	}
+
 	// Only for a run that completed: on one that failed, a stub the run never
 	// reached is legitimately unanswered, and the report cannot tell that
 	// apart from a genuinely idle one — the same unverifiable-claim honesty

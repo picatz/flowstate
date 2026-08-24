@@ -500,3 +500,67 @@ func capRunes(text string, limit int) string {
 
 	return string(runes[:limit]) + fmt.Sprintf("… (%d more)", len(runes)-limit)
 }
+
+// Autopsy holds the session open one last time, after a case's run has ended
+// and its expectations have been judged: the failures print, and the scope is
+// still there to be questioned. It is the other half of "debug tests / use
+// tests to debug" — a breakpoint stops a run *before* it surprises you, and
+// the autopsy is for the case that already did: explore the finished run,
+// craft the claim with `inspect`, and leave with the `expect.check:` entry
+// the file was missing.
+//
+// failures are the rendered verdicts, printed as the failures they are. The
+// commands are the session's ordinary ones; the movement verbs (`step`,
+// `continue`, `until`) and `quit` all just leave, because there is no run
+// left to move — and leaving changes nothing: the verdict was reached before
+// this was called, so an autopsy can never turn a red case green or a green
+// one red. Commands accepted here are recorded like any others, so a
+// replayed script re-runs the same questions over the same corpse.
+//
+// flowtest calls this only for a failing case under `--debug`, discovering
+// it by capability the way it discovers a session that observes — a
+// [v1.Debugger] that does not implement it simply ends when the run ends.
+func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, failures []string) {
+	s.printfTone(ToneBreak, "autopsy: the case failed %d expectation(s); the run is over, but its scope is still here\n", len(failures))
+	for _, failure := range failures {
+		s.printfTone(ToneDanger, "  %s\n", failure)
+	}
+	s.printf("(`inspect` questions the finished run; `quit` or `continue` leaves — the verdict is already in)\n")
+
+	for {
+		line, ok := s.readCommand()
+		if !ok {
+			return
+		}
+
+		verb, rest := split(line)
+		switch verb {
+		case "", "step", "s", "continue", "c", "until", "u", "quit", "q":
+			s.record("quit")
+
+			return
+
+		case "inspect", "p":
+			expression := strings.TrimSpace(rest)
+			if expression == "" {
+				s.printfTone(ToneWarning, "inspect needs an expression: inspect steps.build.artifact\n")
+				continue
+			}
+			s.record("inspect " + expression)
+			s.inspect(ctx, expression, scope)
+
+		case "scope":
+			s.record("scope")
+			s.showScope(scope)
+
+		case "help", "h", "?":
+			s.printf(`inspect <expr>   evaluate a CEL expression against the finished run
+scope            list what the run can still name
+quit, q          leave the autopsy (so do step/continue — the run is over)
+`)
+
+		default:
+			s.printfTone(ToneWarning, "unknown command %q — try `help`\n", verb)
+		}
+	}
+}

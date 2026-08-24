@@ -113,10 +113,10 @@ var exemptScopeConstruction = map[string]string{
 		"nothing else; the scope exists for that one in-process read and is never an activity argument — `flow test` " +
 		"runs the local driver only (#155) and dispatches nothing.",
 
-	"pkg/flowstate/v1/flowtest/check.go#assertChecks": "the post-run assertion scope for `expect.check:` (#1072): one " +
-		"in-process evaluation of a case's claims against the finished run's outputs, on the local driver only, never " +
-		"an activity argument. It deliberately carries no identity for the same reason every local run does — " +
-		"`run.identity` stays empty with `run.local` true, and a rehearsal must never look attested.",
+	"pkg/flowstate/v1/flowtest/check.go#postRunScope": "the post-run scope a finished case is questioned against — `expect.check:` " +
+		"evaluation and the debugger's autopsy share it (#1072): in-process, local driver only, never an activity " +
+		"argument. It deliberately carries no identity for the same reason every local run does — `run.identity` " +
+		"stays empty with `run.local` true, and a rehearsal must never look attested.",
 
 	// The two in this package's own tests, which the walk reaches because
 	// engine tests are in scope. Neither builds a scope that is dispatched: one

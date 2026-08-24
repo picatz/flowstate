@@ -155,3 +155,41 @@ func TestWithoutDebugNothingChanges(t *testing.T) {
 func unwrapped(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
+
+// TestDebugAutopsyOnAFailingCase (#1072): the session stops once more after
+// the verdict, the failure prints, inspect answers from the finished run —
+// and the case is exactly as red as it was, because the autopsy cannot touch
+// the verdict.
+func TestDebugAutopsyOnAFailingCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: debugged
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: claims the wrong thing
+    expect:
+      ran: [first]
+      check:
+        - "'first' in steps"
+        - 1 == 2
+`), 0o600))
+
+	res := runFlowStdin(t, "continue\ninspect 1 + 1\nquit\n", "test", "--debug", "--run", "claims the wrong", dir)
+	require.Error(t, res.Err, "the autopsy must not turn a red case green")
+
+	assert.Contains(t, res.Stdout, "autopsy: the case failed 1 expectation(s)")
+	assert.Contains(t, res.Stdout, "check failed: 1 == 2")
+	assert.Contains(t, res.Stdout, "2", "the autopsy's inspect answers")
+	assert.Contains(t, res.Stdout, "FAIL", "and the report still says what it said")
+}
