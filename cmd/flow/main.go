@@ -1532,8 +1532,9 @@ func warnUnreachableIssuers(logger *slog.Logger, policy *auth.Policy) {
 		return
 	}
 	for _, finding := range policy.UnreachableIssuers() {
-		logger.Warn("a trust policy entry can never admit anybody; the entry above it admits every caller it would, "+
-			"so those callers get that entry's namespace and role instead",
+		logger.Warn("a trust policy entry can never admit anybody; an entry above it admits every caller it would, "+
+			"so those callers are admitted further up the list, with some other entry's namespace and role "+
+			"rather than this entry's",
 			"entry", finding.Name,
 			"entry_index", finding.Index,
 			"shadowed_by", finding.ShadowedByName,

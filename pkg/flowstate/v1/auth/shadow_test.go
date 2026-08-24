@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -103,6 +104,62 @@ func TestUnreachableIssuersReportsShadowedEntry(t *testing.T) {
 	require.Contains(t, message, `issuers[0] ("ci-any-branch")`, "and the entry that kills it")
 	require.Contains(t, message, "move", "and what to do instead")
 	require.Contains(t, message, "narrow", "and the other way to fix it")
+
+	// The message says those callers are admitted by an entry above this one,
+	// never that they all hold the named entry's role: an entry above the
+	// named one may take some of them without admitting all of them, and
+	// naming one entry's namespace and role for every caller would be a
+	// confident wrong answer about who has what.
+	require.Contains(t, message, "admitted by an entry above this one")
+	require.NotContains(t, message, `under "ci-any-branch"'s namespace`)
+}
+
+// TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller is that precision
+// as a policy rather than as a string. Here a rule on "ref" sits above a
+// repository-wide entry, and the unreachable entry below them is reported
+// against the repository-wide one — but main-branch callers are admitted by the
+// first entry, with its role, so no diagnostic may say every caller lands on
+// the entry it names.
+func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
+	const issuerURL = "https://token.actions.githubusercontent.com"
+
+	entry := func(name, role string, rules ...auth.ClaimRule) auth.TrustedIssuer {
+		return auth.TrustedIssuer{
+			Name: name, Issuer: issuerURL, Audiences: []string{"flowstate"},
+			Require: rules, Role: role, Namespace: "acme",
+		}
+	}
+
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
+		entry("main-branch", "deployer", auth.RequireClaim("ref", "refs/heads/main")),
+		entry("any-repo-caller", "viewer"),
+		entry("repo-scoped", "admin", auth.RequireClaim("repository", "picatz/flowstate")),
+	}}
+
+	findings := policy.UnreachableIssuers()
+	require.Len(t, findings, 1)
+	require.Equal(t, 2, findings[0].Index)
+	require.Equal(t, "any-repo-caller", findings[0].ShadowedByName,
+		"the first entry admits only some of the dead entry's callers, so it is not the one that proves it dead")
+
+	// A token for the dead entry that the *first* entry takes, with that
+	// entry's role: the reason the message does not attribute every caller to
+	// the entry it names.
+	issuer := newTestIssuer(t)
+	live := policy
+	for i := range live.Issuers {
+		live.Issuers[i].Issuer = issuer.URL()
+	}
+	verifier, err := auth.NewOIDCVerifier(live)
+	require.NoError(t, err)
+
+	principal, err := verifier.Verify(context.Background(), issuer.MintToken(
+		map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/main"},
+		authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
+	))
+	require.NoError(t, err)
+	require.Equal(t, "main-branch", principal.IssuerName)
+	require.Equal(t, "deployer", principal.Role)
 }
 
 // TestUnreachableIssuersSilentOnCorrectOrder is the ordering this diagnostic
@@ -339,6 +396,26 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 			require.Emptyf(t, policy.UnreachableIssuers(), "reported a shadow it cannot prove: %s", testCase.why)
 		})
 	}
+}
+
+// TestUnreachableIssuersHandlesAPolicyOfManyIssuers is the correctness half of
+// the grouping in [auth.Policy.UnreachableIssuers]: entries naming different
+// issuers can never shadow one another, are never compared, and are reported
+// about exactly as before. TestShadowKeySeparatesEntriesThatCannotCompete
+// (shadow_internal_test.go) pins the grouping itself.
+func TestUnreachableIssuersHandlesAPolicyOfManyIssuers(t *testing.T) {
+	var issuers []auth.TrustedIssuer
+	for i := range 2_000 {
+		issuers = append(issuers, auth.TrustedIssuer{
+			Name:      "issuer-" + strconv.Itoa(i),
+			Issuer:    "https://issuer-" + strconv.Itoa(i) + ".example",
+			Audiences: []string{"flowstate"},
+			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+			Namespace: "acme",
+		})
+	}
+
+	require.Empty(t, auth.Policy{Issuers: issuers}.UnreachableIssuers())
 }
 
 // TestUnreachableIssuersReportsEachEntryOnce keeps the output one line per dead
