@@ -939,6 +939,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	warnUnreachableIssuers(logger, policy)
 
 	// Resolved against that same policy, so an advertised authorization
 	// server whose tokens this deployment's own verifier would refuse for

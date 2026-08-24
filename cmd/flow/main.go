@@ -953,6 +953,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	warnUnreachableIssuers(logger, policy)
+
 	rpcResource, err := resolveRPCResource(rpcResourceFlagsOf(cmd), authCfg, policy)
 	if err != nil {
 		return err
@@ -1509,6 +1511,35 @@ func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
 		return nil, nil, fmt.Errorf("configuring token verification: %w", err)
 	}
 	return verifier, &policy, nil
+}
+
+// warnUnreachableIssuers reports every trust policy entry that an earlier entry
+// makes unreachable, one loud start-up line each.
+//
+// A warning rather than a refusal, the same choice and for the same kind of
+// reason as [warnUnpolledTenantQueues]: a shadowed entry is a mistake often
+// enough to be worth saying and not always — an operator mid-migration may have
+// deliberately parked a narrow entry behind a broad one they are about to
+// delete — and a server that refused to start over it would turn a lint into an
+// outage for a deployment whose authentication was working a minute ago. The
+// symptom this exists to supply is that there is no symptom: the file reads
+// correctly, every token verifies, and a workload quietly holds the broad
+// entry's namespace and role instead of the narrow entry's own. See
+// [auth.Policy.UnreachableIssuers] for what counts as unreachable and for the
+// shapes it deliberately does not report.
+func warnUnreachableIssuers(logger *slog.Logger, policy *auth.Policy) {
+	if policy == nil {
+		return
+	}
+	for _, finding := range policy.UnreachableIssuers() {
+		logger.Warn("a trust policy entry can never admit anybody; the entry above it admits every caller it would, "+
+			"so those callers get that entry's namespace and role instead",
+			"entry", finding.Name,
+			"entry_index", finding.Index,
+			"shadowed_by", finding.ShadowedByName,
+			"shadowed_by_index", finding.ShadowedByIndex,
+			"fix", "move "+finding.Name+" above "+finding.ShadowedByName+", or narrow "+finding.ShadowedByName)
+	}
 }
 
 // identityBroker builds the broker that issues Flowstate's own assertions, or
