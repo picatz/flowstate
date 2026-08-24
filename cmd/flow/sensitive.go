@@ -433,6 +433,19 @@ func redactStepOutputs(outputs *v1.Workflow_StepOutputs, decision carriedValues)
 	return outputs
 }
 
+// redactedEntityStateAllowance is how much larger than the answer it arrived in
+// a withheld [v1.EntityState] may be — see [redactEntityState] for the rule this
+// is half of.
+//
+// Sixteen kibibytes: about a hundred and eighty marker-replaced entries, which
+// is far past what any workflow's `vars:` and concurrently-active `loop:` state
+// plausibly runs to, and small enough that a surface handed the maximum is
+// handed something nobody needs to bound further. It is this file's own number
+// rather than a reading of the engine's, because it answers a different
+// question — not "how big may a projection be" but "how much may censoring one
+// cost" — and the two are free to move independently.
+const redactedEntityStateAllowance = 16 << 10
+
 // redactEntityState withholds the carried state of a RUNNING run — its
 // top-level `vars:` and the value each active `loop:` is carrying into the next
 // iteration — on [decideCarriedValues], the decision it shares with the step
@@ -453,9 +466,52 @@ func redactStepOutputs(outputs *v1.Workflow_StepOutputs, decision carriedValues)
 //
 // What survives is the shape, for [redactStepValues]'s reason: the keys stay, so
 // a reader still sees which vars exist and which loops are carrying state, and
-// only the values become the marker. [v1.EntityState.Truncated] is left alone —
-// it is a fact about this projection's own byte bound, not a value the workload
-// produced.
+// only the values become the marker.
+//
+// # Redaction may not inflate a message that was deliberately bounded
+//
+// The marker is longer than the values it replaces — around eighty bytes against
+// a `vars:` entry that may be two — and this projection is bounded on purpose:
+// `entityStateMaxBytes` refuses to let one serialize past 256 KiB, precisely
+// because a query answer is its own resource read by a caller who did not ask
+// how big it is, and how many short keys a run carries is the *workload's*
+// choice. Replacing every value with a sentence therefore turns a message that
+// passed that bound into one several times its size, which is CLAUDE.md's
+// "bounding one resource does not bound another the peer controls the ratio to"
+// with this function supplying the ratio. Codex found it on PR #1067.
+//
+// `entityStateMaxBytes` is deliberately not re-derived here. It lives in the
+// engine, a copy of it in this file would be the same number written down twice,
+// and a client enforcing its own idea of the server's bound would be wrong the
+// moment the server's moved. What is enforced instead is a rule this function
+// can check entirely by itself:
+//
+//	the withheld answer is never larger than the arrived one, or than
+//	[redactedEntityStateAllowance], whichever of those two is larger.
+//
+// Which preserves whatever bound the answer already satisfied — a message the
+// server capped at 256 KiB stays under 256 KiB — without this file having an
+// opinion about what that cap is, and caps the amplification at a few kilobytes
+// in absolute terms besides.
+//
+// It is not the simpler "never larger than what arrived", which was tried first
+// and is wrong: a marker is longer than most real values, so two ordinary vars
+// carrying a token each already exceed their own arrived size, and the rule
+// would truncate every run it was meant to protect. The allowance is what
+// separates "this projection grew a little because censoring costs words" from
+// "this projection was multiplied by the number of keys a workload chose".
+//
+// Over that, the answer falls back to [v1.EntityState.Truncated], which is the
+// schema's own existing spelling for this exact situation and not a new one:
+// "cut down to stay inside this message's own bound ... omits vars and loop_state
+// entirely rather than reporting a partial, silently-incomplete map". A reader
+// gets a flag saying the keys are not all there rather than a projection that
+// grew in the act of being censored. It costs the shape only for a run carrying
+// hundreds of very short vars — and a reader who wants it back can type
+// `--reveal-sensitive`, which never reaches here at all.
+//
+// [v1.EntityState.Truncated] is otherwise left alone: it is a fact about this
+// projection's own byte bound, not a value the workload produced.
 func redactEntityState(state *v1.EntityState, decision carriedValues) *v1.EntityState {
 	if state == nil || decision == carriedValuesShown {
 		return state
@@ -479,8 +535,14 @@ func redactEntityState(state *v1.EntityState, decision carriedValues) *v1.Entity
 		return redacted
 	}
 
+	arrived := proto.Size(state)
+
 	state.Vars = withheld(state.GetVars())
 	state.LoopState = withheld(state.GetLoopState())
+
+	if size := proto.Size(state); size > arrived && size > redactedEntityStateAllowance {
+		return &v1.EntityState{Truncated: true}
+	}
 
 	return state
 }
