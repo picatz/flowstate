@@ -10,7 +10,7 @@
 // workflow's own control flow — conditions, retries, loops, `undo:` — runs for
 // real through the ordinary local driver. That is the registry-swap pattern
 // the repo's own tests already use (`allowLoopback`, `NewUndoServer` in
-// pkg/flowstate/v1/tests) productized for an author's own workflow.
+// pkg/flowstate/v1/internal/conformance) productized for an author's own workflow.
 //
 // # Secrets are stubbed at the reference boundary, the same way tasks are
 // stubbed at the task boundary
@@ -45,6 +45,106 @@
 // `run.identity` stays empty and `run.local` true for every case, as it does
 // for every local run, because a local run must never look like an attested
 // production one.
+//
+// # What a green case proves about identity, and what it does not
+//
+// The sentence to read first, because it is the one an author is most likely
+// to assume the other way round: **a green case says nothing about whether the
+// identity it names would be allowed to do any of this in production.**
+// Nothing attested a `starter:` or a `sender:` - they are what the file says
+// they are - and every policy a *deployment* installs is either absent from
+// this process or evaluated against somebody else entirely.
+//
+// What reads a [Test.Starter], exhaustively: the workflow's own `signals:`
+// policy, through [v1.SignalPolicyCheck] - the function `FlowstateServer.Signal`
+// itself calls - reached from [v1.NewPolicedLocalSignals] in runCase. That is
+// a rule's `subject:`, `issuer:`, `namespace:` and `claims:` matching a
+// scripted [SignalScript.Sender], and `distinct_from_starter:` comparing that
+// sender's [v1.QualifiedSubject] against the starter's. Nothing else in this
+// package passes the value anywhere.
+//
+// What does not read it, each for a reason worth stating separately:
+//
+//   - **`run.identity`.** Empty for every case, whatever `starter:` says, with
+//     `run.local` true - see [Test.Starter]. An `if:` keyed on
+//     `run.identity.namespace` therefore takes the empty branch here and may
+//     take another one in production.
+//
+//   - **Task-shape policy** ([v1.TaskPolicy]). Every dispatch does reach
+//     [v1.CheckTaskPolicy] - eval.go calls it at the seam both drivers share -
+//     and it is handed `scope.GetIdentity()`, which is that same empty
+//     identity. It is never handed a `starter:`.
+//
+//     Which policy it consults is a property of the *process*, not of the
+//     case, and the distinction is worth stating precisely because the
+//     convenient version of it is false. The `flow test` **command** installs
+//     none: `--task-policy` is declared on `flow worker`, `flow run local`,
+//     `flow mcp`, `flow serverdev` and `flow task run`, and deliberately not
+//     on `flow test`, so under that command [v1.TaskPolicyIn] finds nothing
+//     and every dispatch is allowed. But a policy is installed process-wide
+//     by [v1.SetDefaultTaskPolicy], runCase does not clear it with
+//     [v1.NewContextWithTaskPolicy], and `flow test`'s machinery is reachable
+//     from other hosts: the `flowstate_test` MCP tool runs
+//     [RunSourceContext] in whatever process serves it, so under
+//     `flow mcp --task-policy` a case's dispatches *are* governed by that
+//     deployment's policy. A rehearsal inherits whatever the hosting process
+//     installed.
+//
+//     Which is its own trap, and the reason the identity clause above is not
+//     a footnote: a rule that reads `identity.namespace` or
+//     `identity.subject` is matched against the empty identity there, not
+//     against `starter:`, however the case names one. So a policy admitting
+//     only a named namespace refuses every stubbed dispatch in that host, and
+//     an author reading the denial has no `starter:` to change that would
+//     make any difference. [v1.TaskPolicyDeniedError] says exactly that in
+//     its own message (#652 item 3): a denial from this venue names the
+//     identity the rule was evaluated against, and where that identity is
+//     empty it says so and says why — that a rehearsal has one only where
+//     `flow run local --as-*` named one, and never under `flow test`. Which
+//     is the difference between "the rule matched me" and "the rule had
+//     nothing to match", and it is not one an author can otherwise derive
+//     from a denial. The remedy it names is the policy *this process*
+//     installed rather than a `--task-policy` flag, precisely because this
+//     command does not have one.
+//
+//   - **Egress policy** (`netpolicy`). Never consulted, because no request is
+//     made: a step that would reach the network is answered by its stub, so
+//     there is no URL for a policy to refuse. `--egress-policy` is likewise
+//     not offered on `flow test`.
+//
+//   - **Secret access policy** (`auth.SecretAccessPolicy`). Consulted, and this
+//     is the surface where the gap is easiest to miss, because the mechanism is
+//     real and the answer is fixed: [secretRuntime] compiles `allow: ["true"]`
+//     and runs it under the constant identity `flow-test#flow-test`, not under
+//     `starter:`. So every `${secret(...)}` a case binds resolves, and a
+//     deployment rule keyed on `identity.namespace` is neither loaded nor
+//     matched.
+//
+// The line all four sit on is CLAUDE.md's: report what is a property of the
+// file, and stay silent about what a deployment decides. `signals:` is written
+// in the Flowfile, so `flow test` owns it; task-shape, egress and secret
+// access rules are installed by whoever runs the worker, and a case whose
+// verdict turned on which policy file happened to be passed on the command
+// line would be a test of that machine rather than of the workflow — which is
+// exactly what a case gets when the hosting process installed one, so a suite
+// meant to be portable should be run by a command that takes no such flag.
+// A case
+// that wants to exercise one of those *denials* writes it against the policy's
+// own package - [v1.TaskPolicy.Check] and `auth.SecretPolicy` are pure
+// functions of (thing, identity), tested that way today, and need no workflow
+// at all - which is the same answer [secretRuntime]'s own doc has been giving
+// for secrets since it was written. See #652 item 2, where this was decided
+// and deliberately not built.
+//
+// That decision is now enforced rather than only recorded. `cmd/flow`'s
+// TestFlowTestTakesNoDeploymentPolicyFlags asserts `flow test` declares
+// neither `--task-policy` nor `--egress-policy` — while every verb that runs a
+// real dispatch still declares the first, so the assertion means "deliberately
+// absent here" rather than "absent everywhere" — and
+// [TestACaseCannotDeclareADeploymentPolicy] asserts a case file cannot smuggle
+// one in through a key of its own. A paragraph of prose beside a one-line flag
+// registration is the same value written down twice, and only one of the two
+// is what the program does.
 //
 // # Why this runs the local driver only
 //
@@ -139,6 +239,15 @@ type File struct {
 	// is not itself a bug — see #203's discussion of `examples/call-a-workflow/workflow.test.yaml`.
 	Edition string `yaml:"edition"`
 
+	// Vars are the literal values this file states once and references
+	// everywhere (#1072): a whole-value `${vars.x}` in a fixture position is
+	// substituted at load, and `expect.check:` reads `vars.x` at evaluation.
+	// Literals only — any `${` inside one is refused, including a reference
+	// to another var — so there is no evaluation order and no cycles; see
+	// vars.go for the design and the one deliberate asymmetry (a stub's
+	// `vars.` stays the workflow's).
+	Vars map[string]any `yaml:"vars"`
+
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
 	// inherits them and may override them, by the boring, stated rules
@@ -169,10 +278,22 @@ type File struct {
 // the second is a fact about the workflow that belongs written down beside it,
 // not silently tolerated.
 type CoverageStanza struct {
-	// AllowUnreached maps a step id to the reason no case reaches it. A step
-	// named here is reported as an accepted residual rather than a gap, and
-	// does not fail `--coverage-required`. The reason is required, because an
-	// entry with none is the silent gap this record exists to refuse.
+	// AllowUnreached maps a step id — or, since issue #801, a switch arm's key —
+	// to the reason no case reaches it. An entry named here is reported as an
+	// accepted residual rather than a gap, and does not fail
+	// `--coverage-required`. The reason is required, because an entry with none
+	// is the silent gap this record exists to refuse.
+	//
+	// A switch arm's key is [SwitchArm.Key]: `<step>:case[<i>]` for a case
+	// holding one literal, `<step>:case[<i>][<j>]` for member j of a case listing
+	// several, and `<step>:default`. `flow test` prints the key to record beside
+	// the diagnostic for every arm it reports, so nobody has to derive one.
+	//
+	// One map for both, rather than a second stanza: an entry here answers one
+	// question — "no case reaches this, and here is why" — and the answer does
+	// not change with what kind of thing is unreached. An entry naming neither a
+	// step nor an arm of any workflow the file targets is stale, and fails the
+	// same way an unrecorded gap does.
 	AllowUnreached map[string]string `yaml:"allow_unreached"`
 }
 
@@ -257,7 +378,32 @@ type Test struct {
 	// production one (eval.go's own eval, invariant 3). A case asserting on
 	// `run.identity.subject` therefore sees "" here whatever this field says,
 	// the same value `flow run local` shows it.
+	//
+	// One policy surface reads it, and the others a deployment installs read
+	// nothing of it at all — see the package doc's "What a green case proves
+	// about identity". The short version: `signals:` is a control the
+	// *workflow file* declares, so `flow test` exercises it; task-shape
+	// policy, egress policy and secret access policy are controls a
+	// *deployment* installs, and `flow test` neither takes them nor evaluates
+	// them under this identity.
 	Starter *ScriptedIdentity `yaml:"starter"`
+
+	// Cases are the rows of a table entry (#924 slice 2): one run each, with
+	// the enclosing entry standing to a row exactly as `defaults:` stands to
+	// a case. An entry that declares rows does not itself run — it is the
+	// template they are merged over — and a row's own value always beats the
+	// entry's, the one direction every merge in this file takes.
+	//
+	// The house Go convention this mirrors is the charter's: "slice-of-struct
+	// tables with a `name` field, one `t.Run` per case" (#405). Report
+	// identity is `<entry name>/<row name>`, the two-level naming `t.Run`
+	// gives a Go table, carried in the existing [v1.TestCase] name so nothing
+	// reading a report needs a schema change to see it.
+	//
+	// One level only. A row that declares its own `cases:` is refused rather
+	// than flattened, because a table of tables is a shape whose merge order
+	// nobody wrote down and whose report identity has no obvious spelling.
+	Cases []Test `yaml:"cases"`
 
 	// Expect is what the run must have done to pass.
 	Expect Expectation `yaml:"expect"`
@@ -412,6 +558,14 @@ func (d *TriggerDelivery) Context() *v1.TriggerContext {
 //   - Sender fills in only where a case's signal omits its own `sender:`.
 //     Explicit beats inherited, so a signal that names a sender keeps it.
 type Defaults struct {
+	// Workflow is the Flowfile every case runs against unless it names its
+	// own (#924 slice 1) — resolved exactly as a case's own `workflow:` is,
+	// relative to the test file's directory, because it becomes the case's
+	// value before anything resolves. The one fact 151 of the corpus's 151
+	// cases restated identically, now stated once; a case that does name a
+	// workflow keeps it, per the merge rules' one direction.
+	Workflow string `yaml:"workflow"`
+
 	// Inputs are the base bindings every case starts from, before its own
 	// `inputs:` are merged over them one key at a time.
 	Inputs map[string]any `yaml:"inputs"`
@@ -425,6 +579,13 @@ type Defaults struct {
 	// omit their own. It is the one place a whole file's signals share an
 	// approver identity rather than restating the five-line stanza per signal.
 	Sender *ScriptedIdentity `yaml:"sender"`
+
+	// Check holds claims every case in the file must satisfy (#1072),
+	// prepended to each case's own `expect.check:` by [mergeDefaults]. Bare
+	// CEL carries no `${` fence, so the #416 fixture rule — a default may
+	// hold no expression *value* — is untouched: a claim is a predicate the
+	// file states, not a value a case inherits.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // Stub replaces one task's real behavior with a canned answer.
@@ -434,6 +595,14 @@ type Defaults struct {
 // run for real through the actual local driver, and only the effect —
 // whatever the task would have done outside the process — is replaced.
 type Stub struct {
+	// fromDefaults records that this stub reached the case through the file's
+	// `defaults:` rather than being written on the case itself — set by
+	// [mergeDefaults], invisible to the YAML form, and read by the
+	// unused-stub report (#926): a file-level catch-all is *expected* to go
+	// unanswered by cases that never invoke its task, so it is exempt from
+	// the warning a case's own idle stub earns.
+	fromDefaults bool
+
 	// Task is the task name this replaces, exactly as a step's own task key
 	// names it: `http`, `log`, a plugin task's name. Mutually exclusive with
 	// Step; a stub names one or the other, never both and never neither.
@@ -508,6 +677,57 @@ type Stub struct {
 	// succeeding, so a case can exercise `continue_on_error:`, `retry:`, and
 	// `undo:` without a real dependency ever having to be down on purpose.
 	Fails *StubFailure `yaml:"fails"`
+
+	// Times bounds how many invocations this stub answers before it retires
+	// and the list falls through to the next matcher (#927). Absent means
+	// unbounded — every stub before this field existed answers forever, and
+	// still does. It is what makes a stub list a *script* rather than only a
+	// switch: the canonical retry test, fail once and then succeed, is two
+	// stubs for one step, the first carrying `times: 1` and `fails:`, the
+	// second answering the recovery — inexpressible before this existed,
+	// because the first match answered every attempt and `retry:` was
+	// testable only to exhaustion.
+	//
+	// Consumption is counted per answer, `returns:` and `fails:` alike, and
+	// the budget is per case: every case (and every seeded schedule of one)
+	// starts the count over. A drained stub shows up in an unmatched-stub
+	// failure with its spent budget, so an invocation that fell past it is
+	// explained rather than mysterious.
+	//
+	// One caution, and the schedule explorer enforces it rather than this
+	// package hiding it: two `parallel:` branches invoking one task drain a
+	// shared `times:` budget in whichever order the schedule runs them, which
+	// is a real observable `--seeds` will legitimately flag. Scope such a
+	// stub with `step:`, which already tells steps sharing a task apart.
+	//
+	// A pointer so an explicit `times: 0` is told apart from the field being
+	// absent, and refused when the file loads: a stub that can answer nothing
+	// asserts nothing.
+	Times *int `yaml:"times"`
+
+	// Response answers the invocation with a raw *response* instead of shaped
+	// outputs, and the task then evaluates its own deferred inputs over it —
+	// for `http`, the step's `outputs:` and `expect:` run for real against
+	// `status_code`, `headers`, `body` (and `response.json` under
+	// `parse_json: true`) exactly as they would against a live response
+	// (#925). That is the difference from Returns, which supplies the
+	// post-shaping outputs and leaves the mapping — the exact expression a
+	// path typo lives in — unexercised by every green case.
+	//
+	// The fields and their meanings are the task's own: `http` takes
+	// `status_code` (200 when omitted), `body` (a string verbatim, or a map
+	// or list encoded as its JSON), and `headers` (name to string value), and
+	// refuses a name it does not define. A task that defines no raw-response
+	// semantics — `log`, or a plugin task this harness knows only by name —
+	// refuses the stanza when the case binds, naming `returns:` as the
+	// spelling that exists. Values follow the Flowfile fence rule at any
+	// depth, exactly as Returns documents, so one stub can answer a loop's
+	// iterations differently.
+	//
+	// Mutually exclusive with Returns and with Fails: a stub answers with a
+	// response the task interprets, with outputs already shaped, or with a
+	// failure — one of the three, said once.
+	Response map[string]any `yaml:"response"`
 }
 
 // StubFailure is a canned failure a [Stub] reports instead of outputs.
@@ -684,8 +904,10 @@ type Expectation struct {
 	// Outputs, when set, must equal the workflow's declared `outputs:`
 	// exactly — every named output present with the expected value, and no
 	// unexpected one. Ignored when Failed is true, on the same reasoning
-	// [tests.Case.ExpectedOutputs] already documents: a run that fails
+	// [conformance.Case.ExpectedOutputs] already documents: a run that fails
 	// outright has no outputs to compare.
+	//
+	// [conformance.Case.ExpectedOutputs]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#Case
 	Outputs map[string]any `yaml:"outputs"`
 
 	// Inputs, when set, must equal the inputs a replayed delivery produced,
@@ -731,7 +953,7 @@ type Expectation struct {
 	// Compensated names the steps that must have been undone, in any order —
 	// this checks the *set* the undo log reports, not the reverse-registration
 	// order [v1.RunUndoLog] itself already guarantees and which
-	// pkg/flowstate/v1/tests/undo.go already pins for both drivers.
+	// pkg/flowstate/v1/internal/conformance/undo.go already pins for both drivers.
 	Compensated []string `yaml:"compensated"`
 
 	// Ran names steps that must have executed — present in the run's step
@@ -769,6 +991,18 @@ type Expectation struct {
 	// results, never at the top level) is not miscounted as a step that should
 	// have been skipped.
 	Others string `yaml:"others"`
+
+	// Check holds CEL claims over the finished run (#1072) — for everything
+	// the named fields above cannot say. Each entry is a bare CEL predicate,
+	// or `{that:, because:}` to add the sentence a failure prints. Evaluated
+	// against `steps.*`, `inputs.*`, and a `run` root (`failed`, `error`,
+	// `local`), whether or not the run failed — an error claim exists
+	// precisely for failed runs. See [CheckClaim].
+	//
+	// Across defaults → entry → row the lists accumulate — every level's
+	// claims all hold — where the named fields above merge by override.
+	// Predicates union naturally; values cannot.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
@@ -789,7 +1023,14 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	file, err := parseSource(data, true)
+	// The directory's shared fixture, if the suite's own directory states
+	// one — see dirdefaults.go for the chain and its boundaries.
+	dd, err := loadDirDefaults(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := parseSourceWith(data, dd, true)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -824,6 +1065,13 @@ func LoadSource(data []byte) (*File, error) {
 // and no path runs the identical checks rather than a second copy of them.
 // requireWorkflow is false only for [LoadSource]; see its doc for why.
 func parseSource(data []byte, requireWorkflow bool) (*File, error) {
+	return parseSourceWith(data, nil, requireWorkflow)
+}
+
+// parseSourceWith is [parseSource] with a directory's contribution folded in
+// before anything resolves or validates, so the combined suite is what every
+// rule below checks.
+func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, error) {
 	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
 	// do anything: Unmarshal resolves every alias into the destination value
 	// as it decodes, which means a billion-laughs document is already fully
@@ -863,6 +1111,45 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 					"record why no case reaches this step, or remove the entry and let it be a gap", step)
 			}
 		}
+	}
+
+	dd.combineInto(&file)
+
+	// Vars validate and substitute first, before tables expand and before
+	// `defaults:` is checked: an inherited `${vars.x}` resolves to its
+	// literal exactly once, and the fixture rule below then checks what the
+	// run will actually see.
+	if err := checkVars(file.Vars); err != nil {
+		return nil, err
+	}
+	if err := file.resolveVars(); err != nil {
+		return nil, err
+	}
+
+	// Rows are expanded before defaults are merged, which is what makes the
+	// precedence chain read the way an author expects it to: a row beats its
+	// entry, and an entry beats `defaults:`. Expanding afterward would let a
+	// file-level default win over an entry's own value for a row that stated
+	// neither — one fact written down twice, disagreeing with itself.
+	//
+	// Done here rather than at run time so everything downstream — the
+	// per-test checks below, coverage, `--run`, the Go subtests — keeps
+	// reading one flat list of effective cases and needs no notion of a table.
+	expanded, err := expandTableEntries(file.Tests)
+	if err != nil {
+		return nil, err
+	}
+	file.Tests = expanded
+
+	// The bound is on the runs, not on the written entries: a row is a whole
+	// case, so an entry with four hundred rows costs what four hundred cases
+	// cost. Checked after expansion for that reason, and the diagnostic says
+	// "once its rows are counted" because the limit is otherwise confusing to
+	// read in a file whose `tests:` list is three items long.
+	if len(file.Tests) > MaxTestsPerFile {
+		return nil, fmt.Errorf(
+			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
+			len(file.Tests), MaxTestsPerFile)
 	}
 
 	// Validated then merged before anything below bounds or checks a case, so
@@ -910,6 +1197,12 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 		if err := checkScriptedIdentity(fmt.Sprintf("test %q starter:", test.Name), test.Starter); err != nil {
 			return nil, err
 		}
+		// The slice is the entry in file.Tests, not the loop copy: this
+		// validation also strips a tolerated whole-value fence in place, and
+		// stripping a copy would leave the fence on the claim the run reads.
+		if err := checkCheckClaims(fmt.Sprintf("test %q expect", test.Name), file.Tests[i].Expect.Check); err != nil {
+			return nil, err
+		}
 		for j, signal := range test.Signals {
 			// Checked at load, alongside every other shape check in this
 			// loop, rather than when the scripted goroutine delivers: a
@@ -937,6 +1230,30 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 				return nil, fmt.Errorf(
 					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
 					test.Name, j+1, stubTarget(&stub))
+			}
+			if stub.Response != nil && stub.Returns != nil {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares both response and returns; a stub answers with a raw "+
+						"response the task interprets, or with outputs already shaped, not both",
+					test.Name, j+1, stubTarget(&stub))
+			}
+			if stub.Response != nil && stub.Fails != nil {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares both response and fails; a failing response is a "+
+						"response — write the status the failure would carry, and let the step's own "+
+						"expect: decide",
+					test.Name, j+1, stubTarget(&stub))
+			}
+			// `times: 0` is refused rather than read as "never answers": a
+			// stub that can answer nothing asserts nothing, and an author who
+			// wrote 0 meant something — most likely deleting the stub, or the
+			// unbounded default they get by writing no `times:` at all.
+			// Negative is the same mistake with less ambiguity.
+			if stub.Times != nil && *stub.Times <= 0 {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares times: %d, which is a stub that never answers; "+
+						"delete the stub, or drop `times:` for the unbounded default",
+					test.Name, j+1, stubTarget(&stub), *stub.Times)
 			}
 		}
 		if err := checkOthers(&test); err != nil {
@@ -1127,6 +1444,9 @@ func checkDefaults(d *Defaults) error {
 	if len(d.Stubs) > MaxDefaultStubs {
 		return fmt.Errorf("defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
 	}
+	if err := checkNoExpressions("defaults.workflow", d.Workflow, 0); err != nil {
+		return err
+	}
 	for name, v := range d.Inputs {
 		if err := checkNoExpressions("defaults.inputs."+name, v, 0); err != nil {
 			return err
@@ -1146,6 +1466,9 @@ func checkDefaults(d *Defaults) error {
 		if err := checkNoExpressions("defaults.sender", d.Sender, 0); err != nil {
 			return err
 		}
+	}
+	if err := checkCheckClaims("defaults", d.Check); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1236,6 +1559,15 @@ func checkNoExpressions(where string, v any, depth int) error {
 // slices are the author's, and a second case merging the same defaults must see
 // them untouched.
 func mergeDefaults(d *Defaults, test Test) Test {
+	// Workflow: explicit beats inherited, the same one direction Sender
+	// takes. Merged before anything resolves, so the inherited path is
+	// resolved relative to the test file exactly as a stated one would be —
+	// and idempotently, since a merged case carries the value and never
+	// takes it again.
+	if d.Workflow != "" && test.Workflow == "" {
+		test.Workflow = d.Workflow
+	}
+
 	// Inputs: one level. Start from the defaults, then let the case replace
 	// whole keys. A nested map under a key is replaced wholesale by the case's,
 	// not deep-merged, which is the "one level" the rules promise.
@@ -1271,7 +1603,12 @@ func mergeDefaults(d *Defaults, test Test) Test {
 			if replaced[stubTargetKey(&d.Stubs[i])] {
 				continue
 			}
-			merged = append(merged, d.Stubs[i])
+			inherited := d.Stubs[i]
+			// Marked on the appended copy, never on the file's own entry: a
+			// second case merging the same defaults must see them untouched,
+			// per this function's contract above.
+			inherited.fromDefaults = true
+			merged = append(merged, inherited)
 		}
 		test.Stubs = merged
 	}
@@ -1279,6 +1616,21 @@ func mergeDefaults(d *Defaults, test Test) Test {
 	// Sender: explicit beats inherited. A signal that named its own sender
 	// keeps it; only one that omitted `sender:` inherits the default (the
 	// resolved open question in #416).
+	// Check accumulates rather than overriding: the file's claims and the
+	// case's all hold, inherited first so a failure lists them in the order
+	// a reader meets them in the file. A fresh slice — a second case merging
+	// the same defaults must see them untouched — and marked, because this
+	// fold runs twice on the Go door and a prepend is the one merge here
+	// that is not idempotent by shape (see [CheckClaim].fromDefaults).
+	if len(d.Check) > 0 && !slices.ContainsFunc(test.Expect.Check, func(c CheckClaim) bool { return c.fromDefaults }) {
+		inherited := make([]CheckClaim, 0, len(d.Check)+len(test.Expect.Check))
+		for _, claim := range d.Check {
+			claim.fromDefaults = true
+			inherited = append(inherited, claim)
+		}
+		test.Expect.Check = append(inherited, test.Expect.Check...)
+	}
+
 	if d.Sender != nil && len(test.Signals) > 0 {
 		signals := make([]SignalScript, len(test.Signals))
 		copy(signals, test.Signals)
@@ -1296,10 +1648,7 @@ func mergeDefaults(d *Defaults, test Test) Test {
 // WorkflowPath resolves a test's `workflow:` relative to the *.test.yaml file
 // that declared it.
 func WorkflowPath(testFile string, test *Test) string {
-	if filepath.IsAbs(test.Workflow) {
-		return test.Workflow
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Workflow)
+	return workflowPathIn(filepath.Dir(testFile), test)
 }
 
 // DeliveryPath resolves a trigger case's `payload:` the same way [WorkflowPath]
@@ -1308,11 +1657,5 @@ func WorkflowPath(testFile string, test *Test) string {
 //
 // Empty for a case that replays nothing.
 func DeliveryPath(testFile string, test *Test) string {
-	if test.Trigger == nil || test.Trigger.Payload == "" {
-		return ""
-	}
-	if filepath.IsAbs(test.Trigger.Payload) {
-		return test.Trigger.Payload
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Trigger.Payload)
+	return deliveryPathIn(filepath.Dir(testFile), test)
 }

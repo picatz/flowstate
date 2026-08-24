@@ -1,0 +1,2 @@
+go test fuzz v1
+string("edition: v2026.3\nname: #\nA0\n")

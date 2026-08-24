@@ -43,15 +43,18 @@ steps:
 
 // TestTheLocalAnswerNamesAFieldNobodyPopulated is the bug, stated as a property.
 //
-// `hello` produces no named values, so `namedValues` is an unset map. The durable
-// driver emits it as `{}` and the local one omitted the key entirely, so
+// `hello` produces no named values. The durable driver emitted an empty map for
+// them and the local one omitted the key entirely, so a `jq` expression reaching
+// for the step's values answered `{}` against production and `null` against the
+// rehearsal. Those are the same question, and [marshalJSON]'s comment says why only
+// one of them is answerable: a reader who finds a key missing cannot tell an absent
+// value from a field this build has never heard of without going to the schema.
 //
-//	jq .stepValues.hello.namedValues
-//
-// answered `{}` against production and `null` against the rehearsal. Those are the
-// same question, and [marshalJSON]'s comment says why only one of them is
-// answerable: a reader who finds a key missing cannot tell an absent value from a
-// field this build has never heard of without going to the schema.
+// The property outlived the spelling. The wrapper the two drivers disagreed about
+// is gone from the document — a message whose only field is a map is that map now,
+// see rundoc.go — so what is asserted is the same fact one level up: the *step* is
+// named, with an empty object under it, rather than missing because it produced
+// nothing.
 //
 // Asserted on the parsed document rather than on the bytes, so it stays a statement
 // about what a consumer can index and not about how it was spelled.
@@ -62,17 +65,18 @@ func TestTheLocalAnswerNamesAFieldNobodyPopulated(t *testing.T) {
 	require.NoError(t, err)
 
 	var outputs struct {
-		StepValues map[string]map[string]json.RawMessage `json:"stepValues"`
+		Steps map[string]map[string]json.RawMessage `json:"steps"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &outputs),
 		"stdout is not a single JSON document:\n%s", stdout)
 
-	step, ran := outputs.StepValues["hello"]
+	step, ran := outputs.Steps["hello"]
 	require.True(t, ran, "the run did not report the step it ran:\n%s", stdout)
 
-	assert.Contains(t, step, "namedValues",
-		"the local driver omitted an unset field the durable driver emits, so one jq "+
-			"expression cannot read both:\n%s", stdout)
+	assert.NotNil(t, step,
+		"the local driver omitted a step that produced nothing, where the durable "+
+			"driver names it with an empty object, so one jq expression cannot read "+
+			"both:\n%s", stdout)
 }
 
 // TestALocalRunAnswersAMachineCallerWithTheWholeRun covers the format that did not
@@ -80,8 +84,8 @@ func TestTheLocalAnswerNamesAFieldNobodyPopulated(t *testing.T) {
 //
 // `flow run local -o json` was `unknown shorthand flag: 'o'`. The document is a
 // GetResponse because that is what the durable driver's machine formats emit, and
-// the point of having one is that `.status` and `.outputs.stepValues` are the same
-// two paths whichever driver ran the workload.
+// the point of having one is that `.status` and `.outputs.steps` are the same two
+// paths whichever driver ran the workload.
 func TestALocalRunAnswersAMachineCallerWithTheWholeRun(t *testing.T) {
 	t.Parallel()
 
@@ -97,8 +101,8 @@ func TestALocalRunAnswersAMachineCallerWithTheWholeRun(t *testing.T) {
 
 	outputs, produced := run["outputs"].(map[string]any)
 	require.True(t, produced, "the run's answer is not under the field the durable driver puts it under:\n%s", stdout)
-	assert.Contains(t, outputs, "stepValues",
-		"`.outputs.stepValues` does not resolve, so a jq expression written against "+
+	assert.Contains(t, outputs, "steps",
+		"`.outputs.steps` does not resolve, so a jq expression written against "+
 			"`flow run` does not work against `flow run local`")
 
 	// Present and empty, which is the honest answer rather than an omission. A local
@@ -109,6 +113,50 @@ func TestALocalRunAnswersAMachineCallerWithTheWholeRun(t *testing.T) {
 			"'this run has no durable identity' from 'this field does not exist'")
 	assert.Equal(t, "", run["workflowId"],
 		"a local run was given a durable identity it does not have")
+}
+
+// TestAStructuredLiteralOutputRendersAsPlainJSON is the regression for a Codex
+// finding on #666: `.runOutputs.<name>` is documented (runDocumentHelp) as
+// "each a plain JSON value rather than a tagged union", but an output written
+// directly as a mapping or list — rather than as a computed `${...}`
+// expression — compiled to a Value_Structure and reached the rendering
+// untouched, in the tagged wire spelling a program reading the documented
+// path had no reason to expect.
+func TestAStructuredLiteralOutputRendersAsPlainJSON(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, `edition: v2026.3
+name: structured-literal-output
+steps:
+  - id: a
+    log:
+      message: hi
+outputs:
+  config:
+    value:
+      replicas: 3
+      region: us-east-1
+`, "--output", "json")
+	require.NoError(t, err, stdout)
+
+	var run map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &run),
+		"stdout is not a single JSON document:\n%s", stdout)
+
+	outputs, ok := run["outputs"].(map[string]any)
+	require.True(t, ok, "no outputs in the document:\n%s", stdout)
+	runOutputs, ok := outputs["runOutputs"].(map[string]any)
+	require.True(t, ok, "no runOutputs in the document:\n%s", stdout)
+
+	config, ok := runOutputs["config"].(map[string]any)
+	require.True(t, ok,
+		"`.runOutputs.config` is not a plain JSON object — the documented contract "+
+			"is violated:\n%s", stdout)
+
+	assert.NotContains(t, config, "structure",
+		"the tagged wire spelling leaked into the run document instead of being flattened")
+	assert.EqualValues(t, 3, config["replicas"])
+	assert.Equal(t, "us-east-1", config["region"])
 }
 
 // TestBothDriversAnswerWithTheSameFieldSet is the claim the README makes, checked
@@ -215,6 +263,24 @@ func TestALocalRunThatFailsWritesNoDocumentForAPerson(t *testing.T) {
 
 	assert.Empty(t, stdout,
 		"a run that produced no answer wrote something to the stream a pipe reads")
+}
+
+// TestALocalRunThatFailsHonoursRawWithoutDashOJSON is the regression for a
+// Codex follow-on on #666: the failure-path guard in runLocal still asked
+// format.Machine() alone after the success and task-run failure paths moved
+// to runRendering.WantsDocument(), so --raw on a failed local run with the
+// default text format wrote nothing, exactly the gap --raw's own help
+// promises not to have.
+func TestALocalRunThatFailsHonoursRawWithoutDashOJSON(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, deniedWorkflow, "--raw")
+	require.Error(t, err, "a run the egress policy stopped was reported as having succeeded")
+
+	var run map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &run),
+		"--raw without -o json on a failed local run wrote nothing a program could parse:\n%s", stdout)
+	assert.Equal(t, "STATUS_FAILED", run["status"])
 }
 
 // TestARunSomebodyStoppedIsNotReportedAsAFault is the distinction a machine

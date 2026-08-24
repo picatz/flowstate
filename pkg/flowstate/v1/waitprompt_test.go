@@ -166,6 +166,24 @@ func TestSubmitRefusesAPromptThatReachesASensitiveInput(t *testing.T) {
 	assert.Contains(t, err.Error(), "salary")
 }
 
+// TestSubmitRefusesAPromptReachingASensitiveInputThroughAStepVar pins the
+// evaluation order at the privacy boundary: step vars are installed before the
+// prompt runs, so checking only the prompt's own expression would let a bare
+// name conceal its reach into a sensitive input.
+func TestSubmitRefusesAPromptReachingASensitiveInputThroughAStepVar(t *testing.T) {
+	t.Parallel()
+
+	wf := promptGate(v1.NewExpr(`question`),
+		&v1.InputDeclaration{Name: "token", Sensitive: true})
+	wf.Steps[0].Vars = map[string]*v1.Value{
+		"question": v1.NewExpr(`"approve " + inputs.token`),
+	}
+
+	err := v1.CheckWaitPromptsAreAskable(wf)
+	require.Error(t, err, "a step var hid a prompt's reach into a sensitive input")
+	assert.Contains(t, err.Error(), "token")
+}
+
 // TestSubmitRefusesAPromptWhoseReachCannotBeDecided is fail-closed for a lint:
 // `inputs[someComputedKey]` names no key statically, so whether it reaches the
 // sensitive one cannot be answered, and a check that cannot decide must not
@@ -286,4 +304,345 @@ func utf8ValidString(s string) bool {
 	}
 
 	return true
+}
+
+// The names the *grammar* binds around a gate (#976).
+//
+// The rule above follows a prompt into the wait step's own `vars:`, because that
+// is where the engine evaluates it from. The language binds three more bare names
+// around a step — a `for_each`'s `as:` (or the `item` it binds when none is
+// written), a `loop:`'s carried state, and an enclosing step's `vars:` — and a
+// prompt reading one of them reaches whatever that name was bound to. These are
+// the same four names `flow fix` had to learn about twice, for the same reason:
+// each is legal alongside a step of the same id, so a walk that does not know
+// what the grammar binds reads the wrong thing.
+//
+// Each scope is taken from where the engine evaluates the thing: a loop's binding
+// is in scope for the body only, and a container step's `vars:` are in scope for
+// what is inside it.
+
+// gateAsking is a one-step gate node asking the given question, for nesting
+// inside the containers below.
+func gateAsking(id string, prompt *v1.Value) *v1.Node {
+	return &v1.Node{
+		Id: id,
+		Kind: &v1.Node_Wait{Wait: &v1.Wait{
+			Kind: &v1.Wait_Signal{Signal: &v1.Signal{Name: "approve", Prompt: prompt}},
+		}},
+	}
+}
+
+// forEachAsking builds the issue's own shape: a `for_each` over items, binding
+// `as` (empty for the default), whose body holds one gate.
+func forEachAsking(items *v1.Value, as string, prompt *v1.Value, declared ...*v1.InputDeclaration) *v1.Workflow {
+	return &v1.Workflow{
+		Name:           "asking",
+		DeclaredInputs: declared,
+		Steps: []*v1.Node{{
+			Id: "review",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items:    items,
+				Iterator: as,
+				Body:     []*v1.Node{gateAsking("approve", prompt)},
+			}},
+		}},
+	}
+}
+
+// TestSubmitRefusesAPromptReachingASensitiveInputThroughALoopBinding is #976's
+// example, exactly as the issue writes it.
+func TestSubmitRefusesAPromptReachingASensitiveInputThroughALoopBinding(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWaitPromptsAreAskable(forEachAsking(
+		v1.NewExpr(`inputs.customers`), "cust", v1.NewExpr(`cust`),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true}))
+
+	require.Error(t, err,
+		"a `for_each`'s `as:` laundered a sensitive input into the question an approver is shown")
+	assert.Contains(t, err.Error(), "customers")
+	assert.Contains(t, err.Error(), "approve", "the refusal named the loop rather than the gate inside it")
+}
+
+// TestSubmitRefusesAPromptReachingASensitiveInputThroughTheImplicitItem is the
+// same reach through the name a loop binds when it writes no `as:`, which is the
+// spelling that has no name in the file at all to notice.
+func TestSubmitRefusesAPromptReachingASensitiveInputThroughTheImplicitItem(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWaitPromptsAreAskable(forEachAsking(
+		v1.NewExpr(`inputs.customers`), "", v1.NewExpr(v1.DefaultIterator),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true}))
+
+	require.Error(t, err,
+		"a `for_each` with no `as:` still binds "+v1.DefaultIterator+", and the prompt reading it was accepted")
+	assert.Contains(t, err.Error(), "customers")
+}
+
+// TestSubmitRefusesAPromptReachingASensitiveInputThroughLoopState covers the
+// third bare name: a `loop:`'s carried state, read under its own name inside the
+// body. Reached through `update:` rather than `initial:` on purpose — the state
+// holds whatever `update:` computed on every iteration after the first, so a walk
+// that only read the initial value would miss every one of them.
+func TestSubmitRefusesAPromptReachingASensitiveInputThroughLoopState(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		Name:           "asking",
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "token", Sensitive: true}},
+		Steps: []*v1.Node{{
+			Id: "poll",
+			Kind: &v1.Node_Loop{Loop: &v1.Loop{
+				State:         "cursor",
+				Initial:       v1.NewLiteral(""),
+				Update:        v1.NewExpr(`"page " + inputs.token`),
+				Until:         v1.NewExpr("true"),
+				MaxIterations: 2,
+				Body:          []*v1.Node{gateAsking("approve", v1.NewExpr(`cursor`))},
+			}},
+		}},
+	}
+
+	err := v1.CheckWaitPromptsAreAskable(wf)
+	require.Error(t, err, "a loop's carried state hid a prompt's reach into a sensitive input")
+	assert.Contains(t, err.Error(), "token")
+}
+
+// TestSubmitRefusesAPromptReachingASensitiveInputThroughAnEnclosingStepsVars is
+// the fourth: a container step's `vars:` are bound for everything inside it, so a
+// gate in the body reads them exactly as the container's own inputs do.
+func TestSubmitRefusesAPromptReachingASensitiveInputThroughAnEnclosingStepsVars(t *testing.T) {
+	t.Parallel()
+
+	wf := forEachAsking(v1.NewLiteralList("a"), "cust", v1.NewExpr(`question`),
+		&v1.InputDeclaration{Name: "token", Sensitive: true})
+	wf.Steps[0].Vars = map[string]*v1.Value{
+		"question": v1.NewExpr(`"approve " + inputs.token`),
+	}
+
+	err := v1.CheckWaitPromptsAreAskable(wf)
+	require.Error(t, err, "an enclosing step's `vars:` hid a prompt's reach into a sensitive input")
+	assert.Contains(t, err.Error(), "token")
+}
+
+// TestAPromptReachingAnOrdinaryInputThroughALoopBindingIsAccepted is the control
+// for all four, and the one that keeps them from being a refusal of every bare
+// name: the identical shape over an input nobody declared `sensitive:` is fine,
+// in a workflow that does declare one so the rule is actually running.
+func TestAPromptReachingAnOrdinaryInputThroughALoopBindingIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(forEachAsking(
+		v1.NewExpr(`inputs.hosts`), "host", v1.NewExpr(`"deploy to " + host + "?"`),
+		&v1.InputDeclaration{Name: "hosts", Type: v1.InputDeclaration_TYPE_LIST},
+		&v1.InputDeclaration{Name: "token", Sensitive: true})),
+		"a prompt reading an ordinary input through a loop binding was refused because some "+
+			"*other* input is sensitive")
+}
+
+// TestALoopBindingIsNotInScopeAfterTheLoop pins the extent of the binding rather
+// than its existence: a loop's item is bound for the body only, so the same name
+// outside the loop is whatever it was outside the loop — here a step of that id,
+// which this rule does not follow. Widening the scope would report this file as
+// wrong on the strength of a binding that is not in scope where it is read.
+func TestALoopBindingIsNotInScopeAfterTheLoop(t *testing.T) {
+	t.Parallel()
+
+	inner := forEachAsking(v1.NewExpr(`inputs.customers`), "cust", v1.NewLiteral("approve?"),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true})
+	// A sibling of the loop, not of the gate inside it: nothing binds `cust` here.
+	inner.Steps = append(inner.Steps, gateAsking("after", v1.NewExpr(`cust`)))
+
+	// Both sit inside a container that binds a name of its own, so the scope the
+	// loop extends is a live map rather than the empty one at the top of a
+	// workflow: a binding written into the enclosing scope in place would be
+	// visible to the sibling below, which is the failure this asserts against.
+	wf := &v1.Workflow{
+		Name:           inner.GetName(),
+		DeclaredInputs: inner.GetDeclaredInputs(),
+		Steps: []*v1.Node{{
+			Id:   "outer",
+			Vars: map[string]*v1.Value{"greeting": v1.NewLiteral("hello")},
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items: v1.NewLiteralList("once"),
+				Body:  inner.GetSteps(),
+			}},
+		}},
+	}
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(wf),
+		"a `for_each`'s binding was treated as in scope after the loop, where the engine has "+
+			"already dropped it")
+}
+
+// TestAStepIdIsNotABindingOfTheSameName is the other half of that: a bare name
+// that merely *looks* like a binding is a step reference, which is a value this
+// rule does not follow, and reporting it would be a false diagnostic about a file
+// that is fine.
+func TestAStepIdIsNotABindingOfTheSameName(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		Name:           "asking",
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "customers", Sensitive: true}},
+		Steps: []*v1.Node{
+			{Id: "cust", Kind: &v1.Node_Value{Value: v1.NewLiteral("acme")}},
+			gateAsking("approve", v1.NewExpr(`cust`)),
+		},
+	}
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(wf),
+		"a step whose id happens to match nothing bound here was read as a binding")
+}
+
+// TestABindingShadowedByAMacroIsNotFollowed keeps free names free in the CEL
+// sense. `list.map(cust, cust)` binds `cust` itself, so the walk must not go
+// looking for the enclosing loop's binding of that name — the same rule
+// [walkInputReach] already applies to `inputs` and the one `flow fix` learned
+// first.
+func TestABindingShadowedByAMacroIsNotFollowed(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(forEachAsking(
+		v1.NewExpr(`inputs.customers`), "cust", v1.NewExpr(`["ok"].map(cust, cust)[0]`),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true})),
+		"a comprehension's own iteration variable was looked up among the grammar's bindings, "+
+			"so an expression that reaches nothing was refused")
+}
+
+// TestABindingDoesNotEscapeIntoASiblingBranch pins that an inner scope stays
+// inner: a binding made for one `for_each`'s body is not in scope in a branch
+// beside it.
+func TestABindingDoesNotEscapeIntoASiblingBranch(t *testing.T) {
+	t.Parallel()
+
+	sensitive := &v1.InputDeclaration{Name: "customers", Sensitive: true}
+	wf := &v1.Workflow{
+		Name:           "asking",
+		DeclaredInputs: []*v1.InputDeclaration{sensitive},
+		Steps: []*v1.Node{{
+			Id: "both",
+			// A `vars:` block so the branches share a live scope: a binding made
+			// in one branch and written into that scope in place would be in the
+			// branch beside it, which is what this asserts against.
+			Vars: map[string]*v1.Value{"greeting": v1.NewLiteral("hello")},
+			Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+				{Steps: []*v1.Node{{
+					Id: "review",
+					Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+						Items:    v1.NewExpr(`inputs.customers`),
+						Iterator: "cust",
+						Body:     []*v1.Node{gateAsking("inner", v1.NewLiteral("approve?"))},
+					}},
+				}}},
+				{Steps: []*v1.Node{gateAsking("beside", v1.NewExpr(`cust`))}},
+			}}},
+		}},
+	}
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(wf),
+		"a binding from one branch's loop leaked into the branch beside it")
+}
+
+// TestAnUndecidableReachThroughABindingIsRefused carries the fail-closed answer
+// across a binding: `inputs[whicheverKey]` names no key, and a name bound to it
+// is no more decidable than the expression itself.
+func TestAnUndecidableReachThroughABindingIsRefused(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWaitPromptsAreAskable(forEachAsking(
+		v1.NewExpr(`inputs[inputs.which]`), "cust", v1.NewExpr(`string(cust)`),
+		&v1.InputDeclaration{Name: "salary", Sensitive: true},
+		&v1.InputDeclaration{Name: "which", Type: v1.InputDeclaration_TYPE_STRING}))
+
+	require.Error(t, err,
+		"a reach this walk cannot name was allowed once it passed through a loop binding, so "+
+			"\"could not tell\" answered as silence")
+}
+
+// TestACalleesPromptIsCheckedAgainstItsOwnScope pins the one boundary bindings do
+// not cross. A callee is inlined into what is submitted, so its prompts are
+// checked — but `inputs.` there names the callee's arguments, and no bare name the
+// caller bound is in scope inside it.
+func TestACalleesPromptIsCheckedAgainstItsOwnScope(t *testing.T) {
+	t.Parallel()
+
+	// The callee declares a sensitive input of its own, so the rule is running
+	// inside it — and one that happens to share the caller's name, which is what
+	// makes the claim testable: if the caller's binding of `cust` crossed the
+	// boundary, its reach into the *caller's* `customers` would be matched
+	// against the callee's declaration of that name and refused.
+	callee := &v1.Workflow{
+		Name:           "inner",
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "customers", Sensitive: true}},
+		Steps:          []*v1.Node{gateAsking("approve", v1.NewExpr(`cust`))},
+	}
+	wf := forEachAsking(v1.NewExpr(`inputs.customers`), "cust", v1.NewLiteral("approve?"),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true})
+	wf.Steps[0].GetForEach().Body = append(wf.Steps[0].GetForEach().Body, &v1.Node{
+		Id:   "delegate",
+		Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}},
+	})
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(wf),
+		"the caller's loop binding was carried into a callee, where the name means whatever that "+
+			"file says it means")
+}
+
+// TestWaitPromptProblemsReportsEveryRefusedGate is what `flowfile` needs and what
+// the first-error spelling cannot give it: a file earning two refusals gets two
+// positioned diagnostics rather than one and a surprise on the next run.
+func TestWaitPromptProblemsReportsEveryRefusedGate(t *testing.T) {
+	t.Parallel()
+
+	wf := forEachAsking(v1.NewExpr(`inputs.customers`), "cust", v1.NewExpr(`cust`),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true})
+	wf.Steps[0].GetForEach().Body = append(wf.Steps[0].GetForEach().Body,
+		gateAsking("second", v1.NewExpr(`"about " + cust`)))
+
+	problems := v1.WaitPromptProblems(wf, v1.DescendCalls)
+	require.Len(t, problems, 2, "only one of two refused gates was reported: %v", problems)
+	assert.Equal(t, "approve", problems[0].StepID)
+	assert.Equal(t, "second", problems[1].StepID)
+}
+
+// TestSkipCallsLeavesACalleeToItsOwnValidation is the distinction the two callers
+// need: `flow validate` has a separate file to report against, and the submit
+// boundary does not.
+func TestSkipCallsLeavesACalleeToItsOwnValidation(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{
+		Name:           "inner",
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "salary", Sensitive: true}},
+		Steps:          []*v1.Node{gateAsking("approve", v1.NewExpr(`inputs.salary`))},
+	}
+	wf := &v1.Workflow{
+		Name:  "outer",
+		Steps: []*v1.Node{{Id: "delegate", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}}},
+	}
+
+	assert.Empty(t, v1.WaitPromptProblems(wf, v1.SkipCalls),
+		"a callee was checked by the caller's compiler, which reports against the wrong file")
+	assert.NotEmpty(t, v1.WaitPromptProblems(wf, v1.DescendCalls),
+		"an inlined callee's prompt was not checked at the boundary where no separate file is left")
+}
+
+// TestAWaitsOwnNowShadowsAnEnclosingBindingOfThatName is the extent of the one
+// name a wait binds for itself.
+//
+// [evalWaitExpr] overlays [v1.NowIdentifier] onto the activation last, so a
+// prompt's `${now}` is the clock reading whatever a loop or a step var of that
+// spelling held — the enclosing binding is not what the prompt reads, and
+// refusing it would be a diagnostic about a reach the run cannot have. `flow
+// validate` refuses that collision outright; a specification built in Go never
+// met the validator, which is why this check answers it too.
+func TestAWaitsOwnNowShadowsAnEnclosingBindingOfThatName(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(forEachAsking(
+		v1.NewExpr(`inputs.customers`), v1.NowIdentifier, v1.NewExpr(v1.NowIdentifier),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true})),
+		"a prompt reading `"+v1.NowIdentifier+"` was checked against an enclosing binding of that "+
+			"name, which a wait overlays with the clock before the prompt is ever evaluated")
 }

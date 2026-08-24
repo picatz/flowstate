@@ -32,13 +32,24 @@ import (
 // — a worker restricted to one tenant cannot tell whose work an unrecognized
 // workflow is, and guessing is the fail-open answer.
 //
-// Also the two authorized task activities, which are the arms that resolve
-// secrets and mint credentials under a run's own identity, as a second line for
-// the case a wrong-tenant worker shares a queue with a right-tenant one and
+// Also every activity whose arguments say whose work it is, as a second line
+// for the case a wrong-tenant worker shares a queue with a right-tenant one and
 // steals an activity task from a run the right-tenant worker already accepted.
-// [Task] and [TaskInScope] carry no identity — they are the unauthorized arms,
-// which is precisely why they have nothing to check — so this is defense in
-// depth and not the boundary. The boundary is the queue plus the run refusal.
+// That is [Task] and the authorized arms, which take an identity parameter, and
+// [TaskInScope] and [WorkflowVars], which carry one inside their [v1.Scope].
+//
+// A scope answers this question whether or not it holds an identity, which
+// [tenantArg] argues at length because it is the thing that has been got wrong
+// in both directions: the default tenant's namespace is the empty string, so a
+// scope naming no identity names the default tenant rather than declining to
+// answer, and a worker restricted to another tenant must refuse it.
+//
+// [TaskWithPrev] is the one arm carrying neither shape, which is precisely why
+// it has nothing to check — it predates scopes and exists only to replay
+// histories that name it.
+//
+// So this is defense in depth and not the boundary; the boundary is the queue
+// plus the run refusal above.
 //
 // # What the refusal costs
 //
@@ -124,11 +135,11 @@ type tenantActivityInbound struct {
 func (t *tenantActivityInbound) ExecuteActivity(
 	ctx context.Context, in *interceptor.ExecuteActivityInput,
 ) (any, error) {
-	// Only when an identity is actually present: see [TenantInterceptor] on why
-	// the unauthorized arms have nothing to check, and why that makes this a
-	// second line rather than the boundary.
-	if identity, ok := identityArg(in.Args); ok {
-		if got := identity.GetNamespace(); got != t.namespace {
+	// Only when the arguments say whose work this is: see [TenantInterceptor]
+	// on why one arm has nothing to check, and why that makes this a second
+	// line rather than the boundary.
+	if got, ok := tenantArg(in.Args); ok {
+		if got != t.namespace {
 			return nil, tenantRefusal(fmt.Sprintf(
 				"this worker executes one tenant's workloads only, and this task belongs to namespace %q; "+
 					"it reached a task queue this worker polls, which is a routing misconfiguration (%s)",
@@ -168,17 +179,45 @@ func runStateArg(args []any) (*v1.RunState, bool) {
 	return nil, false
 }
 
-// identityArg finds the run identity among an activity's arguments.
+// tenantArg reports the Flowstate namespace an activity's arguments say the
+// work belongs to, and whether they say at all.
 //
-// By type rather than by position, because the two authorized arms take it at
-// different indexes and a position is a thing that drifts when a signature
-// gains a parameter.
-func identityArg(args []any) (*v1.WorkloadIdentity, bool) {
+// By type rather than by position, because the arms take these at different
+// indexes and a position is a thing that drifts when a signature gains a
+// parameter.
+//
+// A [v1.Scope] answers whether or not it carries an identity, and that is the
+// part worth stating, because the obvious reading — "no identity, nothing to
+// check" — is what left a hole here. The default tenant's namespace is the
+// empty string, so a scope with no identity is not an activity that declines
+// to say whose work it is; it is an activity saying the default tenant's. A
+// worker restricted to `team-a` must refuse it for the same reason it refuses
+// `team-b`'s, and the version of this function that skipped it let exactly
+// that activity through.
+//
+// The converse mistake is the one that made this subtle enough to get wrong
+// twice: reading an identity-less scope as the default tenant is only correct
+// once every scope that *should* carry an identity does. [WorkflowVars] is
+// dispatched with a scope built at the call site rather than one derived from
+// a run, and until it was given the run's identity, a `--tenant team-a` worker
+// reading its scope as the default tenant would have refused every run
+// declaring `vars:` — its own runs included. That is why the two dispatch
+// sites set Identity, and why this comment names them.
+//
+// Only arguments carrying neither shape leave nothing to check: [TaskWithPrev],
+// which predates scopes entirely and exists to replay histories that name it.
+func tenantArg(args []any) (string, bool) {
 	for _, arg := range args {
 		if identity, ok := arg.(*v1.WorkloadIdentity); ok && identity != nil {
-			return identity, true
+			return identity.GetNamespace(), true
 		}
 	}
 
-	return nil, false
+	for _, arg := range args {
+		if scope, ok := arg.(*v1.Scope); ok && scope != nil {
+			return scope.GetIdentity().GetNamespace(), true
+		}
+	}
+
+	return "", false
 }

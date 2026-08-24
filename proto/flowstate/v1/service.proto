@@ -1,0 +1,1179 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/catalog.proto";
+import "flowstate/v1/diagnostics.proto";
+import "flowstate/v1/run.proto";
+import "flowstate/v1/schedule.proto";
+import "flowstate/v1/value.proto";
+import "flowstate/v1/workflow.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// RunRequest is the request message for running a workflow.
+message RunRequest {
+  Workflow workflow = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Inputs are the arguments this run is started with, keyed by the name an
+  // [InputDeclaration] on the workflow gave.
+  //
+  // # Values, never expressions
+  //
+  // Every [Value] here must be a literal. Not a convention: the security posture
+  // of the whole surface. These arrive from whoever can call Run, which is the
+  // definition of an untrusted party, and an expression accepted from there is
+  // code the server would evaluate on its own behalf, in a scope holding the
+  // run's own values. An expression is something a file says, and a file is
+  // reviewed and compiled; this is data a caller sends. `secret_ref` is refused
+  // for the neighbouring reason: a caller naming a secret would be choosing which
+  // credential the run resolves, which is a decision that belongs to the
+  // specification and its policy.
+  //
+  // The oneof cannot say which arm is allowed (protovalidate rules attach to
+  // fields), so the server enforces it at submit, together with the rest of the
+  // check against the declarations: every required input present, no undeclared
+  // name, every value of the declared type, defaults filled in for what was left
+  // out. Fail closed on each: a run that would be wrong is refused while the
+  // caller is still there to be told.
+  //
+  // # Size (invariant 9)
+  //
+  // These become part of the run's state, so they are weighed by
+  // `CheckRunStateSize` at every Continue-As-New along with everything else the
+  // run carries: `proto.Size` on the whole message, so nothing has to be added
+  // to a tally by hand. The submit-time check is `CheckSpecSize` on the workflow;
+  // a caller who could push a run past the blob limit with arguments alone would
+  // have found the hang that invariant exists to convert into an answer.
+  map<string, Value> inputs = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
+
+  // EntityKey turns a stable business key into the run's workflow id, in place of
+  // today's random one, so a long-lived workload (a subscription, an order, an
+  // incident) can be addressed by what it *is* rather than by an id nobody wrote
+  // down. Unset is byte-identical to today: a `flowstate-workflow-<uuid>` id, same
+  // as every run before this field existed (invariant 10, no compatibility arm
+  // needed because the zero value already means "generate one").
+  //
+  // # The id is namespace-scoped, and the request never says which namespace
+  //
+  // The other half of the id is the caller's own tenant, taken only from
+  // [FlowstateServer.identityFor], the same rule [fairnessFor] already applies to
+  // scheduling priority and invariant "a workload's namespace comes from the
+  // authenticated caller, never from the workload itself" states generally. A
+  // request cannot name the namespace half of its own address, or a caller could
+  // address (and collide with) another tenant's entity by asserting their
+  // namespace as a field value rather than authenticating as them.
+  //
+  // # Grammar, and why it is the same grammar a namespace already has
+  //
+  // Lowercase ASCII letters, digits, and a dash that is never first, identical to
+  // [auth.ValidateNamespace]'s grammar, and deliberately so: the two halves are
+  // joined by a single separator character neither grammar permits (see
+  // `EntityWorkflowID` in `pkg/flowstate/v1/entity.go`), which is what makes the
+  // join unambiguous. CLAUDE.md's env-provider incident is the exact trap this
+  // avoids: `prefix + NAMESPACE + "_" + name` let `TEAM_A` + `KEY` collide with
+  // `TEAM` + `A_KEY` because every character legal in the prefix was also legal in
+  // the name. Here, neither half can contain the separator, so there is only ever
+  // one place the string could have been split, and it is the right one.
+  //
+  // # The key is metadata, not a secret
+  //
+  // A workflow id is visibility data: the cluster indexes it, every listing
+  // and every UI shows it, and no payload codec can ever cover it, because
+  // encrypting the address a workload is reached at would leave nothing to
+  // reach it by. On a deployment that encrypts payloads, this key is still at
+  // rest in plaintext. Name the workload by what it is publicly known as, an
+  // order id or a subscription id, and never by a value the codec exists to
+  // protect. The same rule holds for search attributes, and for the same
+  // structural reason; the guard is `runSearchAttributes` in
+  // `pkg/flowstate/v1/server`.
+  optional string entity_key = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+  }];
+
+  // Reason is why a person is starting this run, recorded on it.
+  //
+  // Optional here and required by the *workflow*: a specification declaring
+  // `manual: {require_reason: true}` is refused a start without one (see
+  // [ManualTrigger.require_reason]), while everything else ignores this field.
+  // That placement is deliberate — the requirement is a property of the
+  // workload, so it travels with the workload, and a caller cannot lift it by
+  // omitting the field.
+  //
+  // Recorded as a memo rather than reaching an expression. It is provenance for
+  // whoever reads the run afterwards, not an argument the workflow computes
+  // with: a value a caller writes freely and a step then branches on is an
+  // input, and an input goes through `inputs:` where declarations check it.
+  // That is also why it is absent from [TriggerContext], whose four fields are
+  // all attested rather than asserted.
+  //
+  // Free text, because the question it answers is one a person asks another
+  // person. Bounded like everything else a caller chooses the size of.
+  string reason = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string = {max_len: 512}
+  ];
+}
+
+// RunResponse is the response message for a workflow run.
+message RunResponse {
+  message Error {
+    string message = 1 [(buf.validate.field).required = true];
+
+    // Kind classifies why the run failed, mirroring flowstatev1.ErrorKind, the
+    // same classification retry policy is built from, so an agent (or any
+    // programmatic consumer) can decide "repair the file / retry / escalate to
+    // the operator" without parsing Message.
+    //
+    // A plain string rather than an enum: the set this names already lives as a
+    // Go type in the execution-independent layer (errors.go) because it drives
+    // retry semantics on both drivers before it ever needed to travel, and it
+    // already crosses the durable driver's own wire (Temporal's
+    // ApplicationError carries it as its Type) as this same string. Restating
+    // it as a second, proto-owned enum would be two closed sets that could
+    // disagree about what "PolicyDenied" means; this field is that value
+    // reaching the client rather than a parallel definition of it.
+    //
+    // Always set alongside Message, on the same rule flowstatev1.ClassifyError
+    // itself follows: a failure this driver cannot otherwise classify is
+    // reported as "Internal" rather than left blank, because an unclassified
+    // failure is a gap in Flowstate and not a statement that nothing is known.
+    string kind = 2;
+  }
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_RUNNING = 1;
+    STATUS_COMPLETED = 2;
+    STATUS_FAILED = 3;
+    STATUS_CANCELED = 4;
+    STATUS_TERMINATED = 5;
+    STATUS_TIMED_OUT = 6;
+  }
+  // WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run and
+  // `flowstate-entity-<namespace>_<entity_key>` for one started with
+  // [RunRequest.entity_key], no longer a bare UUID, so the format constraint
+  // is a length bound rather than [buf.validate.field.string.uuid], which the
+  // generated id never actually satisfied on its own (it is a prefixed string,
+  // not a bare UUID) and which an entity-addressed id cannot satisfy at all.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 1024
+    }
+  ];
+  string run_id = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+  Status status = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    Error error = 4;
+    Workflow.StepOutputs outputs = 5;
+  }
+
+  // SpecificationAsSubmitted is the server saying whether the run it just
+  // started executes the specification this caller sent, unchanged.
+  //
+  // A deployment may register a workflow of its own under a name a caller also
+  // submits, and the server then runs *its* copy rather than the caller's — that
+  // substitution is the point of the trusted-workflow set, because it is what
+  // makes `manual: denied` and `manual.allowed_principals` authorization policy
+  // rather than caller input. The caller cannot otherwise see it happen. That
+  // matters beyond curiosity because a client renders a run's declared outputs
+  // against the specification it holds: `sensitive: true` is a fact about the
+  // specification that *ran*, so a caller redacting against a copy that did not
+  // run prints in the clear any value only the executed copy marks.
+  //
+  // Substitution is the loudest way the two can differ and not the only one. A
+  // server also *transforms* what it runs: it writes its own selection of plugin
+  // versions onto the specification before the engine sees it, and may normalize
+  // or expand more of it later. So this is whole-message equality between the
+  // request as it arrived and the specification handed to the engine, answered
+  // after every one of those steps rather than at the substitution alone. Reading
+  // it as "the parts a client's redaction happens to consult" would be a list
+  // somebody has to extend for every transformation added afterwards, and it
+  // would answer true the first time nobody did.
+  //
+  // Three answers, not two, which is why this is `optional`. True means the
+  // executed specification is the submitted one, so a client may trust its own
+  // copy's declarations. False means it is not, so the client must not. *Unset*
+  // means this server did not say — an older server that substitutes and has no
+  // field to report it in — which is not the same claim as false and must not be
+  // read as true: a client fails closed on it exactly as it does on false. A
+  // plain `bool` could not carry that, its zero value being indistinguishable
+  // from silence.
+  //
+  // What it deliberately does not carry is the executed specification, or any
+  // part of it. The trusted copy is deployment configuration the caller did not
+  // send and is not owed; this answers only "is mine the one that ran", which a
+  // caller is owed about their own request, and leaves the disclosure question
+  // alone.
+  optional bool specification_as_submitted = 6;
+}
+
+// GetRequest is the request message for getting a workflow run.
+message GetRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+  optional string run_id = 2 [(buf.validate.field).string.uuid = true];
+}
+
+// GetResponse is the response message for getting a workflow run.
+message GetResponse {
+  string workflow_id = 1;
+  string run_id = 2;
+  RunResponse.Status status = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    RunResponse.Error error = 4;
+    Workflow.StepOutputs outputs = 5;
+  }
+
+  // StartTime is when the workload began, and CloseTime when it finished, unset
+  // while it is still running, so "has not finished" and "finished at the epoch"
+  // stay distinct.
+  //
+  // Same two fields a listing reports, with the same names and the same meaning,
+  // because a listing already answered them and a Get did not: `flow list` could
+  // tell you a run had been going for an hour and `flow get <id>` on the same run
+  // could only tell you it was running. One verb knowing less about a run than the
+  // verb that enumerates it is the wrong way round: Get is the one a person
+  // reaches for when they care about a *particular* run.
+  //
+  // Both come off the same DescribeWorkflowExecution response the status does, so
+  // this costs nothing but the field.
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Timestamp close_time = 7;
+
+  // Progress is where a running run has got to. Unset for any other status, since a
+  // finished run's position is its outputs.
+  //
+  // Unset does not mean "at the beginning". It also means no worker answered, or
+  // that the run is on an interpreter built before this existed: facts about the
+  // deployment rather than about the workload. A reader that rendered an unanswered
+  // query as "step 1 of 5" would be inventing one.
+  RunProgress progress = 8;
+
+  // PendingActivities are the steps Temporal is retrying right now, with why the
+  // last attempt failed and when the next one is due.
+  //
+  // This is the answer to "why has this been RUNNING for six hours", and until
+  // it was carried here that answer was unobtainable through Flowstate at all:
+  // Temporal's Describe response held it, the server read only the status beside
+  // it, and an operator had to leave the tenancy boundary this service enforces
+  // and ask the temporal CLI directly. Set only for a RUNNING run, on the same
+  // reasoning progress is; empty for a running run means nothing is mid-retry,
+  // which is itself the answer: the run is waiting or between steps, not stuck.
+  repeated PendingActivity pending_activities = 9;
+
+  // Outputs are the values the workflow declared it would report, computed by
+  // this run: the answer, as against the transcript `outputs` above holds.
+  //
+  // A new field beside the existing oneof rather than a third arm in it: the
+  // oneof answers "did it fail", which is a different question from "what did it
+  // produce", and a run can perfectly well have both a status and a result. Unset
+  // means the workflow declared no outputs, or the run has not finished, or the
+  // run was started before this existed, all three of which are honestly
+  // "nothing to report" rather than "an empty result", which is why there is no
+  // empty message to distinguish them.
+  RunOutputs run_outputs = 10;
+
+  // EntityState is a bounded snapshot of a RUNNING run's carried state (its
+  // top-level `vars:` and the value each active `loop:` is carrying between
+  // iterations), answered by a second Temporal query beside
+  // [RunProgress]'s, for the reason [RunProgress] itself exists: nothing
+  // outside a running workflow knows its own state, because the state lives
+  // in the interpreter's own memory rather than in anything the service
+  // records, so the only way to ask is a query that reaches the worker.
+  //
+  // # Why this exists at all
+  //
+  // Outputs (both arms of the oneof above) populate only on
+  // STATUS_COMPLETED. An entity (a run shaped as `loop:` +
+  // `wait_for_signal:` that is never meant to finish) is by design always
+  // RUNNING, so before this field existed its state was categorically
+  // unreadable: not even by its own owner, and not without either signaling
+  // it (mutating it to provoke a readable output, the wrong tool for a
+  // read) or waiting for it to end, which it structurally never does.
+  //
+  // Set only for a RUNNING run, on [RunProgress]'s exact reasoning: a
+  // finished run's state is its outputs, which the oneof above already
+  // answers.
+  EntityState entity_state = 11;
+
+  // Starter is who submitted this run, as the qualified `issuer#subject` string
+  // the server recorded on it at submit.
+  //
+  // # Why it was invisible, and why that mattered
+  //
+  // A run has always recorded its starter - `FlowstateServer.Signal` reads it
+  // out of the run's memo to enforce [SignalPolicy.distinct_from_starter] - and
+  // no RPC answered with it. So a workflow could declare "the approver may not
+  // be whoever asked for this", the server could enforce it exactly, and nobody
+  // outside the server could see the fact being compared against. An operator
+  // told `PermissionDenied` on a `flow signal` had no way to learn that they
+  // were being refused for being the starter, and a surface rendering an
+  // approval gate could not say who was asking.
+  //
+  // # Why the raw qualified string, not a rendered display form
+  //
+  // Because `issuer#subject` is exactly what a [SignalPolicyRule.subject] names,
+  // and [QualifiedSubject] is the one join that produces it. A surface holding
+  // this can compare it to a policy rule, or to its own caller's identity, with
+  // a string equality that is the same comparison [SignalPolicyCheck] makes.
+  // Rendering it - splitting it, shortening it, dropping the issuer - would give
+  // this field a second, prettier spelling of an identity that this schema is
+  // otherwise careful to keep in exactly one form, and a reader who compared the
+  // pretty one would have written a check that passes for a subject minted by a
+  // different identity provider. A client that wants a display form can cut on
+  // the separator; a client that wants to compare must not have to reassemble.
+  //
+  // # Absent means absent
+  //
+  // Empty for a run started before the starter was recorded at all, and for one
+  // whose memo could not be read. There is no compatibility arm and no
+  // placeholder: "this server does not know who started this run" is a true
+  // answer and a different one from any subject, and a reader must not be handed
+  // something that compares equal to a real identity. Authorization never reads
+  // this field - it reads the same memo itself, and denies rather than proceeds
+  // when the answer is missing (see the server's authorizeSignal) - so an empty
+  // value here weakens nothing.
+  string starter = 12;
+}
+
+// SignalRequest delivers a signal to a waiting run.
+message SignalRequest {
+  // WorkflowId identifies the run to signal.
+  //
+  // A caller may address only runs in a namespace their own authenticated
+  // identity establishes. The namespace is never taken from this request: a
+  // caller who could name their own tenant could name someone else's, and an id
+  // is not a capability.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 256
+    }
+  ];
+
+  // RunId optionally pins the signal to one run of the workload. Unset addresses
+  // whichever run is current, which is what a human approving a gate means: they
+  // are approving the workload, and they neither know nor care how many times it
+  // has been continued as new.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Name is the signal being sent, matching what the waiting step declared.
+  string name = 3 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // Payload becomes the waiting step's outputs, so `${approval.approved}`
+  // resolves to what a sender put here.
+  Node.Outputs payload = 4;
+}
+
+// SignalResponse is empty: a delivered signal has nothing to report.
+//
+// The absence of a body is the whole of the answer, and it is a narrow one. It
+// says the cluster accepted the signal for the workload, not that a waiting step
+// consumed it, and not that whatever the payload asks for has happened. A caller
+// that needs to know what the run did with it reads the run back with
+// [WorkflowService.Get].
+message SignalResponse {}
+
+// SignalWithStartRequest delivers a signal to an entity, creating it first if it
+// does not yet exist, which closes the race an ordinary create-then-signal has: a
+// caller who checks "does it exist" and then either Runs or Signals can always be
+// beaten between the two calls, either by another creator or by the signal
+// arriving before the run does.
+//
+// The delivery that creates the entity travels as part of that entity's own
+// starting state rather than as a signal that follows its creation, so an
+// accepted create can never leave an entity missing the mutation that initiated
+// it — even if this handler disappears immediately afterward. Only a delivery to
+// an entity that *already existed* before this call — the not-created branch — is
+// sent as a signal after the fact, and by then the entity's existence was
+// somebody else's atomic creation, not this call's, so there is nothing left for
+// this call itself to make atomic.
+//
+// # Two authorization questions, decided separately, both fail-closed
+//
+// "May this sender signal entity key K" and "may this sender CREATE an entity
+// under key K" are not the same question, and this handler never answers the
+// second by reusing the first's rule. Delivering a signal is authorized by the
+// signal policy the *target* already declared: [Workflow.signals], enforced the
+// same way [FlowstateServer.Signal] enforces it, against the memo recorded when
+// the entity was created. Creating one has nothing yet to declare a policy: there
+// is no target, no memo, no `signals:` block recorded anywhere to check. So it is
+// authorized the same way [FlowstateServer.Run] authorizes an ordinary run:
+// every check `Run` performs on [workflow] and [inputs] runs here too, on the
+// same fields, before either branch is taken, which is a strictly *stronger* bar
+// than delivering a signal (a bare workflow id, a signal name, and a payload)
+// asks for. An authenticated caller in their own namespace may always create,
+// exactly as they may always Run; what [entity_key] changes is only the address
+// the result is reachable at.
+//
+// [workflow] and [inputs] are read only on the branch that creates. See
+// [SignalWithStartResponse.created]. When the entity already exists, Temporal
+// never looks at them and this handler never lets a caller believe they changed
+// anything about the run they signalled.
+message SignalWithStartRequest {
+  // EntityKey addresses the entity, composed with the caller's own namespace
+  // exactly as [RunRequest.entity_key] is. See that field's doc comment for
+  // the grammar and the unforgeability argument, which apply unchanged here.
+  string entity_key = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[a-z0-9][a-z0-9-]*$"
+    }
+  ];
+
+  // Workflow is the specification to start the entity from if it does not
+  // already exist. Checked exactly as [RunRequest.workflow] is (the same
+  // validation, the same signal-policy shape check, the same size bound)
+  // and ignored entirely if the entity is already running.
+  Workflow workflow = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Inputs seed the entity's arguments if it does not already exist. Checked
+  // exactly as [RunRequest.inputs] is, and ignored if the entity is already
+  // running: an existing entity's inputs were bound once, at its own
+  // creation, and this call cannot rebind them.
+  map<string, Value> inputs = 3 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
+
+  // Name is the signal to deliver, matching what a waiting step declared:
+  // the same field, the same grammar, as [SignalRequest.name].
+  string name = 4 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // Payload becomes the waiting step's outputs, exactly as [SignalRequest.payload].
+  Node.Outputs payload = 5;
+}
+
+// SignalWithStartResponse identifies the entity the signal reached, and says
+// whether this call is what brought it into existence.
+message SignalWithStartResponse {
+  string workflow_id = 1;
+  string run_id = 2;
+
+  // Created is true when this call is what brought the entity into existence.
+  // False means a signal was delivered to an entity that was already running.
+  // A caller that needs to tell "I just created this" from "this already
+  // existed" (to decide whether to wait for a different handler, say) has
+  // no other way to learn it: [workflow_id] and [run_id] are populated
+  // identically either way, a run and a workflow execution, so this field is
+  // the only place the distinction is reported.
+  bool created = 3;
+
+  // SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+  // this RPC: the same question, the same three answers, and deliberately the
+  // same name rather than a second vocabulary for one fact.
+  //
+  // This RPC substitutes the trusted copy exactly as `Run` does — see the
+  // server's `trustedWorkflow` — and then transforms what it runs the same way,
+  // writing the deployment's plugin selection onto it before the engine sees it.
+  // So a caller here faces the identical question a caller of `Run` faces: is
+  // the specification I hold the one that ran, and may I therefore trust its
+  // `sensitive: true` declarations to describe this entity's outputs? Read
+  // [RunResponse.specification_as_submitted] for the whole argument, including
+  // why *unset* is not `false` and why neither may be read as assent.
+  //
+  // One thing is this RPC's own, and it is a consequence of [created]. When this
+  // call created the entity, the answer is about the specification this call
+  // handed the engine, exactly as `Run`'s is. When it did not — a mutation
+  // delivered to an entity that was already running — the executing
+  // specification is whatever *that* run was created with, which this server did
+  // not compare against anything and will not claim to know: the answer is false,
+  // the fail-closed one, and it is stated rather than left unset because the
+  // server is answering rather than staying silent. A caller wanting the precise
+  // view of an entity it did not create has no route to it through this field,
+  // which is the honest position.
+  optional bool specification_as_submitted = 4;
+}
+
+// Stopping a run is two different asks, and the difference is not a detail of
+// implementation: it decides whether the workload's cleanup happens.
+//
+// Cancel is cooperative. It asks the run to stop and the run gets to finish
+// responding: a workload that has to release a lock, roll back a partial
+// deployment, or tell someone it gave up still does that. The cost is that a run
+// which is wedged (blocked on something that never returns) may not stop.
+//
+// Terminate is not cooperative. The execution stops where it is, no further step
+// runs, and nothing the workload would have done on the way out is done. It is
+// the answer when a run must stop now and when a run cannot be made to stop any
+// other way, and it should be the second thing tried rather than the first.
+//
+// So: cancel by default, terminate when cancel will not do. Anything holding a
+// resource it is responsible for releasing is a reason to prefer cancel, and
+// terminating it is a decision to leak that resource on purpose.
+
+// CancelRequest asks a run to stop, letting it clean up on the way out.
+message CancelRequest {
+  // WorkflowId identifies the run to cancel.
+  //
+  // A caller may address only runs in a namespace their own authenticated
+  // identity establishes. The namespace is never taken from this request: a
+  // caller who could name their own tenant could name someone else's, and an id
+  // is not a capability.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 256
+    }
+  ];
+
+  // RunId optionally pins the request to one run of the workload. Unset
+  // addresses whichever run is current, which is what someone stopping a
+  // workload means: they neither know nor care how many times it has been
+  // continued as new.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// CancelResponse is empty: the request to stop was accepted, and that is all it
+// claims.
+//
+// Cancellation is cooperative, so this answers that the run has been asked to
+// stop rather than that it has stopped. Cleanup runs after this returns, and a
+// caller that needs the run's final status polls [WorkflowService.Get] for it.
+message CancelResponse {}
+
+// TerminateRequest stops a run immediately, without letting it clean up.
+message TerminateRequest {
+  // WorkflowId identifies the run to terminate.
+  //
+  // A caller may address only runs in a namespace their own authenticated
+  // identity establishes. The namespace is never taken from this request: a
+  // caller who could name their own tenant could name someone else's, and an id
+  // is not a capability.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 256
+    }
+  ];
+
+  // RunId optionally pins the request to one run of the workload. Unset
+  // addresses whichever run is current.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Reason is recorded on the terminated execution, so whoever finds the run
+  // later learns why it was stopped rather than only that it was.
+  //
+  // A terminated run leaves no trace of its own explaining itself (that is what
+  // terminate means), so this is the only account of the decision there will be.
+  string reason = 3 [(buf.validate.field).string = {max_len: 1024}];
+}
+
+// TerminateResponse is empty: the run is stopped, and there was no cleanup to
+// report on.
+//
+// Unlike [CancelResponse] this is not an acceptance that something will happen
+// later. Termination is immediate, so the absence of a body here is the absence
+// of anything further to say, and the account of why it was stopped is the
+// reason recorded on the execution rather than anything returned to the caller.
+message TerminateResponse {}
+
+// ListRequest asks for the caller's runs.
+message ListRequest {
+  // PageSize bounds how many runs come back. Zero takes the server's default.
+  //
+  // This bounds the answer, not the work: the server filters by tenant itself
+  // (see ListResponse.next_page_token), so a small page is not a promise of a
+  // small scan.
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1000
+  }];
+
+  // PageToken continues a previous List. Opaque: it encodes where the scan
+  // stopped, and nothing else should be read from or written into it.
+  string page_token = 2 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Filter keeps only the runs a CEL expression answers yes about.
+  //
+  // CEL because that is what everything else an author writes here is: the
+  // expressions in a Flowfile, the rules in an egress or auth policy, the
+  // condition on a step. A query language of its own would be a second grammar
+  // to learn, a second parser to bound, and a second place for `status` to mean
+  // something slightly different.
+  //
+  // The names it binds are a run's own: `workflow_id`, `run_id`, `status`,
+  // `start_time`, `close_time`, `finished`. `status` is the short name
+  // (`FAILED`, not `STATUS_FAILED`) and comparing it to a name no status has is
+  // refused rather than silently matching nothing.
+  //
+  //     status == "FAILED"
+  //     status == "RUNNING" && start_time < timestamp("2026-08-01T00:00:00Z")
+  //     finished && close_time - start_time > duration("1h")
+  //
+  // `close_time` is null while a run is going: null rather than the epoch,
+  // because a run that has not finished has no close time and a filter that
+  // compared one against a date would otherwise report every running run as
+  // having finished in 1970. Comparing null errors, which is why `finished`
+  // exists: CEL's `&&` absorbs errors from the side it does not need, so the
+  // guarded form above does what it looks like it does.
+  //
+  // # What this bounds, and what it does not
+  //
+  // A filter narrows the *answer*, never the work. The tenant a run belongs to
+  // is a memo, which Temporal cannot query, so a listing is already a bounded
+  // scan with a predicate applied to each result, and a filter that matches
+  // little makes a page more likely to come back short with a token, not more
+  // likely to scan further. The scan bounds are unchanged and unaffected by what
+  // is written here.
+  //
+  // The evaluation itself is cost-bounded per run, well below the budget an
+  // ordinary expression gets, because this one is evaluated once per execution
+  // read and the two multiply.
+  //
+  // # Room this leaves
+  //
+  // When a deployment registers search attributes, the parts of a filter the
+  // visibility store can answer become a query pushed down into it, and the rest
+  // stays a predicate here. That changes what a listing costs and never what it
+  // means: the same filter returns the same runs either way, which is what lets
+  // an operator turn pushdown on without re-reading every saved query.
+  string filter = 3 [(buf.validate.field).string = {max_len: 4096}];
+}
+
+// RunSummary describes one run in a listing.
+//
+// Deliberately not a run's outputs. A listing is about which workloads exist and
+// what they are doing; reading what one produced is Get, which is one run and one
+// authorization decision. A list that returned outputs would make "show me my
+// runs" the cheapest way to read every workload's data at once.
+message RunSummary {
+  string workflow_id = 1;
+  string run_id = 2;
+  RunResponse.Status status = 3;
+
+  // StartTime is when the workload began.
+  google.protobuf.Timestamp start_time = 4;
+
+  // CloseTime is when it finished, unset while it is still running.
+  google.protobuf.Timestamp close_time = 5;
+
+  // Name is the workflow's own declared name (Workflow.name), not Temporal's
+  // WorkflowType: every run's WorkflowType is "Run", the one interpreter
+  // workflow, so it cannot distinguish "nightly-etl" from "onboard-tenant".
+  //
+  // Populated from the run's memo, recorded unconditionally at submit,
+  // never from a search attribute, and deliberately so: a deployment may
+  // additionally project this into Temporal's visibility store for external
+  // tooling, but `flow list --filter` never depends on that having
+  // succeeded, or a filter with nothing wrong with it would silently return
+  // nothing on a deployment where search-attribute registration failed.
+  // Empty only for a run that predates this field entirely. Absence is not
+  // an error. See server/list.go and runfilter.go, where a filter comparing
+  // against `name` simply does not match a run that carries none.
+  string name = 6;
+
+  // Labels are the workflow's own declared labels ([Workflow.labels]), recorded
+  // on the run at submit.
+  //
+  // Populated from the memo, on [RunSummary.name]'s exact terms and for its exact
+  // reason: written unconditionally by every path that starts a run, read back
+  // through the same memo a listing already fetches for the tenant check, and
+  // never sourced from a search attribute — a `labels` filter that worked only
+  // where attribute registration succeeded would answer "nothing matched" to a
+  // filter with nothing wrong with it.
+  //
+  // Empty for a run of a workflow that declared none, and for a run started
+  // before this was recorded at all. The two are deliberately not distinguished:
+  // both are "this run carries no labels", which is the only question a filter
+  // asks. `labels["team"] == "payments"` does not match such a run, and
+  // `!("team" in labels)` does.
+  map<string, string> labels = 7;
+
+  // Starter is who submitted this run, as the qualified `issuer#subject` string
+  // recorded on it at submit — the same string, from the same memo, by the same
+  // rules as [GetResponse.starter], whose doc is the whole of the reasoning for
+  // the raw qualified form and for what an empty value means.
+  //
+  // Here rather than only on Get because the question an operator asks at scale
+  // is "whose runs are these", and answering it through Get is one RPC per run.
+  // It is the same fact in both places, read from the same memo by the same
+  // reader, so the two cannot disagree.
+  string starter = 8;
+
+  // WorkerVersion is the Worker Deployment version this run is pinned to, as
+  // `deployment-name.build-id` — Temporal's own spelling of the pair
+  // `flow worker --deployment-name`/`--build-id` configures.
+  //
+  // Empty when the deployment does not use Worker Deployment Versioning at all,
+  // which is the unconfigured default, and empty for a run started before its
+  // worker was versioned. Absence is therefore "this run is not pinned to a
+  // version", never "the version is unknown".
+  //
+  // Read from Temporal's own `WorkflowExecutionInfo.versioning_info` rather than
+  // from a memo, unlike every other field here, and the difference is the point:
+  // the pinned version is not a fact about the submission, it is a fact about
+  // where the run is *executing*, and it legitimately changes at Continue-As-New
+  // when a run takes the deployment's current version. A memo written at submit
+  // would freeze a value the run itself does not honour — the one shape of
+  // "recorded twice, drifting" this schema keeps out. It costs nothing extra:
+  // the listing response already carries it.
+  string worker_version = 9;
+}
+
+// ListResponse returns a page of the caller's runs.
+message ListResponse {
+  repeated RunSummary runs = 1;
+
+  // NextPageToken continues the listing, and is set whenever the scan stopped
+  // with more to look at, including when this page came back short or empty.
+  //
+  // That case is real rather than theoretical. The tenant a run belongs to is
+  // recorded as a memo, which Temporal cannot filter on, so the server reads a
+  // bounded number of executions and keeps the ones that are the caller's. In a
+  // namespace shared by several tenants a scan can therefore end having found
+  // few matches, or none, while plenty remain. An empty page with a token set
+  // means "keep asking", and only an empty token means the listing is done.
+  string next_page_token = 2;
+}
+
+// WorkflowService is the service that provides operations for managing and running workflows.
+service WorkflowService {
+  // Run submits a compiled workflow specification and starts it running durably.
+  //
+  // It answers with the ids to watch the run by, and it does not wait. A workload
+  // may take a week; a caller made to hold a connection open for one is a caller
+  // that cannot survive its own restart. Follow the run with [Get], using the ids
+  // this returns.
+  //
+  // What it takes is the specification [Compile] produces, not Flowfile source.
+  // The path from a file somebody wrote is therefore [Validate], [Compile], Run,
+  // and each step answers with something a caller can act on: diagnostics, then a
+  // specification, then a running workload.
+  rpc Run(RunRequest) returns (RunResponse) {}
+
+  // Get reports one run: its status, its timing, where it has reached, its
+  // outputs once it has finished, who started it, and every approval gate it is
+  // parked on right now.
+  //
+  // For each open gate the answer carries the question the gate asks, the signal
+  // name that releases it, whether a deadline lapses it, and whether the workflow
+  // declares a policy over who may answer. That set is what an approval surface
+  // has to render, and it is what a `distinct_from_starter` policy is compared
+  // against.
+  //
+  // To answer a gate, call [Signal] with the gate's signal name and a payload
+  // carrying the decision. Address the workflow rather than a run: a run id pins
+  // delivery to one attempt, and a workload that has been continued as new since
+  // the gate opened will refuse it.
+  rpc Get(GetRequest) returns (GetResponse) {}
+
+  // Signal delivers a signal to a run waiting for one, which is how a human
+  // approval reaches a workload.
+  //
+  // This addresses a durable run. A local run is a process with nobody to signal
+  // it once it has started, so `flow run local` answers its gates from flags
+  // instead. What the two drivers share is the payload and everything downstream
+  // of it: the same signal name, the same outputs, the same expressions reading
+  // them. That is the part that has to match for a local run to tell an author
+  // what production will do.
+  //
+  // [SignalResponse] is empty: it says the signal was accepted, not what the run
+  // did with it. Call [Get] afterward to see whether a waiting step consumed it.
+  rpc Signal(SignalRequest) returns (SignalResponse) {}
+
+  // SignalWithStart delivers a signal to the entity holding a business key, an
+  // order id or a subscription id, creating that entity if this is the first
+  // event for the key.
+  //
+  // Use this rather than [Run] whenever the key, and not a run id, is what a
+  // caller has. It is atomic, so two callers racing on the same key produce one
+  // entity rather than two. The entity is created from
+  // [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] when
+  // nothing is running under [SignalWithStartRequest.entity_key] yet. See
+  // [SignalWithStartRequest] for the two authorization questions this decides
+  // separately and the race this closes that Run-then-Signal cannot.
+  rpc SignalWithStart(SignalWithStartRequest) returns (SignalWithStartResponse) {}
+
+  // List returns a page of the runs belonging to the caller's tenant.
+  //
+  // The filtering is done here rather than by Temporal, and that follows from how
+  // Run records a tenant: as a memo, because a memo needs no cluster-side
+  // registration and a first run therefore needs nothing but `temporal server
+  // start-dev`. Temporal cannot query a memo. A search attribute could be
+  // queried, but it would make listing your own runs fail until an operator had
+  // registered the attribute, and a basic verb that does not work out of the box
+  // is worse than one that scans.
+  //
+  // So the scan is bounded instead, and the bound is on how many executions the
+  // server reads rather than on how many it returns: a caller asking for ten runs
+  // in a namespace holding a hundred thousand must not be able to make the server
+  // walk all of them. See ListResponse.next_page_token for what that means for a
+  // caller: a short or empty page is not the end of the listing.
+  rpc List(ListRequest) returns (ListResponse) {}
+
+  // Cancel asks a run to stop and lets it clean up on the way out.
+  //
+  // [CancelResponse] is empty: it says the stop request was accepted, not that
+  // the run has stopped. Call [Get] afterward to see the run's final status.
+  rpc Cancel(CancelRequest) returns (CancelResponse) {}
+
+  // Terminate stops a run immediately, running none of its cleanup. Prefer
+  // Cancel; see CancelRequest for when this is the right answer anyway.
+  //
+  // [TerminateResponse] is empty: the run is already stopped by the time this
+  // returns, so a follow-up call to [Get] confirms status rather than awaiting it.
+  rpc Terminate(TerminateRequest) returns (TerminateResponse) {}
+
+  // Validate checks Flowfiles and returns their diagnostics, executing nothing.
+  //
+  // `flow validate` does this offline and must keep doing so: a validator that
+  // needs a server is one that stops working on an aeroplane, and invariant 8
+  // says a first run needs no infrastructure. This is not a replacement for that.
+  // It is the same check for a caller who has no filesystem to point the command
+  // at (a browser, a CI service, an agent writing a file it has not saved),
+  // and it answers with the very same [ValidationReport] message the command
+  // prints, from the very same code, so there is no second validator to disagree
+  // with the first.
+  //
+  // Pure by construction, which is what makes it the useful one to hand an agent:
+  // it reads nothing, writes nothing, and starts nothing, so it can be looped on
+  // unattended in a way none of the verbs above can.
+  //
+  // Authenticated like everything else here, because checking a file is work
+  // somebody's CPU does. Bounded like everything else that takes input somebody
+  // else chose: see ValidateRequest.
+  rpc Validate(ValidateRequest) returns (ValidateResponse) {}
+
+  // Compile turns Flowfile source into the specification Run takes, executing
+  // nothing.
+  //
+  // It exists because Validate alone left a caller one step short: an agent
+  // could check a file and could submit a compiled specification, and nothing
+  // on the wire connected the two, because the compiler lived only in the CLI, so a
+  // caller with no `flow` binary could author a correct file it had no way to
+  // run. Same terms as Validate: the same compiler the CLI uses, pure, bounded
+  // by the schema, authenticated like everything else.
+  //
+  // A file that does not compile answers with its diagnostics rather than an
+  // RPC error, because "your file has a problem at line 12" is an answer, not a
+  // failure to answer.
+  rpc Compile(CompileRequest) returns (CompileResponse) {}
+
+  // GetCatalog returns what this deployment can execute: every task with its
+  // typed inputs and outputs, and every CEL function an expression may call.
+  //
+  // Read it before writing a workflow. What it lists is the whole of what a step
+  // may name and what an expression may call, so a file checked against it is a
+  // file this deployment can actually run.
+  //
+  // The registry is the single source of truth for capability, and until this
+  // existed the only way to ask it was to run `flow tasks` on a machine with the
+  // same build, which is not the same question. A worker that loaded plugins can
+  // run tasks this binary has never heard of, so "what tasks exist" is a property
+  // of a deployment, and a caller writing a workflow for it needs the deployment's
+  // answer rather than their laptop's.
+  //
+  // [TaskCatalog]'s own comment anticipated this RPC, and returning that message
+  // unchanged is the point: an editor, an agent, a documentation generator and
+  // `flow tasks --output json` all read one shape.
+  rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse) {}
+
+  // The schedule verbs, on this service rather than one of their own.
+  //
+  // A separate `ScheduleService` was the obvious alternative and buys nothing
+  // here. Everything that makes this service what it is applies to a schedule
+  // unchanged: the same authenticated caller, the same tenant, the same Temporal
+  // client selected by that tenant, the same protovalidate interceptor, the same
+  // MCP tool surface derived from the descriptors. A second service would
+  // duplicate all of it and add a second client for the CLI to hold, in exchange
+  // for a name.
+  //
+  // The line that would justify splitting is a different *authority*: an
+  // administrative surface answering to a different policy, or a service a
+  // different process serves. Schedules are neither: creating one is the same
+  // permission as starting a run, because a schedule is a run somebody arranged
+  // in advance.
+  //
+  // All unary. A schedule is a small object read whole, and there is nothing here
+  // a stream would serve: even Trigger returns nothing to follow, because the
+  // cluster takes the action after answering.
+
+  // CreateSchedule arranges for a workflow to run on a cadence.
+  //
+  // The act a `triggers:` block does not perform. A file may declare that it is
+  // meant to run nightly, and that declaration does nothing until this is called.
+  // A file that starts running on its own when it merges is a surprise, and one
+  // whose first firing is indistinguishable from somebody having meant it.
+  //
+  // Everything that can be refused is refused here, where a person is present:
+  // the specification is validated and size-checked exactly as `Run` does it, the
+  // arguments are bound against the workflow's declarations through the very same
+  // `BindRunInputs`, and the cadence must say when it fires. What fires at three
+  // in the morning has already been checked.
+  //
+  // Create it paused when the cadence is the part in doubt. A paused schedule
+  // reports the times it would fire without taking one of them, which is the
+  // cheapest way to find out that "every Monday" meant something other than what
+  // was intended.
+  rpc CreateSchedule(CreateScheduleRequest) returns (CreateScheduleResponse) {}
+
+  // ListSchedules returns the schedules belonging to the caller's tenant, each
+  // with whether it is live and when it next fires.
+  //
+  // A bounded scan filtered by the tenant recorded on each schedule, for the
+  // reason `List` scans runs: the tenant is a memo, which Temporal cannot query,
+  // and a memo is what keeps this working against `temporal server start-dev`
+  // with nothing registered. Unlike runs there is no paging; see
+  // [ListSchedulesRequest] for why, and for what the response says instead.
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse) {}
+
+  // DescribeSchedule reports one schedule: its cadence, its arguments, when it
+  // next fires and what it has done lately.
+  rpc DescribeSchedule(DescribeScheduleRequest) returns (DescribeScheduleResponse) {}
+
+  // DeleteSchedule removes a schedule, so that it fires no more.
+  //
+  // Runs it already started are unaffected. They are ordinary workloads, and
+  // stopping one is [Cancel].
+  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse) {}
+
+  // PauseSchedule stops a schedule firing without removing it, which is what an
+  // incident wants: the arrangement is still there, still reviewable, and not
+  // running.
+  //
+  // The note it records is what the next person to find it paused will read, so
+  // it is worth writing for them rather than for the person pausing it.
+  rpc PauseSchedule(PauseScheduleRequest) returns (PauseScheduleResponse) {}
+
+  // ResumeSchedule lets a paused schedule fire again.
+  //
+  // Firings missed while it was paused are not made up. Resuming is the schedule
+  // starting from now, not the schedule catching up, which is the behavior an
+  // incident wants: an arrangement paused for six hours must not answer being
+  // resumed with six hours of backlog.
+  rpc ResumeSchedule(ResumeScheduleRequest) returns (ResumeScheduleResponse) {}
+
+  // TriggerSchedule fires a schedule now, without waiting for its cadence.
+  //
+  // The verb that makes a schedule testable. Creating one and waiting until
+  // Tuesday to find out whether it works is not a development loop, and the
+  // alternative, running the workflow by hand, proves the workflow rather than
+  // the schedule: it does not exercise the arguments the schedule stored, the
+  // tenant it records on the runs it starts, or the queue it puts them on.
+  //
+  // It fires even a paused schedule, which is Temporal's behavior and the useful
+  // one: create paused, trigger once to see what happens, then resume.
+  //
+  // It answers with no run id. The cluster takes the action after answering, so
+  // what the firing started is read back with [DescribeSchedule] rather than
+  // returned here.
+  rpc TriggerSchedule(TriggerScheduleRequest) returns (TriggerScheduleResponse) {}
+}
+
+// ValidateRequest is one or more files to check.
+message ValidateRequest {
+  // Files are the files to check, in the order the report should list them.
+  //
+  // Bounded by count as well as by size, because bounding one resource does not
+  // bound another the peer controls the ratio to: a thousand megabyte files is a
+  // gigabyte of parsing, and every one of them is individually within its bound.
+  repeated SourceFile files = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+  }];
+}
+
+// ValidateResponse is what the check found.
+message ValidateResponse {
+  // Report is one entry per file, including the files that were clean.
+  //
+  // Wrapped rather than returned bare so the RPC can grow a second thing to say
+  // (which version of the grammar answered, how long it took) without changing
+  // the shape a caller already parses.
+  ValidationReport report = 1;
+}
+
+// CompileRequest is one Flowfile to compile.
+//
+// One rather than many, unlike ValidateRequest: validation is a survey and its
+// answer is a report, while compilation produces the artifact the next call
+// submits, and a batch of artifacts would leave a caller matching outputs back
+// to inputs by position.
+message CompileRequest {
+  SourceFile file = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+// CompileResponse is the specification, or the reasons there is not one.
+message CompileResponse {
+  // Workflow is the compiled specification, set only when the file compiled
+  // clean. It is exactly what RunRequest.workflow takes.
+  Workflow workflow = 1;
+
+  // Report carries the diagnostics for the file, present even when empty so
+  // "compiled clean" is stated rather than inferred from absence.
+  DiagnosticReport report = 2;
+}
+
+// GetCatalogRequest asks what this deployment can execute. It takes nothing
+// today; a filter or a profile selector would go here.
+message GetCatalogRequest {}
+
+// GetCatalogResponse is the deployment's capability.
+message GetCatalogResponse {
+  TaskCatalog catalog = 1;
+  PluginCatalog plugins = 2;
+}
+
+// MutationResult is the answer a mutation gives to a program.
+//
+// Every mutation on this service answers with an empty message today:
+// `CancelResponse`, `TerminateResponse`, `SignalResponse`, and the four
+// schedule mutations. A caller that changed something therefore has nothing to
+// read back and has to ask the server a second time to learn what it just did,
+// which is a round trip for facts the calling process already held. This
+// message is the envelope that closes that gap, and it is deliberately one
+// shape across every mutation verb rather than one per verb: a caller writes a
+// single expression, and a verb added later is already covered by it.
+//
+// It belongs in the schema because it travels. A document a script indexes by
+// name is a contract with everything downstream, and a contract this project
+// keeps is one the schema describes: the field names come from here, protojson
+// renders it, and `buf breaking` guards it exactly as it guards every message a
+// caller reads off an RPC.
+//
+// What may appear here is bounded by what the process performing the mutation
+// knows for certain, which is what it asked and that the server accepted the
+// asking. Nothing is inferred about the resulting state of a run or a schedule,
+// because inventing "the run is now cancelled" out of an empty response is the
+// one claim these surfaces have always refused to make. As those responses gain
+// fields of their own (picatz/flowstate#374), this becomes the smaller half of
+// an answer rather than the whole of it.
+message MutationResult {
+  // Verb is the act that produced this result, spelled the way a caller asked
+  // for it and without the binary name: "cancel", "terminate", "signal",
+  // "schedule pause".
+  //
+  // Carried so that a log of these documents, or a pipeline handling several,
+  // says what each one was. Read out of its invocation, a result is otherwise
+  // an identifier and a word with no verb attached to either.
+  string verb = 1;
+
+  // WorkflowId names the workload acted on, and is empty on the schedule verbs.
+  string workflow_id = 2;
+
+  // RunId is the attempt the request was pinned to, and is empty when the
+  // caller pinned none.
+  //
+  // Empty is the usual case and means the request addressed whichever run of
+  // the workload is current. This is the run id that was sent rather than the
+  // one the server resolved, which is the point of reporting it: a caller can
+  // tell a request that named an attempt from one that took the current attempt
+  // without knowing which attempt that turned out to be.
+  string run_id = 3;
+
+  // ScheduleName names the schedule acted on, and is empty on the run verbs.
+  //
+  // A name rather than an id, because that is what the schema calls it
+  // ([ScheduleDescription.name]) and a schedule has no other identity. Spelling
+  // it "schedule_id" here would invent a second word for one concept.
+  string schedule_name = 4;
+
+  // SignalName is the signal that was sent, and is empty on every other verb.
+  //
+  // Part of what was done rather than only of what was addressed: two signals
+  // to one run are two different acts, and a result naming neither leaves a
+  // reader unable to tell them apart afterwards.
+  string signal_name = 5;
+
+  // Result is how far the act got, which is the distinction these verbs turn on
+  // and the one that decides whether a caller may build on the answer.
+  //
+  // Three words, and the differences between them are load bearing.
+  //
+  // "applied" is an act that is true once the server has answered: terminating
+  // a run, and deleting, pausing or resuming a schedule. The new state is in
+  // effect at that point, so a caller may act on it directly.
+  //
+  // "requested" is an act the server has accepted and has not yet performed.
+  // Cancellation is cooperative, so the run has been told and is still finishing
+  // its response; a triggered schedule fires after the answer, which is also why
+  // there is no run id to report alongside it. A caller that needs the outcome
+  // has to go and read it.
+  //
+  // "delivered" belongs to the signal verb, and it is neither of the other two
+  // on purpose. The server has taken the signal, either into the gate that was
+  // waiting or into the bounded pending set for a gate the run has not reached
+  // yet, and that is the whole of what anything on this side can claim. A signal
+  // still pending when the run continues as new is dropped once the carry limit
+  // is full, so a workflow that never observes it is a possible ending of a
+  // delivery that succeeded. "applied" would promise that the workflow acted on
+  // it, which no surface here is in a position to know.
+  //
+  // A string rather than an enum, because this is the calling process reporting
+  // how far its own request got rather than a state the server models, and the
+  // vocabulary grows as those empty responses gain the fields that would let an
+  // answer be more precise. An enum here would freeze a set that is still
+  // learning its own distinctions, and would rename every value a caller reads
+  // today.
+  string result = 6;
+}

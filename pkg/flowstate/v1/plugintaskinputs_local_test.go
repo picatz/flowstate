@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestPluginTaskInputsLocal is one of the two driver callers #436 asks for:
@@ -17,7 +17,7 @@ import (
 // at all, so every claim about deferred inputs and secret-reference containment
 // at a plugin task's boundary rested on the durable driver alone.
 // TestPluginTaskInputsDurable in engine/plugintaskinputs_test.go is the other
-// caller, running the identical [tests.PluginTaskInputCases] through
+// caller, running the identical [conformance.PluginTaskInputCases] through
 // [runAuthorityCase]'s durable twin.
 //
 // The fixture goes into [v1.DefaultRegistry] and not onto a private registry,
@@ -32,9 +32,9 @@ import (
 // default registry and says in its own doc that anything else "holds tasks
 // nothing will ever look up".
 func TestPluginTaskInputsLocal(t *testing.T) {
-	require.NoError(t, v1.DefaultRegistry().Register(tests.PluginTaskInputsTaskDef()))
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.PluginTaskInputsTaskDef()))
 
-	for _, test := range tests.PluginTaskInputCases() {
+	for _, test := range conformance.PluginTaskInputCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
 		})

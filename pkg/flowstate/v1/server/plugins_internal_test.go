@@ -19,7 +19,7 @@ import (
 // is what lets this run without one.
 
 func testCatalog(plugins ...*v1.PluginDescription) *v1.PluginCatalog {
-	return &v1.PluginCatalog{Plugins: plugins}
+	return &v1.PluginCatalog{Plugins: plugins, ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion}
 }
 
 func installedPlugin(name, version string) *v1.PluginDescription {
@@ -29,6 +29,7 @@ func installedPlugin(name, version string) *v1.PluginDescription {
 		ProtocolVersion:    2,
 		TaskSchemaDigest:   "sha256:schema",
 		DistributionDigest: "sha256:binary",
+		ClaimsDigest:       "sha256:claims",
 	}
 }
 

@@ -7,7 +7,7 @@ two drivers over one execution model, and anything observable between them
 must match. Use this checklist whenever a change touches step execution,
 retries, tolerance, loops, or run results:
 
-1. Add the new case(s) to `pkg/flowstate/v1/tests`, not to one driver's own
+1. Add the new case(s) to `pkg/flowstate/v1/internal/conformance`, not to one driver's own
    package — a case that lives only where one driver can see it can't prove
    agreement.
 2. Confirm **both** drivers actually call the case set you added or extended,

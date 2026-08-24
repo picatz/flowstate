@@ -32,22 +32,17 @@ description: Reads a repository's commit history in two bounded pages using git.
 # pages — every commit reached, exactly once — remains at
 # TestGitLogCursorPagesReachEveryCommitExactlyOnce
 # (plugins/git/log_test.go).
-
 vars:
   repo: https://github.com/octocat/Hello-World.git
-
 steps:
   - id: page_one
     git.log:
-      url: ${vars.repo}
       max_commits: 2
       # No ref, no cursor: this is a fresh walk from the remote's default
       # branch.
-
+      url: ${vars.repo}
   - id: page_two
     git.log:
-      url: ${vars.repo}
-      max_commits: 2
       cursor: ${steps.page_one.next_cursor}
       # Empty when page_one was not truncated (this task always populates
       # next_cursor empty in that case - see LogOutputs.next_cursor's own
@@ -55,20 +50,18 @@ steps:
       # ordinary fresh call with no ref, which the "not truncated" case
       # having nothing left to resume makes the right fallback rather than
       # an error.
-
+      max_commits: 2
+      url: ${vars.repo}
   - id: announce
     log:
-      message: "${'page one: %d commits (truncated=%s); page two: %d commits (truncated=%s), resumed at %s'.format([steps.page_one.commits.size(), string(steps.page_one.truncated), steps.page_two.commits.size(), string(steps.page_two.truncated), steps.page_one.next_cursor])}"
-
+      message: '${"page one: %d commits (truncated=%s); page two: %d commits (truncated=%s), resumed at %s".format([steps.page_one.commits.size(), string(steps.page_one.truncated), steps.page_two.commits.size(), string(steps.page_two.truncated), steps.page_one.next_cursor])}'
 outputs:
   page_one_shas:
     value: ${steps.page_one.commits.map(c, c.sha)}
     description: the first page's commits, most recent first
-
   page_two_shas:
     value: ${steps.page_two.commits.map(c, c.sha)}
     description: the second page's commits - continuing immediately after page_one's last entry, never repeating it
-
   resumed_from:
     value: ${steps.page_one.next_cursor}
     description: the opaque cursor page_two was resumed from - empty if page_one was not truncated

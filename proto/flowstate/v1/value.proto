@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/expr/v1alpha1/syntax.proto";
+import "google/api/expr/v1alpha1/value.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "flowstatev1";
+
+// SecretRef names a secret without containing it.
+//
+// A workflow specification is persisted, replayed, and readable by anyone who can
+// read workflow history, so it must never carry a credential. It carries this
+// instead: enough to find the value at the moment it is needed, and nothing more.
+//
+// The scheme and name are separate fields rather than one joined string so that
+// the schema itself rejects a malformed reference at the boundary, before any
+// worker tries to resolve it.
+//
+// This message must never gain a field holding a value. Adding one would make
+// every workflow that used it leak a credential into history, and the mistake
+// would be invisible until someone read the history.
+message SecretRef {
+  // Scheme selects the provider that resolves the reference, such as "env",
+  // "file", "vault", or "keychain".
+  //
+  // A scheme is how a secrets backend plugs in: a deployment registers providers
+  // for the schemes it permits, and a reference to an unregistered scheme is
+  // refused rather than guessed at. A deployment that permits no secrets at all
+  // registers none, and every reference fails.
+  string scheme = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 32
+      pattern: "^[a-z0-9-]+$"
+    }
+  ];
+
+  // Name locates the secret within that provider: an environment variable
+  // suffix, a path under a mounted directory, a vault path. Its meaning belongs
+  // to the provider, including how it expresses versions.
+  //
+  // The pattern here cannot express everything that matters: control characters
+  // are also rejected, in code, because a reference reaching a log or history
+  // must not be able to forge lines in it.
+  string name = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 1024
+    }
+  ];
+}
+
+// Value represents a value that can be used in expressions or as inputs/outputs in tasks.
+// It can be a primitive type (like string, int, float, or bool), a structured type
+// (like a struct or list), an expression (ParsedExpr), or an error. The Value type is used
+// to encapsulate different kinds of data that can be used within the workflow.
+message Value {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_STRING = 1;
+    TYPE_INT = 2;
+    TYPE_FLOAT = 3;
+    TYPE_BOOL = 4;
+    TYPE_STRUCT = 5;
+    TYPE_LIST = 6;
+    TYPE_EXPR = 7;
+    TYPE_ERROR = 8;
+  }
+
+  message Error {
+    enum Code {
+      CODE_UNSPECIFIED = 0;
+      CODE_INVALID_ARGUMENT = 1;
+      CODE_NOT_FOUND = 2;
+      CODE_PERMISSION_DENIED = 3;
+      CODE_UNAUTHENTICATED = 4;
+      CODE_INTERNAL = 5;
+      CODE_UNAVAILABLE = 6;
+    }
+    string message = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED
+    ];
+    Code code = 2 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED,
+      (buf.validate.field).enum = {
+        defined_only: true
+        not_in: [0]
+      }
+    ];
+  }
+
+  // Structure is a list or a mapping whose entries are Values in their own
+  // right, rather than one value some expression produces.
+  //
+  // It exists for exactly one reason: so a secret reference can sit inside a
+  // header map, a form or a JSON body. A structure containing an expression
+  // compiles into a single CEL expression, and the *workflow* evaluates that,
+  // which is what evaluating a reference must never mean, because everything
+  // workflow code produces is written to durable, broadly readable history.
+  // Keeping every entry a Value keeps the reference a reference for the whole
+  // path, and the worker resolves it at the moment it applies the header or
+  // encodes the body.
+  //
+  // Its entries are literals and references, never expressions. That is a
+  // deliberate restriction rather than an omission: the walkers that decide
+  // which step outputs a resumed run has to carry look for a whole-value
+  // expression and cannot see one nested in here, and an output they miss is
+  // pruned from a run that then fails after Continue-As-New. The compiler
+  // refuses the mixture and says so, which is the fail-closed half of the same
+  // fact.
+  message Structure {
+    // List is a sequence, in the order it was written.
+    message List {
+      repeated Value values = 1;
+    }
+
+    // Map is a mapping. Entry order is not carried, because nothing that
+    // consumes one depends on it: headers are a set, a form and a query are
+    // encoded in sorted key order, and a JSON object is unordered by
+    // definition.
+    message Map {
+      map<string, Value> entries = 1;
+    }
+
+    oneof kind {
+      option (buf.validate.oneof).required = true;
+      List list = 1;
+      Map map = 2;
+    }
+  }
+
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    google.api.expr.v1alpha1.ParsedExpr expr = 1;
+    google.api.expr.v1alpha1.Value literal = 2;
+    Error error = 3;
+
+    // A reference to a secret, resolved only where the value is needed.
+    //
+    // This kind is inert everywhere except the activity that uses it. The
+    // compiler produces it, the control plane transports it, and workflow-side
+    // evaluation passes it through untouched: it is never resolved into a value
+    // and never copied into step outputs, because workflow history is durable and
+    // broadly readable. Only the worker executing the task resolves it, and the
+    // value exists solely for that call.
+    SecretRef secret_ref = 4;
+
+    // A list or a mapping whose entries are values, which is the only shape
+    // that can hold a [SecretRef] somewhere other than at the top.
+    Structure structure = 5;
+    // TODO(kent): we're using "value" to represent a "literal" value, which isn't quite the same.
+    // So, this is probably worth revisiting. The "value" allows for more complex types, like a
+    // struct or list, while the "literal" is more of a primitive value like a string, int, or bool.
+    //
+    // https://github.com/googleapis/googleapis/blob/34b323e7ee72888dd9337cce8b24233ae078f23b/google/api/expr/v1beta1/expr.proto#L230-L241C9
+    // https://github.com/googleapis/googleapis/blob/34b323e7ee72888dd9337cce8b24233ae078f23b/google/api/expr/v1beta1/value.proto#L29-L72
+    //
+    // google.api.expr.v1alpha1.Literal literal = 2;
+  }
+}

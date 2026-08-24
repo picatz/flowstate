@@ -1635,7 +1635,7 @@ var File_github_v1_github_proto protoreflect.FileDescriptor
 
 const file_github_v1_github_proto_rawDesc = "" +
 	"\n" +
-	"\x16github/v1/github.proto\x12\tgithub.v1\x1a\x1cflowstate/v1/flowstate.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x9e\x01\n" +
+	"\x16github/v1/github.proto\x12\tgithub.v1\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x9e\x01\n" +
 	"\x14PullRequestGetInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +

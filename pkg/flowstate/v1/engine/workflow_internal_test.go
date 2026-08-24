@@ -284,7 +284,7 @@ func Test_activityError_retryAfter(t *testing.T) {
 			Kind:       v1.ErrorKindUpstream,
 			Err:        errors.New("429 Too Many Requests"),
 			RetryAfter: 30 * time.Second,
-		})
+		}, false)
 
 		var appErr *temporal.ApplicationError
 		require.ErrorAs(t, err, &appErr)
@@ -305,7 +305,7 @@ func Test_activityError_retryAfter(t *testing.T) {
 		// on it.
 		original := &v1.TaskError{Task: "http", Kind: v1.ErrorKindUpstream, Err: errors.New("boom")}
 
-		err := activityError("http", original)
+		err := activityError("http", original, false)
 
 		var appErr *temporal.ApplicationError
 		require.ErrorAs(t, err, &appErr)
@@ -326,7 +326,7 @@ func Test_activityError_retryAfter(t *testing.T) {
 			Kind:       v1.ErrorKindInvalidInput,
 			Err:        errors.New("bad request"),
 			RetryAfter: 30 * time.Second,
-		})
+		}, false)
 
 		var appErr *temporal.ApplicationError
 		require.ErrorAs(t, err, &appErr)
@@ -343,7 +343,7 @@ func Test_activityError_retryAfter(t *testing.T) {
 			RetryAfter: 5 * time.Second,
 		})
 
-		err := activityError("http", wrapped)
+		err := activityError("http", wrapped, false)
 
 		var appErr *temporal.ApplicationError
 		require.ErrorAs(t, err, &appErr)
@@ -353,6 +353,103 @@ func Test_activityError_retryAfter(t *testing.T) {
 	t.Run("a non-task error is unaffected", func(t *testing.T) {
 		require.Zero(t, v1.RetryAfter(errors.New("plain")))
 		require.Zero(t, v1.RetryAfter(nil))
+	})
+}
+
+// Test_activityError_category covers #750: a step whose policy tolerates its
+// task's failure (`continue_on_error: true`) must produce a Temporal
+// ApplicationError categorized [temporal.ApplicationErrorCategoryBenign], and
+// an untolerated failure of the identical shape must not — on every branch
+// [activityError] can take, since the bug this closes was that none of them
+// ever set Category at all.
+func Test_activityError_category(t *testing.T) {
+	t.Run("a tolerated retryable failure with a delay is benign", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task:       "http",
+			Kind:       v1.ErrorKindUpstream,
+			Err:        errors.New("429 Too Many Requests"),
+			RetryAfter: 30 * time.Second,
+		}, true)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, temporal.ApplicationErrorCategoryBenign, appErr.Category())
+	})
+
+	t.Run("an untolerated retryable failure with a delay is not benign", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task:       "http",
+			Kind:       v1.ErrorKindUpstream,
+			Err:        errors.New("429 Too Many Requests"),
+			RetryAfter: 30 * time.Second,
+		}, false)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, temporal.ApplicationErrorCategoryUnspecified, appErr.Category())
+	})
+
+	t.Run("a tolerated retryable failure with no delay is benign", func(t *testing.T) {
+		err := activityError("http",
+			&v1.TaskError{Task: "http", Kind: v1.ErrorKindUpstream, Err: errors.New("boom")}, true)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, temporal.ApplicationErrorCategoryBenign, appErr.Category())
+	})
+
+	t.Run("an untolerated retryable failure with no delay is not benign", func(t *testing.T) {
+		err := activityError("http",
+			&v1.TaskError{Task: "http", Kind: v1.ErrorKindUpstream, Err: errors.New("boom")}, false)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, temporal.ApplicationErrorCategoryUnspecified, appErr.Category())
+	})
+
+	t.Run("a tolerated non-retryable failure is benign and still permanent", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task: "http",
+			Kind: v1.ErrorKindInvalidInput,
+			Err:  errors.New("bad request"),
+		}, true)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.True(t, appErr.NonRetryable(), "tolerating a failure must not make it retry")
+		require.Equal(t, temporal.ApplicationErrorCategoryBenign, appErr.Category())
+	})
+
+	t.Run("an untolerated non-retryable failure is not benign", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task: "http",
+			Kind: v1.ErrorKindInvalidInput,
+			Err:  errors.New("bad request"),
+		}, false)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.True(t, appErr.NonRetryable())
+		require.Equal(t, temporal.ApplicationErrorCategoryUnspecified, appErr.Category())
+	})
+
+	t.Run("a tolerated policy denial is not benign", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task: "http",
+			Kind: v1.ErrorKindPolicyDenied,
+			Err:  errors.New("egress denied"),
+		}, true)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.True(t, appErr.NonRetryable())
+		require.Equal(t, v1.ErrorKindPolicyDenied.String(), appErr.Type())
+		require.Equal(t, temporal.ApplicationErrorCategoryUnspecified, appErr.Category())
+	})
+
+	t.Run("a nil error stays nil regardless of tolerance", func(t *testing.T) {
+		require.NoError(t, activityError("http", nil, true))
+		require.NoError(t, activityError("http", nil, false))
 	})
 }
 

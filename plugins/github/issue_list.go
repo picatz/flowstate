@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/go-github/v75/github"
@@ -69,7 +68,11 @@ func issueList(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, err
 	}
 
-	client, err := newClient(token, in.GetBaseUrl())
+	// apiBase, not in.GetBaseUrl(): the fingerprint below must describe the
+	// instance this call actually reaches, which for an authenticated call
+	// is the operator-configured one rather than anything the input names.
+	// See effectiveAPIBase's own doc comment (#694).
+	client, apiBase, err := newClient(token, in.GetBaseUrl())
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +87,7 @@ func issueList(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		direction:  direction,
 		maxResults: maxResults,
 		cursor:     cursorRaw,
-		baseURL:    in.GetBaseUrl(),
+		apiBase:    apiBase,
 	})
 	if err != nil {
 		return nil, classifyReadError(err)
@@ -107,7 +110,7 @@ type issueListParams struct {
 	direction  string
 	maxResults int
 	cursor     string // opaque, already structurally validated - see cursor.go
-	baseURL    string // GitHub Enterprise Server API base, "" meaning github.com
+	apiBase    string // the API base this call actually reaches - newClient's own second return, see effectiveAPIBase
 }
 
 // issueListFingerprint hashes the filters a github.issue_list walk runs
@@ -116,26 +119,42 @@ type issueListParams struct {
 // back alongside a different set. See cursor.go's own doc comment, "why a
 // fingerprint," and requireCursorFingerprint.
 //
-// base_url is included precisely because it is easy to forget: it is not a
-// "filter" in the sense state or labels are, but a cursor's own (page,
-// skip) position means nothing against a different server - the exact
-// mismatch a workflow that reconfigures base_url between two calls (a
-// GitHub Enterprise Server migration, a typo corrected) would otherwise hit
-// silently, resuming partway into a listing on a server this walk never
-// actually queried, rather than being refused the way every other
-// filter mismatch already is.
+// The API base is included precisely because it is easy to forget: it is
+// not a "filter" in the sense state or labels are, but a cursor's own
+// (page, skip) position means nothing against a different server - the
+// exact mismatch a deployment that changes which instance these calls reach
+// between two of them (a GitHub Enterprise Server migration, a typo
+// corrected) would otherwise hit silently, resuming partway into a listing
+// on a server this walk never actually queried, rather than being refused
+// the way every other filter mismatch already is.
+//
+// It is the *effective* base - what newClient reports having pointed the
+// client at - and not the task's own base_url input, which since #663 is
+// empty for every authenticated call whatever instance that call goes to,
+// so fingerprinting it left two GHES instances' cursors interchangeable
+// (#694).
+//
+// Labels are hashed one field per label, behind their own count, rather
+// than joined into one string: a join makes ["a", "b"] and ["a,b"] the same
+// bytes, which is the same encoding ambiguity filterFingerprint's own
+// length prefixing exists to refuse.
 func issueListFingerprint(owner, repo string, p issueListParams) fingerprint {
-	return filterFingerprint(
-		"owner="+owner,
-		"repo="+repo,
-		"state="+p.state,
-		"labels="+strings.Join(p.labels, ","),
+	fields := []string{
+		"owner=" + owner,
+		"repo=" + repo,
+		"state=" + p.state,
+		"labels=" + strconv.Itoa(len(p.labels)),
+	}
+	for _, label := range p.labels {
+		fields = append(fields, "label="+label)
+	}
+	return filterFingerprint(append(fields,
 		"since="+p.since.Format(time.RFC3339),
 		"sort="+p.sort,
 		"direction="+p.direction,
 		"max_results="+strconv.Itoa(p.maxResults),
-		"base_url="+normalizeBaseURL(p.baseURL),
-	)
+		"api_base="+canonicalAPIBase(p.apiBase),
+	)...)
 }
 
 // doIssueList is issueList's already-validated network step.

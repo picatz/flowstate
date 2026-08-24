@@ -8,7 +8,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // sdkDefaultDeadlockBudget is the SDK's own default, written here because it is
@@ -43,7 +43,7 @@ func stallsPastTheDefaultBudget(workflow.Context) error {
 // TMPRL1101 naming the detector, which is a far better diagnosis than the
 // boundary tests going intermittently red on a loaded machine again.
 func TestABoundaryEnvironmentRaisesTheDeadlockBudget(t *testing.T) {
-	require.Greater(t, tests.BoundaryDeadlockDetectionTimeout, sdkDefaultDeadlockBudget,
+	require.Greater(t, conformance.BoundaryDeadlockDetectionTimeout, sdkDefaultDeadlockBudget,
 		"the boundary budget has to be above the default it exists to raise")
 
 	suite := &testsuite.WorkflowTestSuite{}

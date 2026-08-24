@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
@@ -28,10 +29,40 @@ type compiledStub struct {
 	// task and step are the two ways a stub names what it replaces, exactly one
 	// set. task is filled straight from the file; step is resolved to its task
 	// against the compiled workflow by [bindStubs], and stepScope carries the
-	// step id forward so the matcher answers only that step's invocations.
+	// workflow and step forward so the matcher answers only that exact step's
+	// invocations.
 	task      string
 	step      string
-	stepScope string
+	stepScope stubStepScope
+
+	// ordinal is this stub's 1-based position in the case's declared order —
+	// the number every diagnostic about it uses ("stub 2"), kept here because
+	// [bindStubs] regroups matchers by task and the position in a task's own
+	// matcher list stops being the position the author can count to.
+	ordinal int
+
+	// fromDefaults mirrors [Stub]'s provenance mark: this stub reached the
+	// case through the file's `defaults:`. Read by [unusedStubWarnings],
+	// which exempts an inherited catch-all from the idle-stub warning a
+	// case's own stub earns (#926).
+	fromDefaults bool
+
+	// answered records that this matcher answered at least one invocation in
+	// the current case — with `returns:` or with `fails:`, either is an
+	// answer. Written under [stubbedTask.mu], because two parallel branches
+	// can invoke one task concurrently. Per-case state: [bindStubs] builds a
+	// fresh matcher list for every case, and schedule exploration re-runs the
+	// whole case, so nothing here survives into another run.
+	answered bool
+
+	// times is the stub's declared answer budget, 0 for unbounded; remaining
+	// counts it down per answer, under the same lock and with the same
+	// per-case lifetime as answered. A drained matcher (times > 0, remaining
+	// 0) is skipped with a verdict that says so, and the list falls through —
+	// which is the whole mechanism of [Stub.Times]: the matcher sequence
+	// becomes a script.
+	times     int
+	remaining int
 
 	where *expr.ParsedExpr // nil matches unconditionally
 
@@ -48,7 +79,19 @@ type compiledStub struct {
 	returns    map[string]any
 	hasReturns bool
 
+	// response is [Stub.Response] compiled exactly as returns is — the same
+	// fence rule at every depth — and resolved per invocation the same way.
+	// What the resolved fields *mean* is the task's business
+	// ([v1.TaskDef.StubResponseFn]); this package only carries them there.
+	response    map[string]any
+	hasResponse bool
+
 	fails *StubFailure
+}
+
+type stubStepScope struct {
+	workflow string
+	step     string
 }
 
 // stubExpr is one ${...} expression inside a stub's `returns:`, parsed at load
@@ -66,6 +109,27 @@ type stubExpr struct {
 // they were written — the shape a `switch` already has, and named that way in
 // [Stub.Where]'s doc.
 type stubbedTask struct {
+	// mu serializes the matcher scan and the per-matcher bookkeeping against
+	// concurrent invocations of one task: two `parallel:` branches invoking
+	// the same task race otherwise, and the bookkeeping ([compiledStub.answered],
+	// and a `times:` budget once one exists) must decide atomically with the
+	// match itself. Held for the length of one invocation's scan — a test
+	// harness's matcher list is short, and a lock that is obviously correct
+	// beats a clever one in the package whose own claims are ordering claims.
+	mu sync.Mutex
+
+	// invoked records that any invocation of this task reached the stub set at
+	// all, which is what tells "this case never invokes the task" apart from
+	// "the task ran and this stub never matched" in [unusedStubWarnings].
+	invoked bool
+
+	// respond is the task's own [v1.TaskDef.StubResponseFn], resolved once at
+	// bind time so a `response:` stub aimed at a task with no raw-response
+	// semantics is refused before the run rather than surfacing mid-case. Nil
+	// where the task defines none — which [bindStubs] has then already
+	// guaranteed no matcher here needs.
+	respond func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope, response map[string]*v1.Value) (*v1.Node_Outputs, error)
+
 	matchers []compiledStub
 }
 
@@ -91,14 +155,30 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 			return nil, fmt.Errorf("stub %d for %s: returns: %w", i+1, stubTarget(&s), err)
 		}
 
+		response, err := compileReturns(s.Response)
+		if err != nil {
+			return nil, fmt.Errorf("stub %d for %s: response: %w", i+1, stubTarget(&s), err)
+		}
+
+		times := 0
+		if s.Times != nil {
+			times = *s.Times
+		}
+
 		compiled = append(compiled, compiledStub{
-			task:        s.Task,
-			step:        s.Step,
-			where:       parsed,
-			whereSource: s.Where,
-			returns:     returns,
-			hasReturns:  s.Returns != nil,
-			fails:       s.Fails,
+			task:         s.Task,
+			step:         s.Step,
+			ordinal:      i + 1,
+			fromDefaults: s.fromDefaults,
+			where:        parsed,
+			whereSource:  s.Where,
+			returns:      returns,
+			hasReturns:   s.Returns != nil,
+			response:     response,
+			hasResponse:  s.Response != nil,
+			fails:        s.Fails,
+			times:        times,
+			remaining:    times,
 		})
 	}
 
@@ -147,18 +227,44 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 				return nil, unknownStepError(m.step, kindOfStep, taskOfStep)
 			}
 			task = resolved
-			m.stepScope = m.step
+			m.stepScope = stubStepScope{workflow: spec.GetName(), step: m.step}
 		}
 
 		t, ok := byTask[task]
 		if !ok {
 			t = &stubbedTask{}
+			if def, exists := v1.DefaultRegistry().Lookup(task); exists {
+				t.respond = def.StubResponseFn
+			}
 			byTask[task] = t
 		}
+
+		// A `response:` stub needs the task to say what a raw response means
+		// ([v1.TaskDef.StubResponseFn]), and only a task with deferred
+		// response semantics does — refused here, before the run, with the
+		// spelling that exists. A task this harness knows only by name (a
+		// plugin's) has no semantics to consult, and gets the same answer.
+		if m.hasResponse && t.respond == nil {
+			return nil, fmt.Errorf(
+				"stub %d for %s declares response:, but task %q does not evaluate a raw response — "+
+					"only a task with deferred inputs (such as http's outputs: and expect:) can; "+
+					"use returns: for already-shaped outputs",
+				m.ordinal, describeStubTarget(&m), task)
+		}
+
 		t.matchers = append(t.matchers, m)
 	}
 
 	return byTask, nil
+}
+
+// describeStubTarget names a compiled stub the way the author aimed it, for a
+// diagnostic: by step where a step was named, by task otherwise.
+func describeStubTarget(m *compiledStub) string {
+	if m.step != "" {
+		return fmt.Sprintf("step %q", m.step)
+	}
+	return fmt.Sprintf("task %q", m.task)
 }
 
 // unknownStepError refuses a step-form stub naming a step the workflow does not
@@ -175,8 +281,16 @@ func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[
 			"stub a task step, or the task itself with `task:` and `where:`", step, kind)
 	}
 
-	names := make([]string, 0, len(taskOfStep))
+	// Suggestions draw on every step the workflow has, not only the task
+	// steps: a typo one letter off a `call:` or a `wait` step used to get the
+	// bare "no task step" sentence below, because the candidate list stopped
+	// at taskOfStep — and the author retyping the suggested id then gets the
+	// kind-specific refusal above, which names the actual fix (#926).
+	names := make([]string, 0, len(taskOfStep)+len(kindOfStep))
 	for id := range taskOfStep {
+		names = append(names, id)
+	}
+	for id := range kindOfStep {
 		names = append(names, id)
 	}
 	sort.Strings(names)
@@ -361,6 +475,25 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 
 		activation := stubActivation(ctx, scope, native)
 
+		// The transcript's share of an answer (#929 slice 2): which matcher
+		// answered, serving which step — the same numbering every stub
+		// diagnostic uses, recorded so a failing case's account can say
+		// `stub 2 (step: build)` beside what the step produced. Nil outside
+		// `flow test`'s own runs, where nothing records.
+		recordAnswer := func(m *compiledStub) {
+			if recorder := runRecorderFromContext(ctx); recorder != nil {
+				serving, _ := v1.TaskStepFromContext(ctx)
+				recorder.stubAnswered(name, m.ordinal, m.step, serving)
+			}
+		}
+
+		// The scan and its bookkeeping are one atomic decision: two parallel
+		// branches invoking this task concurrently must not both read a
+		// matcher's state between one another's updates. See [stubbedTask.mu].
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.invoked = true
+
 		var verdicts []stubVerdict
 		// sawEvalErr tracks whether any tried matcher's where: failed to
 		// evaluate, so the final failure keeps ErrorKindExpression rather than
@@ -369,17 +502,28 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 		// errors.
 		var sawEvalErr bool
 
-		for _, m := range s.matchers {
+		for i := range s.matchers {
+			m := &s.matchers[i]
+
 			// A step-form stub answers only its own step's invocations, told
 			// apart by the step id the engine records on each node's context.
 			// An undo call carries none (it runs off the run level context), so
 			// a step stub never answers a compensation, which is what keeps the
 			// forward call and its reversal stubbable separately.
-			if m.stepScope != "" {
-				current, ok := v1.TaskStepFromContext(ctx)
-				if !ok || current != m.stepScope {
+			if m.stepScope.step != "" {
+				current, ok := v1.TaskStepRefFromContext(ctx)
+				if !ok || current.Workflow != m.stepScope.workflow || current.Step != m.stepScope.step {
 					continue
 				}
+			}
+
+			// A drained `times:` stub retires: the list falls through to the
+			// next matcher, which is the scripting [Stub.Times] promises. The
+			// verdict is recorded so an invocation that then matches nothing
+			// is explained by the budget it fell past, not left mysterious.
+			if m.times > 0 && m.remaining == 0 {
+				verdicts = append(verdicts, stubVerdict{whereSource: m.whereSource, drained: m.times})
+				continue
 			}
 
 			ok, matchErr := m.matches(ctx, scope.GetProfile(), activation)
@@ -398,11 +542,38 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			}
 
 			if m.fails != nil {
+				// A `fails:` answer is an answer: the stub did its job, so the
+				// unused-stub report must not name it (#926), and it spends
+				// `times:` budget exactly as a `returns:` answer does.
+				m.answered = true
+				if m.times > 0 {
+					m.remaining--
+				}
+				recordAnswer(m)
 				kind := v1.ErrorKind(m.fails.Kind)
 				if kind == "" {
 					kind = v1.ErrorKindUpstream
 				}
 				return nil, v1.NewTaskError(name, kind, errors.New(m.fails.Message))
+			}
+
+			m.answered = true
+			if m.times > 0 {
+				m.remaining--
+			}
+			recordAnswer(m)
+
+			// A `response:` answer hands the resolved fields to the task's own
+			// raw-response evaluation ([v1.TaskDef.StubResponseFn], resolved
+			// non-nil at bind time), with the invocation's full input map —
+			// deferred expressions included — so the step's `outputs:` and
+			// `expect:` run exactly as they would over a live response (#925).
+			if m.hasResponse {
+				resolved, err := resolveStubValues(ctx, scope.GetProfile(), activation, m.response)
+				if err != nil {
+					return nil, v1.NewTaskError(name, v1.ErrorKindExpression, fmt.Errorf("response: %w", err))
+				}
+				return s.respond(ctx, inputs, scope, v1.NewNamedValues(resolved))
 			}
 
 			returns, err := m.answer(ctx, scope.GetProfile(), activation)
@@ -411,6 +582,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			}
 
 			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
+		}
+
+		// An invocation nothing answered clears any attribution an earlier
+		// attempt of the same step recorded — see [runRecorder.stubUnmatched].
+		if recorder := runRecorderFromContext(ctx); recorder != nil {
+			serving, _ := v1.TaskStepFromContext(ctx)
+			recorder.stubUnmatched(serving)
 		}
 
 		// A where: that failed to evaluate is a broken expression, the same
@@ -531,6 +709,11 @@ type stubVerdict struct {
 	whereSource string // empty for a stub with no `where:`
 	matched     bool
 	err         error
+
+	// drained is the stub's spent `times:` budget when the matcher was
+	// skipped as retired rather than tried at all — the one verdict where the
+	// clause is not what decided (#927). Zero otherwise.
+	drained int
 }
 
 // maxUnmatchedStubValueLen bounds how much of one input's rendered value an
@@ -540,34 +723,190 @@ type stubVerdict struct {
 // (CLAUDE.md, "bound anything that consumes untrusted input").
 const maxUnmatchedStubValueLen = 200
 
+// sensitiveInputs is the redaction set one unmatched-stub diagnostic is
+// rendered against: what [unmatchedStubError] must not print, plus whether
+// that set could be built at all.
+//
+// The two lists are deliberately different sizes. values is compared with
+// [reflect.DeepEqual] against every node of the invocation, so it holds each
+// sensitive input's whole value *and* every value nested within it.
+// substrings is the textual backstop [redactSensitiveSubstrings] applies to
+// the rendered line, which is a far blunter instrument — a string replaced
+// everywhere it occurs — so it holds a narrower set; the walk in
+// [sensitiveNativeValues] decides which strings earn a place in it.
+//
+// withholdAll is the fail-closed answer: when the set could not be built
+// completely, no input can be shown to be safe, so every input on the
+// invocation is withheld. [sensitiveNativeValues] documents the two ways that
+// happens.
+type sensitiveInputs struct {
+	values      []any
+	substrings  []string
+	withholdAll bool
+}
+
+// minSensitiveSubstringRunes is the shortest *descendant* string
+// [redactSensitiveSubstrings] will replace textually. A one-rune leaf is not
+// a redaction, it is a shredder: replacing every `a` in the rendered line
+// with the marker destroys the diagnostic while protecting nothing
+// [isSensitiveValue] has not already caught by comparing that leaf on its
+// own. A declared input's own value is exempt from this floor — it is the
+// thing `sensitive:` names, and `"Bearer " + inputs.token` is precisely the
+// shape the backstop exists for.
+const minSensitiveSubstringRunes = 2
+
+// maxSensitiveDescendants bounds how many values one invocation's redaction
+// set may hold, counting both what the walk below has collected and what it
+// still has queued. The queue is counted because it is memory the same input
+// controls: bounding only the result would leave a wide, shallow value free
+// to push millions of entries onto the stack on the way to a bounded answer,
+// which is the "bounding one resource does not bound another" failure
+// CLAUDE.md names.
+//
+// A workflow input may legitimately carry maxListElements = 10,000 elements
+// (pkg/flowstate/v1/constraints.go), and every entry in the set costs one
+// [reflect.DeepEqual] per node of the invocation in [redactSensitiveTree]
+// plus, for a string, a full [strings.ReplaceAll] pass over the rendered
+// value. 1024 sits far above any real credential — a token, a key pair, a
+// small object of headers — and far below where building a *failure* message
+// costs more than the run it is reporting on.
+//
+// Blowing the bound is not a reason to redact less: [sensitiveNativeValues]
+// answers withholdAll, so an input too large to enumerate withholds the whole
+// invocation rather than printing the part of it the walk never reached. That
+// is one mechanism serving two of CLAUDE.md's rules at once — bound the
+// resource the attacker controls, and deny when you cannot decide.
+const maxSensitiveDescendants = 1024
+
 // sensitiveNativeValues returns, as native Go values comparable with
-// [reflect.DeepEqual], the run's own values for every workflow input
-// sensitiveNames marks: the values [unmatchedStubError] must not print even
-// when they reach a task's inputs under a different name, since `sensitive:`
-// is a property of the value's origin, not of whatever a step chose to call
-// it. Returns nil when there is nothing to redact, which is the common case
-// and costs one nil map read per invocation.
-func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) []any {
+// [reflect.DeepEqual], every value the run's own `sensitive:` inputs carry:
+// each such input's whole value and every value nested within it. These are
+// what [unmatchedStubError] must not print even when they reach a task's
+// inputs under a different name, since `sensitive:` is a property of the
+// value's origin, not of whatever a step chose to call it.
+//
+// The descendants are in there because a sensitive declaration can itself be
+// structured. A `creds:` input marked `sensitive: true` and read as
+// `${inputs.creds.token}` puts a leaf into the invocation that is not
+// [reflect.DeepEqual] to anything the scope holds, so a set of whole values
+// alone prints that credential in the clear — and [redactSensitiveSubstrings]
+// does not save it either, since the whole value there is a map rather than a
+// string. Returns the zero value when there is nothing to redact, which is
+// the common case and costs one nil map read per invocation.
+//
+// # The cost of matching by value, and why it is still the right rule
+//
+// This matches by *content*, with no provenance: nothing in
+// [invocationNativeInputs] records which declaration a native value came
+// from, so a descendant that happens to equal an unrelated input's value
+// redacts that input too. Sensitive `creds: {enabled: false}` puts `false`
+// into the set, and an ordinary `follow_redirects: false` on the same
+// invocation then renders as `[redacted: follow_redirects]` — hiding one of
+// the discriminating fields this diagnostic exists to show (Codex, #956).
+//
+// That cost is real, and it is chosen for the same reason cmd/flow's
+// redactStepValues chooses the same trade at greater length. The precise
+// alternative is to trace each value back to the declaration it came from,
+// and a trace catches only what it can see: a sensitive leaf that reaches the
+// invocation through a step's `vars:`, through another step's output, or
+// concatenated into a larger string has no path back to `inputs.creds` at
+// all. Such a rule would print those in the clear while implying that it
+// traces sensitive data — a mechanism that looks precise and is not, which is
+// worse than one that is honestly blunt, because a reader trusts the one that
+// looks precise (CLAUDE.md, "fail closed").
+//
+// So the blunt rule stays and its cost is written down here, rather than
+// being rediscovered by whoever next wonders why an unrelated `false` came
+// back redacted.
+func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sensitiveInputs {
 	if len(sensitiveNames) == 0 {
-		return nil
+		return sensitiveInputs{}
 	}
 
-	var values []any
+	// node carries whether a queued value is the declared input itself rather
+	// than something nested inside it, which only the substring floor above
+	// cares about.
+	type node struct {
+		value any
+		root  bool
+	}
+
+	var out sensitiveInputs
 	for name, v := range scope.GetInputs() {
 		if !sensitiveNames[name] {
 			continue
 		}
+
+		// A sensitive input this cannot read is withheld whole, and takes
+		// every other input on the invocation with it. Skipping it — which is
+		// what a `continue` here does — drops it out of the redaction set
+		// silently, so *nothing* about that input is redacted anywhere in the
+		// diagnostic: an allow-on-error in the one function whose job is to
+		// deny (CLAUDE.md, "fail closed": a component that allows when it
+		// cannot decide will eventually allow everything).
 		lit := v.GetLiteral()
 		if lit == nil {
-			continue
+			return sensitiveInputs{withholdAll: true}
 		}
 		native, err := literalToGo(lit)
 		if err != nil {
-			continue
+			return sensitiveInputs{withholdAll: true}
 		}
-		values = append(values, native)
+
+		// Sensitivity belongs to the declared input's origin, so it follows
+		// every descendant when a task selects one field or one list element
+		// out of a structured value. The container is kept as well: a task may
+		// carry it whole.
+		pending := []node{{value: native, root: true}}
+		for len(pending) > 0 {
+			if len(out.values)+len(pending) > maxSensitiveDescendants {
+				return sensitiveInputs{withholdAll: true}
+			}
+
+			n := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			out.values = append(out.values, n.value)
+
+			switch value := n.value.(type) {
+			case string:
+				// "" is excluded whatever its origin: replacing it inserts
+				// the marker between every rune of the rendered line.
+				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
+					out.substrings = append(out.substrings, value)
+				}
+			case int64, uint64, float64, bool:
+				// A non-string scalar's canonical text joins the backstop:
+				// `${string(inputs.pin)}` turns the number into a string the
+				// typed equality can never see (Codex, #1052). fmt.Sprint is
+				// the spelling both CEL's string() of an int and this
+				// package's own rendering produce; a reformatted spelling
+				// (padding, precision) is past what a substring set can
+				// enumerate, which is the boundary the withholdAll rule
+				// already draws for sets that cannot be built at all. The
+				// floor and root exemption apply exactly as for a string
+				// descendant.
+				text := fmt.Sprint(value)
+				if n.root || utf8.RuneCountInString(text) >= minSensitiveSubstringRunes {
+					out.substrings = append(out.substrings, text)
+				}
+			case map[string]any:
+				// Keys are descendants too: sensitivity belongs to the whole
+				// declared value, and a map whose *keys* carry the material —
+				// account ids, say — leaks through a walk that only enqueues
+				// what they map to (Codex, #1052). A key rides the queue as
+				// any string descendant does, so the substring floor and the
+				// descendant bound apply to it unchanged.
+				for name, child := range value {
+					pending = append(pending, node{value: name}, node{value: child})
+				}
+			case []any:
+				for _, child := range value {
+					pending = append(pending, node{value: child})
+				}
+			}
+		}
 	}
-	return values
+	return out
 }
 
 // isSensitiveValue reports whether v is one of the run's own sensitive-input
@@ -602,6 +941,15 @@ func redactSensitiveTree(v any, sensitiveValues []any) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, e := range t {
+			// Keys redact by exact match at every depth, not only where a
+			// renderer happens to print one at the top level: a sensitive
+			// struct's key — including one below the substring floor — is as
+			// much the material as the value it maps to (Codex, #1052). Two
+			// sensitive keys folding into one marker entry lose a pair, which
+			// is the redaction doing its job, not a collision to avoid.
+			if isSensitiveValue(k, sensitiveValues) {
+				k = sensitiveMarker
+			}
 			out[k] = redactSensitiveTree(e, sensitiveValues)
 		}
 		return out
@@ -626,18 +974,70 @@ const sensitiveMarker = "[redacted]"
 // reaches the invocation as part of a larger string rather than as the whole
 // value or a map/list leaf: `"Bearer " + inputs.token` renders as one
 // string, which [redactSensitiveTree] cannot see into because nothing about
-// the concatenated result equals the token on its own. Every sensitive
-// string value's exact text is replaced wherever it occurs in rendered, so
-// the credential cannot survive by being wrapped in unrelated characters.
-func redactSensitiveSubstrings(rendered string, sensitiveValues []any) string {
-	for _, sv := range sensitiveValues {
-		s, ok := sv.(string)
-		if !ok || s == "" {
+// the concatenated result equals the token on its own. Each sensitive
+// string's exact text is replaced wherever it occurs in rendered, so the
+// credential cannot survive by being wrapped in unrelated characters.
+//
+// It reads [sensitiveInputs.substrings] rather than the full value set on
+// purpose: this replacement is textual and unanchored, so a string short
+// enough to occur by accident does more damage to the diagnostic than it
+// prevents. [sensitiveNativeValues] is where that line is drawn, and
+// [minSensitiveSubstringRunes] is where it is argued.
+func redactSensitiveSubstrings(rendered string, substrings []string) string {
+	// Every match of every sensitive string is found against the ORIGINAL
+	// text, the intervals merged, and the merged spans spliced out in one
+	// pass. Sequential ReplaceAll cannot be ordered into correctness: with
+	// containment (`abcd` in `abcdef`) the shorter-first order splits the
+	// longer into `[redacted]ef`, and with intersection (`ABCDE` and `CDEFG`
+	// across `ABCDEFG`) *either* order leaves the other's fragment exposed —
+	// both partial leaks, the second one whatever you sort by (Codex, #1052).
+	// A union of matches has no order to get wrong. One site, so the stub
+	// diagnostics and the transcript share the answer.
+	type span struct{ start, end int }
+	var spans []span
+	for _, s := range substrings {
+		if s == "" {
 			continue
 		}
-		rendered = strings.ReplaceAll(rendered, s, sensitiveMarker)
+		for from := 0; from <= len(rendered)-len(s); {
+			i := strings.Index(rendered[from:], s)
+			if i < 0 {
+				break
+			}
+			start := from + i
+			spans = append(spans, span{start: start, end: start + len(s)})
+			// Advance one byte, not one match length: self-overlapping
+			// matches ("aa" across "aaa") must all enter the union.
+			from = start + 1
+		}
 	}
-	return rendered
+	if len(spans) == 0 {
+		return rendered
+	}
+
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+
+	var b strings.Builder
+	prev := 0
+	current := spans[0]
+	flush := func() {
+		b.WriteString(rendered[prev:current.start])
+		b.WriteString(sensitiveMarker)
+		prev = current.end
+	}
+	for _, sp := range spans[1:] {
+		if sp.start <= current.end {
+			if sp.end > current.end {
+				current.end = sp.end
+			}
+			continue
+		}
+		flush()
+		current = sp
+	}
+	flush()
+	b.WriteString(rendered[prev:])
+	return b.String()
 }
 
 // truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting
@@ -665,12 +1065,15 @@ func truncateRuneSafe(rendered string, max int) string {
 // the clear, at the top level, nested inside a structure, or concatenated
 // into a larger string; see [invocationNativeInputs]'s doc for why that
 // distinction has to survive past evaluation and into anything printed.
-func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues []any) string {
-	if isSecret || isSensitiveValue(v, sensitiveValues) {
+func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitive sensitiveInputs) string {
+	// sensitive.withholdAll is the fail-closed case: the redaction set could
+	// not be built completely, so no input can be shown to be safe and every
+	// one of them is withheld — see [sensitiveNativeValues].
+	if isSecret || sensitive.withholdAll || isSensitiveValue(v, sensitive.values) {
 		return fmt.Sprintf("[redacted: %s]", name)
 	}
 
-	redacted := redactSensitiveTree(v, sensitiveValues)
+	redacted := redactSensitiveTree(v, sensitive.values)
 
 	var rendered string
 	if s, ok := redacted.(string); ok {
@@ -679,7 +1082,7 @@ func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues
 		rendered = fmt.Sprintf("%v", redacted)
 	}
 
-	rendered = redactSensitiveSubstrings(rendered, sensitiveValues)
+	rendered = redactSensitiveSubstrings(rendered, sensitive.substrings)
 
 	return truncateRuneSafe(rendered, maxUnmatchedStubValueLen)
 }
@@ -689,7 +1092,7 @@ func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues
 // CLAUDE.md requires it, and every tried stub's `where:` beside whether it
 // matched, so an author can see why in the failure output instead of having
 // to reason it out from the workflow (#386, "diagnostics are a feature").
-func unmatchedStubError(name string, declared int, native map[string]any, secretNames map[string]bool, sensitiveValues []any, verdicts []stubVerdict) error {
+func unmatchedStubError(name string, declared int, native map[string]any, secretNames map[string]bool, sensitive sensitiveInputs, verdicts []stubVerdict) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "flow test: task %q was invoked with no matching stub (%d stub(s) declared for it); "+
 		"add a stub with no `where:` to answer every invocation, or one whose `where:` matches these inputs\n",
@@ -706,8 +1109,17 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	} else {
 		b.WriteString("  invocation carried:\n")
 		for _, n := range names {
-			fmt.Fprintf(&b, "    %s: %s\n", n, formatUnmatchedStubValue(n, native[n], secretNames[n], sensitiveValues))
+			fmt.Fprintf(&b, "    %s: %s\n", n, formatUnmatchedStubValue(n, native[n], secretNames[n], sensitive))
 		}
+	}
+
+	// Every input came back redacted for a reason the reader cannot otherwise
+	// see: say which one, so an author staring at a diagnostic that shows
+	// nothing knows it is a refusal rather than a bug (CLAUDE.md,
+	// "diagnostics are a feature").
+	if sensitive.withholdAll {
+		b.WriteString("  (every input above is withheld: this run's sensitive inputs could not be enumerated, " +
+			"so nothing on this invocation can be shown to be safe to print)\n")
 	}
 
 	if len(verdicts) == 0 {
@@ -720,6 +1132,8 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 				where = "(no where:)"
 			}
 			switch {
+			case v.drained > 0:
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> drained (times: %d spent)", i+1, where, v.drained)
 			case v.matched:
 				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> true", i+1, where)
 			case v.err != nil:
@@ -733,6 +1147,87 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	return errors.New(b.String())
 }
 
+// unusedStubWarnings reports, after one case's run, every stub the case
+// declared and the run never answered through — the account a green case owes
+// about its own scaffolding (#926). A shipped example asserted in prose that
+// "a stub whose task is never invoked is itself reported"; before this
+// existed, that sentence was false, and an unused stub sat quietly forever.
+//
+// Warnings, not failures: an idle stub is a hole in the case's hygiene, not
+// in the run, so the case's verdict is untouched and `flow test
+// --fail-on-warning` is where a suite opts in to treating one as fatal — the
+// `--coverage-required` shape. Two exemptions, each a legitimate pattern
+// rather than a hole:
+//
+//   - A stub inherited from `defaults:` ([compiledStub.fromDefaults]): a
+//     file-level catch-all exists precisely to be shared by cases that may
+//     not all invoke its task.
+//   - Nothing at all when the run failed or never reached a verdict — the
+//     caller skips this whenever the run errored, since a run that stopped
+//     early leaves later stubs legitimately unanswered, and this report
+//     cannot tell that apart from a genuinely idle one (the same
+//     unverifiable-claim honesty `expect.skipped` applies to parallel
+//     branches on a failed run).
+//
+// The two messages tell the two situations apart, because the fix differs: a
+// task never invoked is a stub aimed at nothing, while a matcher tried and
+// never matched is a `where:` (or an earlier stub) that took the traffic.
+func unusedStubWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
+	type idle struct {
+		ordinal int
+		message string
+	}
+	var found []idle
+
+	for task, stubs := range byTask {
+		for i := range stubs.matchers {
+			m := &stubs.matchers[i]
+			if m.answered || m.fromDefaults {
+				continue
+			}
+
+			target := fmt.Sprintf("task %q", task)
+			if m.step != "" {
+				target = fmt.Sprintf("step %q", m.step)
+			}
+
+			var message string
+			switch {
+			case !stubs.invoked:
+				message = fmt.Sprintf(
+					"stub %d (%s) was never consulted: this case invoked no %q task at all; "+
+						"delete the stub, or move it under `defaults:` if it is shared boilerplate",
+					m.ordinal, target, task)
+			case m.whereSource != "":
+				message = fmt.Sprintf(
+					"stub %d (%s) never answered an invocation: its where: (%s) matched nothing this case ran; "+
+						"tighten or delete it — a matcher that answers nothing asserts nothing",
+					m.ordinal, target, m.whereSource)
+			default:
+				message = fmt.Sprintf(
+					"stub %d (%s) never answered an invocation: every call it could have answered "+
+						"was taken by an earlier stub; delete it, or reorder the list it falls through",
+					m.ordinal, target)
+			}
+
+			found = append(found, idle{ordinal: m.ordinal, message: message})
+		}
+	}
+
+	// Ordered by the author's own numbering, not by Go's map walk: the report
+	// must read identically on every run.
+	sort.Slice(found, func(i, j int) bool { return found[i].ordinal < found[j].ordinal })
+
+	warnings := make([]*v1.Diagnostic, 0, len(found))
+	for _, f := range found {
+		warnings = append(warnings, &v1.Diagnostic{
+			Field:   "stubs",
+			Message: f.message,
+		})
+	}
+	return warnings
+}
+
 // answer resolves the stub's `returns:` for one invocation, evaluating every
 // ${...} it holds against that invocation's activation.
 func (c compiledStub) answer(ctx context.Context, profile string, activation cel.Activation) (map[string]any, error) {
@@ -740,11 +1235,23 @@ func (c compiledStub) answer(ctx context.Context, profile string, activation cel
 		return nil, nil
 	}
 
-	resolved := make(map[string]any, len(c.returns))
-	for name, v := range c.returns {
+	resolved, err := resolveStubValues(ctx, profile, activation, c.returns)
+	if err != nil {
+		return nil, fmt.Errorf("returns %w", err)
+	}
+	return resolved, nil
+}
+
+// resolveStubValues resolves one compiled value map — a stub's `returns:` or
+// its `response:` — for one invocation, evaluating every ${...} it holds
+// against that invocation's activation. One resolver for both, so the two
+// stanzas cannot disagree about what a fenced value means.
+func resolveStubValues(ctx context.Context, profile string, activation cel.Activation, values map[string]any) (map[string]any, error) {
+	resolved := make(map[string]any, len(values))
+	for name, v := range values {
 		value, err := resolveReturnValue(ctx, profile, activation, v)
 		if err != nil {
-			return nil, fmt.Errorf("returns %q: %w", name, err)
+			return nil, fmt.Errorf("%q: %w", name, err)
 		}
 		resolved[name] = value
 	}

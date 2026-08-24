@@ -45,7 +45,7 @@ func TestTokenFromValueTreatsUnsetAsPublic(t *testing.T) {
 // The one path that resolves successfully: this plugin's own scheme, backed
 // by the environment variable secrets.go derives from the reference name.
 func TestTokenFromValueResolvesItsOwnScheme(t *testing.T) {
-	t.Setenv("VCS_SECRET_TEST_TOKEN", containmentSecret)
+	t.Setenv("VCS_SECRET_0__TEST_TOKEN", containmentSecret)
 
 	v := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
 		SecretRef: &flowstatev1.SecretRef{Scheme: secretScheme, Name: "test-token"},
@@ -60,9 +60,54 @@ func TestTokenFromValueResolvesItsOwnScheme(t *testing.T) {
 }
 
 func TestResolveSecretRefusesWhenUnset(t *testing.T) {
-	os.Unsetenv("VCS_SECRET_DOES_NOT_EXIST")
+	os.Unsetenv("VCS_SECRET_0__DOES_NOT_EXIST")
 	_, err := resolveSecret(context.Background(), sdk.SecretRequest{Scheme: secretScheme, Name: "does-not-exist"})
 	if err == nil {
 		t.Fatal("resolveSecret for an unset variable: got no error, want one")
+	}
+}
+
+// TestResolveSecretRefusesAliasingNamesAndNamespaces is the negative
+// direction #693 asks for: not that a tenant reads its own secret (the
+// colliding encoding satisfied that too), but that a differently-spelled or
+// differently-segmented reference cannot resolve another tenant's variable.
+// Before the fix, namespace "team-a" + name "prod-token", namespace "team" +
+// name "a-prod-token", and the default namespace + name
+// "team-a-prod-token" all concatenated to the same VCS_SECRET_TEAM_A_PROD_TOKEN.
+func TestResolveSecretRefusesAliasingNamesAndNamespaces(t *testing.T) {
+	t.Setenv("VCS_SECRET_6_TEAM_A_PROD_TOKEN", containmentSecret)
+
+	tests := []sdk.SecretRequest{
+		{Scheme: secretScheme, Name: "prod_token", Namespace: "team-a"},
+		{Scheme: secretScheme, Name: "prod/token", Namespace: "team-a"},
+		{Scheme: secretScheme, Name: "prod-token", Namespace: "team_a"},
+		{Scheme: secretScheme, Name: "PROD-TOKEN", Namespace: "team-a"},
+	}
+	for _, req := range tests {
+		if _, err := resolveSecret(context.Background(), req); err == nil {
+			t.Errorf("resolveSecret(%q, %q): got no error, want invalid input", req.Namespace, req.Name)
+		}
+	}
+
+	// All three references used to concatenate to TEAM_A_PROD_TOKEN. Only the
+	// reference whose length-prefixed variable is configured may resolve it.
+	aliases := []sdk.SecretRequest{
+		{Scheme: secretScheme, Name: "a-prod-token", Namespace: "team"},
+		{Scheme: secretScheme, Name: "team-a-prod-token"},
+	}
+	for _, req := range aliases {
+		if _, err := resolveSecret(context.Background(), req); err == nil {
+			t.Errorf("resolveSecret(%q, %q): got no error, want not found", req.Namespace, req.Name)
+		}
+	}
+
+	resp, err := resolveSecret(context.Background(), sdk.SecretRequest{
+		Scheme: secretScheme, Name: "prod-token", Namespace: "team-a",
+	})
+	if err != nil {
+		t.Fatalf("resolveSecret for configured reference: %v", err)
+	}
+	if got := string(resp.Value); got != containmentSecret {
+		t.Fatalf("resolved secret: got %q, want containment canary", got)
 	}
 }

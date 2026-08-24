@@ -28,44 +28,6 @@ import (
 // The second is that it never overwrites, in either direction and with nothing
 // half-written when it refuses.
 
-// initOutput runs `flow init` with the given arguments through the real command
-// tree, and returns what it wrote to stdout and stderr.
-//
-// Through the tree rather than by calling runInit, so the flag, the argument
-// default and the group registration are exercised too — a command nothing can
-// reach is the failure this would otherwise miss.
-func initOutput(t *testing.T, args ...string) (string, string, error) {
-	t.Helper()
-
-	root := newRootCommand()
-
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"init"}, args...))
-
-	err := root.Execute()
-
-	return out.String(), errOut.String(), err
-}
-
-// runFlow runs any command in the tree and returns its combined report, for the
-// three commands the gate below points at the scaffold.
-func runFlow(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-
-	root := newRootCommand()
-
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(args)
-
-	err := root.Execute()
-
-	return out.String() + errOut.String(), err
-}
-
 // TestInitProducesAFlowfileTheToolAccepts is the anti-rot gate.
 //
 // Not "the template parses" and not "the template contains an edition marker":
@@ -78,19 +40,19 @@ func runFlow(t *testing.T, args ...string) (string, error) {
 func TestInitProducesAFlowfileTheToolAccepts(t *testing.T) {
 	dir := t.TempDir()
 
-	_, _, err := initOutput(t, dir)
+	err := runFlow(t, "init", dir).Err
 	require.NoError(t, err)
 
 	workflow := filepath.Join(dir, scaffoldWorkflow)
 
-	report, err := runFlow(t, "validate", workflow)
-	assert.NoError(t, err, "the scaffold does not validate:\n%s", report)
+	validated := runFlow(t, "validate", workflow)
+	assert.NoError(t, validated.Err, "the scaffold does not validate:\n%s", validated.Output())
 
-	report, err = runFlow(t, "test", dir)
-	assert.NoError(t, err, "the scaffold's own test does not pass:\n%s", report)
+	tested := runFlow(t, "test", dir)
+	assert.NoError(t, tested.Err, "the scaffold's own test does not pass:\n%s", tested.Output())
 
-	report, err = runFlow(t, "fix", "--check", workflow)
-	assert.NoError(t, err, "the scaffold is not in the current edition:\n%s", report)
+	fixed := runFlow(t, "fix", "--check", workflow)
+	assert.NoError(t, fixed.Err, "the scaffold is not in the current edition:\n%s", fixed.Output())
 }
 
 // TestInitWritesTheCurrentEdition pins the mechanism the gate above depends on.
@@ -102,7 +64,7 @@ func TestInitProducesAFlowfileTheToolAccepts(t *testing.T) {
 func TestInitWritesTheCurrentEdition(t *testing.T) {
 	dir := t.TempDir()
 
-	_, _, err := initOutput(t, dir)
+	err := runFlow(t, "init", dir).Err
 	require.NoError(t, err)
 
 	for _, name := range []string{scaffoldWorkflow, scaffoldTest} {
@@ -129,7 +91,7 @@ func TestInitRefusesRatherThanOverwrite(t *testing.T) {
 			path := filepath.Join(dir, existing)
 			require.NoError(t, os.WriteFile(path, []byte(mine), 0o644))
 
-			_, _, err := initOutput(t, dir)
+			err := runFlow(t, "init", dir).Err
 			require.Error(t, err, "init overwrote %s", existing)
 
 			// The refusal names the file that stopped it, because the whole of
@@ -156,12 +118,65 @@ func TestInitWritesNothingWhenItRefuses(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, scaffoldTest), []byte("# mine\n"), 0o644))
 
-	_, _, err := initOutput(t, dir)
+	err := runFlow(t, "init", dir).Err
 	require.Error(t, err)
 
 	_, statErr := os.Stat(filepath.Join(dir, scaffoldWorkflow))
 	assert.True(t, os.IsNotExist(statErr),
 		"init refused and still wrote %s, leaving a half-scaffolded directory", scaffoldWorkflow)
+}
+
+// TestReserveScaffoldFilesRefusesALateSymlink pins the atomic half of the
+// no-overwrite promise. runInit checks both destinations before writing either,
+// but a directory entry can appear after that check; the create itself must
+// therefore refuse an existing symlink rather than follow it and truncate its
+// target.
+//
+// The assertion is the negative direction — the victim's bytes are unchanged —
+// because a test that only checks the error would pass just as happily against
+// a create that followed the link and then failed for some other reason.
+func TestReserveScaffoldFilesRefusesALateSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	const mine = "mine, and not to be replaced\n"
+	require.NoError(t, os.WriteFile(victim, []byte(mine), 0o644))
+
+	require.NoError(t, os.Symlink(victim, filepath.Join(dir, scaffoldWorkflow)))
+
+	_, err := reserveScaffoldFiles(dir, []scaffoldFile{
+		{name: scaffoldWorkflow, contents: "replacement\n"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "never overwrites",
+		"a late collision lost the refusal the preflight words for the same case")
+
+	data, err := os.ReadFile(victim)
+	require.NoError(t, err)
+	assert.Equal(t, mine, string(data), "the scaffold write followed an existing symlink")
+}
+
+// TestReserveScaffoldFilesLeavesNothingWhenTheSecondPathCollides pins the other
+// half of the same promise, and the half the exclusive create is what makes
+// reachable: two files land or neither does.
+//
+// runInit's preflight cannot keep that on its own, because the collision this
+// test plants arrives after it. Reserving both destinations before writing
+// either is what keeps it, so the assertion is that the *first* path is gone
+// again — not merely that the call failed.
+func TestReserveScaffoldFilesLeavesNothingWhenTheSecondPathCollides(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, scaffoldTest), []byte("planted\n"), 0o644))
+
+	_, err := reserveScaffoldFiles(dir, []scaffoldFile{
+		{name: scaffoldWorkflow, contents: starterWorkflow("example")},
+		{name: scaffoldTest, contents: starterTest()},
+	})
+	require.Error(t, err)
+
+	_, err = os.Lstat(filepath.Join(dir, scaffoldWorkflow))
+	assert.True(t, os.IsNotExist(err),
+		"a collision on %s left %s behind, half-scaffolding the directory",
+		scaffoldTest, scaffoldWorkflow)
 }
 
 // TestInitCreatesTheDirectory covers the invocation a newcomer actually types
@@ -170,7 +185,7 @@ func TestInitWritesNothingWhenItRefuses(t *testing.T) {
 func TestInitCreatesTheDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "deploy-frontend")
 
-	_, _, err := initOutput(t, dir)
+	err := runFlow(t, "init", dir).Err
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, scaffoldWorkflow))
@@ -207,8 +222,9 @@ func TestInitNamesTheWorkflowAfterTheDirectory(t *testing.T) {
 			// directory literally called "..." needs a parent to sit in.
 			dir := filepath.Join(t.TempDir(), tt.dir)
 
-			out, _, err := initOutput(t, dir)
-			require.NoError(t, err)
+			res := runFlow(t, "init", dir)
+			require.NoError(t, res.Err)
+			out := res.Stdout
 
 			data, err := os.ReadFile(filepath.Join(dir, scaffoldWorkflow))
 			require.NoError(t, err)
@@ -238,7 +254,7 @@ func TestInitTakesTheNameItIsGiven(t *testing.T) {
 	t.Run("legal", func(t *testing.T) {
 		dir := t.TempDir()
 
-		_, _, err := initOutput(t, dir, "--name", "nightly_report-2")
+		err := runFlow(t, "init", dir, "--name", "nightly_report-2").Err
 		require.NoError(t, err)
 
 		data, err := os.ReadFile(filepath.Join(dir, scaffoldWorkflow))
@@ -249,7 +265,7 @@ func TestInitTakesTheNameItIsGiven(t *testing.T) {
 	t.Run("illegal, refused with the remedy", func(t *testing.T) {
 		dir := t.TempDir()
 
-		_, _, err := initOutput(t, dir, "--name", "my report")
+		err := runFlow(t, "init", dir, "--name", "my report").Err
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "spaces")
 		assert.Contains(t, err.Error(), "my-report", "the refusal offers nothing to paste")
@@ -261,7 +277,7 @@ func TestInitTakesTheNameItIsGiven(t *testing.T) {
 	})
 
 	t.Run("too long for the schema", func(t *testing.T) {
-		_, _, err := initOutput(t, t.TempDir(), "--name", strings.Repeat("a", maxWorkflowNameLen+1))
+		err := runFlow(t, "init", t.TempDir(), "--name", strings.Repeat("a", maxWorkflowNameLen+1)).Err
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "at most")
 	})
@@ -274,8 +290,9 @@ func TestInitTakesTheNameItIsGiven(t *testing.T) {
 func TestInitReportsWhatToDoNext(t *testing.T) {
 	dir := t.TempDir()
 
-	out, _, err := initOutput(t, dir)
-	require.NoError(t, err)
+	res := runFlow(t, "init", dir)
+	require.NoError(t, res.Err)
+	out := res.Stdout
 
 	assert.Contains(t, out, filepath.Join(dir, scaffoldWorkflow))
 	assert.Contains(t, out, filepath.Join(dir, scaffoldTest))

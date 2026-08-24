@@ -29,6 +29,12 @@
 # The scripted `sender:` is the same kind of assertion - it stands in for an
 # approver, and the gate's `sender.local` output reads true to say so, which
 # is why the dispatch below may never gate on attestation itself.
+# The issuer is the one fact every sender in this file shares, stated once
+# (#1072): a fixture position takes a whole-value `${vars.x}` reference, and
+# the loader substitutes the literal before anything else reads it.
+vars:
+  issuer: https://issuer.example.com
+
 edition: v2026.3
 defaults:
   # Every case ships the same build to the same environment and expects the
@@ -44,7 +50,7 @@ defaults:
   # omitted one was before defaults existed.
   sender:
     subject: sre-lead@example.com
-    issuer: https://issuer.example.com
+    issuer: "${vars.issuer}"
     claims:
       team: release-managers
   stubs:
@@ -72,7 +78,7 @@ tests:
     workflow: ./workflow.yaml
     starter:
       subject: release-requester@example.com
-      issuer: https://issuer.example.com
+      issuer: "${vars.issuer}"
     signals:
       - name: deploy-approved
         payload:
@@ -97,7 +103,7 @@ tests:
     workflow: ./workflow.yaml
     starter:
       subject: sre-lead@example.com
-      issuer: https://issuer.example.com
+      issuer: "${vars.issuer}"
     signals:
       - name: deploy-approved
         payload:
@@ -116,14 +122,14 @@ tests:
     workflow: ./workflow.yaml
     starter:
       subject: release-requester@example.com
-      issuer: https://issuer.example.com
+      issuer: "${vars.issuer}"
     signals:
       - name: deploy-approved
         payload:
           approved: true
         sender:
           subject: someone-else@example.com
-          issuer: https://issuer.example.com
+          issuer: "${vars.issuer}"
           claims:
             team: release-managers
     expect:
@@ -144,7 +150,7 @@ tests:
           # named — signals: refuses it before it is ever delivered, so
           # the wait simply times out, the same as nobody answering at all.
           subject: someone-else@example.com
-          issuer: https://issuer.example.com
+          issuer: "${vars.issuer}"
           claims:
             team: release-managers
     expect:

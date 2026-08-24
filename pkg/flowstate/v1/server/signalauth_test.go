@@ -193,7 +193,7 @@ func TestSignalPolicySurvivesContinueAsNew(t *testing.T) {
 
 	// One step per segment, so the run continues as new before it ever
 	// reaches its gate.
-	flowstate := server.New(temporal, server.WithNamespace("team-a"), server.WithMaxStepsPerRun(1))
+	flowstate := mustNew(t, temporal, server.WithNamespace("team-a"), server.WithMaxStepsPerRun(1))
 
 	wf := gatedWorkflowRequiring("https://issuer.example.com", "release-manager@example.com")
 	// A padding step ahead of the request/gate pair, so at least one
@@ -246,6 +246,47 @@ func TestSignalPolicySurvivesContinueAsNew(t *testing.T) {
 		resp, err := flowstate.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
 		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
 	}, 60*time.Second, 200*time.Millisecond, "the run did not complete after the authorized sender approved")
+}
+
+// TestSignalAcceptsTheRunsStableAddressAfterContinueAsNew covers the address a
+// workload hands to an external callback: its first run id remains stable across
+// the chain, even though Temporal's SignalWorkflow ordinarily interprets a run id
+// as one execution segment.
+func TestSignalAcceptsTheRunsStableAddressAfterContinueAsNew(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+	flowstate, err := server.New(temporal, server.WithNamespace("team-a"), server.WithMaxStepsPerRun(1))
+	require.NoError(t, err)
+
+	wf := gatedWorkflow()
+	wf.Steps = append([]*v1.Node{{
+		Id: "warmup",
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name:   "log",
+			Inputs: map[string]*v1.Value{"message": v1.NewLiteral("warming up")},
+		}},
+	}}, wf.Steps...)
+
+	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: wf}))
+	require.NoError(t, err)
+	waitUntilParkedAtTheGate(t, temporal, started.Msg.GetWorkflowId())
+
+	_, err = flowstate.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: started.Msg.GetWorkflowId(),
+		RunId:      started.Msg.GetRunId(),
+		Name:       "deploy-approved",
+		Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	}))
+	require.NoError(t, err, "the stable callback address went stale after Continue-As-New")
+
+	require.Eventually(t, func() bool {
+		resp, err := flowstate.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: started.Msg.GetWorkflowId()}))
+		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
+	}, 60*time.Second, 200*time.Millisecond, "the callback did not reach the current execution")
 }
 
 // scheduledGatedWorkflowRequiring is [gatedWorkflowRequiring] with a schedule

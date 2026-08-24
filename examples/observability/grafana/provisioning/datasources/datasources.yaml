@@ -73,3 +73,43 @@ datasources:
           url: "${__value.raw}"
           datasourceUid: flowstate-tempo
           urlDisplayLabel: View trace
+
+  # The same OTLP logs and traces are also written to ClickHouse. The plugin's
+  # query builder discovers the contrib exporter's tables, while this fixed uid
+  # makes downstream dashboards portable. No password exists in this loopback-
+  # only lab; production guidance in README.md explicitly requires one.
+  - name: ClickHouse
+    uid: flowstate-clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    url: http://clickhouse:8123
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      defaultDatabase: otel
+      username: default
+      tlsSkipVerify: false
+      # `otelEnabled` is what tells the query builder that these tables carry the
+      # collector's OTel schema, rather than columns it must be told about one at
+      # a time (`timeColumn`, `messageColumn`, `traceIdColumn`, and the rest of
+      # the list in the plugin's `CHLogsConfig`/`CHTracesConfig`). Omitting it is
+      # not a default-on: the plugin's `getVersion(undefined)` returns nothing, so
+      # no mapping is applied and the Logs and Traces builders query a schema they
+      # do not know the shape of.
+      #
+      # `otelVersion: latest` is a real value in the plugin's version list (it
+      # tracks the newest, 1.29.0 in 4.11.2), and it is the right one here: this
+      # lab pins the collector image, so what these tables look like moves only
+      # when someone bumps that pin, and following the plugin's newest mapping is
+      # what keeps the two aligned when they do.
+      logs:
+        defaultDatabase: otel
+        defaultTable: otel_logs
+        otelEnabled: true
+        otelVersion: latest
+      traces:
+        defaultDatabase: otel
+        defaultTable: otel_traces
+        otelEnabled: true
+        otelVersion: latest

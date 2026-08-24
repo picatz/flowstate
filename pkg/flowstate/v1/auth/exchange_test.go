@@ -141,6 +141,7 @@ func TestTokenExchanger(t *testing.T) {
 		TargetAudience: "https://api.partner.example.com",
 		Scopes:         []string{"read", "write"},
 		Clock:          clock.Now,
+		EgressPolicy:   authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -211,8 +212,9 @@ func TestTokenExchangerRejects(t *testing.T) {
 			name: "a token that is not a bearer token",
 			respond: func(t *testing.T, w http.ResponseWriter) {
 				writeJSON(t, w, http.StatusOK, map[string]any{
-					"access_token": "not-a-bearer",
-					"token_type":   "mac",
+					"access_token":      "not-a-bearer",
+					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+					"token_type":        "mac",
 				})
 			},
 			wantDetail: "mac",
@@ -239,9 +241,10 @@ func TestTokenExchangerRejects(t *testing.T) {
 			})
 
 			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-				TokenURL: party.url + "/token",
-				Audience: "https://as.example.com",
-				Clock:    clock.Now,
+				TokenURL:     party.url + "/token",
+				Audience:     "https://as.example.com",
+				Clock:        clock.Now,
+				EgressPolicy: authtest.EgressPolicy(),
 			})
 			require.NoError(t, err)
 
@@ -267,14 +270,258 @@ func TestTokenExchangerRejects(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-			TokenURL: party.url + "/token",
-			Audience: "https://as.example.com",
-			Clock:    clock.Now,
+			TokenURL:     party.url + "/token",
+			Audience:     "https://as.example.com",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
 		_, err = exchanger.Exchange(t.Context(), serialized(t, mintAssertion(t, issuer, "https://as.example.com")))
 		require.ErrorIs(t, err, auth.ErrCredentialUnresolved)
+	})
+}
+
+// TestTokenExchangeStrictProfileVectors pins the fail-closed boundary between
+// RFC 8693's extensible protocol and the smaller authority model Flowstate can
+// faithfully turn into CredentialBearer.
+func TestTokenExchangeStrictProfileVectors(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	base := map[string]any{
+		"access_token":      "downstream-token",
+		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"token_type":        "Bearer",
+		"expires_in":        300,
+		"scope":             "read",
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"missing issued token type", func(v map[string]any) { delete(v, "issued_token_type") }},
+		{"id token result", func(v map[string]any) { v["issued_token_type"] = "urn:ietf:params:oauth:token-type:id_token" }},
+		{"jwt assertion result", func(v map[string]any) { v["issued_token_type"] = "urn:ietf:params:oauth:token-type:jwt" }},
+		{"zero lifetime", func(v map[string]any) { v["expires_in"] = 0 }},
+		{"unbounded lifetime", func(v map[string]any) { v["expires_in"] = 86401 }},
+		{"malformed scope", func(v map[string]any) { v["scope"] = "read  write" }},
+		{"overbroad scope", func(v map[string]any) { v["scope"] = "read write" }},
+		{"explicitly empty scope grant", func(v map[string]any) { v["scope"] = "" }},
+		{"null scope grant", func(v map[string]any) { v["scope"] = nil }},
+		{"proof downgrade", func(v map[string]any) { v["token_type"] = "DPoP" }},
+		{"confirmation extension", func(v map[string]any) { v["cnf"] = map[string]any{"jkt": "thumbprint"} }},
+		{"authorization details extension", func(v map[string]any) { v["authorization_details"] = []any{} }},
+		{"unknown extension", func(v map[string]any) { v["vendor_grant"] = "changed" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := make(map[string]any, len(base))
+			for key, value := range base {
+				response[key] = value
+			}
+			test.mutate(response)
+			party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+				writeJSON(t, w, http.StatusOK, response)
+			})
+			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+				TokenURL: party.url + "/token", Audience: "https://as.example.com",
+				Scopes: []string{"read"}, Clock: clock.Now,
+				EgressPolicy: authtest.EgressPolicy(),
+			})
+			require.NoError(t, err)
+			credential, err := exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
+			require.ErrorIs(t, err, auth.ErrExchangeFailed)
+			require.True(t, credential.IsZero())
+		})
+	}
+
+	for _, tokenType := range []string{
+		"urn:ietf:params:oauth:token-type:id_token",
+		"urn:ietf:params:oauth:token-type:jwt",
+		"urn:example:token-type:unknown",
+	} {
+		_, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+			TokenURL: "https://as.example.com/token", Audience: "https://as.example.com",
+			RequestedTokenType: tokenType,
+			EgressPolicy:       authtest.EgressPolicy(),
+		})
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+	}
+}
+
+// TestTokenExchangeStrictProfileAcceptsConformingServers is the other half of
+// the vectors above, and the half that is easy to leave out: a strict profile
+// that also refuses answers the RFC permits is not strict, it is broken. Each
+// case here is a response a conforming authorization server is entitled to
+// send, and each one was refused by an earlier draft of this decoder.
+func TestTokenExchangeStrictProfileAcceptsConformingServers(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	exchange := func(t *testing.T, cfg auth.TokenExchangeConfig, response map[string]any) (auth.Credential, error) {
+		t.Helper()
+
+		party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+			writeJSON(t, w, http.StatusOK, response)
+		})
+
+		cfg.TokenURL = party.url + "/token"
+		cfg.Audience = "https://as.example.com"
+		cfg.Clock = clock.Now
+		cfg.EgressPolicy = authtest.EgressPolicy()
+
+		exchanger, err := auth.NewTokenExchanger(cfg)
+		require.NoError(t, err)
+
+		return exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
+	}
+
+	// RFC 6749 section 3.3: scope is a space-delimited, order-independent set,
+	// so "b a" is the same grant as "a b". A server that reorders the set has
+	// granted exactly what was asked for and must not be refused for it.
+	t.Run("a scope grant returned in a different order", func(t *testing.T) {
+		credential, err := exchange(t, auth.TokenExchangeConfig{Scopes: []string{"read", "write"}}, map[string]any{
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        300,
+			"scope":             "write read",
+		})
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"read", "write"}, credential.Scopes)
+	})
+
+	// RFC 8693 section 2.2.1 lists refresh_token as an OPTIONAL member of a
+	// success response. The profile drops it rather than using it, and dropping
+	// a member is not the same as refusing the response that carried it.
+	t.Run("a response carrying the optional refresh_token", func(t *testing.T) {
+		credential, err := exchange(t, auth.TokenExchangeConfig{Scopes: []string{"read"}}, map[string]any{
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        300,
+			"scope":             "read",
+			"refresh_token":     "not-ours-to-keep",
+		})
+		require.NoError(t, err)
+		require.Equal(t, referenceTime.Add(5*time.Minute), credential.ExpiresAt.UTC())
+
+		// The refresh token is dropped, not carried along under another name.
+		require.NotContains(t, fmt.Sprintf("%+v", credential), "not-ours-to-keep")
+	})
+
+	// The regression this test exists for: the strict decoder path must keep
+	// threading the target's own ceiling into tokenResponse.credential. Passing
+	// a zero ceiling there fails *every* exchange, because a sub-second ceiling
+	// is refused as an unusable policy — and it silently disables the operator's
+	// TokenExchangeConfig.MaxCredentialLifetime at the same time.
+	t.Run("the target's configured credential lifetime ceiling", func(t *testing.T) {
+		response := func(expiresIn int) map[string]any {
+			return map[string]any{
+				"access_token":      "downstream-token",
+				"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				"token_type":        "Bearer",
+				"expires_in":        expiresIn,
+			}
+		}
+
+		credential, err := exchange(t, auth.TokenExchangeConfig{MaxCredentialLifetime: 5 * time.Minute}, response(300))
+		require.NoError(t, err, "a token inside the configured ceiling is accepted")
+		require.Equal(t, referenceTime.Add(5*time.Minute), credential.ExpiresAt.UTC())
+
+		credential, err = exchange(t, auth.TokenExchangeConfig{MaxCredentialLifetime: 5 * time.Minute}, response(301))
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, "longer than the 5m0s this target allows",
+			"the ceiling that refuses it is the target's, not a package constant")
+		require.True(t, credential.IsZero())
+
+		// And the default ceiling still applies to a target that names none,
+		// which is the direction a zero passed to credential would break.
+		credential, err = exchange(t, auth.TokenExchangeConfig{}, response(int(auth.DefaultMaxCredentialLifetime.Seconds())))
+		require.NoError(t, err)
+		require.Equal(t, referenceTime.Add(auth.DefaultMaxCredentialLifetime), credential.ExpiresAt.UTC())
+	})
+}
+
+// TestTokenExchangeScopeOmissionIsNotAnEmptyGrant separates the two readings of
+// a missing scope, which a plain string field cannot tell apart.
+//
+// RFC 6749 section 5.1, which RFC 8693 section 2.2.1 defers to, makes the scope
+// member OPTIONAL only when it is identical to what was requested and REQUIRED
+// otherwise. So an omitted member is the server saying "all of it" and an
+// explicitly empty one is the server saying "none of it" — and decoding both
+// into "" turns the second into the first. The failure is silent and it is in
+// the dangerous direction: the exchange succeeds, and the credential records
+// scopes the authorization server refused to grant.
+func TestTokenExchangeScopeOmissionIsNotAnEmptyGrant(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	// exchange asks for the given scopes against a server that answers with the
+	// given raw JSON body, so that a test can send a scope member no Go map
+	// literal can distinguish — absent, empty, and null.
+	exchange := func(t *testing.T, scopes []string, body string) (auth.Credential, error) {
+		t.Helper()
+
+		party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+			w.Header().Set("Content-Type", "application/json")
+			_, err := w.Write([]byte(body))
+			require.NoError(t, err)
+		})
+
+		exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+			TokenURL: party.url + "/token", Audience: "https://as.example.com",
+			Scopes: scopes, Clock: clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
+		})
+		require.NoError(t, err)
+
+		return exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
+	}
+
+	const withoutScope = `{"access_token":"downstream-token",` +
+		`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",` +
+		`"token_type":"Bearer","expires_in":300}`
+
+	// The one reading that may be taken as "granted as requested".
+	t.Run("an omitted scope member", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"}, withoutScope)
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"read", "write"}, credential.Scopes)
+	})
+
+	t.Run("an explicitly empty scope member", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"},
+			`{"access_token":"downstream-token",`+
+				`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",`+
+				`"token_type":"Bearer","expires_in":300,"scope":""}`)
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, "present but empty",
+			"the diagnostic names the difference from an omitted member")
+		require.True(t, credential.IsZero(), "a refused grant yields no credential to overstate")
+	})
+
+	t.Run("a null scope member", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"},
+			`{"access_token":"downstream-token",`+
+				`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",`+
+				`"token_type":"Bearer","expires_in":300,"scope":null}`)
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, "null")
+		require.True(t, credential.IsZero())
+	})
+
+	// The asymmetry is only defensible if it is actually asymmetric: a server
+	// that grants nothing to a request that asked for nothing has agreed with
+	// the request, and is not refused for saying so out loud.
+	t.Run("an empty scope member when nothing was requested", func(t *testing.T) {
+		credential, err := exchange(t, nil,
+			`{"access_token":"downstream-token",`+
+				`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",`+
+				`"token_type":"Bearer","expires_in":300,"scope":""}`)
+		require.NoError(t, err)
+		require.Empty(t, credential.Scopes)
 	})
 }
 
@@ -286,18 +533,20 @@ func TestClientCredentialsExchanger(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "service-token",
-			"token_type":   "Bearer",
-			"expires_in":   1800,
+			"access_token":      "service-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        1800,
 		})
 	})
 
 	t.Run("authenticated by the assertion", func(t *testing.T) {
 		exchanger, err := auth.NewClientCredentialsExchanger(auth.ClientCredentialsConfig{
-			TokenURL: party.url + "/token",
-			ClientID: "flowstate-prod",
-			Scopes:   []string{"api.read"},
-			Clock:    clock.Now,
+			TokenURL:     party.url + "/token",
+			ClientID:     "flowstate-prod",
+			Scopes:       []string{"api.read"},
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -329,6 +578,7 @@ func TestClientCredentialsExchanger(t *testing.T) {
 			ClientID:     "flowstate-prod",
 			ClientSecret: "hunter2",
 			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -349,7 +599,12 @@ func TestAWSExchanger(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
-	expiry := referenceTime.Add(time.Hour).UTC()
+	// Fifteen minutes because that is the session STS is being asked for: with no
+	// Duration configured the exchanger takes the AWS minimum, and an expiration
+	// outside the session that was requested is now refused. Configuring an hour
+	// here instead would pass just as well and would stop this test being the one
+	// place the default duration is pinned.
+	expiry := referenceTime.Add(15 * time.Minute).UTC()
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		w.Header().Set("Content-Type", "text/xml")
@@ -369,9 +624,10 @@ func TestAWSExchanger(t *testing.T) {
 	})
 
 	exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-		RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
-		Endpoint: party.url + "/",
-		Clock:    clock.Now,
+		RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+		Endpoint:     party.url + "/",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -386,7 +642,8 @@ func TestAWSExchanger(t *testing.T) {
 	require.Equal(t, "AssumeRoleWithWebIdentity", sent.form.Get("Action"))
 	require.Equal(t, "arn:aws:iam::123456789012:role/flowstate", sent.form.Get("RoleArn"))
 	require.Equal(t, assertion.Token(), sent.form.Get("WebIdentityToken"))
-	require.Equal(t, "900", sent.form.Get("DurationSeconds"))
+	require.Equal(t, "900", sent.form.Get("DurationSeconds"),
+		"an unconfigured duration is the AWS minimum, because a step needs a credential for one step")
 
 	// The session name is what appears in CloudTrail, so it has to be derived from
 	// the workload and legal for AWS at the same time.
@@ -434,9 +691,10 @@ func TestAWSExchangerRejects(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-			RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
-			Endpoint: party.url + "/",
-			Clock:    clock.Now,
+			RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+			Endpoint:     party.url + "/",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -454,9 +712,10 @@ func TestAWSExchangerRejects(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-			RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
-			Endpoint: party.url + "/",
-			Clock:    clock.Now,
+			RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+			Endpoint:     party.url + "/",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -498,8 +757,9 @@ func TestAWSExchangerRejects(t *testing.T) {
 
 	t.Run("a region selects the regional endpoint", func(t *testing.T) {
 		exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
-			RoleARN: "arn:aws:iam::123456789012:role/flowstate",
-			Region:  "us-east-1",
+			RoleARN:      "arn:aws:iam::123456789012:role/flowstate",
+			Region:       "us-east-1",
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 		require.NotNil(t, exchanger)
@@ -525,9 +785,10 @@ func TestGCPExchanger(t *testing.T) {
 		})
 
 		exchanger, err := auth.NewGCPExchanger(auth.GCPConfig{
-			Audience: pool,
-			Endpoint: party.url + "/v1/token",
-			Clock:    clock.Now,
+			Audience:     pool,
+			Endpoint:     party.url + "/v1/token",
+			Clock:        clock.Now,
+			EgressPolicy: authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -555,9 +816,10 @@ func TestGCPExchanger(t *testing.T) {
 			switch {
 			case r.URL.Path == "/v1/token":
 				writeJSON(t, w, http.StatusOK, map[string]any{
-					"access_token": "federated-token",
-					"token_type":   "Bearer",
-					"expires_in":   3600,
+					"access_token":      "federated-token",
+					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+					"token_type":        "Bearer",
+					"expires_in":        3600,
 				})
 			default:
 				// The IAM Credentials API authenticates with the federated token,
@@ -577,6 +839,7 @@ func TestGCPExchanger(t *testing.T) {
 			ServiceAccountEmail: "flowstate@project.iam.gserviceaccount.com",
 			Lifetime:            30 * time.Minute,
 			Clock:               clock.Now,
+			EgressPolicy:        authtest.EgressPolicy(),
 		})
 		require.NoError(t, err)
 
@@ -608,6 +871,7 @@ func TestGCPExchanger(t *testing.T) {
 			config: auth.GCPConfig{
 				Audience:            pool,
 				ServiceAccountEmail: "flowstate",
+				EgressPolicy:        authtest.EgressPolicy(),
 			},
 		},
 	}
@@ -640,6 +904,18 @@ func TestExchangerRejectsUnprotectedEndpoints(t *testing.T) {
 	// have to mint an assertion that any relying party would accept.
 	_, err = auth.NewTokenExchanger(auth.TokenExchangeConfig{TokenURL: "https://as.example.com/token"})
 	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+
+	// The two target selectors are alternatives naming one target; a config
+	// setting both has not said which authority it wants, and the pair is
+	// refused at load rather than sent as an ambiguous request.
+	_, err = auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL:       "https://as.example.com/token",
+		Audience:       "a",
+		TargetAudience: "https://api.partner.example.com",
+		Resource:       "https://resource.example.com/api",
+		EgressPolicy:   authtest.EgressPolicy(),
+	})
+	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
 }
 
 // TestCredentialNeverRevealsItself checks the property that makes the
@@ -651,16 +927,18 @@ func TestCredentialNeverRevealsItself(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "super-secret-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "super-secret-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 

@@ -51,7 +51,9 @@ together.
 Prefer federation to a static secret when the downstream system supports token
 exchange or workload identity. Configure `federation.targets` in the same reviewed
 auth policy, give the worker a rotating PKCS#8 signing key, and name the target in
-the HTTP task:
+the HTTP task. What the other side has to accept — the two metadata documents an
+issuer publishes and what each cloud consumer requires of them — is
+[Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md).
 
 ```yaml
 http:
@@ -65,6 +67,30 @@ flow worker \
   --auth-policy /etc/flowstate/auth.yaml \
   --identity-key /var/run/flowstate/2026-08.pem
 ```
+
+`--identity-key` repeats, and the order is the rule: **the first occurrence signs,
+and every later one is published for verification only.** That is how a key is
+rotated, because the rotation an operator performs is a restart, and a process that
+publishes only its new key rejects assertions the previous process signed while
+those are still valid. Generate the new key, restart naming it first with the
+outgoing key behind it, and after `federation.key_retention` (default 24h) restart
+with the new key alone:
+
+```sh
+flow keys generate --out /etc/flowstate/keys/2026-09.pem
+
+flow worker \
+  --auth-policy /etc/flowstate/auth.yaml \
+  --identity-key /etc/flowstate/keys/2026-09.pem \
+  --identity-key /etc/flowstate/keys/2026-08.pem
+```
+
+A verify-only entry may be the outgoing private key file or just its public half in
+a PKIX PEM (`openssl pkey -in 2026-08.pem -pubout`); either way this process never
+signs with it.
+A key that cannot be read or parsed, and two files publishing one key id, refuse
+start-up rather than being skipped. `FLOWSTATE_IDENTITY_KEY` names one key, and any
+`--identity-key` on the command line replaces it rather than adding to it.
 
 The activity evaluates the target's CEL assume policy against the authenticated
 tenant, workflow, run, and step; mints an audience-scoped Flowstate assertion;
@@ -315,15 +341,18 @@ is one rule with consequences — the fuller reasoning lives in
   here, rendered by the same protojson encoder, because a document scripts index
   by name is a contract and this project describes its contracts in the schema.
   Only its *values* come from the calling process rather than from the server.
-  `result` is `applied` for an act that is true once the server answers,
-  `requested` for one it has accepted and not yet performed, and `delivered` for
-  a signal the server has taken, which is a claim about the server and not about
-  the workflow: a signal held for a gate the run has not reached is dropped if
-  the run continues as new with the pending set full, so a workflow that never
-  observes it is a possible ending of a delivery that succeeded. The envelope
-  carries only what this process knows for certain, because inventing a
-  resulting state out of an empty response is exactly the claim the prose has
-  always refused to make. That emptiness is the real defect
+  What each `result` value means is canonical in one place — the `--help` text
+  every mutation verb ends with, `mutationFlagHelp` in `cmd/flow/output.go`,
+  mirrored generated in [docs/reference/cli.md](reference/cli.md) — rather than
+  restated here, so there is one wording to keep current instead of two that
+  can drift apart. The one fact worth adding here, because it is about the
+  design rather than about a flag: `delivered` is a claim about the server and
+  not about the workflow. A signal held for a gate the run has not reached is
+  dropped if the run continues as new with the pending set full, so a workflow
+  that never observes it is a possible ending of a delivery that succeeded.
+  The envelope carries only what this process knows for certain, because
+  inventing a resulting state out of an empty response is exactly the claim
+  the prose has always refused to make. That emptiness is the real defect
   (picatz/flowstate#374): when those responses gain fields, the envelope stops
   being the whole answer and the response's own protojson carries the rest.
 - **Exit status is a contract with three values.** `0`: the command succeeded
@@ -434,6 +463,11 @@ choose any of it. An opt-in a caller can send is not an opt-in.
 Nothing in a tool's arguments can widen any of it. A denied request means this
 process was not configured for it, not that the workflow is wrong — which is what
 the refusal says, so an agent corrects the right thing.
+
+Everything above is the stdio posture: one trusted caller, decided once at
+start-up. Reaching `flow mcp` over HTTP instead — many callers, authenticated
+per request — is a separate surface with its own authorization story; see
+[docs/MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md).
 
 ### Configuring a client
 
@@ -579,8 +613,8 @@ caller that ever injects the virtual one, through
 [`v1.NewContextWithClock`](../pkg/flowstate/v1/clock.go). Any case where the
 two drivers could disagree about what `now` means, or about whether a wait
 actually blocks for what it says, is covered by a shared case in
-`pkg/flowstate/v1/tests` that both drivers run — see `WaitCases` in
-`pkg/flowstate/v1/tests/wait.go` — which is what keeps "the local driver got
+`pkg/flowstate/v1/internal/conformance` that both drivers run — see `WaitCases` in
+`pkg/flowstate/v1/internal/conformance/wait.go` — which is what keeps "the local driver got
 faster" from quietly becoming "the local driver stopped rehearsing production."
 
 Stubbing happens at the task boundary and nowhere lower: a step's `if:`,
@@ -591,6 +625,128 @@ the call itself still runs for real — which is what makes `flow test` able to
 exercise composition rather than only a single file in isolation; see
 `examples/call-a-workflow/workflow.test.yaml` for a worked case, run in CI by
 the `Example workflows pass their own tests` job.
+
+### One fixture, many rows
+
+The house Go convention is a table: "slice-of-struct tables with a `name` field,
+one `t.Run` per case". A `*.test.yaml` writes the same shape with `cases:`, and
+the shared half is stated once (#924):
+
+```yaml
+defaults:
+  workflow: ./workflow.yaml          # every case in the file, stated once
+tests:
+  - name: a declaration is enforced before the first step runs
+    stubs:
+      - task: http
+        returns: {}
+    expect:
+      failed: true                   # true of every row
+    cases:
+      - name: the required argument is missing
+        expect:
+          error_contains: which service to deploy
+      - name: a replica count above the declared bound
+        inputs: {service: checkout, replicas: 99}
+        expect:
+          error_contains: must satisfy
+```
+
+An entry that declares `cases:` does not itself run — it is the template its
+rows are merged over — and each row reports as `<entry name>/<row name>`, the
+two-level identity `t.Run` gives a Go table.
+
+`--run` takes a regular expression matched against that whole name, which gives
+the `go test -run` behaviour at both levels: a pattern matching only the entry
+half selects every row under it, and one reaching into the row half selects
+one. Against the entry above, `--run 'enforced before'` runs all three rows and
+`--run 'enforced.*/a replica count'` runs one — note the `.*`, since the pattern
+spans the rest of the entry name to reach the `/`.
+
+There is one merge rule, applied at two levels: **stated beats inherited**.
+`defaults:` fills in what a case did not write, and an entry fills in what its
+row did not. `inputs:` and `expect:` merge one level — a row that writes
+`expect.error_contains` keeps the entry's `expect.failed` — while `stubs:`,
+`signals:`, `secrets:` and `trigger:` are inherited whole or replaced whole,
+because their halves are not independently meaningful. A row's stub replaces an
+inherited one for the same target rather than joining it, which is #416's
+identity rule unchanged.
+
+The cost of merging `expect:` field by field, stated plainly: a row cannot
+assert *less* than its entry. An entry that pins `outputs:` pins it for every
+row that does not overwrite it, so an entry should hold only what is true of
+every row. The failure is loud rather than silent — the row fails against a
+value nobody claimed for it.
+
+A table is one level deep. A row that declares its own `cases:` is refused, as
+is an entry whose `cases:` is empty: a file that quietly ran zero cases where
+one was expected is the "green by not running" failure this repository
+legislates against everywhere else. `examples/parameterized-deploy` is the
+worked example, and it runs in CI like the rest.
+
+### What a directory shares: `testdefaults.yaml`
+
+A directory holding several suites states their shared fixture once, in a file beside them (#1072). It holds `vars:` and `defaults:` and nothing else — a `tests:` key is refused with the field named, because that is almost certainly a suite saved under the wrong name — and its name deliberately does not match the `*.test.yaml` discovery glob, so it can never be run as one:
+
+```yaml
+# testdefaults.yaml — shared by every suite in this directory
+vars:
+  issuer: https://issuer.example.com
+defaults:
+  workflow: ./workflow.yaml
+  sender: {subject: approver@example.com, issuer: "${vars.issuer}"}
+```
+
+The chain is directory → file `defaults:` → entry → row, each level filling only what the level below did not state — the same one direction every merge in the format takes, one level further out. Checks accumulate directory-first; everything else the file wins. Exactly the suite's own directory is consulted, never a parent: a suite's behaviour depends on at most two files, both visible in one `ls`. A suite loaded from bytes (the MCP tool) or built in Go has no directory and gets none, the same rule that already governs how those doors resolve a `workflow:` path.
+
+### One value, stated once: `vars:`
+
+A file-level `vars:` block holds the literals a suite states once and references everywhere — a URL, an issuer, a payload fragment (#1072). A fixture position (a case's `inputs:`, a trigger's fields, a scripted `sender:`, `expect.outputs:`) references one as a whole-value `${vars.x}` fence, resolved at load by substitution, so what reaches the run is the literal; a check reads `vars.x` at evaluation. A var may hold a structure, and it lands whole in a position that wants one:
+
+```yaml
+vars:
+  issuer: https://issuer.example.com
+  order: {id: ord_123, region: eu-west-1}
+tests:
+  - name: the order is stated once
+    inputs: {order: "${vars.order}"}
+    signals:
+      - name: approve
+        sender: {subject: approver@example.com, issuer: "${vars.issuer}"}
+    expect:
+      check:
+        - steps.join.value.region == vars.order.region
+```
+
+Literals only, for now: any `${` inside a var is refused, including a reference to another var, so there is no evaluation order and no cycles — and a mixed string (`"https://${vars.host}/v1"`) is refused too, because a partial substitution would be a template language this file deliberately is not. Build combined text in the workflow, or state it literally.
+
+**One asymmetry, stated because it is load-bearing**: inside a stub's `where:` and `returns:`, `vars.` keeps meaning the *workflow's* own `vars:` block — those expressions evaluate against the run's scope, and a load-time substitution there would silently hijack that meaning. A stub speaks the run's language; everywhere else in the test file, `vars.` is the file's.
+
+### Claims the named fields cannot say: `expect.check:`
+
+`ran:`, `outputs:` and the other named fields assert structure, and they stay the idiomatic spelling for it — they feed coverage and read the transcript's record. `expect.check:` is for everything else: a shape claim over an output, an error that must name its step, a relation between two steps' values. Each entry is a bare CEL predicate over the finished run — `steps.*`, `inputs.*`, and a `run` root carrying `failed`, `error` and `local` — or `{that:, because:}` to add the sentence a failure prints:
+
+```yaml
+expect:
+  ran: [plan, join]
+  check:
+    - size(steps.join.value.regions) == 2
+    - that: steps.join.value.regions[0] == inputs.region
+      because: the join must keep the order's own region, not the fleet default
+```
+
+A failing check arrives with its evidence — the values the claim read, re-evaluated once and printed beside it, redacted through the same set the transcript and the stub diagnostics share:
+
+```
+expect.check[1]: check failed: steps.join.value.regions[0] == inputs.region
+           because: the join must keep the order's own region, not the fleet default
+           steps.join.value.regions[0] = "us-east-1"
+           inputs.region = "eu-west-1"
+```
+
+Three rules, all inherited rather than invented. A check is evaluated by the engine's own evaluator under the workflow's profile, so it is cost-bounded exactly as any expression in the run is. It runs whether or not the run failed — an error claim (`run.error.contains('must satisfy')`) exists precisely for failed runs. And across `defaults:` → entry → row, check lists **accumulate** — every level's claims all hold — where the named fields merge by override; predicates union naturally, values cannot.
+
+The loop this closes: `flow test --debug` and `check:` answer from the *same* evaluation — the debugger's `inspect` and a check share the activation, the evaluator and the cost bound — so a claim rehearsed at a breakpoint asserts identically in the file. Stop a case where it surprises you, `inspect` until the expression says what you mean, then paste it under `expect.check:`; the test you debugged becomes the test that guards it.
 
 ### What a stub can see
 
@@ -637,6 +793,42 @@ named the task's inputs since stubs existed, and that meaning is kept.
 the step's answer — which is why `examples/http-expect` and
 `examples/http-output-shaping` assert the steps around those expressions rather
 than the expressions themselves.
+
+### What a case's identity is checked against
+
+A case can name who the run started as (`starter:`) and who each scripted signal
+stands in for (`sender:`). **A green case says nothing about whether that identity
+would be allowed to do any of this in production.** Nothing attested either one, and
+`flow test` takes no policy flags: `--task-policy` and `--egress-policy` are declared
+on `flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`,
+and deliberately not here.
+
+What a `starter:` reaches is the workflow's own `signals:` policy, through the same
+`SignalPolicyCheck` the server calls — so `distinct_from_starter:` and an `allow:`
+rule answer here the way they answer in production. What it does not reach:
+`run.identity` (empty for every case, `run.local` true), task-shape policy (the check
+runs, against the empty scope identity, never against `starter:`), egress policy
+(never reached — the request that would be refused is answered by a stub), and secret
+access policy (a fixed allow-everything rule, evaluated under the constant
+`flow-test#flow-test` identity rather than under `starter:`).
+
+Task-shape policy carries one qualification, because "`flow test` installs none" is
+true of the *command* and not of the *process*. The flag is declared on `flow worker`,
+`flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, and deliberately
+not on `flow test` — but it installs a process-wide policy that a case never clears,
+and the same machinery runs elsewhere: the `flowstate_test` MCP tool runs cases in
+whatever process serves it, so under `flow mcp --task-policy` a case's dispatches are
+governed by that deployment's policy. A rehearsal inherits whatever the hosting
+process installed, and evaluates it against the empty identity — so a rule keyed on
+`identity.namespace` refuses every stubbed dispatch there, and no `starter:` an author
+can write changes that.
+
+That split is the diagnostics rule one level up: `signals:` is a control the Flowfile
+declares, so `flow test` exercises it; the other three are controls a deployment
+installs, and a case whose verdict turns on which policy file the hosting process was
+passed is testing that process instead of the workflow. Denials in those three are
+written against the policy packages directly, which need no workflow at all.
+[docs/DSL.md](DSL.md) has the table and #652 has the decision.
 
 ## What this means for a change
 

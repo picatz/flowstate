@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"slices"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -59,7 +61,47 @@ const (
 	// memory, via connect.WithReadMaxBytes. A plugin is not trusted because an
 	// operator installed it, and a response is the one thing it fully controls
 	// the size of.
+	//
+	// Deliberately larger than flowstatev1.MaxTaskOutputBytes, the bound on
+	// what a task's *outputs* may weigh (#787). This cap is about memory — how
+	// much of a response the host will read at all — and the output cap is
+	// about storage — what Temporal will hold as the activity's result. The
+	// gap between them exists for a plugin that reads a large response and
+	// reduces it before returning, the same pattern as the http task's
+	// `outputs:` selection: reading 4 MiB and emitting 10 KiB of outputs is
+	// legitimate, while returning the 4 MiB whole is refused at
+	// Task.EvalInScope with a diagnosis naming both numbers.
 	DefaultMaxResponseBytes = 4 << 20 // 4 MiB
+
+	// DefaultMaxProgressFrames bounds how many TaskProgress frames one
+	// ExecuteStream call relays to the caller's progress reporter before the
+	// rest are dropped rather than forwarded.
+	//
+	// Issue #804: MaxResponseBytes bounds the *aggregate* ExecuteStream
+	// response — every TaskProgress frame and the terminal ExecuteResponse all
+	// share one byte budget, enforced once over the whole HTTP response body
+	// (see boundedTransport in transport.go). A task that reports progress
+	// frequently, especially inside a loop, could exhaust that shared budget
+	// on its own progress before its terminal response ever arrived, failing
+	// an otherwise-successful task on the strength of its own reporting
+	// frequency rather than anything wrong with its result.
+	//
+	// The fix is a separate, additive allowance reserved for progress frames
+	// — see maxProgressFrameWireBytes in transport.go — so the terminal
+	// response keeps its own full share of MaxResponseBytes regardless of how
+	// much a task reports. That reserve is sized by a frame *count* rather
+	// than by an arbitrary byte figure because TaskPhase is a closed
+	// vocabulary (progress.go): every legitimate frame's wire size is fixed
+	// and small, which makes a count of frames — not a count of bytes — the
+	// resource actually worth bounding here. This constant is that count.
+	// Once one ExecuteStream call has relayed this many, further progress
+	// frames in the same call are dropped rather than forwarded or treated as
+	// a failure: a task's own reporting frequency must never be able to fail
+	// the call, only crowd out how much of its own progress the caller gets
+	// to see. The overall aggregate bound plugin output is still capped by
+	// MaxResponseBytes plus that same fixed reserve, so a plugin streaming
+	// unbounded garbage — progress-shaped or not — is still refused.
+	DefaultMaxProgressFrames = 4096
 
 	// DefaultMaxRestarts is how many times a plugin that exits on its own is
 	// relaunched before it is given up on. A plugin that crashes on every launch
@@ -77,17 +119,70 @@ const (
 	// DefaultMaxDescriptorBytes bounds one serialized descriptor in a task
 	// manifest. Descriptors are attacker-chosen input that the host parses and
 	// links, so their size is bounded before any of that happens.
-	DefaultMaxDescriptorBytes = 1 << 20 // 1 MiB
+	//
+	// Defined in flowstatev1 rather than here, because the *writing* side needs
+	// the same number: a plugin reading its own descriptor set for the comments
+	// to attach ([flowstatev1.ParseDescriptorProse]) bounds it with this, so an
+	// artifact too large for a host to accept is refused at the plugin's startup
+	// — where its author sees it — rather than parsed there and refused later
+	// (#874 review). One bound, read by both sides, cannot come to mean two
+	// different sizes.
+	DefaultMaxDescriptorBytes = flowstatev1.DefaultMaxDescriptorBytes
 
 	// DefaultMaxDescriptorFiles bounds how many files one descriptor may carry
 	// when it is a FileDescriptorSet. Depth bounds do not stop breadth
 	// explosions, so this bounds breadth and [maxDescriptorDepth] bounds depth.
-	DefaultMaxDescriptorFiles = 256
+	// Defined alongside the byte bound above, for the same reason.
+	DefaultMaxDescriptorFiles = flowstatev1.DefaultMaxDescriptorFiles
+
+	// DefaultMaxCatalogPlugins, DefaultMaxCatalogTasks and
+	// DefaultMaxCatalogDescriptorBytes bound a catalog document read by
+	// [TaskDefsFromCatalog], which is a different attack from the one
+	// MaxDescriptorBytes and MaxDescriptorFiles answer.
+	//
+	// Those two bound *one* descriptor. A catalog is a saved file or an RPC
+	// response naming as many plugins and as many tasks as its author likes,
+	// each carrying a descriptor that is individually well under the per
+	// descriptor cap, and every one of them is parsed, linked and retained. The
+	// resource the peer controls there is breadth and total volume, so those are
+	// what these bound: a bound on the size of one item is not a bound on how
+	// many items arrive (#854 review).
+	//
+	// The numbers are read off what a real deployment can produce. A plugin
+	// manifest may declare 64 tasks (plugin.proto's `max_items` on
+	// TaskManifest), and a search path holding more than a couple of hundred
+	// plugin binaries is not a deployment anybody has; the byte bound is what
+	// actually caps memory, since the other two multiplied by
+	// MaxDescriptorBytes would not.
+	DefaultMaxCatalogPlugins = 256
+
+	// DefaultMaxCatalogTasks bounds the tasks in a whole catalog, across every
+	// plugin in it: 64 plugins' worth of the 64 tasks a manifest may declare.
+	DefaultMaxCatalogTasks = 4096
+
+	// DefaultMaxCatalogDescriptorBytes bounds the serialized descriptors a whole
+	// catalog carries, summed. It is the bound that makes the two above bounds
+	// on memory rather than only on count.
+	DefaultMaxCatalogDescriptorBytes = 32 << 20 // 32 MiB
 
 	// DefaultMaxStderrLine bounds one line of a plugin's stderr. Logs are
 	// streamed a line at a time, so this is the whole memory bound on a plugin
 	// that writes without ever printing a newline.
 	DefaultMaxStderrLine = 64 << 10 // 64 KiB
+
+	// DefaultMaxStderrLinesPerMinute bounds how many stderr lines per minute the
+	// host will relay into its own log stream. It bounds volume, not size —
+	// MaxStderrLine already bounds one line, and the two are independent
+	// resources: a plugin can flood by rate without ever writing an overlong
+	// line. Generous enough that no honest plugin's normal logging, including a
+	// noisy startup, ever reaches it.
+	DefaultMaxStderrLinesPerMinute = 2000
+
+	// stderrRateWindow is the interval [Config.MaxStderrLinesPerMinute] is
+	// measured over. Fixed rather than configurable: the field name promises a
+	// per-minute budget, and a window a deployment could change out from under
+	// that name would make the field lie about its own units.
+	stderrRateWindow = time.Minute
 )
 
 // Config describes which plugins a deployment will run and how far it will let
@@ -114,11 +209,14 @@ type Config struct {
 	SearchPath []string
 
 	// AllowInsecureSearchPath permits a search path directory that other users
-	// can write to.
+	// can write to or own — and, since #972, one reached through a path they
+	// can. It is one decision rather than three: a deployment that has said out
+	// loud it accepts an untrusted search path should not then meet a further
+	// refusal it cannot turn off.
 	//
-	// What that means is that any user who can write to that directory chooses
-	// what code this worker runs, with the worker's credentials and network
-	// reach. There is a legitimate use — a container image where the whole
+	// What that means is that any user who can write to that directory, or to
+	// any directory on the way to it, chooses what code this worker runs, with
+	// the worker's credentials and network reach. There is a legitimate use — a container image where the whole
 	// filesystem is 0777 and the only user is root — and no other one. Setting
 	// it because discovery refused a directory is the wrong fix; fixing the
 	// directory's mode is the right one.
@@ -128,6 +226,30 @@ type Config struct {
 	// is how a deployment pins exactly which plugins run without curating the
 	// directory, and how a test launches one of several.
 	Only []string
+
+	// PinnedDigests, for the names it holds, is the digest the binary answering
+	// to that name must have before it is allowed to run: plugin name to
+	// "sha256:" and sixty-four lower-case hex characters, the one spelling
+	// [flowstatev1.ContentDigest] writes everywhere.
+	//
+	// [Config.Only] is an allowlist of names, and a name is a mutable reference:
+	// whoever can write the file at that path chooses what this worker executes
+	// under it, forever and silently. This is the allowlist of *contents*. It is
+	// checked against the digest taken from the descriptor the process is about
+	// to be exec'd from, at the top of the launch, before the process exists and
+	// therefore before any handshake — a compromised plugin's own announcement
+	// of itself cannot take part in the decision to admit it.
+	//
+	// It is opt-in per name, which is the cost this chooses: a name with no
+	// entry launches as it always has, so trust-on-first-use remains the default
+	// for a deployment that has not pinned anything, and pinning is adopted one
+	// plugin at a time rather than all at once. A name that *is* pinned fails
+	// closed — a mismatch, or an image that could not be measured, is a refusal.
+	//
+	// The digest to write here is the one this package logs as "distribution"
+	// when the plugin launches, and the one `sha256sum` prints for the same
+	// file. See [admit] for what a pin does and does not claim.
+	PinnedDigests map[string]string
 
 	// PermittedSchemes, when non-empty, lists the secret schemes plugins may
 	// claim. A plugin claiming anything else is refused rather than partially
@@ -189,6 +311,21 @@ type Config struct {
 	// [DefaultMaxResponseBytes].
 	MaxResponseBytes int
 
+	// MaxProgressFrames bounds how many TaskProgress frames one ExecuteStream
+	// call relays to the caller's progress reporter before later ones in the
+	// same call are dropped. Zero selects [DefaultMaxProgressFrames].
+	//
+	// The dropping is specific to [Plugin.executeTask]'s internal dispatch,
+	// which is the one path with a reporter to drop frames *from*. A caller
+	// using the exported [Plugin.TaskService] / [Host.TaskServiceForTask]
+	// stream directly reads every frame the plugin sends — see
+	// taskService.ExecuteStream's own doc comment in service.go for why that
+	// cannot be filtered — but is still governed by the same reserved byte
+	// ceiling this value sizes, so a plugin cannot starve either path's
+	// terminal response by reporting within this bound, and reporting far
+	// beyond it is refused on both.
+	MaxProgressFrames int
+
 	// MaxRestarts caps relaunches of a plugin that exits on its own. Zero
 	// selects [DefaultMaxRestarts]; a negative value disables restarting, so a
 	// plugin that exits stays exited.
@@ -204,9 +341,48 @@ type Config struct {
 	MaxDescriptorBytes int
 	MaxDescriptorFiles int
 
+	// MaxCatalogPlugins, MaxCatalogTasks and MaxCatalogDescriptorBytes bound a
+	// whole catalog document read by [TaskDefsFromCatalog] — how many plugins
+	// it names, how many tasks it names across all of them, and how many
+	// descriptor bytes it carries in total. Zero selects the corresponding
+	// defaults. See those defaults for why bounding one descriptor is not
+	// bounding a catalog.
+	MaxCatalogPlugins         int
+	MaxCatalogTasks           int
+	MaxCatalogDescriptorBytes int
+
 	// MaxStderrLine bounds one captured stderr line. Zero selects
 	// [DefaultMaxStderrLine].
 	MaxStderrLine int
+
+	// MaxStderrLinesPerMinute bounds how many stderr lines per minute are
+	// relayed into the host's log. Zero selects
+	// [DefaultMaxStderrLinesPerMinute]; a negative value disables the bound,
+	// for a deployment that has decided some other layer owns log volume.
+	//
+	// Lines suppressed past the budget are still drained from the pipe — the
+	// plugin never blocks on a full one — and counted, and the count is
+	// reported in one summary line logged the moment the next window opens, so
+	// a flood is visible at a rate the host chooses rather than the plugin's.
+	MaxStderrLinesPerMinute int
+
+	// stderrClock is the time source a plugin's stderr rate limiter measures
+	// its window against. Nil selects [time.Now]; a test seam so a rate
+	// bounded in wall-clock minutes can be verified without waiting one. See
+	// beforeExec below for why a seam that a deployment must not reach is
+	// unexported rather than a field.
+	stderrClock func() time.Time
+
+	// beforeExec runs after a plugin's executable has been opened and hashed and
+	// before it is executed, with the plugin's path.
+	//
+	// It is the seam the time-of-check-to-time-of-use test replaces a binary
+	// through, and it is unexported so that no deployment can reach it: what it
+	// exists to make deterministic is a window that a test would otherwise have
+	// to hope for, and a sleep-shaped race test proves nothing on a loaded
+	// machine. Nothing outside this package sets it, so it is nil everywhere a
+	// plugin actually runs.
+	beforeExec func(path string)
 }
 
 // withDefaults returns a copy with every zero bound replaced by its default, so
@@ -223,10 +399,15 @@ func (c Config) withDefaults() Config {
 
 	setInt(&c.HealthFailureThreshold, DefaultHealthFailureThreshold)
 	setInt(&c.MaxResponseBytes, DefaultMaxResponseBytes)
+	setInt(&c.MaxProgressFrames, DefaultMaxProgressFrames)
 	setInt(&c.MaxRestarts, DefaultMaxRestarts)
 	setInt(&c.MaxDescriptorBytes, DefaultMaxDescriptorBytes)
 	setInt(&c.MaxDescriptorFiles, DefaultMaxDescriptorFiles)
+	setInt(&c.MaxCatalogPlugins, DefaultMaxCatalogPlugins)
+	setInt(&c.MaxCatalogTasks, DefaultMaxCatalogTasks)
+	setInt(&c.MaxCatalogDescriptorBytes, DefaultMaxCatalogDescriptorBytes)
 	setInt(&c.MaxStderrLine, DefaultMaxStderrLine)
+	setInt(&c.MaxStderrLinesPerMinute, DefaultMaxStderrLinesPerMinute)
 
 	if c.MaxRestartBackoff < c.RestartBackoff {
 		c.MaxRestartBackoff = c.RestartBackoff
@@ -234,6 +415,7 @@ func (c Config) withDefaults() Config {
 
 	c.SearchPath = slices.Clone(c.SearchPath)
 	c.Only = slices.Clone(c.Only)
+	c.PinnedDigests = maps.Clone(c.PinnedDigests)
 	c.PermittedSchemes = slices.Clone(c.PermittedSchemes)
 	c.Env = slices.Clone(c.Env)
 
@@ -275,6 +457,15 @@ func (c Config) validate() error {
 	for _, scheme := range c.PermittedSchemes {
 		if scheme == "" {
 			return fmt.Errorf("plugin: PermittedSchemes contains an empty scheme")
+		}
+	}
+
+	// Sorted, so that a configuration with several bad pins reports the same one
+	// on every run: map iteration order would otherwise make the diagnostic an
+	// operator sees depend on nothing they can see.
+	for _, name := range slices.Sorted(maps.Keys(c.PinnedDigests)) {
+		if err := validateDigestPin(name, c.PinnedDigests[name]); err != nil {
+			return err
 		}
 	}
 

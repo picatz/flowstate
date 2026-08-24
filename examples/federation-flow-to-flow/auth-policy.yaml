@@ -1,0 +1,40 @@
+# Deployment A's file: both directions of trust, one document.
+#
+# `issuers:` is inbound — who may call *this* deployment. `federation:` is
+# outbound — who this deployment may call, and as whom.
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    # Also the audience `flow server --rpc-resource` is started with: the
+    # server requires the exact string it binds Connect RPC to to be listed by
+    # a trusted kind: oidc issuer, so a resource nobody can mint for is refused
+    # at start-up rather than 401ing every caller.
+    audiences: [https://flowstate.example.com/rpc]
+    algorithms: [RS256]
+    # A GitHub Actions issuer admits every workload on the platform unless it is
+    # pinned: the audience is chosen by whoever requests the token, so it does
+    # not narrow anything. This entry names the one repository whose runs this
+    # deployment trusts, and reads the tenant off a verified claim.
+    require:
+      - claim: repository_owner
+        any_of: [picatz]
+    namespace_claim: repository_owner
+
+federation:
+  issuer: https://flowstate.example.com
+
+  # The replay window of a directly presented assertion is its lifetime, and
+  # this is the only knob that sets it. Two minutes is long enough to reach a
+  # peer and short enough that a captured assertion is worth little.
+  assertion_lifetime: 2m
+
+  allow:
+    - 'target == "peer-flowstate" && workload.namespace == "acme"'
+
+  targets:
+    # No exchange: the peer is an OIDC verifier, so the assertion *is* the
+    # credential. `audience:` is the peer's own identifier, and it is the only
+    # place this assertion is good for.
+    - name: peer-flowstate
+      assertion:
+        audience: https://flowstate.peer.example.com

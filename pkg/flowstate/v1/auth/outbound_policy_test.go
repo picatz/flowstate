@@ -33,7 +33,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key)
+		broker, err := policy.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 		require.Equal(t, []string{"aws-prod"}, broker.Targets())
 		require.Equal(t, "https://flowstate.example.com", broker.Issuer().URL())
@@ -53,7 +53,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key)
+		broker, err := policy.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 		require.Equal(t, []string{"partner"}, broker.Targets())
 	})
@@ -117,7 +117,7 @@ targets:
 	key, err := auth.GenerateSigningKey("k", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key)
+	broker, err := policy.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"aws-prod", "gcp-analytics", "internal", "partner"}, broker.Targets())
@@ -301,7 +301,7 @@ federation:
 	key, err := auth.GenerateSigningKey("k", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Federation.Broker(key)
+	broker, err := policy.Federation.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 	require.Equal(t, []string{"aws-prod"}, broker.Targets())
 
@@ -323,11 +323,18 @@ federation:
 	})
 
 	t.Run("a policy with no federation section still works", func(t *testing.T) {
+		// The require rule is not incidental to this case: a policy naming a
+		// public multi-tenant issuer with no rule at all no longer loads at
+		// all, so a fixture without one would be testing the refusal rather
+		// than the absent federation section. See multitenant_test.go.
 		policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
+    require:
+      - claim: repository
+        any_of: [picatz/flowstate]
 `))
 		require.NoError(t, err)
 		require.Nil(t, policy.Federation)
@@ -386,6 +393,7 @@ func TestFederationRoundTrip(t *testing.T) {
 				}},
 			},
 			auth.WithClock(clock.Now),
+			auth.WithEgressPolicy(authtest.EgressPolicy()),
 		)
 		require.NoError(t, err)
 
@@ -401,9 +409,10 @@ func TestFederationRoundTrip(t *testing.T) {
 		verified <- principal
 
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "partner-token-for-" + principal.Subject,
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "partner-token-for-" + principal.Subject,
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	}))
 	t.Cleanup(relyingParty.Close)
@@ -412,6 +421,7 @@ func TestFederationRoundTrip(t *testing.T) {
 	// the one system it may present it to.
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
+declared_claims: [repository]
 allow:
   - 'target == "partner" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
 targets:
@@ -425,7 +435,7 @@ targets:
 	key, err := auth.GenerateSigningKey("2026-07", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now))
+	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	mu.Lock()
@@ -463,6 +473,7 @@ targets:
 		// refuses it: both sides get a say, which is what federation means.
 		permissive, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
+declared_claims: [repository]
 targets:
   - name: partner
     token_exchange:
@@ -471,7 +482,7 @@ targets:
 `))
 		require.NoError(t, err)
 
-		permissiveBroker, err := permissive.Broker(key, auth.WithFederationClock(clock.Now))
+		permissiveBroker, err := permissive.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 
 		mu.Lock()

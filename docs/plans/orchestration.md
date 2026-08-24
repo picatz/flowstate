@@ -1,5 +1,11 @@
 # Orchestration reference
 
+> [!NOTE]
+> **Internal process, not product documentation.** This file is part of
+> `docs/plans/`: how agent work is dispatched here, and what past waves
+> measured. Nothing in it describes Flowstate to someone using it — the map of
+> the documentation that does is [docs/README.md](../README.md).
+
 For the session that dispatches agents. Agents do not read this; what an
 agent must know goes in its dispatch prompt or in CLAUDE.md.
 

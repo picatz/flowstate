@@ -409,4 +409,17 @@ func Test_encodedForms(t *testing.T) {
 		require.Contains(t, forms, url.QueryEscape("a b/c+d="))
 		require.Contains(t, forms, base64.StdEncoding.EncodeToString([]byte("a b/c+d=")))
 	})
+
+	t.Run("JSON-escaped material is redacted before parsing can reveal it", func(t *testing.T) {
+		const value = "pa<ss\twith\"quotes"
+
+		body, err := json.Marshal(map[string]string{"secret": value})
+		require.NoError(t, err)
+		require.NotContains(t, string(body), value, "the reproducer must exercise an encoded spelling")
+
+		scrubbed := NewScrubber(NewSecret(NewRef("env", "T"), value)).Scrub(string(body))
+		var parsed map[string]string
+		require.NoError(t, json.Unmarshal([]byte(scrubbed), &parsed))
+		require.Equal(t, Redacted, parsed["secret"])
+	})
 }

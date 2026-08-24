@@ -9,13 +9,13 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwk"
 )
@@ -40,7 +40,7 @@ const minRSAKeyBits = 2048
 // thousand times the work, for a request that has proven nothing yet.
 //
 // 8192 rather than something tighter because it is comfortably above every key
-// anyone deploys -- 4096 is already unusual -- while leaving the quadratic term
+// anyone deploys — 4096 is already unusual — while leaving the quadratic term
 // nowhere to go. This bounds the resource the far side actually controls, which
 // is the size of the modulus in a key set we fetched, not the number of
 // requests.
@@ -49,45 +49,13 @@ const maxRSAKeyBits = 8192
 // discoveryPath is appended to an issuer to find its OpenID Provider Metadata.
 const discoveryPath = "/.well-known/openid-configuration"
 
-// maxRedirects bounds a redirect chain while fetching issuer metadata or keys.
-const maxRedirects = 5
-
-// transportProtectedClient returns a client that fetches issuer metadata and
-// keys the way the given client would, but which refuses to follow a redirect
-// onto an unprotected transport.
-//
-// Validating only the first URL is not enough: an issuer that advertises an
-// https key set but redirects to plain http would have its signing keys, and so
-// the identity of every caller it vouches for, decided by whoever is on the
-// network path. The check is applied to a copy, so a caller's own client is
-// never modified.
-func transportProtectedClient(client *http.Client) *http.Client {
-	protected := &http.Client{}
-	if client != nil {
-		protected = &http.Client{
-			Transport:     client.Transport,
-			Jar:           client.Jar,
-			Timeout:       client.Timeout,
-			CheckRedirect: client.CheckRedirect,
-		}
-	}
-
-	inherited := protected.CheckRedirect
-	protected.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= maxRedirects {
-			return fmt.Errorf("stopped after %d redirects", maxRedirects)
-		}
-		if _, err := validateHTTPSURL(req.URL.String(), "redirect target"); err != nil {
-			return err
-		}
-		if inherited != nil {
-			return inherited(req, via)
-		}
-		return nil
-	}
-
-	return protected
-}
+// The redirect chain, the address every hop resolves to, the TLS floor and the
+// response body cap are all the egress policy's ([DefaultEgressPolicy], or what
+// the deployment named instead), applied by the client the policy hands out.
+// This package used to bound the chain itself and re-check each hop's scheme,
+// which was the right rule applied in the wrong place: it never saw an address,
+// so an issuer advertising an https jwks_uri that resolved to 169.254.169.254
+// passed every check it made. See egress.go.
 
 // publicKey is one usable signing key from an issuer's JSON Web Key Set.
 type publicKey struct {
@@ -400,7 +368,7 @@ func discoverJWKSURL(ctx context.Context, client *http.Client, issuer string) (s
 
 	// The key set may live on another host, as it does for several major
 	// providers, but it must still be reachable over a protected transport.
-	if _, err := validateHTTPSURL(document.JWKSURI, "jwks_uri"); err != nil {
+	if _, err := ValidateHTTPSURL(document.JWKSURI, "jwks_uri"); err != nil {
 		return "", fmt.Errorf("discovery document at %q is unusable: %w", discoveryURL, err)
 	}
 
@@ -514,12 +482,14 @@ func fetchJSON(ctx context.Context, client *http.Client, rawURL string, limit in
 		return fmt.Errorf("fetching %q returned status %s", rawURL, response.Status)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	// The policy's own cap is already installed on response.Body, below this
+	// call, so an oversized body fails whatever a caller reaches for. This
+	// narrows it further to what a document of this kind can plausibly be, and
+	// [netpolicy.ReadLimited] is the one implementation of "read this much and
+	// no more" rather than a second one spelled here.
+	body, err := netpolicy.ReadLimited(response.Body, limit)
 	if err != nil {
 		return fmt.Errorf("unable to read %q: %w", rawURL, err)
-	}
-	if int64(len(body)) > limit {
-		return fmt.Errorf("response from %q exceeds %d bytes", rawURL, limit)
 	}
 
 	if err := json.Unmarshal(body, into); err != nil {

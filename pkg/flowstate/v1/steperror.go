@@ -114,6 +114,15 @@ func StepErrorText(err error) string {
 		return err.Error()
 	}
 
+	// A cause that already names the task in its own words — a task-shape policy
+	// denial — is rendered as itself rather than under a `task %q failed (%s):`
+	// frame that would name the task a second time (#184, #899). The kind still
+	// travels structurally (recordedStepKind), and the denial's own sentence is
+	// self-describing, so nothing a reader needs is lost by dropping the frame.
+	if selfNamesTask(taskErr.Err) {
+		return taskErr.Err.Error() + cause
+	}
+
 	if taskErr.Kind == "" {
 		return fmt.Sprintf("task %q failed: %v%s", taskErr.Task, taskErr.Err, cause)
 	}

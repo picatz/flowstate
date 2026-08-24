@@ -1,19 +1,20 @@
-# The same boundary http-expect's own test file names applies here: `outputs:`
-# is an input the http *task* evaluates against `response`, so a stub — which
-# replaces the task — is what decides this step's outputs, and taskFuncHTTP's
-# own tests own the shaping itself.
+# Two cases, because a stub answers this step in two different currencies and
+# the difference is the example's own subject. `returns:` supplies the shaped
+# outputs directly — the task is replaced, shaping included — which is right
+# for a case about what *later steps* read. `response:` supplies the raw
+# response and the task then evaluates the shaping above over it for real
+# (#925), which is what makes the `json_parse(response.body)` expression —
+# the exact place a path typo lives — something this file exercises rather
+# than something only taskFuncHTTP's own tests ever run.
 #
-# What is entirely this file's, and what this case pins, is the *other* half of
-# the example and the half a reader gets wrong: the two spellings are different
-# things. `response.body` is read inside the step; `steps.web.body` is read
-# afterwards — and when a step shapes its outputs, `body` is no longer among
-# them. So the case gives `web` exactly the three shaped names and asserts that
-# `report` composes its sentence from all three, including `source`, which comes
-# from `vars.source` rather than from the response at all.
-#
-# `title` and `source` are deliberately not the values the real endpoint or the
-# real var carry, so a `report` that read anything else — a default output, or
-# the var directly rather than the step's — reaches no stub.
+# The first case pins the half a reader gets wrong: the two spellings are
+# different things. `response.body` is read inside the step; `steps.web.body`
+# is read afterwards — and when a step shapes its outputs, `body` is no longer
+# among them. So the case gives `web` exactly the three shaped names and
+# asserts that `report` composes its sentence from all three, including
+# `source`, which comes from `vars.source` rather than from the response at
+# all. `title` and `source` are deliberately not the values the real endpoint
+# or the real var carry, so a `report` that read anything else reaches no stub.
 edition: v2026.3
 tests:
   - name: a later step reads only the shaped names the step reported
@@ -26,6 +27,27 @@ tests:
           source: catalog
       - task: log
         where: inputs.message == 'got 204 for Sample Slide Show from catalog'
+        returns: {}
+    expect:
+      ran: [web, report]
+
+  - name: the shaping itself runs over a declared response
+    workflow: ./workflow.yaml
+    stubs:
+      # A structured `body:` is encoded as its JSON — the shape a JSON API
+      # answers with — and the step's own `outputs:` expressions then run over
+      # it: the json_parse picks the title out, `${response.status_code}`
+      # reads the declared status, and `${vars.source}` still comes from the
+      # file. Misspell a path in the shaping above and this case fails, which
+      # no `returns:` stub could notice.
+      - step: web
+        response:
+          status_code: 200
+          body:
+            slideshow:
+              title: Declared Slide Show
+      - task: log
+        where: inputs.message == 'got 200 for Declared Slide Show from catalog'
         returns: {}
     expect:
       ran: [web, report]

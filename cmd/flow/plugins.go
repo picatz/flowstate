@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	"github.com/picatz/flowstate/internal/covbuild"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -52,7 +54,8 @@ type pluginFlags struct {
 	// schemes, when non-empty, is the secret schemes a plugin may claim.
 	schemes []string
 
-	// allowInsecureDirs permits a world-writable plugin directory. There is one
+	// allowInsecureDirs permits a plugin directory other users can write to,
+	// group-writable as well as world-writable. There is one
 	// legitimate use — a container image whose whole filesystem is 0777 and whose
 	// only user is root — and no other one.
 	allowInsecureDirs bool
@@ -70,20 +73,109 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	schemes, _ := cmd.Flags().GetStringArray("plugin-scheme")
 	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
 
-	if len(dirs) == 0 {
-		dirs = splitSearchPath(os.Getenv(pluginSearchPathEnv))
+	// The $FLOWSTATE_PLUGIN_DIR fallback is bound at registration time, in
+	// addPluginFlags, as the flag's own default — not here — so that the
+	// generated CLI reference's environment-mirror detection (which works by
+	// scanning DefValue for a sentinel written through os.Setenv before the
+	// tree is rebuilt) can see it. A read-time fallback here would be invisible
+	// to that scan the same way it was before #725.
+
+	// A saved catalog and a way to launch plugins are two sources of one fact,
+	// and this is the only place that sees all of them — so the refusal is here,
+	// before [startPlugins] can bring a single process up behind a catalog the
+	// caller asked to be checked against (#710). See
+	// [errPluginCatalogAndLaunch] for why only flags given on the command line
+	// count, and why an ambient $FLOWSTATE_PLUGIN_DIR loses to an explicit
+	// --plugin-catalog rather than refusing the run.
+	if pluginCatalogPath(cmd) != "" {
+		var named []string
+		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
+			if cmd.Flags().Changed(name) {
+				named = append(named, "--"+name)
+			}
+		}
+		if len(named) > 0 {
+			return pluginFlags{}, newUsageError(fmt.Errorf(
+				"%w: %s launches plugins and --%s reads what they said without launching anything; "+
+					"pass one of them",
+				errPluginCatalogAndLaunch, strings.Join(named, " and "), pluginCatalogFlag))
+		}
+
+		// Nothing is launched behind a catalog. An ambient search path is
+		// dropped here rather than left to [pluginFlags.configured], so that
+		// every later question about this invocation — whether to open a host,
+		// whether a --plugin pin has somewhere to look — is answered by the
+		// source the command line chose.
+		return pluginFlags{}, nil
 	}
 
 	// Resolved here rather than left to fail inside the host, because the message
 	// a person needs names the path they typed and the directory it resolved
 	// against, and by the time the host sees it only the first half survives.
+	//
+	// Except where the working directory is not the command's to trust: see
+	// [commandLinePluginsOnly]. There a relative path is refused rather than
+	// resolved, because the directory it would resolve against is one the
+	// workspace chose.
+	editorOnly := commandLinePluginsOnly(cmd)
 	absolute := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
+		if editorOnly {
+			if !filepath.IsAbs(dir) {
+				return pluginFlags{}, newUsageError(fmt.Errorf(
+					"--plugin-dir %q is relative, and %s resolves it against the directory the "+
+						"editor started this process in — which is the workspace, so a repository "+
+						"somebody cloned would choose what their editor executes: pass an absolute "+
+						"path such as %q",
+					dir, cmd.Name(), filepath.Join(string(filepath.Separator), "opt", "flowstate", "plugins")))
+			}
+			absolute = append(absolute, dir)
+
+			continue
+		}
+
 		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return pluginFlags{}, fmt.Errorf("resolving plugin directory %q: %w", dir, err)
 		}
 		absolute = append(absolute, abs)
+	}
+
+	// A pin with nowhere to look is refused here, not silently ignored.
+	//
+	// --plugin is the one plugin flag that makes a *promise*: its own help says a
+	// name with no binary behind it is an error rather than a silent omission,
+	// because a deployment that pinned a set expects that set. That promise is
+	// kept inside the host — which never runs when there is no search path, since
+	// [pluginFlags.configured] is a question about directories and
+	// [startPlugins] returns early on it. So `--plugin example` with no
+	// --plugin-dir and no $FLOWSTATE_PLUGIN_DIR launched nothing and said nothing:
+	// the exact "silently half-configured" state every other refusal on this path
+	// exists to prevent, and on `flow fix` a rewrite of a plugin's steps as though
+	// they were ordinary ones (#835 review).
+	//
+	// A usage error, because it is one: nothing ran, and the command line asked
+	// for two things that do not fit together.
+	//
+	// Deliberately only --plugin. --plugin-scheme and --allow-insecure-plugin-dir
+	// narrow or widen what a search path may do, so with no search path they
+	// restrict an empty set, which is vacuous rather than unmet. --plugin names
+	// something that must come up.
+	//
+	// The remedy differs by trust: an editor process does not read
+	// $FLOWSTATE_PLUGIN_DIR at all, so offering it would send someone to set a
+	// variable this command ignores — a diagnostic that names a fix which does
+	// not work is worse than a shorter one.
+	if len(absolute) == 0 && len(only) > 0 {
+		remedy := "pass --plugin-dir <directory> as well, or set $" + pluginSearchPathEnv
+		if editorOnly {
+			remedy = "pass --plugin-dir <absolute directory> as well"
+		}
+
+		return pluginFlags{}, newUsageError(fmt.Errorf(
+			"--plugin %s names a plugin that must launch, and there is nowhere to look for it: "+
+				"%s. A pinned plugin is never quietly skipped",
+			strings.Join(only, ", "), remedy))
 	}
 
 	return pluginFlags{
@@ -93,6 +185,16 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 		allowInsecureDirs: allowInsecure,
 	}, nil
 }
+
+// ambientPluginSearchPath is what the environment says the search path is,
+// unsplit and unresolved.
+//
+// A function rather than an [os.Getenv] call at each site, so this file stays
+// the one place that reads $FLOWSTATE_PLUGIN_DIR — which is what the env-var
+// reference's `read:` column names, and what
+// docsgen's TestEveryDocumentedReadLocationIsWhereItIsRead checks. A second
+// reader elsewhere sends anyone following that column to the wrong file.
+func ambientPluginSearchPath() string { return os.Getenv(pluginSearchPathEnv) }
 
 // splitSearchPath splits a path-list environment variable, dropping empties.
 //
@@ -116,6 +218,12 @@ func splitSearchPath(value string) []string {
 // Worth a method rather than a length check at each call site: no search path is
 // the overwhelmingly common case, and it must cost nothing — a host opened over
 // no directories would launch nothing and still be a lifecycle to get wrong.
+//
+// It is a question about directories only, and that is safe *because*
+// [pluginFlagsOf] refuses a --plugin pin with no search path before ever
+// building one of these. Without that refusal this method answers "nothing was
+// asked for" to a command line that named a plugin, which is how a pin came to
+// be silently skipped.
 func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 
 // host builds a host for these flags. The caller owns closing it.
@@ -127,12 +235,22 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		PermittedSchemes:        f.schemes,
 		HostVersion:             version,
 		Logger:                  logger,
+		// pluginEnv (pkg/flowstate/v1/plugin/launch.go) deliberately strips a
+		// launched plugin down to the protocol variables plus whatever an
+		// operator names here — GOCOVERDIR is not ambient by design. Forward
+		// it only when it is set on this process, which is only ever true
+		// under `make coverage` (see internal/covbuild); an ordinary `flow
+		// worker` or `flow mcp` run never sets GOCOVERDIR and this is a no-op.
+		// Without it, a coverage-instrumented plugin binary launched through
+		// this host writes nothing, and #519's plugin blind spot stays closed
+		// only for the tests that build their own Config.Env by hand.
+		Env: covbuild.Env(),
 	})
 }
 
 // addPluginFlags declares them on a command.
 func addPluginFlags(cmd *cobra.Command) {
-	cmd.Flags().StringArray("plugin-dir", nil,
+	cmd.Flags().StringArray("plugin-dir", splitSearchPath(os.Getenv(pluginSearchPathEnv)),
 		"directory to discover plugins in, repeatable, in precedence order "+
 			"(default $"+pluginSearchPathEnv+")")
 	cmd.Flags().StringArray("plugin", nil,
@@ -141,6 +259,75 @@ func addPluginFlags(cmd *cobra.Command) {
 		"secret reference scheme a plugin may claim, repeatable (default: any)")
 	cmd.Flags().Bool("allow-insecure-plugin-dir", false,
 		"permit a plugin directory other users can write to, which lets them choose what this worker runs")
+}
+
+// pluginTrustAnnotation marks a command that does not trust its surroundings to
+// choose the code it launches, and [pluginTrustCommandLineOnly] is its one
+// value. Two questions are settled by it: whether $FLOWSTATE_PLUGIN_DIR is
+// bound as the search path's default, and whether a relative --plugin-dir
+// resolves or is refused.
+//
+// It travels on the command rather than being handed to [pluginFlagsOf] as a
+// second argument, and that is the point. The narrower help text and the
+// narrower behaviour are then one decision written once: the first version of
+// this change had them as two, so `flow lsp --help` printed a
+// "(default [...])" taken from an environment variable the command had stopped
+// reading — a command contradicting its own help, in the one place where the
+// help is all an operator has.
+const (
+	pluginTrustAnnotation      = "flowstate.io/plugin-trust"
+	pluginTrustCommandLineOnly = "command-line-only"
+)
+
+// commandLinePluginsOnly reports whether cmd was registered with
+// [addEditorPluginFlags].
+func commandLinePluginsOnly(cmd *cobra.Command) bool {
+	return cmd.Annotations[pluginTrustAnnotation] == pluginTrustCommandLineOnly
+}
+
+// addEditorPluginFlags declares the same four flags [addPluginFlags] does, then
+// narrows the two things an editor process may not let its surroundings decide.
+//
+// A narrowing on top of the one registration rather than a second reader beside
+// it: `flow lsp` still takes exactly the flags `flow worker` takes, still
+// refuses a --plugin pin with nowhere to look, and still reports a search path
+// the same way — the review of the first version of this change found a
+// parallel `lspPluginFlagsOf` that had quietly dropped that pin refusal, which
+// is the "silently half-configured" state #835 exists to prevent, reachable
+// again on this one path.
+//
+// What is narrowed:
+//
+//   - The environment is not bound as the search path's default. An editor
+//     hands the language server whatever environment the desktop session has,
+//     which is not a command line a person wrote for this process.
+//   - A relative --plugin-dir is refused rather than resolved, in
+//     [pluginFlagsOf], because the working directory an editor starts a
+//     language server in is the opened workspace.
+//
+// Both are the same claim in two places: the operator's command line is the
+// whole of the opt-in, and a cloned repository does not get a vote.
+func addEditorPluginFlags(cmd *cobra.Command) {
+	addPluginFlags(cmd)
+
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[pluginTrustAnnotation] = pluginTrustCommandLineOnly
+
+	dir := cmd.Flags().Lookup("plugin-dir")
+
+	// Cleared through the flag's own value, so `--help`, `GetStringArray` and
+	// the generated CLI reference all read one answer. DefValue is what cobra
+	// prints as "(default …)", and "[]" is the zero value pflag suppresses.
+	if slice, ok := dir.Value.(pflag.SliceValue); ok {
+		_ = slice.Replace(nil)
+	}
+	dir.DefValue = dir.Value.String()
+
+	dir.Usage = "absolute directory to discover plugins in, repeatable, in precedence order; " +
+		"a relative path is refused and $" + pluginSearchPathEnv + " is not read, because an " +
+		"editor starts this process in the workspace"
 }
 
 // runPlugins implements the plugins sub-command.
@@ -235,6 +422,17 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 		for _, task := range p.GetTasks() {
 			fmt.Fprintf(out, "\n  %s\n    %s\n", theme.Accent.Render(task.GetName()), task.GetSummary())
 
+			// The two claims that change what this task can see, in words an
+			// operator can act on rather than a field an operator has to already
+			// know to go looking for (#712). Printed here, ahead of the
+			// input/output tables, because they are trust posture rather than
+			// shape: a reviewer deciding whether to trust this task reads these
+			// two lines before they read what it takes.
+			if secretInputs := task.GetSecretInputs(); len(secretInputs) > 0 {
+				fmt.Fprintf(out, "    accepts a secret in: %s\n", strings.Join(secretInputs, ", "))
+			}
+			fmt.Fprintf(out, "    receives prior step outputs: %s\n", yesNo(task.GetNeedsScope()))
+
 			if err := writeFields(out, theme, surface.Caps.Width, []fieldGroup{
 				{label: "inputs", fields: inputFields(task.GetInputs())},
 				{label: "outputs", fields: inputFields(task.GetOutputs())},
@@ -250,6 +448,15 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 		"This is what a worker with the same --plugin-dir would bring up, not the state of one already running."))
 
 	return nil
+}
+
+// yesNo renders a bool the way an operator reads a trust-posture line, rather
+// than as a Go zero value.
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 // pluginLogger sends host events and plugin stderr to the account stream.
@@ -312,12 +519,15 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 // it until the process exits, which is the only lifecycle this supports and the
 // only one it needs.
 func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.PluginCatalog, func(), error) {
-	noop := func() {}
-
 	flags, err := pluginFlagsOf(cmd)
 	if err != nil {
-		return nil, noop, err
+		return nil, func() {}, err
 	}
+	return startPluginsWithFlags(cmd, secretProviders, flags)
+}
+
+func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry, flags pluginFlags) (*v1.PluginCatalog, func(), error) {
+	noop := func() {}
 
 	if !flags.configured() {
 		return nil, noop, nil

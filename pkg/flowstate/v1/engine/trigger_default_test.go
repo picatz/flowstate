@@ -12,7 +12,7 @@ import (
 )
 
 // What a durable run reports when its state records no trigger — the other half
-// of the one asymmetry [tests.TriggerContextCases] deliberately leaves out.
+// of the one asymmetry [conformance.TriggerContextCases] deliberately leaves out.
 //
 // Every entry path in this repository records one now, so a state with none is a
 // run that started before the field existed. Empty is the honest answer for it,
@@ -37,7 +37,7 @@ func TestARunRecordingNoTriggerReadsEmptyRatherThanFailing(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	// No Trigger field: exactly the state a run started before this field existed
@@ -76,7 +76,7 @@ func TestARunRecordingAnUnknownTriggerKindIsRefused(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
