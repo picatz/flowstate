@@ -124,3 +124,29 @@ tests:
 
 	flowtesting.RunFile(t, path, flowtesting.WithSchedules(dst.Budget{Schedules: 2}))
 }
+
+// TestATableRunsEachRowAsItsOwnSubtest: a table file (#924 slice 2) reaches
+// this bridge already flattened — flowtest expands rows at load — so the
+// bridge needs no notion of a table, and each row is simply a case with a
+// `/` in its name. That `/` is what `go test -run` reads as another level,
+// which [TestARowsNameSurvivesAsANestedSubtestPath] pins directly.
+func TestATableRunsEachRowAsItsOwnSubtest(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "workflow.yaml"), greetWorkflow)
+	path := write(t, filepath.Join(dir, "workflow.test.yaml"), `
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the entry
+    expect:
+      ran: [hello]
+    cases:
+      - name: the first row
+      - name: the second row
+`)
+
+	flowtesting.RunFile(t, path)
+}
