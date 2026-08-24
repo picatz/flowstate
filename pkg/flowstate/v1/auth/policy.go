@@ -1135,8 +1135,12 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, rawURL, err)
 	}
 
-	if parsed.Host == "" {
-		return nil, fmt.Errorf("%s %q must include a host", field, rawURL)
+	// Hostname, not Host: Host keeps a bare port (url.Parse("https://:443/x")
+	// yields Host == ":443", Hostname() == ""), so testing Host here would
+	// accept a URL that names no host and disagree with the isLoopbackHost
+	// check below, which already uses Hostname().
+	if parsed.Hostname() == "" {
+		return nil, fmt.Errorf("%s %q must name a host, such as %q", field, rawURL, "https://example.com")
 	}
 
 	// Credentials in an issuer or key set URL would be sent on every fetch and
