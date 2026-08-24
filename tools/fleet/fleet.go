@@ -110,17 +110,40 @@ const (
 type Machine struct {
 	Cores int
 
-	// Load1 is -1, and MemoryFree 0, when the platform does not report them.
+	// Load1 is -1 when the platform does not report a load average.
 	//
-	// Both mean "unknown", and unknown must not read as "none": a macOS box has
-	// no /proc/meminfo, and treating that as zero free memory made the memory
-	// bound win every time and the tool answer zero lanes forever, on every
-	// machine it could not measure. Unknown is therefore unbounded — the plan
-	// falls back to the resources it can see — and the printed line says which
+	// Unknown must not read as "none": a macOS box has no /proc/loadavg, and
+	// treating that as an idle machine would hand out lanes on the strength of
+	// a figure nobody measured. Unknown is therefore unbounded — the plan falls
+	// back to the resources it can see — and the printed line says which
 	// figures were unavailable rather than quietly presenting a partial answer
 	// as a whole one.
-	Load1      float64
-	MemoryFree uint64
+	Load1 float64
+
+	// MemoryFree is what a lane may actually be given, and MemoryKnown says
+	// whether anything measured it. They are two fields for the same reason
+	// Load1 spends a sentinel on the distinction and LoadIsHostWide carries
+	// scope separately: an unavailable reading and a real reading are
+	// different facts, and a single number cannot hold both.
+	//
+	// The distinction is load-bearing in both directions, and this type used
+	// to make it in neither. Zero previously meant "unknown", which is the
+	// macOS case [TestUnknownIsNotNone] pins — no /proc/meminfo, so treating
+	// the read as zero free memory made the memory bound win every time and
+	// the tool answer zero lanes forever, on every machine it could not
+	// measure. But zero is also a reading a Linux container gives honestly:
+	// a cgroup sitting *at* its memory.max reports exactly no memory free,
+	// and that is the one machine that must be told to dispatch nothing. With
+	// one field the second case was indistinguishable from the first, so the
+	// memory bound switched itself off precisely when it was right — handing
+	// lanes to a container with no memory to run them in, which then OOMs
+	// mid-build and looks to the lane like a defect in its own diff.
+	//
+	// So: MemoryKnown false is unbounded and says so in the advice;
+	// MemoryKnown true with MemoryFree 0 is a hard zero-lane bound named
+	// "memory".
+	MemoryFree  uint64
+	MemoryKnown bool
 
 	// DiskFree is the tightest of the filesystems a lane writes to, which is
 	// not necessarily one: a checkout and GOCACHE can be on different mounts,
@@ -156,8 +179,10 @@ func PlanFor(m Machine) Plan {
 
 	byCPU := (m.Cores - reservedCores) / LaneCores
 
+	// A measured zero is a bound, not a missing fact. Only an unmeasured one
+	// falls back to the other resources; see [Machine.MemoryKnown].
 	byMemory := math.MaxInt32
-	if m.MemoryFree > 0 {
+	if m.MemoryKnown {
 		byMemory = int((m.MemoryFree - min(m.MemoryFree, reservedMemory)) / LaneMemoryBytes)
 	}
 
@@ -204,9 +229,13 @@ func PlanFor(m Machine) Plan {
 			"the shared build cache is %s; `go clean -cache` reclaims it at the price of one cold rebuild per lane",
 			bytes(m.CacheSizeBytes)))
 	}
-	if m.MemoryFree == 0 {
+	if !m.MemoryKnown {
 		plan.Advice = append(plan.Advice,
 			"free memory could not be read on this platform, so the plan is bound by cores and disk alone — treat the count as an upper bound")
+	} else if plan.Lanes == 0 && plan.Bound == "memory" {
+		plan.Advice = append(plan.Advice, fmt.Sprintf(
+			"only %s of memory is free and a lane is budgeted %s: this is a measured reading, not a missing one, so dispatching anyway buys an OOM kill mid-build rather than a slow build. Wait for the running lanes to finish, or raise the container's memory limit",
+			bytes(m.MemoryFree), bytes(LaneMemoryBytes)))
 	}
 	if m.LoadIsHostWide {
 		plan.Advice = append(plan.Advice,
