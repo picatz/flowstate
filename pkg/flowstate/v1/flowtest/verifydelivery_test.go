@@ -35,10 +35,9 @@ func hmacHex(key, payload string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// writeVerifyFixture lays down a workflow whose trigger verifies with the
-// generic HMAC scheme, and a delivery whose signature is computed by this
-// test over the embedded body — genuine unless a caller tampers with it.
-func writeVerifyFixture(t *testing.T, body, signature string) string {
+// writeVerifyWorkflow lays down a workflow whose trigger verifies with the
+// generic HMAC scheme, in a directory of its own.
+func writeVerifyWorkflow(t *testing.T) string {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -61,6 +60,17 @@ steps:
     log:
       message: ${'order ' + inputs.order_id}
 `)
+
+	return dir
+}
+
+// writeVerifyFixture is that workflow beside a delivery whose signature is
+// computed by this test over the embedded body — genuine unless a caller
+// tampers with it.
+func writeVerifyFixture(t *testing.T, body, signature string) string {
+	t.Helper()
+
+	dir := writeVerifyWorkflow(t)
 	writeFile(t, dir+"/delivery.json", fmt.Sprintf(`{
   "headers": {"X-Flowstate-Signature": %q, "X-Request-Id": "r-1"},
   "body": %s
@@ -327,4 +337,74 @@ tests:
 	require.Empty(t, report.GetRefused())
 	c := report.GetCases()[0]
 	assert.True(t, c.GetPassed(), "error: %v / failures: %v", c.GetError(), c.GetFailures())
+}
+
+// TestARawBodyCarriesACapturedBodysExactBytes (Codex, #1109): a sender signs
+// the HTTP body's exact bytes, whitespace included, and an embedded JSON
+// value can never carry the whitespace around one — the decoder owns it. So
+// a captured "  {...}\n" body rides in `raw_body` verbatim, the computed
+// verification signs over exactly those bytes, and the genuine capture
+// verifies offline while its mappings still read the decoded payload.
+func TestARawBodyCarriesACapturedBodysExactBytes(t *testing.T) {
+	t.Parallel()
+
+	captured := "  " + verifiedBody + "\n"
+	dir := writeVerifyWorkflow(t)
+	writeFile(t, dir+"/delivery.json", fmt.Sprintf(`{
+  "headers": {"X-Flowstate-Signature": %q, "X-Request-Id": "r-1"},
+  "raw_body": %q
+}`, hmacHex(fixtureKey, captured), captured))
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: a captured body verifies over its exact bytes
+    workflow: ./workflow.yaml
+    secrets:
+      "env:HOOK_KEY": whsec_fixture_key
+    trigger:
+      webhook: orders
+      payload: ./delivery.json
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      inputs:
+        order_id: ord_9
+      ran: [record]
+`)
+	report := flowtest.RunFile(dir + "/x.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	assert.True(t, c.GetPassed(), "error: %v / failures: %v", c.GetError(), c.GetFailures())
+}
+
+// TestBothBodySpellingsAreRefused: two spellings of one body is the
+// two-sources-of-truth bug as a fixture, and a signature can only be over one
+// byte sequence — refused naming both.
+func TestBothBodySpellingsAreRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := writeVerifyWorkflow(t)
+	writeFile(t, dir+"/delivery.json", fmt.Sprintf(`{
+  "headers": {"X-Request-Id": "r-1"},
+  "body": %s,
+  "raw_body": %q
+}`, verifiedBody, verifiedBody))
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: never gets to a verdict
+    workflow: ./workflow.yaml
+    secrets:
+      "env:HOOK_KEY": whsec_fixture_key
+    trigger:
+      webhook: orders
+      payload: ./delivery.json
+    expect:
+      refused: true
+`)
+	report := flowtest.RunFile(dir + "/x.test.yaml")
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	assert.Contains(t, c.GetError(), "both `body` and `raw_body`")
 }

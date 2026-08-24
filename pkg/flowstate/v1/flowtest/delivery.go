@@ -35,12 +35,24 @@ import (
 // only a body could not exercise the required field at all, and a case would be
 // asserting the easy half of the mapping.
 //
-// The raw bytes of the fixture's `body` value come back beside the decoded
-// delivery, spelled exactly as the fixture spells them, because they are what a
-// computed verification signs over ([replayDelivery]): a signature is over bytes,
-// not over a document, and a re-encoded body differs from the stored one for
-// reasons nobody can see — the identical argument [v1.VerifyWebhookDelivery]
-// makes for the receiver reading its body once.
+// The raw bytes of the body come back beside the decoded delivery, because
+// they are what a computed verification signs over ([replayDelivery]): a
+// signature is over bytes, not over a document, and a re-encoded body differs
+// from the stored one for reasons nobody can see — the identical argument
+// [v1.VerifyWebhookDelivery] makes for the receiver reading its body once.
+//
+// Two spellings carry them, strictly one per fixture. `body` embeds the
+// payload as a JSON value, and its bytes are exactly the fixture's own
+// spelling of that value — the common case, readable in the fixture. What an
+// embedded value can never carry is the whitespace *around* a captured HTTP
+// body: a sender signs `  {"id":1}` followed by a newline as those exact
+// bytes, and a JSON value's decoder owns the surrounding whitespace, so a
+// genuine captured signature would fail offline with nothing visibly wrong
+// (Codex, #1109). `raw_body` is the exact-bytes door for that capture: a JSON
+// string holding the body verbatim, whitespace and all, whose contents must
+// still decode as JSON for the `${event.body...}` mappings. Declaring both is
+// refused naming both, since two spellings of one body is the
+// two-sources-of-truth bug as a fixture.
 //
 // Verified is left false here and set by the case or computed from its bound
 // keys, deliberately: this function knows what arrived, not whether it was
@@ -58,12 +70,24 @@ func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
 	var stored struct {
 		Headers map[string]string `json:"headers"`
 		Body    json.RawMessage   `json:"body"`
+		RawBody *string           `json:"raw_body"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&stored); err != nil {
 		return v1.WebhookDelivery{}, nil, fmt.Errorf(
-			"the delivery %s is not one JSON document with `headers` and `body`: %w", path, err)
+			"the delivery %s is not one JSON document with `headers` and `body` (or `raw_body`): %w", path, err)
+	}
+
+	raw := []byte(stored.Body)
+	if stored.RawBody != nil {
+		if len(stored.Body) > 0 {
+			return v1.WebhookDelivery{}, nil, fmt.Errorf(
+				"the delivery %s declares both `body` and `raw_body`, and a signature can only be over one "+
+					"byte sequence; keep `raw_body` for a captured body's exact bytes, or `body` for a "+
+					"payload this fixture spells itself", path)
+		}
+		raw = []byte(*stored.RawBody)
 	}
 
 	// Numbers read the way a payload reads them rather than as float64s: see
@@ -71,16 +95,16 @@ func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
 	// identical decode so that a replayed delivery and a real one produce the same
 	// value for `"amount": 4200`.
 	var body any
-	if len(stored.Body) > 0 {
-		bodyDecoder := json.NewDecoder(bytes.NewReader(stored.Body))
+	if len(raw) > 0 {
+		bodyDecoder := json.NewDecoder(bytes.NewReader(raw))
 		bodyDecoder.UseNumber()
 		if err := bodyDecoder.Decode(&body); err != nil {
 			return v1.WebhookDelivery{}, nil, fmt.Errorf(
-				"the delivery %s carries a `body` that will not decode: %w", path, err)
+				"the delivery %s carries a body that will not decode: %w", path, err)
 		}
 	}
 
-	return v1.WebhookDelivery{Headers: stored.Headers, Body: v1.NormalizeDeliveryNumbers(body)}, stored.Body, nil
+	return v1.WebhookDelivery{Headers: stored.Headers, Body: v1.NormalizeDeliveryNumbers(body)}, raw, nil
 }
 
 // replayDelivery runs one trigger case up to the point a run would start.
