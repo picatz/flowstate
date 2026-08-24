@@ -307,6 +307,21 @@ func NewRegistry() *Registry {
 	return &Registry{tasks: make(map[string]TaskDef)}
 }
 
+// NewBuiltinRegistry returns a new registry containing only the task
+// definitions Flowstate ships with.
+//
+// Unlike [DefaultRegistry], the returned registry never includes tasks added
+// by plugin hosts or other process-wide extensions. Callers that need an
+// execution capability boundary can therefore add only the custom tasks that
+// particular execution is allowed to use.
+func NewBuiltinRegistry() *Registry {
+	r := NewRegistry()
+	for _, def := range builtinTasks() {
+		r.MustRegister(def)
+	}
+	return r
+}
+
 // Register adds a task definition, replacing any task already registered under
 // the same name.
 //
@@ -393,11 +408,7 @@ func (r *Registry) All() []TaskDef {
 
 // defaultRegistry holds the built-in tasks, populated on first use.
 var defaultRegistry = sync.OnceValue(func() *Registry {
-	r := NewRegistry()
-	for _, def := range builtinTasks() {
-		r.MustRegister(def)
-	}
-	return r
+	return NewBuiltinRegistry()
 })
 
 // DefaultRegistry returns the registry every lookup in the engine reads.

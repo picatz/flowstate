@@ -36,8 +36,9 @@ type RunOptions struct {
 	Inputs map[string]any
 
 	// Tasks is the custom tasks this run may execute, in addition to
-	// whatever this build's [v1.DefaultRegistry] already provides. Left nil,
-	// only the build's own tasks run.
+	// the tasks Flowstate ships with. Left nil, only those built-in tasks run;
+	// tasks installed globally for validation or plugins are not execution
+	// capabilities for this run.
 	//
 	// Reading this set does not require [Tasks.Install] to have been called,
 	// and does not require it to still be installed if it was — see
@@ -102,10 +103,8 @@ type RunOptions struct {
 //
 // # The task registry this run actually executes against
 //
-// Every call builds a fresh [v1.Registry], seeded from
-// [v1.DefaultRegistry]'s current contents — this build's own tasks, plus
-// anything else installed globally in this process, such as another
-// embedder's already-[Tasks.Install]ed set — and then layers the http task
+// Every call builds a fresh [v1.Registry], seeded only with the task
+// definitions Flowstate ships with, and then layers the http task
 // (opts.EgressPolicy's, or [v1.DefaultEgressPolicy]'s when nil) and
 // opts.Tasks on top, before installing the result on the run's context with
 // [v1.NewContextWithRegistry]. Three consequences follow:
@@ -127,6 +126,9 @@ type RunOptions struct {
 //     process (`cmd/flow/egress.go`'s own mutation of [v1.DefaultRegistry],
 //     or another embedder's [Tasks.Install] overriding `http`) has changed
 //     what [v1.DefaultRegistry] itself would have answered.
+//   - Tasks added to [v1.DefaultRegistry] for validation or by a plugin host
+//     are not executable unless they are also present in opts.Tasks. An
+//     install is metadata visibility, not an ambient execution grant.
 //   - Two concurrent RunLocal calls with different opts.Tasks or
 //     opts.EgressPolicy never interfere with each other: each builds and
 //     discards its own registry, and nothing about running one mutates
@@ -136,13 +138,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 		return nil, fmt.Errorf("flowstate/embed: RunLocal: workflow is nil")
 	}
 
-	registry := v1.NewRegistry()
-	for _, def := range v1.DefaultRegistry().All() {
-		if err := registry.Register(def); err != nil {
-			// Every def just came from a registry that already accepted it.
-			return nil, fmt.Errorf("flowstate/embed: RunLocal: copying the default registry: %w", err)
-		}
-	}
+	registry := v1.NewBuiltinRegistry()
 
 	// The http task is always (re-)registered explicitly, never left as
 	// whatever the copy above happened to carry over. Reading it off

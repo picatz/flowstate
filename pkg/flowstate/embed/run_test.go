@@ -7,6 +7,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -256,5 +257,37 @@ steps:
 	got := outputs.GetStepValues()["step1"].GetNamedValues()["result"].GetLiteral().GetInt64Value()
 	if got != 42 {
 		t.Errorf("step1 result = %d, want 42", got)
+	}
+}
+
+func TestRunLocal_DoesNotExecuteAmbientInstalledTask(t *testing.T) {
+	const taskName = "ambient_task"
+	executed := false
+	tasks := NewTasks()
+	if err := tasks.Register(Task{
+		Name: taskName,
+		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+			executed = true
+			return &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	uninstall, err := tasks.Install()
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	defer uninstall()
+
+	workflow, err := flowfile.Unmarshal(echoWorkflowSource(taskName))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	_, runErr := RunLocal(context.Background(), workflow, RunOptions{})
+	if runErr == nil || !strings.Contains(runErr.Error(), "unknown task") {
+		t.Fatalf("RunLocal: error = %v, want unknown task", runErr)
+	}
+	if executed {
+		t.Fatal("RunLocal executed a globally installed task that was not granted in RunOptions.Tasks")
 	}
 }
