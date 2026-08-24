@@ -63,7 +63,7 @@ check:
 	go build ./...
 	go vet ./...
 	$(require-gofmt)
-	@fmt_out="$$($(GOFMT) -l ./cmd ./pkg)" || exit 1; \
+	@fmt_out="$$("$(GOFMT)" -l ./cmd ./pkg)" || exit 1; \
 	if [ -n "$$fmt_out" ]; then \
 		echo "gofmt -l found unformatted files:"; \
 		echo "$$fmt_out"; \
@@ -132,7 +132,7 @@ test-plugins:
 		( cd "$$module" && go build ./... && go vet ./... && \
 			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
-		fmt_out="$$($(GOFMT) -l $$module)" || exit 1; \
+		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
 
@@ -180,7 +180,7 @@ test-fast:
 
 fmt:
 	$(require-gofmt)
-	$(GOFMT) -w ./cmd ./pkg
+	"$(GOFMT)" -w ./cmd ./pkg
 
 # Report what Go's `go fix` modernizers would change, and change nothing
 # (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
