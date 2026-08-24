@@ -654,8 +654,14 @@ tests:
 
 An entry that declares `cases:` does not itself run — it is the template its
 rows are merged over — and each row reports as `<entry name>/<row name>`, the
-two-level identity `t.Run` gives a Go table. `--run` matches that whole name,
-so `--run 'enforced/replica'` selects one row.
+two-level identity `t.Run` gives a Go table.
+
+`--run` takes a regular expression matched against that whole name, which gives
+the `go test -run` behaviour at both levels: a pattern matching only the entry
+half selects every row under it, and one reaching into the row half selects
+one. Against the entry above, `--run 'enforced before'` runs all three rows and
+`--run 'enforced.*/a replica count'` runs one — note the `.*`, since the pattern
+spans the rest of the entry name to reach the `/`.
 
 There is one merge rule, applied at two levels: **stated beats inherited**.
 `defaults:` fills in what a case did not write, and an entry fills in what its
