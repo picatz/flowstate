@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -137,4 +139,30 @@ defaults:
 	require.Len(t, broken.Diagnostics, 1)
 	assert.Equal(t, codeYAMLSyntax, broken.Diagnostics[0].Code,
 		"a syntax error is still reported, as itself")
+}
+
+// TestABrokenDefaultsFileIsNotAnchoredOnTheSuite (Codex, #1109): a yaml.Error
+// from the sibling testdefaults.yaml carries the DEFAULTS file's position, so
+// mapping it onto this buffer lands a squiggle on an unrelated token, with
+// the parser's bare message hiding which file is broken. It anchors at the
+// suite's document start instead, the message carrying the sibling's path,
+// position and excerpt — the one case the excerpt earns its place, since the
+// editor is not showing that file.
+func TestABrokenDefaultsFileIsNotAnchoredOnTheSuite(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "testdefaults.yaml"),
+		[]byte("defaults:\n  stubs: [\n"), 0o600))
+
+	params := c.open("file://"+dir+"/suite.test.yaml", validSuite)
+	require.Len(t, params.Diagnostics, 1)
+	d := params.Diagnostics[0]
+	assert.Equal(t, codeTestFile, d.Code)
+	assert.Contains(t, d.Message, "testdefaults.yaml",
+		"the message must name the broken sibling file")
+	assert.Equal(t, documentStart, d.Range,
+		"a sibling file's own position must never index this buffer's lines")
 }

@@ -58,6 +58,27 @@ func diagnoseTestDocument(doc *document) []carriedDiagnostic {
 		return set.sorted()
 	}
 
+	// A refusal that originated in the directory's testdefaults.yaml is
+	// carried whole at the top of this document, never through
+	// [yamlDiagnostic]: its yaml.Error position indexes the DEFAULTS file's
+	// lines, so mapped onto this buffer it lands on an unrelated token, with
+	// the parser's bare message hiding which file is broken (Codex, #1109).
+	// The full error keeps the sibling's path, position and rendered excerpt
+	// — the one case where the excerpt earns its place, because the editor
+	// is not showing that file — and the suite's document start is the
+	// honest anchor for a problem fixed in a different buffer.
+	if strings.Contains(err.Error(), flowtest.DirDefaultsName) {
+		set.add(lsp.Diagnostic{
+			Range:    documentStart,
+			Severity: lsp.Error,
+			Source:   diagnosticSource,
+			Code:     codeTestFile,
+			Message:  err.Error(),
+		})
+
+		return set.sorted()
+	}
+
 	// One loader error is the whole report, exactly as one syntax error is
 	// for a workflow: everything the loader checks after the failure point
 	// never ran, and diagnostics for checks that never ran would be guesses.

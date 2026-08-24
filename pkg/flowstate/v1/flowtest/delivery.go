@@ -92,12 +92,24 @@ func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
 		raw = []byte(*stored.RawBody)
 	}
 
+	// An empty body takes the receiver's answer too: decodeDeliveryBody always
+	// decodes, and zero bytes fail it with EOF, so a fixture with no body — an
+	// absent `body`, or `raw_body: ""` — would rehearse a delivery production
+	// refuses, and could even verify an HMAC over the empty sequence on the
+	// way (Codex, #1109). Refused with the guidance the decoder's bare EOF
+	// would not give.
+	if len(raw) == 0 {
+		return v1.WebhookDelivery{}, nil, fmt.Errorf(
+			"the delivery %s carries no body, and the receiver refuses an empty delivery body, so a "+
+				"rehearsal must too; store the payload under `body`, or a captured one under `raw_body`", path)
+	}
+
 	// Numbers read the way a payload reads them rather than as float64s: see
 	// [v1.NormalizeDeliveryNumbers], which the live receiver applies to the
 	// identical decode so that a replayed delivery and a real one produce the same
 	// value for `"amount": 4200`.
 	var body any
-	if len(raw) > 0 {
+	{
 		bodyDecoder := json.NewDecoder(bytes.NewReader(raw))
 		bodyDecoder.UseNumber()
 		if err := bodyDecoder.Decode(&body); err != nil {

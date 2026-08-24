@@ -442,3 +442,40 @@ tests:
 	require.False(t, c.GetPassed(), "a two-document body must be a fixture mistake, not a verdict")
 	assert.Contains(t, c.GetError(), "more than one JSON document")
 }
+
+// TestAnEmptyBodyIsRefused (Codex, #1109): the receiver always decodes the
+// body and zero bytes fail it with EOF, so a fixture with no body — absent
+// `body`, or `raw_body: ""` — rehearses a delivery production refuses, and
+// could even verify an HMAC over the empty sequence on the way.
+func TestAnEmptyBodyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for name, delivery := range map[string]string{
+		"absent body":    fmt.Sprintf(`{"headers": {"X-Flowstate-Signature": %q}}`, hmacHex(fixtureKey, "")),
+		"empty raw_body": fmt.Sprintf(`{"headers": {"X-Flowstate-Signature": %q}, "raw_body": ""}`, hmacHex(fixtureKey, "")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := writeVerifyWorkflow(t)
+			writeFile(t, dir+"/delivery.json", delivery)
+			writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: never gets to a verdict
+    workflow: ./workflow.yaml
+    secrets:
+      "env:HOOK_KEY": whsec_fixture_key
+    trigger:
+      webhook: orders
+      payload: ./delivery.json
+    expect:
+      refused: true
+`)
+			report := flowtest.RunFile(dir + "/x.test.yaml")
+			require.Len(t, report.GetCases(), 1)
+			c := report.GetCases()[0]
+			require.False(t, c.GetPassed(), "an empty body must be a fixture mistake, not a verdict")
+			assert.Contains(t, c.GetError(), "carries no body")
+		})
+	}
+}
