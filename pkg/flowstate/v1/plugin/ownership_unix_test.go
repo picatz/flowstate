@@ -19,7 +19,7 @@ func ownedBy(t *testing.T, uid uint32) {
 	t.Helper()
 
 	original := pathOwner
-	pathOwner = func(fs.FileInfo) (uint32, bool) { return uid, true }
+	pathOwner = func(string, fs.FileInfo) (uint32, bool) { return uid, true }
 	t.Cleanup(func() { pathOwner = original })
 }
 
@@ -70,9 +70,9 @@ func TestDiscoverRefusesAPathOwnedByAnotherUser(t *testing.T) {
 		// first, so a seam that answered for every path would make this pass
 		// without the binary's own check running.
 		original := pathOwner
-		pathOwner = func(info fs.FileInfo) (uint32, bool) {
+		pathOwner = func(path string, info fs.FileInfo) (uint32, bool) {
 			if info.IsDir() {
-				return original(info)
+				return original(path, info)
 			}
 
 			return other, true

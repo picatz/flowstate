@@ -11,9 +11,11 @@ import (
 // and versions, never anything a plugin resolved.
 var (
 	// ErrSearchPath reports that a configured plugin directory cannot be used —
-	// it is relative, or it is writable by users other than this one. A
-	// directory of plugin binaries is a directory of things this process will
-	// execute, so an unsafe one is refused rather than scanned.
+	// it is relative, it is owned by or writable by users other than this one,
+	// or a directory on the path leading to it is. A directory of plugin
+	// binaries is a directory of things this process will execute, so an unsafe
+	// one is refused rather than scanned, and a path somebody else can redirect
+	// is the same thing one level up.
 	ErrSearchPath = errors.New("plugin: unusable search path")
 
 	// ErrHandshake reports that a launched process did not announce itself in

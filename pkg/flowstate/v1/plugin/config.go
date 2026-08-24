@@ -209,11 +209,14 @@ type Config struct {
 	SearchPath []string
 
 	// AllowInsecureSearchPath permits a search path directory that other users
-	// can write to.
+	// can write to or own — and, since #972, one reached through a path they
+	// can. It is one decision rather than three: a deployment that has said out
+	// loud it accepts an untrusted search path should not then meet a further
+	// refusal it cannot turn off.
 	//
-	// What that means is that any user who can write to that directory chooses
-	// what code this worker runs, with the worker's credentials and network
-	// reach. There is a legitimate use — a container image where the whole
+	// What that means is that any user who can write to that directory, or to
+	// any directory on the way to it, chooses what code this worker runs, with
+	// the worker's credentials and network reach. There is a legitimate use — a container image where the whole
 	// filesystem is 0777 and the only user is root — and no other one. Setting
 	// it because discovery refused a directory is the wrong fix; fixing the
 	// directory's mode is the right one.

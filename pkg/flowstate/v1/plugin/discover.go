@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/picatz/flowstate/internal/pathsec"
 )
 
 // BinaryPrefix is what a plugin executable's name begins with. The rest of the
@@ -77,6 +79,9 @@ func Discover(cfg Config) ([]Found, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := checkPathAncestry(dir, cfg.AllowInsecureSearchPath); err != nil {
+			return nil, err
+		}
 		if !decidable {
 			warnOwnershipUnchecked(log, dir)
 		}
@@ -114,6 +119,13 @@ func Discover(cfg Config) ([]Found, error) {
 			}
 
 			if _, err := checkPathIsTrusted(info, path, cfg.AllowInsecureSearchPath); err != nil {
+				return nil, err
+			}
+			// Walked as well as checked, because os.Stat above followed any
+			// symbolic link: what gets executed is the target, and the
+			// directories leading to a target outside this search path entry
+			// are not ones the walk of dir has seen.
+			if err := checkPathAncestry(path, cfg.AllowInsecureSearchPath); err != nil {
 				return nil, err
 			}
 
@@ -236,7 +248,7 @@ func checkPathIsTrusted(info fs.FileInfo, path string, allow bool) (decidable bo
 		)
 	}
 
-	trusted, decidable := ownedByTrustedUser(info)
+	trusted, decidable := ownedByTrustedUser(path, info)
 	if allow || !decidable || trusted {
 		return decidable, nil
 	}
@@ -244,6 +256,60 @@ func checkPathIsTrusted(info fs.FileInfo, path string, allow bool) (decidable bo
 	return true, fmt.Errorf(
 		"%w: %q is owned by another user, who can replace it whatever its permission bits say, and so chooses what this worker executes; install it as root or as this service's own identity, or set AllowInsecureSearchPath if this is a single-user image",
 		ErrSearchPath, path,
+	)
+}
+
+// checkPathAncestry refuses a path whose *ancestors* somebody else can
+// replace, which the two checks above cannot see (#972).
+//
+// [checkPathIsTrusted] asks who owns a path and who may write it. Neither
+// question reaches one level up: an `/opt` owned by an untrusted uid lets that
+// uid rename `/opt/plugins` and put its own directory there, whatever the
+// permissions on the directory that used to be at that path — so the search
+// path entry this process reads is that uid's choice, and every binary in it
+// with it. It is the argument [checkPathIsTrusted] already makes about owning
+// the leaf, applied to each component of the path leading to it.
+//
+// The walk is [pathsec.Checker.Check], which is `cmd/flow`'s ACME cache walk
+// lifted into a package both can import rather than a second implementation
+// beside it: it resolves the path the way the kernel does, component by
+// component and through symbolic links, and took two corrections (#735, #736)
+// to fit real deployments. An ACME account key and a directory of programs
+// this worker executes are not stakes that warrant two different standards.
+//
+// The leaf keeps its own, stricter rule rather than deferring to the walk's:
+// [pathsec] exempts a sticky directory, because on one the kernel lets only an
+// entry's owner rename it — which protects an *ancestor* and does nothing for
+// a search path entry, where the attack is adding a
+// `flowstate-plugin-anything` of one's own rather than renaming what is there.
+// So both run, and the leaf's refusal is reported first because it is the one
+// an operator can usually fix with a chmod.
+//
+// [Config.AllowInsecureSearchPath] covers this refusal for the reason it
+// covers the other two: a deployment that has said out loud it accepts an
+// untrusted search path should not then meet a third refusal it cannot turn
+// off.
+//
+// A platform that cannot decide answers [pathsec.ErrUnsupported], which is not
+// a refusal — [warnOwnershipUnchecked] is what tells the operator that half of
+// this did not run.
+func checkPathAncestry(path string, allow bool) error {
+	if allow {
+		return nil
+	}
+
+	err := newPathChecker().Check(path)
+	switch {
+	case err == nil, errors.Is(err, pathsec.ErrUnsupported):
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%w: %q cannot be resolved safely: %w; whoever can replace a directory on the way to a "+
+			"plugin directory chooses what this worker executes, whatever the permissions on the "+
+			"directory itself; install plugins under a path owned by root or by this service's own "+
+			"identity, or set AllowInsecureSearchPath if this is a single-user image",
+		ErrSearchPath, path, err,
 	)
 }
 
