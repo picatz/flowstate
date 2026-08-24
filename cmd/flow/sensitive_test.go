@@ -131,18 +131,23 @@ func TestRedactGetResponsePrecisionWithSpec(t *testing.T) {
 }
 
 // TestRedactGetResponseNilAndEmptyPassThrough checks the boring paths a fail-open
-// mistake likes to hide in: a nil response, and a response carrying neither run
-// outputs nor a step transcript, must pass through unchanged rather than panic
-// or fabricate a document.
+// mistake likes to hide in: a nil response, and a response with nothing in it to
+// withhold, must come back unchanged rather than panic or fabricate a document.
 //
-// "Neither", not "no run outputs" — that is the whole of the bug the test below
-// this one pins. A response with a transcript and nil run outputs has something
-// to withhold.
+// It used to assert pointer identity here, on the strength of a field-presence
+// guard that returned the input when it saw no run outputs and no transcript.
+// That guard is gone (#975): it did not know about [v1.GetResponse.EntityState],
+// so it returned a RUNNING entity's carried state untouched, and a guard that
+// lists the fields carrying values fails open every time somebody adds one. What
+// is asserted instead is the property the identity was standing in for — the
+// answer says the same thing — which is also the property that survives the next
+// field being added.
 func TestRedactGetResponseNilAndEmptyPassThrough(t *testing.T) {
 	require.Nil(t, redactGetResponse(nil, nil, false))
 
 	response := &v1.GetResponse{Status: v1.RunResponse_STATUS_RUNNING}
-	require.Same(t, response, redactGetResponse(response, nil, false))
+	require.True(t, proto.Equal(response, redactGetResponse(response, nil, false)),
+		"a response with nothing to withhold must come back saying exactly what it said")
 }
 
 // TestRedactGetResponseWithholdsATranscriptItCannotCheck is the fail-closed
