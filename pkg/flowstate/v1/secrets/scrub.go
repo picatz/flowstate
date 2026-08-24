@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,9 +43,10 @@ import (
 //
 // Each registered secret is matched as its literal value and as the encodings a
 // value picks up in transit: percent-encoding with either upper or lower case
-// escapes, base64 in the standard and URL alphabets with and without padding, and
-// hex in either case. Matches are replaced with [Redacted], longest first, so an
-// encoded form that contains a shorter one does not leave a fragment behind.
+// escapes, JSON string escaping, base64 in the standard and URL alphabets with
+// and without padding, and hex in either case. Matches are replaced with
+// [Redacted], longest first, so an encoded form that contains a shorter one does
+// not leave a fragment behind.
 //
 // It is best effort by construction and not a substitute for keeping a revealed
 // value close to its use. A value that has been transformed some other way —
@@ -234,8 +236,10 @@ func (s *Scrubber) MarshalJSON() ([]byte, error) {
 // encodedForms returns the value and the encodings it might appear as.
 func encodedForms(value string) []string {
 	forms := []string{value}
+	jsonString, _ := json.Marshal(value) // encoding a string cannot fail
 
 	candidates := []string{
+		string(jsonString[1 : len(jsonString)-1]),
 		url.QueryEscape(value),
 		url.PathEscape(value),
 		lowerPercentEscapes(url.QueryEscape(value)),
