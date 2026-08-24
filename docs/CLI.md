@@ -626,6 +626,128 @@ exercise composition rather than only a single file in isolation; see
 `examples/call-a-workflow/workflow.test.yaml` for a worked case, run in CI by
 the `Example workflows pass their own tests` job.
 
+### One fixture, many rows
+
+The house Go convention is a table: "slice-of-struct tables with a `name` field,
+one `t.Run` per case". A `*.test.yaml` writes the same shape with `cases:`, and
+the shared half is stated once (#924):
+
+```yaml
+defaults:
+  workflow: ./workflow.yaml          # every case in the file, stated once
+tests:
+  - name: a declaration is enforced before the first step runs
+    stubs:
+      - task: http
+        returns: {}
+    expect:
+      failed: true                   # true of every row
+    cases:
+      - name: the required argument is missing
+        expect:
+          error_contains: which service to deploy
+      - name: a replica count above the declared bound
+        inputs: {service: checkout, replicas: 99}
+        expect:
+          error_contains: must satisfy
+```
+
+An entry that declares `cases:` does not itself run — it is the template its
+rows are merged over — and each row reports as `<entry name>/<row name>`, the
+two-level identity `t.Run` gives a Go table.
+
+`--run` takes a regular expression matched against that whole name, which gives
+the `go test -run` behaviour at both levels: a pattern matching only the entry
+half selects every row under it, and one reaching into the row half selects
+one. Against the entry above, `--run 'enforced before'` runs all three rows and
+`--run 'enforced.*/a replica count'` runs one — note the `.*`, since the pattern
+spans the rest of the entry name to reach the `/`.
+
+There is one merge rule, applied at two levels: **stated beats inherited**.
+`defaults:` fills in what a case did not write, and an entry fills in what its
+row did not. `inputs:` and `expect:` merge one level — a row that writes
+`expect.error_contains` keeps the entry's `expect.failed` — while `stubs:`,
+`signals:`, `secrets:` and `trigger:` are inherited whole or replaced whole,
+because their halves are not independently meaningful. A row's stub replaces an
+inherited one for the same target rather than joining it, which is #416's
+identity rule unchanged.
+
+The cost of merging `expect:` field by field, stated plainly: a row cannot
+assert *less* than its entry. An entry that pins `outputs:` pins it for every
+row that does not overwrite it, so an entry should hold only what is true of
+every row. The failure is loud rather than silent — the row fails against a
+value nobody claimed for it.
+
+A table is one level deep. A row that declares its own `cases:` is refused, as
+is an entry whose `cases:` is empty: a file that quietly ran zero cases where
+one was expected is the "green by not running" failure this repository
+legislates against everywhere else. `examples/parameterized-deploy` is the
+worked example, and it runs in CI like the rest.
+
+### What a directory shares: `testdefaults.yaml`
+
+A directory holding several suites states their shared fixture once, in a file beside them (#1072). It holds `vars:` and `defaults:` and nothing else — a `tests:` key is refused with the field named, because that is almost certainly a suite saved under the wrong name — and its name deliberately does not match the `*.test.yaml` discovery glob, so it can never be run as one:
+
+```yaml
+# testdefaults.yaml — shared by every suite in this directory
+vars:
+  issuer: https://issuer.example.com
+defaults:
+  workflow: ./workflow.yaml
+  sender: {subject: approver@example.com, issuer: "${vars.issuer}"}
+```
+
+The chain is directory → file `defaults:` → entry → row, each level filling only what the level below did not state — the same one direction every merge in the format takes, one level further out. Checks accumulate directory-first; everything else the file wins. Exactly the suite's own directory is consulted, never a parent: a suite's behaviour depends on at most two files, both visible in one `ls`. A suite loaded from bytes (the MCP tool) or built in Go has no directory and gets none, the same rule that already governs how those doors resolve a `workflow:` path.
+
+### One value, stated once: `vars:`
+
+A file-level `vars:` block holds the literals a suite states once and references everywhere — a URL, an issuer, a payload fragment (#1072). A fixture position (a case's `inputs:`, a trigger's fields, a scripted `sender:`, `expect.outputs:`) references one as a whole-value `${vars.x}` fence, resolved at load by substitution, so what reaches the run is the literal; a check reads `vars.x` at evaluation. A var may hold a structure, and it lands whole in a position that wants one:
+
+```yaml
+vars:
+  issuer: https://issuer.example.com
+  order: {id: ord_123, region: eu-west-1}
+tests:
+  - name: the order is stated once
+    inputs: {order: "${vars.order}"}
+    signals:
+      - name: approve
+        sender: {subject: approver@example.com, issuer: "${vars.issuer}"}
+    expect:
+      check:
+        - steps.join.value.region == vars.order.region
+```
+
+Literals only, for now: any `${` inside a var is refused, including a reference to another var, so there is no evaluation order and no cycles — and a mixed string (`"https://${vars.host}/v1"`) is refused too, because a partial substitution would be a template language this file deliberately is not. Build combined text in the workflow, or state it literally.
+
+**One asymmetry, stated because it is load-bearing**: inside a stub's `where:` and `returns:`, `vars.` keeps meaning the *workflow's* own `vars:` block — those expressions evaluate against the run's scope, and a load-time substitution there would silently hijack that meaning. A stub speaks the run's language; everywhere else in the test file, `vars.` is the file's.
+
+### Claims the named fields cannot say: `expect.check:`
+
+`ran:`, `outputs:` and the other named fields assert structure, and they stay the idiomatic spelling for it — they feed coverage and read the transcript's record. `expect.check:` is for everything else: a shape claim over an output, an error that must name its step, a relation between two steps' values. Each entry is a bare CEL predicate over the finished run — `steps.*`, `inputs.*`, and a `run` root carrying `failed`, `error` and `local` — or `{that:, because:}` to add the sentence a failure prints:
+
+```yaml
+expect:
+  ran: [plan, join]
+  check:
+    - size(steps.join.value.regions) == 2
+    - that: steps.join.value.regions[0] == inputs.region
+      because: the join must keep the order's own region, not the fleet default
+```
+
+A failing check arrives with its evidence — the values the claim read, re-evaluated once and printed beside it, redacted through the same set the transcript and the stub diagnostics share:
+
+```
+expect.check[1]: check failed: steps.join.value.regions[0] == inputs.region
+           because: the join must keep the order's own region, not the fleet default
+           steps.join.value.regions[0] = "us-east-1"
+           inputs.region = "eu-west-1"
+```
+
+Three rules, all inherited rather than invented. A check is evaluated by the engine's own evaluator under the workflow's profile, so it is cost-bounded exactly as any expression in the run is. It runs whether or not the run failed — an error claim (`run.error.contains('must satisfy')`) exists precisely for failed runs. And across `defaults:` → entry → row, check lists **accumulate** — every level's claims all hold — where the named fields merge by override; predicates union naturally, values cannot.
+
+The loop this closes: `flow test --debug` and `check:` answer from the *same* evaluation — the debugger's `inspect` and a check share the activation, the evaluator and the cost bound — so a claim rehearsed at a breakpoint asserts identically in the file. Stop a case where it surprises you, `inspect` until the expression says what you mean, then paste it under `expect.check:`; the test you debugged becomes the test that guards it.
+
 ### What a stub can see
 
 A stub's `where:` and its `returns:` are evaluated against **the scope the

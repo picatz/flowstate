@@ -111,7 +111,19 @@ func RunFile(path string) *v1.TestReport {
 // file's own directory when one exists; empty refuses any case that needs a
 // path resolved, exactly as [RunSourceContext]'s byte-born cases are refused.
 func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult {
-	file = file.withDefaultsApplied()
+	// Tables expand before defaults fold, the same order [Load] applies to a
+	// parsed file and for the same reason: a row beats its entry, and an
+	// entry beats `defaults:`. A built file skipping expansion would run a
+	// table's template and silently never its rows — the parsed-vs-built
+	// divergence #1015 is about, wearing #924's clothes. On a file Load
+	// already expanded this is a no-op: no surviving entry carries `cases:`.
+	expanded, err := expandTableEntries(file.Tests)
+	if err != nil {
+		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: err.Error()}}
+	}
+	shallow := *file
+	shallow.Tests = expanded
+	file = (&shallow).withDefaultsApplied()
 
 	return runSuite(ctx, file, opts, func(test *Test) (loader, string) {
 		identity := workflowPathIn(dir, test)
@@ -214,7 +226,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// invocations (Codex, #1052, twice).
 				record := !opts.skipTranscript &&
 					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
-				return runCase(ctx, &test, l.deliveryPath, l.load, record)
+				return runCase(ctx, &test, l.deliveryPath, l.load, record, file.Vars)
 			})
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
@@ -496,7 +508,7 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars map[string]any) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -671,7 +683,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// before it reaches any wait step regardless, so nothing here needs to
 	// enforce anything.
 	var policies map[string]*v1.SignalPolicy
-	if bound, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
+	var bound map[string]*v1.Value
+	var sensitive sensitiveInputs
+	if b, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
+		bound = b
 		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
 		if err != nil {
 			result.Error = fmt.Sprintf("resolving workflow %q's signal policy: %v", test.Workflow, err)
@@ -679,15 +694,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		}
 		policies = resolved
 
-		// The transcript's redaction set, built from the same bound inputs
-		// and the same `sensitive:` declarations the stub diagnostics read
-		// ([sensitiveNativeValues]) — one set, so what one surface refuses to
-		// print no other surface prints. A case whose bind fails records no
-		// step events carrying input-derived values: the run fails at the
-		// same bind before any step runs.
-		if recorder != nil {
-			recorder.sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
-		}
+		// The redaction set, built from the same bound inputs and the same
+		// `sensitive:` declarations the stub diagnostics read
+		// ([sensitiveNativeValues]) — one set, shared by the transcript's
+		// recorder and the check witnesses below, so what one surface
+		// refuses to print no other surface prints. A case whose bind fails
+		// records no step events carrying input-derived values: the run
+		// fails at the same bind before any step runs.
+		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
 	}
 
 	// The case's own `secrets:` plaintext joins the set (Codex, #1052):
@@ -699,14 +713,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// the substring backstop catches "Bearer " + secret. An empty value is
 	// skipped — replacing the empty string would mark every position in
 	// every line while protecting nothing.
-	if recorder != nil {
-		for _, value := range test.Secrets {
-			if value == "" {
-				continue
-			}
-			recorder.sensitive.values = append(recorder.sensitive.values, value)
-			recorder.sensitive.substrings = append(recorder.sensitive.substrings, value)
+	for _, value := range test.Secrets {
+		if value == "" {
+			continue
 		}
+		sensitive.values = append(sensitive.values, value)
+		sensitive.substrings = append(sensitive.substrings, value)
+	}
+	if recorder != nil {
+		recorder.sensitive = sensitive
 	}
 
 	// Who this case runs as, for the one question a starter answers locally:
@@ -775,6 +790,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	transcript = outputs
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
+	// The CEL claims (#1072), after the named fields so a report reads
+	// structure first, values second — the order the file states them in.
+	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
 	result.Passed = len(result.Failures) == 0
 
 	// Only for a run that completed: on one that failed, a stub the run never

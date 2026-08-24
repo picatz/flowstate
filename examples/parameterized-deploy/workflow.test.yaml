@@ -13,12 +13,14 @@
 # identical workflows.
 edition: v2026.3
 defaults:
+  # One workflow for every case in the file, stated once (#924): each case
+  # below inherits it, and a case that named its own would keep it.
+  workflow: ./workflow.yaml
   stubs:
     - task: log
       returns: {}
 tests:
   - name: only the required argument is supplied, and every default fills itself in
-    workflow: ./workflow.yaml
     inputs:
       service: checkout
     stubs:
@@ -43,7 +45,6 @@ tests:
       skipped: [note_dry_run]
 
   - name: a dry run announces nothing, and says so on the branch that only exists for it
-    workflow: ./workflow.yaml
     inputs:
       service: checkout
       region: us-east-1
@@ -63,37 +64,37 @@ tests:
       # statement than `skipped:` alone.
       skipped: [announce]
 
-  - name: the required argument missing is refused while the caller is still there to be told
-    workflow: ./workflow.yaml
+  # The three refusals are one table (#924): they share a workflow, a stub that
+  # is never reached, and `failed: true`, and differ only in what was supplied
+  # and which sentence comes back. A row merges over its entry exactly as a
+  # case merges over `defaults:`, field by field — so `failed: true` is written
+  # once here rather than three times, and each row adds only the half that is
+  # its own.
+  - name: a declaration is enforced before the first step runs
     stubs:
+      # Declared and never reached: an invocation arriving here would mean the
+      # run got past the declaration, which is the thing these rows deny.
       - task: http
         returns: {}
     expect:
       failed: true
-      # The description is repeated back in the refusal, which is the one part of
-      # a declaration written for whoever supplies the value.
-      error_contains: which service to deploy
+    cases:
+      - name: the required argument is missing
+        expect:
+          # The description is repeated back in the refusal, which is the one part
+          # of a declaration written for whoever supplies the value.
+          error_contains: which service to deploy
 
-  - name: a replica count outside the declared bound is refused before the first request goes out
-    workflow: ./workflow.yaml
-    inputs:
-      service: checkout
-      replicas: 99
-    stubs:
-      - task: http
-        returns: {}
-    expect:
-      failed: true
-      error_contains: "must satisfy"
+      - name: a replica count above the declared bound
+        inputs:
+          service: checkout
+          replicas: 99
+        expect:
+          error_contains: "must satisfy"
 
-  - name: zero replicas is refused by the same bound, from the other side
-    workflow: ./workflow.yaml
-    inputs:
-      service: checkout
-      replicas: 0
-    stubs:
-      - task: http
-        returns: {}
-    expect:
-      failed: true
-      error_contains: "must satisfy"
+      - name: zero replicas, the same bound from the other side
+        inputs:
+          service: checkout
+          replicas: 0
+        expect:
+          error_contains: "must satisfy"

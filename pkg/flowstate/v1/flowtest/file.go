@@ -239,6 +239,15 @@ type File struct {
 	// is not itself a bug — see #203's discussion of `examples/call-a-workflow/workflow.test.yaml`.
 	Edition string `yaml:"edition"`
 
+	// Vars are the literal values this file states once and references
+	// everywhere (#1072): a whole-value `${vars.x}` in a fixture position is
+	// substituted at load, and `expect.check:` reads `vars.x` at evaluation.
+	// Literals only — any `${` inside one is refused, including a reference
+	// to another var — so there is no evaluation order and no cycles; see
+	// vars.go for the design and the one deliberate asymmetry (a stub's
+	// `vars.` stays the workflow's).
+	Vars map[string]any `yaml:"vars"`
+
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
 	// inherits them and may override them, by the boring, stated rules
@@ -378,6 +387,23 @@ type Test struct {
 	// *deployment* installs, and `flow test` neither takes them nor evaluates
 	// them under this identity.
 	Starter *ScriptedIdentity `yaml:"starter"`
+
+	// Cases are the rows of a table entry (#924 slice 2): one run each, with
+	// the enclosing entry standing to a row exactly as `defaults:` stands to
+	// a case. An entry that declares rows does not itself run — it is the
+	// template they are merged over — and a row's own value always beats the
+	// entry's, the one direction every merge in this file takes.
+	//
+	// The house Go convention this mirrors is the charter's: "slice-of-struct
+	// tables with a `name` field, one `t.Run` per case" (#405). Report
+	// identity is `<entry name>/<row name>`, the two-level naming `t.Run`
+	// gives a Go table, carried in the existing [v1.TestCase] name so nothing
+	// reading a report needs a schema change to see it.
+	//
+	// One level only. A row that declares its own `cases:` is refused rather
+	// than flattened, because a table of tables is a shape whose merge order
+	// nobody wrote down and whose report identity has no obvious spelling.
+	Cases []Test `yaml:"cases"`
 
 	// Expect is what the run must have done to pass.
 	Expect Expectation `yaml:"expect"`
@@ -553,6 +579,13 @@ type Defaults struct {
 	// omit their own. It is the one place a whole file's signals share an
 	// approver identity rather than restating the five-line stanza per signal.
 	Sender *ScriptedIdentity `yaml:"sender"`
+
+	// Check holds claims every case in the file must satisfy (#1072),
+	// prepended to each case's own `expect.check:` by [mergeDefaults]. Bare
+	// CEL carries no `${` fence, so the #416 fixture rule — a default may
+	// hold no expression *value* — is untouched: a claim is a predicate the
+	// file states, not a value a case inherits.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // Stub replaces one task's real behavior with a canned answer.
@@ -958,6 +991,18 @@ type Expectation struct {
 	// results, never at the top level) is not miscounted as a step that should
 	// have been skipped.
 	Others string `yaml:"others"`
+
+	// Check holds CEL claims over the finished run (#1072) — for everything
+	// the named fields above cannot say. Each entry is a bare CEL predicate,
+	// or `{that:, because:}` to add the sentence a failure prints. Evaluated
+	// against `steps.*`, `inputs.*`, and a `run` root (`failed`, `error`,
+	// `local`), whether or not the run failed — an error claim exists
+	// precisely for failed runs. See [CheckClaim].
+	//
+	// Across defaults → entry → row the lists accumulate — every level's
+	// claims all hold — where the named fields above merge by override.
+	// Predicates union naturally; values cannot.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
@@ -978,7 +1023,14 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	file, err := parseSource(data, true)
+	// The directory's shared fixture, if the suite's own directory states
+	// one — see dirdefaults.go for the chain and its boundaries.
+	dd, err := loadDirDefaults(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := parseSourceWith(data, dd, true)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -1013,6 +1065,13 @@ func LoadSource(data []byte) (*File, error) {
 // and no path runs the identical checks rather than a second copy of them.
 // requireWorkflow is false only for [LoadSource]; see its doc for why.
 func parseSource(data []byte, requireWorkflow bool) (*File, error) {
+	return parseSourceWith(data, nil, requireWorkflow)
+}
+
+// parseSourceWith is [parseSource] with a directory's contribution folded in
+// before anything resolves or validates, so the combined suite is what every
+// rule below checks.
+func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, error) {
 	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
 	// do anything: Unmarshal resolves every alias into the destination value
 	// as it decodes, which means a billion-laughs document is already fully
@@ -1052,6 +1111,45 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 					"record why no case reaches this step, or remove the entry and let it be a gap", step)
 			}
 		}
+	}
+
+	dd.combineInto(&file)
+
+	// Vars validate and substitute first, before tables expand and before
+	// `defaults:` is checked: an inherited `${vars.x}` resolves to its
+	// literal exactly once, and the fixture rule below then checks what the
+	// run will actually see.
+	if err := checkVars(file.Vars); err != nil {
+		return nil, err
+	}
+	if err := file.resolveVars(); err != nil {
+		return nil, err
+	}
+
+	// Rows are expanded before defaults are merged, which is what makes the
+	// precedence chain read the way an author expects it to: a row beats its
+	// entry, and an entry beats `defaults:`. Expanding afterward would let a
+	// file-level default win over an entry's own value for a row that stated
+	// neither — one fact written down twice, disagreeing with itself.
+	//
+	// Done here rather than at run time so everything downstream — the
+	// per-test checks below, coverage, `--run`, the Go subtests — keeps
+	// reading one flat list of effective cases and needs no notion of a table.
+	expanded, err := expandTableEntries(file.Tests)
+	if err != nil {
+		return nil, err
+	}
+	file.Tests = expanded
+
+	// The bound is on the runs, not on the written entries: a row is a whole
+	// case, so an entry with four hundred rows costs what four hundred cases
+	// cost. Checked after expansion for that reason, and the diagnostic says
+	// "once its rows are counted" because the limit is otherwise confusing to
+	// read in a file whose `tests:` list is three items long.
+	if len(file.Tests) > MaxTestsPerFile {
+		return nil, fmt.Errorf(
+			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
+			len(file.Tests), MaxTestsPerFile)
 	}
 
 	// Validated then merged before anything below bounds or checks a case, so
@@ -1097,6 +1195,12 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 			}
 		}
 		if err := checkScriptedIdentity(fmt.Sprintf("test %q starter:", test.Name), test.Starter); err != nil {
+			return nil, err
+		}
+		// The slice is the entry in file.Tests, not the loop copy: this
+		// validation also strips a tolerated whole-value fence in place, and
+		// stripping a copy would leave the fence on the claim the run reads.
+		if err := checkCheckClaims(fmt.Sprintf("test %q expect", test.Name), file.Tests[i].Expect.Check); err != nil {
 			return nil, err
 		}
 		for j, signal := range test.Signals {
@@ -1363,6 +1467,9 @@ func checkDefaults(d *Defaults) error {
 			return err
 		}
 	}
+	if err := checkCheckClaims("defaults", d.Check); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1509,6 +1616,21 @@ func mergeDefaults(d *Defaults, test Test) Test {
 	// Sender: explicit beats inherited. A signal that named its own sender
 	// keeps it; only one that omitted `sender:` inherits the default (the
 	// resolved open question in #416).
+	// Check accumulates rather than overriding: the file's claims and the
+	// case's all hold, inherited first so a failure lists them in the order
+	// a reader meets them in the file. A fresh slice — a second case merging
+	// the same defaults must see them untouched — and marked, because this
+	// fold runs twice on the Go door and a prepend is the one merge here
+	// that is not idempotent by shape (see [CheckClaim].fromDefaults).
+	if len(d.Check) > 0 && !slices.ContainsFunc(test.Expect.Check, func(c CheckClaim) bool { return c.fromDefaults }) {
+		inherited := make([]CheckClaim, 0, len(d.Check)+len(test.Expect.Check))
+		for _, claim := range d.Check {
+			claim.fromDefaults = true
+			inherited = append(inherited, claim)
+		}
+		test.Expect.Check = append(inherited, test.Expect.Check...)
+	}
+
 	if d.Sender != nil && len(test.Signals) > 0 {
 		signals := make([]SignalScript, len(test.Signals))
 		copy(signals, test.Signals)
