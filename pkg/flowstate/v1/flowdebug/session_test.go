@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -417,4 +418,70 @@ func TestNoEmitKeepsThePlainWriter(t *testing.T) {
 	assert.Equal(t, []string{"build", "test", "deploy"}, ran)
 	assert.Contains(t, out, "break at build")
 	assert.NotContains(t, out, "\x1b[", "no escape sequence reaches a plain session")
+}
+
+// The autopsy (#1072): a failing case's session stops once more after the
+// verdict, failures printed, scope still questionable.
+
+// TestTheAutopsyAnswersFromTheFinishedRun: inspect and scope work over the
+// corpse, the failures print as failures, and quit leaves.
+func TestTheAutopsyAnswersFromTheFinishedRun(t *testing.T) {
+	t.Parallel()
+
+	var fragments []tonedFragment
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader("inspect steps.build.ok\nscope\nquit\n"),
+		Emit: func(text string, tone flowdebug.Tone) {
+			fragments = append(fragments, tonedFragment{text: text, tone: tone})
+		},
+	})
+	require.NoError(t, err)
+
+	scope := &v1.Scope{Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"build": {NamedValues: map[string]*v1.Value{"ok": v1.NewLiteral("built")}},
+	}}}
+
+	session.Autopsy(t.Context(), scope, []string{`expect.check[0]: check failed: steps.build.ok == 'shipped'`})
+
+	joined := ""
+	for _, f := range fragments {
+		joined += f.text
+	}
+	assert.Contains(t, joined, "autopsy: the case failed 1 expectation(s)")
+	assert.Contains(t, joined, `"built"`, "an inspection reads the finished run")
+	assert.Contains(t, joined, "steps: build")
+
+	failureTone := flowdebug.ToneInfo
+	for _, f := range fragments {
+		if strings.Contains(f.text, "check failed") {
+			failureTone = f.tone
+		}
+	}
+	assert.Equal(t, flowdebug.ToneDanger, failureTone, "a failure prints as one")
+
+	assert.Equal(t, []string{"inspect steps.build.ok", "scope", "quit"}, session.Script(),
+		"autopsy commands join the replay script")
+}
+
+// TestTheAutopsyMovementVerbsAllLeave: there is no run left to move, so every
+// movement verb is a departure — and an exhausted console leaves too.
+func TestTheAutopsyMovementVerbsAllLeave(t *testing.T) {
+	t.Parallel()
+
+	for _, verb := range []string{"step\n", "continue\n", "until deploy\n", "quit\n", ""} {
+		var out strings.Builder
+		session, err := flowdebug.New(flowdebug.Options{In: strings.NewReader(verb), Out: &out})
+		require.NoError(t, err)
+
+		done := make(chan struct{})
+		go func() {
+			session.Autopsy(t.Context(), &v1.Scope{}, nil)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("autopsy did not leave on %q", strings.TrimSpace(verb))
+		}
+	}
 }

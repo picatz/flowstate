@@ -125,6 +125,17 @@ func checkCheckClaims(where string, claims []CheckClaim) error {
 	return nil
 }
 
+// postRunScope is the scope a finished case is questioned against: the
+// run's outputs, the case's bound inputs, the workflow's profile, and
+// `Local: true` — a rehearsal must never look attested. One construction,
+// shared by `expect.check:` evaluation and the debugger's autopsy, so the
+// two surfaces cannot answer the same question against two different
+// scopes; it is the site the #737 guard blesses (see
+// engine/scope_guard_test.go), and it is never an activity argument.
+func postRunScope(spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs) *v1.Scope {
+	return &v1.Scope{Profile: spec.GetProfile(), Outputs: outputs, Inputs: bound, Local: true}
+}
+
 // assertChecks evaluates a case's claims against the finished run, returning
 // one diagnostic per claim that did not hold — with the values the claim read,
 // so a red check arrives with its evidence rather than only its text.
@@ -141,7 +152,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		return nil
 	}
 
-	scope := &v1.Scope{Profile: spec.GetProfile(), Outputs: outputs, Inputs: bound, Local: true}
+	scope := postRunScope(spec, bound, outputs)
 
 	// The `run` root, bound as a bare local. [v1.Scope.ActivationWith]'s
 	// extras shadow the activation's own rooted namespaces, so this map
