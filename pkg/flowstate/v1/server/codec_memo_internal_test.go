@@ -55,11 +55,11 @@ func TestCodecMemosAreReadThroughTheConfiguredConverter(t *testing.T) {
 
 	// The server an operator gets from `flow server` on a deployment with a
 	// codec configured: the same converter the Temporal client was built with.
-	s := New(nil, WithDataConverter(dc))
+	s := mustNew(t, nil, WithDataConverter(dc))
 
 	// And the server every other test in this package gets, kept alongside so
 	// the negative direction is asserted rather than assumed.
-	plainServer := New(nil)
+	plainServer := mustNew(t, nil)
 
 	// Exactly what the SDK does with the maps namespaceMemoEntry,
 	// starterMemoEntry, signalPolicyMemoEntry and workflowNameMemoEntry return,

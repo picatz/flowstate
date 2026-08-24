@@ -36,15 +36,13 @@ description: Calls a task a plugin provides, as though it were built in.
 # rather than quietly serving a different `greet`.
 plugins:
   example: v0.1.0
-
 vars:
   who: world
-
 steps:
   - id: hello
     example.greet:
-      name: ${vars.who}
       greeting: Hello
+      name: ${vars.who}
       token: ${secret('env:GREET_TOKEN')}
 
   # The plugin's answer, back in the run's scope under the step's id, addressable
@@ -52,7 +50,6 @@ steps:
   - id: announce
     log:
       message: ${steps.hello.message}
-
 outputs:
   greeting:
     value: ${steps.hello.message}

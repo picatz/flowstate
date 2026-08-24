@@ -9,10 +9,10 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
-// TestRunWorkflowAsyncUnwind is the durable half of [tests.AsyncUnwindCases].
+// TestRunWorkflowAsyncUnwind is the durable half of [conformance.AsyncUnwindCases].
 //
 // Both claims were found by the schedule search over the local driver and both
 // are claims about the execution model rather than about one driver, so this
@@ -23,19 +23,19 @@ import (
 // what the local driver did before #477 slice 0.
 //
 // The interleaving is Temporal's rather than anything this test arranges, which
-// is why the claims are written against [tests.UndoCase.UnorderedPrefix]: the
+// is why the claims are written against [conformance.UndoCase.UnorderedPrefix]: the
 // concurrent work is a set and the unwind after it is a sequence.
 func TestRunWorkflowAsyncUnwind(t *testing.T) {
-	for index, outline := range tests.AsyncUnwindCases(undoPlaceholderBase) {
+	for index, outline := range conformance.AsyncUnwindCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.AsyncUnwindCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.AsyncUnwindCases(base)[index]
 
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
-			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
@@ -46,7 +46,7 @@ func TestRunWorkflowAsyncUnwind(t *testing.T) {
 			require.Contains(t, err.Error(), test.Summary,
 				"the failure does not carry the account of what was compensated")
 
-			tests.AssertRecorded(t, test, recorded())
+			conformance.AssertRecorded(t, test, recorded())
 		})
 	}
 }

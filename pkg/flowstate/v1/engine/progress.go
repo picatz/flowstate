@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"strings"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
@@ -73,10 +75,9 @@ type progress struct {
 
 	// loopState is, for every `loop:` currently active in this segment, the
 	// value its `state:` binding is carrying into the next iteration — keyed by
-	// the loop step's own id. Bounded by [entityStateMaxLoopEntries]: nested
-	// loops are not a shape this engine runs yet, but several independent
-	// top-level loops inside a `parallel:` block are, and an author is free to
-	// write as many as the step-count and spec-size bounds allow.
+	// the loop step's own id. Bounded by [entityStateMaxLoopEntries]; how many
+	// loops can be here at once — one, for any submittable spec — is that
+	// constant's comment.
 	loopState map[string]*v1.Value
 
 	// loopStateTruncated is set once loopState has refused an entry for being
@@ -92,10 +93,60 @@ type progress struct {
 // A loop's own carried value is already bounded transitively — it travelled
 // here inside a `RunState` that [v1.CheckRunStateSize] refused to let grow
 // past Temporal's blob limit at the last Continue-As-New — but *how many*
-// loops are simultaneously active is a different resource, one a `parallel:`
-// block full of loops controls directly, and CLAUDE.md's rule applies: ask
-// which resource an author's own spec controls, then bound that resource
-// separately from the one the size check already bounds.
+// loops are simultaneously active is a different resource, and CLAUDE.md's
+// rule applies: ask which resource an author's own spec controls, then bound
+// that resource separately from the one the size check already bounds.
+//
+// # How many loops actually reach this map: one, and why the bound cannot fire
+//
+// This is the substance of #289, which observed that no live path records more
+// than one concurrently active loop — so the bound guards a state the system
+// cannot currently produce. That observation is correct. The reachable maximum
+// is one, held down by two independent facts, each covered in
+// loop_state_reach_internal_test.go:
+//
+//   - Concurrent constructs record nothing. A concurrent `for_each` worker
+//     ([executor.runForEach]) and a `parallel:` branch ([executor.runParallel])
+//     each build their executor with `progress: nil` — deliberately, no one
+//     branch being *the* run's position — so a `loop:` inside either never
+//     calls [progress.setLoopState]. Two loops in two parallel branches are
+//     genuinely live at once and this map stays empty.
+//
+//   - A second loop can only be live beside a first by running inside the
+//     first's body, and that shape — a loop reached from within a loop body,
+//     directly or laundered through a `call:`, a `switch:`, or a `for_each:` —
+//     is refused before it runs. [v1.CheckLoopNesting] is the refusal on the
+//     RPC boundary and `flowfile.bodyHasNestedLoop` is its twin in the
+//     compiler; both descend through `call:` (#727/#680), because the engine
+//     does not suspend inside a loop body, so an inner loop would run
+//     atomically inside each outer iteration with no Continue-As-New between
+//     them. So a `loop:` whose body calls a workflow that itself loops does not
+//     run and stack two entries — it is rejected at submission.
+//
+// [executor.runCall] does carry `progress: e.progress` into a callee (a call is
+// transparent to suspension), which is why a callee's loop records under its
+// own step id at all — but the caller cannot *also* be looping around that
+// call, which is the only way the two would coexist, so the carry never
+// produces a second concurrent entry through any accepted spec.
+//
+// So this bound sits sixty-four times above a reachable maximum of one. It
+// cannot fire, and a bound nothing reaches is a bound nothing tests — the
+// objection #289 exists to record. The value is left at 64 here on purpose:
+// whether to keep it documented, remove it, or lower it is the open decision on
+// #289, and correcting the reasoning behind the bound is not the same act as
+// taking that decision. (If a future change makes concurrent fan-out carry
+// progress, #272, or lifts the loop-nesting refusal, this stops being dead
+// weight and the count becomes reachable — that is the future the "keep it
+// documented" option is for.)
+//
+// One latent wrong answer, live only in that future: keys here are step ids
+// alone, and a callee's step ids are its own namespace, so two loops that both
+// name a step `loop` would collide on one key if they were ever concurrently
+// live. Today they cannot be — the nesting refusal above rejects exactly that
+// shape — so it is recorded here and asserted unreachable
+// ([TestTheSubmissionPathRefusesEveryShapeThatWouldStackLoopState]'s same-id
+// case) rather than fixed. A fix would re-key the map, which changes what
+// [v1.EntityState]'s keys mean to every client and belongs with #289's decision.
 const entityStateMaxLoopEntries = 64
 
 // entityStateMaxBytes bounds the serialized size of one [v1.EntityState]
@@ -131,6 +182,51 @@ func (p *progress) snapshot() *v1.RunProgress {
 	}
 
 	return out
+}
+
+// currentDetailsMarkdown renders the run's position for
+// [workflow.SetCurrentDetails] — see its call site in execute.go, right beside
+// [progress.enter], which is what keeps this current on every step
+// transition.
+//
+// Joined "`id` > `id` > `id`", the identical shape `cmd/flow/get.go`'s
+// positionPath renders a queried [v1.RunProgress] in: a reader who already
+// knows how `flow get`/`flow watch` spell a position should not have to learn
+// a second notation for the same fact in Temporal Web. The two cannot import
+// one function to share — this package cannot depend on `cmd/flow`, which is
+// the wrong direction for an engine to depend in — so the shape is kept in
+// sync by citing this comment rather than by one function.
+//
+// Empty stepID (a position asked about before the run reached anywhere)
+// renders nothing, matching [progress.snapshot]'s own treatment of the same
+// case — an empty [workflow.SetCurrentDetails] is simply never called for it,
+// which is honest: there is nothing to say yet, and inventing "on step 1"
+// would be a fact this position does not have.
+//
+// Built only from step ids, which [v1.Workflow_Node.Id]'s schema constrains
+// to `^[A-Za-z0-9-_]+$` (workflow.proto) — the same grammar
+// [server.runStaticSummary] already relies on to backtick-delimit safely, so
+// this is exactly as safe to render the same way. Nothing here is secret or
+// caller-supplied outside that grammar: a step id is an author's own
+// specification, exactly as public as the position [ProgressQuery] already
+// answers with, so nothing crosses the boundary CLAUDE.md's "Secrets never
+// enter workflow history" describes.
+func (p *progress) currentDetailsMarkdown() string {
+	if p == nil || p.stepID == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("On step `")
+	b.WriteString(p.stepID)
+	b.WriteByte('`')
+	for _, step := range p.path {
+		b.WriteString(" > `")
+		b.WriteString(step)
+		b.WriteByte('`')
+	}
+
+	return b.String()
 }
 
 // ancestors returns the steps enclosing the step the run is currently inside,

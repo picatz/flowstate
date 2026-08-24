@@ -362,20 +362,39 @@ func validSignalName(name string) bool {
 	return true
 }
 
-// checkWaitPolicy reports per-step policy that does nothing on a step scheduling
-// no activity.
+// checkPolicyPlacement reports a step-level `timeout:` or `retry:` that binds
+// nothing, on any kind of step that schedules no single activity for either key
+// to bound or re-run.
 //
-// Two kinds schedule none. A wait is a timer, so the two policy keys that bound
-// and retry an activity have nothing to act on: a `timeout:` beside a `sleep:` is
-// not a shorter sleep, and `retry:` cannot re-run a timer. A `value:` is an
-// expression evaluated in workflow code, so it has nothing to bound either, and
-// nothing a second attempt could change, because it is deterministic and an expression
-// that failed will fail identically however many times it is asked.
+// `StepPolicy` compiles onto every step kind, but only a task's arm ever reads it
+// — see `activityOptionsFor` in the engine and its counterpart in `eval.go`, the
+// one place per driver that consumes `timeout`/`retry`. Everywhere else the two
+// keys parse, validate, and vanish, which is worse than a parse error: an author
+// who writes `retry:` on a step believes they bounded something, and nothing
+// downstream — not the parser, not either driver, not a lint — ever tells them
+// otherwise. This is the fix: refuse both keys, with a position and a remedy,
+// everywhere they cannot act.
 //
-// Silently ignoring either would leave an author believing they had bounded
-// something. A wait's own bound is `wait_for_signal.timeout`, and a value's is the
-// evaluation cost limit nobody writes; the diagnostics say so.
-func (c *compiler) checkWaitPolicy(step *v1.Node, fields *fieldSet, path string, r ref) {
+// Two kinds schedule none, in a sense settled and tested from the start. A wait
+// is a timer, so a `timeout:` beside a `sleep:` is not a shorter sleep, and
+// `retry:` cannot re-run one. A `value:` is an expression evaluated in workflow
+// code, so it has nothing to bound either, and nothing a second attempt could
+// change, because it is deterministic and an expression that failed will fail
+// identically however many times it is asked.
+//
+// Five more schedule zero or more *of something else* rather than one activity of
+// their own: `for_each:`, `parallel:`, `call:`, `loop:`, and `switch:` are
+// composites over steps that do the scheduling. Retrying or bounding the
+// composite itself is a live feature request — see flowstate#286 — but it is not
+// implemented on either driver today, and R6 of the style charter (#543) admits
+// no interim in which a key silently binds nothing: refuse now, on both drivers
+// identically because this refusal runs at compile time before either driver sees
+// the file, and lift it if and when #286 lands real semantics. Each of the five
+// has a place these keys already work: the steps inside its own body.
+//
+// Silently ignoring either would leave an author believing they had bounded or
+// re-attempted something. The diagnostics say where the key does work instead.
+func (c *compiler) checkPolicyPlacement(step *v1.Node, fields *fieldSet, path string, r ref) {
 	var subject string
 	advice := map[string]string{}
 
@@ -391,6 +410,42 @@ func (c *compiler) checkWaitPolicy(step *v1.Node, fields *fieldSet, path string,
 			"and it is already bounded by the evaluation cost limit every expression in the file shares"
 		advice["retry"] = "a value is deterministic, so a second attempt computes exactly what the first one did; " +
 			"if the expression is wrong, it is wrong every time"
+
+	case *v1.Node_ForEach:
+		subject = "a `for_each:` step"
+		advice["timeout"] = "a for_each step fans out over its items rather than scheduling one activity itself; " +
+			"put `timeout:` on the steps under `for_each.steps:`, which run once per item"
+		advice["retry"] = "a for_each step fans out over its items rather than scheduling one activity itself; " +
+			"put `retry:` on the steps under `for_each.steps:`, which run once per item"
+
+	case *v1.Node_Parallel:
+		subject = "a `parallel:` step"
+		advice["timeout"] = "a parallel step is branches, each with its own steps, rather than one activity itself; " +
+			"put `timeout:` on the steps inside the branch that needs it"
+		advice["retry"] = "a parallel step is branches, each with its own steps, rather than one activity itself; " +
+			"put `retry:` on the steps inside the branch that needs it"
+
+	case *v1.Node_Call:
+		subject = "a `call:` step"
+		advice["timeout"] = "a call step runs another workflow's steps rather than scheduling one activity itself; " +
+			"put `timeout:` on the steps inside the called workflow that need it"
+		advice["retry"] = "a call step runs another workflow's steps rather than scheduling one activity itself; " +
+			"put `retry:` on the steps inside the called workflow that need it"
+
+	case *v1.Node_Loop:
+		subject = "a `loop:` step"
+		advice["timeout"] = "a loop step repeats its body rather than scheduling one activity itself; " +
+			"put `timeout:` on the steps under `loop.steps:`, which run once per iteration — " +
+			"`max_iterations:` is the loop's own bound, and it limits the count, not the time"
+		advice["retry"] = "a loop step repeats its body rather than scheduling one activity itself; " +
+			"put `retry:` on the steps under `loop.steps:`, which run once per iteration"
+
+	case *v1.Node_Switch:
+		subject = "a `switch:` step"
+		advice["timeout"] = "a switch step dispatches to exactly one case and schedules no activity itself; " +
+			"put `timeout:` on the steps inside the `cases:` or `default:` branch that needs it"
+		advice["retry"] = "a switch step dispatches to exactly one case and schedules no activity itself; " +
+			"put `retry:` on the steps inside the `cases:` or `default:` branch that needs it"
 
 	default:
 		return

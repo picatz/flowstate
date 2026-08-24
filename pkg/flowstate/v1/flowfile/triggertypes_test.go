@@ -66,9 +66,16 @@ func TestAnUnknownFunctionInATriggerArgumentIsReported(t *testing.T) {
 func TestABadOperatorInAnIdempotencyKeyIsReported(t *testing.T) {
 	t.Parallel()
 
+	// References event so [v1.CheckWebhookIdempotencyKey]'s own,
+	// independent check — introduced by #689, which requires a delivery-
+	// derived idempotency key — stays quiet and this isolates the single
+	// diagnostic under test: the ill-typed `1 + true` on its own would
+	// *also* trip that check, since it depends on nothing that varies per
+	// delivery, and this test would then see two diagnostics for one
+	// mistake instead of the one it is written to pin.
 	source := strings.Replace(webhookSource,
 		`    idempotency_key: ${event.headers["stripe-signature"]}`,
-		`    idempotency_key: ${1 + true}`, 1)
+		`    idempotency_key: ${event != null && 1 + true == 2}`, 1)
 
 	diagnostics, err := flowfile.ValidateSource([]byte(source))
 	require.NoError(t, err)

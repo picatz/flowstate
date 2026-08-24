@@ -198,46 +198,70 @@ func rootedUnder(src, root string, names map[string]bool) (string, bool, error) 
 
 // collectStepIdents calls visit for every free identifier naming a step.
 //
-// Bound names are tracked the way the validator tracks them, because a
+// A filter over [walkFreeIdents], which is where the scope tracking lives: a
 // comprehension's iteration variable is not a step even when it is spelled like
-// one — and rooting it would change what the expression means rather than how it
+// one, and rooting it would change what the expression means rather than how it
 // is written.
 func collectStepIdents(e *exprpb.Expr, bound, steps map[string]bool, visit func(int64, string) error, failure *error) {
+	walkFreeIdents(e, bound, func(id int64, name string) error {
+		if !steps[name] {
+			return nil
+		}
+		return visit(id, name)
+	}, failure)
+}
+
+// walkFreeIdents calls visit for every identifier an expression reads and does
+// not itself bind.
+//
+// Two callers want different halves of one question and neither can answer it
+// alone by inspecting a rendering. The rewriter above asks *which* of these
+// names is a step, to root it. [Lint] asks whether any of them is a name the
+// grammar binds locally — a loop's item, a step's own `vars:` key, `now` inside
+// a wait — because an expression reading one of those cannot be lifted out of
+// where it is written, and a suggestion to lift it would be advice that breaks
+// the file. Both are the same walk with a different predicate, and writing it
+// twice is how one copy comes to know about comprehensions and the other does
+// not.
+//
+// "Free" is decided by which macros the parser knows; see [rootedUnder] for why
+// that makes the parsing environment load-bearing rather than incidental.
+func walkFreeIdents(e *exprpb.Expr, bound map[string]bool, visit func(int64, string) error, failure *error) {
 	if e == nil || *failure != nil {
 		return
 	}
 	switch kind := e.GetExprKind().(type) {
 	case *exprpb.Expr_IdentExpr:
 		name := kind.IdentExpr.GetName()
-		if bound[name] || !steps[name] {
+		if bound[name] {
 			return
 		}
 		if err := visit(e.GetId(), name); err != nil {
 			*failure = err
 		}
 	case *exprpb.Expr_SelectExpr:
-		collectStepIdents(kind.SelectExpr.GetOperand(), bound, steps, visit, failure)
+		walkFreeIdents(kind.SelectExpr.GetOperand(), bound, visit, failure)
 	case *exprpb.Expr_CallExpr:
-		collectStepIdents(kind.CallExpr.GetTarget(), bound, steps, visit, failure)
+		walkFreeIdents(kind.CallExpr.GetTarget(), bound, visit, failure)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectStepIdents(arg, bound, steps, visit, failure)
+			walkFreeIdents(arg, bound, visit, failure)
 		}
 	case *exprpb.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			collectStepIdents(el, bound, steps, visit, failure)
+			walkFreeIdents(el, bound, visit, failure)
 		}
 	case *exprpb.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectStepIdents(entry.GetMapKey(), bound, steps, visit, failure)
-			collectStepIdents(entry.GetValue(), bound, steps, visit, failure)
+			walkFreeIdents(entry.GetMapKey(), bound, visit, failure)
+			walkFreeIdents(entry.GetValue(), bound, visit, failure)
 		}
 	case *exprpb.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
 
 		// The range and the accumulator's start are evaluated outside the
 		// comprehension's own scope, so a step named there is still a step.
-		collectStepIdents(c.GetIterRange(), bound, steps, visit, failure)
-		collectStepIdents(c.GetAccuInit(), bound, steps, visit, failure)
+		walkFreeIdents(c.GetIterRange(), bound, visit, failure)
+		walkFreeIdents(c.GetAccuInit(), bound, visit, failure)
 
 		inner := make(map[string]bool, len(bound)+3)
 		for name := range bound {
@@ -248,9 +272,9 @@ func collectStepIdents(e *exprpb.Expr, bound, steps map[string]bool, visit func(
 				inner[name] = true
 			}
 		}
-		collectStepIdents(c.GetLoopCondition(), inner, steps, visit, failure)
-		collectStepIdents(c.GetLoopStep(), inner, steps, visit, failure)
-		collectStepIdents(c.GetResult(), inner, steps, visit, failure)
+		walkFreeIdents(c.GetLoopCondition(), inner, visit, failure)
+		walkFreeIdents(c.GetLoopStep(), inner, visit, failure)
+		walkFreeIdents(c.GetResult(), inner, visit, failure)
 	}
 }
 

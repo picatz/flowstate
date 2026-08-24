@@ -14,8 +14,10 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/picatz/flowstate/internal/covbuild"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -64,7 +66,15 @@ var buildExample = sync.OnceValues(func() (string, error) {
 
 	// Built from this package's own directory, which is inside the module, so
 	// the module context is whatever the test is running under.
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", output, examplePackage)
+	//
+	// Instrumented with -cover when GOCOVERDIR is set (see internal/covbuild):
+	// this plugin is the worked example that proves the SDK and host agree, and
+	// this boundary is the one #519 calls out as the worst blind spot — a
+	// separately compiled binary reached over Connect RPC that `go test -cover`
+	// cannot see into at all.
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", output, examplePackage)
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = packageDir()
 
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -98,7 +108,10 @@ func exampleHost(t *testing.T, extraEnv ...string) *Host {
 	}
 
 	cfg := testConfig(t, dir)
-	cfg.Env = extraEnv
+	// pluginEnv strips a launched plugin down to the protocol variables plus
+	// whatever is named here, by design — so GOCOVERDIR must be added back in
+	// explicitly for an instrumented example plugin to write anything.
+	cfg.Env = append(append([]string{}, extraEnv...), covbuild.Env()...)
 
 	return openHost(t, cfg)
 }
@@ -179,6 +192,72 @@ func TestExamplePluginTaskDescriptorsAreReconstructed(t *testing.T) {
 
 	if def.Summary == "" {
 		t.Error("the task has no summary, which is what `flow tasks` shows")
+	}
+}
+
+// TestExamplePluginShipsItsOwnFieldProse is the reconstruction test's other
+// half: the descriptors came across the wire carrying the comments the example
+// plugin's author wrote in example.proto, so an editor documents a plugin's
+// inputs the way it documents a built-in's (#723).
+//
+// The comments cannot have come from anywhere else, and both directions are
+// asserted rather than only the one that passes. This binary does not import the
+// example's generated package, so nothing local declares the message; and even a
+// binary that did import it would find no prose there, because protoc strips
+// SourceCodeInfo from what a .pb.go embeds — which is exactly why the plugin
+// ships a `buf build --exclude-imports` artifact and the SDK attaches it. Read
+// through [protodoc.CommentOf], which is the function the language server's
+// fieldDoc asks first, so this and the hover it feeds cannot disagree.
+func TestExamplePluginShipsItsOwnFieldProse(t *testing.T) {
+	t.Parallel()
+
+	host := exampleHost(t)
+
+	defs := host.TaskDefs()
+	if len(defs) != 1 {
+		t.Fatalf("host provides %d tasks, want 1", len(defs))
+	}
+
+	def := defs[0]
+	if def.Inputs == nil || def.Outputs == nil {
+		t.Fatal("the task has no descriptors, so there is nothing prose could be attached to")
+	}
+
+	// The sentences are the ones in
+	// examples/flowstate-plugin-example/proto/example/v1/example.proto. Quoting
+	// them here is deliberate: this test fails when that file's prose changes
+	// without the checked-in descriptor set being rebuilt, which is the drift
+	// the pin in `make check` exists to catch and the state in which a comment
+	// would describe a field that has moved.
+	for _, want := range []struct {
+		message protoreflect.MessageDescriptor
+		field   string
+		comment string
+	}{
+		{def.Inputs, "name", "Name is who to greet."},
+		{def.Inputs, "greeting", `Greeting overrides the default "Hello".`},
+		{def.Outputs, "message", "Message is the assembled greeting."},
+	} {
+		fd := want.message.Fields().ByName(protoreflect.Name(want.field))
+		if fd == nil {
+			t.Errorf("%s has no field %q", want.message.FullName(), want.field)
+
+			continue
+		}
+
+		if _, known := protodoc.Comment(fd.FullName()); known {
+			t.Errorf("this build's schema describes %s, so its prose proves nothing about the plugin's", fd.FullName())
+		}
+
+		got, ok := protodoc.CommentOf(fd)
+		if !ok {
+			t.Errorf("%s arrived with no comment: the plugin's descriptor set did not travel", fd.FullName())
+
+			continue
+		}
+		if got != want.comment {
+			t.Errorf("%s is documented as %q, want %q", fd.FullName(), got, want.comment)
+		}
 	}
 }
 

@@ -201,83 +201,98 @@ func httpInputError(err error) error {
 	return NewTaskError("http", ErrorKindInvalidInput, err)
 }
 
+// httpPreparedInputs is the request-independent front of the http task: the
+// deferred and structure-held inputs split out, the rest populated into the
+// schema message, the `outputs` specification normalized into the field or the
+// whole-map expression, and the schema's constraints enforced. One function
+// with two callers — [taskFuncHTTP], which then performs the request, and
+// [httpStubResponseFn], which is handed the response by a test harness — so
+// the two paths cannot disagree about what the inputs mean (#925).
+func httpPreparedInputs(ctx context.Context, input map[string]*Value, scope *Scope) (taskInputs *Task_HTTP_Inputs, outputsExpr *expr.ParsedExpr, expectSpec, headersSpec *Value, err error) {
+	taskInputs = &Task_HTTP_Inputs{
+		Method: proto.String(http.MethodGet),
+	}
+
+	// `outputs` and `expect` are evaluated against the response rather than
+	// against earlier steps, so they are held back from population: resolving
+	// them here would fail on `status_code` and `body`, which do not exist yet.
+	//
+	// `headers` is held back for a different reason and only when it is written
+	// as a structure. The schema's field is map<string, string> and a reference
+	// is not a string, so a structure carrying one has nowhere to be put down —
+	// and putting the *resolved* value there would be worse than the error it
+	// avoids, since a proto struct field is exactly what `fmt` reflects into.
+	// It stays a Value until [httpRequestHeaders] hands it to the request.
+	var outputsSpec *Value
+	inputForPopulate := input
+	if _, hasOutputs := input["outputs"]; hasOutputs || input["expect"] != nil ||
+		input["headers"].GetStructure() != nil {
+		outputsSpec, expectSpec = input["outputs"], input["expect"]
+		if input["headers"].GetStructure() != nil {
+			headersSpec = input["headers"]
+		}
+		inputForPopulate = make(map[string]*Value, len(input))
+		for k, v := range input {
+			if k == "outputs" || k == "expect" {
+				continue
+			}
+			if k == "headers" && headersSpec != nil {
+				continue
+			}
+			inputForPopulate[k] = v
+		}
+	}
+
+	if err := populateProtoMessageFromValueMap(ctx, inputForPopulate, taskInputs, scope); err != nil {
+		return nil, nil, nil, nil, NewTaskError("http", ErrorKindInvalidInput, err)
+	}
+
+	if outputsSpec != nil {
+		switch kind := outputsSpec.GetKind().(type) {
+		case *Value_Literal:
+			converted, err := literalToValueMap(kind.Literal)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid outputs literal: %w", err)
+			}
+			if len(converted) > 0 {
+				taskInputs.Outputs = converted
+			}
+		case *Value_Structure_:
+			// The mapping form, compiled entry by entry so its names survive
+			// into the specification. Each entry lands in the same field a
+			// literal map lands in and is evaluated by the same loop below —
+			// the shape the schema always had for this input, now reachable
+			// from a spelling that keeps its keys.
+			mapped := kind.Structure.GetMap()
+			if mapped == nil {
+				return nil, nil, nil, nil, fmt.Errorf("outputs must be a mapping of names to values, not a list")
+			}
+			taskInputs.Outputs = mapped.GetEntries()
+		case *Value_Expr:
+			outputsExpr = kind.Expr
+		case *Value_Error_:
+			return nil, nil, nil, nil, fmt.Errorf("invalid outputs specification: %s", kind.Error.GetMessage())
+		default:
+			return nil, nil, nil, nil, fmt.Errorf("unsupported outputs specification kind: %T", kind)
+		}
+	}
+
+	// Enforce the constraints the schema declares (a valid URI, a known
+	// method). This is real validation: the previously generated validator
+	// was produced by a plugin that reads a different option set than the
+	// schema uses, so every check in it was a no-op.
+	if err := Validate(taskInputs); err != nil {
+		return nil, nil, nil, nil, NewTaskError("http", ErrorKindInvalidInput, err)
+	}
+
+	return taskInputs, outputsExpr, expectSpec, headersSpec, nil
+}
+
 func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 	return func(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
-		taskInputs := &Task_HTTP_Inputs{
-			Method: proto.String(http.MethodGet),
-		}
-
-		// `outputs` and `expect` are evaluated against the response rather than
-		// against earlier steps, so they are held back from population: resolving
-		// them here would fail on `status_code` and `body`, which do not exist yet.
-		//
-		// `headers` is held back for a different reason and only when it is written
-		// as a structure. The schema's field is map<string, string> and a reference
-		// is not a string, so a structure carrying one has nowhere to be put down —
-		// and putting the *resolved* value there would be worse than the error it
-		// avoids, since a proto struct field is exactly what `fmt` reflects into.
-		// It stays a Value until [httpRequestHeaders] hands it to the request.
-		var outputsSpec, expectSpec, headersSpec *Value
-		inputForPopulate := input
-		if _, hasOutputs := input["outputs"]; hasOutputs || input["expect"] != nil ||
-			input["headers"].GetStructure() != nil {
-			outputsSpec, expectSpec = input["outputs"], input["expect"]
-			if input["headers"].GetStructure() != nil {
-				headersSpec = input["headers"]
-			}
-			inputForPopulate = make(map[string]*Value, len(input))
-			for k, v := range input {
-				if k == "outputs" || k == "expect" {
-					continue
-				}
-				if k == "headers" && headersSpec != nil {
-					continue
-				}
-				inputForPopulate[k] = v
-			}
-		}
-
-		if err := populateProtoMessageFromValueMap(ctx, inputForPopulate, taskInputs, scope); err != nil {
-			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
-		}
-
-		var outputsExpr *expr.ParsedExpr
-		if outputsSpec != nil {
-			switch kind := outputsSpec.GetKind().(type) {
-			case *Value_Literal:
-				converted, err := literalToValueMap(kind.Literal)
-				if err != nil {
-					return nil, fmt.Errorf("invalid outputs literal: %w", err)
-				}
-				if len(converted) > 0 {
-					taskInputs.Outputs = converted
-				}
-			case *Value_Structure_:
-				// The mapping form, compiled entry by entry so its names survive
-				// into the specification. Each entry lands in the same field a
-				// literal map lands in and is evaluated by the same loop below —
-				// the shape the schema always had for this input, now reachable
-				// from a spelling that keeps its keys.
-				mapped := kind.Structure.GetMap()
-				if mapped == nil {
-					return nil, fmt.Errorf("outputs must be a mapping of names to values, not a list")
-				}
-				taskInputs.Outputs = mapped.GetEntries()
-			case *Value_Expr:
-				outputsExpr = kind.Expr
-			case *Value_Error_:
-				return nil, fmt.Errorf("invalid outputs specification: %s", kind.Error.GetMessage())
-			default:
-				return nil, fmt.Errorf("unsupported outputs specification kind: %T", kind)
-			}
-		}
-
-		// Enforce the constraints the schema declares (a valid URI, a known
-		// method). This is real validation: the previously generated validator
-		// was produced by a plugin that reads a different option set than the
-		// schema uses, so every check in it was a no-op.
-		if err := Validate(taskInputs); err != nil {
-			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
+		taskInputs, outputsExpr, expectSpec, headersSpec, err := httpPreparedInputs(ctx, input, scope)
+		if err != nil {
+			return nil, err
 		}
 
 		requestURL, err := applyQuery(taskInputs.GetUrl(), taskInputs.GetQuery())
@@ -490,138 +505,155 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			httpResp.Header[name] = values
 		}
 
-		// Parsing is opt-in, so a body that is not JSON is a real error here rather
-		// than a silently empty value: a step that asked for JSON and got HTML has a
-		// problem worth naming.
-		var parsedJSON *expr.Value
-		if taskInputs.GetParseJson() {
-			parsedJSON, err = parseJSONResponse(respBody)
-			if err != nil {
-				return nil, NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
-					"%s %s: %w", taskInputs.GetMethod(), taskInputs.GetUrl(), err))
-			}
+		return httpAnswerFromResponse(ctx, taskInputs, outputsExpr, expectSpec, httpResp, respBody, scope)
+	}
+}
 
-			// Bounded here, before anything below gets a chance to walk it: both
-			// `expect:` (httpExpectationMet, below) and `outputs:` (the
-			// evaluation further down) run a CEL expression directly against
-			// `response.json` *inside this function*, so
-			// [checkTaskOutputElementBound] at [Task.EvalInScope] — which only
-			// sees what this function returns — is too late to stop a
-			// comprehension over an oversized response from ever running. The
-			// byte cap on the body (see [netpolicy.Policy.ReadResponseBody])
-			// bounds bytes, not elements: a body well under it can still carry
-			// tens of thousands of small elements, exactly the asymmetry #204
-			// measured for the input side and #224 review found still open
-			// here for a task's own evaluation of its result.
-			if err := checkHTTPResponseElementBound(taskInputs.GetUrl(), parsedJSON); err != nil {
-				return nil, err
-			}
+// httpAnswerFromResponse is the response-dependent tail of the http task:
+// optional JSON parsing under the element bound, `expect:` deciding success,
+// and the step's own `outputs:` shaping — everything the task does once it
+// holds a status, headers, and a body, wherever they came from. One function
+// with two callers — [taskFuncHTTP] after a real request, and
+// [httpStubResponseFn] over a response a test declared — which is what makes a
+// stubbed response exercise the same shaping expressions a live one does
+// instead of bypassing them (#925).
+//
+// The caller owns everything transport: the request, the bounded body read,
+// and the credential scrub, which must happen before this observes the bytes.
+func httpAnswerFromResponse(ctx context.Context, taskInputs *Task_HTTP_Inputs, outputsExpr *expr.ParsedExpr, expectSpec *Value, httpResp *http.Response, respBody []byte, scope *Scope) (*Node_Outputs, error) {
+
+	// Parsing is opt-in, so a body that is not JSON is a real error here rather
+	// than a silently empty value: a step that asked for JSON and got HTML has a
+	// problem worth naming.
+	var parsedJSON *expr.Value
+	if taskInputs.GetParseJson() {
+		var err error
+		parsedJSON, err = parseJSONResponse(respBody)
+		if err != nil {
+			return nil, NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
+				"%s %s: %w", taskInputs.GetMethod(), taskInputs.GetUrl(), err))
 		}
 
-		respVars := httpResponseVars(httpResp, respBody, parsedJSON)
-
-		if err := httpExpectationMet(ctx, taskInputs, expectSpec, httpResp, respVars, scope); err != nil {
+		// Bounded here, before anything below gets a chance to walk it: both
+		// `expect:` (httpExpectationMet, below) and `outputs:` (the
+		// evaluation further down) run a CEL expression directly against
+		// `response.json` *inside this function*, so
+		// [checkTaskOutputElementBound] at [Task.EvalInScope] — which only
+		// sees what this function returns — is too late to stop a
+		// comprehension over an oversized response from ever running. The
+		// byte cap on the body (see [netpolicy.Policy.ReadResponseBody])
+		// bounds bytes, not elements: a body well under it can still carry
+		// tens of thousands of small elements, exactly the asymmetry #204
+		// measured for the input side and #224 review found still open
+		// here for a task's own evaluation of its result.
+		if err := checkHTTPResponseElementBound(taskInputs.GetUrl(), parsedJSON); err != nil {
 			return nil, err
 		}
+	}
 
-		// Default outputs mirror the response so a workflow can reference
-		// ${steps.<id>.status_code}, ${steps.<id>.body}, and ${steps.<id>.headers} without
-		// declaring an outputs expression.
-		defaultOuts := &Task_HTTP_Outputs{
-			StatusCode: int32(httpResp.StatusCode),
-			Body:       string(respBody),
-			Headers:    firstHeaderValues(httpResp.Header),
-			Json:       parsedJSON,
+	respVars := httpResponseVars(httpResp, respBody, parsedJSON)
+
+	if err := httpExpectationMet(ctx, taskInputs, expectSpec, httpResp, respVars, scope); err != nil {
+		return nil, err
+	}
+
+	// Default outputs mirror the response so a workflow can reference
+	// ${steps.<id>.status_code}, ${steps.<id>.body}, and ${steps.<id>.headers} without
+	// declaring an outputs expression.
+	defaultOuts := &Task_HTTP_Outputs{
+		StatusCode: int32(httpResp.StatusCode),
+		Body:       string(respBody),
+		Headers:    firstHeaderValues(httpResp.Header),
+		Json:       parsedJSON,
+	}
+
+	// If typed outputs provided (either as explicit map entries or via a CEL map expression),
+	// evaluate them using the response variables and return only those named values.
+	if len(taskInputs.Outputs) > 0 || outputsExpr != nil {
+		env, err := httpResponseEnv(scope.GetProfile())
+		if err != nil {
+			return nil, err
 		}
+		varAct, err := interpreter.NewActivation(respVars)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create activation: %w", err)
+		}
+		// The scope's own activation, which is what carries `vars.<name>` and a
+		// loop's iterator into here — and which sets Ctx, Eval and Profile, so a
+		// stored expression resolved while shaping these outputs stays
+		// cancellable, cost-bounded and pinned to the run's vocabulary. The
+		// hand-built one this replaces set the first two and dropped the rest.
+		//
+		// The response is the child, so it is asked first; see the same note in
+		// [httpExpectSatisfied].
+		act := interpreter.NewHierarchicalActivation(scope.Activation(ctx), varAct)
 
-		// If typed outputs provided (either as explicit map entries or via a CEL map expression),
-		// evaluate them using the response variables and return only those named values.
-		if len(taskInputs.Outputs) > 0 || outputsExpr != nil {
-			env, err := httpResponseEnv(scope.GetProfile())
-			if err != nil {
-				return nil, err
-			}
-			varAct, err := interpreter.NewActivation(respVars)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create activation: %w", err)
-			}
-			// The scope's own activation, which is what carries `vars.<name>` and a
-			// loop's iterator into here — and which sets Ctx, Eval and Profile, so a
-			// stored expression resolved while shaping these outputs stays
-			// cancellable, cost-bounded and pinned to the run's vocabulary. The
-			// hand-built one this replaces set the first two and dropped the rest.
+		if outputsExpr != nil {
+			// Through the shared evaluator, which is what applies the cost
+			// limit and makes the evaluation cancellable. Building a program
+			// here by hand did neither: an author's `outputs:` expression is
+			// the expression they most directly control, and it was the one
+			// place in the engine that ran unbounded.
 			//
-			// The response is the child, so it is asked first; see the same note in
-			// [httpExpectSatisfied].
-			act := interpreter.NewHierarchicalActivation(scope.Activation(ctx), varAct)
-
-			if outputsExpr != nil {
-				// Through the shared evaluator, which is what applies the cost
-				// limit and makes the evaluation cancellable. Building a program
-				// here by hand did neither: an author's `outputs:` expression is
-				// the expression they most directly control, and it was the one
-				// place in the engine that ran unbounded.
-				//
-				// Every failure below is classified, and that is not tidiness. An
-				// unwrapped error classifies as [ErrorKindInternal], which is
-				// *retryable* — so a typo in `outputs:` re-ran the whole attempt,
-				// and the whole attempt begins by sending the request again. A POST
-				// that had already succeeded was sent five times for a mistake no
-				// number of attempts could fix. [ErrorKind.Retryable] states the
-				// rule this was breaking: "Retrying a POST that already took effect
-				// is worse than surfacing a failure that might have resolved on its
-				// own." `expect:`, one file over, has classified all along.
-				out, err := DefaultEvaluator().EvalParsed(ctx, env, outputsExpr, act)
-				if err != nil {
-					return nil, NewTaskError("http", ErrorKindExpression,
-						fmt.Errorf("evaluating outputs: %w", err))
-				}
-				pv, err := cel.RefValueToValue(out)
-				if err != nil {
-					return nil, NewTaskError("http", ErrorKindExpression,
-						fmt.Errorf("converting the result of outputs: %w", err))
-				}
-				mv, ok := pv.GetKind().(*expr.Value_MapValue)
-				if !ok {
-					return nil, NewTaskError("http", ErrorKindExpression,
-						fmt.Errorf("outputs must evaluate to a map of names to values, got %s",
-							out.Type().TypeName()))
-				}
-				outputs := &Node_Outputs{NamedValues: make(map[string]*Value, len(mv.MapValue.Entries))}
-				for _, e := range mv.MapValue.Entries {
-					outputs.NamedValues[e.Key.GetStringValue()] = &Value{
-						Kind: &Value_Literal{Literal: e.Value},
-					}
-				}
-				return outputs, nil
+			// Every failure below is classified, and that is not tidiness. An
+			// unwrapped error classifies as [ErrorKindInternal], which is
+			// *retryable* — so a typo in `outputs:` re-ran the whole attempt,
+			// and the whole attempt begins by sending the request again. A POST
+			// that had already succeeded was sent five times for a mistake no
+			// number of attempts could fix. [ErrorKind.Retryable] states the
+			// rule this was breaking: "Retrying a POST that already took effect
+			// is worse than surfacing a failure that might have resolved on its
+			// own." `expect:`, one file over, has classified all along.
+			out, err := DefaultEvaluator().EvalParsed(ctx, env, outputsExpr, act)
+			if err != nil {
+				return nil, NewTaskError("http", ErrorKindExpression,
+					fmt.Errorf("evaluating outputs: %w", err))
 			}
-
-			outputs := &Node_Outputs{NamedValues: map[string]*Value{}}
-			for name, v := range taskInputs.Outputs {
-				switch k := v.GetKind().(type) {
-				case *Value_Expr:
-					// Same path as the whole-block form above, for the same reason.
-					out, err := DefaultEvaluator().EvalParsed(ctx, env, k.Expr, act)
-					if err != nil {
-						return nil, NewTaskError("http", ErrorKindExpression,
-							fmt.Errorf("evaluating output %q: %w", name, err))
-					}
-					pv, err := cel.RefValueToValue(out)
-					if err != nil {
-						return nil, NewTaskError("http", ErrorKindExpression,
-							fmt.Errorf("converting output %q: %w", name, err))
-					}
-					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: pv}}
-				case *Value_Literal:
-					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: k.Literal}}
-				default:
-					return nil, NewTaskError("http", ErrorKindInvalidInput,
-						fmt.Errorf("output %q is neither an expression nor a literal (%T)", name, v.GetKind()))
+			pv, err := cel.RefValueToValue(out)
+			if err != nil {
+				return nil, NewTaskError("http", ErrorKindExpression,
+					fmt.Errorf("converting the result of outputs: %w", err))
+			}
+			mv, ok := pv.GetKind().(*expr.Value_MapValue)
+			if !ok {
+				return nil, NewTaskError("http", ErrorKindExpression,
+					fmt.Errorf("outputs must evaluate to a map of names to values, got %s",
+						out.Type().TypeName()))
+			}
+			outputs := &Node_Outputs{NamedValues: make(map[string]*Value, len(mv.MapValue.Entries))}
+			for _, e := range mv.MapValue.Entries {
+				outputs.NamedValues[e.Key.GetStringValue()] = &Value{
+					Kind: &Value_Literal{Literal: e.Value},
 				}
 			}
 			return outputs, nil
 		}
 
-		return nodeOutputsFromProtoMessage(defaultOuts)
+		outputs := &Node_Outputs{NamedValues: map[string]*Value{}}
+		for name, v := range taskInputs.Outputs {
+			switch k := v.GetKind().(type) {
+			case *Value_Expr:
+				// Same path as the whole-block form above, for the same reason.
+				out, err := DefaultEvaluator().EvalParsed(ctx, env, k.Expr, act)
+				if err != nil {
+					return nil, NewTaskError("http", ErrorKindExpression,
+						fmt.Errorf("evaluating output %q: %w", name, err))
+				}
+				pv, err := cel.RefValueToValue(out)
+				if err != nil {
+					return nil, NewTaskError("http", ErrorKindExpression,
+						fmt.Errorf("converting output %q: %w", name, err))
+				}
+				outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: pv}}
+			case *Value_Literal:
+				outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: k.Literal}}
+			default:
+				return nil, NewTaskError("http", ErrorKindInvalidInput,
+					fmt.Errorf("output %q is neither an expression nor a literal (%T)", name, v.GetKind()))
+			}
+		}
+		return outputs, nil
 	}
+
+	return nodeOutputsFromProtoMessage(defaultOuts)
 }

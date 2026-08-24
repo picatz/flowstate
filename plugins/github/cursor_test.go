@@ -19,7 +19,7 @@ func TestCursorRoundTrips(t *testing.T) {
 		{page: 1, skip: 0},
 		{page: 1, skip: 9},
 		{page: 42, skip: 0},
-		{page: 1000000, skip: 100},
+		{page: 1000000, skip: maxPerPage - 1},
 	}
 
 	for _, c := range cases {
@@ -56,6 +56,8 @@ func TestDecodePageCursorRefusesGarbage(t *testing.T) {
 		{"too short", "AA"},
 		{"too long", strings.Repeat("A", 200)},
 		{"page zero", encodePageCursorRawForTest(0, 0, fp)},
+		{"skip at page size", encodePageCursorRawForTest(1, maxPerPage, fp)},
+		{"skip overflows int32", encodePageCursorRawForTest(1, 1<<31, fp)},
 		{"wrong magic", "X" + valid[1:]},
 		{"empty", ""},
 	}
@@ -76,19 +78,24 @@ func TestDecodePageCursorRefusesGarbage(t *testing.T) {
 	}
 }
 
-// encodePageCursorRawForTest builds a cursor with a page number
-// encodePageCursor itself would never be asked to encode (0) - reaching
-// past the normal constructor deliberately, the way plugins/git's own
-// cursor tests reach directly into decodeCursor to prove the structural
-// check fires regardless of how the bad value was produced. Duplicates
-// encodePageCursor's own packing by hand rather than calling it, since
-// encodePageCursor is production code that never needs to write an
-// out-of-range page number.
-func encodePageCursorRawForTest(page, skip int, fp fingerprint) string {
+// encodePageCursorRawForTest builds a cursor carrying a page or skip
+// encodePageCursor itself would never be asked to encode - page 0, or a
+// skip at or past maxPerPage - reaching past the normal constructor
+// deliberately, the way plugins/git's own cursor tests reach directly into
+// decodeCursor to prove the structural check fires regardless of how the
+// bad value was produced. Duplicates encodePageCursor's own packing by hand
+// rather than calling it, since encodePageCursor is production code that
+// never needs to write an out-of-range value.
+//
+// Both fields are uint32 rather than int on purpose: the wire format's own
+// types, so a case can name a value (1<<31, say) that no int-typed helper
+// could hand a 32-bit worker without wrapping on the way in - which would
+// test the conversion rather than the decoder.
+func encodePageCursorRawForTest(page, skip uint32, fp fingerprint) string {
 	buf := make([]byte, 0, cursorRawLen)
 	buf = append(buf, cursorMagic...)
-	buf = binary.BigEndian.AppendUint32(buf, uint32(page))
-	buf = binary.BigEndian.AppendUint32(buf, uint32(skip))
+	buf = binary.BigEndian.AppendUint32(buf, page)
+	buf = binary.BigEndian.AppendUint32(buf, skip)
 	buf = append(buf, fp[:]...)
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
@@ -151,14 +158,23 @@ func TestRequireCursorFingerprintRefusesMismatch(t *testing.T) {
 	}
 }
 
-// TestFilterFingerprintDoesNotCollideAcrossFieldBoundaries proves the nul
-// separator filterFingerprint uses actually prevents the concatenation
-// collision its own doc comment names: "a=1" then "b=" must not fingerprint
-// identically to "a=1b=" then "".
+// TestFilterFingerprintDoesNotCollideAcrossFieldBoundaries proves the
+// length prefixing filterFingerprint uses actually prevents the
+// concatenation collision its own doc comment names: "a=1" then "b=" must
+// not fingerprint identically to "a=1b=" then "".
+//
+// The nul-carrying pair is the case a separator cannot answer and a length
+// prefix can, which is why the prefix replaced it: with fields joined by a
+// nul byte, a field that CONTAINS one forges a boundary, so "a=1\x00b=2"
+// alone hashes exactly as "a=1" then "b=2" does.
 func TestFilterFingerprintDoesNotCollideAcrossFieldBoundaries(t *testing.T) {
-	a := filterFingerprint("a=1", "b=")
-	b := filterFingerprint("a=1b=", "")
-	if a == b {
-		t.Fatal("filterFingerprint collided across a field boundary")
+	if filterFingerprint("a=1", "b=") == filterFingerprint("a=1b=", "") {
+		t.Error("filterFingerprint collided across a field boundary")
+	}
+	if filterFingerprint("a=1\x00b=2") == filterFingerprint("a=1", "b=2") {
+		t.Error("filterFingerprint collided on a field carrying its own separator byte")
+	}
+	if filterFingerprint("a=") == filterFingerprint("a=", "") {
+		t.Error("filterFingerprint collided on a trailing empty field")
 	}
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -26,8 +25,8 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // exampleSecretSchemes are the schemes every example in the corpus may resolve
@@ -75,7 +74,7 @@ func exampleSecretProviders() []secrets.Provider {
 //   - It forces a Continue-As-New boundary between *every* step (StepsBudget=1), so
 //     an example with more than one step suspends and resumes at least once. That is
 //     the entire point: compaction only decides wrongly when there is a handover for
-//     it to decide at, and a bound nothing reaches is a bound nothing tests.
+//     it to decide at, and a bound nothing reaches is a bound nothing conformance.
 //   - It compares the answer against the local driver's answer for the same file.
 //     Invariant 3 says local runs exist to tell an author what production will do, so
 //     the honest check is not "the durable run succeeded" but "the durable run said
@@ -154,6 +153,43 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// agentic-loop's `review` gate is reached only when the turn spent more than
+	// `vars.token_budget`, and neither host this example names resolves, so no
+	// run here gets far enough to ask. The entry exists for the reason
+	// enterprise-fund-transfer's does: the gate is structural
+	// (`WaitsForASignal` sees the node regardless of `if:`), and every waiting
+	// example must answer in one of these two tables. The payload is the one
+	// this example's own `--signal` line documents, and the key its gate's
+	// `outputs:` shaping reads.
+	"agentic-loop": {
+		"turn-approved": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
+	// deployment-reconciler is kept finite by its own `max_passes` (1, in that
+	// example's `inputs.json`) rather than by this payload, and that division is
+	// deliberate. The example consumes a retirement in the *first* step of its
+	// loop body, before it observes or writes anything — which is the whole
+	// point of that ordering, since a retirement buffered across a
+	// Continue-As-New must not produce one last scale. So a `retired: true` here
+	// would end the run having exercised no read and no write, and the
+	// cross-driver comparison this harness exists for would be comparing two
+	// runs that did nothing.
+	//
+	// A spec change instead: it is consumed by the same wait, wakes the pass
+	// immediately (so the run does not sit out a resync interval on either
+	// driver), and leaves the pass reconciling — the stand-in reports fewer
+	// replicas than this asks for, so `observed`, `drift` and `converge` all run
+	// and both drivers are held to the same answer. The retirement path is the
+	// subject of that example's own `workflow.test.yaml`, where a virtual clock
+	// can place a signal before the first pass and assert nothing was scaled.
+	"deployment-reconciler": {
+		"spec-changed": {NamedValues: map[string]*v1.Value{
+			"desired_replicas": v1.NewLiteral(7),
+		}},
+	},
+
 	// enterprise-access-review's `attestation` gate checks the attested sender
 	// against `inputs.expected_reviewer` — this harness's fixed simulated
 	// identity ("examples"/"flowstate:test") never matches the
@@ -219,7 +255,7 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 
 	// Answered rather than lapsing, and it has to be: this gate's bound is
 	// `${timestamp(inputs.sign_off_by) > now ? ... : duration('0s')}`, so
-	// [tests.LapsesWithin] cannot promise it lapses inside the unattended budget
+	// [conformance.LapsesWithin] cannot promise it lapses inside the unattended budget
 	// — how long a computed timeout is, is not a property of the file. The
 	// example's subject is the length being computed at all, which the answered
 	// path shows as well as the lapsed one; `workflow.test.yaml` covers the lapse
@@ -251,6 +287,28 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// approval-escalation belongs here rather than in [exampleLapsingGates] for
+	// renewal-reminder's reason with one extra wrinkle. Its gate does lapse, and
+	// lapsing is half of what it demonstrates — but the chase's cadence is an
+	// hour and its budget is four asks, so an unanswered run takes four hours to
+	// reach its auto-reject and [conformance.LapsesWithin] rightly refuses to
+	// promise that inside [unattendedGateBudget]. Answering closes the chase on
+	// its first ask, which is the shape this shared table can express: it hands
+	// each name one delivery, and one is all an approval needs.
+	//
+	// The reminder cadence, the escalation to the backup approver and the
+	// budget-exhausted auto-reject are what the file's own workflow.test.yaml
+	// walks on the local driver's virtual clock, where a signal can be scripted
+	// for a named moment and the deadlines can be allowed to pass.
+	//
+	// The payload is the one this example's own `flow signal` line documents, and
+	// `approved` is the key its gate's `outputs:` shaping reads.
+	"approval-escalation": {
+		"approval-decision": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
 	// optional-dispatch's own workflow.test.yaml covers all three outcomes —
 	// approved, rejected, and the lapse — through the local driver, where the
 	// deadline can be moved and a signal with no `approved` key can be sent at
@@ -277,7 +335,7 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 // deadline passing, `timed_out` coming back true, and the run carrying on down the
 // branch written for that rather than failing.
 //
-// The claim is checked rather than trusted: [tests.LapsesWithin] asks the compiled
+// The claim is checked rather than trusted: [conformance.LapsesWithin] asks the compiled
 // workflow whether every gate in it lapses inside [unattendedGateBudget], so an
 // entry here for a file that would block — `approval-gate` lapses after a day — is
 // refused below instead of suspending the suite until its own timeout.
@@ -298,14 +356,10 @@ var exampleDurableSkips = map[string]string{}
 // TestEveryExampleRunsDurably runs every example through the durable driver, across
 // Continue-As-New, and checks the answer against the local driver's.
 func TestEveryExampleRunsDurably(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping: starts a real Temporal dev server; CI runs the full suite")
-	}
-
-	// One stand-in and one dev server for the whole corpus. Starting either per
+	// One stand-in and one namespace for the whole corpus. Starting either per
 	// example would dominate the wall time — the server takes seconds to boot and
 	// the examples take a second or two each — and neither has per-example state.
-	base, unserved := tests.NewExamplesHTTPServer(t)
+	base, unserved := conformance.NewExamplesHTTPServer(t)
 
 	// The worker capabilities the secret- and credential-using examples need.
 	// `http-secret`, `vault-secret`, `keychain-secret`, `onepassword-secret`, and
@@ -315,35 +369,32 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 	// path this harness should be exercising, since it is the one production uses.
 	//
 	// [exampleSecretSchemes] is a fixture store answering every scheme the corpus
-	// needs with the same value, built here rather than through [tests.Authority]
+	// needs with the same value, built here rather than through [conformance.Authority]
 	// because that helper resolves exactly one scheme and this corpus needs several
 	// — the same set [exampleSecretProviders] builds for the local-driver harness in
 	// examples_run_test.go, so a scheme reachable on one driver and not the other is
 	// exactly the disagreement this test exists to catch.
-	authority := tests.Authority{
+	authority := conformance.Authority{
 		Allow: []string{"true"},
 		Identity: auth.WorkloadIdentity{
 			Subject: "examples",
 			Issuer:  "flowstate:test",
 		},
-		Federation: &tests.Federation{Target: "partner-api", Token: "example-jit-token"},
 	}
 	secretStore, err := secrets.NewStore(exampleSecretProviders()...)
 	require.NoError(t, err)
+	// The broker is [conformance.ExamplesBroker] rather than this Authority's,
+	// for the reason the store above is built here: that helper configures
+	// exactly one target and this corpus names two, so a target registered on
+	// one driver's harness and not the other's is precisely the disagreement
+	// this test exists to catch rather than to cause.
 	runtime, err := engine.NewTaskRuntimeConfig(
-		secretStore, authority.Policy(t), authority.Broker(t))
+		secretStore, authority.Policy(t), conformance.ExamplesBroker(t))
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
+	temporal := newTemporalNamespace(t)
 
-	devServer, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
-		ClientOptions: &client.Options{},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
-
-	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
+	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
 	engine.Register(w, runtime)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
@@ -403,7 +454,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		// checkout` — which was a second answer to what an example needs, sitting
 		// beside the file a reader actually runs. Two answers drift, and the one
 		// nobody can reproduce is the harness's.
-		inputs, err := tests.BindExampleInputs(t, wf, path)
+		inputs, err := conformance.BindExampleInputs(t, wf, path)
 		if err != nil {
 			t.Errorf("%s cannot be started, so it is an example nobody can run: %v", name, err)
 
@@ -411,7 +462,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		}
 
 		signals := exampleSignals[name]
-		if tests.WaitsForASignal(wf.GetSteps()) {
+		if conformance.WaitsForASignal(wf.GetSteps()) {
 			_, lapsing := exampleLapsingGates[name]
 
 			skip := false
@@ -431,7 +482,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 				// `timeout:` blocks until the run ends, so an entry claiming a lapse for
 				// one would suspend this example until [exampleRunTimeout] and report a
 				// timeout instead of the mistake.
-				if !tests.LapsesWithin(wf.GetSteps(), unattendedGateBudget) {
+				if !conformance.LapsesWithin(wf.GetSteps(), unattendedGateBudget) {
 					t.Errorf("%s is listed as lapsing and has a gate this harness cannot sit through: either no "+
 						"`timeout:` at all, which blocks for as long as the run lasts, or one longer "+
 						"than %s", name, unattendedGateBudget)
@@ -459,8 +510,8 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		// drivers. A step this cannot point is not a step to run: it would reach the
 		// real host, which makes the suite depend on somebody else's service being up
 		// and fails outright on a machine with no egress.
-		if tests.ReachesTheNetwork(wf.GetSteps()) {
-			if unpointable := tests.PointAtStandIn(wf.GetSteps(), base); len(unpointable) > 0 {
+		if conformance.ReachesTheNetwork(wf.GetSteps()) {
+			if unpointable := conformance.PointAtStandIn(wf.GetSteps(), base); len(unpointable) > 0 {
 				t.Errorf("%s has an http step this test cannot point at the stand-in, so running it would reach "+
 					"the real host; give the step a literal url, or teach PointAtStandIn the shape it uses: %v",
 					name, unpointable)
@@ -495,8 +546,8 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// before it failed is the shape only this harness can reach —
 			// `RunState.pending_undo` is the field that makes it work, and a run that
 			// never suspends never reads it.
-			if want, fails := tests.ExampleFailure(name); fails {
-				assertFailingExampleAgrees(t, devServer.Client(), "example-failing-"+name, name, want,
+			if want, fails := conformance.ExampleFailure(name); fails {
+				assertFailingExampleAgrees(t, temporal, "example-failing-"+name, name, want,
 					localSpec, suspendingSpec, inputs, authority, secretStore, signals)
 
 				mu.Lock()
@@ -516,7 +567,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// handed over, so nothing was compacted away, and any difference is a real
 			// disagreement between the drivers rather than carryover trimming.
 			whole, wholeCrossings := runExampleDurably(t,
-				devServer.Client(), "example-whole-"+name, name, wholeSpec, inputs, signals, 0)
+				temporal, "example-whole-"+name, name, wholeSpec, inputs, signals, 0)
 			assert.Zero(t, wholeCrossings,
 				"%s continued as new on the default budget, so the comparison below is against a "+
 					"compacted answer rather than a whole one", name)
@@ -537,7 +588,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// handover, which is how the output-declaration pruning bug survived
 			// examples CI.
 			suspended, crossings := runExampleDurably(t,
-				devServer.Client(), "example-"+name, name, suspendingSpec, inputs, signals, 1)
+				temporal, "example-"+name, name, suspendingSpec, inputs, signals, 1)
 
 			mu.Lock()
 			crossed[name] = crossings
@@ -574,13 +625,13 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		// An example's default arguments are one path through it. order-fulfillment's
 		// compensation — the property that example exists to demonstrate — is
 		// reached only by overriding `carrier_outage`, which the default run never
-		// does, so it needs its own invocation the way [tests.ExampleFailure]'s one
-		// entry gets one for free. See [tests.ExampleVariants].
-		for _, variant := range tests.ExampleVariants(name) {
+		// does, so it needs its own invocation the way [conformance.ExampleFailure]'s one
+		// entry gets one for free. See [conformance.ExampleVariants].
+		for _, variant := range conformance.ExampleVariants(name) {
 			t.Run(name+"/"+variant.Name, func(t *testing.T) {
 				t.Parallel()
 
-				runVariantDurably(t, devServer.Client(), name, variant,
+				runVariantDurably(t, temporal, name, variant,
 					cloneSpec(t, wf), cloneSpec(t, wf), inputs, authority, secretStore, signals)
 			})
 		}
@@ -650,7 +701,7 @@ func runExampleDurably(
 			Workflow:    spec,
 			Inputs:      inputs,
 			StepsBudget: budget,
-			Identity: (&tests.Authority{
+			Identity: (&conformance.Authority{
 				Identity: auth.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
 			}).ProtoIdentity(),
 
@@ -728,7 +779,7 @@ func runExampleLocally(
 	t *testing.T,
 	spec *v1.Workflow,
 	inputs map[string]*v1.Value,
-	authority tests.Authority,
+	authority conformance.Authority,
 	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) *v1.Workflow_StepOutputs {
@@ -740,7 +791,7 @@ func runExampleLocally(
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store:    secretStore,
 		Policy:   authority.Policy(t),
-		Broker:   authority.Broker(t),
+		Broker:   conformance.ExamplesBroker(t),
 		Identity: authority.Identity,
 		Step:     auth.StepRef{Workflow: spec.GetName(), Run: "example-run"},
 	})
@@ -752,7 +803,7 @@ func runExampleLocally(
 	// needs the channel to exist in order to go unanswered on it. Durably the
 	// equivalent is free: a Temporal workflow can always be signalled, so an empty
 	// map there simply means nobody did.
-	if tests.WaitsForASignal(spec.GetSteps()) {
+	if conformance.WaitsForASignal(spec.GetSteps()) {
 		waiter := v1.NewLocalSignals()
 		for signal, payload := range signals {
 			// Delivered before the run starts, for the reason the durable side signals
@@ -1054,18 +1105,18 @@ func TestAnExampleWithNoInputsFileIsRefusedRatherThanCapped(t *testing.T) {
 	require.NoError(t, err)
 
 	// The example as it ships: the file beside it answers what it declares.
-	bound, err := tests.BindExampleInputs(t, wf, path)
+	bound, err := conformance.BindExampleInputs(t, wf, path)
 	require.NoError(t, err, "the example's own inputs.json no longer answers its declarations")
 	require.Equal(t, "checkout", bound["service"].GetLiteral().GetStringValue())
 
 	// The same specification, read from a directory holding no inputs.json — which is
 	// what a new example demonstrating a required input looks like before anyone
 	// writes one.
-	_, err = tests.BindExampleInputs(t, wf, filepath.Join(t.TempDir(), "workflow.yaml"))
+	_, err = conformance.BindExampleInputs(t, wf, filepath.Join(t.TempDir(), "workflow.yaml"))
 	require.Error(t, err,
 		"an example whose required inputs nothing answers was accepted, so a run of it would be "+
 			"skipped or invented rather than reported")
-	require.ErrorContains(t, err, tests.ExampleInputsFile,
+	require.ErrorContains(t, err, conformance.ExampleInputsFile,
 		"the refusal does not name the file convention, so an author is told what is missing "+
 			"without being told where to write it")
 	require.ErrorContains(t, err, `input "service" is required`)
@@ -1096,7 +1147,7 @@ func assertFailingExampleAgrees(
 	id, name, want string,
 	localSpec, durableSpec *v1.Workflow,
 	inputs map[string]*v1.Value,
-	authority tests.Authority,
+	authority conformance.Authority,
 	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) {
@@ -1116,7 +1167,7 @@ func assertFailingExampleAgrees(
 			Workflow:    durableSpec,
 			Inputs:      inputs,
 			StepsBudget: 1,
-			Identity: (&tests.Authority{
+			Identity: (&conformance.Authority{
 				Identity: auth.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
 			}).ProtoIdentity(),
 
@@ -1145,7 +1196,7 @@ func assertFailingExampleAgrees(
 }
 
 // runVariantDurably runs one of an example's additional invocations — see
-// [tests.ExampleVariants] — across both drivers, in its own namespace so it
+// [conformance.ExampleVariants] — across both drivers, in its own namespace so it
 // cannot collide with the example's own default run.
 //
 // Only the failing shape is implemented, because it is the only one a variant
@@ -1159,10 +1210,10 @@ func runVariantDurably(
 	t *testing.T,
 	c client.Client,
 	name string,
-	variant tests.ExampleVariant,
+	variant conformance.ExampleVariant,
 	localSpec, durableSpec *v1.Workflow,
 	inputs map[string]*v1.Value,
-	authority tests.Authority,
+	authority conformance.Authority,
 	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) {
@@ -1184,7 +1235,7 @@ func runFailingExampleLocally(
 	t *testing.T,
 	spec *v1.Workflow,
 	inputs map[string]*v1.Value,
-	authority tests.Authority,
+	authority conformance.Authority,
 	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) error {
@@ -1196,7 +1247,7 @@ func runFailingExampleLocally(
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store:    secretStore,
 		Policy:   authority.Policy(t),
-		Broker:   authority.Broker(t),
+		Broker:   conformance.ExamplesBroker(t),
 		Identity: authority.Identity,
 		Step:     auth.StepRef{Workflow: spec.GetName(), Run: "example-run"},
 	})

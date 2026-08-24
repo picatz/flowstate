@@ -276,7 +276,7 @@ func TestIssueListCursorRefusesMismatchedBaseURL(t *testing.T) {
 	client := newPagedTestServer(t, 20, 4, issueJSON)
 
 	p := stableIssueListParams(5)
-	p.baseURL = "https://github.example.com/api/v3"
+	p.apiBase = "https://github.example.com/api/v3"
 	_, _, cursor, err := doIssueList(context.Background(), client, "o", "r", p)
 	if err != nil {
 		t.Fatalf("producing a cursor: unexpected error: %v", err)
@@ -286,7 +286,7 @@ func TestIssueListCursorRefusesMismatchedBaseURL(t *testing.T) {
 	}
 
 	mismatched := stableIssueListParams(5)
-	mismatched.baseURL = "https://github.other-example.com/api/v3"
+	mismatched.apiBase = "https://github.other-example.com/api/v3"
 	mismatched.cursor = cursor
 	_, _, _, err = doIssueList(context.Background(), client, "o", "r", mismatched)
 	if err == nil {
@@ -299,7 +299,7 @@ func TestIssueListCursorRefusesMismatchedBaseURL(t *testing.T) {
 	// A trailing-slash difference alone must NOT trip this - normalizeBaseURL
 	// exists precisely so "https://x" and "https://x/" fingerprint identically.
 	trailingSlash := stableIssueListParams(5)
-	trailingSlash.baseURL = "https://github.example.com/api/v3/"
+	trailingSlash.apiBase = "https://github.example.com/api/v3/"
 	trailingSlash.cursor = cursor
 	if _, _, _, err := doIssueList(context.Background(), client, "o", "r", trailingSlash); err != nil {
 		t.Fatalf("doIssueList with a merely trailing-slash-different base_url: unexpected error: %v", err)

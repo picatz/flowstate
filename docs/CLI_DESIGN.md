@@ -453,7 +453,7 @@ three sections say where they do not.
 
 ## 4. Other surfaces derive from the same structure
 
-The protobuf messages under `proto/flowstate/v1/flowstate.proto` **are** the view
+The protobuf messages in the schema under `proto/flowstate/v1/` **are** the view
 model. `flow get`'s text form and `flow get -o json`'s document are two renderings
 of one `GetResponse`; a web dashboard, a VS Code extension, or an MCP-served UI
 rendering the same run is a third, fourth, and fifth renderer of the identical
@@ -491,7 +491,7 @@ support beyond the four named clients is not something this audit verified beyon
 the announcement's own claim, and should be treated as unconfirmed until checked
 against whatever MCP client the next slice targets.
 
-What this makes easy for `flow mcp`: the nine RPC-projected tools already return
+What this makes easy for `flow mcp`: the RPC-projected tools already return
 protojson built from the same messages this document's views render, so a `ui://`
 resource for, say, a run's progress would consume `GetResponse` exactly as
 `writeRun` does today — no new data path, only a new renderer subscribing to data
@@ -582,7 +582,7 @@ a graph is the moment a non-Go consumer needs one, with every field renamed by
 hand to match. The graph shape is schema from the start, exactly like
 `RunProgress` and `Diagnostic` already are.
 
-`proto/flowstate/v1/flowstate.proto` gains three additive messages (new
+The schema under `proto/flowstate/v1/` gains three additive messages (new
 messages, no changes to anything existing — safe under `buf breaking` the way
 every other addition in this schema is):
 
@@ -930,7 +930,7 @@ validate`'s diagnostics view, and `flow get`/`flow watch`'s pill-opened summary
 line. What is not: everything below.
 
 1. **The graph schema** (section 6.1): additive `Graph`, `GraphNode`, `GraphEdge`
-   messages in `proto/flowstate/v1/flowstate.proto` — node kind and edge kind
+   messages in the schema under `proto/flowstate/v1/` — node kind and edge kind
    enums, the path-qualified `id`/display `label` split section 6.2 requires,
    `depth`. No run-state fields yet — see slice 3. `buf generate`, `buf
    breaking` (additive messages are safe by construction, verified rather than

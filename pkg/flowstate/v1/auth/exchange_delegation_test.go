@@ -1,0 +1,305 @@
+package auth_test
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+)
+
+// TestDelegatedTokenExchange covers the RFC 8693 delegation case: a workload
+// obtaining a credential while acting for somebody else, with both identities
+// on the wire so the authorization server can record the pair.
+//
+// The direction is the whole point and is the opposite of the intuitive
+// reading, so it is asserted rather than described: the delegator is the
+// *subject*, and the Flowstate assertion — the party actually making the call —
+// is the *actor*.
+func TestDelegatedTokenExchange(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	// The delegator's token comes from an identity provider that is not us,
+	// which is the situation the parameter exists for.
+	delegatorIssuer := newTestIssuer(t, authtest.WithClock(clock.Now))
+	delegatorToken := delegatorIssuer.MintToken(delegatorIssuer.Claims(
+		authtest.WithSubject("alice@example.com"),
+		authtest.WithAudience("https://as.example.com"),
+	))
+
+	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token":      "delegated-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
+		})
+	})
+
+	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL:        party.url + "/token",
+		Audience:        "https://as.example.com",
+		Clock:           clock.Now,
+		AllowDelegation: true,
+		Delegator: func(context.Context) (auth.Material, string, error) {
+			return auth.NewSingleMaterial(delegatorToken), "", nil
+		},
+	})
+	require.NoError(t, err)
+
+	assertion := mintAssertion(t, issuer, exchanger.Requirement().Audience)
+
+	credential, err := exchanger.Exchange(t.Context(), assertion)
+	require.NoError(t, err)
+
+	sent := party.last(t)
+	require.Equal(t, "urn:ietf:params:oauth:grant-type:token-exchange", sent.form.Get("grant_type"))
+
+	// RFC 8693 §2.1: the subject is the party being acted for, and the actor is
+	// the party doing the acting.
+	require.Equal(t, delegatorToken, sent.form.Get("subject_token"),
+		"the delegator is the subject of a delegated exchange")
+	require.Equal(t, "urn:ietf:params:oauth:token-type:jwt", sent.form.Get("subject_token_type"))
+	require.Equal(t, assertion.Token(), sent.form.Get("actor_token"),
+		"the workload's own assertion is the actor")
+	require.Equal(t, "urn:ietf:params:oauth:token-type:jwt", sent.form.Get("actor_token_type"))
+
+	bearer, ok := credential.Bearer()
+	require.True(t, ok)
+	require.Equal(t, "delegated-token", bearer)
+
+	// An undelegated exchanger sends no actor token at all, so the two shapes
+	// are distinguishable on the wire rather than only in configuration.
+	plain, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL: party.url + "/token",
+		Audience: "https://as.example.com",
+		Clock:    clock.Now,
+	})
+	require.NoError(t, err)
+
+	_, err = plain.Exchange(t.Context(), assertion)
+	require.NoError(t, err)
+
+	sent = party.last(t)
+	require.Equal(t, assertion.Token(), sent.form.Get("subject_token"))
+	require.Empty(t, sent.form.Get("actor_token"))
+	require.Empty(t, sent.form.Get("actor_token_type"))
+}
+
+// TestDelegatedCredentialsAreNotSharedBetweenDelegators is the negative
+// direction for the credential cache: not that a delegator gets its own
+// credential, but that it cannot be handed somebody else's.
+//
+// The cache is keyed on the workload identity and target, which is the whole of
+// what determines an undelegated exchange. A delegated one also depends on the
+// party being acted for, and that key cannot tell two of them apart — so the
+// same workload, step and target acting first for alice and then for bob would
+// serve bob whatever the authorization server minted for alice, inside the
+// credential's lifetime and with no exchange at all.
+func TestDelegatedCredentialsAreNotSharedBetweenDelegators(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	delegatorIssuer := newTestIssuer(t, authtest.WithClock(clock.Now))
+	tokenFor := func(subject string) string {
+		return delegatorIssuer.MintToken(delegatorIssuer.Claims(
+			authtest.WithSubject(subject),
+			authtest.WithAudience("https://as.example.com"),
+		))
+	}
+
+	// The authorization server mints a credential naming whoever the subject
+	// token names, which is what makes a mix-up visible in the result.
+	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
+		principal, err := auth.NewOIDCVerifier(
+			auth.Policy{
+				Issuers: []auth.TrustedIssuer{{
+					Name:      "delegators",
+					Issuer:    delegatorIssuer.URL(),
+					Audiences: []string{"https://as.example.com"},
+				}},
+			},
+			auth.WithClock(clock.Now),
+		)
+		require.NoError(t, err)
+
+		verified, err := principal.Verify(r.Context(), r.PostFormValue("subject_token"))
+		require.NoError(t, err)
+
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token":      "credential-for-" + verified.Subject,
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
+		})
+	})
+
+	// One exchanger, whose delegator is whoever the current request is acting
+	// for — the shape an agent serving several people has.
+	var acting string
+	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL:        party.url + "/token",
+		Audience:        "https://as.example.com",
+		Clock:           clock.Now,
+		AllowDelegation: true,
+		Delegator: func(context.Context) (auth.Material, string, error) {
+			return auth.NewSingleMaterial(tokenFor(acting)), "", nil
+		},
+	})
+	require.NoError(t, err)
+
+	broker, err := auth.NewBroker(issuer,
+		auth.WithTarget("partner", exchanger),
+		auth.WithAssumeAllowRules("true"),
+		auth.WithBrokerClock(clock.Now),
+	)
+	require.NoError(t, err)
+
+	// Same workload, same step, same target, twice — the cache hit.
+	acting = "alice@example.com"
+	first, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
+	require.NoError(t, err)
+	alice, ok := first.Bearer()
+	require.True(t, ok)
+	require.Equal(t, "credential-for-alice@example.com", alice)
+
+	acting = "bob@example.com"
+	second, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
+	require.NoError(t, err)
+	bob, ok := second.Bearer()
+	require.True(t, ok)
+
+	require.Equal(t, "credential-for-bob@example.com", bob,
+		"a delegated credential must never be served from a cache that cannot tell two delegators apart")
+	require.NotEqual(t, alice, bob, "bob must not receive alice's credential")
+}
+
+// TestUndelegatedCredentialsAreStillCached is the other half, so the fix above
+// cannot be satisfied by simply never caching: an ordinary exchange has nothing
+// beyond the workload and target to key on, and still gets one exchange.
+func TestUndelegatedCredentialsAreStillCached(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	var exchanges int
+	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
+		exchanges++
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
+		})
+	})
+
+	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL: party.url + "/token",
+		Audience: "https://as.example.com",
+		Clock:    clock.Now,
+	})
+	require.NoError(t, err)
+
+	broker, err := auth.NewBroker(issuer,
+		auth.WithTarget("partner", exchanger),
+		auth.WithAssumeAllowRules("true"),
+		auth.WithBrokerClock(clock.Now),
+	)
+	require.NoError(t, err)
+
+	for range 3 {
+		_, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 1, exchanges, "an undelegated exchange is still cached")
+}
+
+// TestDelegatedTokenExchangeFailsClosed covers what a delegated exchange must
+// never degrade into.
+//
+// Falling back to the undelegated form would send the delegator's authority
+// request without saying who was acting, and the authorization server would
+// return a credential it believed the delegator itself had asked for. That is
+// impersonation arriving through an error path, so every one of these refuses
+// the exchange instead.
+func TestDelegatedTokenExchangeFailsClosed(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	var reached bool
+	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
+		reached = true
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token":      "should-never-be-issued",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
+		})
+	})
+
+	tests := []struct {
+		name      string
+		delegator auth.DelegatorTokenFunc
+	}{
+		{
+			name: "the delegator's token could not be acquired",
+			delegator: func(context.Context) (auth.Material, string, error) {
+				return auth.Material{}, "", errors.New("the session has expired")
+			},
+		},
+		{
+			name: "there is no delegator token to act for",
+			delegator: func(context.Context) (auth.Material, string, error) {
+				return auth.Material{}, "", nil
+			},
+		},
+		{
+			name: "the delegator's token is empty",
+			delegator: func(context.Context) (auth.Material, string, error) {
+				return auth.NewSingleMaterial(""), "", nil
+			},
+		},
+		{
+			// The declared type is a claim about the value; an opaque blob sent
+			// as a JWT subject token would make the authorization server's
+			// answer about something other than what this profile said it was
+			// asking with.
+			name: "the delegator's token is declared a JWT but is not one",
+			delegator: func(context.Context) (auth.Material, string, error) {
+				return auth.NewSingleMaterial("an-opaque-session-blob"), "", nil
+			},
+		},
+		{
+			name: "a delegator token with an empty middle segment is not a JWT",
+			delegator: func(context.Context) (auth.Material, string, error) {
+				return auth.NewSingleMaterial("aGVhZGVy..c2ln"), "", nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reached = false
+
+			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+				TokenURL:        party.url + "/token",
+				Audience:        "https://as.example.com",
+				Clock:           clock.Now,
+				AllowDelegation: true,
+				Delegator:       test.delegator,
+			})
+			require.NoError(t, err)
+
+			credential, err := exchanger.Exchange(t.Context(),
+				mintAssertion(t, issuer, exchanger.Requirement().Audience))
+			require.ErrorIs(t, err, auth.ErrExchangeFailed)
+			require.True(t, credential.IsZero(), "a refused exchange must produce no credential")
+			require.False(t, reached, "the authorization server must not be asked at all")
+		})
+	}
+}

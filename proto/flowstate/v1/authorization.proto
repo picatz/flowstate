@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// The authorization action vocabulary: the one closed list of operations this
+// deployment can be asked to perform, and the one spelling of each.
+//
+// This is picatz/flowstate#567's D1, answered: "One proto-owned action list,
+// read by policy, by the protected-resource metadata, and by ceremonies —
+// decided before S5 and S7 each bake in a spelling." Three consumers were
+// heading for three lists — #558's `scopes_supported` and its
+// `insufficient_scope` challenges, #557's ceremony rules, and #548's policy
+// surfaces all name operations — and three lists means a step-up challenge and
+// the policy that provoked it name one operation differently, with no claim
+// mapping able to bridge a split we created ourselves.
+//
+// It lives in flowstate.v1 rather than in a package of its own because the
+// thing it is a vocabulary *of* is this package's service: every action here
+// is reached through flowstate.v1.WorkflowService or through the MCP surface
+// projected from it, and a vocabulary one `buf breaking` run away from the
+// RPCs it names cannot drift apart from them. It lives in its own file, and
+// not in service.proto, because the service describes what the RPCs *are*
+// while this describes what they are *authorized as* — a distinction #567
+// needs to keep, since a later action may gate something that is not an RPC at
+// all (mcp.run_local and mcp.test already are).
+//
+// What is deliberately absent is the rest of an authorization model. There is
+// no principal message, no request, no resource, no decision, and no policy
+// evaluator here: those are D1's *consumers*, and a principal shipped now
+// would have to spell the delegation edge, which is #567's D2 — "the track's
+// one nearly-irreversible move", still open. A field name in a public schema
+// that `buf breaking` guards is not a thing to guess at.
+//
+// The cost of choosing an enum: adding an action is a schema change and a
+// regeneration rather than a line in a Go slice. That is the point — the list
+// is closed, and `buf breaking` refuses a rename, so the spelling a client
+// requested a token for yesterday is the spelling policy reads tomorrow.
+
+// AuthorizationAction is the closed list itself. Each value is one operation
+// a caller may be authorized to perform.
+//
+// The OAuth scope value for an action is derived from the value's own name and
+// written down nowhere else: strip the AUTHORIZATION_ACTION_ prefix, lowercase
+// it, and turn the first underscore into a dot, so
+// AUTHORIZATION_ACTION_WORKLOAD_RUN is the scope `workload.run` and
+// AUTHORIZATION_ACTION_MCP_RUN_LOCAL is `mcp.run_local`. Everything before the
+// first underscore is therefore the group, and the derivation is what lets
+// RFC 9728 metadata publish this list without a second copy of it existing
+// anywhere (see AuthorizationActionScope in pkg/flowstate/v1/authorization.go).
+//
+// The names are bare rather than URI- or `flowstate:`-prefixed. A scope value
+// is global within an authorization server, so a bare `schedule.read` can
+// collide with another resource server's scope at a shared IdP; the cost is
+// accepted because every token this deployment accepts is already bound by
+// RFC 8707 to this resource's own identifier, so a colliding scope cannot
+// arrive on a token that is admitted here anyway — and a prefix would put a
+// second spelling between the scope a client requests and the action a CEL
+// rule names, which is precisely the split D1 exists to prevent.
+//
+// Internal enforcement points — secret access, egress, credential assumption —
+// have their own policy surfaces already (auth.SecretAccessPolicy,
+// netpolicy, auth.assume) and are deliberately not named here. An action with
+// no place that consults it is a spelling nothing reads, and this list is the
+// one place that must not accumulate those.
+enum AuthorizationAction {
+  AUTHORIZATION_ACTION_UNSPECIFIED = 0;
+
+  // Starting work: Run and SignalWithStart, which starts a run.
+  AUTHORIZATION_ACTION_WORKLOAD_RUN = 1;
+
+  // Reading a run: Get and List.
+  AUTHORIZATION_ACTION_WORKLOAD_READ = 2;
+
+  // Signaling a run that is already going.
+  AUTHORIZATION_ACTION_WORKLOAD_SIGNAL = 3;
+
+  // Asking a run to stop, letting its compensation run.
+  AUTHORIZATION_ACTION_WORKLOAD_CANCEL = 4;
+
+  // Stopping a run without letting it wind down.
+  AUTHORIZATION_ACTION_WORKLOAD_TERMINATE = 5;
+
+  // Checking a Flowfile. Reaches no run and no tenant.
+  AUTHORIZATION_ACTION_WORKLOAD_VALIDATE = 6;
+
+  // Compiling a Flowfile to the execution plan it describes.
+  AUTHORIZATION_ACTION_WORKLOAD_COMPILE = 7;
+
+  // Reading what this deployment can execute.
+  AUTHORIZATION_ACTION_CATALOG_READ = 8;
+
+  AUTHORIZATION_ACTION_SCHEDULE_CREATE = 9;
+  AUTHORIZATION_ACTION_SCHEDULE_READ = 10;
+  AUTHORIZATION_ACTION_SCHEDULE_DELETE = 11;
+  AUTHORIZATION_ACTION_SCHEDULE_PAUSE = 12;
+  AUTHORIZATION_ACTION_SCHEDULE_RESUME = 13;
+
+  // Running a schedule's workflow now, out of band.
+  AUTHORIZATION_ACTION_SCHEDULE_TRIGGER = 14;
+
+  // Executing a submitted workflow in the process serving the tool. No RPC
+  // has this effect, which is why the action exists separately.
+  AUTHORIZATION_ACTION_MCP_RUN_LOCAL = 15;
+
+  // Rehearsing a submitted workflow against stubs. No RPC either.
+  AUTHORIZATION_ACTION_MCP_TEST = 16;
+}
+
+// AuthorizationActionBinding says which operations one action covers.
+//
+// The bindings are what keep the vocabulary attached to the surfaces it is a
+// vocabulary of: TestEveryRPCHasExactlyOneAuthorizationAction walks
+// flowstate.v1.WorkflowService's descriptor and fails when an RPC is named by
+// no binding or by two, so an RPC added to the schema cannot arrive without an
+// action, and a binding cannot name an RPC the service no longer declares.
+//
+// rpcs holds RPC names only. The MCP tool projected from an RPC is derived
+// from the RPC name and is deliberately not listed: which tools a given MCP
+// surface registers is a registration decision (`flow mcp serve` serves a
+// deliberately reduced list — see docs/MCP_AUTHORIZATION.md), not a
+// vocabulary one, and a column asserting an MCP path per RPC would be
+// asserting a fact about registration that this file cannot see.
+message AuthorizationActionBinding {
+  // The action being bound. Never UNSPECIFIED: a binding with no action is a
+  // mapping to nothing.
+  AuthorizationAction action = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+
+  // The action whose authority this one escalates, when it escalates one:
+  // terminate is a harder cancel, compile goes further than validate, and
+  // triggering a schedule starts a run. UNSPECIFIED means the action stands
+  // alone. Nothing enforces the lineage yet; it is recorded here so that the
+  // step-up challenge and the policy that provokes it read one relation.
+  AuthorizationAction parent = 2 [(buf.validate.field).enum.defined_only = true];
+
+  // The WorkflowService methods this action covers, by their schema names.
+  repeated string rpcs = 3 [(buf.validate.field).repeated = {
+    unique: true
+    max_items: 8
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^[A-Z][A-Za-z0-9]*$"
+      }
+    }
+  }];
+
+  // The MCP tools this action covers that no RPC projects, by their full tool
+  // names. Held to the tools actually registered by a test in cmd/flow, which
+  // is where registration happens and therefore the only place that can tell.
+  repeated string mcp_tools = 4 [(buf.validate.field).repeated = {
+    unique: true
+    max_items: 8
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^[a-z][a-z0-9_]*$"
+      }
+    }
+  }];
+}

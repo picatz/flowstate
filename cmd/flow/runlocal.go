@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"time"
 
@@ -40,10 +41,12 @@ import (
 // because it is the only verb that both narrates a run and produces its result, in
 // one process, at the same time.
 func runLocalWorkflow(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
 	}
+
+	format := rendering.format
 
 	// Before the policies load and before any plugin process starts, because
 	// those are work, and the venue is announced before a run does any. The
@@ -51,6 +54,37 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// because there is none to name, which is the whole difference between the
 	// two venues said in one word. See venue.go.
 	announceVenue(cmd, localVenue())
+
+	// Telemetry, which this command reached for and never started.
+	//
+	// [startTelemetry] had exactly two callers — [temporalConfig] and the RPC
+	// client's constructor — and a local run touches neither: it dials no
+	// Temporal cluster and makes no RPC. So every span this driver opens, and
+	// every `log:` record [telemetryLogHandler] bridges below, went to the
+	// global no-op provider in the one invocation that had asked for telemetry
+	// by pointing OTEL_EXPORTER_OTLP_* somewhere. That is CLAUDE.md's "a
+	// capability is not done until it is reachable" in its exact shape: the
+	// spans existed, the tests that recorded them installed their own provider,
+	// and the command a person actually types installed none.
+	//
+	// Before [telemetryLogHandler] is built further down, which is the ordering
+	// the other two call sites already state for their own reason: an instrument
+	// built ahead of this captures the no-op globals and keeps them for the life
+	// of the process.
+	//
+	// Off unless the operator configured an endpoint — no exporter, no provider,
+	// no spans — and a warning rather than a refusal when it is configured and
+	// cannot start, for the reason the client states best: the command a person
+	// asked for is `flow run local`, not `flow run local with tracing`, and a
+	// mistyped endpoint should cost them the trace rather than the rehearsal.
+	//
+	// Nothing is flushed here. [main] calls [flushTelemetry] after every command
+	// returns, precisely because a command that lives for a second is shorter
+	// than a batch exporter's window — which is this command exactly.
+	if _, err := startTelemetry(cmd.Context()); err != nil {
+		log.Printf("WARNING: telemetry is configured but could not be started, "+
+			"so this run emits no trace: %v", err)
+	}
 
 	// The same flag the worker takes, because a rehearsal under a different egress
 	// policy rehearses a different production. A file that does not load refuses
@@ -97,7 +131,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// plugin providing it is loaded. This is the same [startPlugins] the worker,
 	// the server, `flow task run`, `flow plugins`, `flow mcp` and `flow lsp` all
 	// call, with the same discovery hardening, the same handshake and the same
-	// refusal of a world-writable directory. A local run that discovered plugins
+	// refusal of a directory other users can write to. A local run that discovered plugins
 	// its own way would be rehearsing a different deployment.
 	catalog, closePlugins, err := startPlugins(cmd, providers.registry)
 	if err != nil {
@@ -159,8 +193,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	//
 	// And to a collector when one is configured, so that the two drivers agree about
 	// where a `log:` line ends up: the durable driver exports the same records from
-	// the worker. What differs is the trace id, and unavoidably — a local run makes
-	// no RPC and opens no span, so its records have no trace to belong to.
+	// the worker. The trace id agrees too, since #523's gap 3 — the local driver
+	// opens the same `flowstate.task/<name>` span around the step, so the record
+	// carries the trace of the step that emitted it here as well.
 	surface := newSurface(cmd)
 	ctx = v1.ContextWithLogger(ctx,
 		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))
@@ -193,8 +228,12 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// The text shape still writes nothing, and that is not an inconsistency: an
 		// empty stdout is a meaningful value there, because the answer is the outputs
 		// and a failed run has none. `{}` would claim it produced none *successfully*.
-		if format.Machine() {
-			if err := writeJSON(surface, format, response); err != nil {
+		//
+		// rendering.WantsDocument() rather than format.Machine() alone, so --raw with
+		// the default text format is honoured on a failed local run the same way the
+		// success and task-failure paths already honour it.
+		if rendering.WantsDocument() {
+			if err := writeRunJSON(surface, rendering, response); err != nil {
 				return err
 			}
 		}
@@ -218,7 +257,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			workflow.GetName())
 	}
 
-	if err := writeRun(surface, format, response); err != nil {
+	if err := writeRun(surface, rendering, response); err != nil {
 		return fmt.Errorf("writing the outputs of %s: %w", workflow.GetName(), err)
 	}
 

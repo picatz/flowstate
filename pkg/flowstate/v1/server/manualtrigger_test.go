@@ -49,7 +49,7 @@ func TestRunRefusesAManualStartTheWorkflowNarrowedAway(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	for _, test := range []struct {
 		name     string
@@ -93,6 +93,29 @@ func TestRunRefusesAManualStartTheWorkflowNarrowedAway(t *testing.T) {
 				"the refusal does not say which rule refused: %v", err)
 		})
 	}
+}
+
+// TestRunCannotRemoveADeploymentOwnedManualPolicy covers the trust boundary:
+// the request names the registered workload but removes its manual restriction.
+// Authorization must still consult the server's copy, or the restriction is an
+// assertion made by the attacker it is intended to restrict.
+func TestRunCannotRemoveADeploymentOwnedManualPolicy(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	trusted := narrowedWorkflow()
+	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", trusted))
+
+	modified := narrowedWorkflow()
+	modified.Triggers.Manual = nil
+	_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: modified,
+		Reason:   "trying to bypass the deployment policy",
+	}))
+
+	require.Error(t, err, "removing manual policy from the submitted copy bypassed authorization")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "oncall@example.com")
 }
 
 // reasonOnlyWorkflow narrows on the reason alone, so the reason can be tested
@@ -142,7 +165,7 @@ func TestAManualStartWithAReasonRunsAndReportsItsTrigger(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	spec := &v1.Workflow{
 		Name:     "reason-required",

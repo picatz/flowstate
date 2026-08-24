@@ -17,10 +17,9 @@ steps:
   # would fail the run; with it, the workflow decides what absence means.
   - id: maybe_missing
     http:
+      expect: ${response.status_code in vars.accepted}
       method: GET
       url: https://httpbin.org/status/404
-      expect: ${response.status_code in vars.accepted}
-
   - id: report_missing
     log:
       message: ${"lookup answered %d, which this step accepts".format([steps.maybe_missing.status_code])}
@@ -30,11 +29,10 @@ steps:
   # body — which is why the body is read before success is decided.
   - id: checked
     http:
-      method: GET
-      url: https://httpbin.org/json
-      parse_json: true
       expect: ${response.status_code == 200 && !has(response.json.error)}
-
+      method: GET
+      parse_json: true
+      url: https://httpbin.org/json
   - id: report_checked
     log:
       message: '${"response carried no error field: %s".format([string(steps.checked.status_code)])}'

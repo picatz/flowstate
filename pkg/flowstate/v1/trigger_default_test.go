@@ -12,7 +12,7 @@ import (
 //
 // This is the one half of trigger context the shared corpus deliberately cannot
 // hold, because it is the one place the two drivers honestly differ — see
-// [tests.TriggerContextCases]'s own note. The durable driver's empty context
+// [conformance.TriggerContextCases]'s own note. The durable driver's empty context
 // means "no trigger recorded", which is a gap in a record; the local driver's
 // means nothing at all, because there is only one way a local run can happen: a
 // person ran it.

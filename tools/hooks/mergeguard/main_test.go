@@ -360,11 +360,12 @@ func TestGHCLIMergeTarget(t *testing.T) {
 		// consuming its argument, "$sha" is mistaken for the target and the
 		// real target (498) is never found. Covers the P2 finding on #503.
 		{`gh pr merge --match-head-commit "$sha" 498 -R picatz/flowstate`, "picatz", "flowstate", 498},
-		// unquote is not a full shell parser (see its doc comment): a
-		// single-token quoted value is fine, a multi-word one is not
-		// attempted here, since word-splitting inside quotes is a separate
-		// problem from consuming a value-flag's argument.
+		// Both single- and multi-word flag values remain one shell word and
+		// are consumed without becoming the positional target.
 		{`gh pr merge --body release-notes --author-email a@b.com -t subject 498 -R picatz/flowstate`, "picatz", "flowstate", 498},
+		{`echo "gh pr merge"; gh pr merge 999 -R owner/repo`, "owner", "repo", 999},
+		{`gh pr merge --body "note 1" 999 -R owner/repo`, "owner", "repo", 999},
+		{`gh pr merge --subject 'release 42' 999 --repo 'owner/repo'`, "owner", "repo", 999},
 	}
 	for _, tt := range identify {
 		owner, repo, number, ok := ghCLIMergeTarget(tt.cmd)
