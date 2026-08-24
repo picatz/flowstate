@@ -407,6 +407,20 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// signal policy check below reads from too, so authorizing this signal costs
 	// no round trip beyond what tenancy already paid for.
 	temporal, resp, err := s.authorizeRun(ctx, workflowID, runID)
+	if runID != "" && (err != nil || resp.GetWorkflowExecutionInfo().GetFirstRunId() == runID) {
+		// run.run_id is Temporal's FirstRunID: it identifies the whole
+		// Continue-As-New chain, while SignalWorkflow interprets a non-empty run
+		// id as one execution in that chain. Once the first execution closes, try
+		// the current execution and accept it only when Temporal attests that it
+		// belongs to the requested chain. The comparison is what prevents a late
+		// callback from reaching a new workflow that reused the same workflow id.
+		if currentTemporal, currentResp, currentErr := s.authorizeRun(ctx, workflowID, ""); currentErr == nil &&
+			currentResp.GetWorkflowExecutionInfo().GetFirstRunId() == runID &&
+			currentResp.GetWorkflowExecutionInfo().GetExecution().GetRunId() != runID {
+			temporal, resp, err = currentTemporal, currentResp, nil
+			runID = "" // let Temporal route the signal to the current execution
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
