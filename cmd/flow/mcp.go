@@ -947,8 +947,8 @@ func hollowedStepValues(steps map[string]*v1.Node_Outputs) (map[string]*v1.Node_
 	}
 
 	return hollowed, fmt.Sprintf("%s still exceeded %d bytes after every reduction, so each value was "+
-		"replaced with an \"[omitted: <n> bytes]\" marker before rendering (the step ids and output "+
-		"names are real; the values were this large)", subject, flowmcp.MaxResultBytes)
+		"replaced with an \"[omitted: <n> bytes]\" marker (the step ids and output names are real; "+
+		"the values were this large)", subject, flowmcp.MaxResultBytes)
 }
 
 // renderRunLocalResult assembles the answer and brings it under the cap.
@@ -1084,6 +1084,32 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord, pr
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	// The cap is a promise about rendered bytes, and the preflight's last
+	// resort measured proto bytes — which a rendering can outgrow: JSON
+	// escaping expands a control-heavy string toward six output bytes per
+	// input byte, and bytes fields grow a third through base64, so a kept
+	// step small enough in proto space can carry the floor past the cap in
+	// the only representation the cap is about (Codex, #1109). Every rung
+	// above measured real bytes, so being here over the cap means the kept
+	// step outputs are the remaining weight — the declared outputs and the
+	// failure message already took their rungs — and the last resort runs
+	// where bytes are real: hollow the kept steps and render once more.
+	// After that the answer is the floor whether or not it fits, which is
+	// the same contract the rung above states, now over values bounded by
+	// the schema or by this surface rather than by the workflow.
+	if len(encoded) > flowmcp.MaxResultBytes {
+		if outputs := trimmed.GetOutputs(); outputs != nil {
+			if hollowed, note := hollowedStepValues(outputs.GetStepValues()); hollowed != nil {
+				trimmed.Kind = &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{
+					StepValues: hollowed,
+					RunOutputs: outputs.GetRunOutputs(),
+				}}
+
+				return renderTrimmedRun(trimmed, withPreflight(note))
+			}
+		}
 	}
 
 	return encoded, nil

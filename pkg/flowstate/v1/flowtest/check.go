@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -143,9 +144,10 @@ func postRunScope(spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Wor
 // complete — and the file's `vars` bind beside it (nothing to shadow: this
 // scope carries no workflow ambient vars, and the day they join, #1072's
 // per-case collision refusal lands with them). One construction, shared by
-// `expect.check:` evaluation and the debugger's autopsy (Codex, #1107): an
-// inspection at the autopsy must answer exactly as the failing check read,
-// and two builders would eventually answer differently.
+// `expect.check:` evaluation and the debugger's autopsy (Codex, #1107) —
+// the autopsy through [autopsyExtras], which redacts what these bindings
+// would print, so the two surfaces share the names and shapes while only
+// the printing one withholds values.
 func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, runErr error) map[string]ref.Val {
 	errText := ""
 	if runErr != nil {
@@ -170,6 +172,54 @@ func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, ru
 	}
 
 	return extra
+}
+
+// autopsyExtras is [postRunExtras] with the case's redaction posture applied,
+// because the autopsy *prints* (Codex, #1109). What a check prints — its
+// witnesses — already withholds the case's secrets and declared-sensitive
+// values through the one shared set; an `inspect vars.token` that rendered
+// the same value in the clear would be a second output channel around that
+// set. The file's vars can genuinely hold a secret's plaintext, since
+// resolveVars substitutes them into a case's `secrets:`, and a run's failure
+// text can echo one. Evaluation stays raw in [assertChecks]: a check
+// comparing a secret value must see the value; only what renders withholds
+// it — the same split the transcript already lives by.
+func autopsyExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, runErr error, sensitive sensitiveInputs) map[string]ref.Val {
+	if runErr != nil {
+		text := redactSensitiveSubstrings(runErr.Error(), sensitive.substrings)
+		if sensitive.withholdAll {
+			text = "[withheld]"
+		}
+		runErr = errors.New(text)
+	}
+
+	return postRunExtras(ctx, scope, redactedVars(vars, sensitive), runErr)
+}
+
+// redactedVars is the vars map as the autopsy may show it: each value through
+// [redactSensitiveTree], string values additionally through the substring
+// backstop — the identical pair every witness rendering applies — and
+// everything withheld when the case's posture withholds everything.
+func redactedVars(vars map[string]any, sensitive sensitiveInputs) map[string]any {
+	if len(vars) == 0 {
+		return vars
+	}
+
+	out := make(map[string]any, len(vars))
+	for name, value := range vars {
+		if sensitive.withholdAll {
+			// The word [redactedScalarText] uses for the same posture.
+			out[name] = "[withheld]"
+			continue
+		}
+		redacted := redactSensitiveTree(value, sensitive.values)
+		if s, ok := redacted.(string); ok {
+			redacted = redactSensitiveSubstrings(s, sensitive.substrings)
+		}
+		out[name] = redacted
+	}
+
+	return out
 }
 
 // assertChecks evaluates a case's claims against the finished run, returning

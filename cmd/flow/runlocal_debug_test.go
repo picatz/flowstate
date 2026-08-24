@@ -98,6 +98,36 @@ func TestRunLocalDebugQuitEndsTheRun(t *testing.T) {
 	assert.Contains(t, res.Err.Error(), "debug session ended")
 }
 
+// TestRunLocalDebugRefusesASensitiveWorkflowWithoutReveal: a debugger is a
+// reveal — the observer narrates step values and `inspect` reaches anything
+// in scope — so a workflow whose declarations withhold its transcript takes
+// the explicit flag the other surfaces share, or no debugger (Codex, #1109).
+func TestRunLocalDebugRefusesASensitiveWorkflowWithoutReveal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: secretive
+steps:
+  - id: mint
+    value: ${"sk-live-0123456789"}
+outputs:
+  token:
+    value: ${steps.mint.value}
+    sensitive: true
+`), 0o600))
+
+	res := runFlowStdin(t, "continue\n", "run", "local", path, "--debug")
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "--reveal-sensitive",
+		"the refusal must name the flag that makes the reveal explicit")
+	assert.NotContains(t, res.Stdout+res.Stderr, "sk-live-0123456789",
+		"the refusal itself must not leak the value")
+
+	revealed := runFlowStdin(t, "continue\n", "run", "local", path, "--debug", "--reveal-sensitive")
+	require.NoError(t, revealed.Err, "with the reveal stated, the debugger attaches: %v", revealed.Err)
+	assert.Contains(t, revealed.Stderr, "break at mint")
+}
+
 // TestRunLocalWithoutDebugHasNoConsole is the shape of the cost: no flag, no
 // session, and the run is the run it always was.
 func TestRunLocalWithoutDebugHasNoConsole(t *testing.T) {

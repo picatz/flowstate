@@ -3,6 +3,7 @@ package flowdebug_test
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -539,4 +540,56 @@ func TestTheAutopsyAnswersWithTheChecksOwnBindings(t *testing.T) {
 	assert.Contains(t, out, `"shipped"`, "vars answers as the check read it")
 	assert.Contains(t, out, "true", "run.failed answers")
 	assert.Contains(t, out, "exploded", "run.error answers")
+}
+
+// TestTheAutopsyScopeListsItsBindings: `scope` is how an author discovers
+// what to inspect, so the autopsy's extra bindings must appear in it — a
+// listing that omits `vars` while `inspect vars.x` answers hides exactly the
+// names it exists to reveal (Codex, #1109).
+func TestTheAutopsyScopeListsItsBindings(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("scope\nquit\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+
+	extra := map[string]ref.Val{
+		"vars": v1.TypeAdapter.NativeToValue(map[string]any{"want": "shipped"}),
+		"run":  v1.TypeAdapter.NativeToValue(map[string]any{"failed": true}),
+	}
+	session.Autopsy(t.Context(), &v1.Scope{}, extra, []string{"expect.check[0]: check failed"})
+
+	assert.Contains(t, console.String(), "bound: run, vars",
+		"the autopsy's own bindings are missing from the scope listing")
+}
+
+// TestACancelledContextUnblocksThePrompt: ctrl-C's first signal cancels the
+// command's context, and a session parked at a prompt has to notice — a
+// synchronous read would hold the process hostage for a second, harder
+// signal (Codex, #1109). The console here never writes, which is exactly the
+// terminal a person just interrupted.
+func TestACancelledContextUnblocksThePrompt(t *testing.T) {
+	t.Parallel()
+
+	blocked, _ := io.Pipe()
+	session, err := flowdebug.New(flowdebug.Options{In: blocked})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- session.BeforeStep(ctx, markStep("build"), &v1.Scope{})
+	}()
+
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled,
+			"the engine must see the cancellation, not a resume or a hang")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt did not notice the cancelled context")
+	}
 }

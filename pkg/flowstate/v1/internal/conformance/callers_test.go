@@ -104,6 +104,15 @@ func TestTheOneSidedAllowlistStaysHonest(t *testing.T) {
 				"delete the entry", name)
 			continue
 		}
+		if !c.local && !c.durable {
+			// The entry excuses one-sidedness, not zero-sidedness: an
+			// allowlisted export whose only caller is deleted would otherwise
+			// stay green while its assertion never runs — the ZeroValueCases
+			// shape hiding behind its own excuse (Codex, #1109).
+			t.Errorf("%s is allowlisted as one-sided by design and now has no caller at all; "+
+				"restore the caller its reason describes, or delete the function and the entry", name)
+			continue
+		}
 		if c.local && c.durable {
 			t.Errorf("%s now has callers on both drivers; delete its oneSidedByDesign entry — "+
 				"a stale excuse is the next gap's cover", name)

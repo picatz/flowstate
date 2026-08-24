@@ -214,7 +214,22 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// none of the test verb's refusals apply here. The session observes as
 	// well as gates, so each step's own account arrives at the prompt that
 	// paused it.
+	reveal := revealSensitiveRequested(cmd)
 	if debugging, _ := cmd.Flags().GetBool("debug"); debugging {
+		// A debugger is a reveal: the session narrates each step's values as
+		// they complete and `inspect` reaches anything in scope, so on a
+		// workflow whose declarations make the final render withhold its
+		// transcript, attaching one quietly opens exactly the side channel
+		// redaction closes (Codex, #1109) — and #928's own rule is that debug
+		// output sits behind the same redaction, never a parallel copy. There
+		// is no parallel redactor here on purpose: the honest shapes are this
+		// refusal, or the explicit flag every other surface already shares.
+		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
+			return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+				"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
+				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
+				workflow.GetName())
+		}
 		session, err := flowdebug.New(flowdebug.Options{
 			In:   cmd.InOrStdin(),
 			Out:  surface.Err,
@@ -240,7 +255,6 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// This process just parsed workflow itself, so redaction here is precise
 	// against its own `sensitive:` declarations rather than the fail-closed case
 	// a renderer with no specification falls back to — see sensitive.go.
-	reveal := revealSensitiveRequested(cmd)
 	if reveal {
 		noteRevealedSensitiveValues(surface)
 	}

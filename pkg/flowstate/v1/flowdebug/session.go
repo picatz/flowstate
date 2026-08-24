@@ -149,6 +149,13 @@ type Session struct {
 	in    *bufio.Scanner
 	clock v1.Clock
 
+	// lines carries what the reader goroutine scans, and closes when the
+	// stream ends; readOnce starts that goroutine at the first prompt. A
+	// goroutine rather than a synchronous Scan, because the run being held
+	// is cancellable and a Scanner is not — see [Session.readCommand].
+	lines    chan string
+	readOnce sync.Once
+
 	mu          sync.Mutex
 	mode        mode
 	until       string
@@ -243,7 +250,13 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	s.announce(node)
 
 	for {
-		line, ok := s.readCommand()
+		line, ok, readErr := s.readCommand(ctx)
+		if readErr != nil {
+			// Cancelled mid-prompt: the person interrupted the run this
+			// session was holding, and the engine unwinds it as the
+			// cancellation it is rather than as a console that wandered off.
+			return readErr
+		}
 		if !ok {
 			// The console is gone: a replay script that ran out, or a
 			// terminal that closed. The run resumes and finishes rather than
@@ -367,26 +380,57 @@ func (s *Session) announce(node *v1.Node) {
 	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), NodeKind(node), at)
 }
 
-// readCommand reads one line, reporting false once the stream has ended.
-func (s *Session) readCommand() (string, bool) {
+// readCommand reads one line. ok is false once the stream has ended, and err
+// is the context's own error when cancellation ended the wait instead.
+//
+// The scan runs on a goroutine of its own, because the run being held is
+// cancellable and a Scanner is not: ctrl-C's first signal cancels the
+// command's context for a graceful stop, and a session blocked synchronously
+// in Scan would hold the process hostage for a second, harder signal (Codex,
+// #1109). One reader goroutine per session, started at the first prompt;
+// after a cancellation it may stay parked on the open stream, which costs a
+// process that is already leaving nothing.
+func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err error) {
 	s.mu.Lock()
 	closed, scanner := s.closed, s.in
 	s.mu.Unlock()
 
 	if closed || scanner == nil {
-		return "", false
+		return "", false, nil
 	}
 
+	s.readOnce.Do(func() {
+		s.lines = make(chan string)
+		go func() {
+			defer close(s.lines)
+			for scanner.Scan() {
+				s.lines <- scanner.Text()
+			}
+		}()
+	})
+
 	s.printfTone(TonePrompt, "debug> ")
-	if !scanner.Scan() {
+	select {
+	case line, open := <-s.lines:
+		if !open {
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+
+			return "", false, nil
+		}
+
+		return line, true, nil
+
+	case <-ctx.Done():
+		// The run is being torn down around this prompt; closed so no later
+		// boundary or autopsy asks a console the person already interrupted.
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()
 
-		return "", false
+		return "", false, ctx.Err()
 	}
-
-	return scanner.Text(), true
 }
 
 // record appends an accepted command to the replay script.
@@ -550,8 +594,10 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 	s.printf("(`inspect` questions the finished run; `quit` or `continue` leaves — the verdict is already in)\n")
 
 	for {
-		line, ok := s.readCommand()
-		if !ok {
+		line, ok, readErr := s.readCommand(ctx)
+		if readErr != nil || !ok {
+			// A cancellation or a finished stream both end the autopsy the
+			// same way: there is no run left for either to change.
 			return
 		}
 
@@ -573,7 +619,7 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 
 		case "scope":
 			s.record("scope")
-			s.showScope(scope)
+			s.showScopeWith(scope, extra)
 
 		case "help", "h", "?":
 			s.printf(`inspect <expr>   evaluate a CEL expression against the finished run

@@ -170,6 +170,17 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 // showScope lists what the paused run can name, which is the question an
 // author asks before they know what to inspect.
 func (s *Session) showScope(scope *v1.Scope) {
+	s.showScopeWith(scope, nil)
+}
+
+// showScopeWith is showScope with the extra bare bindings listed too — the
+// autopsy's door, for the reason inspectWith exists: a listing that omits
+// `vars` and `run` while `inspect vars.x` answers would be a scope command
+// hiding exactly the names it is for discovering (Codex, #1109).
+func (s *Session) showScopeWith(scope *v1.Scope, extra map[string]ref.Val) {
+	if len(extra) > 0 {
+		s.printf("bound: %s\n", strings.Join(sortedKeys(extra), ", "))
+	}
 	steps := scope.GetOutputs().GetStepValues()
 	if len(steps) == 0 {
 		s.printf("no steps have produced outputs yet\n")

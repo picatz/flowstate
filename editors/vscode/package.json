@@ -89,40 +89,40 @@
       "commandPalette": [
         {
           "command": "flowstate.validate",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)"
         },
         {
           "command": "flowstate.test",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml"
         },
         {
           "command": "flowstate.fix",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)"
         },
         {
           "command": "flowstate.runLocal",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)"
         }
       ],
       "editor/context": [
         {
           "command": "flowstate.validate",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)",
           "group": "flowstate@1"
         },
         {
           "command": "flowstate.test",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml",
           "group": "flowstate@2"
         },
         {
           "command": "flowstate.fix",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)",
           "group": "flowstate@3"
         },
         {
           "command": "flowstate.runLocal",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)",
           "group": "flowstate@4"
         }
       ]

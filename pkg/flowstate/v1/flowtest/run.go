@@ -813,7 +813,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
 			}
 			scope := postRunScope(workflow, bound, outputs)
-			examiner.Autopsy(ctx, scope, postRunExtras(ctx, scope, vars, runErr), rendered)
+			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, runErr, sensitive), rendered)
 		}
 	}
 

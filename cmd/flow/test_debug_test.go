@@ -201,3 +201,48 @@ tests:
 		"the run root answers too — the run passed; the check is what failed")
 	assert.Contains(t, res.Stdout, "FAIL", "and the report still says what it said")
 }
+
+// TestDebugAutopsyWithholdsSecretBackedVars: a file var substituted into a
+// case's `secrets:` is a secret's plaintext, and the witnesses of a failing
+// check already withhold it — so the autopsy, which prints to the same
+// console, withholds it too rather than being a second door around the one
+// shared set (Codex, #1109).
+func TestDebugAutopsyWithholdsSecretBackedVars(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: debugged
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+vars:
+  token: hunter2-swordfish
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: fails with a secret-backed var in scope
+    secrets:
+      "env:TOKEN": ${vars.token}
+    expect:
+      ran: [first]
+      check:
+        - 1 == 2
+`), 0o600))
+
+	res := runFlowStdin(t, "continue\ninspect vars.token\nscope\nquit\n",
+		"test", "--debug", "--run", "fails with", dir)
+	require.Error(t, res.Err, "the case is red")
+
+	assert.NotContains(t, res.Stdout+res.Stderr, "hunter2-swordfish",
+		"the secret's plaintext reached the console through the autopsy")
+	assert.Contains(t, res.Stdout, "[redacted]",
+		"the inspected var should render as the shared redaction marker")
+	assert.Contains(t, res.Stdout, "bound: run, vars",
+		"the autopsy scope listing should still name the bindings")
+}

@@ -1089,6 +1089,41 @@ func TestASingleOversizedStepCannotDefeatTheBound(t *testing.T) {
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
 }
 
+// TestAStepThatOutgrowsItsProtoSizeInJSONCannotDefeatTheBound is the escape
+// the proto-space arithmetic cannot see (Codex, #1109): JSON escaping expands
+// a control-heavy string toward six rendered bytes per proto byte, so a step
+// under every proto-space threshold can still carry the ladder's floor past
+// the cap in the one representation the cap is about. The last resort
+// therefore also runs where bytes are real — after the ladder, measured on
+// the rendered answer.
+func TestAStepThatOutgrowsItsProtoSizeInJSONCannotDefeatTheBound(t *testing.T) {
+	t.Parallel()
+
+	// ~200KiB of 0x01 bytes: under flowmcp.MaxResultBytes in proto form, and
+	// six times it once every byte renders as .
+	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"scrape": {NamedValues: map[string]*v1.Value{
+			"body": v1.NewValue(strings.Repeat("\x01", 200<<10)),
+		}},
+	}}
+
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"the rendered answer escaped the cap through JSON expansion: %d bytes", len(encoded))
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+	require.Contains(t, answer.Run.Outputs.StepValues, "scrape")
+	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+		"[omitted:", "the expanding value survived as itself rather than as a size marker")
+	assert.Contains(t, answer.Note, `step "scrape"`)
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
+}
+
 // TestARunThatFitsIsNotTrimmed is the other side of that bound: an ordinary run
 // keeps its outputs and its logs, so the trimming path cannot quietly become the
 // normal one.
