@@ -53,6 +53,14 @@
 //     code execution by anyone, and a group is a list of users this process does
 //     not curate. See [Config.AllowInsecureSearchPath] for the escape hatch and
 //     what it costs.
+//   - A search path entry, or a plugin binary, reached through a directory
+//     another identity owns or can write. Whoever owns `/opt` can rename
+//     `/opt/plugins` and put their own directory there, whatever the
+//     permissions on the directory that used to be at that path, so the
+//     ownership question is asked of every component of the path and not only
+//     of its last one. On a platform with no POSIX ownership none of this can
+//     be decided, and discovery says so in a warning rather than reporting a
+//     check that did not run as one that passed.
 //   - A binary that does not handshake within [Config.HandshakeTimeout]. It is
 //     killed rather than waited on.
 //   - A handshake naming a protocol version the host did not offer, or an
