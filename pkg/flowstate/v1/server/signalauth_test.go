@@ -257,7 +257,8 @@ func TestSignalAcceptsTheRunsStableAddressAfterContinueAsNew(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
-	flowstate := server.New(temporal, server.WithNamespace("team-a"), server.WithMaxStepsPerRun(1))
+	flowstate, err := server.New(temporal, server.WithNamespace("team-a"), server.WithMaxStepsPerRun(1))
+	require.NoError(t, err)
 
 	wf := gatedWorkflow()
 	wf.Steps = append([]*v1.Node{{
