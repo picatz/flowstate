@@ -129,9 +129,9 @@
 // is invalid, and an invalid span context injects nothing.
 //
 // A span says the shape of the call and never its content: the method, the
-// scheme, the host and port dialed, and the status returned. The URL is not
-// recorded in any form, because every part of one can carry a credential — a
-// token in the query, a secret path segment in a webhook URL, a password in
+// scheme, the port dialed, and the status returned. The URL is not recorded in
+// any form, because every part of one can carry a credential — a token in the
+// hostname or query, a secret path segment in a webhook URL, a password in
 // userinfo — and a span is exported to a collector that is not tenant-scoped.
 // [tracingRoundTripper] has the whole rule and the reasoning behind it.
 package netpolicy
