@@ -106,27 +106,32 @@ func TestRevokeKeyRefuses(t *testing.T) {
 // TestRevokeKeyDoesNotRaceInFlightSigning covers the window between choosing a
 // signing key and signing with it.
 //
-// mintFor used to copy i.active and release the read lock before calling sign.
-// Rotate and RevokeKey could both complete inside that window, so an assertion
-// could be minted — and returned to a caller — signed with a key the issuer had
-// already withdrawn from its published set. A relying party holding a cached
-// key set accepts it, which means revocation reported success while still
-// emitting new assertions signed by the key an operator was trying to kill.
+// mintFor copies i.active, releases the read lock, signs, and then re-reads the
+// published key set before returning. Rotate and RevokeKey can both complete
+// inside that window, so without the re-read an assertion could be minted — and
+// returned to a caller — signed with a key the issuer had already withdrawn
+// from its published set. A relying party holding a cached key set accepts it,
+// which means revocation would report success while still emitting new
+// assertions signed by the key an operator was trying to kill.
+//
+// The deterministic half of that property is
+// TestMintDiscardsAnAssertionSignedByAKeyRevokedMidSignature, which parks a
+// signature and revokes underneath it. This is the half that only exists when
+// several goroutines are inside the issuer at once, so it drives the
+// interleaving hard and lets `-race` be the judge.
 //
 // What this can and cannot assert is worth being exact about, because the
 // obvious assertion is wrong. "Every returned assertion names a key still
 // published when the caller looks" is *not* a property an issuer can offer:
 // once mintFor returns, another rotation and revocation may land before the
 // caller reads anything, and that key is then legitimately gone. The window the
-// fix closes is the one *inside* mintFor, between choosing the key and signing
-// with it — and from outside, a signature that happened before RevokeKey
-// acquired the write lock is indistinguishable from one that happened after,
-// except by the race detector.
+// re-read closes is the one *inside* mintFor, between choosing the key and
+// returning an assertion signed with it — and from outside, a mint that
+// completed before RevokeKey took the write lock is indistinguishable from one
+// that completed after.
 //
-// So this drives the interleaving hard and lets `-race` be the judge, which is
-// what the gate and CI both run it under. The deterministic half of the
-// property lives in the tests above; this is the half that only shows up when
-// two goroutines are in the issuer at once.
+// Both are run under `-race` by the gate and by CI, which is where an unguarded
+// read of the key set would show up.
 func TestRevokeKeyDoesNotRaceInFlightSigning(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)

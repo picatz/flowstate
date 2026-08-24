@@ -51,6 +51,13 @@ type FederationPolicy struct {
 	// stays published.
 	KeyRetention time.Duration `json:"key_retention,omitempty" yaml:"key_retention,omitempty"`
 
+	// SigningTimeout overrides [DefaultSigningTimeout], how long one signature
+	// may take. It is the bound that matters to a deployment signing through a
+	// KMS or an HSM — see [WithSigningTimeout] — and is here rather than only
+	// in the Go API because the deployments with a remote signer are exactly
+	// the ones configured from a policy file.
+	SigningTimeout time.Duration `json:"signing_timeout,omitempty" yaml:"signing_timeout,omitempty"`
+
 	// DeclaredClaims names the extension claims assertions minted here may
 	// carry, beyond the ones every assertion has. The claim set is closed: a
 	// carried claim absent from this list is refused at mint rather than
@@ -333,6 +340,9 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	}
 	if p.KeyRetention > 0 {
 		issuerOpts = append(issuerOpts, WithKeyRetention(p.KeyRetention))
+	}
+	if p.SigningTimeout > 0 {
+		issuerOpts = append(issuerOpts, WithSigningTimeout(p.SigningTimeout))
 	}
 	if len(p.DeclaredClaims) > 0 {
 		issuerOpts = append(issuerOpts, WithDeclaredClaims(p.DeclaredClaims...))

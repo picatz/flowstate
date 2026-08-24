@@ -50,14 +50,17 @@ const MaxSignatureBytes = maxTokenBytes
 //   - "kid" must be [Signer.KeyID], the id the public half is published under.
 //   - "alg" must be [Signer.Algorithm].
 //
-// Sign is called on the path of a mint request and is given that request's
-// context, so a remote implementation inherits its deadline and cancellation
-// rather than blocking a caller who has already given up.
+// Sign is called on the path of a mint request and is given a context derived
+// from that request's, so a remote implementation inherits its deadline and
+// cancellation rather than blocking a caller who has already given up. That
+// context also carries the issuer's own [WithSigningTimeout] deadline, whichever
+// of the two is sooner: a signer that never answers is a bounded failure rather
+// than a hung mint.
 //
 // # Sign must be safe for concurrent use
 //
 // An [Issuer] is safe for concurrent use and mints in parallel: [Issuer.Mint]
-// takes the issuer's *read* lock precisely so that concurrent mints sign at the
+// holds no lock at all across the signature, so concurrent mints sign at the
 // same time, which means concurrent calls into one Signer, and nothing between
 // here and there serializes them.
 //
@@ -69,6 +72,12 @@ const MaxSignatureBytes = maxTokenBytes
 // or hand each call its own from a pool. The obligation sits with the adapter
 // because only the adapter knows whether its transport has one session or many,
 // and how many are affordable.
+//
+// The requirement is if anything stronger than it was when the mint held the
+// issuer's read lock across this call: signing outside every lock is what stops
+// a slow provider from blocking [Issuer.Rotate] and [Issuer.RevokeKey], and it
+// removes the last thing that could have imposed any order on these calls
+// (picatz/flowstate#1055).
 //
 // # Sign must bound its own reads
 //

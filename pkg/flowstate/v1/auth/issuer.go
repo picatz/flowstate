@@ -44,6 +44,17 @@ const (
 	// relying party's cache of the key set, or rotation would reject assertions
 	// that are still valid.
 	DefaultKeyRetention = 24 * time.Hour
+
+	// DefaultSigningTimeout is how long one signature may take. See
+	// [WithSigningTimeout] for how it is applied and how to size it.
+	//
+	// Ten seconds is far more than a local Ed25519 or ECDSA signature needs
+	// (microseconds) and more than a healthy cloud KMS round trip takes
+	// (tens of milliseconds), which is the point: the bound is not a latency
+	// target, it is the line past which a provider is not slow but stuck. A
+	// value tight enough to be a target would turn an ordinary p99 into a
+	// failed mint.
+	DefaultSigningTimeout = 10 * time.Second
 )
 
 // DiscoveryPath is where an [Issuer] publishes its OpenID Provider Metadata,
@@ -406,11 +417,12 @@ func (a Assertion) LogValue() slog.Value {
 // An Issuer is safe for concurrent use, and its keys can be rotated while it is
 // serving.
 type Issuer struct {
-	url          string
-	jwksPath     string
-	lifetime     time.Duration
-	keyRetention time.Duration
-	clock        func() time.Time
+	url            string
+	jwksPath       string
+	lifetime       time.Duration
+	keyRetention   time.Duration
+	signingTimeout time.Duration
+	clock          func() time.Time
 
 	// declared is the closed set of extension claim names an assertion minted
 	// here may carry, sorted. Nil means none: a deployment that declares
@@ -425,8 +437,10 @@ type Issuer struct {
 	// options may still change.
 	verifyOnly []verifyOnlyKey
 
-	// mu guards the keys. Minting takes a read lock, rotation a write lock, so
-	// signing is not serialized.
+	// mu guards the keys. Minting takes a read lock twice — once to choose the
+	// key and once to check it is still published — and never holds it across
+	// the signature itself; rotation and revocation take the write lock. See
+	// [Issuer.mintFor].
 	mu      sync.RWMutex
 	active  SigningKey
 	retired []retiredKey
@@ -472,6 +486,32 @@ func WithJWKSPath(path string) IssuerOption {
 // verification.
 func WithKeyRetention(retention time.Duration) IssuerOption {
 	return func(i *Issuer) { i.keyRetention = retention }
+}
+
+// WithSigningTimeout bounds how long a single signature may take, from
+// [DefaultSigningTimeout].
+//
+// Signing used to be a local Ed25519 operation measured in microseconds, and
+// needed no bound of its own: the mint's context was the only clock that could
+// matter. A [Signer] makes it a round trip to a KMS or an HSM, which is a call
+// to a machine this process does not control and which can simply stop
+// answering — so per CLAUDE.md's rule, the resource the far side controls is
+// how long it takes, and that is what this bounds.
+//
+// It is applied as a deadline on the context handed to the signer, derived
+// from the mint's own context, so whichever expires first wins: a caller with
+// a tighter deadline still gets it, and a caller with none still cannot wait
+// forever. A signer that ignores its context cannot be interrupted by anything
+// here — no caller can interrupt a call that does not look — but it can no
+// longer stall the issuer, because the signature does not run under any lock
+// (see [Issuer.mintFor]).
+//
+// It must be positive. Zero is refused rather than read as "no bound", because
+// this package fails closed and an unbounded remote call configured by leaving
+// a field unset is exactly the outage this option exists to prevent. Size it
+// generously: it is a stuck-provider detector, not a latency budget.
+func WithSigningTimeout(timeout time.Duration) IssuerOption {
+	return func(i *Issuer) { i.signingTimeout = timeout }
 }
 
 // WithDeclaredClaims declares the extension claims assertions from this issuer
@@ -579,12 +619,13 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 	}
 
 	issuer := &Issuer{
-		url:          strings.TrimSuffix(issuerURL, "/"),
-		jwksPath:     DefaultJWKSPath,
-		lifetime:     DefaultAssertionLifetime,
-		keyRetention: DefaultKeyRetention,
-		clock:        time.Now,
-		active:       key,
+		url:            strings.TrimSuffix(issuerURL, "/"),
+		jwksPath:       DefaultJWKSPath,
+		lifetime:       DefaultAssertionLifetime,
+		keyRetention:   DefaultKeyRetention,
+		signingTimeout: DefaultSigningTimeout,
+		clock:          time.Now,
+		active:         key,
 	}
 
 	for _, opt := range opts {
@@ -609,6 +650,9 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 		return nil, fmt.Errorf("%w: key set path must not be the workload issuer metadata path %q", ErrInvalidPolicy, WorkloadIssuerMetadataPath)
 	case issuer.keyRetention < 0:
 		return nil, fmt.Errorf("%w: key retention must not be negative", ErrInvalidPolicy)
+	case issuer.signingTimeout <= 0:
+		return nil, fmt.Errorf("%w: signing timeout must be positive; a signature is a call to a machine this process does not control, and an unbounded one blocks the mint that made it",
+			ErrInvalidPolicy)
 	}
 
 	declared, err := validateDeclaredClaims(issuer.declared)
@@ -845,6 +889,11 @@ func (i *Issuer) Rotate(key SigningKey) error {
 // deployment running several of them revokes on each, and a relying party stops
 // accepting the key when its own cache of the key set next refreshes — which is
 // its [DefaultKeyCacheTTL], not ours.
+//
+// This does not wait for signatures already in flight, and does not need to: a
+// mint whose signature was made with a key revoked while it was being signed
+// discards it rather than returning it. See [Issuer.mintFor] for why the
+// signature is made outside the lock, and what closes that window instead.
 func (i *Issuer) RevokeKey(keyID string) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -869,6 +918,22 @@ func (i *Issuer) RevokeKey(keyID string) error {
 	}
 
 	return nil
+}
+
+// publishedLocked reports whether the given key id is in the set [Issuer.KeySet]
+// would serve right now: the active key, or a retired key still inside its
+// retention. The caller must hold i.mu.
+//
+// Written from the same rule KeySet applies rather than from a second one,
+// because the question it answers — would a relying party fetching the key set
+// find this key — is only meaningful if the two agree.
+func (i *Issuer) publishedLocked(keyID string, now time.Time) bool {
+	if keyID == i.active.id {
+		return true
+	}
+	return slices.ContainsFunc(i.retired, func(key retiredKey) bool {
+		return key.id == keyID && !now.After(key.expiresAt)
+	})
 }
 
 // pruneLocked drops retired keys past their retention. The caller must hold i.mu
@@ -998,35 +1063,76 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		claims[name] = identity.Claims[name]
 	}
 
-	// Choosing the key and signing with it happen under one hold of the read
-	// lock, and that is a correctness requirement rather than tidiness.
+	// The signature happens outside the lock, between two holds of it: one to
+	// choose the key, one to check that key is still published. Getting this
+	// wrong in either direction is a real failure, so both are stated.
 	//
-	// Copying i.active and releasing the lock before signing leaves a window:
-	// [Issuer.Rotate] can retire that key and [Issuer.RevokeKey] can withdraw
-	// it, both completing while this signature is still in flight, and the
-	// assertion is then minted with a key the issuer has already told the world
-	// is revoked. A relying party holding a cached key set accepts it, so
-	// revocation would report success while still emitting new assertions
-	// signed by the compromised key — the one thing RevokeKey exists to stop.
+	// Signing *under* the read lock is the obvious spelling, and this code held
+	// it that way deliberately for a while: it closes the window in which
+	// [Issuer.RevokeKey] withdraws a key while a signature made with it is in
+	// flight, so revocation could report success and this function still return
+	// an assertion signed by the key an operator was trying to kill. That was
+	// correct while signing was a local Ed25519 operation measured in
+	// microseconds. It stopped being acceptable when a [Signer] made signing a
+	// round trip to a KMS or an HSM: a provider that hangs then holds a lock
+	// [Issuer.Rotate] and [Issuer.RevokeKey] need, and Go's [sync.RWMutex]
+	// gives a waiting writer priority over later readers — so one stuck call
+	// blocks the two verbs an operator reaches for during an incident *and*
+	// every subsequent mint. A process-wide outage of the token path, caused by
+	// one slow machine somewhere else (picatz/flowstate#1055).
 	//
-	// A read lock is the right one: concurrent mints still sign in parallel,
-	// since they share it. Only Rotate and RevokeKey take the write lock, and
-	// they now wait for in-flight signatures to finish — which is exactly the
-	// guarantee RevokeKey's doc claims, that no assertion signed with the key
-	// survives its return.
+	// Releasing the lock costs nothing here as long as the window it opened is
+	// closed on the other side: this re-reads the published set afterwards and
+	// refuses to return an assertion whose key is no longer in it. The
+	// difference from holding the lock is who waits — Rotate and RevokeKey no
+	// longer wait for in-flight signatures — and not what a caller can end up
+	// holding. RevokeKey's guarantee is unchanged: no assertion signed with a
+	// revoked key is ever handed back.
+	//
+	// It is a *published* check rather than an active-key one, because rotation
+	// is not revocation: a key rotated out mid-signature is still published for
+	// its retention, assertions signed with it still verify, and discarding one
+	// would fail a mint that is perfectly valid.
 	i.mu.RLock()
 	key := i.active
+	i.mu.RUnlock()
+
 	if key.IsZero() {
-		i.mu.RUnlock()
 		return Assertion{}, ErrNoSigningKey
 	}
 
-	token, err := key.sign(ctx, claims)
+	// The bound belongs here rather than on the caller, because the caller is
+	// not the party that can be stuck. See [WithSigningTimeout].
+	signCtx, cancel := context.WithTimeout(ctx, i.signingTimeout)
+	defer cancel()
+
+	token, err := key.sign(signCtx, claims)
 	keyID := key.id
-	i.mu.RUnlock()
 
 	if err != nil {
+		// Named for what happened, and distinguished from the caller's own
+		// deadline: "the KMS did not answer in 10s" and "you cancelled" are
+		// different incidents, and an operator reading one line of log gets to
+		// know which. The signer's own error is kept, since a signer that
+		// honours its context usually says something more specific.
+		if ctx.Err() == nil && signCtx.Err() != nil {
+			return Assertion{}, fmt.Errorf("%w: signing with key %q did not finish within %s: %w",
+				context.DeadlineExceeded, truncate(keyID, 64), i.signingTimeout, err)
+		}
 		return Assertion{}, err
+	}
+
+	i.mu.RLock()
+	published := i.publishedLocked(keyID, i.clock())
+	i.mu.RUnlock()
+
+	if !published {
+		// Discarded rather than returned. The token is a real signature by a
+		// key this issuer has withdrawn, so handing it back is precisely what
+		// RevokeKey exists to prevent — a relying party with a cached key set
+		// would accept it.
+		return Assertion{}, fmt.Errorf("%w: key %q was withdrawn from this issuer's published key set while the assertion was being signed",
+			ErrUnknownKey, truncate(keyID, 64))
 	}
 
 	return Assertion{
