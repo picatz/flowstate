@@ -149,6 +149,15 @@ type authFlags struct {
 	policyPath string
 	insecure   bool
 
+	// policyPathGiven records whether policyPath was typed on this command
+	// line rather than inherited from $FLOWSTATE_AUTH_POLICY, which is the
+	// flag's default. It changes no decision — [authVerifier] refuses
+	// --insecure-no-auth beside a policy from either source — only what the
+	// refusal tells the operator to do about it, since unsetting an exported
+	// variable and deleting a flag are different actions. Same distinction,
+	// and the same spelling, as devFlags.authPolicyGiven in serverdev.go.
+	policyPathGiven bool
+
 	// identityKeyPaths holds the keys Flowstate publishes when the trust policy
 	// configures federation, in the order they were given. Empty means the
 	// server verifies callers but issues nothing, which is the inbound-only
@@ -201,6 +210,7 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 
 	return authFlags{
 		policyPath:       policyPath,
+		policyPathGiven:  cmd.Flags().Changed("auth-policy"),
 		insecure:         insecure,
 		identityKeyPaths: identityKeyPaths,
 		identityClaims:   identityClaims,
@@ -1435,7 +1445,48 @@ const maxHeaderValueCount = 500
 // missing or unreadable policy: a server that cannot load its trust policy must
 // refuse to start rather than quietly begin accepting everyone, which is exactly
 // the failure this replaces.
+//
+// Naming both answers is refused rather than resolved by priority. This
+// function used to return the anonymous verifier before it looked at
+// flags.policyPath at all, so `flow server --insecure-no-auth --auth-policy
+// /nonexistent/policy.yaml` reached the Temporal dial: the policy was not
+// merged, not preferred and not reported, it was never opened. The deployment
+// that produces is the dangerous one — an operator who added --insecure-no-auth
+// for a local reproduction and left it in a unit file has an anonymous server
+// whose configuration still reads as authenticated, beside a trust policy every
+// reader believes is in force. A contradiction is a deployment that has not
+// said which it wants, and this repository refuses those at start-up rather
+// than picking one (see [resolveRPCResource] for --rpc-resource beside
+// --allow-issuer-wide-audiences, the same shape one surface down).
+//
+// `flow server dev` does not reach here: it builds its handler from
+// [auth.InsecureAnonymousVerifier] directly and answers the same question in
+// devCheckAuthPolicy (cmd/flow/serverdev.go), which refuses an inherited
+// FLOWSTATE_AUTH_POLICY and deliberately accepts a --auth-policy typed on its
+// own command line, for that command's secrets rules only. That is a different
+// answer on purpose and is left alone: this command has no such reading, since
+// `flow server` does not resolve secrets.
+//
+// The doc gate in documentedservers_test.go already refuses the pair in every
+// Markdown recipe in the repository, on this same reasoning. With this refusal
+// the runtime and that gate now agree: a document showing both describes a
+// server that no longer starts.
 func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
+	if flags.insecure && flags.policyPath != "" {
+		if !flags.policyPathGiven {
+			return nil, nil, fmt.Errorf("--insecure-no-auth cannot be combined with the trust policy in "+
+				"$FLOWSTATE_AUTH_POLICY (%s): that flag authenticates every caller as anonymous without a "+
+				"token, so the policy would never be read and this server would accept callers it rejects. "+
+				"Drop --insecure-no-auth to authenticate against that policy, or unset FLOWSTATE_AUTH_POLICY "+
+				"for this run to serve anonymously on purpose", flags.policyPath)
+		}
+		return nil, nil, fmt.Errorf("--insecure-no-auth and --auth-policy %s are mutually exclusive: one "+
+			"authenticates every caller against that trust policy and the other authenticates nobody at "+
+			"all, so a deployment giving both has not said which it wants. Were this resolved by priority "+
+			"the anonymous verifier would win and the policy would never be read. Pass one or the other",
+			flags.policyPath)
+	}
+
 	if flags.insecure {
 		return auth.InsecureAnonymousVerifier(), nil, nil
 	}
@@ -2448,7 +2499,9 @@ flow server --verbose`,
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
-		"allow unauthenticated access; for local development only")
+		"allow unauthenticated access; for local development only, and cannot be combined with "+
+			"--auth-policy (or an inherited FLOWSTATE_AUTH_POLICY), which authenticates every caller "+
+			"against a trust policy this flag would leave unread")
 	addRPCResourceFlags(serverCmd)
 	serverCmd.Flags().StringArray("identity-key",
 		identityKeyDefault(),

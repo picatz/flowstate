@@ -116,6 +116,12 @@ rather than a fallback for a policy that failed to load
 (`cmd/flow/main.go`). The Local development recipe below is labelled a Tier 0/1a
 *boundary* for this reason.
 
+Naming both is refused at start-up rather than resolved by priority. A server
+given `--insecure-no-auth` alongside `--auth-policy` — or alongside an inherited
+`FLOWSTATE_AUTH_POLICY`, which is the same sentence typed somewhere else — would
+otherwise authenticate nobody while its configuration still read as Tier 1a,
+with a trust policy beside it that nothing opens. Pass one or the other.
+
 ### Tier 0 — `flow run local`
 
 No server, no Temporal, no worker process boundary. A single command runs a

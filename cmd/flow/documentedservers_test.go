@@ -129,10 +129,14 @@ type documentedCommand struct {
 // picatz/flowstate#1053. A command with no policy must therefore say
 // --insecure-no-auth, and the walkthroughs now do.
 //
-// Naming both is refused for the opposite reason: authVerifier returns the
-// anonymous verifier before it looks at the policy path at all, so a recipe
-// showing both describes an authenticated deployment and instructs an
-// anonymous one, with a trust policy beside it that the server never reads.
+// Naming both is refused for the opposite reason: a recipe showing both
+// describes an authenticated deployment and instructs an anonymous one, with a
+// trust policy beside it that the server never reads. Since picatz/flowstate#1062
+// the runtime refuses the pair too — authVerifier (cmd/flow/main.go) returns an
+// error before building either verifier — so this gate and the command now give
+// the same answer: a document showing both describes a server that does not
+// start. The gate is kept rather than folded into that refusal, because it
+// reads documents the runtime never sees.
 //
 // What remains genuinely unchecked is one thing and it is named:
 // `flow server dev`, a different command with its own authentication, skipped
@@ -180,18 +184,21 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 			}
 
 			// The other way to answer the question twice. authVerifier
-			// (cmd/flow/main.go) returns InsecureAnonymousVerifier before it
-			// ever looks at flags.policyPath, so the named policy is not
-			// merged, not preferred, and not reported — it is never read.
-			// Verified against dadf2279: `flow server --insecure-no-auth
-			// --auth-policy /nonexistent/policy.yaml` gets past authentication
+			// (cmd/flow/main.go) used to return InsecureAnonymousVerifier
+			// before it ever looked at flags.policyPath, so the named policy
+			// was not merged, not preferred, and not reported — it was never
+			// read. Verified against dadf2279: `flow server --insecure-no-auth
+			// --auth-policy /nonexistent/policy.yaml` got past authentication
 			// to the Temporal dial rather than failing to read the file.
 			//
 			// A document showing both therefore describes an authenticated
 			// deployment and instructs an anonymous one, and every reader of
 			// the trust policy beside it is reading a file the server ignores.
 			// Nothing in the repository does this today; this is here so that
-			// it stays that way. Reported by Codex on picatz/flowstate#1060.
+			// it stays that way. Reported by Codex on picatz/flowstate#1060,
+			// and fixed at the runtime in picatz/flowstate#1062, which now
+			// refuses the pair at start-up: a recipe caught here today is a
+			// command that does not start rather than one that starts wrong.
 			require.Falsef(t, documented.insecure && policyPath != "",
 				"%s documents a `flow server` with both --insecure-no-auth and --auth-policy (%s). "+
 					"That server authenticates nobody: --insecure-no-auth wins in authVerifier and the "+
