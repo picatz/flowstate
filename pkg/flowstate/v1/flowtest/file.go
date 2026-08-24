@@ -239,6 +239,15 @@ type File struct {
 	// is not itself a bug — see #203's discussion of `examples/call-a-workflow/workflow.test.yaml`.
 	Edition string `yaml:"edition"`
 
+	// Vars are the literal values this file states once and references
+	// everywhere (#1072): a whole-value `${vars.x}` in a fixture position is
+	// substituted at load, and `expect.check:` reads `vars.x` at evaluation.
+	// Literals only — any `${` inside one is refused, including a reference
+	// to another var — so there is no evaluation order and no cycles; see
+	// vars.go for the design and the one deliberate asymmetry (a stub's
+	// `vars.` stays the workflow's).
+	Vars map[string]any `yaml:"vars"`
+
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
 	// inherits them and may override them, by the boring, stated rules
@@ -1088,6 +1097,17 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 					"record why no case reaches this step, or remove the entry and let it be a gap", step)
 			}
 		}
+	}
+
+	// Vars validate and substitute first, before tables expand and before
+	// `defaults:` is checked: an inherited `${vars.x}` resolves to its
+	// literal exactly once, and the fixture rule below then checks what the
+	// run will actually see.
+	if err := checkVars(file.Vars); err != nil {
+		return nil, err
+	}
+	if err := file.resolveVars(); err != nil {
+		return nil, err
 	}
 
 	// Rows are expanded before defaults are merged, which is what makes the

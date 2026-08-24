@@ -684,6 +684,29 @@ one was expected is the "green by not running" failure this repository
 legislates against everywhere else. `examples/parameterized-deploy` is the
 worked example, and it runs in CI like the rest.
 
+### One value, stated once: `vars:`
+
+A file-level `vars:` block holds the literals a suite states once and references everywhere — a URL, an issuer, a payload fragment (#1072). A fixture position (a case's `inputs:`, a trigger's fields, a scripted `sender:`, `expect.outputs:`) references one as a whole-value `${vars.x}` fence, resolved at load by substitution, so what reaches the run is the literal; a check reads `vars.x` at evaluation. A var may hold a structure, and it lands whole in a position that wants one:
+
+```yaml
+vars:
+  issuer: https://issuer.example.com
+  order: {id: ord_123, region: eu-west-1}
+tests:
+  - name: the order is stated once
+    inputs: {order: "${vars.order}"}
+    signals:
+      - name: approve
+        sender: {subject: approver@example.com, issuer: "${vars.issuer}"}
+    expect:
+      check:
+        - steps.join.value.region == vars.order.region
+```
+
+Literals only, for now: any `${` inside a var is refused, including a reference to another var, so there is no evaluation order and no cycles — and a mixed string (`"https://${vars.host}/v1"`) is refused too, because a partial substitution would be a template language this file deliberately is not. Build combined text in the workflow, or state it literally.
+
+**One asymmetry, stated because it is load-bearing**: inside a stub's `where:` and `returns:`, `vars.` keeps meaning the *workflow's* own `vars:` block — those expressions evaluate against the run's scope, and a load-time substitution there would silently hijack that meaning. A stub speaks the run's language; everywhere else in the test file, `vars.` is the file's.
+
 ### Claims the named fields cannot say: `expect.check:`
 
 `ran:`, `outputs:` and the other named fields assert structure, and they stay the idiomatic spelling for it — they feed coverage and read the transcript's record. `expect.check:` is for everything else: a shape claim over an output, an error that must name its step, a relation between two steps' values. Each entry is a bare CEL predicate over the finished run — `steps.*`, `inputs.*`, and a `run` root carrying `failed`, `error` and `local` — or `{that:, because:}` to add the sentence a failure prints:

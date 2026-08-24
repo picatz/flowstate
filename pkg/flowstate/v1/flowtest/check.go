@@ -136,7 +136,7 @@ func checkCheckClaims(where string, claims []CheckClaim) error {
 // Checks run whether or not the run failed — an error claim (`run.error`)
 // exists precisely for failed runs — against whatever the partial transcript
 // holds; a claim reaching a step the failure preceded errors, honestly.
-func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
+func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars map[string]any, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	if len(claims) == 0 {
 		return nil
 	}
@@ -157,6 +157,14 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		"error":  errText,
 		"local":  true,
 	})}
+	// The file's `vars:` (#1072), bound the way `run` is. This scope carries
+	// no workflow ambient vars — the check scope's `vars` is the file's, one
+	// meaning per position (see vars.go's asymmetry note) — so there is
+	// nothing here to shadow; the day workflow vars join this scope, the
+	// per-case collision refusal recorded on #1072 lands with them.
+	if len(vars) > 0 {
+		extra["vars"] = v1.TypeAdapter.NativeToValue(vars)
+	}
 	activation := scope.ActivationWith(ctx, extra)
 
 	libs, err := v1.ProfileLibraries(spec.GetProfile())
