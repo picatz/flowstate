@@ -165,3 +165,33 @@ func shadowTestTokens() []shadowToken {
 	}
 	return tokens
 }
+
+// TestShadowKeySeparatesEntriesThatCannotCompete pins the grouping
+// [Policy.UnreachableIssuers] uses to avoid comparing entries that could never
+// shadow one another: two entries share a key only where
+// [TrustedIssuer.shadows] could possibly return true for them.
+func TestShadowKeySeparatesEntriesThatCannotCompete(t *testing.T) {
+	oidc := TrustedIssuer{Issuer: "https://issuer.example", Audiences: []string{"flowstate"}}
+	otherOIDC := TrustedIssuer{Issuer: "https://other.example", Audiences: []string{"flowstate"}}
+	mesh := TrustedIssuer{Kind: IssuerKindMTLS, Issuer: "mesh-ca", ClientCAFile: "/ca.pem", SubjectFrom: SubjectFromURISAN}
+	otherMesh := TrustedIssuer{Kind: IssuerKindMTLS, Issuer: "mesh-ca", ClientCAFile: "/other-ca.pem", SubjectFrom: SubjectFromURISAN}
+	future := TrustedIssuer{Name: "spiffe-one", Kind: "spiffe"}
+	otherFuture := TrustedIssuer{Name: "spiffe-two", Kind: "spiffe"}
+
+	// Entries that can compete share a key: an explicit kind: oidc and the
+	// default empty one are the same kind.
+	require.Equal(t, oidc.shadowKey(), TrustedIssuer{Kind: IssuerKindOIDC, Issuer: oidc.Issuer}.shadowKey())
+	require.Equal(t, mesh.shadowKey(), TrustedIssuer{
+		Kind: IssuerKindMTLS, Issuer: "another-label", ClientCAFile: "/ca.pem",
+	}.shadowKey(), "mtls candidates are selected by CA pool, not by the issuer label")
+
+	// Entries that cannot compete do not, so they are never compared.
+	require.NotEqual(t, oidc.shadowKey(), otherOIDC.shadowKey())
+	require.NotEqual(t, oidc.shadowKey(), mesh.shadowKey())
+	require.NotEqual(t, mesh.shadowKey(), otherMesh.shadowKey())
+
+	// A kind this package does not know is compared against nothing, which is
+	// the answer shadows gives it anyway.
+	require.NotEqual(t, future.shadowKey(), otherFuture.shadowKey())
+	require.False(t, future.shadows(otherFuture))
+}
