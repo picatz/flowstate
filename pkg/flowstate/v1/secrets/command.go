@@ -55,6 +55,10 @@ type execRunner struct {
 	// default here — a keychain or password-manager CLI needs HOME, the user's
 	// session, and its own configuration to work at all.
 	env []string
+
+	// redactStderr keeps an arbitrary command's diagnostic output out of surfaced
+	// errors, where it could otherwise enter logs or durable workflow history.
+	redactStderr bool
 }
 
 // run implements [commandRunner].
@@ -109,6 +113,11 @@ func (r execRunner) run(ctx context.Context, name string, args ...string) ([]byt
 	if runErr != nil {
 		var exit *exec.ExitError
 		if errors.As(runErr, &exit) {
+			if r.redactStderr {
+				return nil, fmt.Errorf("%w: %s exited %d (stderr redacted)",
+					ErrNotFound, name, exit.ExitCode())
+			}
+
 			// The tool ran and refused. Its stderr says why, and a secret tool puts
 			// the reason there rather than the secret, so it is safe to include —
 			// bounded, and with any trailing newline trimmed.
@@ -227,10 +236,10 @@ const (
 //	secrets.NewCommandProvider([]string{"sops", "-d", "--extract", `["{{name}}"]`, "/etc/flowstate/secrets.enc.yaml"})
 //	secrets.NewCommandProvider([]string{"aws", "secretsmanager", "get-secret-value", "--secret-id", "{{name}}", "--query", "SecretString", "--output", "text"})
 //
-// The command's exit code and stderr classify the failure the same way the keychain
-// and 1Password providers do: a non-zero exit is [ErrNotFound] with a bounded,
-// control-character-stripped summary of stderr; a timeout or a missing executable is
-// [ErrUnavailable]; empty output is [ErrEmpty].
+// A non-zero exit is [ErrNotFound], but stderr is never included in the returned
+// error: an arbitrary command may write secret material there, and resolution errors
+// can be recorded in logs or durable workflow history. A timeout or a missing
+// executable is [ErrUnavailable]; empty output is [ErrEmpty].
 //
 // It is safe for concurrent use.
 type CommandProvider struct {
@@ -303,7 +312,11 @@ func NewCommandProvider(args []string, opts ...CommandOption) (*CommandProvider,
 	provider := &CommandProvider{
 		scheme: DefaultCommandScheme,
 		args:   append([]string(nil), args...),
-		runner: execRunner{timeout: DefaultCommandTimeout, maxBytes: DefaultCommandMaxBytes},
+		runner: execRunner{
+			timeout:      DefaultCommandTimeout,
+			maxBytes:     DefaultCommandMaxBytes,
+			redactStderr: true,
+		},
 	}
 
 	for _, opt := range opts {
