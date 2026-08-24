@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
 
@@ -192,10 +193,15 @@ func runMCP(cmd *cobra.Command, args []string) error {
 
 // maxRunLocalLogRecords bounds how many `log:` lines are carried back.
 //
-// Same reason [flowmcp.MaxResultBytes] gives one level up, and bounded by count
-// rather than bytes because a loop is how this gets large: the run controls how
-// many records there are, and each one is small.
-const maxRunLocalLogRecords = 200
+// Count and bytes are independent bounds: a loop controls the former, while one
+// message or field controls the latter. The byte budget is deliberately a
+// fraction of the answer budget because JSON escaping can expand every byte to
+// six and the run itself still has to fit beside the logs.
+const (
+	maxRunLocalLogRecords = 200
+	maxRunLocalLogBytes   = flowmcp.MaxResultBytes / 16
+	maxRunLocalProtoBytes = flowmcp.MaxResultBytes / 16
+)
 
 // runLocalArguments is the tool's whole input surface.
 //
@@ -757,6 +763,32 @@ type runLocalResult struct {
 // dropping a part and *saying so* leaves the status and the reason — the two
 // things a model needs to decide what to do next — intact.
 func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([]byte, error) {
+	// protojson builds its answer in memory. Preflight the binary representation
+	// before asking it to do so: JSON can expand one byte to six (for example a
+	// control character), hence the conservative divisor. This is a resource
+	// bound, not the answer's shrinking ladder; preserve declared outputs when
+	// possible, then fall through to the same notes the ordinary size checks use.
+	if proto.Size(response) > maxRunLocalProtoBytes {
+		// A shallow copy is intentional: cloning here would duplicate the very
+		// attacker-sized transcript this preflight exists to avoid retaining.
+		trimmed := *response
+		if trimmed.GetOutputs() != nil {
+			trimmed.Kind = nil
+		}
+		if proto.Size(&trimmed) <= maxRunLocalProtoBytes {
+			return renderTrimmedRun(&trimmed, fmt.Sprintf(
+				"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
+					"Have the workflow carry less, or read the values it needs in a step of its own",
+				flowmcp.MaxResultBytes))
+		}
+
+		trimmed.RunOutputs = nil
+		return renderTrimmedRun(&trimmed, fmt.Sprintf(
+			"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
+				"Read what the run produced with `flow get`, or have the workflow answer with less",
+			flowmcp.MaxResultBytes))
+	}
+
 	run, err := marshalJSON(response, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
@@ -870,9 +902,10 @@ type runLocalLogs struct {
 // runLocalLogSink is the collection itself, held apart from the handler because
 // slog.Handler is copied by WithAttrs and the records must not be.
 type runLocalLogSink struct {
-	mu   sync.Mutex
-	seen int
-	held []runLocalLogRecord
+	mu    sync.Mutex
+	seen  int
+	bytes int
+	held  []runLocalLogRecord
 }
 
 // newRunLocalLogs returns an empty collector.
@@ -888,18 +921,28 @@ func (l *runLocalLogs) Handle(_ context.Context, record slog.Record) error {
 	defer l.sink.mu.Unlock()
 
 	l.sink.seen++
-	if len(l.sink.held) >= maxRunLocalLogRecords {
+	if len(l.sink.held) >= maxRunLocalLogRecords || l.sink.bytes >= maxRunLocalLogBytes {
 		return nil
 	}
 
+	remaining := maxRunLocalLogBytes - l.sink.bytes
+	message := boundedRunLocalLogString(record.Message, &remaining)
 	fields := make(map[string]string, record.NumAttrs()+len(l.attrs))
 	for _, attr := range l.attrs {
-		fields[attr.Key] = attr.Value.String()
+		if remaining == 0 {
+			break
+		}
+		key := boundedRunLocalLogString(attr.Key, &remaining)
+		fields[key] = boundedRunLocalLogString(attr.Value.String(), &remaining)
 	}
 	record.Attrs(func(attr slog.Attr) bool {
-		fields[attr.Key] = attr.Value.String()
+		if remaining == 0 {
+			return false
+		}
+		key := boundedRunLocalLogString(attr.Key, &remaining)
+		fields[key] = boundedRunLocalLogString(attr.Value.String(), &remaining)
 
-		return true
+		return remaining > 0
 	})
 	if len(fields) == 0 {
 		fields = nil
@@ -908,11 +951,29 @@ func (l *runLocalLogs) Handle(_ context.Context, record slog.Record) error {
 	label, _ := logLabel(record.Level)
 	l.sink.held = append(l.sink.held, runLocalLogRecord{
 		Level:   label,
-		Message: record.Message,
+		Message: message,
 		Fields:  fields,
 	})
+	l.sink.bytes = maxRunLocalLogBytes - remaining
 
 	return nil
+}
+
+// boundedRunLocalLogString spends from remaining without splitting UTF-8. The
+// bounded clone prevents a short retained prefix from keeping an
+// attacker-sized backing string alive for the lifetime of the MCP call.
+func boundedRunLocalLogString(s string, remaining *int) string {
+	if len(s) <= *remaining {
+		*remaining -= len(s)
+		return strings.Clone(s)
+	}
+
+	end := *remaining
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	*remaining = 0
+	return strings.Clone(s[:end])
 }
 
 // WithAttrs returns a handler that also emits attrs, collecting into the same
