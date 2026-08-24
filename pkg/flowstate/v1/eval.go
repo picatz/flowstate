@@ -1658,7 +1658,16 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 		return nil, err
 	}
 
-	if err := runNodes(ctx, callee.GetSteps(), inner, undo, placement, depth, nil); err != nil {
+	// A callee's step ids belong to the callee, not to its caller. Move the
+	// runtime position across that boundary before runNodes stamps each local
+	// step id; besides keeping policy references accurate, this prevents a
+	// consumer of the runtime position from confusing equal step ids in two
+	// different workflow files.
+	calleeCtx := ctx
+	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
+		calleeCtx = ContextWithSecretStep(ctx, callee.GetName(), runtime.Step.Run, "")
+	}
+	if err := runNodes(calleeCtx, callee.GetSteps(), inner, undo, placement, depth, nil); err != nil {
 		// Named, because a failure inside a called workflow reported without
 		// saying which one leaves a reader looking through the caller for a step
 		// that is not there.

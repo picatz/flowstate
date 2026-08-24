@@ -28,10 +28,11 @@ type compiledStub struct {
 	// task and step are the two ways a stub names what it replaces, exactly one
 	// set. task is filled straight from the file; step is resolved to its task
 	// against the compiled workflow by [bindStubs], and stepScope carries the
-	// step id forward so the matcher answers only that step's invocations.
+	// workflow and step forward so the matcher answers only that exact step's
+	// invocations.
 	task      string
 	step      string
-	stepScope string
+	stepScope stubStepScope
 
 	where *expr.ParsedExpr // nil matches unconditionally
 
@@ -49,6 +50,11 @@ type compiledStub struct {
 	hasReturns bool
 
 	fails *StubFailure
+}
+
+type stubStepScope struct {
+	workflow string
+	step     string
 }
 
 // stubExpr is one ${...} expression inside a stub's `returns:`, parsed at load
@@ -147,7 +153,7 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 				return nil, unknownStepError(m.step, kindOfStep, taskOfStep)
 			}
 			task = resolved
-			m.stepScope = m.step
+			m.stepScope = stubStepScope{workflow: spec.GetName(), step: m.step}
 		}
 
 		t, ok := byTask[task]
@@ -375,9 +381,9 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			// An undo call carries none (it runs off the run level context), so
 			// a step stub never answers a compensation, which is what keeps the
 			// forward call and its reversal stubbable separately.
-			if m.stepScope != "" {
-				current, ok := v1.TaskStepFromContext(ctx)
-				if !ok || current != m.stepScope {
+			if m.stepScope.step != "" {
+				current, ok := v1.TaskStepRefFromContext(ctx)
+				if !ok || current.Workflow != m.stepScope.workflow || current.Step != m.stepScope.step {
 					continue
 				}
 			}
