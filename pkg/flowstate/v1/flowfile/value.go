@@ -120,6 +120,25 @@ func fenceError(s string) error {
 	return fmt.Errorf("%q mixes literal text with an expression: %s", s, interpolationHelp)
 }
 
+// LiteralText returns s as the compiler reads it where the Flowfile grammar
+// requires literal text, or reports why it cannot be used there. These fields
+// are read while the workflow is compiled, so there is no evaluation context
+// in which either a whole-value expression or an interpolation could be used.
+//
+// It is exported so editor features which act on literal-text fields can apply
+// the compiler's rule rather than accidentally treating rejected source as a
+// literal value.
+func LiteralText(s string) (string, error) {
+	segs, err := scanInterpolation(s)
+	if err != nil {
+		return "", err
+	}
+	if hasFence(segs) {
+		return "", fmt.Errorf("cannot be an expression; it is read when the workflow is compiled, so write the value out")
+	}
+	return literalText(segs), nil
+}
+
 // inputValue compiles a task input, where what the value holds is whatever the task
 // declares and so only a fenced string is an expression.
 func (c *compiler) inputValue(n ast.Node, path string, r ref) *v1.Value {

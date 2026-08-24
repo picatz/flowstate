@@ -391,6 +391,35 @@ func TestDefinitionFollowsACall(t *testing.T) {
 		assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
 	})
 
+	t.Run("a target containing an expression is no location at all", func(t *testing.T) {
+		t.Parallel()
+
+		for _, target := range []string{"${'callee.yaml'}", "./callee${'.yaml'}"} {
+			t.Run(target, func(t *testing.T) {
+				t.Parallel()
+
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, target),
+					[]byte(calleeSource("decoy")), 0o644))
+
+				src := callerSource(target)
+				caller := filepath.Join(dir, "workflow.yaml")
+				require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+				c := newClient(t)
+				c.initialize()
+				uri := "file://" + caller
+				params := c.open(uri, src)
+				require.NotEmpty(t, params.Diagnostics,
+					"premise: the compiler refuses expressions in a call target")
+
+				pos := callTargetPosition(t, src, target)
+				assert.Empty(t, c.definition(uri, pos.Line, pos.Character),
+					"invalid source must not navigate to a literal file with the same name")
+			})
+		}
+	})
+
 	t.Run("nowhere else on the step answers with the callee", func(t *testing.T) {
 		t.Parallel()
 

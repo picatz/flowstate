@@ -190,8 +190,11 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 		return nil
 	}
 
-	target := from.callEntry.valueText()
-	if target == "" {
+	target, err := flowfile.LiteralText(from.callEntry.valueText())
+	if target == "" || err != nil {
+		// The compiler reads a call target as literal text and refuses any
+		// expression or interpolation. Navigating to a literal filename matching
+		// rejected source would claim that an invalid call works.
 		return nil
 	}
 
