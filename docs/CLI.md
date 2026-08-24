@@ -626,6 +626,58 @@ exercise composition rather than only a single file in isolation; see
 `examples/call-a-workflow/workflow.test.yaml` for a worked case, run in CI by
 the `Example workflows pass their own tests` job.
 
+### One fixture, many rows
+
+The house Go convention is a table: "slice-of-struct tables with a `name` field,
+one `t.Run` per case". A `*.test.yaml` writes the same shape with `cases:`, and
+the shared half is stated once (#924):
+
+```yaml
+defaults:
+  workflow: ./workflow.yaml          # every case in the file, stated once
+tests:
+  - name: a declaration is enforced before the first step runs
+    stubs:
+      - task: http
+        returns: {}
+    expect:
+      failed: true                   # true of every row
+    cases:
+      - name: the required argument is missing
+        expect:
+          error_contains: which service to deploy
+      - name: a replica count above the declared bound
+        inputs: {service: checkout, replicas: 99}
+        expect:
+          error_contains: must satisfy
+```
+
+An entry that declares `cases:` does not itself run — it is the template its
+rows are merged over — and each row reports as `<entry name>/<row name>`, the
+two-level identity `t.Run` gives a Go table. `--run` matches that whole name,
+so `--run 'enforced/replica'` selects one row.
+
+There is one merge rule, applied at two levels: **stated beats inherited**.
+`defaults:` fills in what a case did not write, and an entry fills in what its
+row did not. `inputs:` and `expect:` merge one level — a row that writes
+`expect.error_contains` keeps the entry's `expect.failed` — while `stubs:`,
+`signals:`, `secrets:` and `trigger:` are inherited whole or replaced whole,
+because their halves are not independently meaningful. A row's stub replaces an
+inherited one for the same target rather than joining it, which is #416's
+identity rule unchanged.
+
+The cost of merging `expect:` field by field, stated plainly: a row cannot
+assert *less* than its entry. An entry that pins `outputs:` pins it for every
+row that does not overwrite it, so an entry should hold only what is true of
+every row. The failure is loud rather than silent — the row fails against a
+value nobody claimed for it.
+
+A table is one level deep. A row that declares its own `cases:` is refused, as
+is an entry whose `cases:` is empty: a file that quietly ran zero cases where
+one was expected is the "green by not running" failure this repository
+legislates against everywhere else. `examples/parameterized-deploy` is the
+worked example, and it runs in CI like the rest.
+
 ### What a stub can see
 
 A stub's `where:` and its `returns:` are evaluated against **the scope the

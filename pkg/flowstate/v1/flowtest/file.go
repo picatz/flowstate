@@ -379,6 +379,23 @@ type Test struct {
 	// them under this identity.
 	Starter *ScriptedIdentity `yaml:"starter"`
 
+	// Cases are the rows of a table entry (#924 slice 2): one run each, with
+	// the enclosing entry standing to a row exactly as `defaults:` stands to
+	// a case. An entry that declares rows does not itself run — it is the
+	// template they are merged over — and a row's own value always beats the
+	// entry's, the one direction every merge in this file takes.
+	//
+	// The house Go convention this mirrors is the charter's: "slice-of-struct
+	// tables with a `name` field, one `t.Run` per case" (#405). Report
+	// identity is `<entry name>/<row name>`, the two-level naming `t.Run`
+	// gives a Go table, carried in the existing [v1.TestCase] name so nothing
+	// reading a report needs a schema change to see it.
+	//
+	// One level only. A row that declares its own `cases:` is refused rather
+	// than flattened, because a table of tables is a shape whose merge order
+	// nobody wrote down and whose report identity has no obvious spelling.
+	Cases []Test `yaml:"cases"`
+
 	// Expect is what the run must have done to pass.
 	Expect Expectation `yaml:"expect"`
 }
@@ -1052,6 +1069,32 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 					"record why no case reaches this step, or remove the entry and let it be a gap", step)
 			}
 		}
+	}
+
+	// Rows are expanded before defaults are merged, which is what makes the
+	// precedence chain read the way an author expects it to: a row beats its
+	// entry, and an entry beats `defaults:`. Expanding afterward would let a
+	// file-level default win over an entry's own value for a row that stated
+	// neither — one fact written down twice, disagreeing with itself.
+	//
+	// Done here rather than at run time so everything downstream — the
+	// per-test checks below, coverage, `--run`, the Go subtests — keeps
+	// reading one flat list of effective cases and needs no notion of a table.
+	expanded, err := expandTableEntries(file.Tests)
+	if err != nil {
+		return nil, err
+	}
+	file.Tests = expanded
+
+	// The bound is on the runs, not on the written entries: a row is a whole
+	// case, so an entry with four hundred rows costs what four hundred cases
+	// cost. Checked after expansion for that reason, and the diagnostic says
+	// "once its rows are counted" because the limit is otherwise confusing to
+	// read in a file whose `tests:` list is three items long.
+	if len(file.Tests) > MaxTestsPerFile {
+		return nil, fmt.Errorf(
+			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
+			len(file.Tests), MaxTestsPerFile)
 	}
 
 	// Validated then merged before anything below bounds or checks a case, so
