@@ -408,3 +408,37 @@ tests:
 	require.False(t, c.GetPassed())
 	assert.Contains(t, c.GetError(), "both `body` and `raw_body`")
 }
+
+// TestATrailingDocumentInARawBodyIsRefused (Codex, #1109): the receiver's own
+// decodeDeliveryBody refuses `{"id":"a"} {"id":"b"}` as more than one
+// document, so a rehearsal must too — even when the signature over the whole
+// sequence is genuine, since verifying the bytes and then running from the
+// first document's prefix would pass offline for a delivery production
+// rejects.
+func TestATrailingDocumentInARawBodyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	captured := verifiedBody + ` {"order":{"id":"ord_SMUGGLED","total":1}}`
+	dir := writeVerifyWorkflow(t)
+	writeFile(t, dir+"/delivery.json", fmt.Sprintf(`{
+  "headers": {"X-Flowstate-Signature": %q, "X-Request-Id": "r-1"},
+  "raw_body": %q
+}`, hmacHex(fixtureKey, captured), captured))
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: never gets to a verdict
+    workflow: ./workflow.yaml
+    secrets:
+      "env:HOOK_KEY": whsec_fixture_key
+    trigger:
+      webhook: orders
+      payload: ./delivery.json
+    expect:
+      refused: true
+`)
+	report := flowtest.RunFile(dir + "/x.test.yaml")
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "a two-document body must be a fixture mistake, not a verdict")
+	assert.Contains(t, c.GetError(), "more than one JSON document")
+}

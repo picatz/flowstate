@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -101,6 +103,20 @@ func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
 		if err := bodyDecoder.Decode(&body); err != nil {
 			return v1.WebhookDelivery{}, nil, fmt.Errorf(
 				"the delivery %s carries a body that will not decode: %w", path, err)
+		}
+
+		// And nothing after it — the receiver's own rule (decodeDeliveryBody,
+		// server/webhook.go), which refuses `{"id":"a"} {"id":"b"}` as more
+		// than one document rather than starting a run from the prefix. A
+		// `body` value cannot carry a trailing document (a RawMessage is one
+		// token by construction), but `raw_body` is arbitrary bytes, and a
+		// rehearsal accepting what production refuses is the rehearsal lying
+		// about production (Codex, #1109).
+		var trailing json.RawMessage
+		if err := bodyDecoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+			return v1.WebhookDelivery{}, nil, fmt.Errorf(
+				"the delivery %s carries more than one JSON document in its body; the receiver refuses "+
+					"such a delivery, so a rehearsal must too — store one document per delivery", path)
 		}
 	}
 
