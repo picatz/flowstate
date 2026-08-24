@@ -13,15 +13,24 @@
 # considers clean. Three agents investigated that false positive before it was
 # written down.
 #
-# `go env GOROOT` answers with the pin only from inside the module; outside it
-# there is no go.mod to read and the answer is the host default, which is the
-# same trap wearing a different hat. Make runs at the repository root, so this
-# is evaluated inside the module. The absolute path it produces is what makes
-# it safe in `test-plugins`, which formats each module by path.
+# Resolved by asking for the version go.mod names, exactly, rather than by
+# asking `go env GOROOT` what is selected. The `go` directive is a *minimum*:
+# toolchain selection keeps a local default that is new enough, so on a machine
+# whose Go is newer than the pin, plain `go env GOROOT` answers with that newer
+# toolchain — while CI's `go-version-file: go.mod` installs the directive's
+# version exactly. That would put the newer gofmt here and the pinned one there,
+# which is this whole problem again with the versions swapped.
+#
+# The version is read out of go.mod rather than written down here, so it is the
+# same single value CI reads and cannot drift from it. `GOTOOLCHAIN` naming an
+# exact release is what makes the answer that release and not merely something
+# at least as new; it downloads the toolchain if this machine lacks it, which is
+# what CI does too.
 #
 # `tools/gate` needs none of this: its gofmt leg calls `go/format`, the library
 # face of the same printer, compiled with the toolchain that builds the gate.
-GOFMT := $(shell go env GOROOT)/bin/gofmt
+GOVERSION := $(shell awk '$$1 == "go" { print $$2; exit }' go.mod)
+GOFMT := $(shell GOTOOLCHAIN=go$(GOVERSION) go env GOROOT)/bin/gofmt
 
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse

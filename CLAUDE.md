@@ -82,20 +82,28 @@ one of them concluding CI would be red for every PR until somebody fixed it
 (#1061). CI installs the pin through `go-version-file: go.mod`, so its `gofmt`
 is the right one and it was never wrong.
 
-Run the pin's, from inside the module:
+Reach for `make fmt` or `make check`, which resolve the right one through the
+`GOFMT` variable. By hand it is:
 
-    "$(go env GOROOT)"/bin/gofmt -l ./cmd ./pkg
+    "$(GOTOOLCHAIN=go$(awk '$1 == "go" { print $2; exit }' go.mod) go env GOROOT)"/bin/gofmt -l ./cmd ./pkg
 
-Both halves matter. `go env GOROOT` answers with the pin only where there is a
-`go.mod` to read — from `/tmp` it answers with the host default, which is the
-same false positive wearing a different hat, and is how one of those
+which is a mouthful because two separate things have to be right. `go env
+GOROOT` alone answers with the *selected* toolchain, and the `go` directive is
+a minimum rather than a pin — selection keeps a local default that is new
+enough — so on a machine whose Go is newer than the directive it answers with
+that newer toolchain, while CI's `go-version-file: go.mod` installs the
+directive's version exactly. That is this same disagreement with the versions
+swapped, and it is why `GOTOOLCHAIN` names an exact release. And the version is
+read out of `go.mod` rather than typed, because a version typed anywhere else
+is a second copy of a number CI already reads. Run it from inside the module:
+outside it there is no `go.mod`, `go env GOROOT` answers with the host default,
+and that is the original false positive again — which is how one of those
 investigations confirmed the wrong answer twice.
 
-`make check`, `make fmt` and `make test-plugins` resolve it this way already
-(the `GOFMT` variable), and `tools/gate` never had the problem: its gofmt leg
-calls `go/format`, the library face of the same printer, compiled with the
-toolchain that builds the gate. Reach for a bare `gofmt` by hand and you are
-the only thing in the loop without the pin.
+`tools/gate` never had the problem: its gofmt leg calls `go/format`, the
+library face of the same printer, compiled with the toolchain that builds the
+gate. Reach for a bare `gofmt` and you are the only thing in the loop without
+the pin.
 
 A `go test` command that returns does not mean the test binary exited. If a run
 behaves oddly, check:
@@ -351,7 +359,7 @@ not the whole answer you want:
 
     go build ./...
     go vet ./...
-    "$(go env GOROOT)"/bin/gofmt -l ./cmd ./pkg  # must print nothing; the pin's gofmt, not PATH's
+    $(GOFMT) -l ./cmd ./pkg                    # must print nothing; see GOFMT in the Makefile
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
     make test-plugins                          # the plugin modules ./... cannot reach
     GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
