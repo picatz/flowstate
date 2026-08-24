@@ -33,6 +33,7 @@
           "**/workflow.yml",
           "**/workflows/*.yaml",
           "**/*.test.yaml",
+          "**/*.test.yml",
           "**/testdefaults.yaml"
         ],
         "configuration": "./language-configuration.json"

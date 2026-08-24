@@ -153,3 +153,23 @@ test("workflow-only commands exclude the test-file shapes in every menu", () => 
   // workflow-only commands and one test command, in two menus each.
   assert.equal(checked, 8, `expected all eight gated menu entries, saw ${checked}`);
 });
+
+// Both suite extensions, or neither (Codex, #1109): `flow test`'s discovery
+// (cmd/flow/test.go, collectTestFiles) and the server's own classifier
+// (flowfile/lsp/store.go, kindOfURI) accept `.test.yaml` and `.test.yml`
+// alike, and the Neovim pattern matches both — so an association list naming
+// only one leaves a supported suite as plain YAML with no extension attached.
+const filenamePatterns = (
+  JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf8")) as {
+    contributes: { languages: { filenamePatterns?: string[] }[] };
+  }
+).contributes.languages.flatMap((l) => l.filenamePatterns ?? []);
+
+test("both suite extensions are associated", () => {
+  for (const pattern of ["**/*.test.yaml", "**/*.test.yml", "**/testdefaults.yaml"]) {
+    assert.ok(
+      filenamePatterns.includes(pattern),
+      `filenamePatterns is missing ${pattern}; the CLI and the server both recognize it`,
+    );
+  }
+});
