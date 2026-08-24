@@ -2,6 +2,7 @@ package flowdebug_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -334,4 +335,86 @@ func TestASecretReferenceIsNotResolvedByAnInspection(t *testing.T) {
 // markStepless is a value step, so the secret test needs no second task.
 func markStepless(id string) *v1.Node {
 	return &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+}
+
+// tonedFragment is one Emit callback, for the tests below.
+type tonedFragment struct {
+	text string
+	tone flowdebug.Tone
+}
+
+// TestEmitClassifiesTheSessionsOutput drives a run holding each kind of
+// outcome and asserts every fragment arrives through Emit with the tone its
+// meaning calls for — and that Out is left alone once Emit is installed,
+// because two output paths would let a terminal and a capture disagree about
+// what the session said.
+func TestEmitClassifiesTheSessionsOutput(t *testing.T) {
+	t.Parallel()
+
+	var fragments []tonedFragment
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("step\nsetp\ninspect ((\ncontinue\n"),
+		Out: &out,
+		Emit: func(text string, tone flowdebug.Tone) {
+			fragments = append(fragments, tonedFragment{text: text, tone: tone})
+		},
+	})
+	require.NoError(t, err)
+
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(v1.TaskDef{Name: "boom", Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+		return nil, errors.New("deliberate failure")
+	}}))
+
+	ctx := v1.NewContextWithRegistry(t.Context(), registry)
+	ctx = v1.NewContextWithDebugger(ctx, session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+
+	workflow := &v1.Workflow{Name: "toned", Steps: []*v1.Node{
+		{Id: "shrugged", Kind: &v1.Node_Task{Task: &v1.Task{Name: "boom"}},
+			Policy: &v1.StepPolicy{ContinueOnError: true, Retry: &v1.RetryPolicy{MaxAttempts: 1}}},
+		{Id: "fatal", Kind: &v1.Node_Task{Task: &v1.Task{Name: "boom"}},
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}}},
+	}}
+
+	_, err = v1.Run(ctx, workflow)
+	require.Error(t, err, "the second step fails the run")
+
+	assert.Empty(t, out.String(), "Emit replaces Out; one session, one output path")
+
+	toneOf := func(substr string) (flowdebug.Tone, bool) {
+		for _, f := range fragments {
+			if strings.Contains(f.text, substr) {
+				return f.tone, true
+			}
+		}
+		return 0, false
+	}
+	assertTone := func(substr string, want flowdebug.Tone) {
+		t.Helper()
+		tone, found := toneOf(substr)
+		require.True(t, found, "no fragment contains %q", substr)
+		assert.Equal(t, want, tone, "the fragment containing %q", substr)
+	}
+
+	assertTone("break at shrugged", flowdebug.ToneBreak)
+	assertTone("debug> ", flowdebug.TonePrompt)
+	assertTone("tolerated by continue_on_error", flowdebug.ToneWarning)
+	assertTone(`unknown command "setp"`, flowdebug.ToneWarning)
+	assertTone("expression", flowdebug.ToneWarning) // the failed inspection
+	assertTone("FAILED", flowdebug.ToneDanger)
+}
+
+// TestNoEmitKeepsThePlainWriter: the zero-configuration session writes plain
+// text to Out exactly as before Emit existed — the compatibility half.
+func TestNoEmitKeepsThePlainWriter(t *testing.T) {
+	t.Parallel()
+
+	out, ran, err := runDebugged(t, "step\nstep\nstep\n", flowdebug.Options{})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"build", "test", "deploy"}, ran)
+	assert.Contains(t, out, "break at build")
+	assert.NotContains(t, out, "\x1b[", "no escape sequence reaches a plain session")
 }

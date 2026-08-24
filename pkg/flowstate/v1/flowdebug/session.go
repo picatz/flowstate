@@ -50,6 +50,40 @@ const (
 	MaxInspectRunes = 4096
 )
 
+// Tone classifies one fragment of session output, so a terminal can colour
+// the session the way `flow test` already colours its transcript.
+//
+// Deliberately this package's own vocabulary rather than flowtest's
+// [flowtest.TranscriptTone], and the reason is the member set: a transcript
+// has no prompt and no breakpoint, and extending its tones with members no
+// transcript line can carry would muddy what that type means. The consumer
+// (`flow test --debug`) maps both vocabularies onto the one theme, which is
+// where they meet.
+type Tone int
+
+const (
+	// ToneInfo is the account: step outcomes, scope listings, inspection
+	// results, help. The zero value, so an unclassified fragment reads as
+	// ordinary text rather than as an outcome it is not.
+	ToneInfo Tone = iota
+
+	// ToneBreak is the session's heading: the "break at <step>" line a
+	// reader scans for when deciding where they are.
+	ToneBreak
+
+	// TonePrompt is the input affordance ("debug> "), secondary by nature —
+	// it should recede so the run's own account stands out.
+	TonePrompt
+
+	// ToneWarning is a fact worth noticing that is not a run failure: a
+	// tolerated step failure, an inspection that did not compile, an
+	// unknown command, a console that ran out.
+	ToneWarning
+
+	// ToneDanger is a step failure the run does not absorb.
+	ToneDanger
+)
+
 // Options configures a [Session].
 type Options struct {
 	// In is where commands are read from: a terminal, or a recorded script
@@ -75,6 +109,14 @@ type Options struct {
 	// virtual clock reports the run's own time rather than the wall's. Nil
 	// reads no clock and prints no timestamps.
 	Clock v1.Clock
+
+	// Emit, when set, receives every fragment the session would have written
+	// to Out, classified by [Tone], and Out is then not written to at all —
+	// the fragment's bytes (newlines included) are the caller's to render.
+	// This is how `flow test --debug` colours the session through its theme
+	// without this package knowing a terminal exists. Nil keeps the plain
+	// writes to Out.
+	Emit func(text string, tone Tone)
 }
 
 // mode is what the session does at the next boundary it reaches.
@@ -101,7 +143,8 @@ const (
 // called workflows all share, and [v1.RunObserver] states plainly that its
 // callbacks may arrive on a different goroutine than the boundary did.
 type Session struct {
-	out io.Writer
+	out  io.Writer
+	emit func(text string, tone Tone)
 	// in is nil when no console was given.
 	in    *bufio.Scanner
 	clock v1.Clock
@@ -134,6 +177,7 @@ func New(opts Options) (*Session, error) {
 
 	s := &Session{
 		out:         opts.Out,
+		emit:        opts.Emit,
 		clock:       opts.Clock,
 		breakpoints: make(map[string]struct{}, len(opts.Breakpoints)),
 	}
@@ -203,7 +247,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 			// debugger is an availability incident. Said out loud, because a
 			// run that finished the rest of itself unattended is something
 			// the reader has to know happened.
-			s.printf("(no more commands — continuing to the end of the run)\n")
+			s.printfTone(ToneWarning, "(no more commands — continuing to the end of the run)\n")
 			s.resume(modeRun, "")
 
 			return nil
@@ -230,7 +274,17 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 	s.lastOutcome = id + " " + text
 	s.mu.Unlock()
 
-	s.printf("  %s %s\n", id, text)
+	// The tone is the outcome's, matching the transcript's reading of the
+	// same three cases: a failure the run absorbs is a warning, one it does
+	// not is danger, and everything else is account.
+	tone := ToneInfo
+	switch {
+	case err != nil && tolerated:
+		tone = ToneWarning
+	case err != nil:
+		tone = ToneDanger
+	}
+	s.printfTone(tone, "  %s %s\n", id, text)
 }
 
 // StepSkipped implements [v1.RunObserver]. A skipped step never reaches
@@ -305,7 +359,7 @@ func (s *Session) announce(node *v1.Node) {
 		at = fmt.Sprintf("   t=%s", elapsed)
 	}
 
-	s.printf("break at %s (%s)%s\n", node.GetId(), NodeKind(node), at)
+	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), NodeKind(node), at)
 }
 
 // readCommand reads one line, reporting false once the stream has ended.
@@ -318,7 +372,7 @@ func (s *Session) readCommand() (string, bool) {
 		return "", false
 	}
 
-	s.printf("debug> ")
+	s.printfTone(TonePrompt, "debug> ")
 	if !scanner.Scan() {
 		s.mu.Lock()
 		s.closed = true
@@ -343,8 +397,19 @@ func (s *Session) record(line string) {
 	s.script = append(s.script, line)
 }
 
-func (s *Session) printf(format string, args ...any) {
+// printfTone writes one classified fragment: through Emit when the caller
+// installed one, to Out otherwise. Every write in this package goes through
+// here, so a session is colourable without a second output path.
+func (s *Session) printfTone(tone Tone, format string, args ...any) {
+	if s.emit != nil {
+		s.emit(fmt.Sprintf(format, args...), tone)
+		return
+	}
 	fmt.Fprintf(s.out, format, args...)
+}
+
+func (s *Session) printf(format string, args ...any) {
+	s.printfTone(ToneInfo, format, args...)
 }
 
 // stepOutcomeText renders one step's recorded outcome for the console.

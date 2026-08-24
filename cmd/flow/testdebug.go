@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -73,14 +75,55 @@ func debugSession(
 	session, err := flowdebug.New(flowdebug.Options{
 		In:  cmd.InOrStdin(),
 		Out: surface.Out,
+		// The session's tones through the one theme the transcript already
+		// renders with, so a paused run and a failed run's account read as
+		// one product. A non-terminal stream resolves every style to a
+		// no-op, so machine-ish captures see the same bytes as before.
+		Emit: debugEmitter(surface.Out, surface.Theme),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Fprintf(surface.Out, "debugging %q — `help` lists the commands\n", matched[0])
+	fmt.Fprintf(surface.Out, "%s\n", surface.Theme.Accent.Render(
+		fmt.Sprintf("debugging %q — `help` lists the commands", matched[0])))
 
 	return session, nil
+}
+
+// debugEmitter maps the session's tone vocabulary onto the theme:
+//
+//   - a break line is the product's own voice (Accent), the heading a reader
+//     scans for;
+//   - the prompt recedes (Muted) so the run's account stands out;
+//   - warnings and dangers take the same two styles the transcript's
+//     [flowtest.ToneWarning] and [flowtest.ToneDanger] take in
+//     printTranscript, because a tolerated failure must look identical
+//     whether an author meets it live at a breakpoint or afterward in a
+//     failing case's account;
+//   - the account itself stays plain, matching the transcript.
+//
+// Styling is applied to the fragment minus its trailing newline, so the
+// escape sequences never wrap a line break.
+func debugEmitter(out io.Writer, theme ui.Theme) func(string, flowdebug.Tone) {
+	return func(text string, tone flowdebug.Tone) {
+		trimmed, hadNewline := strings.CutSuffix(text, "\n")
+		switch tone {
+		case flowdebug.ToneBreak:
+			trimmed = theme.Accent.Render(trimmed)
+		case flowdebug.TonePrompt:
+			trimmed = theme.Muted.Render(trimmed)
+		case flowdebug.ToneWarning:
+			trimmed = theme.Warning.Render(trimmed)
+		case flowdebug.ToneDanger:
+			trimmed = theme.Danger.Render(trimmed)
+		}
+		if hadNewline {
+			fmt.Fprintln(out, trimmed)
+			return
+		}
+		fmt.Fprint(out, trimmed)
+	}
 }
 
 // debuggerOrNil hands a session to [flowtest.RunOptions] as the interface it

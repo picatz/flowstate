@@ -41,7 +41,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	case "until", "u":
 		target := strings.TrimSpace(rest)
 		if target == "" {
-			s.printf("until needs a step id: until <step-id>\n")
+			s.printfTone(ToneWarning, "until needs a step id: until <step-id>\n")
 
 			return false, nil
 		}
@@ -69,7 +69,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	case "inspect", "p":
 		expression := strings.TrimSpace(rest)
 		if expression == "" {
-			s.printf("inspect needs an expression: inspect steps.build.artifact\n")
+			s.printfTone(ToneWarning, "inspect needs an expression: inspect steps.build.artifact\n")
 
 			return false, nil
 		}
@@ -104,7 +104,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		// Named rather than ignored, the diagnostics rule this repo applies
 		// to a misspelled key in a file: silently doing nothing gives the
 		// author no reason to doubt what they typed.
-		s.printf("unknown command %q — try `help`\n", verb)
+		s.printfTone(ToneWarning, "unknown command %q — try `help`\n", verb)
 
 		return false, nil
 	}
@@ -130,7 +130,7 @@ func split(line string) (verb, rest string) {
 func (s *Session) inspect(ctx context.Context, expression string, scope *v1.Scope) {
 	libs, err := v1.ProfileLibraries(scope.GetProfile())
 	if err != nil {
-		s.printf("cannot inspect: %v\n", err)
+		s.printfTone(ToneWarning, "cannot inspect: %v\n", err)
 
 		return
 	}
@@ -140,7 +140,7 @@ func (s *Session) inspect(ctx context.Context, expression string, scope *v1.Scop
 		// An author's expression failing is an ordinary event at a debugger
 		// prompt, not a session-ending one: they are asking questions, and
 		// some of them will not compile.
-		s.printf("%v\n", err)
+		s.printfTone(ToneWarning, "%v\n", err)
 
 		return
 	}
@@ -190,7 +190,7 @@ func (s *Session) showStep(node *v1.Node) {
 
 func (s *Session) addBreakpoint(id string) {
 	if id == "" {
-		s.printf("break needs a step id: break <step-id>\n")
+		s.printfTone(ToneWarning, "break needs a step id: break <step-id>\n")
 
 		return
 	}
@@ -203,7 +203,7 @@ func (s *Session) addBreakpoint(id string) {
 	s.mu.Unlock()
 
 	if full {
-		s.printf("a session holds at most %d breakpoints\n", MaxBreakpoints)
+		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
 
 		return
 	}
@@ -213,7 +213,7 @@ func (s *Session) addBreakpoint(id string) {
 
 func (s *Session) deleteBreakpoint(id string) {
 	if id == "" {
-		s.printf("delete needs a step id: delete <step-id>\n")
+		s.printfTone(ToneWarning, "delete needs a step id: delete <step-id>\n")
 
 		return
 	}
