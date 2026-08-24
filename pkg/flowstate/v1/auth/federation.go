@@ -221,6 +221,14 @@ func (p FederationPolicy) Validate() error {
 		return err
 	}
 
+	// Same reason, and it matters more for a bound than for a knob: a
+	// `signing_timeout: -1s` that fell through to the default would leave an
+	// operator believing they had set the safety bound they typed.
+	if p.SigningTimeout < 0 {
+		return fmt.Errorf("%w: federation.signing_timeout must be positive, got %s; omit it to use the %s default",
+			ErrInvalidPolicy, p.SigningTimeout, DefaultSigningTimeout)
+	}
+
 	names := make(map[string]struct{}, len(p.Targets))
 	for i, target := range p.Targets {
 		if target.Name == "" {
@@ -341,7 +349,10 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	if p.KeyRetention > 0 {
 		issuerOpts = append(issuerOpts, WithKeyRetention(p.KeyRetention))
 	}
-	if p.SigningTimeout > 0 {
+	// Not `> 0`, unlike the two above: a negative bound is a mistake, and
+	// [NewIssuer] refuses one. Passing it on is what makes that refusal the
+	// single rule rather than something this wiring can quietly opt out of.
+	if p.SigningTimeout != 0 {
 		issuerOpts = append(issuerOpts, WithSigningTimeout(p.SigningTimeout))
 	}
 	if len(p.DeclaredClaims) > 0 {

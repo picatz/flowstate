@@ -444,6 +444,14 @@ type Issuer struct {
 	mu      sync.RWMutex
 	active  SigningKey
 	retired []retiredKey
+
+	// generations numbers each *installation* of a key, so that two keys that
+	// share an id can still be told apart. A key id is not an identity: only
+	// the active id is protected from reuse ([Issuer.Rotate] refuses it), so a
+	// revoked id can be installed again by a later rotation. [Issuer.mintFor]
+	// compares generations rather than ids for exactly that reason.
+	generations uint64
+	activeGen   uint64
 }
 
 // verifyOnlyKey is a public key an operator named at start-up so that
@@ -465,6 +473,10 @@ type retiredKey struct {
 	algorithm jwa.Algorithm
 	published jwk.Value
 	expiresAt time.Time
+
+	// generation is the installation this key is, from [Issuer.generations].
+	// See that field: an id is not an identity.
+	generation uint64
 }
 
 // An IssuerOption configures an [Issuer].
@@ -628,6 +640,8 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 		active:         key,
 	}
 
+	issuer.activeGen = issuer.nextGeneration()
+
 	for _, opt := range opts {
 		opt(issuer)
 	}
@@ -703,9 +717,10 @@ func (i *Issuer) installVerifyOnlyKeys() error {
 		}
 
 		i.retired = append(i.retired, retiredKey{
-			id:        key.id,
-			algorithm: algorithm,
-			published: published,
+			id:         key.id,
+			algorithm:  algorithm,
+			published:  published,
+			generation: i.nextGeneration(),
 			// Measured from start-up, because that is when this key stopped
 			// signing as far as this process can tell. An operator whose
 			// retention has to outlast a longer gap configures a longer
@@ -847,12 +862,14 @@ func (i *Issuer) Rotate(key SigningKey) error {
 	now := i.clock()
 
 	i.retired = append(i.retired, retiredKey{
-		id:        i.active.id,
-		algorithm: i.active.algorithm,
-		published: i.active.published,
-		expiresAt: now.Add(i.keyRetention),
+		id:         i.active.id,
+		algorithm:  i.active.algorithm,
+		published:  i.active.published,
+		expiresAt:  now.Add(i.keyRetention),
+		generation: i.activeGen,
 	})
 	i.active = key
+	i.activeGen = i.nextGeneration()
 
 	i.pruneLocked(now)
 
@@ -920,19 +937,33 @@ func (i *Issuer) RevokeKey(keyID string) error {
 	return nil
 }
 
-// publishedLocked reports whether the given key id is in the set [Issuer.KeySet]
-// would serve right now: the active key, or a retired key still inside its
-// retention. The caller must hold i.mu.
+// nextGeneration returns the next unused key generation. The caller must hold
+// i.mu for writing, or be building the issuer.
+func (i *Issuer) nextGeneration() uint64 {
+	i.generations++
+	return i.generations
+}
+
+// publishedLocked reports whether the given key generation is in the set
+// [Issuer.KeySet] would serve right now: the active key, or a retired key still
+// inside its retention. The caller must hold i.mu.
 //
 // Written from the same rule KeySet applies rather than from a second one,
 // because the question it answers — would a relying party fetching the key set
 // find this key — is only meaningful if the two agree.
-func (i *Issuer) publishedLocked(keyID string, now time.Time) bool {
-	if keyID == i.active.id {
+//
+// It takes a generation and not a key id, because an id does not identify a key
+// across time. [Issuer.Rotate] refuses only the *active* id, so an id that has
+// been rotated out and revoked can be installed again by a later rotation —
+// and a mint that had selected the first key would then find the second one
+// published and hand back a token signed by the revoked one. Comparing
+// generations asks the question that was meant: is *this* key still published.
+func (i *Issuer) publishedLocked(generation uint64, now time.Time) bool {
+	if generation == i.activeGen {
 		return true
 	}
 	return slices.ContainsFunc(i.retired, func(key retiredKey) bool {
-		return key.id == keyID && !now.After(key.expiresAt)
+		return key.generation == generation && !now.After(key.expiresAt)
 	})
 }
 
@@ -1093,8 +1124,13 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 	// is not revocation: a key rotated out mid-signature is still published for
 	// its retention, assertions signed with it still verify, and discarding one
 	// would fail a mint that is perfectly valid.
+	//
+	// And it asks about the key *generation* rather than the key id, because an
+	// id is not an identity across time — a revoked id can be installed again
+	// by a later rotation, and the replacement must not vouch for the key it
+	// was named after. See [Issuer.publishedLocked].
 	i.mu.RLock()
-	key := i.active
+	key, generation := i.active, i.activeGen
 	i.mu.RUnlock()
 
 	if key.IsZero() {
@@ -1123,7 +1159,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 	}
 
 	i.mu.RLock()
-	published := i.publishedLocked(keyID, i.clock())
+	published := i.publishedLocked(generation, i.clock())
 	i.mu.RUnlock()
 
 	if !published {
