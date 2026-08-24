@@ -220,6 +220,11 @@ outputs: {}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
 vars:
   token: hunter2-swordfish
+  # The secret embedded in a nested string of a structured var — the shape the
+  # per-leaf tree redaction alone cannot catch, and the substring backstop
+  # must reach recursively (Codex, #1109).
+  request:
+    header: Bearer hunter2-swordfish
 defaults:
   workflow: ./workflow.yaml
   stubs:
@@ -235,7 +240,7 @@ tests:
         - 1 == 2
 `), 0o600))
 
-	res := runFlowStdin(t, "continue\ninspect vars.token\nscope\nquit\n",
+	res := runFlowStdin(t, "continue\ninspect vars.token\ninspect vars.request\nscope\nquit\n",
 		"test", "--debug", "--run", "fails with", dir)
 	require.Error(t, res.Err, "the case is red")
 

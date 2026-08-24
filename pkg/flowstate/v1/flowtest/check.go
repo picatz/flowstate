@@ -197,9 +197,15 @@ func autopsyExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, ru
 }
 
 // redactedVars is the vars map as the autopsy may show it: each value through
-// [redactSensitiveTree], string values additionally through the substring
-// backstop — the identical pair every witness rendering applies — and
+// [redactSensitiveTree], then the substring backstop over every string the
+// structure holds — the identical pair every witness rendering applies — and
 // everything withheld when the case's posture withholds everything.
+//
+// The backstop recurses rather than checking the top-level type, because the
+// witness path gets recursion for free — it redacts the *rendered* text, one
+// string however deep the value was — while this one hands back a structured
+// value for CEL to walk: a map var holding "Bearer " + secret in a nested
+// field would otherwise reach `inspect vars.request` intact (Codex, #1109).
 func redactedVars(vars map[string]any, sensitive sensitiveInputs) map[string]any {
 	if len(vars) == 0 {
 		return vars
@@ -212,14 +218,36 @@ func redactedVars(vars map[string]any, sensitive sensitiveInputs) map[string]any
 			out[name] = "[withheld]"
 			continue
 		}
-		redacted := redactSensitiveTree(value, sensitive.values)
-		if s, ok := redacted.(string); ok {
-			redacted = redactSensitiveSubstrings(s, sensitive.substrings)
-		}
-		out[name] = redacted
+		out[name] = redactSubstringsTree(redactSensitiveTree(value, sensitive.values), sensitive.substrings)
 	}
 
 	return out
+}
+
+// redactSubstringsTree applies [redactSensitiveSubstrings] to every string a
+// value holds — leaves and map keys alike, since a key is as capable of
+// embedding a secret as a value is. Depth and breadth are the file's own,
+// already bounded before a var exists ([checkExpansionBounds],
+// [MaxTestFileBytes]): vars are load-time literals, never workload output.
+func redactSubstringsTree(v any, substrings []string) any {
+	switch t := v.(type) {
+	case string:
+		return redactSensitiveSubstrings(t, substrings)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for key, entry := range t {
+			out[redactSensitiveSubstrings(key, substrings)] = redactSubstringsTree(entry, substrings)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, entry := range t {
+			out[i] = redactSubstringsTree(entry, substrings)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // assertChecks evaluates a case's claims against the finished run, returning
