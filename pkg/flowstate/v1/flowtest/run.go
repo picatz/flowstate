@@ -807,14 +807,12 @@ func swapRegistry(taskNames []string) func() {
 	}
 
 	return func() {
-		for _, s := range originals {
+		for name, s := range originals {
 			if s.existed {
 				_ = registry.Register(s.def)
+			} else {
+				registry.Unregister(name)
 			}
-			// There is no Unregister; a name that did not exist before this
-			// case is left registered as a stub with nothing left to match,
-			// which fails loudly (see [stubbedTask.fn]) rather than silently
-			// resolving to a task that does not exist anywhere else.
 		}
 	}
 }
