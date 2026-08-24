@@ -130,6 +130,13 @@
 // was, so an audit log shows the rule that admitted a caller rather than only the
 // issuer that signed the token.
 //
+// Order narrowest first. A broad entry placed above a narrower one for the same
+// issuer admits every token the narrow entry was written for, under the broad
+// entry's namespace and role, and the file still reads correctly — nothing
+// fails and nothing logs. [Policy.UnreachableIssuers] is that missing symptom:
+// it reports each entry an earlier entry has made unreachable, and `flow server`
+// logs one warning per finding at start-up.
+//
 // A policy is data, and can be kept in a file next to the rest of a deployment's
 // configuration and reviewed like any other change. See [ParsePolicy]:
 //
