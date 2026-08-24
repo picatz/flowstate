@@ -43,7 +43,7 @@ func TestBroadEntryShadowsNarrowOne(t *testing.T) {
 		},
 	}}
 
-	verifier, err := auth.NewOIDCVerifier(policy)
+	verifier, err := auth.NewOIDCVerifier(policy, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	token := issuer.MintToken(

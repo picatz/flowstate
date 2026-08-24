@@ -270,7 +270,7 @@ func TestCIVendorClaimShapes(t *testing.T) {
 					Namespace:   "infra",
 					MaxTokenAge: 10 * time.Minute,
 				}},
-			}, auth.WithClock(clock.Now))
+			}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 			require.NoError(t, err)
 
 			t.Run("admits the workload the rules name", func(t *testing.T) {
@@ -352,7 +352,7 @@ func TestCIVendorDocumentedIssuerIsMatchedExactly(t *testing.T) {
 					Namespace: "infra",
 					Require:   fixture.require,
 				}},
-			}, auth.WithClock(clock.Now))
+			}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 			require.NoError(t, err)
 
 			principal, err := verifier.Verify(context.Background(),
@@ -386,7 +386,7 @@ func TestCIVendorTenantClaims(t *testing.T) {
 
 				verifier, err := auth.NewOIDCVerifier(auth.Policy{
 					Issuers: []auth.TrustedIssuer{entry},
-				}, auth.WithClock(clock.Now))
+				}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 				require.NoError(t, err)
 
 				return verifier

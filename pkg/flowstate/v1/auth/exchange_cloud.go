@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // AWS session credential limits, from the AssumeRoleWithWebIdentity API.
@@ -99,6 +101,10 @@ type AWSConfig struct {
 	HTTPClient *http.Client
 	Timeout    time.Duration
 	Clock      func() time.Time
+
+	// EgressPolicy governs where this exchanger may connect, over what, and how
+	// much it may read, with the same meaning it has in [TokenExchangeConfig].
+	EgressPolicy *netpolicy.Policy
 }
 
 // awsExchanger implements AWS STS AssumeRoleWithWebIdentity.
@@ -163,6 +169,11 @@ func NewAWSExchanger(cfg AWSConfig) (Exchanger, error) {
 		clock = time.Now
 	}
 
+	exchange, err := newExchangeClient(name+" exchanger HTTPClient", cfg.HTTPClient, cfg.EgressPolicy, cfg.Timeout)
+	if err != nil {
+		return nil, err
+	}
+
 	return &awsExchanger{
 		name:       name,
 		roleARN:    cfg.RoleARN,
@@ -171,7 +182,7 @@ func NewAWSExchanger(cfg AWSConfig) (Exchanger, error) {
 		duration:   duration,
 		policy:     cfg.SessionPolicy,
 		policyARNs: cfg.SessionPolicyARNs,
-		client:     newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		client:     exchange,
 		clock:      clock,
 	}, nil
 }
@@ -456,6 +467,10 @@ type GCPConfig struct {
 	HTTPClient *http.Client
 	Timeout    time.Duration
 	Clock      func() time.Time
+
+	// EgressPolicy governs where this exchanger may connect, over what, and how
+	// much it may read, with the same meaning it has in [TokenExchangeConfig].
+	EgressPolicy *netpolicy.Policy
 }
 
 // gcpExchanger implements Google Cloud Workload Identity Federation.
@@ -538,6 +553,11 @@ func NewGCPExchanger(cfg GCPConfig) (Exchanger, error) {
 		clock = time.Now
 	}
 
+	exchange, err := newExchangeClient(name+" exchanger HTTPClient", cfg.HTTPClient, cfg.EgressPolicy, cfg.Timeout)
+	if err != nil {
+		return nil, err
+	}
+
 	return &gcpExchanger{
 		name:           name,
 		audience:       cfg.Audience,
@@ -547,7 +567,7 @@ func NewGCPExchanger(cfg GCPConfig) (Exchanger, error) {
 		lifetime:       cfg.Lifetime,
 		endpoint:       endpoint,
 		iamEndpoint:    strings.TrimSuffix(iamEndpoint, "/"),
-		client:         newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		client:         exchange,
 		clock:          clock,
 	}, nil
 }

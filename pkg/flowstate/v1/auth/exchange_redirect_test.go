@@ -60,6 +60,7 @@ func TestAnExchangeDoesNotReplayTheAssertionToAnotherHost(t *testing.T) {
 		Audience:       "https://as.example.com",
 		TargetAudience: "https://api.partner.example.com",
 		Clock:          clock.Now,
+		EgressPolicy:   authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -108,7 +109,7 @@ func TestFetchingKeysStillFollowsARedirect(t *testing.T) {
 		Issuer:    keys.URL,
 		Audiences: []string{"https://api.example.com"},
 		JWKSURL:   origin.URL + "/.well-known/jwks.json",
-	}}}, auth.WithClock(clock.Now))
+	}}}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	assertion := mintAssertion(t, issuer, "https://api.example.com")

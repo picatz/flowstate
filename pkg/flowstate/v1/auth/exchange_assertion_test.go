@@ -166,7 +166,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k1", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key)
+		broker, err := policy.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 		require.NoError(t, err)
 		require.Equal(t, []string{"peer-flowstate"}, broker.Targets())
 	})
@@ -236,7 +236,7 @@ targets:
 	key, err := auth.GenerateSigningKey("k1", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now))
+	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	credential, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "peer-flowstate")
@@ -258,7 +258,7 @@ targets:
 `))
 	require.NoError(t, err)
 
-	_, err = tooLong.Broker(key)
+	_, err = tooLong.Broker(key, auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
 	require.ErrorIs(t, err, auth.ErrInvalidPolicy,
 		"a lifetime past MaxAssertionLifetime must not build a broker")
 }

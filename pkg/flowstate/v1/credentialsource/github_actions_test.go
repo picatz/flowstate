@@ -194,7 +194,7 @@ func TestGitHubActionsSource_TokenAcquiredForOneAudienceRefusedForAnother(t *tes
 			Audiences: []string{"https://flowstate.example.com/staging"},
 			Namespace: "infra",
 		}},
-	})
+	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	_, err = verifier.Verify(t.Context(), bearer)
@@ -210,7 +210,7 @@ func TestGitHubActionsSource_TokenAcquiredForOneAudienceRefusedForAnother(t *tes
 			Audiences: []string{"https://flowstate.example.com/prod"},
 			Namespace: "infra",
 		}},
-	})
+	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	_, err = sameAudienceVerifier.Verify(t.Context(), bearer)

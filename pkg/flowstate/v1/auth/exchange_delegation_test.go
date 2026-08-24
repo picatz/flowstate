@@ -49,6 +49,7 @@ func TestDelegatedTokenExchange(t *testing.T) {
 		Delegator: func(context.Context) (auth.Material, string, error) {
 			return auth.NewSingleMaterial(delegatorToken), "", nil
 		},
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -76,9 +77,10 @@ func TestDelegatedTokenExchange(t *testing.T) {
 	// An undelegated exchanger sends no actor token at all, so the two shapes
 	// are distinguishable on the wire rather than only in configuration.
 	plain, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -125,6 +127,7 @@ func TestDelegatedCredentialsAreNotSharedBetweenDelegators(t *testing.T) {
 				}},
 			},
 			auth.WithClock(clock.Now),
+			auth.WithEgressPolicy(authtest.EgressPolicy()),
 		)
 		require.NoError(t, err)
 
@@ -150,6 +153,7 @@ func TestDelegatedCredentialsAreNotSharedBetweenDelegators(t *testing.T) {
 		Delegator: func(context.Context) (auth.Material, string, error) {
 			return auth.NewSingleMaterial(tokenFor(acting)), "", nil
 		},
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -198,9 +202,10 @@ func TestUndelegatedCredentialsAreStillCached(t *testing.T) {
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -292,6 +297,7 @@ func TestDelegatedTokenExchangeFailsClosed(t *testing.T) {
 				Clock:           clock.Now,
 				AllowDelegation: true,
 				Delegator:       test.delegator,
+				EgressPolicy:    authtest.EgressPolicy(),
 			})
 			require.NoError(t, err)
 

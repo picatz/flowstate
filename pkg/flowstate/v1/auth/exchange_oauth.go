@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // OAuth 2.0 URNs used when exchanging an assertion.
@@ -140,6 +142,12 @@ type TokenExchangeConfig struct {
 	// the assertion in the request body would be readable.
 	HTTPClient *http.Client
 
+	// EgressPolicy governs where this exchanger may connect, over what, and how
+	// much it may read. Unset means [DefaultEgressPolicy]: https to public
+	// addresses only. It cannot be combined with HTTPClient, which replaces the
+	// boundary rather than configuring it.
+	EgressPolicy *netpolicy.Policy
+
 	// Timeout bounds a single exchange. Defaults to [DefaultExchangeTimeout].
 	Timeout time.Duration
 
@@ -208,6 +216,11 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 		return nil, err
 	}
 
+	exchange, err := newExchangeClient(name+" exchanger HTTPClient", cfg.HTTPClient, cfg.EgressPolicy, cfg.Timeout)
+	if err != nil {
+		return nil, err
+	}
+
 	return &tokenExchanger{
 		name:        name,
 		tokenURL:    cfg.TokenURL,
@@ -217,7 +230,7 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 		scopes:      cfg.Scopes,
 		tokenType:   tokenType,
 		delegator:   cfg.Delegator,
-		client:      newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		client:      exchange,
 		clock:       clock,
 		maxLifetime: maxLifetime,
 	}, nil
@@ -628,6 +641,10 @@ type ClientCredentialsConfig struct {
 	HTTPClient *http.Client
 	Timeout    time.Duration
 	Clock      func() time.Time
+
+	// EgressPolicy governs where this exchanger may connect, over what, and how
+	// much it may read, with the same meaning it has in [TokenExchangeConfig].
+	EgressPolicy *netpolicy.Policy
 }
 
 // clientCredentialsExchanger implements the client credentials grant.
@@ -685,6 +702,11 @@ func NewClientCredentialsExchanger(cfg ClientCredentialsConfig) (Exchanger, erro
 		return nil, err
 	}
 
+	exchange, err := newExchangeClient(name+" exchanger HTTPClient", cfg.HTTPClient, cfg.EgressPolicy, cfg.Timeout)
+	if err != nil {
+		return nil, err
+	}
+
 	return &clientCredentialsExchanger{
 		name:        name,
 		tokenURL:    cfg.TokenURL,
@@ -692,7 +714,7 @@ func NewClientCredentialsExchanger(cfg ClientCredentialsConfig) (Exchanger, erro
 		audience:    audience,
 		secret:      NewSingleMaterial(cfg.ClientSecret),
 		scopes:      cfg.Scopes,
-		client:      newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		client:      exchange,
 		clock:       clock,
 		maxLifetime: maxLifetime,
 	}, nil

@@ -598,9 +598,10 @@ func TestBrokerAuthorize(t *testing.T) {
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
