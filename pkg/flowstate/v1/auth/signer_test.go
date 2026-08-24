@@ -529,12 +529,20 @@ func (p *concurrentSigner) Sign(ctx context.Context, claims jwt.ClaimsSet) (stri
 // doc comment states: mints run in parallel, so an implementation must be safe
 // for concurrent use.
 //
-// It is worth asserting rather than asserting in prose alone. Mint holds the
-// issuer's *read* lock across the signature, which is what allows the
-// concurrency — a later change to a write lock, or any serialization added
-// between Mint and the signer, would be invisible to every other test in this
-// package and would quietly turn one KMS round trip into the whole process's
-// rate limit. Here it deadlocks this test instead.
+// It is worth asserting rather than asserting in prose alone. Mint takes no
+// lock at all across the signature, which is what allows the concurrency — any
+// serialization added between Mint and the signer would be invisible to every
+// other test in this package and would quietly turn one KMS round trip into the
+// whole process's rate limit. Here it deadlocks this test instead.
+//
+// The requirement survived picatz/flowstate#1055, which moved the signature out
+// from under the issuer's read lock. That is worth saying explicitly, because
+// the natural reading of "the mint no longer holds a lock while signing" is that
+// signers are now called one at a time and an adapter can stop worrying. The
+// opposite is true: the read lock never serialized anything — concurrent mints
+// shared it — and removing it takes away the last thing that could have imposed
+// any order on these calls. This test asserts the *new* arrangement is still
+// concurrent, which is what a Signer implementer needs to know.
 func TestProviderSigningKeyIsCalledConcurrently(t *testing.T) {
 	const mints = 4
 
