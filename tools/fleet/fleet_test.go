@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,19 +30,19 @@ func TestPlanForNamesTheBoundThatDecided(t *testing.T) {
 		// The box this was written on, idle. Three of four cores are
 		// dispatchable, so one lane; the fourth is the orchestrator's.
 		"a small idle box is bound by its cores": {
-			machine:   Machine{Cores: 4, Load1: 0, MemoryFree: 13 * gib, DiskFree: 50 * gib},
+			machine:   Machine{Cores: 4, Load1: 0, MemoryFree: 13 * gib, MemoryKnown: true, DiskFree: 50 * gib},
 			wantLanes: 1,
 			wantBound: "cores",
 		},
 		// The same box mid-session, which is the state that produced this tool:
 		// capacity says one lane, and the work already running says none.
 		"a busy small box is bound by what it is already doing": {
-			machine:   Machine{Cores: 4, Load1: 20, MemoryFree: 13 * gib, DiskFree: 50 * gib},
+			machine:   Machine{Cores: 4, Load1: 20, MemoryFree: 13 * gib, MemoryKnown: true, DiskFree: 50 * gib},
 			wantLanes: 0,
 			wantBound: "current load",
 		},
 		"a large idle box scales up": {
-			machine:   Machine{Cores: 32, Load1: 0.5, MemoryFree: 128 * gib, DiskFree: 500 * gib},
+			machine:   Machine{Cores: 32, Load1: 0.5, MemoryFree: 128 * gib, MemoryKnown: true, DiskFree: 500 * gib},
 			wantLanes: 15,
 			wantBound: "cores",
 		},
@@ -53,24 +55,24 @@ func TestPlanForNamesTheBoundThatDecided(t *testing.T) {
 		// per-process figure would have said three, which is the
 		// over-recommendation that correction exists to stop.
 		"a many-core box with little memory is bound by memory": {
-			machine:   Machine{Cores: 32, Load1: 0.5, MemoryFree: 8 * gib, DiskFree: 500 * gib},
+			machine:   Machine{Cores: 32, Load1: 0.5, MemoryFree: 8 * gib, MemoryKnown: true, DiskFree: 500 * gib},
 			wantLanes: 1,
 			wantBound: "memory",
 		},
 		"a full disk stops dispatch before anything else is considered": {
-			machine:   Machine{Cores: 32, Load1: 0.5, MemoryFree: 128 * gib, DiskFree: 2 * gib},
+			machine:   Machine{Cores: 32, Load1: 0.5, MemoryFree: 128 * gib, MemoryKnown: true, DiskFree: 2 * gib},
 			wantLanes: 0,
 			wantBound: "disk",
 		},
 		// A machine that reports no load average is not an idle machine, and
 		// must not be read as one: the plan falls back to capacity alone.
 		"an unknown load average does not read as idle": {
-			machine:   Machine{Cores: 8, Load1: -1, MemoryFree: 64 * gib, DiskFree: 100 * gib},
+			machine:   Machine{Cores: 8, Load1: -1, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: 100 * gib},
 			wantLanes: 3,
 			wantBound: "cores",
 		},
 		"a single core still leaves the orchestrator a machine to run on": {
-			machine:   Machine{Cores: 1, Load1: 0, MemoryFree: 64 * gib, DiskFree: 100 * gib},
+			machine:   Machine{Cores: 1, Load1: 0, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: 100 * gib},
 			wantLanes: 0,
 			wantBound: "cores",
 		},
@@ -91,7 +93,7 @@ func TestPlanForNamesTheBoundThatDecided(t *testing.T) {
 func TestPlanForNeverRecommendsMoreThanTheMachineHas(t *testing.T) {
 	for cores := 1; cores <= 128; cores++ {
 		for _, memory := range []uint64{gib, 4 * gib, 64 * gib, 512 * gib} {
-			plan := PlanFor(Machine{Cores: cores, Load1: 0, MemoryFree: memory, DiskFree: 1024 * gib})
+			plan := PlanFor(Machine{Cores: cores, Load1: 0, MemoryFree: memory, MemoryKnown: true, DiskFree: 1024 * gib})
 
 			require.GreaterOrEqual(t, plan.Lanes, 0, "a negative lane count is not a refusal, it is a bug")
 			require.LessOrEqual(t, plan.Lanes*LaneCores, cores-reservedCores,
@@ -150,21 +152,21 @@ func TestALanesMemoryBudgetCountsEveryProcessItMayRun(t *testing.T) {
 // that reads it.
 func TestAdviceIsGivenWhereItCanBeActedOn(t *testing.T) {
 	t.Run("a full disk says what to prune", func(t *testing.T) {
-		plan := PlanFor(Machine{Cores: 8, Load1: 0, MemoryFree: 64 * gib, DiskFree: gib})
+		plan := PlanFor(Machine{Cores: 8, Load1: 0, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: gib})
 
 		require.NotEmpty(t, plan.Advice)
 		assert.Contains(t, strings.Join(plan.Advice, "\n"), "go clean -cache")
 	})
 
 	t.Run("a busy machine says to wait rather than to prune", func(t *testing.T) {
-		plan := PlanFor(Machine{Cores: 4, Load1: 20, MemoryFree: 64 * gib, DiskFree: 100 * gib})
+		plan := PlanFor(Machine{Cores: 4, Load1: 20, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: 100 * gib})
 
 		require.NotEmpty(t, plan.Advice)
 		assert.Contains(t, strings.Join(plan.Advice, "\n"), "Wait rather than adding to it")
 	})
 
 	t.Run("a healthy machine is told nothing it cannot use", func(t *testing.T) {
-		plan := PlanFor(Machine{Cores: 16, Load1: 1, MemoryFree: 64 * gib, DiskFree: 100 * gib})
+		plan := PlanFor(Machine{Cores: 16, Load1: 1, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: 100 * gib})
 
 		assert.Empty(t, plan.Advice, "advice on a machine with no problem is noise that trains readers to skip it")
 	})
@@ -178,7 +180,7 @@ func TestAdviceIsGivenWhereItCanBeActedOn(t *testing.T) {
 // the resources that *were* readable, and say so.
 func TestUnknownIsNotNone(t *testing.T) {
 	t.Run("unreadable memory falls back to the other bounds", func(t *testing.T) {
-		plan := PlanFor(Machine{Cores: 16, Load1: 0.2, MemoryFree: 0, DiskFree: 500 * gib})
+		plan := PlanFor(Machine{Cores: 16, Load1: 0.2, MemoryFree: 0, MemoryKnown: false, DiskFree: 500 * gib})
 
 		assert.Positive(t, plan.Lanes, "a machine whose memory could not be read is not a machine with no memory")
 		assert.Equal(t, "cores", plan.Bound)
@@ -186,8 +188,33 @@ func TestUnknownIsNotNone(t *testing.T) {
 			"a plan computed from fewer facts must say so rather than pass as a whole answer")
 	})
 
+	// The other direction, which is what a single field could not express. A
+	// Linux cgroup sitting at its memory.max reports zero free honestly, and
+	// that machine must be refused rather than handed the fallback: lanes
+	// dispatched against memory a parent will not grant do not run slowly,
+	// they are OOM-killed mid-build.
+	t.Run("a measured zero is a bound rather than a fallback", func(t *testing.T) {
+		plan := PlanFor(Machine{Cores: 64, Load1: 0.2, MemoryFree: 0, MemoryKnown: true, DiskFree: 500 * gib})
+
+		assert.Equal(t, 0, plan.Lanes, "a container at its memory limit can hold no lanes")
+		assert.Equal(t, "memory", plan.Bound, "and must say which resource refused, so the reader can raise it")
+		assert.NotContains(t, strings.Join(plan.Advice, "\n"), "could not be read",
+			"a reading of zero was read; calling it unavailable sends the reader to look for a platform problem")
+		assert.Contains(t, strings.Join(plan.Advice, "\n"), "measured reading")
+	})
+
+	// And the two must not be the same plan, which is the whole finding: with
+	// one field they were.
+	t.Run("the two answers differ", func(t *testing.T) {
+		unknown := PlanFor(Machine{Cores: 64, Load1: 0.2, MemoryFree: 0, DiskFree: 500 * gib})
+		exhausted := PlanFor(Machine{Cores: 64, Load1: 0.2, MemoryFree: 0, MemoryKnown: true, DiskFree: 500 * gib})
+
+		assert.NotEqual(t, unknown.Lanes, exhausted.Lanes,
+			"an unmeasured machine and a full one held the same value and got the same plan; only one of them was right")
+	})
+
 	t.Run("an unreadable load average still does not read as idle", func(t *testing.T) {
-		busy := PlanFor(Machine{Cores: 16, Load1: -1, MemoryFree: 64 * gib, DiskFree: 500 * gib})
+		busy := PlanFor(Machine{Cores: 16, Load1: -1, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: 500 * gib})
 
 		assert.Equal(t, 7, busy.Lanes, "capacity alone, with no load discount and no refusal")
 	})
@@ -200,7 +227,7 @@ func TestUnknownIsNotNone(t *testing.T) {
 // machines — a two-core container on a busy sixty-four-core host would be
 // refused every lane on the strength of work it is not competing for.
 func TestHostLoadIsNotComparedWithAContainerQuota(t *testing.T) {
-	container := Machine{Cores: 2, Load1: 40, MemoryFree: 32 * gib, DiskFree: 500 * gib, LoadIsHostWide: true}
+	container := Machine{Cores: 2, Load1: 40, MemoryFree: 32 * gib, MemoryKnown: true, DiskFree: 500 * gib, LoadIsHostWide: true}
 
 	plan := PlanFor(container)
 
@@ -213,4 +240,200 @@ func TestHostLoadIsNotComparedWithAContainerQuota(t *testing.T) {
 	own := container
 	own.LoadIsHostWide = false
 	assert.Equal(t, 0, PlanFor(own).Lanes, "where the scopes match, a busy machine is still a busy machine")
+}
+
+// TestACgroupLimitIsTheTightestOverEveryLevel is the finding that a leaf read
+// is not an effective limit.
+//
+// Under cgroup v2 the quota a process actually gets is the tightest over its
+// own cgroup and every ancestor up to the mount root — the kernel enforces all
+// of them. A session's cgroup whose own `cpu.max` says `max`, nested under a
+// parent carrying a quota, therefore looks unlimited to a reader that stops at
+// the leaf, which falls through to [runtime.NumCPU] and recommends a
+// host-sized fleet on a container that can run one or two lanes. The symptom
+// is not a refusal anyone investigates: it is thirty lanes sharing two cores,
+// each slow enough that its owner reports a flake.
+//
+// Posed as directory layouts rather than as a real cgroup, for the same reason
+// [PlanFor] takes a [Machine]: the interesting hierarchies are ones this
+// process cannot create.
+func TestACgroupLimitIsTheTightestOverEveryLevel(t *testing.T) {
+	for name, test := range map[string]struct {
+		// levels is root-first; each entry is one directory's cpu.max, or ""
+		// for a level with no such file at all.
+		levels    []string
+		wantCores int
+		wantFound bool
+	}{
+		"a leaf quota binds": {
+			levels:    []string{"max 100000", "400000 100000"},
+			wantCores: 4,
+			wantFound: true,
+		},
+		// The finding. The leaf declines to bound anything and the parent does.
+		"an unlimited leaf inherits its parent's quota": {
+			levels:    []string{"200000 100000", "max 100000"},
+			wantCores: 2,
+			wantFound: true,
+		},
+		"the tightest wins wherever it sits": {
+			levels:    []string{"1600000 100000", "200000 100000", "800000 100000"},
+			wantCores: 2,
+			wantFound: true,
+		},
+		// A missing file is not a limit of zero, and must not end the walk
+		// before a level that does carry one.
+		"a level with no cpu.max is skipped rather than ending the walk": {
+			levels:    []string{"300000 100000", "", "max 100000"},
+			wantCores: 3,
+			wantFound: true,
+		},
+		"nothing anywhere reports nothing rather than zero cores": {
+			levels:    []string{"max 100000", "max 100000"},
+			wantFound: false,
+		},
+		"a period of zero is not divided by": {
+			levels:    []string{"100000 0"},
+			wantFound: false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cores, found := tightestCPUQuota(cgroupLayout(t, "cpu.max", test.levels))
+
+			require.Equal(t, test.wantFound, found)
+			if test.wantFound {
+				assert.Equal(t, test.wantCores, cores)
+			}
+		})
+	}
+}
+
+// TestAMemoryLimitIsAlsoInheritedFromEveryAncestor is the same argument for
+// the resource whose failure is loudest: exceeding any enforced limit is an
+// OOM kill, not a slow build, so the headroom a lane may spend is the smallest
+// (limit - usage) over the whole chain.
+func TestAMemoryLimitIsAlsoInheritedFromEveryAncestor(t *testing.T) {
+	// Root-first: each level is a "max current" pair, or "" for a level with
+	// neither file.
+	dirs := cgroupPairLayout(t, []string{"8589934592 4294967296", "", "max 1073741824"})
+
+	free, found := tightestMemoryFree(dirs, "memory.max", "memory.current")
+
+	require.True(t, found, "a leaf that declines to bound anything does not make its parent's limit disappear")
+	assert.Equal(t, uint64(4*gib), free, "the parent has 4 GiB of its 8 GiB left, and the leaf may not spend more")
+
+	t.Run("a cgroup at its limit reports a real zero", func(t *testing.T) {
+		free, found := tightestMemoryFree(
+			cgroupPairLayout(t, []string{"2147483648 2147483648"}), "memory.max", "memory.current")
+
+		require.True(t, found, "at-the-limit is a reading; reporting it as unknown is what disabled the bound")
+		assert.Zero(t, free)
+	})
+
+	t.Run("an unlimited sentinel is not arithmetic", func(t *testing.T) {
+		// cgroup v1 spells "no limit" as a page counter near the top of int64.
+		// Subtracting usage from it yields an enormous headroom figure that
+		// would win any minimum it was folded into.
+		_, found := tightestMemoryFree(
+			cgroupPairLayout(t, []string{"9223372036854771712 1073741824"}), "memory.max", "memory.current")
+
+		assert.False(t, found, "a sentinel is a way of writing 'unlimited', not a number to subtract from")
+	})
+}
+
+// TestTheCgroupChainStaysInsideItsMount pins the walk's two ends: it starts at
+// the process's own cgroup and stops at the mount root, and a relative path
+// carrying `..` cannot take it somewhere that is not a cgroup at all.
+func TestTheCgroupChainStaysInsideItsMount(t *testing.T) {
+	assert.Equal(t,
+		[]string{"/sys/fs/cgroup/docker/abc", "/sys/fs/cgroup/docker", "/sys/fs/cgroup"},
+		cgroupChain("/sys/fs/cgroup", "/docker/abc"),
+		"leaf first, and every ancestor up to the mount, because every one of them is enforced")
+
+	assert.Equal(t, []string{"/sys/fs/cgroup"}, cgroupChain("/sys/fs/cgroup", "/"),
+		"a namespaced container sees its own cgroup as the root, and the chain is one directory")
+
+	assert.Equal(t, []string{"/sys/fs/cgroup/etc", "/sys/fs/cgroup"}, cgroupChain("/sys/fs/cgroup", "/../../etc"),
+		"the `..` is cancelled against the mount rather than climbing out of it, so the walk cannot "+
+			"end up reading /etc for a cpu quota")
+}
+
+// cgroupLayout writes one controller file per level and returns the
+// directories leaf-first, which is the order the readers walk.
+func cgroupLayout(t *testing.T, file string, levels []string) []string {
+	t.Helper()
+
+	dir := t.TempDir()
+	var dirs []string
+	for _, contents := range levels {
+		dir = filepath.Join(dir, "level")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		if contents != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, file), []byte(contents+"\n"), 0o644))
+		}
+		dirs = append([]string{dir}, dirs...)
+	}
+
+	return dirs
+}
+
+// cgroupPairLayout is [cgroupLayout] for the two files a memory limit takes,
+// given as "max current" per level.
+func cgroupPairLayout(t *testing.T, levels []string) []string {
+	t.Helper()
+
+	dir := t.TempDir()
+	var dirs []string
+	for _, pair := range levels {
+		dir = filepath.Join(dir, "level")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		if fields := strings.Fields(pair); len(fields) == 2 {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.max"), []byte(fields[0]+"\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte(fields[1]+"\n"), 0o644))
+		}
+		dirs = append([]string{dir}, dirs...)
+	}
+
+	return dirs
+}
+
+// TestTheDiskBoundCoversWhereBuildIntermediatesLand is the third filesystem a
+// lane writes to and the one nobody remembers.
+//
+// `go help environment` defines GOTMPDIR as "the directory where the go
+// command will write temporary source files, packages, and binaries" — every
+// test binary is linked there before it is copied anywhere — and its fallback
+// is the platform's temporary directory, which is frequently tmpfs: RAM, on a
+// mount orders of magnitude smaller than the checkout's. Measuring only the
+// worktree and GOCACHE reports room those writes do not have, and the fleet it
+// recommends fails at the link step with an ENOSPC naming neither disk nor
+// memory.
+func TestTheDiskBoundCoversWhereBuildIntermediatesLand(t *testing.T) {
+	t.Run("a small tmp mount decides the bound", func(t *testing.T) {
+		free := map[string]uint64{".": 500 * gib, "/cache": 300 * gib, "/tmp": 64 << 20}
+		targets := laneWriteTargets(func(name string) string {
+			return map[string]string{"GOCACHE": "/cache", "GOTMPDIR": "/tmp"}[name]
+		})
+
+		require.Contains(t, targets, "/tmp", "the go command's scratch directory is a filesystem a lane writes to")
+		assert.Equal(t, uint64(64<<20), tightestFree(targets, func(path string) uint64 { return free[path] }),
+			"the tightest mount is the bound, whichever of the three it is")
+	})
+
+	t.Run("an unset GOTMPDIR still measures the directory the go command will use", func(t *testing.T) {
+		targets := laneWriteTargets(func(string) string { return "" })
+
+		assert.Contains(t, targets, os.TempDir(),
+			"empty means the platform default, not that there is nothing to measure")
+	})
+
+	// An unmeasurable mount is a missing fact, not a full one: statfs failing
+	// on a path reports zero, and folding that into the minimum would refuse
+	// the whole fleet on the strength of a read that did not happen.
+	t.Run("an unreadable filesystem does not read as a full one", func(t *testing.T) {
+		free := map[string]uint64{".": 100 * gib}
+
+		assert.Equal(t, uint64(100*gib),
+			tightestFree([]string{".", "/gone", "/also-gone"}, func(path string) uint64 { return free[path] }))
+	})
 }
