@@ -17,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -151,6 +152,15 @@ flow test -o jsonl examples/`,
 	cmd.Flags().Uint64("seed", 0,
 		"replay exactly one schedule, the seed a reported divergence names, instead of searching")
 
+	// The step debugger (#928 slice 1). Interactive by nature, so it is
+	// refused wherever "interactive" is not true of the run: a machine-format
+	// run whose document a prompt would corrupt, a seeded exploration that
+	// runs a case many times, and a selection that is not exactly one case.
+	cmd.Flags().Bool("debug", false,
+		"stop before each step of one case and read commands from the terminal — step, "+
+			"continue, until, break, inspect, scope, quit; requires --run to name exactly "+
+			"one case, and is refused with --output json and with seeded exploration")
+
 	return cmd
 }
 
@@ -256,6 +266,18 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	surface := newSurface(cmd)
 	machine := format.Machine()
 
+	// The debugger's own refusals, all of them stating what is incompatible
+	// rather than quietly doing something else. Each is a shape where the
+	// word "interactive" stops being true of the run, and a session that
+	// attached anyway would be a prompt nobody is answering.
+	debugging, _ := cmd.Flags().GetBool("debug")
+	var session *flowdebug.Session
+	if debugging {
+		if session, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
+			return err
+		}
+	}
+
 	started := time.Now()
 
 	var (
@@ -275,6 +297,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		run := flowtest.RunPath(cmd.Context(), path, flowtest.RunOptions{
 			Budget: budget,
 			Select: selectCase,
+			// nil unless --debug, and a nil interface value in this field is
+			// what every other run in the world passes: the engine's boundary
+			// does one context lookup and finds nothing.
+			Debugger: debuggerOrNil(session),
 		})
 		report, coverage, schedules := run.Report, run.Coverage, run.Schedules
 		result := testFileResult{report: report, coverage: coverage, schedules: schedules, filtered: run.Filtered}

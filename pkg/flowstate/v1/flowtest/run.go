@@ -49,6 +49,22 @@ type RunOptions struct {
 	// (issue #929).
 	Select func(name string) bool
 
+	// Debugger, when set, holds each case's run at every step boundary so a
+	// session can drive it (#928 slice 1). Installed on the run's context, so
+	// loop bodies, branches and called workflows all inherit it.
+	//
+	// A debugger that also implements [v1.RunObserver] is given the account
+	// as well, alongside the transcript's own recorder — capability
+	// discovery rather than a second field, because the two are one object
+	// in the only implementation that exists ([flowdebug.Session]) and an
+	// implementer that only wants to pause should not have to write three
+	// empty methods to say so.
+	//
+	// Interactive by nature: nothing here bounds how long a run is held, and
+	// the caller that sets this owns that decision. `flow test --debug`
+	// refuses to set it for more than one case at a time.
+	Debugger v1.Debugger
+
 	// skipTranscript disables the case account entirely. Set by
 	// [RunSourceContext] and nothing else: that door discards
 	// [RunResult.Transcripts], and its callers are whoever holds a token on
@@ -157,6 +173,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	}
 	coverage := newCoverageAccumulator(allowUnreached)
 	schedules := newScheduleAccumulator(opts.Budget)
+
+	// Installed once for the whole suite rather than per case: the debugger
+	// is a caller's object with a caller's lifetime, and runCase reads it
+	// back off the context to decide whether it also wants the account.
+	if opts.Debugger != nil {
+		ctx = v1.NewContextWithDebugger(ctx, opts.Debugger)
+	}
 
 	filtered := 0
 	var transcripts [][]TranscriptLine
@@ -564,11 +587,21 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// no observer on the context means the engine clones nothing either.
 	if record {
 		recorder = newRunRecorder(clock)
-		ctx = v1.NewContextWithRunObserver(ctx, recorder)
 		ctx = contextWithRunRecorder(ctx, recorder)
 		// What the transcript may honestly call a switch decision — from the
 		// spec, never inferred from an output's name. See [runRecorder.noteSwitches].
 		recorder.noteSwitches(workflow.GetSteps())
+	}
+
+	// Who hears the engine's account. Usually the transcript's recorder and
+	// nobody else; under a debugging session that also observes, both, because
+	// a context holds one observer and a session that could not say what a
+	// step produced would be a debugger you cannot debug with. Either may be
+	// absent — a discarded account records nothing, and a session is rare —
+	// and where both are, nothing is installed at all, which is what keeps the
+	// engine cloning nothing for a run nobody is listening to.
+	if observer := observerFor(ctx, recorder); observer != nil {
+		ctx = v1.NewContextWithRunObserver(ctx, observer)
 	}
 
 	// The run executes against its own registry, not the process-wide one:
