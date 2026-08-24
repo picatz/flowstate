@@ -868,11 +868,17 @@ func TestSignalNames(t *testing.T) {
 					},
 				}},
 			},
+			{
+				Id: "called",
+				Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+					Steps: []*v1.Node{signalStep("in-call", "callee-signal", 0)},
+				}}},
+			},
 		},
 	}
 
 	require.Equal(t,
-		[]string{"top-level", "per-item", "branch-signal"},
+		[]string{"top-level", "per-item", "branch-signal", "callee-signal"},
 		v1.SignalNames(spec))
 }
 
