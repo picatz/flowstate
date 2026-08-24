@@ -272,12 +272,16 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOn
 // from every caller's own parameter of the same name — see [Task]'s doc for
 // where it originates and why it has to cross the activity boundary as an
 // argument rather than being read from anywhere ambient. When set, every
-// branch below adds [temporal.ApplicationErrorCategoryBenign], which is what
+// branch below except a policy denial adds
+// [temporal.ApplicationErrorCategoryBenign], which is what
 // lets an operator's category-aware metrics or alerting distinguish a
 // failure the workflow author already told the system to tolerate from one
 // that needs a human.
 //
-// This is a heuristic, not a verdict on the failure's cause: `continue_on_error`
+// Policy denials are excluded because they describe a security boundary an
+// operator configured, not an ordinary task failure the workflow author gets
+// to make quiet. For all other classifications this is a heuristic, not a
+// verdict on the failure's cause: `continue_on_error`
 // is a property of the *step*, decided before any particular attempt runs, so
 // it categorizes every failure that step produces as benign — including one
 // the author did not anticipate. A step tolerant of a flaky upstream's 5xxs
@@ -301,7 +305,7 @@ func activityError(taskName string, err error, continueOnError bool) error {
 	message := v1.StepErrorText(err)
 
 	var category temporal.ApplicationErrorCategory
-	if continueOnError {
+	if continueOnError && kind != v1.ErrorKindPolicyDenied {
 		category = temporal.ApplicationErrorCategoryBenign
 	}
 

@@ -433,6 +433,20 @@ func Test_activityError_category(t *testing.T) {
 		require.Equal(t, temporal.ApplicationErrorCategoryUnspecified, appErr.Category())
 	})
 
+	t.Run("a tolerated policy denial is not benign", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task: "http",
+			Kind: v1.ErrorKindPolicyDenied,
+			Err:  errors.New("egress denied"),
+		}, true)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.True(t, appErr.NonRetryable())
+		require.Equal(t, v1.ErrorKindPolicyDenied.String(), appErr.Type())
+		require.Equal(t, temporal.ApplicationErrorCategoryUnspecified, appErr.Category())
+	})
+
 	t.Run("a nil error stays nil regardless of tolerance", func(t *testing.T) {
 		require.NoError(t, activityError("http", nil, true))
 		require.NoError(t, activityError("http", nil, false))
