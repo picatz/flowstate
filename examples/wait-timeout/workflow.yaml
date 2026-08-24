@@ -22,7 +22,6 @@ description: Lets an approval lapse, and carries on down the other branch.
 #
 #   flow run local examples/wait-timeout/workflow.yaml \
 #     --signal release-approved='{"approved": true}'
-
 steps:
   - id: request
     log:
@@ -48,8 +47,8 @@ steps:
   - id: postponed
     if: ${steps.approval.timed_out}
     log:
-      message: nobody approved in time, so the release stays queued
       level: warn
+      message: nobody approved in time, so the release stays queued
 
   # The arm that would have run had anyone answered. `.?` reads a key the sender may
   # not have supplied, with the default beside it: a lapsed wait leaves the payload an
@@ -59,7 +58,6 @@ steps:
     if: ${steps.approval.payload.?approved.orValue(false)}
     log:
       message: approved, publishing the release
-
 outputs:
   # The outcome as data rather than as a line in a log. A caller that started this
   # run reads how the gate ended without having to parse anything a person was meant

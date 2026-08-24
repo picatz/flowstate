@@ -1,0 +1,12 @@
+[48;2;0;164;255m [m[1;38;2;32;31;38;48;2;0;164;255mRUNNING[m[48;2;0;164;255m [m [1;38;2;241;239;239mflowstate-workflow-3f7c[m                                               
+[2;38;2;133;131;146mrun 0198f1e2-0000-7000-8000-000000000000[m                                        
+[2;38;2;133;131;146mwatching[m                                                                        
+                                                                                
+[38;2;0;255;178m✓[m checkout                                                                      
+[2;38;2;133;131;146m1 step(s) done[m                                                                  
+                                                                                
+[38;2;245;239;52m△[m [38;2;245;239;52mno Flowstate server answered at  (set --address or FLOWSTATE_ADDRESS to point[m 
+  [38;2;245;239;52mat a deployment that is already running): unavailable: connection refused[m     
+                                                                                
+[2;38;2;133;131;146mq stops watching, not the run[m                                                   
+                                                                                

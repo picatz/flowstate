@@ -222,6 +222,29 @@ func (l *linker) FindDescriptorByName(name protoreflect.FullName) (protoreflect.
 	return l.linked.FindDescriptorByName(name)
 }
 
+// legacySchemaPath is the file flowstate/v1's schema used to be spelled in,
+// before it was split into twelve files of the same package (#658).
+//
+// It is named here for one reason, and it is a compatibility one rather than a
+// schema one. A plugin ships descriptors for its own messages and deliberately
+// leaves out every file the engine is known to have, deriving that set from
+// flowstate's own schema files ([sdk.describeMessage]). A plugin binary built
+// before the split therefore ships a task file carrying a dangling import of
+// this path and depends on the engine to resolve it — and the engine no longer
+// can, because the path is gone.
+//
+// Refusing it is correct: the alternative is linking a plugin against a schema
+// this engine does not have. What is not correct is refusing it with a message
+// about an import nobody recognises, which sends an operator looking for a file
+// that has not existed since the split. So this arm says what happened and what
+// to do, per the standard flowfile/validate.go sets. It costs one comparison on
+// a path that is already failing.
+//
+// Wire compatibility is untouched and is not what broke here — a pre-split
+// plugin never gets far enough to exchange a byte, because the refusal happens
+// while reconstructing its manifest.
+const legacySchemaPath = "flowstate/v1/flowstate.proto"
+
 // link resolves one file and everything it imports, registering the result.
 func (l *linker) link(path string, depth int) (protoreflect.FileDescriptor, error) {
 	if depth > maxDescriptorDepth {
@@ -234,6 +257,13 @@ func (l *linker) link(path string, depth int) (protoreflect.FileDescriptor, erro
 
 	file, ok := l.pending[path]
 	if !ok {
+		if path == legacySchemaPath {
+			return nil, fmt.Errorf(
+				"imports %q, which this engine no longer has: that file was split into twelve files in the same package. "+
+					"This plugin was built against the pre-split schema — rebuild it against the current one",
+				truncate(path, 128),
+			)
+		}
 		return nil, fmt.Errorf(
 			"imports %q, which is neither included in the descriptor nor known to this engine",
 			truncate(path, 128),

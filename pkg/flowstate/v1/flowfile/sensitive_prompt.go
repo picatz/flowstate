@@ -54,86 +54,39 @@ import (
 // checkSensitivePrompt reports a `wait_for_signal:` whose `prompt:` reaches
 // something this system will not put in front of an approver.
 //
-// Positioned per step by asking [v1.CheckWaitPromptsAreAskable] about one step
-// at a time, so the message the author reads and the message a submitted
+// Positioned per step by asking [v1.WaitPromptProblems] about the whole
+// workflow, so the message the author reads and the message a submitted
 // specification is refused with are the same sentence; a second wording here
 // would be the "same mistake in two voices" this package already avoids
 // elsewhere.
+//
+// # Why the whole workflow, and not one step at a time
+//
+// This used to rebuild a single-step workflow per node and hand that to
+// [v1.CheckWaitPromptsAreAskable]. A step in isolation is exactly what cannot
+// see the names the *grammar* bound around it — an enclosing `for_each`'s `as:`,
+// a `loop:`'s carried state, an enclosing step's `vars:` — so a prompt reaching a
+// `sensitive:` input through one of them was accepted here and at submit (#976).
+// The bindings are the shared rule's to know, and it now walks the tree itself
+// carrying them; this file asks it and attaches a position.
+//
+// A `call:` is not followed, for the reason it never was: a callee is a
+// different workflow with its own declared inputs, compiled and validated in its
+// own right, and its own author is the one who should be told about its own
+// prompt. The submit boundary does descend into an inlined callee, because by
+// then there is no separate file left to have been validated — which is the
+// distinction [v1.SkipCalls] names.
 func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
-	return sensitivePromptInNodes(wf.GetSteps(), v1.SensitiveInputNames(wf))
-}
-
-// sensitivePromptInNodes reports every `wait_for_signal:` in a tree of steps whose
-// `prompt:` the shared rule refuses.
-//
-// The tree comes from [v1.WalkNodes], the one traversal (#508), for the reason
-// [sensitiveLogInNodes] gives: `inputs.<name>` means the same workflow input at any
-// nesting depth, so one walk from the top covers the whole tree.
-//
-// A `call:` is not followed, because the traversal does not follow one. A callee is
-// a different workflow with its own declared inputs, compiled and validated in its
-// own right, and its own author is the one who should be told about its own prompt.
-// The submit boundary does descend into an inlined callee, because by then there is
-// no separate file left to have been validated.
-func sensitivePromptInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostics {
 	var ds Diagnostics
 
-	v1.WalkNodes(nodes, v1.Walk{
-		Node: func(node *v1.Node) {
-			if d, ok := sensitivePromptInStep(node, sensitive); ok {
-				ds = append(ds, d)
-			}
-		},
-	})
+	for _, problem := range v1.WaitPromptProblems(wf, v1.SkipCalls) {
+		ds = append(ds, Diagnostic{
+			Step:    problem.StepID,
+			Field:   "wait_for_signal.prompt",
+			Code:    v1.DiagnosticCodeSensitiveInPrompt,
+			Message: fmt.Sprintf("%v", problem.Err),
+		})
+	}
 
 	return ds
-}
-
-// sensitivePromptInStep reports the diagnostic for one step when its prompt is
-// one the shared rule refuses, and ok=false otherwise.
-func sensitivePromptInStep(node *v1.Node, sensitive map[string]bool) (Diagnostic, bool) {
-	signal := node.GetWait().GetSignal()
-	if signal == nil || signal.GetPrompt() == nil {
-		return Diagnostic{}, false
-	}
-
-	// The one node, wrapped so the shared walk sees exactly this step's prompt
-	// and the sensitive names of the workflow it is written in. Wrapped rather
-	// than reimplemented: two spellings of one rule is the divergence this repo
-	// keeps paying for, and the rule here is the interesting part.
-	err := v1.CheckWaitPromptsAreAskable(&v1.Workflow{
-		DeclaredInputs: declarationsFor(sensitive),
-		Steps:          []*v1.Node{{Id: node.GetId(), Kind: node.GetKind()}},
-	})
-	if err == nil {
-		return Diagnostic{}, false
-	}
-
-	return Diagnostic{
-		Step:    node.GetId(),
-		Field:   "wait_for_signal.prompt",
-		Code:    v1.DiagnosticCodeSensitiveInPrompt,
-		Message: fmt.Sprintf("%v", err),
-	}, true
-}
-
-// declarationsFor rebuilds the minimum declaration set the shared rule needs:
-// the names, each marked sensitive.
-//
-// Only sensitive names, because that is the only property of a declaration the
-// rule reads: an input this returns nothing for is one the rule has no opinion
-// about, which is exactly its behavior against the real workflow. Handing it the
-// whole `inputs:` block would work too and would tie this call to fields the
-// rule does not consult.
-func declarationsFor(sensitive map[string]bool) []*v1.InputDeclaration {
-	if len(sensitive) == 0 {
-		return nil
-	}
-
-	declarations := make([]*v1.InputDeclaration, 0, len(sensitive))
-	for name := range sensitive {
-		declarations = append(declarations, &v1.InputDeclaration{Name: name, Sensitive: true})
-	}
-
-	return declarations
 }

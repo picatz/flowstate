@@ -50,6 +50,50 @@ tests:
 	}
 }
 
+// TestStubByStepIdDoesNotMatchACallee proves that a step-form stub is scoped
+// to the workflow in which the named step was resolved. Step ids are local to
+// a Flowfile, so the callee's identically named task must remain unstubbed.
+func TestStubByStepIdDoesNotMatchACallee(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/callee.yaml", `
+edition: v2026.3
+name: callee
+steps:
+  - id: notify
+    log:
+      message: from callee
+`)
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: caller
+steps:
+  - id: notify
+    log:
+      message: from caller
+  - id: invoke
+    call: ./callee.yaml
+`)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: a caller step stub cannot answer the callee
+    workflow: ./workflow.yaml
+    stubs:
+      - step: notify
+        returns: {}
+    expect:
+      ran: [notify, invoke]
+`))
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the callee's notify step must require its own stub")
+	require.NotEmpty(t, c.GetFailures())
+	require.Contains(t, c.GetFailures()[0].GetMessage(), `task "log" was invoked with no matching stub`)
+}
+
 // TestStubByStepIdUnknownStep checks the diagnostic for a step id the workflow
 // does not have: named, positioned, and carrying a did-you-mean suggestion from
 // the workflow's own steps (the existing nearest machinery).

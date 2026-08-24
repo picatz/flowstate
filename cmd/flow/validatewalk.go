@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -249,6 +250,78 @@ func validateWorkflowTarget(target validateTarget) (flowfile.Diagnostics, error)
 		return flowfile.ValidateSource(target.data)
 	}
 	return flowfile.ValidateSourceFile(target.path)
+}
+
+// validatePluginRequirements checks a workflow's `plugins:` block against the
+// catalog the launched plugins actually formed, and reports a version or
+// availability mismatch as a diagnostic (#835 review).
+//
+// It is the validator agreeing with the two execution drivers, which is the
+// invariant CLAUDE.md states as "both execution drivers must agree" extended to
+// the surface that exists to tell an author what they will do. `flow run local`
+// resolves a file's `plugins:` requirements against the launched catalog through
+// [v1.ResolvePlugins] (runlocal.go), and the durable submission does the same on
+// the server; before this, `flow validate --plugin-dir` launched the plugins,
+// registered their task schemas, and then said nothing about a requirement that
+// both drivers would refuse — a `plugins: {example: v99.0.0}` against a v0.1.0
+// binary validated clean and failed at the first real run. That is the false
+// green this whole branch set out to end, wearing the requirement block instead
+// of the task name.
+//
+// Only under --plugin-dir, which is the whole of why this is legitimate rather
+// than a deployment's decision reported as the file's. With no catalog it does
+// nothing and returns nothing: whether a plugin is installed, and at what
+// version, is the deployment's call, and the validator stays silent on it — the
+// same line [runValidate] holds everywhere else. The author who passed
+// --plugin-dir has said "check against this toolchain", so the versions in it
+// are theirs to be checked against.
+//
+// nil catalog, a target read from stdin, or a file that did not parse are each a
+// no-op: there is nothing to resolve against, nothing on disk to re-read, or no
+// workflow to resolve. A parse failure has already been reported by
+// [validateWorkflowTarget]; re-reporting the parse here would double it.
+func validatePluginRequirements(target validateTarget, catalog *v1.PluginCatalog) flowfile.Diagnostics {
+	// No launched plugins, or a document that is not a file on disk to re-parse
+	// for its requirements and its positions — stdin's bytes were validated in
+	// memory and carry no path a callee `call:` could resolve against.
+	if catalog == nil || target.data != nil {
+		return nil
+	}
+
+	wf, pos, err := flowfile.ParseFile(target.path)
+	if err != nil {
+		// The compile already failed and [validateWorkflowTarget] reported it
+		// with positions. There is no workflow to resolve, and saying so again
+		// here is the double-diagnostic #384 warns against.
+		return nil
+	}
+
+	// Nothing declared, nothing to check — and skipping keeps a file with no
+	// `plugins:` block from paying for a resolution that would select the empty
+	// set. [v1.ResolvePlugins] overwrites ResolvedPlugins, so it runs on the
+	// freshly parsed workflow, which is thrown away here: validate selects
+	// nothing, it only checks that a selection is possible.
+	if len(wf.GetPluginRequirements()) == 0 {
+		return nil
+	}
+
+	if err := v1.ResolvePlugins(wf, catalog); err != nil {
+		// Positioned at the `plugins:` block, which is what the requirement is a
+		// property of. The resolver names the plugin, the version the file asked
+		// for, and the version the deployment has — the triple an author acts on
+		// — but returns one error rather than a per-entry path, so the block is
+		// the finest position honestly available without re-deriving which entry
+		// failed.
+		d := flowfile.Diagnostic{Message: err.Error()}
+		if span, ok := pos.At("plugins"); ok {
+			d.Line = span.Start.Line
+			d.Column = span.Start.Column
+		}
+
+		return flowfile.Diagnostics{d}
+	}
+
+	return nil
 }
 
 // validateTestFile checks one Flowfile test under its own schema:

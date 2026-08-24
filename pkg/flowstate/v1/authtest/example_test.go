@@ -31,7 +31,7 @@ func Example() {
 			Role:      "deployer",
 			Namespace: "acme",
 		}},
-	})
+	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	if err != nil {
 		fmt.Println("policy:", err)
 		return

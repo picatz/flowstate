@@ -259,10 +259,14 @@ as the `lsp` argument, not in a project file:
 | Zed | `"arguments": ["lsp", "--plugin-dir", "/path/to/plugins"]` in the `binary` block |
 | Emacs | `'(flowfile-mode . ("flow" "lsp" "--plugin-dir" "/path/to/plugins"))` |
 
-`$FLOWSTATE_PLUGIN_DIR` is read when no `--plugin-dir` is given, the same as for a
-worker — which is a convenience for a machine where every Flowstate command should
-see the same plugins, and still an operator's decision about their own environment
-rather than a repository's about yours.
+`$FLOWSTATE_PLUGIN_DIR` is **not** read by `flow lsp`, and the path it is given must
+be **absolute**. A worker reads the variable, because a worker's environment is one
+an operator arranged; an editor starts the language server with the opened workspace
+as its working directory, so a relative `--plugin-dir` would name a directory inside
+whatever repository you happen to have open, and an inherited variable is one more
+way for something other than this command line to choose what your editor executes.
+The command line in the table above is the whole of the opt-in, which is why there
+is no configuration path to the same effect.
 
 ## Neovim
 
@@ -377,7 +381,7 @@ $ code --extensionDevelopmentPath="$PWD" /path/to/a/repo/with/flowfiles
 ```
 
 `flow` must be on your `PATH`, or point `flowstate.path` at it in your *user*
-settings. That setting and `flowstate.lsp.args` are `machine-overridable`, so a
+settings. That setting and `flowstate.lsp.args` are `machine`, so a
 workspace's own `.vscode/settings.json` cannot choose what your editor executes —
 the same argument this page makes about Neovim's `--plugin-dir` above.
 

@@ -140,10 +140,7 @@ func TestParseSignalFlag(t *testing.T) {
 // ever reached what it meant to check.
 func localSignalsTestCommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	root := newRootCommand()
-	local, _, err := root.Find([]string{"run", "local"})
-	require.NoError(t, err)
-	return local
+	return flowCommand(t, "run", "local")
 }
 
 // TestWithLocalSignalsDelivers checks that a supplied answer actually reaches a

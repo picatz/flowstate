@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
@@ -66,6 +67,7 @@ const numericDateLimit = 1 << 36 // seconds, roughly the year 4147
 // config holds the tunable behavior of an [OIDCVerifier].
 type config struct {
 	httpClient   *http.Client
+	egress       *netpolicy.Policy
 	clock        func() time.Time
 	skew         time.Duration
 	cacheTTL     time.Duration
@@ -77,17 +79,41 @@ type config struct {
 type Option func(*config)
 
 // WithHTTPClient sets the HTTP client used to fetch issuer metadata and keys.
-// Use it to supply a client with a proxy, custom root certificates, or
-// instrumentation. Per-fetch timeouts are applied through the context, so the
-// client does not need its own.
 //
-// The client is copied and its redirect policy replaced, so that a redirect
-// cannot move a key set fetch onto an unprotected transport. A nil client is
-// ignored.
+// It replaces the egress boundary rather than configuring it: the client owns
+// the transport, so none of what [DefaultEgressPolicy] enforces — address
+// classification at dial time, the TLS floor, the phase timeouts, the body cap,
+// the redirect rules — applies to anything it sends. Combining it with
+// [WithEgressPolicy], or with an egress section in the trust policy, is refused
+// rather than resolved by precedence.
+//
+// Prefer [WithEgressPolicy]: a proxy, custom roots, a longer timeout, and a
+// private issuer are all named [netpolicy] options, and reaching for one of them
+// no longer means turning the rest of the boundary off. A nil client is ignored.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) {
 		if client != nil {
 			c.httpClient = client
+		}
+	}
+}
+
+// WithEgressPolicy sets the egress policy applied to every discovery and key set
+// fetch this verifier makes: where it may connect, over what, and how much it
+// may read. Unset means [DefaultEgressPolicy].
+//
+// This is how a deployment reaches an issuer the default policy denies — an
+// in-cluster Kubernetes API server, a sidecar — without giving up the rest of
+// the boundary:
+//
+//	policy, err := netpolicy.New(netpolicy.WithAllowPrivateNetworks())
+//
+// A nil policy is ignored. The same policy may be shared by any number of
+// verifiers; it is immutable and carries the connection pool.
+func WithEgressPolicy(policy *netpolicy.Policy) Option {
+	return func(c *config) {
+		if policy != nil {
+			c.egress = policy
 		}
 	}
 }
@@ -209,7 +235,25 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 		return nil, err
 	}
 
-	client := transportProtectedClient(cfg.httpClient)
+	// The trust policy's own egress section is the file spelling of
+	// [WithEgressPolicy]; naming both is a contradiction rather than a
+	// precedence question, so it is refused here where both are in hand.
+	filePolicy, err := egressPolicyFromConfig(policy.Egress)
+	if err != nil {
+		return nil, err
+	}
+	if filePolicy != nil && cfg.egress != nil {
+		return nil, fmt.Errorf("%w: WithEgressPolicy and the trust policy's egress section both configure "+
+			"outbound identity HTTP: keep the one the deployment reads", ErrInvalidPolicy)
+	}
+	if cfg.egress == nil {
+		cfg.egress = filePolicy
+	}
+
+	client, err := identityHTTPClient("WithHTTPClient", cfg.httpClient, cfg.egress)
+	if err != nil {
+		return nil, err
+	}
 
 	verifier := &OIDCVerifier{
 		entries:    make(map[string][]TrustedIssuer),
@@ -220,6 +264,25 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 	}
 
 	for _, entry := range policy.Issuers {
+		// A kind: mtls entry's Issuer is an operator-chosen label naming a
+		// trusted CA, not an OIDC issuer URL: [TrustedIssuer.validateMTLS] asks
+		// only that it be non-empty. Indexing one here would make that label
+		// both a bearer-token trust entry and a key-set to fetch, so
+		// [OIDCVerifier.Prime] would request discovery and JWKS from whatever a
+		// label that happens to parse as a URL points at, and fail outright on
+		// one that does not — a deployment mixing kind: mtls with Prime cannot
+		// start. Certificate entries are consumed by [NewMTLSVerifier], which
+		// makes the mirror-image test at mtls.go over the same policy.
+		//
+		// The test is "not OIDC" rather than "is mTLS" deliberately. A kind
+		// added to the schema later is then excluded from bearer verification
+		// until someone decides it belongs here, rather than silently inheriting
+		// discovery and trust from a filter that only knew how to name one
+		// exception.
+		if entry.kind() != IssuerKindOIDC {
+			continue
+		}
+
 		// Copied, not aliased: the live trust policy is read from many goroutines
 		// on every request, and must not be something a caller can still change.
 		entry = entry.clone()
@@ -275,8 +338,9 @@ func (v *OIDCVerifier) Prime(ctx context.Context) error {
 // whose type can support that algorithm; the signature verifies against that
 // key; "exp" and "iat" are present and the token is currently within its
 // lifetime, along with "nbf" if present; "iss" matches a trusted issuer exactly;
-// "aud" contains an audience that issuer accepts; and every claim rule of the
-// matching policy entry holds.
+// "aud" contains an audience that issuer accepts; it carries neither RFC 8693
+// delegation claim ([ClaimActor] or [ClaimMayAct], see delegation.go); and
+// every claim rule of the matching policy entry holds.
 //
 // Only the token's signature and claims decide the outcome. Nothing about the
 // request, such as its path or peer address, can widen what a token is allowed
@@ -347,7 +411,19 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		return Principal{}, err
 	}
 
-	claims := verifiedClaims(token.Claims)
+	claims, err := verifiedClaims(token.Claims)
+	if err != nil {
+		return Principal{}, err
+	}
+
+	// Refused here, before any trust policy entry is consulted, because no
+	// entry can express what to do with a delegation claim: an entry that
+	// admitted the token would be admitting the bare "sub" and discarding the
+	// issuer's statement that somebody else is acting. See delegation.go for
+	// why this is the verifier's refusal and not one surface's.
+	if err := refuseDelegationClaims(claims); err != nil {
+		return Principal{}, err
+	}
 
 	var failures []error
 	for _, entry := range candidates {
@@ -520,14 +596,145 @@ func headerString(params header.Parameters, name string) string {
 	return text
 }
 
+// Bounds on the claim set a verified token may carry into a [Principal].
+//
+// These sit behind signature verification, so this is a trusted-issuer resource
+// question rather than an unauthenticated one — and it is still a bound worth
+// having, for the reason every bound in this repository is: the ratio is the
+// peer's to choose. [maxTokenBytes] bounds the token, and a 64 KiB token whose
+// payload is one enormous claim set is a legal token. An issuer we trust for
+// authentication is not thereby trusted to decide how much memory each of its
+// tokens costs us for the lifetime of the [Principal] it produces, which on a
+// long-lived worker is the lifetime of the request it authorizes.
+//
+// A token over a bound is refused, not trimmed: a [Principal] holding some of a
+// token's claims is one whose authorization rules read a claim set the issuer
+// never signed, and a rule keying on the claim that got dropped would silently
+// stop matching.
+//
+// The numbers, measured against real identity providers: a GitHub Actions ID
+// token carries about twenty claims, and the largest claim set in this
+// repository's own tests is fourteen at 640 bytes. 64 claims and 32 KiB give
+// room for an Entra or Okta token carrying a group list, while refusing the
+// pathological token that spends its whole 64 KiB on claims.
+const (
+	// maxVerifiedClaims is how many claims a verified token may carry.
+	maxVerifiedClaims = 64
+
+	// maxVerifiedClaimBytes bounds their total size, which the count does not.
+	maxVerifiedClaimBytes = 32 << 10
+
+	// claimNodeCost is what every value inside a claim costs against that
+	// budget before any of its bytes are counted.
+	//
+	// Without it the bound prices only textual payload, and breadth is free: a
+	// structured claim holding ten thousand empty strings, or ten thousand
+	// empty objects, contributes *zero*. The raw token stays under
+	// [maxTokenBytes] — `"",` is three bytes on the wire — while the
+	// [Principal] it decodes into retains ten thousand allocations for as long
+	// as the request it authorizes. That is the resource the peer controls the
+	// ratio to, which is exactly the thing this repository bounds: the
+	// attacker picks how much memory each wire byte buys.
+	//
+	// 16 bytes because that is the size of an empty interface value on a
+	// 64-bit platform, and every decoded node is retained as one — the least a
+	// claim node can cost us however few bytes it occupied in transit. It is
+	// deliberately an under-estimate of the true retained cost (the allocator
+	// header, the string header, the map bucket are all extra), so the budget
+	// stays generous for real tokens while breadth stops being free.
+	claimNodeCost = 16
+
+	// maxVerifiedClaimDepth bounds how deeply a structured claim value nests.
+	// A claim value is arbitrary JSON the issuer chose, so measuring its size
+	// means walking it, and an unbounded walk over an attacker-influenced
+	// structure is a stack the peer controls the depth of.
+	maxVerifiedClaimDepth = 8
+)
+
 // verifiedClaims copies a verified claims set into a plain map, so that a
 // [Principal] carries no reference to the parsed token it came from.
-func verifiedClaims(claims jwt.ClaimsSet) map[string]any {
+//
+// It refuses a claim set outside the bounds above rather than returning a
+// partial one; see them for why.
+func verifiedClaims(claims jwt.ClaimsSet) (map[string]any, error) {
+	if len(claims) > maxVerifiedClaims {
+		return nil, fmt.Errorf("%w: token carries %d claims, and at most %d are accepted",
+			ErrMalformedToken, len(claims), maxVerifiedClaims)
+	}
+
+	total := 0
 	copied := make(map[string]any, len(claims))
 	for name, value := range claims {
+		size, err := claimSize(value, 1)
+		if err != nil {
+			// Claim names are safe to name and values are not; see
+			// [validateCarriedClaims].
+			return nil, fmt.Errorf("%w: claim %q: %w", ErrMalformedToken, truncate(name, maxClaimValueLength), err)
+		}
+
+		total += len(name) + size
+		if total > maxVerifiedClaimBytes {
+			return nil, fmt.Errorf("%w: token carries more than %d bytes of claims",
+				ErrMalformedToken, maxVerifiedClaimBytes)
+		}
+
 		copied[name] = value
 	}
-	return copied
+
+	return copied, nil
+}
+
+// claimSize prices a decoded claim value against the byte budget, so that the
+// bound above can be applied to a value that is not a string.
+//
+// It is deliberately an approximation: the point is to bound a resource, not to
+// reproduce an encoder. Two things are charged, and the second is the one that
+// makes it a bound rather than a byte count. Every node costs [claimNodeCost]
+// whatever it holds, so a container's members are priced even when they are
+// empty; on top of that a string costs its bytes and a map entry its key's.
+// Depth is bounded because nesting is the peer's choice, and breadth is
+// charged for the same reason.
+func claimSize(value any, depth int) (int, error) {
+	if depth > maxVerifiedClaimDepth {
+		return 0, fmt.Errorf("value nests deeper than %d levels", maxVerifiedClaimDepth)
+	}
+
+	switch typed := value.(type) {
+	case string:
+		return claimNodeCost + len(typed), nil
+	case []any:
+		total := claimNodeCost
+		for _, element := range typed {
+			size, err := claimSize(element, depth+1)
+			if err != nil {
+				return 0, err
+			}
+			total += size
+			if total > maxVerifiedClaimBytes {
+				return total, nil
+			}
+		}
+		return total, nil
+	case map[string]any:
+		total := claimNodeCost
+		for name, member := range typed {
+			size, err := claimSize(member, depth+1)
+			if err != nil {
+				return 0, err
+			}
+			total += len(name) + size
+			if total > maxVerifiedClaimBytes {
+				return total, nil
+			}
+		}
+		return total, nil
+	default:
+		// Every scalar, and anything the JSON decoder did not produce.
+		// Counted rather than refused, because refusing here would reject a
+		// token on the strength of a type this function has not been taught,
+		// which is a rejection an operator cannot act on.
+		return claimNodeCost, nil
+	}
 }
 
 // stringClaim returns a claim that must be a non-empty string.

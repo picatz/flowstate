@@ -62,16 +62,18 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "SUPERSECRET-ACCESS-TOKEN",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "SUPERSECRET-ACCESS-TOKEN",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 
@@ -94,6 +96,7 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 		ClientID:     "leak-test-client",
 		ClientSecret: "SUPERSECRET-CLIENT-SECRET",
 		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 

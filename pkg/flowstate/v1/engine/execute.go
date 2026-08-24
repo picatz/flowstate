@@ -109,6 +109,26 @@ type executor struct {
 	// is the one that stops moving the moment the run descends into anything.
 	progress *progress
 
+	// detailsCtx is the context [workflow.SetCurrentDetails] is called through —
+	// deliberately *not* [executor.ctx]. The SDK's built-in
+	// `__temporal_workflow_metadata` query is answered from the WorkflowOptions
+	// pointer installed on the workflow's own root context, established once by
+	// the SDK before the registered workflow function is even invoked; a value
+	// field on that struct (SetCurrentDetails' target) is a plain string, copied
+	// by value rather than shared by reference the way [progress]'s pointer or
+	// [signals]'s channel are. Any `workflow.With*` call that forks
+	// WorkflowOptions — `workflow.WithDataConverter`, which
+	// [withSignalDeliveryCompat] calls to reach [signalDeliveryCompatConverter] —
+	// installs a *new* WorkflowOptions copy on the context it returns, so a
+	// SetCurrentDetails call made through [executor.ctx] (downstream of that
+	// fork) silently writes a field the built-in query never reads again.
+	// Captured once, at the very top of [runWorkflow], before any such fork, and
+	// carried unchanged everywhere [progress] is — see that field's own doc for
+	// why a concurrent branch or iteration carries neither: SetCurrentDetails is
+	// only ever called guarded on progress being non-nil (execute.go), so this
+	// is meaningless and left unset wherever progress is nil too.
+	detailsCtx workflow.Context
+
 	// waits is the set of signal waits parked in this run, for the same query
 	// handler to answer from.
 	//
@@ -243,6 +263,35 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		e.setFrame(depth, i)
 		e.progress.enter(depth, node.GetId())
 
+		// Guarded on e.progress being non-nil, the same guard [progress.enter]
+		// above already applies internally — see the field's own doc comment:
+		// a parallel branch, a concurrent for_each iteration, and an async
+		// step's executor all deliberately carry progress: nil, because a
+		// position is singular and cannot be claimed by one of several
+		// branches. Calling this unconditionally would let one of those
+		// nil-progress executors' empty currentDetailsMarkdown() overwrite the
+		// *parent* run's still-accurate details for the duration of the
+		// concurrent work — SetCurrentDetails has no concept of "this
+		// executor has nothing to say," only the last value written, so
+		// silence has to mean "do not call" rather than "call with empty."
+		//
+		// Deterministic and pure otherwise — [progress.currentDetailsMarkdown]
+		// only formats state [e.progress] already holds, the same values
+		// [ProgressQuery] already answers with, so this writes no history
+		// event and does no I/O; see that method's doc for the format and for
+		// why it is safe to call on every transition rather than rate-limited.
+		// Surfaces the same position through the SDK's own Details/Timeline
+		// views that [ProgressQuery] already answers over RPC (#753), so the
+		// two never have a second source of truth to drift from each other.
+		//
+		// Through [e.detailsCtx], never [e.ctx] — see [executor.detailsCtx]'s
+		// doc for why calling this through the ordinary execution context
+		// writes a WorkflowOptions copy the built-in metadata query never
+		// reads back.
+		if e.progress != nil {
+			workflow.SetCurrentDetails(e.detailsCtx, e.progress.currentDetailsMarkdown())
+		}
+
 		// Only the node the resume path points at continues descending into a
 		// saved position; everything after it starts fresh.
 		descend := resuming && i == start
@@ -266,12 +315,21 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 
 		if err := e.runNodeWithVars(node, depth, susp, descend); err != nil {
+			// Counted before the failure decides anything: the attempt
+			// scheduled real history whether or not the failure is tolerated
+			// here — or tolerated *above*, which is the case that used to
+			// vanish. A concurrent iteration whose first body step failed
+			// copied a count of zero back to the join, so a loop marked
+			// `continue_on_error:` whose every iteration failed advanced the
+			// budget by one however many activities it had scheduled.
+			e.processed++
 			if propagate := e.recordOutcome(node, err); propagate != nil {
 				return propagate
 			}
+		} else {
+			e.processed++
 		}
 
-		e.processed++
 		e.progress.finished()
 
 		// Suspending is only possible where the position is representable, and
@@ -500,6 +558,11 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		if err := workflow.ExecuteActivity(e.ctx, WorkflowVars, &v1.Scope{
 			AmbientVars: callee.GetVars(),
 			Profile:     v1.CalleeProfile(e.scope, callee),
+
+			// The calling run's identity, for the reason the other WorkflowVars
+			// dispatch carries it: a called workflow's vars are still this run's
+			// work, and the scope has to say so for the tenant guard to check it.
+			Identity: e.identity,
 		}).Get(e.ctx, &evaluated); err != nil {
 			return nodeFailed(err)
 		}
@@ -553,10 +616,11 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// Shared by pointer with the caller, for the same reasons the top-level
 		// executor shares them with every nested one: a signal or a compensation
 		// belongs to the run, not to the level that happens to be executing.
-		signals:  e.signals,
-		progress: e.progress,
-		waits:    e.waits,
-		undo:     e.undo,
+		signals:    e.signals,
+		progress:   e.progress,
+		detailsCtx: e.detailsCtx,
+		waits:      e.waits,
+		undo:       e.undo,
 
 		// Composed with the scope this call itself sits in, not always
 		// [v1.UndoScopeCall] — see [v1.UndoScope.IntoCall]. A call reached from
@@ -680,7 +744,13 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 	}
 
 	if err := e.runNodes(body, depth+1, susp+1); err != nil {
-		return err
+		// Wrapped so the selection survives the failure: failedAt reads the
+		// account off [v1.SwitchBodyError] the way it reads an exhausted loop's,
+		// and failedStepOutputs records it under this step's id. Without it the
+		// switch's own entry holds the failure text alone and the arm that ran
+		// is absent from the record every reader of it consults. The local
+		// driver's runSwitch wraps at the identical point.
+		return nodeFailed(&v1.SwitchBodyError{Err: err, Selection: outputs})
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = outputs
@@ -756,17 +826,108 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			// being resolved locally at each end.
 			Profile: e.scope.GetProfile(),
 		}
-		evalErr = e.dispatch(stepCtx, resolved, compact, needsAuthority, node.GetId(), &out)
+		evalErr = e.dispatch(stepCtx, resolved, compact, needsAuthority, node.GetId(), node.GetPolicy().GetContinueOnError(), &out)
 	} else {
-		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), &out)
+		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), node.GetPolicy().GetContinueOnError(), &out)
 	}
 	if evalErr != nil {
-		return nodeFailed(evalErr)
+		return nodeFailed(durableStepTimeoutMessage(evalErr, node.GetPolicy()))
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = &out
 	return nil
 }
+
+// durableStepTimeoutMessage translates a raw Temporal StartToClose or
+// ScheduleToClose timeout into the sentence CLAUDE.md's diagnostics standard
+// asks for — which budget expired, its value, and where the value came from —
+// in place of Temporal's own "activity StartToClose timeout (type:
+// StartToClose)".
+//
+// It wraps err rather than replacing it, and only for [ErrRunFailed.Message]:
+// [durableStepTimeoutError.Unwrap] returns err unchanged, so
+// [recordedStepError]'s envelope scrub for the recorded
+// `${steps.<id>.error}` value reaches straight through to the same
+// [temporal.ActivityError]/[temporal.TimeoutError] it already reads, and that
+// value — deliberately allowed to differ from the local driver's for a
+// timeout, per [StepTimeoutsFor]'s doc — is untouched by this.
+//
+// Only a plain Temporal timeout is translated. A task that classified its own
+// timeout into a [v1.TaskError] — an http task observing context deadline
+// exceeded, say — already said everything there is to say about why it
+// failed, and this must not overwrite that account with a guess about the
+// budget. That case is exactly "err carries no [temporal.TimeoutError] at
+// all" (Temporal never imposed a deadline; the task returned its own
+// classified failure before one would have fired) — checked by testing for
+// the timeout first, not by testing for an application error first: a
+// ScheduleToClose budget that expires after a retryable failure wraps the
+// last attempt's [temporal.ApplicationError] as the outer
+// [temporal.TimeoutError]'s cause (Temporal's own documented shape for that
+// case), and `errors.As` walks straight through that wrapping to find it, so
+// checking for an application error before checking for the timeout matched
+// on the inner cause and mistook a real, budget-imposed timeout for a
+// task's own account of one — reporting the stale prior attempt's message
+// and hiding that the retry budget was what actually ended the run. This is
+// the identical line [isUndoActivityTimeout]'s caller draws on the undo
+// path, read here instead of there because a step's own policy — not a
+// compensation's narrowed budget — is what names the origin.
+func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
+	var timeoutErr *temporal.TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		return err
+	}
+
+	origin := "the step default; set timeout: on the step to change it"
+	if policy.GetTimeout().AsDuration() > 0 {
+		origin = "the step's declared timeout:"
+	}
+
+	timeouts := v1.StepTimeoutsFor(policy, v1.DefaultStepTimeouts())
+
+	var budgeted string
+	switch timeoutErr.TimeoutType() {
+	case enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
+		budgeted = fmt.Sprintf("one attempt exceeded %s", timeouts.StartToClose)
+	case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE:
+		budgeted = fmt.Sprintf("every attempt together exceeded %s", timeouts.ScheduleToClose)
+	default:
+		// A schedule-to-start or heartbeat timeout names no per-step budget this
+		// engine sets, so there is nothing this can say beyond Temporal's own
+		// sentence — err reaches recordedStepError unchanged, exactly as it did
+		// before this translation existed.
+		return err
+	}
+
+	return &durableStepTimeoutError{
+		err:     err,
+		message: fmt.Sprintf("timed out: %s (%s)", budgeted, origin),
+	}
+}
+
+// durableStepTimeoutError carries [durableStepTimeoutMessage]'s translated
+// sentence alongside the untouched Temporal error, so the run-level Message
+// and the recorded `${steps.<id>.error}` value can each read what they are
+// meant to without one having to be reconstructed from the other.
+type durableStepTimeoutError struct {
+	err     error
+	message string
+}
+
+// Error returns the wrapped Temporal error's own text, unchanged — this type
+// exists to carry a second rendering alongside it (see runMessageText),
+// not to replace what err.Error() already answers, which nothing here reads.
+func (d *durableStepTimeoutError) Error() string { return d.err.Error() }
+
+// Unwrap reaches straight through to the Temporal error this wraps, which is
+// what keeps [recordedStepError] and [recordedStepKind]'s own errors.As calls
+// finding the same [temporal.ActivityError]/[temporal.TimeoutError] they
+// would have found without this wrapper in the way.
+func (d *durableStepTimeoutError) Unwrap() error { return d.err }
+
+// runMessageText is [failedAt]'s translated sentence for the run-level
+// Message, read only when err reaches it directly (not through a nested
+// [ErrRunFailed], which already carries its own).
+func (d *durableStepTimeoutError) runMessageText() string { return d.message }
 
 // dispatch schedules the activity for one resolved task.
 //
@@ -786,29 +947,39 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 // [TaskWithPrev] is not dispatched here at all — it exists only to replay a
 // run whose history predates this split, so it is not one of these four arms
 // and never receives identity; see its own doc.
+//
+// continueOnError is the step's `continue_on_error:` (#750), read by the one
+// caller in [runTask] from `node.GetPolicy()` while it still has the node in
+// hand, and threaded through every arm below to [activityError] — see
+// [Task]'s doc for why it has to travel as an activity argument rather than
+// being recovered on the workflow side after the fact. [runUndoTask] passes
+// false: a compensation's failure is never the tolerated case
+// `continue_on_error` describes, whatever the step it is undoing was
+// configured to tolerate.
 func (e *executor) dispatch(
 	ctx workflow.Context,
 	resolved *v1.Task,
 	scope *v1.Scope,
 	needsAuthority bool,
 	stepID string,
+	continueOnError bool,
 	out *v1.Node_Outputs,
 ) error {
 	if scope != nil {
 		if needsAuthority {
 			return workflow.ExecuteActivity(ctx, "TaskInScopeAuthorized", resolved, scope,
-				e.identity, e.spec.GetName(), e.runID, stepID).Get(ctx, out)
+				e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 		}
 
-		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope).Get(ctx, out)
+		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope, continueOnError, stepID).Get(ctx, out)
 	}
 
 	if needsAuthority {
 		return workflow.ExecuteActivity(ctx, "TaskAuthorized", resolved,
-			e.identity, e.spec.GetName(), e.runID, stepID).Get(ctx, out)
+			e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 	}
 
-	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity).Get(ctx, out)
+	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity, continueOnError, stepID).Get(ctx, out)
 }
 
 // runUndoTask runs one registered compensation as an activity.
@@ -816,9 +987,10 @@ func (e *executor) dispatch(
 // Nothing is evaluated here, which is the whole point of resolving a compensation
 // when its step succeeded rather than when the run fails: undoing is scheduling,
 // and scheduling is not new workflow-side nondeterminism (invariant 4). The scope
-// carries the profile and nothing else — the only inputs still unresolved are the
-// ones a task evaluates against its own response, and those need no run scope in
-// either driver.
+// carries the profile and run identity. The only task inputs still unresolved are
+// the ones a task evaluates against its own response, and those need no other run
+// scope in either driver; identity still has to cross the activity boundary so the
+// deployment's task-shape policy evaluates a compensation against its real caller.
 //
 // The activity options are the ones a step with no `retry:` and no `timeout:`
 // gets, from `activityOptionsFor(nil)`. The local driver reaches the same defaults
@@ -872,10 +1044,13 @@ func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, wit
 	var out v1.Node_Outputs
 	var scope *v1.Scope
 	if v1.TaskNeedsPrevOutputs(task.GetName()) {
-		scope = &v1.Scope{Profile: e.spec.GetProfile()}
+		scope = &v1.Scope{
+			Identity: e.identity,
+			Profile:  e.spec.GetProfile(),
+		}
 	}
 
-	err := e.dispatch(ctx, task, scope, v1.TaskNeedsAuthority(task), entry.GetStepId(), &out)
+	err := e.dispatch(ctx, task, scope, v1.TaskNeedsAuthority(task), entry.GetStepId(), false, &out)
 	if err == nil {
 		return nil
 	}
@@ -944,6 +1119,22 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	// ceiling between them is refused the same way one that started past it is.
 	if err := v1.CheckForEachItems(items); err != nil {
 		return nodeFailed(err)
+	}
+
+	// A loop that will run with no Continue-As-New seam inside it — one that
+	// declares concurrency, or one reached at a suspend depth where suspension
+	// is already illegal (a `parallel:` branch, another loop's body, a
+	// `switch:` arm) — is one atomic stretch of history, so the product of its
+	// items and its body's worst case is weighed before anything is
+	// dispatched, through the same [v1.CheckAtomicBlockActivities] the local
+	// driver applies at the same point under the same condition. A sequential
+	// top-level for_each is deliberately exempt: it suspends between
+	// iterations, where [shouldSuspend] also reads the server's own
+	// history-pressure hint, so it is paced rather than atomic.
+	if loop.GetMaxParallel() > 1 || susp > 0 {
+		if err := v1.CheckAtomicBlockActivities(len(items), loop.GetBody()); err != nil {
+			return nodeFailed(err)
+		}
 	}
 
 	name := v1.IteratorName(loop)
@@ -1208,10 +1399,11 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		processed: e.processed,
 		frames:    e.frames,
 
-		signals:  e.signals,
-		progress: e.progress,
-		waits:    e.waits,
-		undo:     e.undo,
+		signals:    e.signals,
+		progress:   e.progress,
+		detailsCtx: e.detailsCtx,
+		waits:      e.waits,
+		undo:       e.undo,
 
 		// Composed with the scope this loop itself sits in, not always
 		// [v1.UndoScopeLoop] — see [v1.UndoScope.IntoLoop]. A loop body is an
@@ -1293,10 +1485,11 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		// The run's carry, by pointer. A wait in a loop body consumes from the
 		// same place a top-level one does, and consuming it here has to remove it
 		// for the whole run.
-		signals:  e.signals,
-		progress: e.progress,
-		waits:    e.waits,
-		undo:     e.undo,
+		signals:    e.signals,
+		progress:   e.progress,
+		detailsCtx: e.detailsCtx,
+		waits:      e.waits,
+		undo:       e.undo,
 
 		// The concurrent scope is merged by structural position at the parent.
 		undoScope: v1.UndoScopeConcurrent,
@@ -1338,6 +1531,14 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 	results := make([]*v1.Workflow_StepOutputs, len(items))
 	errs := make([]error, len(items))
 	undos := make([]*v1.UndoLog, len(items))
+	// Each iteration's own count of body steps run, copied back at the join —
+	// the concurrent mirror of the `e.processed = nested.processed` the
+	// sequential [runIteration] path does inline. Without it the whole loop
+	// counted as one step against the budget, so the between-siblings seam
+	// after a concurrent loop fired only on the history hint, however much the
+	// loop had actually scheduled. Kept per index and summed in input order,
+	// so the total is the same whatever order the coroutines finished in.
+	processed := make([]int, len(items))
 
 	// A bounded number of workers pull from a shared index, which keeps at most
 	// MaxParallel iterations in flight without needing a semaphore.
@@ -1387,9 +1588,15 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				if err := worker.runNodes(loop.GetBody(), depth, susp); err != nil {
 					undos[i] = iterationUndo
 					errs[i] = err
+					// Copied back on failure too, exactly as the sequential
+					// path copies before it checks the error: the steps that
+					// ran before the failure were still scheduled and are
+					// still history.
+					processed[i] = worker.processed
 					continue
 				}
 				undos[i] = iterationUndo
+				processed[i] = worker.processed
 				// The item attaches to tolerated failures here exactly as the
 				// sequential path's runIteration attaches it, so which
 				// scheduling ran an iteration cannot change what its failure
@@ -1408,6 +1615,13 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 	for _, child := range undos {
 		e.undo.Append(child)
 	}
+	// The loop's true cost joins the budget here, at the join, where the sum
+	// over all iterations is deterministic regardless of scheduling — so the
+	// seams that follow this loop weigh what it actually ran rather than
+	// counting the whole fan-out as a single step.
+	for _, n := range processed {
+		e.processed += n
+	}
 
 	for i, err := range errs {
 		if err != nil {
@@ -1423,6 +1637,11 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 	scopes := make([]*v1.Workflow_StepOutputs, len(branches))
 	errs := make([]error, len(branches))
 	undos := make([]*v1.UndoLog, len(branches))
+	// Each branch's own count of steps run, summed at the join in declaration
+	// order — the same copy-back the concurrent for_each join does, for the
+	// same reason: a block that ran fifty steps and advanced the budget by one
+	// leaves every seam after it weighing history that is not there.
+	processed := make([]int, len(branches))
 
 	done := workflow.NewChannel(e.ctx)
 
@@ -1462,6 +1681,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 			}
 			undos[i] = branchUndo
 			scopes[i] = branchOutputs
+			processed[i] = worker.processed
 			done.Send(gctx, nil)
 		})
 	}
@@ -1472,6 +1692,11 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 	// Branch declaration index is the parallel form of the same structural key.
 	for _, child := range undos {
 		e.undo.Append(child)
+	}
+	// The block's true cost, summed deterministically at the join exactly as
+	// the concurrent for_each's is.
+	for _, n := range processed {
+		e.processed += n
 	}
 
 	for i, err := range errs {

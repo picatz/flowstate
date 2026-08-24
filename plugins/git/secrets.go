@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -35,16 +37,23 @@ const secretEnvPrefix = "GIT_SECRET_"
 // documented there, for one serving several tenants from a shared worker
 // pool.
 func resolveSecret(_ context.Context, req sdk.SecretRequest) (sdk.SecretResponse, error) {
-	name := envSegment(req.Name)
+	name, err := envSegment(req.Name)
+	if err != nil {
+		return sdk.SecretResponse{}, sdk.InvalidInput("invalid secret name %q: %v", req.Name, err)
+	}
 	if name == "" {
 		return sdk.SecretResponse{}, sdk.InvalidInput("secret name is empty")
 	}
 
-	variable := secretEnvPrefix
-	if namespace := envSegment(req.Namespace); namespace != "" {
-		variable += namespace + "_"
+	namespace, err := envSegment(req.Namespace)
+	if err != nil {
+		return sdk.SecretResponse{}, sdk.InvalidInput("invalid secret namespace %q: %v", req.Namespace, err)
 	}
-	variable += name
+	// The namespace length is part of the key even for the default namespace.
+	// A delimiter alone is ambiguous because '_' can occur in either encoded
+	// segment (it represents '-'). The length makes the segment boundary
+	// explicit, so no namespace/name pair can alias another pair.
+	variable := secretEnvPrefix + strconv.Itoa(len(namespace)) + "_" + namespace + "_" + name
 
 	value, ok := os.LookupEnv(variable)
 	if !ok {
@@ -57,22 +66,38 @@ func resolveSecret(_ context.Context, req sdk.SecretRequest) (sdk.SecretResponse
 	return sdk.SecretResponse{Value: []byte(value)}, nil
 }
 
-// envSegment renders part of a reference as part of an environment variable
-// name, so that a name from a workflow cannot construct a variable name of
-// its choosing.
-func envSegment(s string) string {
+// envSegment renders one reference segment as part of an environment variable
+// name: lowercase ASCII letters and digits pass through upcased, a hyphen
+// becomes an underscore, and everything else is refused. The empty string is a
+// valid segment, and is what the default namespace renders as.
+//
+// Rejecting rather than replacing any other character keeps this mapping
+// injective: authorization is performed against the original reference, so two
+// references must never select the same variable. Injectivity of a segment is
+// not by itself enough — see [resolveSecret] for how the pair of them is kept
+// unambiguous — but without it nothing downstream can recover the difference.
+//
+// The refusal names the offending character and where it is, because the
+// author of a Flowfile sees this through `sdk.InvalidInput` and "some character
+// somewhere is wrong" is not something anyone can act on.
+func envSegment(s string) (string, error) {
 	var b strings.Builder
-	for _, r := range s {
+	for i, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteRune(r - ('a' - 'A'))
-		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r >= '0' && r <= '9':
 			b.WriteRune(r)
-		default:
+		case r == '-':
 			b.WriteByte('_')
+		default:
+			return "", fmt.Errorf(
+				"%q at offset %d is not allowed; use only lowercase ASCII letters, digits, and hyphens",
+				r, i)
 		}
 	}
-	return b.String()
+
+	return b.String(), nil
 }
 
 // tokenFromValue extracts an HTTPS credential from a task's `token` input.

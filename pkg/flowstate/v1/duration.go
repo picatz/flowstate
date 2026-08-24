@@ -3,7 +3,6 @@ package flowstatev1
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -46,40 +45,39 @@ func ParseDuration(s string) (time.Duration, error) {
 // duration, and anything left over still fails to parse and still gets a
 // diagnostic.
 func expandDays(s string) (string, error) {
-	var out strings.Builder
-
-	for i := 0; i < len(s); {
+	out := make([]byte, 0, len(s))
+	written := 0
+	for i := 0; i < len(s); i++ {
 		if s[i] != 'd' {
-			out.WriteByte(s[i])
-			i++
-
 			continue
 		}
 
-		// Walk back over the number this d belongs to.
-		written := out.String()
-		start := len(written)
-		for start > 0 && (isDigit(written[start-1]) || written[start-1] == '.') {
+		// Walk back over the number this d belongs to. Scan the input rather
+		// than the accumulated output: rewriting that output for every day
+		// component makes inputs such as 1d1d1d quadratic.
+		start := i
+		for start > written && (isDigit(s[start-1]) || s[start-1] == '.') {
 			start--
 		}
-		if start == len(written) {
+		if start == i {
 			return "", fmt.Errorf("%q has a d with no number before it", s)
 		}
 
-		days, err := strconv.ParseFloat(written[start:], 64)
+		days, err := strconv.ParseFloat(s[start:i], 64)
 		if err != nil {
-			return "", fmt.Errorf("%q is not a number of days", written[start:])
+			return "", fmt.Errorf("%q is not a number of days", s[start:i])
 		}
 
-		out.Reset()
-		out.WriteString(written[:start])
+		out = append(out, s[written:start]...)
 		// Written as hours rather than as a scaled duration so that a fractional
 		// day keeps its precision through Go's own parser.
-		fmt.Fprintf(&out, "%gh", days*24)
-		i++
+		out = strconv.AppendFloat(out, days*24, 'g', -1, 64)
+		out = append(out, 'h')
+		written = i + 1
 	}
 
-	return out.String(), nil
+	out = append(out, s[written:]...)
+	return string(out), nil
 }
 
 // isDigit reports whether b is an ASCII digit.

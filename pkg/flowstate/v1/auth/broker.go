@@ -222,6 +222,32 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 		return Credential{}, err
 	}
 
+	// A credential is cached under the workload identity and target, which are
+	// the whole of what determines it — unless the exchange also depends on a
+	// party neither of them names.
+	//
+	// A delegated exchange does. The same workload, step and target acting for
+	// two different delegators produces two different credentials, minted by
+	// the authorization server for two different subjects with possibly
+	// different scopes; caching under a key that cannot tell them apart hands
+	// the second caller the first delegator's credential. That is the tenancy
+	// mistake this repository already legislates against, arriving through a
+	// cache key rather than through a name: a boundary that holds for every
+	// pair the key distinguishes and fails silently for the pair it does not.
+	//
+	// So a delegated exchange is not cached. The cost is stated rather than
+	// hidden: one exchange per request against such a target, with no reuse
+	// inside the credential's lifetime. Caching per delegator instead would
+	// need a stable, non-secret discriminator for the delegator, which means
+	// reading somebody else's token to derive one — new surface, and a
+	// discriminator that is wrong is this same leak with more machinery in
+	// front of it. When the grant model lands (#567 D1/D2) it can decide what
+	// a delegated credential is keyed by; until then it is keyed by nothing,
+	// which is the fail-closed answer.
+	if delegated, ok := exchanger.(delegatingExchanger); ok && delegated.isDelegated() {
+		return b.exchange(ctx, exchanger, requirement, identity, ref, subject, target)
+	}
+
 	credential, err := b.cache.get(ctx, credentialKey(target, subject, identity), func(ctx context.Context) (Credential, error) {
 		return b.exchange(ctx, exchanger, requirement, identity, ref, subject, target)
 	})
@@ -230,6 +256,22 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 	}
 
 	return credential, nil
+}
+
+// delegatingExchanger is implemented by an [Exchanger] whose result depends on
+// something the workload identity and target do not name — today, the delegator
+// an RFC 8693 delegated exchange acts for.
+//
+// An optional interface rather than a method on [Exchanger], because that
+// interface is implemented outside this package: adding a method would break
+// every external exchanger to describe a property almost none of them have. An
+// exchanger that does not implement this is cached exactly as before, which is
+// the right default — the only exchanger that answers yes is one that was
+// deliberately configured with a delegator.
+type delegatingExchanger interface {
+	// isDelegated reports whether this exchange depends on a delegator, and so
+	// must not be served from a cache keyed without one.
+	isDelegated() bool
 }
 
 // exchange mints an assertion and trades it for a credential.

@@ -35,9 +35,12 @@ import (
 // verified. See mtls.go's package doc for why that is the seam and not a
 // widened [Verifier] signature.
 type Authenticator struct {
-	verifier     Verifier
-	peerVerifier PeerVerifier
-	observe      func(context.Context, *http.Request, error)
+	verifier                     Verifier
+	peerVerifier                 PeerVerifier
+	observe                      func(context.Context, *http.Request, error)
+	protectedResource            string
+	protectedResourceMetadataURL string
+	expectedResource             string
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -72,6 +75,101 @@ func WithFailureObserver(observe func(ctx context.Context, req *http.Request, er
 func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 	return func(a *Authenticator) {
 		a.peerVerifier = p
+	}
+}
+
+// WithProtectedResource makes a 401 challenge this Authenticator issues carry
+// a "resource_metadata" parameter naming pr's RFC 9728 metadata URL, per the
+// MCP specification's requirement that the challenge point a client at the
+// document before it holds any credential.
+//
+// The URL always comes from pr, which is itself built from configuration —
+// never from the request this Authenticator is rejecting. A forged Host
+// header on the request cannot change what this challenge advertises.
+//
+// A nil pr, or the option omitted entirely, leaves the challenge exactly as
+// it reads without this option: "Bearer error=\"invalid_token\"" and nothing
+// more, byte-identical to every deployment that has not configured a
+// protected resource.
+//
+// # Why the resource is kept beside its URL
+//
+// pr's own resource identifier is recorded as well as the document's URL, so
+// that [Authenticator.challengeMetadataURL] can tell whether the document
+// describes the surface doing the rejecting. A challenge is an instruction —
+// a client that reads "fetch this document" fetches it, asks its authorization
+// server for the audience the document names, and comes back with that token
+// — so pointing at a document for some *other* resource does not merely fail
+// to help, it sends a client to mint precisely the token this surface has
+// been configured to refuse. That is reachable from the configuration
+// docs/DEPLOYMENT.md recommends: `flow server --rpc-resource .../rpc
+// --protected-resource .../mcp` publishes the MCP document from the process
+// whose Connect RPC surface admits only the RPC audience. Reported by Codex
+// on picatz/flowstate#1007.
+func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.protectedResource = pr.Resource()
+		a.protectedResourceMetadataURL = pr.MetadataURL()
+	}
+}
+
+// WithExpectedResource narrows what a verified token may be spent on here: the
+// token's "aud" must name resource, the canonical resource URI (RFC 8707
+// section 2) this RPC surface identifies as, or the request is refused.
+//
+// It is the check [MCPTokenVerifier] has always performed against
+// [ProtectedResource.Resource], available to the Connect surface for the first
+// time. The two surfaces are otherwise the same deployment behind the same
+// trust policy, and a [TrustedIssuer] entry lists every audience that issuer
+// may mint for — so a deployment whose entry accepts both its RPC audience and
+// its MCP resource lets a token minted for one be spent at the other. The
+// entry's list admits a token to the deployment; this admits it to this
+// surface.
+//
+// # Why this is opt-in, and what has since flipped it
+//
+// Unset (the default) is unnarrowed: every deployment that does not configure
+// one builds the exact same Authenticator this constructor always built, and
+// no token that verifies today starts failing. That is the cost, stated
+// plainly — an RPC surface is narrowed only when an operator says so, and
+// until then the trust policy's audience list is the whole of the check.
+//
+// It was the right default because of what was true when it landed: nothing
+// minted an RPC token carrying this deployment's resource URI.
+// `--protected-resource` is optional on `flow server` (required only on
+// `flow mcp serve`, whose surface *is* the resource), the RFC 9728 document a
+// deployment may serve is advertisement rather than enforcement, and clients
+// ask their authorization server for whatever audience they were configured
+// with. Narrowing by default would have refused every one of those tokens on
+// upgrade, which is a fail-closed posture bought by an outage.
+//
+// What that paragraph said would flip it has happened, and this is the record
+// of it rather than a prediction: `flow server --rpc-resource` (see
+// cmd/flow/rpcresource.go) turns it on, and having grown the flag the command
+// went straight to requiring it — a deployment that has a bearer issuer to
+// bind to and has not named its RPC audience is refused at start-up, with
+// `--allow-issuer-wide-audiences` restoring the old behaviour for one
+// migration window. The flag is named after the thing it configures rather
+// than after the check it performs, per #890.
+//
+// So the empty value stays meaningful, and now carries three cases rather
+// than "not yet": that migration window, a surface with no bearer path to
+// narrow at all (`flow server --insecure-no-auth`, `flow server --dev`, and a
+// trust policy of nothing but kind: mtls entries — see [AdmitsBearerTokens]),
+// and any caller outside cmd/flow that has not made the decision. An empty
+// resource is therefore ignored rather than refused, so a caller threading
+// through an unset configuration value gets the unnarrowed default rather
+// than a surface that refuses everyone. Which of those a given deployment is
+// in, is decided by the command; this package stays out of command-line
+// policy.
+//
+// Only bearer tokens are narrowed. A client certificate carries no audience,
+// so a request authenticated by [WithPeerVerifier] alone is unaffected; a
+// request carrying both is refused unless the token also names this resource,
+// which is the same "both must verify and agree" rule that path already has.
+func WithExpectedResource(resource string) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.expectedResource = resource
 	}
 }
 
@@ -135,6 +233,37 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		tokenErr = fmt.Errorf("%w: verifier returned no identity", ErrNoToken)
 	}
 
+	// Refused here, on the Principal the Verifier returned, and not only inside
+	// [OIDCVerifier.Verify]. That is the seam where the repository's own
+	// verifier performs this refusal, but an Authenticator holds *any*
+	// [Verifier] — a custom implementation that returns a non-zero Principal
+	// carrying a delegation claim would otherwise be admitted here while the
+	// MCP surface refused the same Principal (mcpverifier.go runs the same
+	// helper for exactly this reason). Checking it at the surface as well as in
+	// the default verifier is what keeps the two surfaces symmetric for every
+	// Verifier rather than only for [OIDCVerifier], which is the whole point of
+	// the change this belongs to. Recorded as a token failure, not returned, so
+	// the mTLS paths below treat it as any other invalid token.
+	if tokenErr == nil {
+		if err := refuseDelegationClaims(tokenPrincipal.Claims); err != nil {
+			tokenErr = err
+		}
+	}
+
+	// Recorded as a token failure rather than returned here, so that the mTLS
+	// paths below treat a token for the wrong resource exactly as they treat
+	// any other invalid token: no fallback to the certificate, and no
+	// precedence rule invented for this one check. See [WithExpectedResource]
+	// for why an unset resource narrows nothing.
+	if tokenErr == nil && a.expectedResource != "" && !tokenPrincipal.HasAudience(a.expectedResource) {
+		// The resource is not named in the error: a caller holding a token for
+		// some other service learns its audience was wrong, and does not learn
+		// this deployment's resource identifier from a failure — that is
+		// published in the RFC 9728 document the challenge points at, which is
+		// where a client is meant to read it.
+		tokenErr = fmt.Errorf("%w: the token's audience does not name this resource", ErrInvalidAudience)
+	}
+
 	// req.TLS.VerifiedChains is set by crypto/tls itself, only once the peer's
 	// certificate has been verified against the listener's ClientCAs — nothing
 	// here re-verifies it or reads req.TLS.PeerCertificates instead. No peer
@@ -147,7 +276,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, tokenErr)
 			}
-			return nil, unauthenticated(tokenErr)
+			return nil, a.unauthenticated(tokenErr)
 		}
 		return tokenPrincipal, nil
 	}
@@ -160,7 +289,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		if a.observe != nil {
 			a.observe(ctx, req, peerErr)
 		}
-		return nil, unauthenticated(peerErr)
+		return nil, a.unauthenticated(peerErr)
 	}
 
 	if rawToken != "" {
@@ -173,7 +302,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, tokenErr)
 			}
-			return nil, unauthenticated(tokenErr)
+			return nil, a.unauthenticated(tokenErr)
 		}
 		if tokenPrincipal.ID() != peerPrincipal.ID() {
 			err := fmt.Errorf("%w: certificate names %q, token names %q",
@@ -181,7 +310,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, err)
 			}
-			return nil, unauthenticated(err)
+			return nil, a.unauthenticated(err)
 		}
 	}
 
@@ -191,10 +320,47 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 // unauthenticated renders a verification failure as the error a caller sees: the
 // RFC 6750 challenge that tells a client its token is the problem, and a short
 // reason that describes the failure without describing the trust policy.
-func unauthenticated(cause error) error {
+//
+// The challenge itself is rendered by [bearerChallenge], which is also where
+// the parameters this deployment deliberately does not send are written down.
+func (a *Authenticator) unauthenticated(cause error) error {
 	err := connect.NewError(connect.CodeUnauthenticated, errors.New(publicReason(cause)))
-	err.Meta().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+	err.Meta().Set("WWW-Authenticate", bearerChallenge("invalid_token", a.challengeMetadataURL()))
 	return err
+}
+
+// challengeMetadataURL is the RFC 9728 document this surface's challenge may
+// name: the one [WithProtectedResource] configured, or nothing when that
+// document describes a resource this surface would not accept a token for.
+//
+// The two options are independent, and a deployment is expected to set both
+// with *different* values — that is the whole point of picatz/flowstate#1007,
+// and what docs/DEPLOYMENT.md now recommends. Naming the document anyway
+// would make the challenge an instruction to go and mint the one audience
+// [WithExpectedResource] has been told to refuse, and a discovery-driven
+// client that followed it would loop: fetch, mint, 401, fetch. Silence is the
+// honest answer — RFC 9728 section 5.1 makes the parameter optional, and a
+// caller reading a bare challenge learns "your token is not accepted here"
+// and no falsehood.
+//
+// It costs discovery on a surface that has narrowed itself, and that cost is
+// paid deliberately rather than papered over: publishing a *second* RFC 9728
+// document, for the RPC resource, is the thing that would buy it back, and
+// that is a route to mount, a collision to check against the three
+// serverHandler already registers, and a decision about a document whose
+// resource path ("/rpc") is not where Connect RPC actually answers ("/", plus
+// each procedure). It is a slice, not a line, and it is left as one.
+//
+// An unnarrowed surface (expectedResource empty — the migration window, the
+// insecure and dev servers, a certificate-only policy) keeps the document it
+// always named: it still accepts every audience its trust policy lists, so
+// the one the document advertises is among them and the instruction is good.
+func (a *Authenticator) challengeMetadataURL() string {
+	if a.expectedResource != "" && a.expectedResource != a.protectedResource {
+		return ""
+	}
+
+	return a.protectedResourceMetadataURL
 }
 
 // PrincipalFromContext returns the [Principal] that [Authenticator.Authenticate]

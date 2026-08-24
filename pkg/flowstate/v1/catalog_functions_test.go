@@ -252,9 +252,11 @@ func TestEveryMacroExampleEvaluates(t *testing.T) {
 
 // TestOnlyAMacroCarriesAnExample keeps the field meaning one thing.
 //
-// A function's name *is* its call form, so an example beside one would be a second
-// way of saying what `name` already says — and two spellings of one fact is how they
-// come to disagree.
+// Example exists because a macro's own API will not say whether its name is
+// written on a namespace or a value (see [macroExamples]) — a question an
+// ordinary function's overloads already answer, through Signature. An example
+// beside one of those would be a second way of saying what Signature already
+// says, and two spellings of one fact is how they come to disagree.
 func TestOnlyAMacroCarriesAnExample(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +265,50 @@ func TestOnlyAMacroCarriesAnExample(t *testing.T) {
 			continue
 		}
 		assert.Empty(t, fn.Example,
-			"%q is an ordinary function and carries an example, which its name already is", fn.Name)
+			"%q is an ordinary function and carries an example, which Signature already gives", fn.Name)
 	}
+}
+
+// TestOnlyAnOrdinaryFunctionCarriesASignature is Example's own guarantee,
+// mirrored: a macro's overload does not exist in the profile's compiled
+// environment under the macro's own name (see [functionSignatures]'s doc
+// comment), so this asserts that absence rather than assuming it — a
+// silent collision here would put a placeholder signature beside a macro's
+// hand-written Example, which is exactly the two-spellings-of-one-fact this
+// repository keeps refinding.
+func TestOnlyAnOrdinaryFunctionCarriesASignature(t *testing.T) {
+	t.Parallel()
+
+	for _, fn := range ProfileFunctions(CurrentProfile) {
+		if !fn.Macro {
+			continue
+		}
+		assert.Empty(t, fn.Signature,
+			"%q is a macro and carries a signature, which should not exist for one", fn.Name)
+	}
+}
+
+// TestEveryOrdinaryFunctionHasASignature is Signature's own version of
+// TestEveryMacroHasAnExample: unlike a macro's Example, this needs no written
+// table to stay honest, because it is derived — so the only way it can go
+// missing is a name [isCallableName] accepts that cel-go's own environment
+// does not register under [ProfileFunctions]' library-scoped lookup, which
+// would be a bug in that lookup rather than something to special-case here.
+func TestEveryOrdinaryFunctionHasASignature(t *testing.T) {
+	t.Parallel()
+
+	functions := ProfileFunctions(CurrentProfile)
+	require.NotEmpty(t, functions, "the profile listed no functions, so this proves nothing")
+
+	checked := 0
+	for _, fn := range functions {
+		if fn.Macro {
+			continue
+		}
+		checked++
+		assert.NotEmpty(t, fn.Signature,
+			"%q is an ordinary function with no signature; functionSignatures could not find "+
+				"it in the profile's compiled environment", fn.Name)
+	}
+	assert.Positive(t, checked, "no ordinary functions were checked, so this proves nothing")
 }
