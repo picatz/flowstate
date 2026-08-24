@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -827,6 +828,21 @@ type runLocalResult struct {
 // fits, are unchanged; what left is [flowmcp.FitResult] doing the measuring, so
 // the "re-encode, re-measure, stop at the first that fits" discipline this
 // function used to spell out by hand is the same code the other two shrinking
+// shallowGetResponse copies a response one field at a time through
+// protoreflect: every set shares the source field's pointer, so nothing the
+// size of the transcript is duplicated, and no hand-kept field list exists to
+// drift when the schema grows.
+func shallowGetResponse(response *v1.GetResponse) *v1.GetResponse {
+	trimmed := &v1.GetResponse{}
+	src := response.ProtoReflect()
+	dst := trimmed.ProtoReflect()
+	src.Range(func(fd protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		dst.Set(fd, value)
+		return true
+	})
+	return trimmed
+}
+
 // answers on this surface run.
 func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([]byte, error) {
 	// protojson builds its answer in memory. Preflight the binary representation
@@ -835,21 +851,26 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 	// bound, not the answer's shrinking ladder; preserve declared outputs when
 	// possible, then fall through to the same notes the ordinary size checks use.
 	if proto.Size(response) > maxRunLocalProtoBytes {
-		// A shallow copy is intentional: cloning here would duplicate the very
+		// A shallow copy is intentional: cloning would duplicate the very
 		// attacker-sized transcript this preflight exists to avoid retaining.
-		trimmed := *response
+		// Copied field by field through protoreflect rather than by value —
+		// `*response` copies the message's internal state (vet: a lock) —
+		// and Range/Set shares each field's pointer instead of cloning it,
+		// which is the whole point. Field-list-free, so a schema addition
+		// cannot silently stop being carried.
+		trimmed := shallowGetResponse(response)
 		if trimmed.GetOutputs() != nil {
 			trimmed.Kind = nil
 		}
-		if proto.Size(&trimmed) <= maxRunLocalProtoBytes {
-			return renderTrimmedRun(&trimmed, fmt.Sprintf(
+		if proto.Size(trimmed) <= maxRunLocalProtoBytes {
+			return renderTrimmedRun(trimmed, fmt.Sprintf(
 				"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
 					"Have the workflow carry less, or read the values it needs in a step of its own",
 				flowmcp.MaxResultBytes))
 		}
 
 		trimmed.RunOutputs = nil
-		return renderTrimmedRun(&trimmed, fmt.Sprintf(
+		return renderTrimmedRun(trimmed, fmt.Sprintf(
 			"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
 				"Read what the run produced with `flow get`, or have the workflow answer with less",
 			flowmcp.MaxResultBytes))
