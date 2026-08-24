@@ -108,11 +108,31 @@ const (
 // so that [Plan] is a pure function and its tests can describe machines this
 // one will never be.
 type Machine struct {
-	Cores          int
-	Load1          float64 // -1 when the platform does not report it
-	MemoryFree     uint64
+	Cores int
+
+	// Load1 is -1, and MemoryFree 0, when the platform does not report them.
+	//
+	// Both mean "unknown", and unknown must not read as "none": a macOS box has
+	// no /proc/meminfo, and treating that as zero free memory made the memory
+	// bound win every time and the tool answer zero lanes forever, on every
+	// machine it could not measure. Unknown is therefore unbounded — the plan
+	// falls back to the resources it can see — and the printed line says which
+	// figures were unavailable rather than quietly presenting a partial answer
+	// as a whole one.
+	Load1      float64
+	MemoryFree uint64
+
+	// DiskFree is the tightest of the filesystems a lane writes to, which is
+	// not necessarily one: a checkout and GOCACHE can be on different mounts,
+	// and it is cache growth this budgets.
 	DiskFree       uint64
-	CacheSizeBytes uint64 // the shared build cache, when it could be measured
+	CacheSizeBytes uint64
+
+	// LoadIsHostWide records that Load1 was read from a host-scoped source
+	// while Cores describes a container's quota. Comparing those two mixes
+	// scopes — a two-core container on a busy sixty-four-core host would be
+	// refused every lane on the strength of work it is not competing for.
+	LoadIsHostWide bool
 }
 
 // Plan is the answer, with the reason attached. The reason is not decoration:
@@ -135,7 +155,11 @@ func PlanFor(m Machine) Plan {
 	}
 
 	byCPU := (m.Cores - reservedCores) / LaneCores
-	byMemory := int((m.MemoryFree - min(m.MemoryFree, reservedMemory)) / LaneMemoryBytes)
+
+	byMemory := math.MaxInt32
+	if m.MemoryFree > 0 {
+		byMemory = int((m.MemoryFree - min(m.MemoryFree, reservedMemory)) / LaneMemoryBytes)
+	}
 
 	var byDisk int
 	if m.DiskFree > DiskFloorBytes {
@@ -146,8 +170,12 @@ func PlanFor(m Machine) Plan {
 	// counts runnable *and* uninterruptible tasks, so a box thrashing on disk
 	// reads high here even when its cores look idle — which is exactly the
 	// state in which adding a lane hurts most.
+	// Applied only where it is measuring the same machine the core count
+	// describes. Where the cores are a cgroup quota and the load average is the
+	// host's, the two are different scopes and the comparison is meaningless in
+	// the direction that refuses work.
 	byLoad := math.MaxInt32
-	if m.Load1 >= 0 {
+	if m.Load1 >= 0 && !m.LoadIsHostWide {
 		byLoad = int((float64(m.Cores) - m.Load1) / LaneCores)
 	}
 
@@ -175,6 +203,14 @@ func PlanFor(m Machine) Plan {
 		plan.Advice = append(plan.Advice, fmt.Sprintf(
 			"the shared build cache is %s; `go clean -cache` reclaims it at the price of one cold rebuild per lane",
 			bytes(m.CacheSizeBytes)))
+	}
+	if m.MemoryFree == 0 {
+		plan.Advice = append(plan.Advice,
+			"free memory could not be read on this platform, so the plan is bound by cores and disk alone — treat the count as an upper bound")
+	}
+	if m.LoadIsHostWide {
+		plan.Advice = append(plan.Advice,
+			"the load average is the host's while the core count is this container's quota, so load was not used as a bound; watch it yourself if the host is shared")
 	}
 	if plan.Lanes == 0 && plan.Bound == "current load" {
 		plan.Advice = append(plan.Advice,

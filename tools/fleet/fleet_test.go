@@ -169,3 +169,48 @@ func TestAdviceIsGivenWhereItCanBeActedOn(t *testing.T) {
 		assert.Empty(t, plan.Advice, "advice on a machine with no problem is noise that trains readers to skip it")
 	})
 }
+
+// TestUnknownIsNotNone is the finding that made the tool useless off Linux.
+//
+// A macOS box has no /proc/meminfo, so the reader returns zero — and zero read
+// as "no memory free" made the memory bound win on every machine the tool
+// could not measure, answering zero lanes forever. Unknown has to fall back to
+// the resources that *were* readable, and say so.
+func TestUnknownIsNotNone(t *testing.T) {
+	t.Run("unreadable memory falls back to the other bounds", func(t *testing.T) {
+		plan := PlanFor(Machine{Cores: 16, Load1: 0.2, MemoryFree: 0, DiskFree: 500 * gib})
+
+		assert.Positive(t, plan.Lanes, "a machine whose memory could not be read is not a machine with no memory")
+		assert.Equal(t, "cores", plan.Bound)
+		assert.Contains(t, strings.Join(plan.Advice, "\n"), "could not be read",
+			"a plan computed from fewer facts must say so rather than pass as a whole answer")
+	})
+
+	t.Run("an unreadable load average still does not read as idle", func(t *testing.T) {
+		busy := PlanFor(Machine{Cores: 16, Load1: -1, MemoryFree: 64 * gib, DiskFree: 500 * gib})
+
+		assert.Equal(t, 7, busy.Lanes, "capacity alone, with no load discount and no refusal")
+	})
+}
+
+// TestHostLoadIsNotComparedWithAContainerQuota keeps two scopes apart.
+//
+// /proc/loadavg has no cgroup scope: inside a container it is the host's. Where
+// the core count came from a quota, comparing the two describes different
+// machines — a two-core container on a busy sixty-four-core host would be
+// refused every lane on the strength of work it is not competing for.
+func TestHostLoadIsNotComparedWithAContainerQuota(t *testing.T) {
+	container := Machine{Cores: 2, Load1: 40, MemoryFree: 32 * gib, DiskFree: 500 * gib, LoadIsHostWide: true}
+
+	plan := PlanFor(container)
+
+	assert.Equal(t, "cores", plan.Bound, "the host's load must not decide a container's fleet")
+	assert.Contains(t, strings.Join(plan.Advice, "\n"), "load average is the host's",
+		"and dropping a bound silently would be worse than not having it")
+
+	// The same numbers on a machine whose cores are its own: the load bound
+	// applies, and refuses.
+	own := container
+	own.LoadIsHostWide = false
+	assert.Equal(t, 0, PlanFor(own).Lanes, "where the scopes match, a busy machine is still a busy machine")
+}
