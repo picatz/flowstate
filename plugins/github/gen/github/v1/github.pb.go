@@ -8,6 +8,7 @@ package githubv1
 
 import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	v1alpha1 "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -704,7 +705,7 @@ func (x *PullRequestSummary) GetUpdatedAt() string {
 // PullRequestListOutputs is a bounded page of matching pull requests.
 type PullRequestListOutputs struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
-	PullRequests []*PullRequestSummary  `protobuf:"bytes,1,rep,name=pull_requests,json=pullRequests,proto3" json:"pull_requests,omitempty"`
+	PullRequests []*v1alpha1.Value      `protobuf:"bytes,1,rep,name=pull_requests,json=pullRequests,proto3" json:"pull_requests,omitempty"`
 	// Truncated reports whether more pull requests matched than this call
 	// returned - by max_results, or by the request budget this task spends
 	// paginating GitHub's own API (see maxListRequests) - so a workflow can
@@ -755,7 +756,7 @@ func (*PullRequestListOutputs) Descriptor() ([]byte, []int) {
 	return file_github_v1_github_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *PullRequestListOutputs) GetPullRequests() []*PullRequestSummary {
+func (x *PullRequestListOutputs) GetPullRequests() []*v1alpha1.Value {
 	if x != nil {
 		return x.PullRequests
 	}
@@ -987,7 +988,7 @@ func (x *PullRequestFile) GetPreviousFilename() string {
 // touches.
 type PullRequestFilesOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Files []*PullRequestFile     `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
+	Files []*v1alpha1.Value      `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
 	// Truncated reports whether the pull request touched more files than
 	// this call returned - see PullRequestListOutputs.truncated's own doc
 	// comment; the same reasoning applies here.
@@ -1034,7 +1035,7 @@ func (*PullRequestFilesOutputs) Descriptor() ([]byte, []int) {
 	return file_github_v1_github_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *PullRequestFilesOutputs) GetFiles() []*PullRequestFile {
+func (x *PullRequestFilesOutputs) GetFiles() []*v1alpha1.Value {
 	if x != nil {
 		return x.Files
 	}
@@ -1565,7 +1566,7 @@ func (x *IssueSummary) GetIsPullRequest() bool {
 // IssueListOutputs is a bounded page of matching issues.
 type IssueListOutputs struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
-	Issues []*IssueSummary        `protobuf:"bytes,1,rep,name=issues,proto3" json:"issues,omitempty"`
+	Issues []*v1alpha1.Value      `protobuf:"bytes,1,rep,name=issues,proto3" json:"issues,omitempty"`
 	// NextCursor is the resume position for the next page, populated exactly
 	// when Truncated is true, Issues is non-empty, AND this call's own
 	// Sort/Direction were "created"/"asc" - see IssueListInputs.cursor and
@@ -1609,7 +1610,7 @@ func (*IssueListOutputs) Descriptor() ([]byte, []int) {
 	return file_github_v1_github_proto_rawDescGZIP(), []int{14}
 }
 
-func (x *IssueListOutputs) GetIssues() []*IssueSummary {
+func (x *IssueListOutputs) GetIssues() []*v1alpha1.Value {
 	if x != nil {
 		return x.Issues
 	}
@@ -1634,7 +1635,7 @@ var File_github_v1_github_proto protoreflect.FileDescriptor
 
 const file_github_v1_github_proto_rawDesc = "" +
 	"\n" +
-	"\x16github/v1/github.proto\x12\tgithub.v1\x1a\x1cflowstate/v1/flowstate.proto\"\x9e\x01\n" +
+	"\x16github/v1/github.proto\x12\tgithub.v1\x1a\x1cflowstate/v1/flowstate.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x9e\x01\n" +
 	"\x14PullRequestGetInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
@@ -1691,9 +1692,9 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"created_at\x18\t \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\n" +
-	" \x01(\tR\tupdatedAt\"\x9b\x01\n" +
-	"\x16PullRequestListOutputs\x12B\n" +
-	"\rpull_requests\x18\x01 \x03(\v2\x1d.github.v1.PullRequestSummaryR\fpullRequests\x12\x1c\n" +
+	" \x01(\tR\tupdatedAt\"\x9d\x01\n" +
+	"\x16PullRequestListOutputs\x12D\n" +
+	"\rpull_requests\x18\x01 \x03(\v2\x1f.google.api.expr.v1alpha1.ValueR\fpullRequests\x12\x1c\n" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1f\n" +
 	"\vnext_cursor\x18\x03 \x01(\tR\n" +
 	"nextCursor\"\xd9\x01\n" +
@@ -1712,9 +1713,9 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"\tadditions\x18\x03 \x01(\x05R\tadditions\x12\x1c\n" +
 	"\tdeletions\x18\x04 \x01(\x05R\tdeletions\x12\x18\n" +
 	"\achanges\x18\x05 \x01(\x05R\achanges\x12+\n" +
-	"\x11previous_filename\x18\x06 \x01(\tR\x10previousFilename\"\x8a\x01\n" +
-	"\x17PullRequestFilesOutputs\x120\n" +
-	"\x05files\x18\x01 \x03(\v2\x1a.github.v1.PullRequestFileR\x05files\x12\x1c\n" +
+	"\x11previous_filename\x18\x06 \x01(\tR\x10previousFilename\"\x8f\x01\n" +
+	"\x17PullRequestFilesOutputs\x125\n" +
+	"\x05files\x18\x01 \x03(\v2\x1f.google.api.expr.v1alpha1.ValueR\x05files\x12\x1c\n" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1f\n" +
 	"\vnext_cursor\x18\x03 \x01(\tR\n" +
 	"nextCursor\"\x98\x01\n" +
@@ -1763,9 +1764,9 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"created_at\x18\x06 \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\a \x01(\tR\tupdatedAt\x12&\n" +
-	"\x0fis_pull_request\x18\b \x01(\bR\risPullRequest\"\x82\x01\n" +
-	"\x10IssueListOutputs\x12/\n" +
-	"\x06issues\x18\x01 \x03(\v2\x17.github.v1.IssueSummaryR\x06issues\x12\x1f\n" +
+	"\x0fis_pull_request\x18\b \x01(\bR\risPullRequest\"\x8a\x01\n" +
+	"\x10IssueListOutputs\x127\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1f.google.api.expr.v1alpha1.ValueR\x06issues\x12\x1f\n" +
 	"\vnext_cursor\x18\x03 \x01(\tR\n" +
 	"nextCursor\x12\x1c\n" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncatedB\xa4\x01\n" +
@@ -1802,17 +1803,18 @@ var file_github_v1_github_proto_goTypes = []any{
 	(*IssueSummary)(nil),            // 13: github.v1.IssueSummary
 	(*IssueListOutputs)(nil),        // 14: github.v1.IssueListOutputs
 	(*v1.Value)(nil),                // 15: flowstate.v1.Value
+	(*v1alpha1.Value)(nil),          // 16: google.api.expr.v1alpha1.Value
 }
 var file_github_v1_github_proto_depIdxs = []int32{
 	15, // 0: github.v1.PullRequestGetInputs.token:type_name -> flowstate.v1.Value
 	15, // 1: github.v1.IssueCommentInputs.token:type_name -> flowstate.v1.Value
 	15, // 2: github.v1.PullRequestListInputs.token:type_name -> flowstate.v1.Value
-	5,  // 3: github.v1.PullRequestListOutputs.pull_requests:type_name -> github.v1.PullRequestSummary
+	16, // 3: github.v1.PullRequestListOutputs.pull_requests:type_name -> google.api.expr.v1alpha1.Value
 	15, // 4: github.v1.PullRequestFilesInputs.token:type_name -> flowstate.v1.Value
-	8,  // 5: github.v1.PullRequestFilesOutputs.files:type_name -> github.v1.PullRequestFile
+	16, // 5: github.v1.PullRequestFilesOutputs.files:type_name -> google.api.expr.v1alpha1.Value
 	15, // 6: github.v1.IssueGetInputs.token:type_name -> flowstate.v1.Value
 	15, // 7: github.v1.IssueListInputs.token:type_name -> flowstate.v1.Value
-	13, // 8: github.v1.IssueListOutputs.issues:type_name -> github.v1.IssueSummary
+	16, // 8: github.v1.IssueListOutputs.issues:type_name -> google.api.expr.v1alpha1.Value
 	9,  // [9:9] is the sub-list for method output_type
 	9,  // [9:9] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name

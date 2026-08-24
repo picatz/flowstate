@@ -91,7 +91,7 @@ func issueList(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	}
 
 	return sdk.EncodeOutputs(&githubv1.IssueListOutputs{
-		Issues:     issues,
+		Issues:     issueSummaryValues(issues),
 		Truncated:  truncated,
 		NextCursor: nextCursor,
 	})

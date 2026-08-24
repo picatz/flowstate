@@ -5,6 +5,7 @@ package github.v1;
 option go_package = "github.com/picatz/flowstate/plugins/github/gen/github/v1;githubv1";
 
 import "flowstate/v1/flowstate.proto";
+import "google/api/expr/v1alpha1/value.proto";
 
 // This plugin's own task schema. Everything here is intentionally named
 // after GitHub's own vocabulary - a pull request, an issue comment - rather
@@ -211,7 +212,7 @@ message PullRequestSummary {
 
 // PullRequestListOutputs is a bounded page of matching pull requests.
 message PullRequestListOutputs {
-  repeated PullRequestSummary pull_requests = 1;
+  repeated google.api.expr.v1alpha1.Value pull_requests = 1;
 
   // Truncated reports whether more pull requests matched than this call
   // returned - by max_results, or by the request budget this task spends
@@ -290,7 +291,7 @@ message PullRequestFile {
 // PullRequestFilesOutputs is a bounded page of the files a pull request
 // touches.
 message PullRequestFilesOutputs {
-  repeated PullRequestFile files = 1;
+  repeated google.api.expr.v1alpha1.Value files = 1;
 
   // Truncated reports whether the pull request touched more files than
   // this call returned - see PullRequestListOutputs.truncated's own doc
@@ -452,7 +453,7 @@ message IssueSummary {
 
 // IssueListOutputs is a bounded page of matching issues.
 message IssueListOutputs {
-  repeated IssueSummary issues = 1;
+  repeated google.api.expr.v1alpha1.Value issues = 1;
 
   // NextCursor is the resume position for the next page, populated exactly
   // when Truncated is true, Issues is non-empty, AND this call's own
