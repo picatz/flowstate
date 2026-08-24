@@ -57,12 +57,13 @@ const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 // another such destination. The path is left out for the same reason wearing
 // different clothes: a webhook URL of the shape
 // https://hooks.example.com/services/T000/B000/<token> carries its credential
-// there. And userinfo (https://user:password@host) is never reached, because
-// what is recorded is [url.URL.Hostname], which does not contain it.
+// there. Userinfo (https://user:password@host) is URL content as well and is
+// likewise omitted in full.
 //
 // What is left is the shape of the call and not its content: the method, the
-// scheme, the host and port dialed, and the status returned. That is enough to
-// find the span, and there is no spelling of a secret that fits in it.
+// scheme, the port dialed, and the status returned. A hostname is URL content
+// too: capability URLs use unguessable tokens as subdomains, so recording one
+// could export the credential that authorizes the call.
 //
 // Errors are recorded as a fixed classification, never with
 // [trace.Span.RecordError] and never with the error's own text — the rule
@@ -81,9 +82,6 @@ func (rt *tracingRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	if req.URL != nil {
 		if scheme := strings.ToLower(req.URL.Scheme); scheme != "" {
 			attrs = append(attrs, semconv.URLScheme(scheme))
-		}
-		if host := ruleHost(req.URL); host != "" {
-			attrs = append(attrs, semconv.ServerAddress(host))
 		}
 		if port, ok := spanPort(req.URL); ok {
 			attrs = append(attrs, semconv.ServerPort(port))

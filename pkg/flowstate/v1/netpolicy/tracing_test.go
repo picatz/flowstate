@@ -27,12 +27,12 @@ import (
 // containment rule that governs workflow history governs a span attribute at
 // least as hard. The request this round tripper describes is the one place in
 // the tree where a credential is most likely to be sitting in the URL: in
-// userinfo, in a webhook path segment, or in a query parameter.
+// a capability hostname, userinfo, a webhook path segment, or a query parameter.
 //
 // So the assertions below are written in the direction that can fail. Asserting
-// that server.address is the host cannot catch the bug this instrumentation
-// would have; rendering every recorded span through the %v family and requiring
-// that a distinctive secret appears in none of them can.
+// that selected attributes have expected values cannot catch the bug this
+// instrumentation would have; asserting the entire attribute set and rendering
+// every recorded span through the %v family can.
 
 // theURLSecret values are distinctive enough that a substring search cannot
 // match one by accident, and each sits in a different part of a URL that a real
@@ -226,7 +226,7 @@ func TestClientSpanNamesTheCallAndNotItsContent(t *testing.T) {
 	require.Equal(t, "GET", stub.Name, "a client span is named for its method")
 	require.Equal(t, trace.SpanKindClient, stub.SpanKind)
 
-	host, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
 	require.NoError(t, err)
 
 	// The whole attribute set, asserted as a set rather than key by key: a test
@@ -235,7 +235,6 @@ func TestClientSpanNamesTheCallAndNotItsContent(t *testing.T) {
 	require.Equal(t, map[string]string{
 		"http.request.method":       "GET",
 		"url.scheme":                "http",
-		"server.address":            host,
 		"server.port":               port,
 		"http.response.status_code": "200",
 	}, attributesOf(stub))
