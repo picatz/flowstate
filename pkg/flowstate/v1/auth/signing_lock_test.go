@@ -314,3 +314,66 @@ func TestFederationPolicySigningTimeoutReachesTheIssuer(t *testing.T) {
 	require.Contains(t, err.Error(), "did not finish within 50ms",
 		"the policy's timeout is the one applied, not the default")
 }
+
+// TestMintDiscardsAnAssertionWhenTheKeyIDIsReinstalledMidSignature is the same
+// window as the test above, seen through the one thing a key id cannot do:
+// identify a key.
+//
+// [auth.Issuer.Rotate] refuses only the *active* id, so an id that has been
+// rotated out and revoked can be installed again — a different key, the same
+// "kid". A post-signature check that compared ids would find that replacement
+// published and take it as proof the original was still good, and hand back a
+// token signed by the revoked key. Which is the whole failure again, now with
+// a key set that even names the right id.
+//
+// Found by Codex on the review of picatz/flowstate#1071.
+func TestMintDiscardsAnAssertionWhenTheKeyIDIsReinstalledMidSignature(t *testing.T) {
+	const reused = "kms-reused-id"
+
+	issuer, provider := newParkedIssuer(t, reused)
+
+	parked := mintInBackground(t.Context(), issuer)
+	<-provider.entered
+
+	interim, err := auth.GenerateSigningKey("interim", jwa.ES256)
+	require.NoError(t, err)
+	require.NoError(t, issuer.Rotate(interim))
+	require.NoError(t, issuer.RevokeKey(reused))
+
+	// A *different* key, published under the id the revoked one used.
+	impostor, err := auth.GenerateSigningKey(reused, jwa.ES256)
+	require.NoError(t, err)
+	require.NoError(t, issuer.Rotate(impostor))
+	require.Equal(t, reused, issuer.ActiveKeyID())
+
+	close(provider.release)
+
+	result := awaitMint(t, parked)
+	require.ErrorIs(t, result.err, auth.ErrUnknownKey,
+		"a later key wearing the revoked key's id must not vouch for it")
+	require.True(t, result.assertion.IsZero())
+}
+
+// TestFederationPolicyRefusesANegativeSigningTimeout is the fail-closed half of
+// the policy field: a mistyped bound is a startup error, not a silent fallback
+// to the default the operator did not ask for.
+//
+// Found by Codex on the review of picatz/flowstate#1071.
+func TestFederationPolicyRefusesANegativeSigningTimeout(t *testing.T) {
+	policy := auth.FederationPolicy{
+		Issuer:         "https://flowstate.example",
+		SigningTimeout: -time.Second,
+	}
+
+	err := policy.Validate()
+	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+	require.Contains(t, err.Error(), "federation.signing_timeout must be positive")
+
+	// And again through the constructor, which is the path a deployment takes:
+	// the refusal is NewIssuer's rule, reached rather than re-implemented.
+	key, err := auth.GenerateSigningKey("test-key", jwa.ES256)
+	require.NoError(t, err)
+
+	_, err = policy.Broker(key)
+	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+}
