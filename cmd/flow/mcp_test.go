@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -1044,6 +1046,31 @@ func TestARunThatFitsIsNotTrimmed(t *testing.T) {
 	assert.Len(t, answer.Logs, 1)
 	assert.Equal(t, "hello",
 		answer.Run.Outputs.StepValues["greet"].NamedValues["body"].Literal["stringValue"])
+}
+
+// TestRunLocalLogsAreByteBounded covers the single-record direction of the
+// collector's bound. A record count cannot constrain one workflow-controlled
+// message or field, and retaining a short slice of either would still retain
+// its large backing allocation.
+func TestRunLocalLogsAreByteBounded(t *testing.T) {
+	t.Parallel()
+
+	logs := newRunLocalLogs()
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, strings.Repeat("界", 1<<20), 0)
+	record.Add("body", strings.Repeat("x", 2<<20))
+	require.NoError(t, logs.Handle(t.Context(), record))
+
+	records := logs.records()
+	require.Len(t, records, 1)
+	assert.LessOrEqual(t, len(records[0].Message), maxRunLocalLogBytes)
+	assert.True(t, utf8.ValidString(records[0].Message), "the byte cap split a UTF-8 rune")
+
+	held := len(records[0].Message)
+	for key, value := range records[0].Fields {
+		held += len(key) + len(value)
+	}
+	assert.LessOrEqual(t, held, maxRunLocalLogBytes,
+		"one log record retained %d bytes despite the collector's byte budget", held)
 }
 
 // TestTheRunLocalToolRefusesUnknownArguments.
