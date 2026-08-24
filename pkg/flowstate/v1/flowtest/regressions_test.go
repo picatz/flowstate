@@ -361,6 +361,9 @@ func TestP1LoadRejectsAnAliasBomb(t *testing.T) {
 // merely dispatchable once compiled.
 func TestP2PluginTaskStubCompilesAndRuns(t *testing.T) {
 	t.Parallel()
+	const taskName = "slack.post"
+	_, registeredBefore := v1.DefaultRegistry().Lookup(taskName)
+	require.False(t, registeredBefore, "the synthetic task name must be unique to this test")
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
@@ -388,6 +391,8 @@ tests:
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]
 	require.True(t, c.GetPassed(), "error: %s failures: %v", c.GetError(), c.GetFailures())
+	_, registeredAfter := v1.DefaultRegistry().Lookup(taskName)
+	require.False(t, registeredAfter, "a synthetic task must not escape its test case")
 }
 
 // TestPluginTaskStubByStepIdCompilesAndRuns is the step-form counterpart of
