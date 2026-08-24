@@ -343,24 +343,10 @@ func TestParentBoundIsEnforcedBeforeTheParentsAreExpanded(t *testing.T) {
 	}
 }
 
-// TestGitLogSinceExcludesAnOctopusMergeFromTheParentBound is issue #717: a
-// since window that would already exclude an octopus merge (more than
-// maxLogParents parents) must let the walk decline to expand it, rather
-// than fail with errCommitMetadataTooLarge. Before the fix, since was
-// applied only by an outer object.NewCommitLimitIterFromIter wrapped
-// around multiRootCommitIter - so the octopus merge was still fully
-// resolved, its parent count still checked, and the walk still refused,
-// even though since's own cutoff, evaluated first, would have excluded it
-// outright. classifyGitError turns that refusal into InvalidInput whose
-// own suggested remedy ("narrow the walk with since or path") could never
-// actually have helped, because the cutoff never got a chance to prevent
-// the expansion.
-//
-// The octopus merge and the commit after it are built the same way
-// TestParentBoundIsEnforcedBeforeTheParentsAreExpanded builds its own
-// oversized commit: encoded directly into the repository's object store,
-// since no history a test could actually push has this shape.
-func TestGitLogSinceExcludesAnOctopusMergeFromTheParentBound(t *testing.T) {
+// An old oversized commit cannot safely be pruned: its attacker-controlled
+// timestamp says nothing about whether its parents are in range. Refuse it
+// rather than silently returning an incomplete audit result.
+func TestGitLogSinceDoesNotPruneAnOldOctopusMerge(t *testing.T) {
 	remote := newBareRemote(t)
 	root := seedRemote(t, remote, "main")
 	repo, err := git.PlainOpen(remote)
@@ -376,10 +362,9 @@ func TestGitLogSinceExcludesAnOctopusMergeFromTheParentBound(t *testing.T) {
 	newer := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	cutoff := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 
-	// The octopus merge itself, dated before cutoff and carrying more
-	// parents than maxLogParents reads - none of which resolve to a real
-	// object, proving the walk never even looks at them once since
-	// excludes the commit that would have expanded into them.
+	// The octopus merge itself is dated before cutoff and carries more
+	// parents than maxLogParents permits. None resolve to a real object;
+	// the parent-count refusal must happen before any lookup or expansion.
 	monster := *realRoot
 	monster.ParentHashes = make([]plumbing.Hash, maxLogParents+1)
 	for i := range monster.ParentHashes {
@@ -413,24 +398,54 @@ func TestGitLogSinceExcludesAnOctopusMergeFromTheParentBound(t *testing.T) {
 		t.Fatalf("SetEncodedObject head: %v", err)
 	}
 
-	commits, truncated, baseIter, err := walkPage(repo, []plumbing.Hash{headHash}, map[plumbing.Hash]bool{},
+	_, _, _, err = walkPage(repo, []plumbing.Hash{headHash}, map[plumbing.Hash]bool{},
+		logParams{maxCommits: maxMaxCommits, since: cutoff})
+	if err == nil {
+		t.Fatal("walkPage succeeded, want the old oversized commit to be refused rather than pruned")
+	}
+}
+
+func TestGitLogSinceTraversesOldCommitToNewerParent(t *testing.T) {
+	remote := newBareRemote(t)
+	root := seedRemote(t, remote, "main")
+	repo, err := git.PlainOpen(remote)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	template, err := repo.CommitObject(root)
+	if err != nil {
+		t.Fatalf("CommitObject: %v", err)
+	}
+	cutoff := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	write := func(message string, when time.Time, parents ...plumbing.Hash) plumbing.Hash {
+		t.Helper()
+		commit := *template
+		commit.Message, commit.ParentHashes = message, parents
+		commit.Author = object.Signature{Name: "A", Email: "a@example.com", When: when}
+		commit.Committer = commit.Author
+		encoded := repo.Storer.NewEncodedObject()
+		if err := commit.Encode(encoded); err != nil {
+			t.Fatalf("Encode %s: %v", message, err)
+		}
+		hash, err := repo.Storer.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatalf("SetEncodedObject %s: %v", message, err)
+		}
+		return hash
+	}
+	hidden := write("in range behind old commit", cutoff.Add(time.Hour))
+	old := write("old gate", cutoff.Add(-time.Hour), hidden)
+	head := write("head", cutoff.Add(2*time.Hour), old)
+	commits, truncated, _, err := walkPage(repo, []plumbing.Hash{head}, map[plumbing.Hash]bool{},
 		logParams{maxCommits: maxMaxCommits, since: cutoff})
 	if err != nil {
-		t.Fatalf("walkPage: %v, want success - since's own cutoff should have excluded the octopus "+
-			"merge before its parent count was ever checked", err)
+		t.Fatalf("walkPage: %v", err)
 	}
 	if truncated {
-		t.Fatalf("truncated = true, want false - nothing since would have returned remains unexplored")
+		t.Fatal("truncated = true, want false")
 	}
-	if len(commits) != 1 {
-		t.Fatalf("len(commits) = %d, want 1 (only the commit after the cutoff)", len(commits))
-	}
-	if commits[0].Sha != headHash.String() {
-		t.Fatalf("commits[0].sha = %s, want %s", commits[0].Sha, headHash)
-	}
-	if got := len(baseIter.Frontier()); got != 0 {
-		t.Fatalf("frontier holds %d hashes, want 0 - the octopus merge was excluded, not merely "+
-			"deferred, so nothing remains to resume", got)
+	if len(commits) != 2 || commits[0].Sha != head.String() || commits[1].Sha != hidden.String() {
+		t.Fatalf("commits = %v, want head %s then hidden parent %s", commits, head, hidden)
 	}
 }
 
