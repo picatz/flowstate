@@ -69,6 +69,34 @@ explodes:
 `-fuzztime` bounds time, not memory. Eight parallel workers on a parser with an
 unbounded expansion path consumed 23 GB and 32 GB of swap in one afternoon.
 
+### `gofmt` on `PATH` is not the pinned toolchain's
+
+`go` re-execs into the toolchain `go.mod` pins; the `gofmt` sitting beside it
+does not. So `/usr/local/go/bin/gofmt` can be an older build while the
+`go version` next to it prints the pin — and the obvious sanity check ("which
+Go is this? the same as CI") confirms the wrong thing. The two disagree about
+real files: 1.24.7 and 1.27.0 indent a composite literal in a multi-value
+return differently, which is why three separate agents reported
+`pkg/flowstate/v1/auth/vocabulary_test.go` as unformatted on a green `main`,
+one of them concluding CI would be red for every PR until somebody fixed it
+(#1061). CI installs the pin through `go-version-file: go.mod`, so its `gofmt`
+is the right one and it was never wrong.
+
+Run the pin's, from inside the module:
+
+    "$(go env GOROOT)"/bin/gofmt -l ./cmd ./pkg
+
+Both halves matter. `go env GOROOT` answers with the pin only where there is a
+`go.mod` to read — from `/tmp` it answers with the host default, which is the
+same false positive wearing a different hat, and is how one of those
+investigations confirmed the wrong answer twice.
+
+`make check`, `make fmt` and `make test-plugins` resolve it this way already
+(the `GOFMT` variable), and `tools/gate` never had the problem: its gofmt leg
+calls `go/format`, the library face of the same printer, compiled with the
+toolchain that builds the gate. Reach for a bare `gofmt` by hand and you are
+the only thing in the loop without the pin.
+
 A `go test` command that returns does not mean the test binary exited. If a run
 behaves oddly, check:
 
@@ -323,7 +351,7 @@ not the whole answer you want:
 
     go build ./...
     go vet ./...
-    gofmt -l ./cmd ./pkg                       # must print nothing
+    "$(go env GOROOT)"/bin/gofmt -l ./cmd ./pkg  # must print nothing; the pin's gofmt, not PATH's
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
     make test-plugins                          # the plugin modules ./... cannot reach
     GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/

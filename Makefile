@@ -1,5 +1,28 @@
 .PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize docs docs-preview appearance appearance-update coverage coverage-plugins
 
+# gofmt from the toolchain go.mod pins, rather than whichever build sits on
+# PATH (#1061).
+#
+# `go` re-execs into the pinned toolchain and `gofmt` beside it does not, so
+# `/usr/local/go/bin/gofmt` can be an older build while the `go version` next
+# to it prints the pin — and the obvious sanity check therefore confirms the
+# wrong thing. An older gofmt disagrees with the pinned one about real files
+# (1.24.7 and 1.27.0 indent a composite literal in a multi-value return
+# differently), so it reports as unformatted what CI — which installs the pin
+# through `go-version-file: go.mod`, making its PATH gofmt the right one —
+# considers clean. Three agents investigated that false positive before it was
+# written down.
+#
+# `go env GOROOT` answers with the pin only from inside the module; outside it
+# there is no go.mod to read and the answer is the host default, which is the
+# same trap wearing a different hat. Make runs at the repository root, so this
+# is evaluated inside the module. The absolute path it produces is what makes
+# it safe in `test-plugins`, which formats each module by path.
+#
+# `tools/gate` needs none of this: its gofmt leg calls `go/format`, the library
+# face of the same printer, compiled with the toolchain that builds the gate.
+GOFMT := $(shell go env GOROOT)/bin/gofmt
+
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse
 # dependencies, and the conditional legs (buf, docs drift, examples, flowtest
@@ -12,7 +35,7 @@ gate:
 check:
 	go build ./...
 	go vet ./...
-	@fmt_out="$$(gofmt -l ./cmd ./pkg)"; \
+	@fmt_out="$$($(GOFMT) -l ./cmd ./pkg)"; \
 	if [ -n "$$fmt_out" ]; then \
 		echo "gofmt -l found unformatted files:"; \
 		echo "$$fmt_out"; \
@@ -80,7 +103,7 @@ test-plugins:
 		( cd "$$module" && go build ./... && go vet ./... && \
 			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
-		fmt_out="$$(gofmt -l $$module)"; \
+		fmt_out="$$($(GOFMT) -l $$module)"; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
 
@@ -127,7 +150,7 @@ test-fast:
 	GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 
 fmt:
-	gofmt -w ./cmd ./pkg
+	$(GOFMT) -w ./cmd ./pkg
 
 # Report what Go's `go fix` modernizers would change, and change nothing
 # (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
