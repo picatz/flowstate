@@ -1023,7 +1023,14 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	file, err := parseSource(data, true)
+	// The directory's shared fixture, if the suite's own directory states
+	// one — see dirdefaults.go for the chain and its boundaries.
+	dd, err := loadDirDefaults(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := parseSourceWith(data, dd, true)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -1058,6 +1065,13 @@ func LoadSource(data []byte) (*File, error) {
 // and no path runs the identical checks rather than a second copy of them.
 // requireWorkflow is false only for [LoadSource]; see its doc for why.
 func parseSource(data []byte, requireWorkflow bool) (*File, error) {
+	return parseSourceWith(data, nil, requireWorkflow)
+}
+
+// parseSourceWith is [parseSource] with a directory's contribution folded in
+// before anything resolves or validates, so the combined suite is what every
+// rule below checks.
+func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, error) {
 	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
 	// do anything: Unmarshal resolves every alias into the destination value
 	// as it decodes, which means a billion-laughs document is already fully
@@ -1098,6 +1112,8 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 			}
 		}
 	}
+
+	dd.combineInto(&file)
 
 	// Vars validate and substitute first, before tables expand and before
 	// `defaults:` is checked: an inherited `${vars.x}` resolves to its

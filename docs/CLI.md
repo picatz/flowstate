@@ -684,6 +684,21 @@ one was expected is the "green by not running" failure this repository
 legislates against everywhere else. `examples/parameterized-deploy` is the
 worked example, and it runs in CI like the rest.
 
+### What a directory shares: `testdefaults.yaml`
+
+A directory holding several suites states their shared fixture once, in a file beside them (#1072). It holds `vars:` and `defaults:` and nothing else — a `tests:` key is refused with the field named, because that is almost certainly a suite saved under the wrong name — and its name deliberately does not match the `*.test.yaml` discovery glob, so it can never be run as one:
+
+```yaml
+# testdefaults.yaml — shared by every suite in this directory
+vars:
+  issuer: https://issuer.example.com
+defaults:
+  workflow: ./workflow.yaml
+  sender: {subject: approver@example.com, issuer: "${vars.issuer}"}
+```
+
+The chain is directory → file `defaults:` → entry → row, each level filling only what the level below did not state — the same one direction every merge in the format takes, one level further out. Checks accumulate directory-first; everything else the file wins. Exactly the suite's own directory is consulted, never a parent: a suite's behaviour depends on at most two files, both visible in one `ls`. A suite loaded from bytes (the MCP tool) or built in Go has no directory and gets none, the same rule that already governs how those doors resolve a `workflow:` path.
+
 ### One value, stated once: `vars:`
 
 A file-level `vars:` block holds the literals a suite states once and references everywhere — a URL, an issuer, a payload fragment (#1072). A fixture position (a case's `inputs:`, a trigger's fields, a scripted `sender:`, `expect.outputs:`) references one as a whole-value `${vars.x}` fence, resolved at load by substitution, so what reaches the run is the literal; a check reads `vars.x` at evaluation. A var may hold a structure, and it lands whole in a position that wants one:
