@@ -181,6 +181,11 @@ func mergeExpectation(entry, row Expectation) Expectation {
 	if merged.Others == "" {
 		merged.Others = entry.Others
 	}
+	// Check is the one accumulating field: the entry's claims and the row's
+	// all hold, entry first (see the field's own doc for why predicates
+	// union where values override). A fresh slice, so rows sharing an entry
+	// cannot append into each other's backing array.
+	merged.Check = append(append([]CheckClaim{}, entry.Check...), row.Check...)
 
 	return merged
 }

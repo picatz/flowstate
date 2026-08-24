@@ -60,9 +60,14 @@ func TestAStatedFieldBeatsAnInheritedOne(t *testing.T) {
 		Ran:            []string{"row"},
 		Skipped:        []string{"row"},
 		Others:         "ran",
+		Check:          []CheckClaim{{That: "1 == 1"}},
 	}
 
-	assert.Equal(t, row, mergeExpectation(entry, row))
+	// Check is the deliberate exception to "inherits nothing": claims
+	// accumulate, entry's first, because every level's predicates all hold.
+	want := row
+	want.Check = append(append([]CheckClaim{}, entry.Check...), row.Check...)
+	assert.Equal(t, want, mergeExpectation(entry, row))
 }
 
 // TestAnEmptyListIsAStatementNotAnAbsence: `ran: []` asserts that no step
@@ -92,6 +97,7 @@ func nonZeroExpectation() Expectation {
 		Ran:            []string{"entry"},
 		Skipped:        []string{"entry"},
 		Others:         "skipped",
+		Check:          []CheckClaim{{That: "true"}},
 	}
 }
 

@@ -684,6 +684,32 @@ one was expected is the "green by not running" failure this repository
 legislates against everywhere else. `examples/parameterized-deploy` is the
 worked example, and it runs in CI like the rest.
 
+### Claims the named fields cannot say: `expect.check:`
+
+`ran:`, `outputs:` and the other named fields assert structure, and they stay the idiomatic spelling for it — they feed coverage and read the transcript's record. `expect.check:` is for everything else: a shape claim over an output, an error that must name its step, a relation between two steps' values. Each entry is a bare CEL predicate over the finished run — `steps.*`, `inputs.*`, and a `run` root carrying `failed`, `error` and `local` — or `{that:, because:}` to add the sentence a failure prints:
+
+```yaml
+expect:
+  ran: [plan, join]
+  check:
+    - size(steps.join.value.regions) == 2
+    - that: steps.join.value.regions[0] == inputs.region
+      because: the join must keep the order's own region, not the fleet default
+```
+
+A failing check arrives with its evidence — the values the claim read, re-evaluated once and printed beside it, redacted through the same set the transcript and the stub diagnostics share:
+
+```
+expect.check[1]: check failed: steps.join.value.regions[0] == inputs.region
+           because: the join must keep the order's own region, not the fleet default
+           steps.join.value.regions[0] = "us-east-1"
+           inputs.region = "eu-west-1"
+```
+
+Three rules, all inherited rather than invented. A check is evaluated by the engine's own evaluator under the workflow's profile, so it is cost-bounded exactly as any expression in the run is. It runs whether or not the run failed — an error claim (`run.error.contains('must satisfy')`) exists precisely for failed runs. And across `defaults:` → entry → row, check lists **accumulate** — every level's claims all hold — where the named fields merge by override; predicates union naturally, values cannot.
+
+The loop this closes: `flow test --debug` and `check:` answer from the *same* evaluation — the debugger's `inspect` and a check share the activation, the evaluator and the cost bound — so a claim rehearsed at a breakpoint asserts identically in the file. Stop a case where it surprises you, `inspect` until the expression says what you mean, then paste it under `expect.check:`; the test you debugged becomes the test that guards it.
+
 ### What a stub can see
 
 A stub's `where:` and its `returns:` are evaluated against **the scope the

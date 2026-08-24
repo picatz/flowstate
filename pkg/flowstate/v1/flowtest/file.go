@@ -570,6 +570,13 @@ type Defaults struct {
 	// omit their own. It is the one place a whole file's signals share an
 	// approver identity rather than restating the five-line stanza per signal.
 	Sender *ScriptedIdentity `yaml:"sender"`
+
+	// Check holds claims every case in the file must satisfy (#1072),
+	// prepended to each case's own `expect.check:` by [mergeDefaults]. Bare
+	// CEL carries no `${` fence, so the #416 fixture rule — a default may
+	// hold no expression *value* — is untouched: a claim is a predicate the
+	// file states, not a value a case inherits.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // Stub replaces one task's real behavior with a canned answer.
@@ -975,6 +982,18 @@ type Expectation struct {
 	// results, never at the top level) is not miscounted as a step that should
 	// have been skipped.
 	Others string `yaml:"others"`
+
+	// Check holds CEL claims over the finished run (#1072) — for everything
+	// the named fields above cannot say. Each entry is a bare CEL predicate,
+	// or `{that:, because:}` to add the sentence a failure prints. Evaluated
+	// against `steps.*`, `inputs.*`, and a `run` root (`failed`, `error`,
+	// `local`), whether or not the run failed — an error claim exists
+	// precisely for failed runs. See [CheckClaim].
+	//
+	// Across defaults → entry → row the lists accumulate — every level's
+	// claims all hold — where the named fields above merge by override.
+	// Predicates union naturally; values cannot.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
@@ -1140,6 +1159,12 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 			}
 		}
 		if err := checkScriptedIdentity(fmt.Sprintf("test %q starter:", test.Name), test.Starter); err != nil {
+			return nil, err
+		}
+		// The slice is the entry in file.Tests, not the loop copy: this
+		// validation also strips a tolerated whole-value fence in place, and
+		// stripping a copy would leave the fence on the claim the run reads.
+		if err := checkCheckClaims(fmt.Sprintf("test %q expect", test.Name), file.Tests[i].Expect.Check); err != nil {
 			return nil, err
 		}
 		for j, signal := range test.Signals {
@@ -1406,6 +1431,9 @@ func checkDefaults(d *Defaults) error {
 			return err
 		}
 	}
+	if err := checkCheckClaims("defaults", d.Check); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1552,6 +1580,21 @@ func mergeDefaults(d *Defaults, test Test) Test {
 	// Sender: explicit beats inherited. A signal that named its own sender
 	// keeps it; only one that omitted `sender:` inherits the default (the
 	// resolved open question in #416).
+	// Check accumulates rather than overriding: the file's claims and the
+	// case's all hold, inherited first so a failure lists them in the order
+	// a reader meets them in the file. A fresh slice — a second case merging
+	// the same defaults must see them untouched — and marked, because this
+	// fold runs twice on the Go door and a prepend is the one merge here
+	// that is not idempotent by shape (see [CheckClaim].fromDefaults).
+	if len(d.Check) > 0 && !slices.ContainsFunc(test.Expect.Check, func(c CheckClaim) bool { return c.fromDefaults }) {
+		inherited := make([]CheckClaim, 0, len(d.Check)+len(test.Expect.Check))
+		for _, claim := range d.Check {
+			claim.fromDefaults = true
+			inherited = append(inherited, claim)
+		}
+		test.Expect.Check = append(inherited, test.Expect.Check...)
+	}
+
 	if d.Sender != nil && len(test.Signals) > 0 {
 		signals := make([]SignalScript, len(test.Signals))
 		copy(signals, test.Signals)

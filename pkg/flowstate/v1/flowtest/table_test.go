@@ -424,3 +424,44 @@ tests:
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "once its `cases:` rows are counted")
 }
+
+// TestAGoBuiltTableExpandsItsRows: the Go door ([flowtest.Run]) expands
+// `cases:` exactly as [flowtest.Load] does — a built file skipping expansion
+// would run a table's template and silently never its rows, the
+// parsed-vs-built divergence #1015 is about wearing #924's clothes.
+func TestAGoBuiltTableExpandsItsRows(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeTableWorkflow(t, dir)
+
+	file := &flowtest.File{
+		Defaults: &flowtest.Defaults{
+			Workflow: "./workflow.yaml",
+			Stubs:    []flowtest.Stub{{Task: "log", Returns: map[string]any{}}},
+		},
+		Tests: []flowtest.Test{{
+			Name: "routing",
+			Expect: flowtest.Expectation{
+				Others: flowtest.OthersSkipped,
+			},
+			Cases: []flowtest.Test{
+				{Name: "low", Inputs: map[string]any{"risk": "low"},
+					Expect: flowtest.Expectation{Ran: []string{"ship_stable"}}},
+				{Name: "high", Inputs: map[string]any{"risk": "high"},
+					Expect: flowtest.Expectation{Ran: []string{"ship_canary"}}},
+			},
+		}},
+	}
+
+	run := flowtest.Run(t.Context(), file, dir, flowtest.RunOptions{Label: "built"})
+	report := run.Report
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2, "two rows, two cases, no third for the template")
+
+	names := []string{report.GetCases()[0].GetName(), report.GetCases()[1].GetName()}
+	assert.Equal(t, []string{"routing/low", "routing/high"}, names)
+	for _, c := range report.GetCases() {
+		assert.True(t, c.GetPassed(), "%s: %v / %v", c.GetName(), c.GetError(), c.GetFailures())
+	}
+}
