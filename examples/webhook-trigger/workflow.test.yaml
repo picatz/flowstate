@@ -7,20 +7,33 @@
 # submit uses. So a mapping that reaches a field the payload does not carry fails
 # here, in seconds, instead of at three in the morning.
 #
-# The verification *outcome* is declared rather than computed, and the second case
-# is where that matters: there is no signature arithmetic in Flowstate yet, so
-# `signature: invalid` says "this delivery did not verify" and the case asserts what
-# Flowstate does about it. Which is the half that is a property of the file — an
-# unverifiable delivery is refused, never allowed on the grounds that it could not
-# be checked.
+# The verification outcome is *computed* where a case supplies the material, and
+# declared where it does not. The first case binds the `verify:` key under
+# `secrets:`, so the outcome comes from the same arithmetic the served receiver
+# runs, over the fixture's exact `body` bytes — which is also the cost this
+# example carries on purpose: editing testdata/stripe-charge.json means
+# re-signing it with the fixture key, and the failure message says so. The
+# signed timestamp is pinned to `flow test`'s own clock epoch (2020-01-01T00:00Z),
+# so the fixture verifies identically forever. The third case is the reason the
+# arithmetic is worth running offline: a captured delivery with an edited body
+# still carries a genuine-looking signature, and only the arithmetic refuses it.
+#
+# The second case is the keyless rehearsal: with no keys bound,
+# `signature: invalid` declares "this delivery did not verify" and asserts what
+# Flowstate does about it — an unverifiable delivery is refused, never allowed on
+# the grounds that it could not be checked. Binding the keys *and* declaring
+# `signature:` is refused outright, because a declaration that could contradict
+# the arithmetic is one fact written down twice.
 edition: v2026.3
 defaults:
   stubs:
     - task: log
       returns: {}
 tests:
-  - name: a stripe delivery starts a run with the mapped inputs
+  - name: a stripe delivery verifies against the bound key and starts a run
     workflow: ./workflow.yaml
+    secrets:
+      "env:STRIPE_WEBHOOK_SECRET": whsec_example_fixture_key
     trigger:
       webhook: stripe
       payload: ./testdata/stripe-charge.json
@@ -36,7 +49,7 @@ tests:
       # an expression reaching the wrong header is wrong in the direction nothing
       # else notices — every delivery gets its own key, or every delivery gets the
       # same one, and both look like working software until a retry happens.
-      idempotency_key: t=1755043200,v1=6f0b6c2c2f2f4c1f9b0d2a3c4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071
+      idempotency_key: t=1577836800,v1=922efac97598f75c6c3e565e26a204ecd6b14d3af19d66a8c0d183aa081f1797
 
       # The run those inputs produced, asserted like any other case's.
       ran: [record]
@@ -54,4 +67,17 @@ tests:
       # Not `failed: true`: a refused delivery does not produce a failed run, it
       # produces no run. That is the point of deciding verification before
       # anything the delivery chose is evaluated.
+      refused: true
+
+  - name: a forged delivery fails the arithmetic and starts nothing
+    workflow: ./workflow.yaml
+    secrets:
+      "env:STRIPE_WEBHOOK_SECRET": whsec_example_fixture_key
+    trigger:
+      webhook: stripe
+      # The genuine fixture with its body edited and its signature left alone —
+      # the capture-and-edit shape signature verification exists to refuse. No
+      # `signature:` line anywhere: the refusal is computed, not declared.
+      payload: ./testdata/stripe-charge-forged.json
+    expect:
       refused: true

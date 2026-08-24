@@ -1567,14 +1567,16 @@ offline from a stored delivery, with no network and no receiver:
 
 ```yaml
 tests:
-  - name: a stripe delivery starts a run with the mapped inputs
+  - name: a stripe delivery verifies against the bound key and starts a run
     workflow: ./workflow.yaml
+    secrets:
+      "env:STRIPE_WEBHOOK_SECRET": whsec_example_fixture_key
     trigger:
       webhook: stripe
       payload: ./testdata/stripe-charge.json   # one JSON document: headers and body
     expect:
       inputs: { order_id: ord_H1x9, amount: 4200 }
-      idempotency_key: t=1755043200,v1=6f0b…
+      idempotency_key: t=1577836800,v1=922e…
 
   - name: an unverifiable delivery is refused, and no run happens
     workflow: ./workflow.yaml
@@ -1588,10 +1590,19 @@ tests:
 
 No network, deterministic, and it turns the argument mapping into a unit test — the
 one part of a workflow that would otherwise be debuggable only in production. The
-mapping is real; the verification *outcome* is declared rather than computed, so a
-case can assert what happens to a delivery that does not verify without holding a
-signing key. `examples/webhook-trigger` is the worked example, and it runs in CI like
-the rest.
+mapping is real, and the verification *outcome* is computed or declared depending on
+what the case supplies. When its `secrets:` binds every key the trigger's `verify:`
+names — the first case above — the outcome comes from the same signature arithmetic
+the served receiver runs, over the fixture's exact `body` bytes, with the signed
+timestamp checked against `flow test`'s own clock epoch (2020-01-01T00:00Z), so a
+signed fixture verifies identically forever and an edited payload must be re-signed
+with the bound key. With no keys bound, `signature: valid|invalid` declares the
+outcome instead, so a case can still assert what happens to a delivery that does not
+verify without holding a signing key. Binding the keys *and* declaring `signature:`
+is refused, naming both, because a declaration that could contradict the arithmetic
+is one fact written down twice. `examples/webhook-trigger` is the worked example —
+its third case replays a captured delivery with an edited body and asserts the
+arithmetic refuses it — and it runs in CI like the rest.
 
 ### `manual:` narrows, and the body can read how a run started
 
