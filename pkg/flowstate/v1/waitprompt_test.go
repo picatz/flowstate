@@ -627,3 +627,22 @@ func TestSkipCallsLeavesACalleeToItsOwnValidation(t *testing.T) {
 	assert.NotEmpty(t, v1.WaitPromptProblems(wf, v1.DescendCalls),
 		"an inlined callee's prompt was not checked at the boundary where no separate file is left")
 }
+
+// TestAWaitsOwnNowShadowsAnEnclosingBindingOfThatName is the extent of the one
+// name a wait binds for itself.
+//
+// [evalWaitExpr] overlays [v1.NowIdentifier] onto the activation last, so a
+// prompt's `${now}` is the clock reading whatever a loop or a step var of that
+// spelling held — the enclosing binding is not what the prompt reads, and
+// refusing it would be a diagnostic about a reach the run cannot have. `flow
+// validate` refuses that collision outright; a specification built in Go never
+// met the validator, which is why this check answers it too.
+func TestAWaitsOwnNowShadowsAnEnclosingBindingOfThatName(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, v1.CheckWaitPromptsAreAskable(forEachAsking(
+		v1.NewExpr(`inputs.customers`), v1.NowIdentifier, v1.NewExpr(v1.NowIdentifier),
+		&v1.InputDeclaration{Name: "customers", Sensitive: true})),
+		"a prompt reading `"+v1.NowIdentifier+"` was checked against an enclosing binding of that "+
+			"name, which a wait overlays with the clock before the prompt is ever evaluated")
+}

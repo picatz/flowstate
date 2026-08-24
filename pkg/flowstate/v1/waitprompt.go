@@ -330,6 +330,20 @@ func bind(bindings map[string]promptReach, name string, reach promptReach) map[s
 	return inner
 }
 
+// unbind returns bindings without one name in them, leaving the caller's map
+// alone for [bind]'s reason.
+func unbind(bindings map[string]promptReach, name string) map[string]promptReach {
+	if _, bound := bindings[name]; !bound {
+		return bindings
+	}
+
+	inner := make(map[string]promptReach, len(bindings)-1)
+	maps.Copy(inner, bindings)
+	delete(inner, name)
+
+	return inner
+}
+
 // promptWalk walks every node that can hold a wait, and every node that can hold
 // one inside it, carrying what the grammar bound on the way down.
 type promptWalk struct {
@@ -357,9 +371,14 @@ type promptWalk struct {
 //   - A `loop:` binds its `state:` bare for the body, `until:` and `update:`, to
 //     `initial:` on the first iteration and to whatever `update:` computed on
 //     every one after.
-//   - `now` is bound inside a wait, and nothing here binds it: it is a clock
-//     reading, so it reaches no input, and leaving it unbound is this walk saying
-//     nothing about a name it did not introduce.
+//   - `now` is bound inside a wait, to a clock reading, which reaches no input -
+//     so a wait's prompt is checked with that name *removed* from the scope
+//     rather than merely not added to it. [evalWaitExpr] overlays it onto the
+//     activation last, so it wins over anything an enclosing loop or `vars:`
+//     block bound under that spelling, and following the enclosing binding would
+//     report a reach the run cannot have. `flow validate` refuses the collision
+//     outright, but a specification built in Go never met the validator, which is
+//     the whole reason this check exists separately from it.
 //
 // A step's `if:` is deliberately not among them, and the omission is the reason
 // to say so: both drivers evaluate a condition *before* installing the step's own
@@ -405,7 +424,9 @@ func (w *promptWalk) nodes(nodes []*Node, sensitive map[string]bool, bindings ma
 		}
 
 		if signal := node.GetWait().GetSignal(); signal != nil {
-			w.check(signal.GetPrompt(), inner, node.GetId(), sensitive)
+			// Without whatever the enclosing scope bound as `now`: a wait binds that
+			// name over anything above it. See [promptWalk.check].
+			w.check(signal.GetPrompt(), unbind(inner, NowIdentifier), node.GetId(), sensitive)
 		}
 
 		if loop := node.GetForEach(); loop != nil {
