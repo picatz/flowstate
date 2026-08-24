@@ -31,7 +31,9 @@
         "filenamePatterns": [
           "**/workflow.yaml",
           "**/workflow.yml",
-          "**/workflows/*.yaml"
+          "**/workflows/*.yaml",
+          "**/*.test.yaml",
+          "**/testdefaults.yaml"
         ],
         "configuration": "./language-configuration.json"
       }

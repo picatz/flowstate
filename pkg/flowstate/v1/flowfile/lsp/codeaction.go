@@ -137,6 +137,9 @@ type codeActionContext struct {
 // pass: a document Fix leaves byte-identical can still hold a misspelled key,
 // and a document full of migrations may carry no suggested edit at all.
 func codeActions(doc *document, params codeActionParams) []codeAction {
+	if !doc.speaksFlowfile() {
+		return nil // see [document.speaksFlowfile]
+	}
 	if doc.tooLarge || doc.parseErr != nil {
 		// A document the server did not analyze, or one that is not YAML at all.
 		// Fix would refuse the second outright, and offering an action computed

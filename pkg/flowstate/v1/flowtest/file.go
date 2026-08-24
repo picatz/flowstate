@@ -1034,6 +1034,23 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
+	return LoadSourceAt(data, path)
+}
+
+// LoadSourceAt is [Load] on bytes the caller already holds, with the semantics
+// the path decides — the directory's `testdefaults.yaml` folded in, the
+// workflow requirement enforced — kept exactly as [Load] applies them.
+//
+// It exists for a caller whose bytes are *newer* than the file at path: the
+// language server checks an editor's live buffer, and an unsaved edit is
+// precisely what its diagnostics have to reflect (#1110). [Load] is this
+// function behind a bounded read, so the two cannot drift.
+func LoadSourceAt(data []byte, path string) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%s: %d bytes exceeds the %d byte limit for a test file",
+			path, len(data), MaxTestFileBytes)
+	}
+
 	// The directory's shared fixture, if the suite's own directory states
 	// one — see dirdefaults.go for the chain and its boundaries.
 	dd, err := loadDirDefaults(filepath.Dir(path))

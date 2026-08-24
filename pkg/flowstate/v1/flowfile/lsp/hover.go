@@ -22,6 +22,9 @@ import (
 // nothing to say. Returning nil is important: a hover popup containing a guess is
 // worse than no popup.
 func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
+	if !doc.speaksFlowfile() {
+		return nil // see [document.speaksFlowfile]
+	}
 	pos = clampPosition(pos) // see [clampPosition]
 
 	if doc.parsed == nil {
