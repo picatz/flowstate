@@ -30,12 +30,21 @@ type UnreachableIssuer struct {
 
 // String renders the diagnostic an operator reads: which entry is dead, which
 // entry killed it, and the two ways to fix it.
+//
+// It says the shadowed entry's callers are admitted *by an entry above it*
+// rather than by the named one specifically, because those are not the same
+// claim. The named entry is the first that admits everything this one would,
+// which is enough to prove this entry dead; an entry above even that one may
+// still take some of those callers without admitting all of them — a rule on
+// "ref" above a repository-wide entry, say — and telling an operator that every
+// such caller holds one named entry's role would be a confident wrong answer
+// about who has what.
 func (u UnreachableIssuer) String() string {
 	return fmt.Sprintf(
 		"issuers[%d] (%q) can never be reached: issuers[%d] (%q) above it admits every caller it would, "+
-			"so those callers are admitted under %q's namespace and role instead; "+
-			"move issuers[%d] (%q) above issuers[%d] (%q), or narrow %q",
-		u.Index, u.Name, u.ShadowedByIndex, u.ShadowedByName, u.ShadowedByName,
+			"so those callers are admitted by an entry above this one, with that entry's namespace and role "+
+			"rather than this one's; move issuers[%d] (%q) above issuers[%d] (%q), or narrow %q",
+		u.Index, u.Name, u.ShadowedByIndex, u.ShadowedByName,
 		u.Index, u.Name, u.ShadowedByIndex, u.ShadowedByName, u.ShadowedByName,
 	)
 }
@@ -122,22 +131,56 @@ func (u UnreachableIssuer) String() string {
 func (p Policy) UnreachableIssuers() []UnreachableIssuer {
 	var findings []UnreachableIssuer
 
-	for later := 1; later < len(p.Issuers); later++ {
-		for earlier := 0; earlier < later; earlier++ {
-			if !p.Issuers[earlier].shadows(p.Issuers[later]) {
+	// Entries are compared only against the earlier entries they could
+	// possibly compete with: shadowing requires the same kind and the same
+	// issuer (or, for kind: mtls, the same CA file), so entries keyed
+	// differently can be skipped without comparing them at all. That keeps a
+	// policy naming many distinct issuers linear rather than quadratic in the
+	// number of entries. Entries for one issuer are still compared pairwise —
+	// they are exactly the entries this diagnostic exists to compare, a
+	// policy's own operator writes them, and a handful per issuer is what
+	// "several entries may name one issuer" means.
+	groups := make(map[string][]int, len(p.Issuers))
+	for index, issuer := range p.Issuers {
+		key := issuer.shadowKey()
+		for _, earlier := range groups[key] {
+			if !p.Issuers[earlier].shadows(p.Issuers[index]) {
 				continue
 			}
 			findings = append(findings, UnreachableIssuer{
-				Index:           later,
-				Name:            p.Issuers[later].Name,
+				Index:           index,
+				Name:            issuer.Name,
 				ShadowedByIndex: earlier,
 				ShadowedByName:  p.Issuers[earlier].Name,
 			})
 			break
 		}
+		groups[key] = append(groups[key], index)
 	}
 
 	return findings
+}
+
+// shadowKey is the value two entries must agree on before either can possibly
+// shadow the other: the kind, and whatever selects candidates for that kind —
+// the exact issuer string for kind: oidc, since [OIDCVerifier.Verify] groups
+// candidates by it, and the CA file for kind: mtls, since
+// [MTLSVerifier.VerifyPeer] selects by which entry's pool the chain
+// intersects. It is only a grouping, never the whole containment check:
+// [TrustedIssuer.shadows] re-checks these and everything else.
+//
+// A kind this package does not know gets a key of its own per entry, so an
+// unknown kind is compared against nothing — the same answer
+// [TrustedIssuer.shadows] gives it, reached without the comparison.
+func (t TrustedIssuer) shadowKey() string {
+	switch t.kind() {
+	case IssuerKindOIDC:
+		return IssuerKindOIDC + "\x00" + t.Issuer
+	case IssuerKindMTLS:
+		return IssuerKindMTLS + "\x00" + t.ClientCAFile
+	default:
+		return "unknown\x00" + t.Kind + "\x00" + t.Name
+	}
 }
 
 // shadows reports whether every caller t admits, a later entry would also have

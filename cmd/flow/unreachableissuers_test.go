@@ -49,6 +49,10 @@ func TestWarnUnreachableIssuersNamesTheEntryAndTheRemedy(t *testing.T) {
 	require.Contains(t, logged, "entry_index=1")
 	require.Contains(t, logged, "shadowed_by=ci-any-branch")
 	require.Contains(t, logged, "move ci-main-only above ci-any-branch")
+	// Never a claim that every such caller holds the named entry's role: an
+	// entry above the named one may take some of them without admitting all
+	// of them. See UnreachableIssuer.String.
+	require.NotContains(t, logged, "get that entry's namespace and role")
 }
 
 // TestWarnUnreachableIssuersSaysNothingAboutACorrectPolicy is the other half:
