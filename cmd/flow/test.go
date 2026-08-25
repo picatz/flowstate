@@ -273,9 +273,14 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	debugging, _ := cmd.Flags().GetBool("debug")
 	var session *flowdebug.Session
 	if debugging {
-		if session, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
+		var restore func()
+		if session, restore, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
 			return err
 		}
+		// A terminal the session put into raw mode, put back — before this
+		// command returns and whatever it returns, because a shell handed back
+		// a raw terminal is one where nothing a person types appears.
+		defer restore()
 		// The session's reader is this command's to release — see
 		// [flowdebug.Session.Close]. Free here, since the process exits after;
 		// closed anyway, because the surface where it is not free

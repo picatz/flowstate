@@ -230,13 +230,28 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
 				workflow.GetName())
 		}
+		// The prompt, where stdin is a terminal. `flow run local --debug <
+		// script.txt` reads the same commands the same way it always did; see
+		// [attachDebugConsole], which answers false for everything that is not
+		// a person at a keyboard.
+		console, debugOut, restore := debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
+		defer restore()
+
 		session, err := flowdebug.New(flowdebug.Options{
-			In:   cmd.InOrStdin(),
-			Out:  surface.Err,
-			Emit: debugEmitter(surface.Err, surface.ErrTheme),
+			In:      cmd.InOrStdin(),
+			Console: consoleOrNil(console),
+			Out:     debugOut,
+			Emit:    debugEmitter(debugOut, surface.ErrTheme),
+			// This command holds the specification, so `break` and `until`
+			// complete over every step the run may reach rather than only the
+			// ones it has been to.
+			Steps: stepIDs(workflow),
 		})
 		if err != nil {
 			return err
+		}
+		if console != nil {
+			console.SetCompleter(session.Complete)
 		}
 		// This process is about to exit either way, so the reader parking
 		// costs nothing here — closed anyway because a session's owner closes
@@ -244,7 +259,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// will be missing where it is.
 		defer func() { _ = session.Close() }()
 
-		fmt.Fprintf(surface.Err, "%s\n", surface.ErrTheme.Accent.Render(
+		fmt.Fprintf(debugOut, "%s\n", surface.ErrTheme.Accent.Render(
 			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
 		ctx = v1.NewContextWithDebugger(ctx, session)
 		ctx = v1.NewContextWithRunObserver(ctx, session)

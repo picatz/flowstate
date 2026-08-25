@@ -12,6 +12,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -30,24 +31,30 @@ func debugSession(
 	budget dst.Budget,
 	files []string,
 	selectCase func(string) bool,
-) (*flowdebug.Session, error) {
+) (*flowdebug.Session, func(), error) {
+	// Returned beside every refusal below as well as beside a session, so a
+	// caller can defer it unconditionally: a cleanup a caller has to remember
+	// only on the success path is one that eventually gets forgotten, and the
+	// thing forgotten here is somebody's terminal left in raw mode.
+	nothingToRestore := func() {}
+
 	switch {
 	case machine:
 		// A prompt and a document cannot share one stdout: the first
 		// `debug>` written into a JSON stream is a document nothing can
 		// parse.
-		return nil, errors.New("--debug reads commands and prints a prompt on the terminal, and " +
+		return nil, nothingToRestore, errors.New("--debug reads commands and prints a prompt on the terminal, and " +
 			"--output json writes a document to the same stream; run one or the other")
 
 	case budget.Pinned != nil || budget.Schedules > 0:
 		// A seeded exploration runs each case many times under different
 		// schedules. Stepping through "the" run of a case that is about to
 		// be run ten thousand times is a question with no answer.
-		return nil, errors.New("--debug steps through one run, and seeded exploration runs each " +
+		return nil, nothingToRestore, errors.New("--debug steps through one run, and seeded exploration runs each " +
 			"case many times under different schedules; drop --seeds/--seed, or drop --debug")
 
 	case len(files) != 1:
-		return nil, fmt.Errorf("--debug drives one console, and %d test files matched; "+
+		return nil, nothingToRestore, fmt.Errorf("--debug drives one console, and %d test files matched; "+
 			"name the one file to debug", len(files))
 	}
 
@@ -59,36 +66,117 @@ func debugSession(
 	// give a diagnostic that names the number.
 	file, err := flowtest.Load(files[0])
 	if err != nil {
-		return nil, err
+		return nil, nothingToRestore, err
 	}
 	matched := make([]string, 0, len(file.Tests))
+	var only flowtest.Test
 	for _, test := range file.Tests {
 		if selectCase == nil || selectCase(test.Name) {
 			matched = append(matched, test.Name)
+			only = test
 		}
 	}
 	if len(matched) != 1 {
-		return nil, fmt.Errorf("--debug steps through one case, and %d of this file's cases were "+
+		return nil, nothingToRestore, fmt.Errorf("--debug steps through one case, and %d of this file's cases were "+
 			"selected: %s. Name one with --run", len(matched), quotedList(matched))
 	}
 
+	console, out, restore := debugConsoleFor(cmd.InOrStdin(), surface.Out, surface.Theme)
+
 	session, err := flowdebug.New(flowdebug.Options{
-		In:  cmd.InOrStdin(),
-		Out: surface.Out,
+		In:      cmd.InOrStdin(),
+		Console: consoleOrNil(console),
+		Out:     out,
 		// The session's tones through the one theme the transcript already
 		// renders with, so a paused run and a failed run's account read as
 		// one product. A non-terminal stream resolves every style to a
 		// no-op, so machine-ish captures see the same bytes as before.
-		Emit: debugEmitter(surface.Out, surface.Theme),
+		Emit: debugEmitter(out, surface.Theme),
+		// The step ids `break` and `until` complete over, read from the
+		// workflow this case runs — which is a second file read on an
+		// interactive path, and worth it for the same reason the test file is
+		// read twice above: a breakpoint is for a step the run has not reached
+		// yet, so a prompt that could only offer the ones already seen would be
+		// no help at exactly the moment somebody wants one.
+		//
+		// A workflow that does not parse contributes nothing and says nothing:
+		// the run is about to report that properly, with positions, and a
+		// second complaint from the completer would be the same news told worse.
+		Steps: workflowStepIDs(flowtest.WorkflowPath(files[0], &only)),
 	})
 	if err != nil {
-		return nil, err
+		restore()
+
+		return nil, nothingToRestore, err
+	}
+	if console != nil {
+		console.SetCompleter(session.Complete)
 	}
 
-	fmt.Fprintf(surface.Out, "%s\n", surface.Theme.Accent.Render(
+	fmt.Fprintf(out, "%s\n", surface.Theme.Accent.Render(
 		fmt.Sprintf("debugging %q — `help` lists the commands", matched[0])))
 
-	return session, nil
+	return session, restore, nil
+}
+
+// debugConsoleFor attaches a terminal line editor where stdin is a terminal,
+// and answers with the plain writer where it is not.
+//
+// The writer comes back with the console because the two are one decision: a
+// console owns the line, so everything the session prints while one is attached
+// has to go through it. Splitting them would make it possible to attach a
+// console and keep writing around it, which is a screen nobody can read.
+func debugConsoleFor(in io.Reader, out io.Writer, theme ui.Theme) (console *debugConsole, writer io.Writer, restore func()) {
+	console, restore, ok := attachDebugConsole(in, out, theme)
+	if !ok {
+		return nil, out, func() {}
+	}
+
+	return console, console, restore
+}
+
+// consoleOrNil hands a console to [flowdebug.Options] as the interface it
+// implements, and a genuinely nil interface when there is none.
+//
+// Written out for the reason [debuggerOrNil] is: a nil *debugConsole stored in
+// a [flowdebug.Console] field is not a nil interface, and the session would
+// prompt through it — calling a method on nothing at the first breakpoint of
+// every run that is not at a terminal, which is every scripted one.
+func consoleOrNil(console *debugConsole) flowdebug.Console {
+	if console == nil {
+		return nil
+	}
+
+	return console
+}
+
+// workflowStepIDs is [stepIDs] for a workflow this command has not parsed yet.
+//
+// Errors are deliberately silent — see the call site.
+func workflowStepIDs(path string) []string {
+	workflow, _, err := flowfile.ParseFile(path)
+	if err != nil {
+		return nil
+	}
+
+	return stepIDs(workflow)
+}
+
+// stepIDs are the ids of every step a workflow declares, for completing
+// `break` and `until`.
+//
+// Nested steps included, which is the point of walking rather than ranging over
+// `steps:`: a breakpoint on a step inside a `for_each` body is the one somebody
+// sets most, because a loop is where a run stops being easy to read.
+func stepIDs(workflow *v1.Workflow) []string {
+	var ids []string
+	v1.WalkWorkflow(workflow, v1.Walk{Node: func(node *v1.Node) {
+		if id := node.GetId(); id != "" {
+			ids = append(ids, id)
+		}
+	}})
+
+	return ids
 }
 
 // debugEmitter maps the session's tone vocabulary onto the theme:
