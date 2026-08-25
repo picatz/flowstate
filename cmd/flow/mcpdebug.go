@@ -76,6 +76,17 @@ const (
 	maxDebugTranscriptBytes = flowmcp.MaxResultBytes / 2
 )
 
+// maxDebugFloorPasses bounds the floor rung's re-measuring in
+// [renderDebugResult].
+//
+// The loop it bounds converges by construction — every pass that does not fit
+// takes its own overshoot out of the next pass's budget, so the budget falls
+// strictly and [renderTestResultWithin]'s three rungs are exhausted long
+// before this — but a loop whose termination is an argument about another
+// function's ladder is one that a change to that ladder can turn into a hang.
+// The count is the bound; the argument is why it is never reached.
+const maxDebugFloorPasses = 4
+
 // debugToolArguments is the tool's whole input surface.
 type debugToolArguments struct {
 	// Workflow is the Flowfile YAML being debugged.
@@ -348,14 +359,36 @@ func debugCaseSelector(testSource []byte, name string) (func(string) bool, error
 	}
 
 	if name != "" {
+		// Counted rather than found, because a match is not a selection. The
+		// predicate this returns is asked about a *name*, so it matches every
+		// case carrying that name — and nothing in [flowtest.LoadSource]
+		// requires names to be unique, so two same-named cases both run,
+		// against one command stream: the first consumes the script and the
+		// second is debugged by an exhausted session, under a transcript that
+		// names one case twice with no way to tell which said what (Codex,
+		// #1109). A session drives one run; this is the same refusal the
+		// count below makes, for the same reason.
+		matches := 0
 		for _, have := range names {
 			if have == name {
-				return func(candidate string) bool { return candidate == name }, nil
+				matches++
 			}
 		}
 
-		return nil, fmt.Errorf("no case is named %q; this document declares %s",
-			name, quotedList(names))
+		switch matches {
+		case 1:
+			return func(candidate string) bool { return candidate == name }, nil
+
+		case 0:
+			return nil, fmt.Errorf("no case is named %q; this document declares %s",
+				name, quotedList(names))
+
+		default:
+			return nil, fmt.Errorf("%d of this document's cases are named %q, and a session drives "+
+				"one run: a script sent to both would be consumed by the first, and the transcript "+
+				"could not say which case answered what. Give them distinct names",
+				matches, name)
+		}
 	}
 
 	if len(names) != 1 {
@@ -455,8 +488,34 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 		// The floor: the verdict, which is the one thing this call shares with
 		// the flowstate_test call a caller could have made instead. Returned
 		// whether or not it fits, which is [flowmcp.FitResult]'s contract for a
-		// last rung — and it is [renderTestResult]'s own floor inside, already
-		// reduced by its ladder.
+		// last rung.
+		//
+		// The report is re-rendered here rather than reused, because the one
+		// above was fitted to the whole cap and this document is not only a
+		// report. A case whose diagnostics render just under the cap survives
+		// every rung above untouched — nothing here can shrink a report — and
+		// the floor then adds the object, its keys and the notes saying what
+		// left, so the floor came back oversized *by construction* while
+		// reporting itself as the answer (Codex, #1109). What the wrapper
+		// costs has to come out of the report's budget.
+		//
+		// Converged rather than computed, and the difference is not fussiness:
+		// what the report costs *here* is not what it measured over there.
+		// [json.Marshal] compacts a json.RawMessage and escapes `<`, `>` and
+		// `&` inside it, and protojson's own spacing is not fixed across
+		// processes — so the report shrinks by a few hundred bytes in one run
+		// and grows in another, from the same report. A reserve computed from
+		// the wrapper alone is a prediction about all of that. Measuring the
+		// finished document is not a prediction, and this file already holds
+		// the lesson: only the encoded length is the length.
+		//
+		// Each pass takes the real overshoot back out of the report's budget,
+		// so the budget strictly falls and the report ladder's own floor —
+		// per-case verdicts, a few hundred bytes — is reached in two or three.
+		// The bound is on passes rather than on convergence, because a report
+		// whose floor still does not fit exists (a `refused` document is
+		// carried by every rung), and that answer is the floor whether or not
+		// it fits, which is [flowmcp.FitResult]'s contract for a last rung.
 		func() ([]byte, error) {
 			answer.Session = nil
 			addNote(fmt.Sprintf(
@@ -464,7 +523,34 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 					"Drive the run with a shorter script — `break <step-id>` and `continue` reach a "+
 					"step without narrating every one before it.", flowmcp.MaxResultBytes))
 
-			return encode(answer)
+			budget := flowmcp.MaxResultBytes
+
+			var encoded []byte
+
+			for pass := 0; pass < maxDebugFloorPasses; pass++ {
+				reduced, err := renderTestResultWithin(report, budget)
+				if err != nil {
+					return nil, err
+				}
+				answer.Report = json.RawMessage(reduced)
+
+				encoded, err = encode(answer)
+				if err != nil {
+					return nil, err
+				}
+
+				over := len(encoded) - flowmcp.MaxResultBytes
+				if over <= 0 {
+					return encoded, nil
+				}
+
+				budget -= over
+				if budget < 1 {
+					break
+				}
+			}
+
+			return encoded, nil
 		},
 	)
 	if err != nil {

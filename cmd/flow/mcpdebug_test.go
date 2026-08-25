@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -704,4 +706,220 @@ func TestTheDebugToolBoundsTheCaseArgument(t *testing.T) {
 		assert.LessOrEqual(t, len(text), flowmcp.MaxResultBytes,
 			"the refusal echoed a declared name whole: %d bytes", len(text))
 	})
+}
+
+// TestQuitCannotSatisfyAnExpectedFailure (Codex, #1109): `quit` ends the run
+// wherever it stands, and an abandoned run returns an error like any other —
+// so a case declaring `expect.failed: true` was *satisfied* by the debugger's
+// own error and passed without ever reaching the failure it named. That is a
+// debugger turning a red case green, which is the one thing it must never do.
+func TestQuitCannotSatisfyAnExpectedFailure(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callDebug(t, session, map[string]any{
+		"workflow": `edition: v2026.3
+name: eventually-fails
+steps:
+  - id: first
+    log:
+      message: one
+  - id: boom
+    value: ${1 / 0}
+outputs: {}
+`,
+		"tests": `tests:
+  - name: it fails at boom
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+`,
+		// Abandoned at the very first boundary, long before `boom`.
+		"commands": []any{"quit"},
+	})
+
+	require.True(t, result.IsError,
+		"the case passed on a run the debugger abandoned before it reached the failure it expected")
+
+	var report struct {
+		Cases []struct {
+			Passed bool   `json:"passed"`
+			Error  string `json:"error"`
+		} `json:"cases"`
+	}
+	require.NoError(t, json.Unmarshal(answer.Report, &report))
+	require.Len(t, report.Cases, 1)
+	assert.False(t, report.Cases[0].Passed)
+	assert.Contains(t, report.Cases[0].Error, "ended this run before it finished",
+		"the case must say it has no verdict, rather than reporting one it never reached")
+}
+
+// reportRenderingJustUnderTheCap builds a v1.TestReport whose own rendering
+// settles just under the whole surface cap, leaving nothing for a document to
+// carry it in.
+//
+// Every message stays under maxTestFailureMessageBytes, so the report ladder's
+// message-capping rung is a no-op and its floor — per-case verdicts with the
+// diagnostics dropped — is the only thing that can make this smaller. That is
+// the shape the wrapper's budget has to survive: a report the debug ladder
+// cannot shrink by any rung of its own.
+func reportRenderingJustUnderTheCap(t *testing.T) *v1.TestReport {
+	t.Helper()
+
+	// Few failures, each heavy, and the weight in `value` rather than in
+	// `message`. Both halves are load-bearing.
+	//
+	// `message` is what the report ladder's second rung caps, so weight there
+	// is weight that rung takes back; `value` — the literal at fault, which a
+	// compared value's size decides — is not capped by any rung, so the report
+	// arrives at rung 0 or at its floor and nothing in between.
+	//
+	// Few, because protojson writes every field of a Diagnostic under
+	// EmitUnpopulated and puts a space after some separators — and *whether*
+	// it does is decided per process. Sixty-odd failures is a thousand such
+	// separators, which is more slack than the wrapper this test is about
+	// weighs, so a fixture built out of small failures cannot sit tight
+	// against the cap in both regimes. Eight can.
+	const chunk = 32 << 10
+
+	// No `<`, `>` or `&` anywhere: json.Marshal escapes each to six bytes
+	// inside a RawMessage, which would put the measurements below out by five
+	// apiece.
+	report := &v1.TestReport{File: "submitted", Cases: []*v1.TestCase{{Name: "it runs"}}}
+	fill := func(size int) *v1.Diagnostic {
+		one := &v1.Diagnostic{Field: "expect.outputs", Value: strings.Repeat("y", size)}
+		holder := report.GetCases()[0]
+		holder.Failures = append(holder.Failures, one)
+
+		return one
+	}
+
+	// The *unreduced* encoding, deliberately, and this is the trap the first
+	// cut of this fixture fell into: renderTestResult never answers over the
+	// cap — that is its whole job — so a search asking it whether the report
+	// fits is satisfied by the collapsed floor and grows the report forever.
+	// Rung 0 is what is being sized here, and it has to keep fitting, or the
+	// report arrives already reduced and the debug floor has room to spare.
+	measure := func() int {
+		encoded, err := marshalJSON(report, false)
+		require.NoError(t, err)
+
+		return len(encoded)
+	}
+
+	// What the report costs *inside* the answer, which is not the same number:
+	// json.Marshal compacts a RawMessage, so protojson's spacing is spent
+	// before the bytes land. This is the one the wrapper competes with.
+	embedded := func() int {
+		encoded, err := marshalJSON(report, false)
+		require.NoError(t, err)
+
+		var compact bytes.Buffer
+		require.NoError(t, json.Compact(&compact, encoded))
+
+		return compact.Len()
+	}
+
+	const margin = 512
+
+	for measure()+chunk+margin < flowmcp.MaxResultBytes {
+		fill(chunk)
+	}
+
+	// Searched rather than computed, because a failure's rendered cost is not
+	// its value's length: EmitUnpopulated writes every field of the message.
+	// The ceiling matches the loop's margin above — the gap it leaves is at
+	// most chunk+margin, and a ceiling under that cannot close it.
+	last := fill(0)
+	low, high := 0, chunk+margin
+	for low < high {
+		middle := (low + high + 1) / 2
+		last.Value = strings.Repeat("y", middle)
+		if measure() <= flowmcp.MaxResultBytes {
+			low = middle
+		} else {
+			high = middle - 1
+		}
+	}
+	last.Value = strings.Repeat("y", low)
+
+	rendered, err := renderTestResult(report)
+	require.NoError(t, err)
+	require.Equal(t, measure(), len(rendered),
+		"no rung of the report's own ladder may have fired, or the debug floor inherits "+
+			"a report that already had room to spare")
+
+	require.Greater(t, embedded(), flowmcp.MaxResultBytes-margin,
+		"the fixture must leave less than the wrapper weighs, or it tests nothing")
+
+	return report
+}
+
+// TestTheDebugAnswerReservesRoomForItsOwnWrapper is the arithmetic every rung
+// above the floor cannot fix (Codex, #1109).
+//
+// A report that renders just under the cap survives every debug rung untouched
+// — dropping the script and the transcript does not shrink a report — and the
+// floor then adds the object, its keys and the notes saying what left. The cap
+// is a promise about the whole answer, so those bytes have to come out of the
+// report's budget rather than being spent twice.
+func TestTheDebugAnswerReservesRoomForItsOwnWrapper(t *testing.T) {
+	t.Parallel()
+
+	report := reportRenderingJustUnderTheCap(t)
+
+	transcript := &debugTranscript{}
+	for transcript.bytes < maxDebugTranscriptBytes-1024 {
+		transcript.add(strings.Repeat("x", 512)+"\n", flowdebug.ToneInfo)
+	}
+
+	encoded, err := renderDebugResult(report, transcript, []string{"continue"}, false)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"the answer carrying the report exceeded the cap the report alone respected")
+
+	// And it is still an answer: a floor that fits by being undecodable, or by
+	// dropping the verdict, would satisfy the line above and be worthless.
+	var answer debugAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+	require.NotEmpty(t, answer.Report, "the verdict never goes")
+
+	var carried v1.TestReport
+	require.NoError(t, protojson.Unmarshal(answer.Report, &carried))
+	require.Len(t, carried.GetCases(), 1)
+	assert.Equal(t, "it runs", carried.GetCases()[0].GetName(),
+		"the case's verdict is what a caller came for")
+}
+
+// TestTheDebugToolRefusesADuplicateCaseName: a document may declare two cases
+// with one name, and `case` names a name rather than a case — so the predicate
+// selects both, one command stream drives two runs, and the transcript names
+// the same case twice with no way to tell which said what (Codex, #1109).
+func TestTheDebugToolRefusesADuplicateCaseName(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, _ := callDebug(t, session, map[string]any{
+		"workflow": debugWorkflow,
+		"tests": `tests:
+  - name: it ships
+    expect:
+      failed: false
+  - name: it ships
+    expect:
+      failed: false
+`,
+		"case":     "it ships",
+		"commands": []any{"continue"},
+	})
+
+	require.True(t, result.IsError, "two cases under one name cannot be one session")
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, `2 of this document's cases are named "it ships"`)
+	assert.Contains(t, text, "Give them distinct names")
 }

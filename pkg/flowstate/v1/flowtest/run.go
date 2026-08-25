@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -828,6 +829,22 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// them (issue #453), and `expect.ran`/`expect.skipped` read the same record,
 	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
+
+	// An abandoned run is not a verdict about the workflow, whatever the case
+	// expected. `quit` ends the run wherever it stands, so a case declaring
+	// `expect.failed: true` would otherwise be *satisfied* by the debugger's
+	// own error and pass without ever reaching the failure it named — a
+	// debugger turning a red case green, which is the one thing `--debug` must
+	// never do (Codex, #1109). Reported as the case's error rather than as a
+	// failed expectation, because nothing about the expectations was actually
+	// judged.
+	if errors.Is(runErr, v1.ErrDebugSessionEnded) {
+		result.Error = fmt.Sprintf("the debug session ended this run before it finished, so this "+
+			"case has no verdict: %v", runErr)
+		result.Passed = false
+
+		return
+	}
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
 	// The CEL claims (#1072), after the named fields so a report reads

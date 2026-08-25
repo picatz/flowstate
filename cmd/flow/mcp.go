@@ -634,12 +634,24 @@ const maxTestFailureMessageBytes = 4 << 10
 // the ladder, and the floor that is returned whether or not it fits are the
 // same ones [renderRunLocalResult] already established.
 func renderTestResult(report *v1.TestReport) ([]byte, error) {
+	return renderTestResultWithin(report, flowmcp.MaxResultBytes)
+}
+
+// renderTestResultWithin is [renderTestResult] against a smaller budget, for a
+// report that is about to be embedded in a larger answer rather than being one.
+//
+// The budget travels rather than being read from [flowmcp.MaxResultBytes]
+// because the surface's cap is a promise about the *whole* answer, and a
+// report that spends all of it leaves nothing for the document carrying it —
+// see [flowmcp.FitResultWithin], and [renderDebugResult], which computes the
+// wrapper's cost and passes the remainder.
+func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 	trimmed, ok := proto.Clone(report).(*v1.TestReport)
 	if !ok {
 		return nil, errors.New("rendering the report: the report is not a TestReport")
 	}
 
-	encoded, _, err := flowmcp.FitResult(
+	encoded, _, err := flowmcp.FitResultWithin(limit,
 		func() ([]byte, error) {
 			encoded, err := marshalJSON(report, false)
 			if err != nil {
@@ -690,7 +702,7 @@ func renderTestResult(report *v1.TestReport) ([]byte, error) {
 				if caseError == "" && len(c.GetFailures()) > 0 {
 					caseError = fmt.Sprintf(
 						"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
-						len(c.GetFailures()), flowmcp.MaxResultBytes)
+						len(c.GetFailures()), limit)
 				}
 				summary.Cases = append(summary.Cases, &v1.TestCase{
 					Name:     c.GetName(),

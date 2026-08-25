@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -244,7 +243,12 @@ func (s *Session) ScriptTruncated() bool {
 
 // errQuit is what a `quit` command returns through [v1.Debugger.BeforeStep],
 // which is how a session ends a run it is holding.
-var errQuit = errors.New("debug session ended by the `quit` command")
+//
+// It wraps [v1.ErrDebugSessionEnded] so a harness can tell an *abandoned* run
+// from a failed one — see that sentinel for why the distinction decides a
+// verdict — while the message stays this session's own, naming the command the
+// person actually typed.
+var errQuit = fmt.Errorf("debug session ended by the `quit` command: %w", v1.ErrDebugSessionEnded)
 
 // BeforeStep implements [v1.Debugger]: the run is held here for as long as the
 // session's reader takes to say otherwise.
@@ -292,7 +296,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 // produced, and this is the same record `flow test`'s transcript renders, from
 // the same seam, rather than a second bookkeeping of it.
 func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
-	text := stepOutcomeText(outputs, err, tolerated)
+	text := s.stepOutcomeText(outputs, err, tolerated)
 
 	s.mu.Lock()
 	s.lastOutcome = id + " " + text
@@ -543,7 +547,7 @@ func (s *Session) printf(format string, args ...any) {
 }
 
 // stepOutcomeText renders one step's recorded outcome for the console.
-func stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string {
+func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string {
 	if err != nil {
 		if tolerated {
 			return "failed (tolerated by continue_on_error): " + err.Error()
@@ -568,7 +572,12 @@ func stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string
 		parts = append(parts, name+": "+valueText(named[name]))
 	}
 
-	return "-> " + capRunes(strings.Join(parts, ", "), MaxInspectRunes)
+	// Redacted *before* the cap, not after. capRunes keeps the first
+	// MaxInspectRunes of the rendering, and a secret longer than that survives
+	// truncation as a prefix no substring match can find — so a cap applied
+	// first would expose the first 4096 runes of exactly the value the
+	// redactor exists to withhold (Codex, #1109). Order is the whole fix.
+	return "-> " + capRunes(s.redactText(strings.Join(parts, ", ")), MaxInspectRunes)
 }
 
 // valueText renders one output value. A value that is not a resolved literal
