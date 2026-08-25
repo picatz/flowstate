@@ -2,7 +2,6 @@ package flowdebug
 
 import (
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/google/cel-go/common/types"
@@ -116,9 +115,12 @@ func (s *Session) Complete(line string, pos int) Completion {
 	case completesExpression:
 		return s.offerExpression(subject, rest)
 	case completesStep:
-		return s.offerNames(lastWord(rest), s.reachableSteps(subject), "a step this run may reach")
+		typed := lastWord(rest)
+		ids, more := s.reachableSteps(subject, typed)
+
+		return s.offerNames(typed, ids, more, "a step this run may reach")
 	case completesBreakpoint:
-		return s.offerNames(lastWord(rest), s.breakpointIDs(), "a breakpoint this session holds")
+		return s.offerNames(lastWord(rest), s.breakpointIDs(), false, "a breakpoint this session holds")
 	default:
 		return Completion{}
 	}
@@ -188,8 +190,12 @@ func (s *Session) offerExpression(at promptSubject, expression string) Completio
 
 // offerNames offers a plain list of names, which is what `break`, `until` and
 // `delete` take.
-func (s *Session) offerNames(prefix string, names []string, detail string) Completion {
-	out := Completion{Prefix: prefix}
+func (s *Session) offerNames(prefix string, names []string, short bool, detail string) Completion {
+	// short carries a truncation that happened *before* the filter, which the
+	// answer's own bound cannot see: a narrow prefix over a list that was
+	// already cut yields few candidates and would otherwise report itself
+	// complete.
+	out := Completion{Prefix: prefix, Truncated: short}
 	for _, name := range names {
 		if !strings.HasPrefix(name, prefix) {
 			continue
@@ -527,7 +533,13 @@ func (b *boundedNameSet) add(name string) {
 		return
 	}
 
-	at, _ := slices.BinarySearch(b.names, name)
+	at, found := slices.BinarySearch(b.names, name)
+	if found {
+		// Deduplicated here rather than by the caller, because one caller
+		// merges three overlapping sources and a duplicate would otherwise
+		// spend a slot the bound is counting.
+		return
+	}
 
 	if len(b.names) == b.limit {
 		b.names = b.names[:b.limit-1]
@@ -564,24 +576,51 @@ func namesOf(values map[string]*v1.Value, detail string) []celcomplete.Candidate
 // that does not (an embedder handed a [v1.Debugger] seam and nothing else) gets
 // the ids this session has actually seen go past, which is at least the run so
 // far rather than nothing at all.
-func (s *Session) reachableSteps(at promptSubject) []string {
+func (s *Session) reachableSteps(at promptSubject, prefix string) ([]string, bool) {
+	// All three sources under one bound, and the reason is the third of them:
+	// the paused scope's step values are a map the *workload* fills, so the
+	// old shape appended every id in it, sorted the lot and compacted — on
+	// every tab press, with no bound anywhere (Codex, #1114, found by sweeping
+	// the class rather than by a review round). The first two are bounded by
+	// the file and by [Session.sawStep], but a bound that only two of three
+	// inputs respect is not a bound on the answer.
+	//
+	// The set keeps the alphabetically-first ids whichever source they came
+	// from, deduplicates as it goes, and remembers that there were more —
+	// which the arrival-order cap in sawStep could not do, since what it
+	// dropped depended on the order steps happened to run in.
+	//
+	// The prefix is applied *here*, before the bound, and that ordering is the
+	// whole correctness of it. Bounding first and filtering after looks
+	// equivalent and is not: the 512 alphabetically-first ids of a large run
+	// may contain none of the matches for what was actually typed, so
+	// `break zzz` would answer nothing while `zzz_step` sat just past the cut.
+	// An existing test caught exactly that when this was first written the
+	// other way round — bounded work bought with wrong answers is not a trade
+	// worth making.
+	kept := newBoundedNames(celcomplete.MaxCandidates)
+	add := func(id string) {
+		if strings.HasPrefix(id, prefix) {
+			kept.add(id)
+		}
+	}
+
 	s.mu.Lock()
-	ids := make([]string, 0, len(s.steps)+len(s.seen))
-	ids = append(ids, s.steps...)
+	for _, id := range s.steps {
+		add(id)
+	}
 	for id := range s.seen {
-		ids = append(ids, id)
+		add(id)
 	}
 	s.mu.Unlock()
 
 	// A step whose outputs are in scope has certainly run, so the paused run's
 	// own scope is a third source that costs nothing to read.
 	for id := range at.scope.GetOutputs().GetStepValues() {
-		ids = append(ids, id)
+		add(id)
 	}
 
-	sort.Strings(ids)
-
-	return slices.Compact(ids)
+	return kept.result()
 }
 
 // breakpointIDs are the ids `delete` may name.

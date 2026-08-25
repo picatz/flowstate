@@ -598,3 +598,46 @@ func TestAnAutopsyBindingWithManyKeysIsStableAndSaysItIsShort(t *testing.T) {
 			"two identical tab presses answered differently")
 	}
 }
+
+// TestAStepPastTheBoundIsStillReachableByTypingIt is the regression an existing
+// test caught while this was being written, kept as a claim of its own because
+// the wrong version looks right.
+//
+// Bounding the id collection and filtering afterwards is the obvious shape and
+// it silently loses answers: the alphabetically-first MaxCandidates ids of a
+// large run need not contain any of the matches for what was actually typed, so
+// a step sitting past the cut becomes uncompletable — the completer reporting
+// nothing for a name that exists and would have run.
+//
+// Filtering before the bound costs the same walk and answers correctly.
+func TestAStepPastTheBoundIsStillReachableByTypingIt(t *testing.T) {
+	t.Parallel()
+
+	// Far more steps than the bound, and one whose id sorts past every one of
+	// them — so it is exactly the name a bound-then-filter completer loses.
+	steps := make(map[string]*v1.Node_Outputs, 4*celcomplete.MaxCandidates)
+	for i := range 4 * celcomplete.MaxCandidates {
+		steps[fmt.Sprintf("step_%05d", i)] = &v1.Node_Outputs{}
+	}
+	steps["zzz_the_one_you_want"] = &v1.Node_Outputs{}
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Outputs = &v1.Workflow_StepOutputs{StepValues: steps}
+
+	var out strings.Builder
+
+	console := &asking{steps: []string{"quit"}, ask: [][]string{{"break zzz"}}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+
+	require.Len(t, console.answers, 1)
+
+	assert.Equal(t, []string{"zzz_the_one_you_want"}, texts(console.answers[0]),
+		"a step past the alphabetical bound has to be reachable by typing its name")
+	assert.False(t, console.answers[0].Truncated,
+		"and one match out of one is not a truncated answer")
+}
