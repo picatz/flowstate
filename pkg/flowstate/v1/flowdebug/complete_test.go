@@ -504,3 +504,43 @@ func TestATabPressCostsNoMoreThanTheAnswerItProduces(t *testing.T) {
 	assert.True(t, narrow.Truncated,
 		"an answer drawn from a truncated member list is truncated, however few it holds")
 }
+
+// TestTheStepsRootSaysWhenTheRunHasMoreSteps (Codex, #1114): the quieter half
+// of the truncation problem.
+//
+// Each step propagated whether its own outputs were cut, and the collection of
+// *step ids* threw the same flag away — so a run past MaxCandidates steps
+// offered 512 with no "and more", and an author who could not find a step
+// would conclude it never ran. A completer may be incomplete; it may not be
+// misleading about it.
+func TestTheStepsRootSaysWhenTheRunHasMoreSteps(t *testing.T) {
+	t.Parallel()
+
+	steps := make(map[string]*v1.Node_Outputs, 2*celcomplete.MaxCandidates)
+	for i := range 2 * celcomplete.MaxCandidates {
+		steps[fmt.Sprintf("step_%05d", i)] = &v1.Node_Outputs{}
+	}
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Outputs = &v1.Workflow_StepOutputs{StepValues: steps}
+
+	var out strings.Builder
+
+	// A narrow prefix, so the *answer* is small and only the root's own
+	// truncation can report that the run went further.
+	console := &asking{steps: []string{"quit"}, ask: [][]string{{"inspect steps.step_00007"}}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+
+	require.Len(t, console.answers, 1)
+	answer := console.answers[0]
+
+	assert.Len(t, answer.Candidates, 1, "the answer itself is far inside the bound")
+	assert.True(t, answer.Truncated,
+		"but the run has more steps than the root could hold, and saying otherwise "+
+			"tells an author a step they cannot find never ran")
+}

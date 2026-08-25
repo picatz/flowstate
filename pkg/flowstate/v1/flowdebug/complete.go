@@ -263,7 +263,7 @@ func (s *Session) completionScope(at promptSubject) celcomplete.Scope {
 		// name into an error.
 		Profile: scope.GetProfile(),
 		Locals:  namesOf(scope.GetVars(), "bound where this expression is written"),
-		Roots:   []celcomplete.Candidate{celcomplete.StepsRoot(stepCandidates(scope))},
+		Roots:   []celcomplete.Candidate{stepsRoot(scope)},
 	}
 
 	// The rooted namespaces, each offered only where the run has one, the rule
@@ -392,10 +392,10 @@ func mapMembers(bound ref.Val) []celcomplete.Candidate {
 // This is what a live scope buys over a document's: an editor offers what a
 // task *declares*, and a shaping expression or a plugin's own answer can make
 // that a different set. Here the names are the ones the run produced.
-func stepCandidates(scope *v1.Scope) []celcomplete.Candidate {
+func stepCandidates(scope *v1.Scope) ([]celcomplete.Candidate, bool) {
 	steps := scope.GetOutputs().GetStepValues()
 
-	ids, _ := boundedNames(steps, celcomplete.MaxCandidates)
+	ids, truncated := boundedNames(steps, celcomplete.MaxCandidates)
 
 	out := make([]celcomplete.Candidate, 0, len(ids))
 	for _, id := range ids {
@@ -412,7 +412,23 @@ func stepCandidates(scope *v1.Scope) []celcomplete.Candidate {
 		})
 	}
 
-	return out
+	return out, truncated
+}
+
+// stepsRoot is the `steps` namespace, carrying whether the run has more steps
+// than the root could hold.
+//
+// The flag was being discarded, which is the quieter half of the same mistake
+// the output names had: 512 step ids with no "and more" lets an author conclude
+// that a step they cannot find never ran (Codex, #1114). A completer may be
+// incomplete; it may not be misleading about it.
+func stepsRoot(scope *v1.Scope) celcomplete.Candidate {
+	steps, truncated := stepCandidates(scope)
+
+	root := celcomplete.StepsRoot(steps)
+	root.Truncated = truncated
+
+	return root
 }
 
 // namesOfOutputs renders one step's recorded output names, bounded.
@@ -455,6 +471,23 @@ func boundedNames[V any](values map[string]V, limit int) (names []string, more b
 	names = make([]string, 0, limit)
 
 	for name := range values {
+		// The cheap rejection first: once the buffer is full, a name sorting
+		// at or after the largest one kept cannot displace anything, so it
+		// needs neither a binary search nor a shift.
+		//
+		// Measured over a million names, a tab press went from 188ms to 81ms
+		// (Codex, #1114). The remainder is the map walk itself and the string
+		// comparison per key, which nothing here can avoid without keeping an
+		// index — and an index is a cache with an invalidation problem, bought
+		// against a cost that is 3ms at a hundred thousand names and reachable
+		// only from a terminal, since the MCP adapter attaches no console and
+		// so never completes at all.
+		if len(names) == limit && name >= names[limit-1] {
+			more = true
+
+			continue
+		}
+
 		at, _ := slices.BinarySearch(names, name)
 
 		if len(names) == limit {

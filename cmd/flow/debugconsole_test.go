@@ -70,7 +70,7 @@ func (k *keyboard) shown() string {
 // offers what the test names.
 func typing(keys string, offers ...flowdebug.Candidate) (*debugConsole, *keyboard) {
 	board := &keyboard{typed: []byte(keys)}
-	console := newDebugConsole(board, flowdebug.Prompt)
+	console := newDebugConsole(board, flowdebug.Prompt, -1)
 	console.SetCompleter(func(line string, pos int) flowdebug.Completion {
 		return completionOver(line[:pos], offers)
 	})
@@ -163,7 +163,7 @@ func TestAListSaysWhenItWasCut(t *testing.T) {
 	t.Parallel()
 
 	board := &keyboard{typed: []byte("break x\t\r\n")}
-	console := newDebugConsole(board, flowdebug.Prompt)
+	console := newDebugConsole(board, flowdebug.Prompt, -1)
 	console.SetCompleter(func(string, int) flowdebug.Completion {
 		return flowdebug.Completion{
 			Prefix:     "x",
@@ -425,4 +425,74 @@ func TestNoConsoleWhereTheOutputIsRedirected(t *testing.T) {
 	written, err := os.ReadFile(redirected.Name())
 	require.NoError(t, err)
 	assert.Empty(t, written, "prompt or escape sequences reached the redirected stream")
+}
+
+// TestTheTerminalKeepsItsSignalsWhileTheRunWorks (Codex, #1114) is the P1, and
+// it is a case where having a console was strictly worse than not having one.
+//
+// term.MakeRaw clears ISIG: while raw mode is held, ctrl-C is an ordinary byte
+// rather than a signal. Held for the length of the run — which is what
+// attaching used to do — a `continue` into a long step left ISIG off with
+// nobody reading stdin, so ctrl-C queued in the buffer and the run could not be
+// interrupted at all. Without a console the terminal would have kept its own
+// signal handling and the same ctrl-C would have worked.
+//
+// So raw mode belongs to a *read*, not to a run: the terminal is ordinary
+// whenever the session is not actually waiting for someone to type.
+func TestTheTerminalKeepsItsSignalsWhileTheRunWorks(t *testing.T) {
+	t.Parallel()
+
+	plain := ui.Plain(io.Discard, io.Discard)
+	pty := aTerminal(t)
+
+	sane, err := term.GetState(int(pty.Fd()))
+	require.NoError(t, err)
+
+	console, restore, ok := attachDebugConsole(pty, pty, plain.Theme)
+	require.True(t, ok)
+	require.NotNil(t, console)
+	t.Cleanup(restore)
+
+	// Attaching alone must not have touched the terminal: between boundaries
+	// the run is working, and that is exactly when ctrl-C has to reach it.
+	attached, err := term.GetState(int(pty.Fd()))
+	require.NoError(t, err)
+	assert.Equal(t, sane, attached,
+		"attaching put the terminal into raw mode, so a run that never prompts again "+
+			"cannot be interrupted")
+}
+
+// TestRawModeIsHeldOnlyForTheLengthOfARead is the other half of the P1: a read
+// may take raw mode, and must give it back.
+//
+// Asserted against the terminal itself rather than through a prompt, because
+// what is under test is the mechanism — enter, and unwind — and driving it
+// through a real ReadLine would need a pty *pair* to feed a line into. Three
+// readings of the same fd say it exactly: ordinary, raw, ordinary again.
+func TestRawModeIsHeldOnlyForTheLengthOfARead(t *testing.T) {
+	t.Parallel()
+
+	plain := ui.Plain(io.Discard, io.Discard)
+	pty := aTerminal(t)
+
+	console, restore, ok := attachDebugConsole(pty, pty, plain.Theme)
+	require.True(t, ok)
+	t.Cleanup(restore)
+
+	before, err := term.GetState(int(pty.Fd()))
+	require.NoError(t, err)
+
+	done := console.readingRaw()
+
+	during, err := term.GetState(int(pty.Fd()))
+	require.NoError(t, err)
+	require.NotEqual(t, before, during,
+		"a read has to actually take raw mode, or the editor cannot read a keystroke at a time")
+
+	done()
+
+	after, err := term.GetState(int(pty.Fd()))
+	require.NoError(t, err)
+	assert.Equal(t, before, after,
+		"and it has to give it back, or the run continues with the terminal's signals switched off")
 }

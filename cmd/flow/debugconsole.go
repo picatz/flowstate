@@ -54,6 +54,37 @@ type debugConsole struct {
 	// [flowdebug.ErrConsoleInterrupted] for why an interrupt must not be
 	// answered the way a finished script is.
 	interrupted *atomic.Bool
+
+	// raw is the terminal to put into raw mode for the duration of a read, or
+	// -1 where there is none to put into it.
+	//
+	// Per read, and never for the length of the run, because term.MakeRaw
+	// clears ISIG: while it is held, ctrl-C is an ordinary byte rather than a
+	// signal. Held across the whole run it would mean a `continue` into a long
+	// step — an unbounded `wait_for_signal`, say — leaves nobody reading stdin
+	// and ISIG switched off, so ctrl-C queues in the buffer and the run cannot
+	// be interrupted at all (Codex, #1114). That is strictly worse than having
+	// no console: without one the terminal keeps its own signal handling.
+	//
+	// So the terminal is ordinary whenever the run is working, and raw only
+	// while a person is actually typing an answer.
+	raw int
+}
+
+// readingRaw puts the terminal into raw mode for one read and gives it back.
+func (c *debugConsole) readingRaw() func() {
+	if c.raw < 0 {
+		return func() {}
+	}
+
+	previous, err := term.MakeRaw(c.raw)
+	if err != nil {
+		// The same degradation attachDebugConsole makes: a terminal that
+		// refuses raw mode is one this can still read a line from.
+		return func() {}
+	}
+
+	return func() { _ = term.Restore(c.raw, previous) }
 }
 
 // newDebugConsole wraps an already-raw stream in a line editor.
@@ -62,7 +93,7 @@ type debugConsole struct {
 // the interrupt handling are testable over a pipe: a terminal is a
 // [io.ReadWriter] to this type, and everything that makes one a *terminal* —
 // the file descriptor, raw mode, restoring it — is the other function's.
-func newDebugConsole(rw io.ReadWriter, prompt string) *debugConsole {
+func newDebugConsole(rw io.ReadWriter, prompt string, raw int) *debugConsole {
 	interrupted := &atomic.Bool{}
 	watched := struct {
 		io.Reader
@@ -75,6 +106,7 @@ func newDebugConsole(rw io.ReadWriter, prompt string) *debugConsole {
 	console := &debugConsole{
 		terminal:    term.NewTerminal(watched, prompt),
 		interrupted: interrupted,
+		raw:         raw,
 	}
 	console.terminal.AutoCompleteCallback = console.onKey
 
@@ -107,14 +139,16 @@ func attachDebugConsole(in io.Reader, out io.Writer, theme ui.Theme) (console *d
 		return nil, nil, false
 	}
 
-	previous, err := term.MakeRaw(int(file.Fd()))
-	if err != nil {
-		// Not an error to report: a stream that says it is a terminal and then
-		// refuses raw mode is a stream this command can still debug through,
-		// one line at a time, exactly as a script does. Degrading is the
-		// answer; refusing to debug would be a worse one.
-		return nil, nil, false
-	}
+	// Raw mode is *not* entered here. It is held by [debugConsole.Prompt] for
+	// the length of one read, because term.MakeRaw clears ISIG and a run that
+	// holds it throughout cannot be interrupted at all — see
+	// [debugConsole.raw]. Attaching therefore changes nothing about the
+	// terminal until somebody is actually typing at it.
+	//
+	// One consequence worth stating: this no longer discovers up front that a
+	// terminal will refuse raw mode. That refusal is handled where it now
+	// happens, in readingRaw, by reading the line without it — the same
+	// degradation this used to make, moved to the same place as the attempt.
 
 	// The prompt through the same theme the session's own tones go through, so
 	// it recedes the way [debugEmitter] makes it recede on the plain path.
@@ -123,18 +157,27 @@ func attachDebugConsole(in io.Reader, out io.Writer, theme ui.Theme) (console *d
 	// characters are.
 	prompt := theme.Muted.Render(flowdebug.Prompt)
 
+	// The restore a caller still holds, and it is a backstop rather than the
+	// mechanism now: each prompt gives the terminal back on its own way out,
+	// so by the time a caller runs this there is normally nothing to undo.
+	// What it covers is the path where a prompt did not get to return —
+	// a panic unwinding through a read — which is exactly the case that
+	// otherwise hands somebody back a shell where nothing they type appears.
+	//
 	// Idempotent, because a caller restores at two moments for two reasons: as
-	// soon as the run is over, so that whatever the command prints afterward
-	// prints onto an ordinary terminal, and again on the way out whatever
-	// happened, so that no error path hands somebody back a shell where
-	// nothing they type appears.
+	// soon as the run is over, and again on the way out whatever happened.
 	var once sync.Once
+
+	sane, err := term.GetState(int(file.Fd()))
+	if err != nil {
+		return nil, nil, false
+	}
 
 	return newDebugConsole(struct {
 			io.Reader
 			io.Writer
-		}{Reader: in, Writer: out}, prompt), func() {
-			once.Do(func() { _ = term.Restore(int(file.Fd()), previous) })
+		}{Reader: in, Writer: out}, prompt, int(file.Fd())), func() {
+			once.Do(func() { _ = term.Restore(int(file.Fd()), sane) })
 		}, true
 }
 
@@ -166,6 +209,9 @@ func (c *debugConsole) SetCompleter(complete func(line string, pos int) flowdebu
 // where an unreachable one today would only have looked like protection
 // (CLAUDE.md: a bound nothing reaches is a bound nothing tests).
 func (c *debugConsole) Prompt() (string, error) {
+	// Raw for the length of this read and no longer — see [debugConsole.raw].
+	defer c.readingRaw()()
+
 	line, err := c.terminal.ReadLine()
 	if err != nil {
 		// term.Terminal answers ctrl-C and ctrl-D with the same io.EOF, and
