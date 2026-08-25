@@ -174,6 +174,16 @@ type Options struct {
 // time, and never concurrently with itself. [Session.Complete] is not: a
 // console's completion callback runs on whichever goroutine is inside Prompt,
 // while the boundary that asked for the line is parked elsewhere.
+//
+// # A console owes [MaxCommandBytes]
+//
+// It is the one bound on this surface that moves with the reader. The other
+// four are the session's wherever the line came from — [MaxBreakpoints] and
+// [MaxInspectRunes] bound what a command does, [MaxScriptCommands] and
+// [MaxScriptBytes] bound the recording — but this one bounds the *read*, and
+// the [bufio.Scanner] that enforces it is not in a console's path. So a
+// console owes it: whatever it returns must be a line the session would have
+// accepted, however that is arranged.
 type Console interface {
 	// Prompt writes the prompt and reads one line, without its newline.
 	//

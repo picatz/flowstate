@@ -285,6 +285,30 @@ func TestCtrlCEndsTheRunAndCtrlDLetsItFinish(t *testing.T) {
 	})
 }
 
+// TestAConsoleCannotReturnALineLongerThanACommandMayBe.
+//
+// [flowdebug.MaxCommandBytes] is the session's bound on one command, and the
+// scanner that enforces it is not in a console's path — so it has to be true of
+// this path some other way. It is: the editor stops accepting characters well
+// before the bound and refuses the rest of a paste at the same point. That is a
+// property of somebody else's package rather than a line of ours, which is why
+// it is asserted here against the real editor instead of guarded by a
+// comparison that could never be true.
+func TestAConsoleCannotReturnALineLongerThanACommandMayBe(t *testing.T) {
+	t.Parallel()
+
+	// A paste, which is the only way a line this long ever arrives: nobody
+	// types sixty-four kilobytes.
+	console, _ := typing(strings.Repeat("x", flowdebug.MaxCommandBytes*2) + "\r\n")
+
+	line, err := console.Prompt()
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(line), flowdebug.MaxCommandBytes,
+		"a console must not hand the session a command longer than one may be")
+	assert.NotEmpty(t, line, "and it keeps what fits rather than dropping the line")
+}
+
 // TestNoConsoleWhereThereIsNoTerminal is the load-bearing one.
 //
 // `flow test --debug < script.txt` is how a recorded session replays and the

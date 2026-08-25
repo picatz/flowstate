@@ -138,6 +138,21 @@ func (c *debugConsole) SetCompleter(complete func(line string, pos int) flowdebu
 }
 
 // Prompt implements [flowdebug.Console].
+//
+// [flowdebug.MaxCommandBytes] is upheld here rather than checked here, and the
+// difference is worth stating because the check would be dead code. A console
+// reads its own lines, so the [bufio.Scanner] carrying that bound on the other
+// path is not in this one — but `term.Terminal` stops accepting characters at a
+// line of its own, several times shorter, and refuses the rest of a paste at
+// the same point. So the session's bound is satisfied by a wide margin on every
+// line this can return, and a comparison against it could never be true.
+//
+// Which makes it a claim to *test* rather than a branch to write:
+// TestAConsoleCannotReturnALineLongerThanACommandMayBe drives a paste past the
+// bound through the real editor and asserts what comes back. If a future
+// release loosens that cap the test goes red and a check gets written here,
+// where an unreachable one today would only have looked like protection
+// (CLAUDE.md: a bound nothing reaches is a bound nothing tests).
 func (c *debugConsole) Prompt() (string, error) {
 	line, err := c.terminal.ReadLine()
 	if err != nil {
