@@ -179,17 +179,16 @@ func Complete(text string, scope Scope) Result {
 		return bound(member, root.Members)
 	}
 	if head, rest, nested := strings.Cut(qualifier, "."); nested {
-		root, ok := find(scope.Roots, head)
-		if ok && !strings.Contains(rest, ".") {
-			if inner, found := find(root.Members, rest); found {
-				return bound(member, inner.Members)
-			}
-		}
-		if ok {
-			// Past the member: selecting into a value whose shape nothing
-			// here describes, or naming a member that does not exist. There
-			// is nothing to offer that would not be a guess.
-			return Result{Prefix: member}
+		if root, ok := find(scope.Roots, head); ok {
+			// One member deep, and the root's answer either way. A member that
+			// is not there and a member with nothing under it come to the same
+			// empty answer, which is the honest one: past a member is a value
+			// whose shape nothing here describes, and past the root is a name
+			// nothing produced. Guessing at either is how a surface starts
+			// offering references the engine rejects.
+			inner, _ := find(root.Members, rest)
+
+			return bound(member, inner.Members)
 		}
 	}
 
