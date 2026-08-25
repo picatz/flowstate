@@ -3,9 +3,11 @@ package flowdebug_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -648,4 +650,148 @@ func TestCloseIsIdempotentAndSafeWithoutAReader(t *testing.T) {
 
 	require.NoError(t, session.Close())
 	require.NoError(t, session.Close())
+}
+
+// TestConcurrentCallbacksAreSerialized holds this type's own doc to account
+// (Codex, #1109).
+//
+// [v1.RunObserver] states plainly that its callbacks arrive on the step's
+// goroutine and that an implementation storing events must synchronize itself
+// where a workflow has `parallel:` branches or `async:` steps; the Session doc
+// answers "safe for concurrent use". It was not: Emit was called with nothing
+// held, and the two emitters this repository ships both accumulate — the MCP
+// adapter appends to a slice and adds up the bytes its answer's bound is
+// computed from.
+//
+// Driven directly rather than through a workflow, deliberately. The local
+// driver is sequential today, so no Flowfile produces these callbacks — a test
+// written as a run would pass against the unsynchronized version and prove
+// nothing. What is under test is the promise, which is made here.
+func TestConcurrentCallbacksAreSerialized(t *testing.T) {
+	const (
+		writers = 8
+		each    = 50
+	)
+
+	var (
+		kept  []string
+		bytes int
+	)
+
+	// An emitter that accumulates, which is the shape both real ones have,
+	// and with no lock of its own: keeping two writers out of each other is
+	// the session's job, and this is the callback that finds out whether it
+	// did. wg.Wait below is the happens-before edge that makes reading these
+	// afterwards safe.
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(""),
+		Emit: func(text string, _ flowdebug.Tone) {
+			kept = append(kept, text)
+			bytes += len(text)
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	var wg sync.WaitGroup
+
+	for writer := range writers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for i := range each {
+				session.StepFinished(fmt.Sprintf("step-%d-%d", writer, i), nil, nil, false)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Every fragment arrived, and the running total agrees with them. A lost
+	// append and a double-counted length are the two ways the unsynchronized
+	// version was wrong, and each of them is a bound computed from a number
+	// nobody wrote down.
+	require.Len(t, kept, writers*each, "an account was lost between two goroutines")
+
+	total := 0
+	for _, text := range kept {
+		total += len(text)
+	}
+	require.Equal(t, total, bytes, "the running total disagrees with what was kept")
+}
+
+// TestConcurrentBoundariesAdmitOneAtATime: two goroutines reaching a step
+// boundary at once must not both prompt.
+//
+// One session holds one run and one command stream answers one prompt, so two
+// boundaries prompting together would split a script between two run
+// positions — each acting on a line meant for the other, and each `inspect`
+// answering from whichever branch's scope happened to win the read. Nothing
+// about that is a data race; it is a session that is simply somewhere else.
+//
+// Made deterministic with a pipe rather than a canned script: the first
+// boundary is held at its prompt with nothing written yet, the second is
+// started underneath it, and the claim is that no second prompt appears until
+// the first has been answered. The wait is a real interval because the wrong
+// behaviour is fast — a second boundary that is admitted reaches its prompt on
+// pure CPU — and it fails in the safe direction: a machine too loaded to get
+// there in time makes this test prove less, never fail wrongly.
+func TestConcurrentBoundariesAdmitOneAtATime(t *testing.T) {
+	prompts := make(chan struct{}, 8)
+
+	console, commands := io.Pipe()
+	t.Cleanup(func() { _ = commands.Close() })
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In: console,
+		Emit: func(_ string, tone flowdebug.Tone) {
+			if tone == flowdebug.TonePrompt {
+				prompts <- struct{}{}
+			}
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "concurrent", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	scope := &v1.Scope{}
+
+	first := make(chan error, 1)
+	go func() { first <- session.BeforeStep(t.Context(), node, scope) }()
+
+	select {
+	case <-prompts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first boundary never reached a prompt")
+	}
+
+	second := make(chan error, 1)
+	go func() { second <- session.BeforeStep(t.Context(), node, scope) }()
+
+	select {
+	case <-prompts:
+		t.Fatal("a second boundary prompted while the first still held the session, " +
+			"so one script was being read by two run positions")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	_, err = commands.Write([]byte("step\n"))
+	require.NoError(t, err)
+	require.NoError(t, <-first)
+
+	// And now it is the second boundary's turn, which is the other half of the
+	// claim: admitted one at a time, not shut out.
+	select {
+	case <-prompts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second boundary never got the session")
+	}
+
+	_, err = commands.Write([]byte("step\n"))
+	require.NoError(t, err)
+	require.NoError(t, <-second)
+
+	require.Equal(t, []string{"step", "step"}, session.Script(),
+		"each boundary consumed exactly one line")
 }

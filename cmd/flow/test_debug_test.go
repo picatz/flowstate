@@ -240,7 +240,8 @@ tests:
         - 1 == 2
 `), 0o600))
 
-	res := runFlowStdin(t, "continue\ninspect vars.token\ninspect vars.request\nscope\nquit\n",
+	res := runFlowStdin(t,
+		"continue\ninspect vars.token\ninspect vars.request\ninspect vars.token == 'hunter2-swordfish'\nscope\nquit\n",
 		"test", "--debug", "--run", "fails with", dir)
 	require.Error(t, res.Err, "the case is red")
 
@@ -250,6 +251,17 @@ tests:
 		"the inspected var should render as the shared redaction marker")
 	assert.Contains(t, res.Stdout, "bound: run, vars",
 		"the autopsy scope listing should still name the bindings")
+
+	// The disagreement is stated rather than left to be discovered (Codex,
+	// #1109). The binding is withheld, so a comparison against the real value
+	// is false here while the same expression in `expect.check` saw the real
+	// one — which is worth knowing before an author concludes their check is
+	// wrong. Handing CEL the raw value instead would agree, and would answer
+	// `startsWith`, `size()` and a slice truthfully about a secret one call
+	// at a time.
+	out := unwrapped(res.Stdout)
+	assert.Contains(t, out, "this case withholds sensitive values")
+	assert.Contains(t, out, "answers false here even where the same check was true")
 }
 
 // TestDebugWithholdsASensitiveInput is the CLI half of the same leak (Codex,

@@ -747,18 +747,24 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// [flowdebug.Session]. Installed per case, because `sensitive` is this
 	// case's — its inputs, its secrets — and cleared afterward so a session
 	// driving a second case never carries the first one's rule.
-	if redacting, ok := v1.DebuggerFromContext(ctx).(interface {
-		SetRedactor(func(string) string)
-	}); ok {
-		redact := sensitive
-		redacting.SetRedactor(func(text string) string {
-			if redact.withholdAll {
-				return "[withheld]\n"
-			}
+	//
+	// Installed only where it would do something, because the session reads
+	// "a redactor is installed" as "this case withholds values" and says so
+	// at the autopsy — a rule that redacts nothing would put that notice on
+	// every failing case.
+	if redact := sensitive; redact.withholdAll || len(redact.substrings) > 0 {
+		if redacting, ok := v1.DebuggerFromContext(ctx).(interface {
+			SetRedactor(func(string) string)
+		}); ok {
+			redacting.SetRedactor(func(text string) string {
+				if redact.withholdAll {
+					return "[withheld]\n"
+				}
 
-			return redactSensitiveSubstrings(text, redact.substrings)
-		})
-		defer redacting.SetRedactor(nil)
+				return redactSensitiveSubstrings(text, redact.substrings)
+			})
+			defer redacting.SetRedactor(nil)
+		}
 	}
 
 	if recorder != nil {

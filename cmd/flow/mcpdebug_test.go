@@ -923,3 +923,56 @@ func TestTheDebugToolRefusesADuplicateCaseName(t *testing.T) {
 	assert.Contains(t, text, `2 of this document's cases are named "it ships"`)
 	assert.Contains(t, text, "Give them distinct names")
 }
+
+// TestTheDebugToolDrivesABranchingWorkflow: `parallel:` is where a debugged
+// run has more than one thread of written order, and every branch's account
+// has to reach one transcript.
+//
+// It is a wiring test and says nothing about concurrency: the local driver
+// runs branches sequentially (pkg/flowstate/v1/eval.go), so nothing here
+// produces the concurrent callbacks [v1.RunObserver] permits. The session's
+// own claim to survive those is tested where it is made, in flowdebug's
+// TestConcurrentCallbacksAreSerialized.
+func TestTheDebugToolDrivesABranchingWorkflow(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callDebug(t, session, map[string]any{
+		"workflow": `edition: v2026.3
+name: branching
+steps:
+  - id: fan
+    parallel:
+      - steps:
+          - id: left
+            log:
+              message: left
+      - steps:
+          - id: right
+            log:
+              message: right
+      - steps:
+          - id: middle
+            log:
+              message: middle
+outputs: {}
+`,
+		"tests": `tests:
+  - name: all three branches run
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [left, right, middle]
+`,
+		"commands": []any{"continue"},
+	})
+	require.False(t, result.IsError, result.Content[0].(*mcp.TextContent).Text)
+
+	joined := answer.transcript()
+	for _, branch := range []string{"left", "right", "middle"} {
+		assert.Contains(t, joined, "  "+branch+" ",
+			"every branch's account has to reach the transcript")
+	}
+}

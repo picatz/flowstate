@@ -158,6 +158,34 @@ type Session struct {
 	done     chan struct{}
 	stopOnce sync.Once
 
+	// promptMu admits one goroutine at a time to a step boundary, and outMu
+	// to the output.
+	//
+	// Neither is paranoia about a driver that "runs branches in written
+	// order": [v1.RunObserver] says in as many words that its callbacks
+	// arrive on the step's own goroutine and that an implementation storing
+	// events must synchronize itself when a workflow has `parallel:`
+	// branches or `async:` steps, and this session both stores them and
+	// hands them to a caller's Emit. Two branches finishing at once raced
+	// this session's own fields and the MCP transcript's slice alike, on a
+	// type whose doc claims it is safe for concurrent use (Codex, #1109).
+	//
+	// promptMu covers the *whole* of [Session.BeforeStep] rather than the
+	// prompt inside it, because deciding whether to stop reads and writes
+	// the same mode two branches would be deciding against — and because a
+	// second branch prompting while the first is parked would have both of
+	// them pulling lines off one command stream, splitting one script
+	// between two run positions. A debugger holds *the* run; while it is
+	// stopped, the run is stopped.
+	//
+	// They are separate locks, and the order is only ever promptMu → outMu
+	// → mu: an account arriving on another branch (StepFinished, which never
+	// prompts) must still be able to print while a boundary is parked
+	// waiting for a command, or the account of a run would deadlock behind
+	// the run's own pause.
+	promptMu sync.Mutex
+	outMu    sync.Mutex
+
 	mu          sync.Mutex
 	mode        mode
 	until       string
@@ -253,6 +281,12 @@ var errQuit = fmt.Errorf("debug session ended by the `quit` command: %w", v1.Err
 // BeforeStep implements [v1.Debugger]: the run is held here for as long as the
 // session's reader takes to say otherwise.
 func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope) error {
+	// Before shouldStop, deliberately: see [Session.promptMu]. Deciding to
+	// stop is a read-modify of the same mode a sibling branch is deciding
+	// against, and one script cannot answer two prompts.
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+
 	if !s.shouldStop(node.GetId()) {
 		return nil
 	}
@@ -495,8 +529,18 @@ func (s *Session) record(line string) {
 func (s *Session) printfTone(tone Tone, format string, args ...any) {
 	text := s.redactText(fmt.Sprintf(format, args...))
 
+	// Held across the call, not just around a field read: Emit is the
+	// caller's, and the two this repository ships both accumulate — the MCP
+	// adapter appends to a slice and adds up bytes, the CLI writes to a
+	// terminal. Serializing here is what makes the contract [v1.RunObserver]
+	// states this session's to keep rather than every embedder's to
+	// rediscover.
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+
 	if s.emit != nil {
 		s.emit(text, tone)
+
 		return
 	}
 	fmt.Fprint(s.out, text)
@@ -540,6 +584,33 @@ func (s *Session) redactText(text string) string {
 	}
 
 	return redact(text)
+}
+
+// noteWithholding says, once, that this scope is not the one the checks read.
+//
+// The bindings an autopsy evaluates against are the redacted ones, so
+// `inspect vars.token` answers `[redacted]` — which is legible — and
+// `inspect vars.token == "the real value"` answers *false*, which is not: the
+// same expression in `expect.check` saw the real binding and may well have
+// been true. That disagreement is deliberate and stays. Handing the raw value
+// to CEL and redacting only the printed line would restore the agreement and
+// turn a withheld value into a programmable oracle — `startsWith`, `size()`
+// and a slice each answer truthfully about a secret, one call at a time,
+// which is a worse door than the one printing was closed against (Codex,
+// #1109). Fail closed, and say so, rather than being quietly wrong.
+func (s *Session) noteWithholding() {
+	s.mu.Lock()
+	withholding := s.redact != nil
+	s.mu.Unlock()
+
+	if !withholding {
+		return
+	}
+
+	s.printfTone(ToneWarning,
+		"(this case withholds sensitive values: they are withheld from these bindings, not just "+
+			"from what prints, so a comparison against a real value answers false here even where "+
+			"the same check was true)\n")
 }
 
 func (s *Session) printf(format string, args ...any) {
@@ -667,6 +738,13 @@ func capRunes(text string, limit int) string {
 // it by capability the way it discovers a session that observes — a
 // [v1.Debugger] that does not implement it simply ends when the run ends.
 func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string]ref.Val, failures []string) {
+	// The same admission [Session.BeforeStep] takes, for the same reason:
+	// this prompts, and a prompt reads the one command stream. The run is
+	// over by the time this is called and no boundary should still be
+	// parked, but "should" is not what a lock is for.
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+
 	// A session that quit at a breakpoint said it was done: the case fails
 	// (abandoning a run is a verdict), and answering the command advertised
 	// as leaving with another prompt would make `quit` a lie (Codex, #1107).
@@ -682,6 +760,7 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 		s.printfTone(ToneDanger, "  %s\n", failure)
 	}
 	s.printf("(`inspect` questions the finished run; `quit` or `continue` leaves — the verdict is already in)\n")
+	s.noteWithholding()
 
 	for {
 		line, ok, readErr := s.readCommand(ctx)
