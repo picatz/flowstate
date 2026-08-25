@@ -177,20 +177,33 @@ func PruneFor(m Machine) Prune {
 
 	cacheShort := want - cacheFree
 
-	prune := Prune{
-		Short: short,
-		Bytes: min(cacheShort, m.CacheSizeBytes),
+	// Clearing the machine's bound takes two things, and only the first is
+	// about the cache: it must hold what its own filesystem is short of, and
+	// every other mount a lane writes to must already be clear of the target.
+	// A prune that fixes the cache mount while the worktree stays short has
+	// bought a cold rebuild and changed the plan by nothing.
+	othersClear := !m.OtherDiskKnown || m.OtherDiskFree >= want
 
-		// Clearing the *machine's* bound needs two things: the cache holds
-		// what its own filesystem is short of, and that filesystem is the one
-		// binding. A cache mount that is short by less than the tightest mount
-		// is not the bound, so emptying it leaves the plan where it was.
-		Enough: m.CacheSizeBytes >= cacheShort && cacheShort >= short,
+	prune := Prune{
+		Short:  short,
+		Bytes:  min(cacheShort, m.CacheSizeBytes),
+		Enough: m.CacheSizeBytes >= cacheShort && othersClear,
 	}
 
 	switch {
 	case prune.Bytes == 0:
 		prune.Advice = []string{elsewhere + " — the cache is empty or unreadable", lookElsewhere}
+
+	case !othersClear:
+		// The cache can do its part and it still will not be enough, because
+		// something else a lane writes to is short too. Named separately from
+		// a cache that is merely too small, since the remedy is different.
+		prune.Advice = []string{
+			fmt.Sprintf("the build cache can give back %s, but another filesystem a lane writes to "+
+				"has only %s free and needs %s, so this will not fit a lane on its own",
+				bytes(prune.Bytes), bytes(m.OtherDiskFree), bytes(want)),
+			lookElsewhere,
+		}
 
 	case !prune.Enough:
 		// Said before the work rather than after: the cache is about to give
@@ -267,6 +280,15 @@ type Machine struct {
 	// which is the outage this whole lever exists to end.
 	CacheDiskFree  uint64
 	CacheDiskKnown bool
+
+	// OtherDiskFree is the tightest of the mounts a lane writes to *other*
+	// than the cache's, and it is what decides whether a prune can unblock
+	// anything at all. Pruning moves bytes on one filesystem; if a different
+	// one is also short, the machine still fits no lanes afterwards and the
+	// cold rebuild was spent for nothing. Claiming otherwise is the same
+	// mistake as measuring the aggregate, one level further in (Codex, #1112).
+	OtherDiskFree  uint64
+	OtherDiskKnown bool
 
 	// LoadIsHostWide records that Load1 was read from a host-scoped source
 	// while Cores describes a container's quota. Comparing those two mixes

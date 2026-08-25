@@ -101,15 +101,24 @@ func readMachine() Machine {
 			}
 		}
 	}
-	machine.CacheSizeBytes = cacheSize()
-	if cache := goEnv("GOCACHE"); cache != "" {
-		// Read separately from DiskFree, which is the tightest mount rather
-		// than this one — see [Machine.CacheDiskFree]. Zero from diskFree is
-		// unreadable, not full, so it stays unknown.
-		if free := diskFree(cache); free > 0 {
-			machine.CacheDiskFree, machine.CacheDiskKnown = free, true
+	machine.CacheSizeBytes = cacheSize(goEnv("GOCACHE"))
+
+	// The cache's own mount and everything else a lane writes to, kept apart:
+	// the cache can only give bytes back to its own filesystem, and a prune
+	// only unblocks the machine when every *other* target is already clear of
+	// the target too — see [Machine.CacheDiskFree] and [Machine.OtherDiskFree].
+	cache := goEnv("GOCACHE")
+	if cache != "" {
+		machine.CacheDiskFree, machine.CacheDiskKnown = diskFree(cache)
+	}
+
+	var others []string
+	for _, target := range laneWriteTargets(goEnv) {
+		if target != cache {
+			others = append(others, target)
 		}
 	}
+	machine.OtherDiskFree, machine.OtherDiskKnown = tightestFree(others, diskFree)
 
 	return machine
 }
@@ -161,7 +170,9 @@ func memoryFree() (uint64, bool) {
 // only the first two paths would confidently recommend a fleet that fails at
 // the link step with an error naming neither disk nor memory.
 func laneDiskFree() uint64 {
-	return tightestFree(laneWriteTargets(goEnv), diskFree)
+	free, _ := tightestFree(laneWriteTargets(goEnv), diskFree)
+
+	return free
 }
 
 // laneWriteTargets names the directories a lane's writes land in, in the order
@@ -196,15 +207,23 @@ func laneWriteTargets(env func(string) string) []string {
 // zero, and folding that in would make every unreadable target a full disk and
 // refuse the fleet outright. An unmeasurable mount is a missing fact, not a
 // full one — the same distinction [Machine.MemoryKnown] carries for memory.
-func tightestFree(paths []string, free func(string) uint64) uint64 {
-	var tightest uint64
+func tightestFree(paths []string, free func(string) (uint64, bool)) (uint64, bool) {
+	var (
+		tightest uint64
+		measured bool
+	)
+
 	for _, path := range paths {
-		if got := free(path); got > 0 && (tightest == 0 || got < tightest) {
-			tightest = got
+		got, ok := free(path)
+		if !ok {
+			continue
+		}
+		if !measured || got < tightest {
+			tightest, measured = got, true
 		}
 	}
 
-	return tightest
+	return tightest, measured
 }
 
 // goEnv asks the go command for one of its own variables, which is the only
@@ -219,27 +238,52 @@ func goEnv(name string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func diskFree(path string) uint64 {
+// diskFree reports free bytes on a path's filesystem, and whether it could be
+// read at all.
+//
+// The two answers are separate because zero is a legitimate reading. A
+// filesystem at ENOSPC has zero bytes available and that is a *fact*; folding
+// it into the same value an unreadable path returns made a full GOCACHE
+// indistinguishable from a missing one, so it dropped out of the tightest-mount
+// calculation and `-prune` answered "nothing to prune" on precisely the
+// condition it exists to fix (Codex, #1112). The same distinction
+// [Machine.MemoryKnown] already draws, for the same reason.
+func diskFree(path string) (uint64, bool) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0
+		return 0, false
 	}
 
-	return stat.Bavail * uint64(stat.Bsize)
+	return stat.Bavail * uint64(stat.Bsize), true
 }
 
-// cacheSize is best-effort: it is advice, not a bound, so a slow or missing
-// answer costs a line of output rather than a wrong plan.
-func cacheSize() uint64 {
-	dir := goEnv("GOCACHE")
+// cacheSize is how much of a build cache a prune could actually reclaim.
+//
+// Best-effort: it decides advice, not a bound, so a slow or missing answer
+// costs a line of output rather than a wrong plan.
+//
+// The directory is a parameter rather than read from the environment, and that
+// is not decoration — while it read GOCACHE itself there was no way to pose a
+// cache to it, so the one function whose number the prune promises had no test
+// at all, and it went out counting a fuzz corpus it could never remove (Codex,
+// #1112).
+func cacheSize(dir string) uint64 {
 	if dir == "" {
 		return 0
 	}
 
-	// The same walk [pruneCache] sizes a directory entry with: an unreadable
-	// subtree makes the number smaller, which is the right direction for a
-	// figure that only ever decides advice.
-	return treeSize(dir)
+	// Only what [pruneCache] could actually remove, which is not the whole
+	// tree: the fuzz corpus lives under GOCACHE and is deliberately preserved,
+	// so a walk of everything promised a prune it could not deliver — eight
+	// gigabytes of corpus beside one of entries would ask for eight and free
+	// one, without ever reporting that it fell short (Codex, #1112). Both
+	// numbers come from one enumeration now, so they cannot drift.
+	var total uint64
+	for _, entry := range cacheEntries(dir) {
+		total += entry.size
+	}
+
+	return total
 }
 
 // runPrune trims the build cache to what the plan needs, and says what it did.
@@ -320,56 +364,10 @@ func pruneCache(dir string, target uint64) (freed uint64, removed int, err error
 		return 0, 0, nil
 	}
 
-	type entry struct {
-		path  string
-		size  uint64
-		used  time.Time
-		isDir bool
-	}
-
-	var entries []entry
-
-	for i := range 256 {
-		subdir := filepath.Join(dir, fmt.Sprintf("%02x", i))
-
-		// Read the whole directory before removing anything, for the reason
-		// cmd/go gives at the same point: removing files during a scan can
-		// invalidate the offset the scan is walking.
-		f, err := os.Open(subdir)
-		if err != nil {
-			continue
-		}
-		names, _ := f.Readdirnames(-1)
-		_ = f.Close()
-
-		for _, name := range names {
-			if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") {
-				continue
-			}
-
-			path := filepath.Join(subdir, name)
-
-			info, err := os.Stat(path)
-			if err != nil {
-				continue
-			}
-
-			size := uint64(info.Size())
-			if info.IsDir() {
-				size = treeSize(path)
-			}
-
-			entries = append(entries, entry{
-				path:  path,
-				size:  size,
-				used:  info.ModTime(),
-				isDir: info.IsDir(),
-			})
-		}
-	}
+	entries := cacheEntries(dir)
 
 	// Oldest first, which is the order the cache can most afford to lose.
-	slices.SortFunc(entries, func(a, b entry) int { return a.used.Compare(b.used) })
+	slices.SortFunc(entries, func(a, b cacheEntry) int { return a.used.Compare(b.used) })
 
 	for _, e := range entries {
 		if freed >= target {
@@ -398,6 +396,77 @@ func pruneCache(dir string, target uint64) (freed uint64, removed int, err error
 	}
 
 	return freed, removed, nil
+}
+
+// cacheEntry is one thing [pruneCache] may remove.
+type cacheEntry struct {
+	path  string
+	size  uint64
+	used  time.Time
+	isDir bool
+}
+
+// cacheEntries enumerates the removable entries of a build cache.
+//
+// One enumeration serves both the prune and [cacheSize], deliberately: they
+// were two walks with different rules, so the size promised and the size
+// reclaimable disagreed by exactly the fuzz corpus (Codex, #1112). A number
+// derived from the thing it describes cannot drift from it.
+//
+// The rules are cmd/go's, because the cache is its format and not ours: only
+// `-a` and `-d` names are entries, they live only in the 256 hex
+// subdirectories, and an entry may be a directory — an executable cache entry.
+// Everything else the directory holds is left alone: trim.txt, the lock, and
+// the fuzz corpus especially, whose values are inputs that once expanded
+// coverage, cost machine-hours to rediscover, and which `go help cache` says
+// plainly it is worse off without.
+func cacheEntries(dir string) []cacheEntry {
+	if dir == "" {
+		return nil
+	}
+
+	var entries []cacheEntry
+
+	for i := range 256 {
+		subdir := filepath.Join(dir, fmt.Sprintf("%02x", i))
+
+		// Read the whole directory before anything is removed, for the reason
+		// cmd/go gives at the same point: removing files during a scan can
+		// invalidate the offset the scan is walking.
+		f, err := os.Open(subdir)
+		if err != nil {
+			continue
+		}
+		names, _ := f.Readdirnames(-1)
+		_ = f.Close()
+
+		for _, name := range names {
+			if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") {
+				continue
+			}
+
+			path := filepath.Join(subdir, name)
+
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+
+			size := uint64(info.Size())
+			if info.IsDir() {
+				size = treeSize(path)
+			}
+
+			entries = append(entries, cacheEntry{
+				path:  path,
+				size:  size,
+				used:  info.ModTime(),
+				isDir: info.IsDir(),
+			})
+		}
+	}
+
+	return entries
 }
 
 // treeSize totals a directory entry, which an executable cache entry is.
