@@ -284,14 +284,15 @@ func (s *Session) completionScope(at promptSubject) celcomplete.Scope {
 	// arrive this way after a case fails, carrying the bindings its
 	// `expect.check:` was judged under.
 	for _, name := range sortedKeys(at.extra) {
-		members := mapMembers(at.extra[name])
+		members, more := mapMembers(at.extra[name])
 
 		candidate := celcomplete.Candidate{
-			Name:    name,
-			Kind:    kindFor(members),
-			Detail:  "bound for this autopsy",
-			Insert:  name + dotIfMembers(members),
-			Members: members,
+			Name:      name,
+			Kind:      kindFor(members),
+			Detail:    "bound for this autopsy",
+			Insert:    name + dotIfMembers(members),
+			Members:   members,
+			Truncated: more,
 		}
 
 		if len(members) == 0 {
@@ -358,21 +359,27 @@ func dotIfMembers(members []celcomplete.Candidate) string {
 // only the key is read, which is what keeps this on the right side of the rule
 // [Session.Complete] states. Bounded by [celcomplete.MaxCandidates] like every
 // other list here, because the size of a bound map is the run's choice.
-func mapMembers(bound ref.Val) []celcomplete.Candidate {
+func mapMembers(bound ref.Val) ([]celcomplete.Candidate, bool) {
 	mapper, ok := bound.(traits.Mapper)
 	if !ok {
-		return nil
+		return nil, false
 	}
 
-	var names []string
-	for it := mapper.Iterator(); it.HasNext() == types.True && len(names) < celcomplete.MaxCandidates; {
+	// The whole binding is walked and the *set* decides what is kept, which is
+	// the difference from stopping at 512: this used to take the first 512 keys
+	// in iteration order and sort those, so an autopsy binding with more keys
+	// than that offered a different arbitrary subset on every tab press — and
+	// said nothing about being short (Codex, #1114).
+	kept := newBoundedNames(celcomplete.MaxCandidates)
+	for it := mapper.Iterator(); it.HasNext() == types.True; {
 		key, ok := it.Next().Value().(string)
 		if !ok {
 			continue
 		}
-		names = append(names, key)
+		kept.add(key)
 	}
-	sort.Strings(names)
+
+	names, more := kept.result()
 
 	out := make([]celcomplete.Candidate, 0, len(names))
 	for _, name := range names {
@@ -383,7 +390,7 @@ func mapMembers(bound ref.Val) []celcomplete.Candidate {
 		})
 	}
 
-	return out
+	return out, more
 }
 
 // stepCandidates renders the steps that have produced outputs, each carrying
@@ -464,48 +471,74 @@ func namesOfOutputs(outputs *v1.Node_Outputs) ([]celcomplete.Candidate, bool) {
 // the work rather than on the answer: the alternative — collect every key,
 // sort, then cut — has already paid for the whole map by the time it cuts.
 func boundedNames[V any](values map[string]V, limit int) (names []string, more bool) {
-	if limit <= 0 {
-		return nil, len(values) > 0
-	}
-
-	names = make([]string, 0, limit)
-
+	kept := newBoundedNames(limit)
 	for name := range values {
-		// The cheap rejection first: once the buffer is full, a name sorting
-		// at or after the largest one kept cannot displace anything, so it
-		// needs neither a binary search nor a shift.
-		//
-		// Measured over a million names, a tab press went from 188ms to 81ms
-		// (Codex, #1114). The remainder is the map walk itself and the string
-		// comparison per key, which nothing here can avoid without keeping an
-		// index — and an index is a cache with an invalidation problem, bought
-		// against a cost that is 3ms at a hundred thousand names and reachable
-		// only from a terminal, since the MCP adapter attaches no console and
-		// so never completes at all.
-		if len(names) == limit && name >= names[limit-1] {
-			more = true
-
-			continue
-		}
-
-		at, _ := slices.BinarySearch(names, name)
-
-		if len(names) == limit {
-			if at == limit {
-				// Sorts after everything kept, so it is one of the ones that
-				// does not fit.
-				more = true
-
-				continue
-			}
-			names = names[:limit-1]
-			more = true
-		}
-
-		names = slices.Insert(names, at, name)
+		kept.add(name)
 	}
 
-	return names, more
+	return kept.result()
+}
+
+// boundedNameSet keeps the alphabetically-first names it is shown, up to a
+// limit, and remembers that it was shown more.
+//
+// One policy with two callers, which is the point rather than tidiness: the
+// map form and the CEL-iterator form were separate loops, and only one of them
+// had the properties. The iterator form took the first 512 keys *in iteration
+// order* and sorted those, so an autopsy binding with more than 512 keys
+// offered a different arbitrary subset on each tab press and never said it was
+// short (Codex, #1114). Two spellings of one bound is how one of them ends up
+// wrong.
+type boundedNameSet struct {
+	names []string
+	limit int
+	more  bool
+}
+
+func newBoundedNames(limit int) *boundedNameSet {
+	if limit < 0 {
+		limit = 0
+	}
+
+	return &boundedNameSet{names: make([]string, 0, limit), limit: limit}
+}
+
+func (b *boundedNameSet) add(name string) {
+	if b.limit == 0 {
+		b.more = true
+
+		return
+	}
+
+	// The cheap rejection first: once the buffer is full, a name sorting at or
+	// after the largest one kept cannot displace anything, so it needs neither
+	// a binary search nor a shift.
+	//
+	// Measured over a million names, a tab press went from 188ms to 81ms
+	// (Codex, #1114). The remainder is the walk itself and one string
+	// comparison per name, which nothing here can avoid without keeping an
+	// index — and an index is a cache with an invalidation problem, bought
+	// against a cost that is 3ms at a hundred thousand names and reachable
+	// only from a terminal, since the MCP adapter attaches no console and so
+	// never completes at all.
+	if len(b.names) == b.limit && name >= b.names[b.limit-1] {
+		b.more = true
+
+		return
+	}
+
+	at, _ := slices.BinarySearch(b.names, name)
+
+	if len(b.names) == b.limit {
+		b.names = b.names[:b.limit-1]
+		b.more = true
+	}
+
+	b.names = slices.Insert(b.names, at, name)
+}
+
+func (b *boundedNameSet) result() ([]string, bool) {
+	return b.names, b.more
 }
 
 // namesOf renders a scope map's keys as candidates.

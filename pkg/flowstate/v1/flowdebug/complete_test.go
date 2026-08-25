@@ -544,3 +544,57 @@ func TestTheStepsRootSaysWhenTheRunHasMoreSteps(t *testing.T) {
 		"but the run has more steps than the root could hold, and saying otherwise "+
 			"tells an author a step they cannot find never ran")
 }
+
+// TestAnAutopsyBindingWithManyKeysIsStableAndSaysItIsShort (Codex, #1114) is
+// the third site of the same truncation class, and the one whose second symptom
+// was worse than the first.
+//
+// It took the first MaxCandidates keys *in iteration order* and sorted those.
+// Go randomises map iteration, so two identical tab presses could offer two
+// different subsets — and neither said it was short. A completer that is
+// incomplete is tolerable; one that is incomplete *differently each time* is
+// not something an author can reason against at all.
+func TestAnAutopsyBindingWithManyKeysIsStableAndSaysItIsShort(t *testing.T) {
+	t.Parallel()
+
+	// An autopsy `vars` with far more keys than the bound.
+	vars := make(map[string]any, 4*celcomplete.MaxCandidates)
+	for i := range 4 * celcomplete.MaxCandidates {
+		vars[fmt.Sprintf("var_%05d", i)] = i
+	}
+	extra := map[string]ref.Val{"vars": v1.TypeAdapter.NativeToValue(vars)}
+
+	ask := func() flowdebug.Completion {
+		t.Helper()
+
+		var out strings.Builder
+
+		console := &asking{steps: []string{"quit"}, ask: [][]string{{"inspect vars."}}}
+		session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = session.Close() })
+		console.session = session
+
+		session.Autopsy(t.Context(), v1.NewScope(v1.CurrentProfile, nil), extra, []string{"a failure"})
+
+		require.Len(t, console.answers, 1)
+
+		return console.answers[0]
+	}
+
+	first := ask()
+
+	assert.Len(t, first.Candidates, celcomplete.MaxCandidates)
+	assert.True(t, first.Truncated,
+		"a binding with four times the bound must not present its prefix as the whole of itself")
+	assert.Equal(t, "var_00000", first.Candidates[0].Text,
+		"and what is kept is the first names in order, not the first the iterator happened to reach")
+
+	// The property the old shape could not hold. Repeated because Go's map
+	// iteration order is what varied it, so a single comparison could pass by
+	// luck.
+	for range 8 {
+		assert.Equal(t, texts(first), texts(ask()),
+			"two identical tab presses answered differently")
+	}
+}
