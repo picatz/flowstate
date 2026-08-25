@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 
@@ -67,7 +68,13 @@ func diagnoseTestDocument(doc *document) []carriedDiagnostic {
 	// — the one case where the excerpt earns its place, because the editor
 	// is not showing that file — and the suite's document start is the
 	// honest anchor for a problem fixed in a different buffer.
-	if strings.Contains(err.Error(), flowtest.DirDefaultsName) {
+	//
+	// Asked of the error rather than of its prose: a message *containing*
+	// "testdefaults.yaml" is not the same fact as a refusal that *came from*
+	// one, and reading the text for it misfiled a case named
+	// `testdefaults.yaml`, and every suite under a directory whose name
+	// contains the string, as errors in a sibling file (Codex, #1109).
+	if _, fromDefaults := errors.AsType[*flowtest.DirDefaultsError](err); fromDefaults {
 		set.add(lsp.Diagnostic{
 			Range:    documentStart,
 			Severity: lsp.Error,

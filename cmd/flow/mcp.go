@@ -624,6 +624,33 @@ func testReportFailed(report *v1.TestReport) bool {
 // ever runs.
 const maxTestFailureMessageBytes = 4 << 10
 
+// maxTestRefusedBytes bounds a reduced report's `refused` — the loader's own
+// error for a `tests` document it would not read at all.
+//
+// The same class of value as a failure message and reachable the same way, but
+// by a shorter path: a refusal quotes what it refused (`trigger %q`, an
+// unreadable signature, a case name), and the document it quotes from may be
+// [flowtest.MaxTestFileBytes] — a megabyte — so a submitted document can
+// choose the size of the answer refusing it. Every rung carried it whole,
+// including the floor, which is how a floor whose contract is that it fits
+// came back four times the cap (Codex, #1109).
+const maxTestRefusedBytes = 4 << 10
+
+// capText cuts text to at most max bytes and says that it did.
+//
+// ToValidUTF8 because the cut lands wherever the byte count does, and protojson
+// refuses to marshal a string field holding invalid UTF-8 — slicing mid-rune
+// would turn a large answer into an encoding error, which is the failure these
+// ladders exist to replace arriving by a different door.
+func capText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+
+	return strings.ToValidUTF8(text[:max], "") +
+		fmt.Sprintf("... (truncated, exceeded %d bytes)", max)
+}
+
 // renderTestResult brings a v1.TestReport under [flowmcp.MaxResultBytes] —
 // [renderRunLocalResult]'s own bound and its own discipline, reused rather
 // than reinvented: stop at a document that still parses, and say what left
@@ -668,18 +695,15 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 		func() ([]byte, error) {
 			for _, c := range trimmed.GetCases() {
 				for _, f := range c.GetFailures() {
-					if len(f.GetMessage()) > maxTestFailureMessageBytes {
-						// ToValidUTF8 because the cut lands wherever the byte
-						// count does, and protojson refuses to marshal a string
-						// field holding invalid UTF-8 — slicing mid-rune would
-						// turn a large answer into an encoding error, which is
-						// the failure this ladder exists to replace arriving by
-						// a different door.
-						f.Message = strings.ToValidUTF8(f.GetMessage()[:maxTestFailureMessageBytes], "") +
-							fmt.Sprintf("... (truncated, exceeded %d bytes)", maxTestFailureMessageBytes)
-					}
+					f.Message = capText(f.GetMessage(), maxTestFailureMessageBytes)
 				}
 			}
+
+			// The refusal is capped on the same rung, for the same reason and
+			// at no cost: a report is either refused, in which case it has no
+			// cases and this is the only thing in it worth bounding, or it has
+			// cases and carries no refusal at all.
+			trimmed.Refused = capText(trimmed.GetRefused(), maxTestRefusedBytes)
 
 			encoded, err := marshalJSON(trimmed, false)
 			if err != nil {
@@ -696,7 +720,28 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 		// it fits, the same reasoning [renderRunLocalResult]'s own last rung
 		// gives for the fields nothing further can drop.
 		func() ([]byte, error) {
-			summary := &v1.TestReport{File: report.GetFile(), Refused: report.GetRefused()}
+			// Every string this keeps is bounded by a share of the budget
+			// rather than by a constant, because how many shares there are is
+			// the *document's* choice: [flowtest.MaxTestsPerFile] is 500 and
+			// [flowtest.MaxTestFileBytes] is a megabyte, so five hundred cases
+			// with two-kilobyte names is an ordinary submitted document and a
+			// floor keeping them whole is four times this cap. Half the budget
+			// across the strings leaves the other half for the structure
+			// around them, and the share shrinks as the budget does — which is
+			// what lets [renderDebugResult]'s floor converge by handing this a
+			// smaller number rather than by having a rung of its own.
+			share := limit / (2 * (len(trimmed.GetCases()) + 1))
+			if share < 64 {
+				// A name cut to nothing is not a verdict anyone can read. At a
+				// budget this small the answer is the floor whether or not it
+				// fits, which is what a floor is.
+				share = 64
+			}
+
+			summary := &v1.TestReport{
+				File:    capText(report.GetFile(), share),
+				Refused: capText(trimmed.GetRefused(), share),
+			}
 			for _, c := range trimmed.GetCases() {
 				caseError := c.GetError()
 				if caseError == "" && len(c.GetFailures()) > 0 {
@@ -705,10 +750,10 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 						len(c.GetFailures()), limit)
 				}
 				summary.Cases = append(summary.Cases, &v1.TestCase{
-					Name:     c.GetName(),
+					Name:     capText(c.GetName(), share),
 					Passed:   c.GetPassed(),
 					Duration: c.GetDuration(),
-					Error:    caseError,
+					Error:    capText(caseError, share),
 				})
 			}
 

@@ -166,3 +166,61 @@ func TestABrokenDefaultsFileIsNotAnchoredOnTheSuite(t *testing.T) {
 	assert.Equal(t, documentStart, d.Range,
 		"a sibling file's own position must never index this buffer's lines")
 }
+
+// TestASuitesOwnErrorIsNotMistakenForTheDefaultsFile (Codex, #1109) is the
+// negative direction of the test above, and it is the one that was wrong.
+//
+// Provenance was decided by looking for "testdefaults.yaml" in the error's
+// prose, so an ordinary refusal from *this* suite that happened to quote that
+// string — a case named after the file — was filed as a sibling's problem:
+// anchored at the document start, shown whole, and bypassing the positioning
+// every other loader error gets. The error is asked where it came from now.
+func TestASuitesOwnErrorIsNotMistakenForTheDefaultsFile(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	// No sibling defaults file exists here at all, so anything blamed on one
+	// is a misfiling by construction.
+	dir := t.TempDir()
+
+	params := c.open("file://"+dir+"/suite.test.yaml", `edition: v2026.3
+tests:
+  - name: testdefaults.yaml
+    expect:
+      failed: false
+`)
+	require.Len(t, params.Diagnostics, 1)
+
+	d := params.Diagnostics[0]
+	assert.Equal(t, codeTestFile, d.Code)
+	assert.NotEqual(t, documentStart, d.Range,
+		"a refusal about this suite's own case was filed as a sibling defaults file's, "+
+			"so it lost the position every other loader error gets")
+}
+
+// TestADirectoryNamedAfterTheDefaultsFileIsStillOrdinary is the same
+// misfiling reached through the path rather than the content: the loader
+// prefixes its errors with the suite's path, so every suite under a directory
+// whose name contains `testdefaults.yaml` matched the prose test.
+func TestADirectoryNamedAfterTheDefaultsFileIsStillOrdinary(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	dir := filepath.Join(t.TempDir(), "testdefaults.yaml.d")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+
+	params := c.open("file://"+dir+"/suite.test.yaml", `edition: v2026.3
+tests:
+  - name: it runs
+    expect:
+      failed: false
+`)
+	require.Len(t, params.Diagnostics, 1)
+
+	d := params.Diagnostics[0]
+	assert.Equal(t, codeTestFile, d.Code)
+	assert.NotEqual(t, documentStart, d.Range,
+		"the directory's name decided where this suite's own diagnostic was anchored")
+}

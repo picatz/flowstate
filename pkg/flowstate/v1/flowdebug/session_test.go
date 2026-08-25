@@ -795,3 +795,53 @@ func TestConcurrentBoundariesAdmitOneAtATime(t *testing.T) {
 	require.Equal(t, []string{"step", "step"}, session.Script(),
 		"each boundary consumed exactly one line")
 }
+
+// TestARefusedCommandSaysWhichBoundItHit (Codex, #1109).
+//
+// A [bufio.Scanner] that meets a line longer than its buffer stops exactly as
+// it stops at end of input: Scan returns false, and only Err tells the two
+// apart. The producer dropped that error, so a command over MaxCommandBytes
+// reached the author as "no more commands — continuing to the end of the run"
+// — a bound this package advertises, hit, and reported as the console having
+// wandered off. The run finishing unattended is the right behaviour once the
+// scanner is dead; saying nothing about why is not.
+func TestARefusedCommandSaysWhichBoundItHit(t *testing.T) {
+	var said strings.Builder
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(strings.Repeat("y", flowdebug.MaxCommandBytes+1) + "\n"),
+		Emit: func(text string, _ flowdebug.Tone) { said.WriteString(text) },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	out := said.String()
+	assert.Contains(t, out, "longer than the 65536 bytes one may be",
+		"the bound that was hit has to be the one named")
+	assert.Contains(t, out, "unattended",
+		"and the consequence has to be stated, since the run is now running itself")
+	assert.NotContains(t, out, "no more commands",
+		"a refused command is not a console that ran out")
+}
+
+// TestAConsoleThatRanOutStillSaysSo is the other half: the ordinary end of a
+// finite script is not an error, and must not be reported as one.
+func TestAConsoleThatRanOutStillSaysSo(t *testing.T) {
+	var said strings.Builder
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(""),
+		Emit: func(text string, _ flowdebug.Tone) { said.WriteString(text) },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	assert.Contains(t, said.String(), "no more commands")
+	assert.NotContains(t, said.String(), "could not be read")
+}

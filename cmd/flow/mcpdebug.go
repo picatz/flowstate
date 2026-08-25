@@ -511,11 +511,15 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 		//
 		// Each pass takes the real overshoot back out of the report's budget,
 		// so the budget strictly falls and the report ladder's own floor —
-		// per-case verdicts, a few hundred bytes — is reached in two or three.
-		// The bound is on passes rather than on convergence, because a report
-		// whose floor still does not fit exists (a `refused` document is
-		// carried by every rung), and that answer is the floor whether or not
-		// it fits, which is [flowmcp.FitResult]'s contract for a last rung.
+		// per-case verdicts — is reached in two or three. That floor bounds
+		// every string it keeps by a share of the budget it was handed, so a
+		// smaller budget really does produce a smaller report; before it did,
+		// a refusal quoting a megabyte of submitted document was carried whole
+		// by every rung and this loop had nothing to converge on (Codex,
+		// #1109). The bound is on passes rather than on convergence all the
+		// same, because a loop whose termination is an argument about another
+		// function's ladder is one a change to that ladder can turn into a
+		// hang — see [maxDebugFloorPasses].
 		func() ([]byte, error) {
 			answer.Session = nil
 			addNote(fmt.Sprintf(

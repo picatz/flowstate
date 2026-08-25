@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -204,6 +205,12 @@ type Session struct {
 	// closed is set once the command stream ended, so the session stops
 	// trying to read from it.
 	closed bool
+	// readErr is why the stream ended, when it ended for a reason. A
+	// [bufio.Scanner] that meets a line longer than [MaxCommandBytes] stops
+	// exactly as it stops at EOF, and a session that cannot tell those apart
+	// answers a refused command with "no more commands" and runs the rest of
+	// the workflow unattended (Codex, #1109).
+	readErr error
 	// redact is what every printed line passes through — see [Session.SetRedactor].
 	redact func(string) string
 	// ended is set when the session itself abandoned the run (`quit` at a
@@ -309,7 +316,12 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 			// debugger is an availability incident. Said out loud, because a
 			// run that finished the rest of itself unattended is something
 			// the reader has to know happened.
-			s.printfTone(ToneWarning, "(no more commands — continuing to the end of the run)\n")
+			if why := s.consoleEnded(); why != "" {
+				s.printfTone(ToneDanger,
+					"(%s — continuing to the end of the run, unattended)\n", why)
+			} else {
+				s.printfTone(ToneWarning, "(no more commands — continuing to the end of the run)\n")
+			}
 			s.resume(modeRun, "")
 
 			return nil
@@ -470,7 +482,19 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 	s.readOnce.Do(func() {
 		s.lines = make(chan string)
 		go func() {
-			defer close(s.lines)
+			// The scanner's own verdict, published before the close that a
+			// receiver reads as "the console is gone" — so a session that
+			// finds the stream closed can tell a console that ended from one
+			// that broke. Set first, closed second: a receiver woken by the
+			// close must find the reason already there.
+			defer func() {
+				s.mu.Lock()
+				s.readErr = scanner.Err()
+				s.mu.Unlock()
+
+				close(s.lines)
+			}()
+
 			for scanner.Scan() {
 				// Never a bare send: with the session done there is no
 				// receiver, and a bare send would park this goroutine for the
@@ -507,6 +531,31 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 		_ = s.Close()
 
 		return "", false, ctx.Err()
+	}
+}
+
+// consoleEnded says why the command stream stopped, in words an author can
+// act on, or "" where it simply ran out.
+//
+// The one reason that is not a broken pipe is the one worth naming: a command
+// longer than [MaxCommandBytes] is a bound this package advertises, and an
+// author who hit it deserves to be told which bound they hit rather than to
+// watch their run finish without them.
+func (s *Session) consoleEnded() string {
+	s.mu.Lock()
+	err := s.readErr
+	s.mu.Unlock()
+
+	switch {
+	case err == nil:
+		return ""
+
+	case errors.Is(err, bufio.ErrTooLong):
+		return fmt.Sprintf("a command was longer than the %d bytes one may be, and a scanner "+
+			"cannot carry on past it", MaxCommandBytes)
+
+	default:
+		return "the console could not be read: " + err.Error()
 	}
 }
 
@@ -766,7 +815,16 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 		line, ok, readErr := s.readCommand(ctx)
 		if readErr != nil || !ok {
 			// A cancellation or a finished stream both end the autopsy the
-			// same way: there is no run left for either to change.
+			// same way: there is no run left for either to change. A stream
+			// that *broke* still says so before going — there is no run to
+			// rescue here, but an author whose command was refused should
+			// learn that rather than watch the prompt vanish (Codex, #1109).
+			if readErr == nil {
+				if why := s.consoleEnded(); why != "" {
+					s.printfTone(ToneDanger, "(%s — leaving the autopsy)\n", why)
+				}
+			}
+
 			return
 		}
 

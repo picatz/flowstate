@@ -976,3 +976,76 @@ outputs: {}
 			"every branch's account has to reach the transcript")
 	}
 }
+
+// TestTheDebugAnswerBoundsARefusedDocument (Codex, #1109): a `tests` document
+// the loader will not read at all produces no cases and one `refused` string —
+// and that string quotes what it refused, out of a document that may be a
+// megabyte.
+//
+// Nothing in the debug ladder shrinks a report, and the report ladder carried
+// `refused` whole on every rung including its floor, so the answer's size was
+// the submitted document's to choose. That is the attacker-controlled resource
+// escaping its bound, which is the one thing these ladders exist to prevent.
+func TestTheDebugAnswerBoundsARefusedDocument(t *testing.T) {
+	t.Parallel()
+
+	// A refusal the size of the document that caused it.
+	report := &v1.TestReport{
+		File:    "submitted",
+		Refused: strings.Repeat("y", 900<<10),
+	}
+
+	transcript := &debugTranscript{}
+	transcript.add("break at first\n", flowdebug.ToneBreak)
+
+	encoded, err := renderDebugResult(report, transcript, []string{"continue"}, false)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"a refused document chose the size of the answer refusing it")
+
+	var answer debugAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	var carried v1.TestReport
+	require.NoError(t, protojson.Unmarshal(answer.Report, &carried))
+	assert.Contains(t, carried.GetRefused(), "truncated, exceeded",
+		"the refusal must say it was cut, not just arrive short")
+	assert.NotEmpty(t, carried.GetRefused(), "and a refusal with nothing in it is not a diagnostic")
+}
+
+// TestTheDebugAnswerBoundsFiveHundredCaseNames is the same escape by the other
+// door: the report floor keeps every case's name, and how many names there are
+// is the document's choice — flowtest.MaxTestsPerFile is 500 and a case name
+// has no length of its own, so a megabyte of names is an ordinary submitted
+// document (Codex, #1109, generalising the refused-report finding).
+func TestTheDebugAnswerBoundsFiveHundredCaseNames(t *testing.T) {
+	t.Parallel()
+
+	report := &v1.TestReport{File: "submitted"}
+	for i := range 500 {
+		report.Cases = append(report.Cases, &v1.TestCase{
+			Name:   fmt.Sprintf("case-%03d-%s", i, strings.Repeat("y", 2<<10)),
+			Passed: false,
+			Error:  "it did not pass",
+		})
+	}
+
+	transcript := &debugTranscript{}
+	transcript.add("break at first\n", flowdebug.ToneBreak)
+
+	encoded, err := renderDebugResult(report, transcript, []string{"continue"}, false)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"five hundred long case names carried the answer past the cap")
+
+	var answer debugAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	var carried v1.TestReport
+	require.NoError(t, protojson.Unmarshal(answer.Report, &carried))
+	require.Len(t, carried.GetCases(), 500, "every verdict survives; only the names are cut")
+	assert.Contains(t, carried.GetCases()[0].GetName(), "case-000",
+		"and each name keeps the part that identifies it")
+}
