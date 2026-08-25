@@ -140,10 +140,13 @@ applies here rather than a second, weaker one.
   the final render withhold its transcript, naming `--reveal-sensitive`. Say the
   reveal out loud, or do not attach a debugger — there is no third answer where
   the debugger quietly shows what the renderer would have hidden.
-- At the autopsy, the case's own redaction posture applies to what prints: a
-  file var holding a secret's plaintext renders `[redacted]`, exactly as a
-  failing check's witnesses render it. Evaluation still sees the real value —
-  only the printing withholds.
+- Under `flow test --debug` and `flowstate_debug`, the case's own redaction
+  posture applies to **everything the session prints** — each step's account as
+  it arrives, every `inspect` answer, and the autopsy's failures — so a
+  declared-`sensitive:` input or a case secret renders `[redacted]` there
+  exactly as it does in the transcript beside it. Evaluation still sees the
+  real value, and a claim comparing against one still holds; only the printing
+  withholds.
 
 ## What it does not do yet
 

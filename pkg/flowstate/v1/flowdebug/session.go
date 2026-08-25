@@ -174,6 +174,8 @@ type Session struct {
 	// closed is set once the command stream ended, so the session stops
 	// trying to read from it.
 	closed bool
+	// redact is what every printed line passes through — see [Session.SetRedactor].
+	redact func(string) string
 	// ended is set when the session itself abandoned the run (`quit` at a
 	// breakpoint): the one command advertised as leaving must not be
 	// answered with another prompt, so the autopsy checks it and stays shut
@@ -450,11 +452,53 @@ func (s *Session) record(line string) {
 // installed one, to Out otherwise. Every write in this package goes through
 // here, so a session is colourable without a second output path.
 func (s *Session) printfTone(tone Tone, format string, args ...any) {
+	text := s.redactText(fmt.Sprintf(format, args...))
+
 	if s.emit != nil {
-		s.emit(fmt.Sprintf(format, args...), tone)
+		s.emit(text, tone)
 		return
 	}
-	fmt.Fprintf(s.out, format, args...)
+	fmt.Fprint(s.out, text)
+}
+
+// SetRedactor installs what every line this session prints passes through, or
+// clears it with nil.
+//
+// A debugger is a reveal — it narrates each step's values as they arrive and
+// `inspect` reaches whatever is in scope — so on a surface whose ordinary
+// rendering withholds a value, the session must withhold it too or it is a
+// second door around the first (Codex, #1109). It cannot decide that itself:
+// what is sensitive is a property of the workflow and the case, which the
+// caller running them knows and this package deliberately does not.
+//
+// So the caller hands the rule in, and hands in nil when the run it applies to
+// is over. Applied to the *rendered line* rather than to values on the way in,
+// because that is the one place everything passes: a step's account, an
+// inspection's answer, a failure at the autopsy. A redactor installed here can
+// only ever make output smaller, so a caller that installs none is exactly as
+// this behaved before.
+//
+// Evaluation is untouched. A `${...}` in the file still sees the real value,
+// and an inspection still compares against it — only what prints withholds,
+// which is the same split [flowtest]'s transcript already lives by.
+func (s *Session) SetRedactor(redact func(string) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.redact = redact
+}
+
+// redactText applies the installed redactor, if any.
+func (s *Session) redactText(text string) string {
+	s.mu.Lock()
+	redact := s.redact
+	s.mu.Unlock()
+
+	if redact == nil {
+		return text
+	}
+
+	return redact(text)
 }
 
 func (s *Session) printf(format string, args ...any) {

@@ -251,3 +251,43 @@ tests:
 	assert.Contains(t, res.Stdout, "bound: run, vars",
 		"the autopsy scope listing should still name the bindings")
 }
+
+// TestDebugWithholdsASensitiveInput is the CLI half of the same leak (Codex,
+// #1109, found on the MCP adapter and true here too): `flow test --debug`
+// installs the same session against the same run, so a declared-sensitive
+// input must not reach the terminal through `inspect` while the transcript
+// beside it withholds the same value.
+func TestDebugWithholdsASensitiveInput(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: secretive
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: echo
+    value: ${inputs.token}
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+tests:
+  - name: it runs
+    inputs:
+      token: hunter2-swordfish
+    expect:
+      ran: [echo]
+`), 0o600))
+
+	res := runFlowStdin(t, "inspect inputs.token\ncontinue\n", "test", "--debug", "--run", "it runs", dir)
+	require.NoError(t, res.Err)
+
+	all := res.Stdout + res.Stderr
+	require.Contains(t, all, "break at echo", "the session did not run at all")
+	assert.NotContains(t, all, "hunter2-swordfish",
+		"a declared-sensitive input reached the terminal through the debug session")
+	assert.Contains(t, all, "[redacted]")
+}

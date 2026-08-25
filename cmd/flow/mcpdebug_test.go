@@ -549,3 +549,49 @@ func TestTheDebugToolRefusesAnOversizedScript(t *testing.T) {
 	assert.Contains(t, result.Content[0].(*mcp.TextContent).Text,
 		fmt.Sprintf("at most %d across all of its commands", maxDebugScriptBytes))
 }
+
+// TestTheDebugToolWithholdsASensitiveInput (Codex, #1109): a debugger is a
+// reveal — it narrates each step's values and `inspect` reaches whatever is in
+// scope — so a value the transcript and the check witnesses withhold must not
+// come back through the session instead. Both paths, since the leak was on
+// both: an inspection asking for it directly, and the step account that would
+// carry it incidentally.
+func TestTheDebugToolWithholdsASensitiveInput(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	_, answer := callDebug(t, session, map[string]any{
+		"workflow": `edition: v2026.3
+name: secretive
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: echo
+    value: ${inputs.token}
+outputs: {}
+`,
+		"tests": `tests:
+  - name: it runs
+    inputs:
+      token: hunter2-swordfish
+    expect:
+      ran: [echo]
+`,
+		"commands": []any{"inspect inputs.token", "continue"},
+	})
+
+	joined := answer.transcript()
+
+	// Both halves: the session really ran and really answered, and what it
+	// answered is not the value. The absence alone would pass on an empty
+	// transcript.
+	require.Contains(t, joined, "break at echo", "the session did not run at all")
+	assert.NotContains(t, joined, "hunter2-swordfish",
+		"a declared-sensitive input reached the answer through the debug session")
+	assert.Contains(t, joined, "[redacted]",
+		"the value should render as the marker the transcript already uses")
+}

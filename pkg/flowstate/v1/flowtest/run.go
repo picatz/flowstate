@@ -739,6 +739,27 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		sensitive.values = append(sensitive.values, value)
 		sensitive.substrings = append(sensitive.substrings, value)
 	}
+	// A debugging session prints what the transcript prints, so it withholds
+	// what the transcript withholds (Codex, #1109). Capability-discovered the
+	// way the autopsy is: a debugger that does not implement it simply prints
+	// whatever it was going to, and the only implementation that exists is
+	// [flowdebug.Session]. Installed per case, because `sensitive` is this
+	// case's — its inputs, its secrets — and cleared afterward so a session
+	// driving a second case never carries the first one's rule.
+	if redacting, ok := v1.DebuggerFromContext(ctx).(interface {
+		SetRedactor(func(string) string)
+	}); ok {
+		redact := sensitive
+		redacting.SetRedactor(func(text string) string {
+			if redact.withholdAll {
+				return "[withheld]\n"
+			}
+
+			return redactSensitiveSubstrings(text, redact.substrings)
+		})
+		defer redacting.SetRedactor(nil)
+	}
+
 	if recorder != nil {
 		recorder.sensitive = sensitive
 	}
