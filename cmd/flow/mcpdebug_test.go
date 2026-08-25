@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -519,6 +521,13 @@ func TestTheDebugAnswerKeepsTheVerdictWhenNothingElseFits(t *testing.T) {
 	assert.Empty(t, answer.Session, "the transcript is the last thing to go, and it went")
 	require.NotEmpty(t, answer.Report, "the verdict never goes")
 	assert.Contains(t, answer.Note, "transcript was dropped entirely")
+
+	// Every rung's note, not just the settled rung's (Codex, #1109): the rungs
+	// are cumulative, so a document that lost the script *and* the transcript
+	// has to say both — otherwise `script: null` arrives with no explanation
+	// for it anywhere.
+	assert.Contains(t, answer.Note, "accepted script was dropped",
+		"the script went too, and the note is where a caller learns why")
 }
 
 // TestTheDebugToolRefusesAnOversizedScript bounds the argument itself, which
@@ -594,4 +603,53 @@ outputs: {}
 		"a declared-sensitive input reached the answer through the debug session")
 	assert.Contains(t, joined, "[redacted]",
 		"the value should render as the marker the transcript already uses")
+}
+
+// TestTheDebugToolHonoursRequestCancellation (Codex, #1109): on the stdio
+// surface no timeout is configured, and the first cut rooted the run at
+// context.Background() — so a client that cancelled a call could not stop it.
+// A `continue` into a wait with no timeout and no scripted signal is a legal
+// Flowfile that never completes, and the run would have outlived the request
+// that asked for it.
+//
+// Against the handler rather than through a client session, because the claim
+// is about the context the handler runs the case under, and cancelling a live
+// MCP request from the client side is the SDK's plumbing rather than this
+// tool's behaviour.
+func TestTheDebugToolHonoursRequestCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	done := make(chan *mcp.CallToolResult, 1)
+	go func() {
+		result, err := debugToolHandler(0)(ctx, &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Arguments: json.RawMessage(`{
+					"workflow": "edition: v2026.3\nname: parked\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+					"tests": "tests:\n  - name: it waits\n    expect:\n      failed: false\n",
+					"commands": ["continue"]
+				}`),
+			},
+		})
+		require.NoError(t, err)
+		done <- result
+	}()
+
+	// The run parks: nothing signals the gate and the virtual clock has no
+	// deadline to advance to.
+	select {
+	case <-done:
+		t.Fatal("the case completed, so this proves nothing about cancellation — the fixture must park")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	cancel()
+
+	select {
+	case result := <-done:
+		require.NotNil(t, result)
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelling the request did not stop the run: it is rooted at a context the caller cannot reach")
+	}
 }

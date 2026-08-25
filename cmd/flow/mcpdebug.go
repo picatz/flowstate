@@ -211,8 +211,20 @@ func debugToolHandler(timeout time.Duration) mcp.ToolHandler {
 		if err != nil {
 			return flowmcp.ToolError(err), nil
 		}
+		// The session's reader outlives this call otherwise: it parks on a
+		// send nobody will take, holding the scanner and the script for the
+		// life of a process that, on the serving surface, does not exit
+		// (Codex, #1109).
+		defer func() { _ = session.Close() }()
 
-		runCtx := context.Background()
+		// The request's own context is the base on every surface, not just
+		// where a timeout is configured. A client that cancels a debug call —
+		// an agent that gave up, a closed connection — is asking for the run
+		// to stop, and a run rooted at context.Background() would not hear it:
+		// `continue` into an unbounded wait would keep a goroutine parked with
+		// nobody left to answer (Codex, #1109). The timeout, where a surface
+		// sets one, layers on top.
+		runCtx := ctx
 		if timeout > 0 {
 			var cancel context.CancelFunc
 			runCtx, cancel = context.WithTimeout(ctx, timeout)
@@ -387,12 +399,13 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 		return encoded, nil
 	}
 
-	// Appended rather than replaced at each rung, so a document that lost two
-	// things says both.
-	withNote := func(a debugResult, said string) debugResult {
-		a.Note = strings.TrimSpace(strings.TrimSpace(a.Note) + " " + said)
-
-		return a
+	// Appended to the answer itself rather than to a copy of it, so a document
+	// that lost two things says both: the rungs are cumulative, and a note
+	// that lived only in the value one rung encoded left the next rung
+	// reporting the transcript reduction while silently omitting the script it
+	// had already dropped (Codex, #1109).
+	addNote := func(said string) {
+		answer.Note = strings.TrimSpace(strings.TrimSpace(answer.Note) + " " + said)
 	}
 
 	encoded, _, err := flowmcp.FitResult(
@@ -402,10 +415,11 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 		// of this document they already have.
 		func() ([]byte, error) {
 			answer.Script = nil
-
-			return encode(withNote(answer, fmt.Sprintf(
+			addNote(fmt.Sprintf(
 				"The accepted script was dropped: the answer exceeded %d bytes. It was the commands "+
-					"you sent, in the order they were accepted.", flowmcp.MaxResultBytes)))
+					"you sent, in the order they were accepted.", flowmcp.MaxResultBytes))
+
+			return encode(answer)
 		},
 
 		// Then the transcript's front. The tail is what a debugging call is
@@ -415,10 +429,11 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 			kept := len(answer.Session) / 4
 			dropped := len(answer.Session) - kept
 			answer.Session = answer.Session[dropped:]
-
-			return encode(withNote(answer, fmt.Sprintf(
+			addNote(fmt.Sprintf(
 				"The first %d transcript fragments were dropped, keeping the most recent %d: the "+
-					"answer exceeded %d bytes.", dropped, kept, flowmcp.MaxResultBytes)))
+					"answer exceeded %d bytes.", dropped, kept, flowmcp.MaxResultBytes))
+
+			return encode(answer)
 		},
 
 		// The floor: the verdict, which is the one thing this call shares with
@@ -428,11 +443,12 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 		// reduced by its ladder.
 		func() ([]byte, error) {
 			answer.Session = nil
-
-			return encode(withNote(answer, fmt.Sprintf(
+			addNote(fmt.Sprintf(
 				"The transcript was dropped entirely: the answer exceeded %d bytes even reduced. "+
 					"Drive the run with a shorter script — `break <step-id>` and `continue` reach a "+
-					"step without narrating every one before it.", flowmcp.MaxResultBytes)))
+					"step without narrating every one before it.", flowmcp.MaxResultBytes))
+
+			return encode(answer)
 		},
 	)
 	if err != nil {

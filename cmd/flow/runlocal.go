@@ -238,6 +238,12 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		// This process is about to exit either way, so the reader parking
+		// costs nothing here — closed anyway because a session's owner closes
+		// it, and a habit that holds only where it is load-bearing is one that
+		// will be missing where it is.
+		defer func() { _ = session.Close() }()
+
 		fmt.Fprintf(surface.Err, "%s\n", surface.ErrTheme.Accent.Render(
 			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
 		ctx = v1.NewContextWithDebugger(ctx, session)

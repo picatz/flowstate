@@ -276,6 +276,12 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		if session, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
 			return err
 		}
+		// The session's reader is this command's to release — see
+		// [flowdebug.Session.Close]. Free here, since the process exits after;
+		// closed anyway, because the surface where it is not free
+		// (`flow mcp serve`) is served by the same habit rather than a
+		// different one.
+		defer func() { _ = session.Close() }()
 	}
 
 	started := time.Now()

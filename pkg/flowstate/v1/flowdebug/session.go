@@ -155,6 +155,9 @@ type Session struct {
 	// is cancellable and a Scanner is not — see [Session.readCommand].
 	lines    chan string
 	readOnce sync.Once
+	// done releases the reader goroutine; see [Session.Close].
+	done     chan struct{}
+	stopOnce sync.Once
 
 	mu          sync.Mutex
 	mode        mode
@@ -194,6 +197,7 @@ func New(opts Options) (*Session, error) {
 		emit:        opts.Emit,
 		clock:       opts.Clock,
 		breakpoints: make(map[string]struct{}, len(opts.Breakpoints)),
+		done:        make(chan struct{}),
 	}
 	if s.out == nil {
 		s.out = io.Discard
@@ -382,6 +386,30 @@ func (s *Session) announce(node *v1.Node) {
 	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), NodeKind(node), at)
 }
 
+// Close releases the session's reader.
+//
+// A session reads its console on a goroutine (see [Session.readCommand]), and
+// that goroutine parks on an unbuffered send whenever a line arrives with
+// nobody left to take it — which is every session whose run ended while a
+// command was still in flight. In a process that is about to exit, parked is
+// free. In a server that answers debug calls for as long as it is up, it is a
+// goroutine, a scanner and a script retained per call, without bound (Codex,
+// #1109).
+//
+// So a caller that outlives its sessions closes them. Idempotent, safe to call
+// from any goroutine, and safe to call on a session whose reader never
+// started: it releases what exists rather than requiring the caller to know
+// what that was.
+//
+// It does not close the underlying reader — a session does not own the
+// caller's io.Reader, and closing stdin under `flow test --debug` would end
+// far more than the session.
+func (s *Session) Close() error {
+	s.stopOnce.Do(func() { close(s.done) })
+
+	return nil
+}
+
 // readCommand reads one line. ok is false once the stream has ended, and err
 // is the context's own error when cancellation ended the wait instead.
 //
@@ -389,9 +417,9 @@ func (s *Session) announce(node *v1.Node) {
 // cancellable and a Scanner is not: ctrl-C's first signal cancels the
 // command's context for a graceful stop, and a session blocked synchronously
 // in Scan would hold the process hostage for a second, harder signal (Codex,
-// #1109). One reader goroutine per session, started at the first prompt;
-// after a cancellation it may stay parked on the open stream, which costs a
-// process that is already leaving nothing.
+// #1109). One reader goroutine per session, started at the first prompt, and
+// it exits when the session is done — either because the stream ended, or
+// because [Session.Close] or a cancelled prompt released it.
 func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err error) {
 	s.mu.Lock()
 	closed, scanner := s.closed, s.in
@@ -406,7 +434,14 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 		go func() {
 			defer close(s.lines)
 			for scanner.Scan() {
-				s.lines <- scanner.Text()
+				// Never a bare send: with the session done there is no
+				// receiver, and a bare send would park this goroutine for the
+				// life of the process holding everything it closed over.
+				select {
+				case s.lines <- scanner.Text():
+				case <-s.done:
+					return
+				}
 			}
 		}()
 	})
@@ -426,10 +461,12 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 
 	case <-ctx.Done():
 		// The run is being torn down around this prompt; closed so no later
-		// boundary or autopsy asks a console the person already interrupted.
+		// boundary or autopsy asks a console the person already interrupted,
+		// and the reader released so it does not outlive the run it was for.
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()
+		_ = s.Close()
 
 		return "", false, ctx.Err()
 	}

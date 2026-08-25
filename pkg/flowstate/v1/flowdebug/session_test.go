@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -592,4 +593,59 @@ func TestACancelledContextUnblocksThePrompt(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the prompt did not notice the cancelled context")
 	}
+}
+
+// TestCloseReleasesTheReaderGoroutine (Codex, #1109): a session's reader parks
+// on an unbuffered send whenever a line arrives with nobody left to take it,
+// which is every session whose run ended with a command still in flight. In a
+// process about to exit that is free; in a server answering debug calls it is
+// a goroutine, a scanner and a script retained per call, without bound.
+//
+// Counted rather than asserted about in prose, because "does not leak" is
+// exactly the claim a test can make vacuously.
+func TestCloseReleasesTheReaderGoroutine(t *testing.T) {
+	// Not parallel: it counts goroutines, and a sibling test starting one
+	// concurrently would be indistinguishable from a leak.
+	before := runtime.NumGoroutine()
+
+	for range 20 {
+		// `step` resumes the run, so BeforeStep returns with the reader
+		// holding the *next* line and no receiver left for it — which is the
+		// shape that parks. A script of non-resuming commands would drain to
+		// EOF and exit on its own, proving nothing; that is how this test was
+		// vacuous when first written.
+		session, err := flowdebug.New(flowdebug.Options{
+			In:  strings.NewReader("step\n" + strings.Repeat("scope\n", 50)),
+			Out: io.Discard,
+		})
+		require.NoError(t, err)
+
+		// One read, then abandon it exactly as a finished call does.
+		require.NoError(t, session.BeforeStep(t.Context(), markStep("only"), &v1.Scope{}))
+		require.NoError(t, session.Close())
+	}
+
+	// The readers exit asynchronously; give them a moment rather than racing.
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	assert.LessOrEqual(t, runtime.NumGoroutine(), before+2,
+		"twenty closed sessions left readers parked: each holds its scanner and script "+
+			"for the life of the process")
+}
+
+// TestCloseIsIdempotentAndSafeWithoutAReader: a caller closing twice, or
+// closing a session whose reader never started, must not panic — a session is
+// closed by whoever owns it, and that owner does not know which of those
+// happened.
+func TestCloseIsIdempotentAndSafeWithoutAReader(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{Out: io.Discard})
+	require.NoError(t, err)
+
+	require.NoError(t, session.Close())
+	require.NoError(t, session.Close())
 }
