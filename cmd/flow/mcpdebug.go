@@ -52,6 +52,17 @@ const maxDebugCommands = 100
 // bound alone would have allowed for one command.
 const maxDebugScriptBytes = 64 << 10
 
+// maxDebugCaseBytes bounds the `case` argument.
+//
+// A refusal naming an unknown case quotes what was asked for, which is right —
+// a diagnostic that will not say what it did not find is not much of one — and
+// that puts a caller-controlled string into an error returned outside the
+// answer ladder, where a 300 KiB "name" becomes an oversized result (Codex,
+// #1109). Bounded at the door instead of trimmed in the message, because a
+// case name is a name: this is two orders of magnitude more than any real one
+// and still a rounding error against the cap.
+const maxDebugCaseBytes = 256
+
 // maxDebugFragments and maxDebugTranscriptBytes bound the answer at the point
 // it is collected, rather than trimming it afterward.
 //
@@ -270,6 +281,11 @@ func checkDebugArguments(args *debugToolArguments) error {
 	if strings.TrimSpace(args.Tests) == "" {
 		return errors.New("tests is required: a debug session runs a case, so pass a *.test.yaml " +
 			"document naming one, e.g. \"tests:\\n  - name: it runs\\n    expect:\\n      failed: false\"")
+	}
+	if len(args.Case) > maxDebugCaseBytes {
+		return fmt.Errorf("the `case` argument is %d bytes and a case name may be at most %d: "+
+			"it names one of the cases in the `tests` document, so this is not one of them",
+			len(args.Case), maxDebugCaseBytes)
 	}
 	if len(args.Commands) == 0 {
 		return errors.New("commands is required: pass the script that drives the session, e.g. " +

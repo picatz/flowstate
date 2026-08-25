@@ -653,3 +653,55 @@ func TestTheDebugToolHonoursRequestCancellation(t *testing.T) {
 		t.Fatal("cancelling the request did not stop the run: it is rooted at a context the caller cannot reach")
 	}
 }
+
+// TestTheDebugToolBoundsTheCaseArgument (Codex, #1109): an unknown-case
+// refusal quotes what was asked for, which is right — and that puts a
+// caller-controlled string into an error returned outside the answer ladder.
+// Both doors: the argument itself, and the file's own case names echoed back
+// beside it.
+func TestTheDebugToolBoundsTheCaseArgument(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	tests := `tests:
+  - name: it ships
+    expect:
+      failed: false
+`
+
+	t.Run("the argument", func(t *testing.T) {
+		t.Parallel()
+
+		result, _ := callDebug(t, session, map[string]any{
+			"workflow": debugWorkflow,
+			"tests":    tests,
+			"case":     strings.Repeat("n", 300<<10),
+			"commands": []any{"continue"},
+		})
+		require.True(t, result.IsError)
+
+		text := result.Content[0].(*mcp.TextContent).Text
+		assert.LessOrEqual(t, len(text), flowmcp.MaxResultBytes,
+			"the refusal echoed the argument and became an oversized answer: %d bytes", len(text))
+		assert.Contains(t, text, fmt.Sprintf("at most %d", maxDebugCaseBytes))
+	})
+
+	t.Run("the file's own names", func(t *testing.T) {
+		t.Parallel()
+
+		// A case whose *name* is enormous, so the refusal listing what the
+		// document declares is the door instead.
+		result, _ := callDebug(t, session, map[string]any{
+			"workflow": debugWorkflow,
+			"tests":    "tests:\n  - name: \"" + strings.Repeat("m", 300<<10) + "\"\n    expect:\n      failed: false\n",
+			"case":     "not-there",
+			"commands": []any{"continue"},
+		})
+		require.True(t, result.IsError)
+
+		text := result.Content[0].(*mcp.TextContent).Text
+		assert.LessOrEqual(t, len(text), flowmcp.MaxResultBytes,
+			"the refusal echoed a declared name whole: %d bytes", len(text))
+	})
+}

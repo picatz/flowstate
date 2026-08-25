@@ -142,8 +142,27 @@ func debuggerOrNil(session *flowdebug.Session) v1.Debugger {
 	return session
 }
 
+// maxDiagnosticNameRunes bounds one name rendered into a diagnostic.
+//
+// The count bound below is not enough on its own: five names is five names of
+// whatever length the file gave them, and a submitted document reaches this
+// through `flowstate_debug`'s refusals, where an error is an answer with a
+// byte budget (Codex, #1109). Long enough that no real case name is touched.
+const maxDiagnosticNameRunes = 120
+
+// capForDiagnostic shortens one name for a message, saying that it did.
+func capForDiagnostic(name string) string {
+	runes := []rune(name)
+	if len(runes) <= maxDiagnosticNameRunes {
+		return name
+	}
+
+	return string(runes[:maxDiagnosticNameRunes]) + fmt.Sprintf("… (%d more)", len(runes)-maxDiagnosticNameRunes)
+}
+
 // quotedList renders names for a diagnostic, bounded so a pattern that matched
-// a hundred cases names a readable few and says how many more.
+// a hundred cases names a readable few and says how many more, and so that one
+// very long name cannot be most of a message.
 func quotedList(names []string) string {
 	const show = 5
 
@@ -155,7 +174,7 @@ func quotedList(names []string) string {
 		if i > 0 {
 			quoted += ", "
 		}
-		quoted += fmt.Sprintf("%q", name)
+		quoted += fmt.Sprintf("%q", capForDiagnostic(name))
 	}
 	if quoted == "" {
 		return "none"
