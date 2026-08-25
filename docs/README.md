@@ -18,6 +18,7 @@ it.
 | [reference/cel.md](reference/cel.md) | *Generated.* Every CEL function and macro an expression may call, with call forms and the cost limit they spend against. |
 | [reference/diagnostics.md](reference/diagnostics.md) | *Generated.* Every stable diagnostic `code` `flow validate` can report, so a program can branch on a failure without parsing prose. |
 | [EDITORS.md](EDITORS.md) | `flow lsp`: diagnostics, hover and completion in an editor, and how to wire it up per editor. |
+| [DEBUGGING.md](DEBUGGING.md) | The step debugger: holding a run at each step and asking it questions, at a terminal or as an agent. The tool for *why* a case failed, where `flow test` answers *that* it did. |
 | [EMBEDDING.md](EMBEDDING.md) | `pkg/flowstate/embed`: compiling and running Flowfiles from your own Go program, and registering Go functions as tasks. |
 | [PLUGINS.md](PLUGINS.md) | Writing a plugin from outside this repository: empty directory to a task in `flow plugins`, and the five places the SDK contract is implicit. |
 | [USE_CASES.md](USE_CASES.md) | Four worked enterprise workloads end to end — the index to `examples/enterprise-*/`. |
