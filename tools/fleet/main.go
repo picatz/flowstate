@@ -112,12 +112,7 @@ func readMachine() Machine {
 		machine.CacheDiskFree, machine.CacheDiskKnown = diskFree(cache)
 	}
 
-	var others []string
-	for _, target := range laneWriteTargets(goEnv) {
-		if target != cache {
-			others = append(others, target)
-		}
-	}
+	others := otherFilesystems(laneWriteTargets(goEnv), cache, deviceOf)
 	machine.OtherDiskFree, machine.OtherDiskKnown = tightestFree(others, diskFree)
 
 	return machine
@@ -200,6 +195,57 @@ func laneWriteTargets(env func(string) string) []string {
 	}
 
 	return targets
+}
+
+// otherFilesystems returns the write targets that are not on the cache's own
+// filesystem — the ones a prune cannot give bytes back to.
+//
+// By filesystem identity rather than by path, and the difference is the common
+// case rather than an edge one: on a single-volume machine the worktree, the
+// cache and GOTMPDIR are three different paths on one device, so excluding by
+// path alone left two of them in this list reporting the cache's own low
+// reading. Every warning about "another filesystem" would then fire exactly
+// when pruning was about to work, because deleting cache entries raises free
+// space for all three at once (Codex, #1113).
+//
+// The device lookup is a parameter for the reason [laneWriteTargets]'s
+// environment lookup is: so a test can pose a machine whose mounts this
+// process cannot arrange. A target whose device cannot be read stays in the
+// list, which over-reports rather than over-promises — the safe direction for
+// a claim that a prune will be enough.
+func otherFilesystems(targets []string, cache string, device func(string) (uint64, bool)) []string {
+	cacheDevice, known := device(cache)
+
+	var others []string
+
+	for _, target := range targets {
+		if target == cache {
+			continue
+		}
+		if known {
+			if got, ok := device(target); ok && got == cacheDevice {
+				continue
+			}
+		}
+		others = append(others, target)
+	}
+
+	return others
+}
+
+// deviceOf identifies the filesystem a path sits on.
+func deviceOf(path string) (uint64, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+
+	return uint64(stat.Dev), true
 }
 
 // tightestFree is the minimum over the readable answers, and it is the readable
