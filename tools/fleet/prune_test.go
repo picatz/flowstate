@@ -142,6 +142,71 @@ func TestPruneAdviceNeverCallsAShortDiskHealthy(t *testing.T) {
 	assert.Empty(t, PruneFor(Machine{DiskFree: 100 * gib, CacheSizeBytes: 40 * gib}).Advice)
 }
 
+// TestPruneForWillNotClaimEnoughWhileAnotherMountIsShort (Codex, #1112): a
+// prune moves bytes on one filesystem, and the machine is only unblocked when
+// every mount a lane writes to is clear of the target.
+//
+// Separating the cache's reading from the aggregate fixed *where* to prune;
+// this is the same mistake one level further in — claiming the prune will
+// unblock a lane when a different write target is short too, so the cold
+// rebuild is spent and the plan is unchanged.
+func TestPruneForWillNotClaimEnoughWhileAnotherMountIsShort(t *testing.T) {
+	t.Parallel()
+
+	want := PruneFor(Machine{
+		DiskFree:       4 * gib, // the cache mount is the tightest
+		CacheDiskFree:  4 * gib,
+		CacheDiskKnown: true,
+		OtherDiskFree:  7 * gib, // but the worktree is short of the 8 GiB target too
+		OtherDiskKnown: true,
+		CacheSizeBytes: 40 * gib,
+	})
+
+	assert.Positive(t, want.Bytes, "the cache can still give back what its own filesystem lacks")
+	assert.False(t, want.Enough,
+		"but the worktree stays below the target, so this does not fit a lane")
+
+	joined := strings.Join(want.Advice, "\n")
+	assert.Contains(t, joined, "another filesystem a lane writes to",
+		"and the reason has to name the mount that is actually blocking")
+}
+
+// TestCacheSizeCountsOnlyWhatAPruneCanRemove is the fuzz corpus (Codex,
+// #1112).
+//
+// `cacheSize` walked the whole tree while the prune deliberately skips
+// `fuzz/`, so the number feeding Machine.CacheSizeBytes — and through it every
+// promise PruneFor makes — counted bytes that could never be given back. An
+// eight-gigabyte corpus beside one gigabyte of entries asked for an
+// eight-gigabyte prune, freed one, and reported Enough while doing it.
+func TestCacheSizeCountsOnlyWhatAPruneCanRemove(t *testing.T) {
+	t.Parallel()
+
+	dir, _ := cacheDir(t)
+
+	// A corpus worth more than everything removable, so counting the tree
+	// cannot be mistaken for counting the entries.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "fuzz", "corpus", "big"), make([]byte, 64<<20), 0o600))
+
+	var eligible uint64
+	for _, entry := range cacheEntries(dir) {
+		eligible += entry.size
+	}
+
+	assert.Equal(t, eligible, cacheSize(dir),
+		"the size promised has to be the size a prune can deliver")
+	assert.Less(t, cacheSize(dir), treeSize(dir),
+		"and the tree holds a corpus and bookkeeping it will never remove")
+
+	// The promise kept: ask for all of it and all of it comes back.
+	freed, _, err := pruneCache(dir, eligible)
+	require.NoError(t, err)
+	assert.Equal(t, eligible, freed, "what was counted is what came back")
+
+	assert.FileExists(t, filepath.Join(dir, "fuzz", "corpus", "big"),
+		"and the corpus is still there, which is the whole reason it was never countable")
+}
+
 func TestPruneForCannotPromiseMoreThanTheCacheHolds(t *testing.T) {
 	t.Parallel()
 
@@ -262,4 +327,79 @@ func TestPruneCacheDoesNothingWithoutATarget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, freed)
 	assert.Zero(t, removed, "no GOCACHE is not an error, it is nothing to do")
+}
+
+// TestOtherFilesystemsGroupsByDeviceNotPath (Codex, #1113) is the common
+// layout, not an edge case: one volume, three paths.
+//
+// Excluding the cache by *path* left the worktree and GOTMPDIR in the list
+// reporting the cache's own low reading, so every "another filesystem is
+// short" warning fired exactly when pruning was about to work — deleting cache
+// entries raises free space for all three at once when all three are one
+// device.
+func TestOtherFilesystemsGroupsByDeviceNotPath(t *testing.T) {
+	t.Parallel()
+
+	device := func(devices map[string]uint64) func(string) (uint64, bool) {
+		return func(path string) (uint64, bool) {
+			got, ok := devices[path]
+
+			return got, ok
+		}
+	}
+
+	t.Run("one volume leaves nothing for a prune to miss", func(t *testing.T) {
+		t.Parallel()
+
+		others := otherFilesystems(
+			[]string{".", "/cache", "/tmp"}, "/cache",
+			device(map[string]uint64{".": 1, "/cache": 1, "/tmp": 1}))
+
+		assert.Empty(t, others,
+			"three paths on one device are one filesystem, and the prune reaches all of it")
+	})
+
+	t.Run("a genuinely separate mount is kept", func(t *testing.T) {
+		t.Parallel()
+
+		others := otherFilesystems(
+			[]string{".", "/cache", "/tmp"}, "/cache",
+			device(map[string]uint64{".": 1, "/cache": 1, "/tmp": 2}))
+
+		assert.Equal(t, []string{"/tmp"}, others,
+			"a tmpfs the cache cannot reach still decides whether a prune is enough")
+	})
+
+	t.Run("an unreadable device is kept rather than assumed shared", func(t *testing.T) {
+		t.Parallel()
+
+		others := otherFilesystems(
+			[]string{".", "/cache"}, "/cache",
+			device(map[string]uint64{"/cache": 1}))
+
+		assert.Equal(t, []string{"."}, others,
+			"over-reporting a mount is safer than promising a prune will be enough")
+	})
+}
+
+// TestPruneOnASingleVolumeMachineClaimsEnough is the same finding at the
+// level a caller sees it: the machine this ran on has its worktree, cache and
+// GOTMPDIR all on device 65024, and the prune has to be able to say so.
+func TestPruneOnASingleVolumeMachineClaimsEnough(t *testing.T) {
+	t.Parallel()
+
+	// One volume: OtherDiskKnown false, because nothing is on another
+	// filesystem for otherFilesystems to have returned.
+	want := PruneFor(Machine{
+		DiskFree:       1 * gib,
+		CacheDiskFree:  1 * gib,
+		CacheDiskKnown: true,
+		CacheSizeBytes: 40 * gib,
+	})
+
+	assert.Positive(t, want.Bytes)
+	assert.True(t, want.Enough,
+		"on one volume a prune raises free space everywhere a lane writes, so it is enough")
+	assert.Empty(t, want.Advice,
+		"and a prune that will work needs no warning about filesystems it cannot reach")
 }

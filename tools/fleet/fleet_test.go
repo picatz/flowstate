@@ -423,7 +423,10 @@ func TestTheDiskBoundCoversWhereBuildIntermediatesLand(t *testing.T) {
 		})
 
 		require.Contains(t, targets, "/tmp", "the go command's scratch directory is a filesystem a lane writes to")
-		assert.Equal(t, uint64(64<<20), tightestFree(targets, func(path string) uint64 { return free[path] }),
+
+		got, measured := tightestFree(targets, reading(free))
+		assert.True(t, measured)
+		assert.Equal(t, uint64(64<<20), got,
 			"the tightest mount is the bound, whichever of the three it is")
 	})
 
@@ -435,12 +438,36 @@ func TestTheDiskBoundCoversWhereBuildIntermediatesLand(t *testing.T) {
 	})
 
 	// An unmeasurable mount is a missing fact, not a full one: statfs failing
-	// on a path reports zero, and folding that into the minimum would refuse
+	// on a path reports nothing, and folding that into the minimum would refuse
 	// the whole fleet on the strength of a read that did not happen.
 	t.Run("an unreadable filesystem does not read as a full one", func(t *testing.T) {
 		free := map[string]uint64{".": 100 * gib}
 
-		assert.Equal(t, uint64(100*gib),
-			tightestFree([]string{".", "/gone", "/also-gone"}, func(path string) uint64 { return free[path] }))
+		got, measured := tightestFree([]string{".", "/gone", "/also-gone"}, reading(free))
+		assert.True(t, measured)
+		assert.Equal(t, uint64(100*gib), got)
 	})
+
+	// And the direction that cost a P1: a filesystem at ENOSPC has zero bytes
+	// available and that is a *measurement*. While zero and unreadable shared
+	// one spelling, a full GOCACHE dropped out of the minimum entirely, so a
+	// machine whose cache mount was the only full one read as healthy and
+	// `-prune` answered "nothing to prune" (Codex, #1112).
+	t.Run("a full filesystem is measured, not skipped", func(t *testing.T) {
+		free := map[string]uint64{".": 100 * gib, "/cache": 0}
+
+		got, measured := tightestFree([]string{".", "/cache"}, reading(free))
+		assert.True(t, measured)
+		assert.Zero(t, got, "a measured zero is the tightest mount there is")
+	})
+}
+
+// reading turns a table of free bytes into the two-value reader tightestFree
+// takes: present means measured, absent means the path could not be read.
+func reading(free map[string]uint64) func(string) (uint64, bool) {
+	return func(path string) (uint64, bool) {
+		got, ok := free[path]
+
+		return got, ok
+	}
 }
