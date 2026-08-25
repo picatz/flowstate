@@ -494,15 +494,57 @@ func TestATabPressCostsNoMoreThanTheAnswerItProduces(t *testing.T) {
 	require.NotEmpty(t, whole.Candidates)
 	assert.Equal(t, "output_00000", whole.Candidates[0].Text)
 
-	// The half that only Candidate.Truncated can carry, and the reason it
-	// exists. Here the *answer* is one candidate — far inside MaxCandidates —
-	// so celcomplete's own bound has nothing to report. The member list it was
-	// drawn from was still a prefix, and saying otherwise would tell an author
-	// they had seen everything `steps.big.` offers.
+	// And the name an author actually types is reachable, however far past the
+	// bound it sorts — the prefix reaches the collection rather than following
+	// it (Codex, #1114). This used to answer nothing while claiming there was
+	// more, which is the worst of both: the name withheld and the notice given
+	// for names that were never being asked about.
 	narrow := console.answers[1]
-	assert.Len(t, narrow.Candidates, 1)
-	assert.True(t, narrow.Truncated,
-		"an answer drawn from a truncated member list is truncated, however few it holds")
+	assert.Equal(t, []string{"output_00007"}, texts(narrow),
+		"a uniquely-narrowing prefix has to reach its name")
+	assert.False(t, narrow.Truncated,
+		"and one match out of one is complete: `and more` here would be about "+
+			"names that do not match what was typed")
+}
+
+// TestATruncatedMemberListIsTruncatedEvenAtAFullAnswer is the half that only a
+// member level's own flag can carry.
+//
+// A prefix matching more names than the bound holds leaves the source returning
+// exactly [celcomplete.MaxCandidates] of them — at which point celcomplete's
+// own cap never sees a candidate it has to refuse, and reports the answer
+// complete. The source is the only thing that knows it cut.
+func TestATruncatedMemberListIsTruncatedEvenAtAFullAnswer(t *testing.T) {
+	t.Parallel()
+
+	named := make(map[string]*v1.Value, 2*celcomplete.MaxCandidates)
+	for i := range 2 * celcomplete.MaxCandidates {
+		named[fmt.Sprintf("output_%05d", i)] = v1.NewLiteral("v")
+	}
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Outputs = &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{"big": {NamedValues: named}},
+	}
+
+	var out strings.Builder
+
+	// `output_0` matches every one of them, so the cut happens inside the
+	// source and the answer arrives exactly full.
+	console := &asking{steps: []string{"quit"}, ask: [][]string{{"inspect steps.big.output_0"}}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+
+	require.Len(t, console.answers, 1)
+
+	assert.Len(t, console.answers[0].Candidates, celcomplete.MaxCandidates,
+		"exactly full, which is what stops celcomplete's own cap from firing")
+	assert.True(t, console.answers[0].Truncated,
+		"so the member level has to say it cut, or a full answer reads as the whole of it")
 }
 
 // TestTheStepsRootSaysWhenTheRunHasMoreSteps (Codex, #1114): the quieter half
@@ -526,9 +568,10 @@ func TestTheStepsRootSaysWhenTheRunHasMoreSteps(t *testing.T) {
 
 	var out strings.Builder
 
-	// A narrow prefix, so the *answer* is small and only the root's own
-	// truncation can report that the run went further.
-	console := &asking{steps: []string{"quit"}, ask: [][]string{{"inspect steps.step_00007"}}}
+	console := &asking{
+		steps: []string{"quit"},
+		ask:   [][]string{{"inspect steps.", "inspect steps.step_00007"}},
+	}
 	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
@@ -536,13 +579,24 @@ func TestTheStepsRootSaysWhenTheRunHasMoreSteps(t *testing.T) {
 
 	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
 
-	require.Len(t, console.answers, 1)
-	answer := console.answers[0]
+	require.Len(t, console.answers, 2)
 
-	assert.Len(t, answer.Candidates, 1, "the answer itself is far inside the bound")
-	assert.True(t, answer.Truncated,
-		"but the run has more steps than the root could hold, and saying otherwise "+
+	// Listing the lot: the root cuts at the bound and has to say so. The
+	// answer arrives exactly full, so celcomplete's own cap never refuses a
+	// candidate and cannot be what reports this.
+	whole := console.answers[0]
+	assert.Len(t, whole.Candidates, celcomplete.MaxCandidates)
+	assert.True(t, whole.Truncated,
+		"the run has more steps than the root could hold, and saying otherwise "+
 			"tells an author a step they cannot find never ran")
+
+	// Naming one of them: complete, and complete *honestly*. The prefix now
+	// reaches the root's own collection, so this answers the step asked for
+	// rather than reporting `and more` about 1023 steps nobody asked about.
+	named := console.answers[1]
+	assert.Equal(t, []string{"step_00007"}, texts(named),
+		"the step an author names is the step they get")
+	assert.False(t, named.Truncated, "and it is the whole of what they asked for")
 }
 
 // TestAnAutopsyBindingWithManyKeysIsStableAndSaysItIsShort (Codex, #1114) is

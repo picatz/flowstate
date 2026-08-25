@@ -290,21 +290,27 @@ func (s *Session) completionScope(at promptSubject) celcomplete.Scope {
 	// arrive this way after a case fails, carrying the bindings its
 	// `expect.check:` was judged under.
 	for _, name := range sortedKeys(at.extra) {
-		members, more := mapMembers(at.extra[name])
+		binding := at.extra[name]
+		// Whether there is anything after the dot, asked of the binding's
+		// shape rather than by listing it: the list is the run's map, so it is
+		// collected per prefix and only when a dot is actually typed.
+		members := hasMembers(binding)
 
 		candidate := celcomplete.Candidate{
-			Name:      name,
-			Kind:      kindFor(members),
-			Detail:    "bound for this autopsy",
-			Insert:    name + dotIfMembers(members),
-			Members:   members,
-			Truncated: more,
+			Name:   name,
+			Kind:   kindFor(members),
+			Detail: "bound for this autopsy",
+			Insert: name + dotIfMembers(members),
 		}
 
-		if len(members) == 0 {
+		if !members {
 			shared.Locals = append(shared.Locals, candidate)
 
 			continue
+		}
+
+		candidate.MemberSource = func(prefix string) ([]celcomplete.Candidate, bool) {
+			return mapMembers(binding, prefix)
 		}
 
 		// A binding with members goes in as a *root*, because only roots are
@@ -324,6 +330,33 @@ func (s *Session) completionScope(at promptSubject) celcomplete.Scope {
 	return shared
 }
 
+// hasMembers reports whether a binding is a map with at least one name under
+// it — the question "should this be written with a dot", answered without
+// listing what the dot reaches.
+//
+// Bounded, because a binding whose keys are all non-strings would otherwise be
+// walked whole to answer no, and how many keys it has is the run's choice. Past
+// the bound the answer is no: a binding with [celcomplete.MaxCandidates] keys
+// and no string among them has nothing this completer could offer anyway.
+func hasMembers(bound ref.Val) bool {
+	mapper, ok := bound.(traits.Mapper)
+	if !ok {
+		return false
+	}
+
+	it := mapper.Iterator()
+	for range celcomplete.MaxCandidates {
+		if it.HasNext() != types.True {
+			return false
+		}
+		if _, ok := it.Next().Value().(string); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
 // replacingRoot puts a root in, replacing any of the same name and keeping the
 // order the rest were offered in.
 func replacingRoot(roots []celcomplete.Candidate, root celcomplete.Candidate) []celcomplete.Candidate {
@@ -340,8 +373,8 @@ func replacingRoot(roots []celcomplete.Candidate, root celcomplete.Candidate) []
 
 // kindFor says whether a binding is a value or a namespace, which is decided by
 // whether anything follows a dot on it.
-func kindFor(members []celcomplete.Candidate) celcomplete.Kind {
-	if len(members) > 0 {
+func kindFor(members bool) celcomplete.Kind {
+	if members {
 		return celcomplete.KindRoot
 	}
 
@@ -350,8 +383,8 @@ func kindFor(members []celcomplete.Candidate) celcomplete.Kind {
 
 // dotIfMembers writes the dot with a binding that has members, for the reason a
 // root is written with one.
-func dotIfMembers(members []celcomplete.Candidate) string {
-	if len(members) > 0 {
+func dotIfMembers(members bool) string {
+	if members {
 		return "."
 	}
 
@@ -365,7 +398,7 @@ func dotIfMembers(members []celcomplete.Candidate) string {
 // only the key is read, which is what keeps this on the right side of the rule
 // [Session.Complete] states. Bounded by [celcomplete.MaxCandidates] like every
 // other list here, because the size of a bound map is the run's choice.
-func mapMembers(bound ref.Val) ([]celcomplete.Candidate, bool) {
+func mapMembers(bound ref.Val, prefix string) ([]celcomplete.Candidate, bool) {
 	mapper, ok := bound.(traits.Mapper)
 	if !ok {
 		return nil, false
@@ -382,7 +415,9 @@ func mapMembers(bound ref.Val) ([]celcomplete.Candidate, bool) {
 		if !ok {
 			continue
 		}
-		kept.add(key)
+		if strings.HasPrefix(key, prefix) {
+			kept.add(key)
+		}
 	}
 
 	names, more := kept.result()
@@ -405,14 +440,14 @@ func mapMembers(bound ref.Val) ([]celcomplete.Candidate, bool) {
 // This is what a live scope buys over a document's: an editor offers what a
 // task *declares*, and a shaping expression or a plugin's own answer can make
 // that a different set. Here the names are the ones the run produced.
-func stepCandidates(scope *v1.Scope) ([]celcomplete.Candidate, bool) {
+func stepCandidates(scope *v1.Scope, prefix string) ([]celcomplete.Candidate, bool) {
 	steps := scope.GetOutputs().GetStepValues()
 
-	ids, truncated := boundedNames(steps, celcomplete.MaxCandidates)
+	ids, truncated := boundedNames(steps, prefix, celcomplete.MaxCandidates)
 
 	out := make([]celcomplete.Candidate, 0, len(ids))
 	for _, id := range ids {
-		members, more := namesOfOutputs(steps[id])
+		outputs := steps[id]
 		out = append(out, celcomplete.Candidate{
 			Name:   id,
 			Kind:   celcomplete.KindValue,
@@ -420,8 +455,15 @@ func stepCandidates(scope *v1.Scope) ([]celcomplete.Candidate, bool) {
 			// No type beside an output name, deliberately: the only source for
 			// one here is the value itself, and reading a value is what this
 			// completer does not do.
-			Members:   members,
-			Truncated: more,
+			//
+			// Lazy, and for two reasons. A step's output names are the task's
+			// map, so the prefix has to reach the bound rather than follow it
+			// — see [celcomplete.Candidate.MemberSource]. And the eager form
+			// built the names of all 512 steps on every tab press, to answer
+			// about at most one of them.
+			MemberSource: func(member string) ([]celcomplete.Candidate, bool) {
+				return namesOfOutputs(outputs, member)
+			},
 		})
 	}
 
@@ -436,10 +478,10 @@ func stepCandidates(scope *v1.Scope) ([]celcomplete.Candidate, bool) {
 // that a step they cannot find never ran (Codex, #1114). A completer may be
 // incomplete; it may not be misleading about it.
 func stepsRoot(scope *v1.Scope) celcomplete.Candidate {
-	steps, truncated := stepCandidates(scope)
-
-	root := celcomplete.StepsRoot(steps)
-	root.Truncated = truncated
+	root := celcomplete.StepsRoot(nil)
+	root.MemberSource = func(prefix string) ([]celcomplete.Candidate, bool) {
+		return stepCandidates(scope, prefix)
+	}
 
 	return root
 }
@@ -453,10 +495,10 @@ func stepsRoot(scope *v1.Scope) celcomplete.Candidate {
 // the answer looks bounded (Codex, #1114). That is the shape CLAUDE.md names —
 // bound the resource the far side controls, not a proxy for it. A tab press
 // must not cost more than the answer it produces.
-func namesOfOutputs(outputs *v1.Node_Outputs) ([]celcomplete.Candidate, bool) {
+func namesOfOutputs(outputs *v1.Node_Outputs, prefix string) ([]celcomplete.Candidate, bool) {
 	named := outputs.GetNamedValues()
 
-	names, more := boundedNames(named, celcomplete.MaxCandidates)
+	names, more := boundedNames(named, prefix, celcomplete.MaxCandidates)
 
 	out := make([]celcomplete.Candidate, 0, len(names))
 	for _, name := range names {
@@ -470,16 +512,25 @@ func namesOfOutputs(outputs *v1.Node_Outputs) ([]celcomplete.Candidate, bool) {
 	return out, more
 }
 
-// boundedNames returns at most limit of a map's keys in order, and whether
-// there were more than that.
+// boundedNames returns at most limit of a map's keys that begin with prefix, in
+// order, and whether there were more than that.
 //
 // It never holds more than limit of them, which is what makes it a bound on
 // the work rather than on the answer: the alternative — collect every key,
 // sort, then cut — has already paid for the whole map by the time it cuts.
-func boundedNames[V any](values map[string]V, limit int) (names []string, more bool) {
+//
+// The prefix belongs *inside* the bound rather than after it, and the two
+// orders are not equivalent: cut first and the 512 alphabetically-first keys of
+// a large map may contain none of the matches for what was typed, so a name
+// that is uniquely identified by what an author has already written is
+// unreachable (Codex, #1114). Filtering first, the bound only ever discards
+// names that were competing for the same answer.
+func boundedNames[V any](values map[string]V, prefix string, limit int) (names []string, more bool) {
 	kept := newBoundedNames(limit)
 	for name := range values {
-		kept.add(name)
+		if strings.HasPrefix(name, prefix) {
+			kept.add(name)
+		}
 	}
 
 	return kept.result()

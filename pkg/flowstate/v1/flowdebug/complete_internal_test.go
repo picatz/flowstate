@@ -24,7 +24,7 @@ func TestBoundedNamesNeverHoldsMoreThanItsBound(t *testing.T) {
 		values[fmt.Sprintf("k%05d", i)] = i
 	}
 
-	names, more := boundedNames(values, 512)
+	names, more := boundedNames(values, "", 512)
 
 	require.Len(t, names, 512, "it must never accumulate past the bound, not even to cut afterwards")
 	assert.True(t, more, "and it has to say the map went further")
@@ -46,7 +46,7 @@ func TestBoundedNamesKeepsTheSmallestWhateverOrderItMeetsThem(t *testing.T) {
 	values := map[string]int{"e": 5, "b": 2, "d": 4, "a": 1, "c": 3}
 
 	for range 32 {
-		names, more := boundedNames(values, 3)
+		names, more := boundedNames(values, "", 3)
 
 		require.Equal(t, []string{"a", "b", "c"}, names)
 		require.True(t, more)
@@ -56,15 +56,15 @@ func TestBoundedNamesKeepsTheSmallestWhateverOrderItMeetsThem(t *testing.T) {
 func TestBoundedNamesOnMapsThatFitAndBoundsThatDoNot(t *testing.T) {
 	t.Parallel()
 
-	names, more := boundedNames(map[string]int{"b": 1, "a": 2}, 512)
+	names, more := boundedNames(map[string]int{"b": 1, "a": 2}, "", 512)
 	assert.Equal(t, []string{"a", "b"}, names)
 	assert.False(t, more, "a map inside the bound is not a truncated one")
 
-	none, more := boundedNames(map[string]int{"a": 1}, 0)
+	none, more := boundedNames(map[string]int{"a": 1}, "", 0)
 	assert.Empty(t, none)
 	assert.True(t, more, "a bound of zero still has to admit there was something")
 
-	empty, more := boundedNames(map[string]int{}, 0)
+	empty, more := boundedNames(map[string]int{}, "", 0)
 	assert.Empty(t, empty)
 	assert.False(t, more, "and nothing withheld is not a truncation")
 }
@@ -98,7 +98,7 @@ func TestBoundedNamesDoesNotAllocateTheWholeMap(t *testing.T) {
 	result := testing.Benchmark(func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			names, more := boundedNames(values, limit)
+			names, more := boundedNames(values, "", limit)
 			if len(names) != limit || !more {
 				b.Fatalf("fixture stopped exercising the bound: %d names, more=%v", len(names), more)
 			}

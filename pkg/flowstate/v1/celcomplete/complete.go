@@ -87,14 +87,52 @@ type Candidate struct {
 	// Members are the names a dot after this one reaches. A candidate with
 	// none — a loop iterator, whose element type is not statically known —
 	// offers nothing after the dot rather than guessing.
+	//
+	// Ignored where MemberSource is set.
 	Members []Candidate
+
+	// MemberSource, when set, is asked for the members instead, with the
+	// prefix the cursor actually carries — and it answers with at most
+	// [MaxCandidates] of the names that match *it*, plus whether there were
+	// more.
+	//
+	// The seam exists because a bound and a filter compose in one order only.
+	// A caller holding a set it must bound — one whose size is a workload's
+	// choice rather than an author's — has to apply the prefix *before* the
+	// bound, since the alphabetically-first 512 of a large set may contain
+	// none of the matches for what was typed, and this package's own filter
+	// runs after the caller has already cut (Codex, #1114). The prefix is
+	// known here, where the expression is parsed, and the names are known
+	// there; nothing else can put the two together without a second parser.
+	//
+	// A caller whose set is an author's own — a file's steps, a declared
+	// input — wants none of this and leaves it nil: eager Members are simpler
+	// and are already bounded by what somebody typed into a document.
+	MemberSource func(prefix string) ([]Candidate, bool)
 
 	// Truncated reports that Members is a *prefix* of what this name reaches,
 	// because the caller bounded the collection rather than handing over
 	// everything it had. Completing into such a candidate sets
 	// [Result.Truncated], so an answer never quietly presents a prefix as the
 	// whole of what a name offers.
+	//
+	// Where MemberSource is set the source's own second return says this
+	// instead, per prefix, and this field is not read.
 	Truncated bool
+}
+
+// membersOf is what a dot after c reaches, given what has been typed after it.
+//
+// The prefix is passed even to a candidate that ignores it: an eager Members
+// list is filtered by [bound] a moment later, so handing it over changes
+// nothing, and having one path rather than two is what keeps the lazy case
+// from being the one nobody looks at.
+func membersOf(c Candidate, prefix string) ([]Candidate, bool) {
+	if c.MemberSource == nil {
+		return c.Members, c.Truncated
+	}
+
+	return c.MemberSource(prefix)
 }
 
 // Text is what accepting this candidate writes.
@@ -183,22 +221,40 @@ func Complete(text string, scope Scope) Result {
 	// language's, and a function qualifier is only reached where no root
 	// claims the name.
 	if root, ok := find(scope.Roots, qualifier); ok {
-		return carry(root, bound(member, root.Members))
+		members, short := membersOf(root, member)
+
+		return carry(short, bound(member, members))
 	}
 	if head, rest, nested := strings.Cut(qualifier, "."); nested {
 		if root, ok := find(scope.Roots, head); ok {
-			// One member deep, and the root's answer either way. A member that
-			// is not there and a member with nothing under it come to the same
-			// empty answer, which is the honest one: past a member is a value
-			// whose shape nothing here describes, and past the root is a name
-			// nothing produced. Guessing at either is how a surface starts
-			// offering references the engine rejects.
-			inner, _ := find(root.Members, rest)
+			// One member deep. The root is asked for `rest` itself, which is
+			// the prefix of exactly the name being looked up — and a bounded
+			// source that keeps the alphabetically-first matches always keeps
+			// an exact one, because a string is a prefix of itself and sorts
+			// before every extension of it. So the lookup cannot be defeated
+			// by a bound the way a bare listing can.
+			above, short := membersOf(root, rest)
 
-			// Either level's truncation is the answer's: a member list that is
-			// a prefix cannot be reported as complete just because the level
-			// below it was whole.
-			return carry(root, carry(inner, bound(member, inner.Members)))
+			// A member that is not there and a member with nothing under it
+			// come to the same empty answer, which is the honest one: past a
+			// member is a value whose shape nothing here describes, and past
+			// the root is a name nothing produced. Guessing at either is how a
+			// surface starts offering references the engine rejects.
+			inner, found := find(above, rest)
+			if !found {
+				// Whether the name is absent or merely past a cut is the
+				// difference between "no such step" and "ask again"; only the
+				// root can tell, and it just did.
+				return carry(short, Result{Prefix: member})
+			}
+
+			// The root's own truncation stops here, deliberately: the member
+			// asked for was found, so what else the root did or did not list
+			// says nothing about the names under *this* one. What matters is
+			// whether the level being listed is whole.
+			members, innerShort := membersOf(inner, member)
+
+			return carry(innerShort, bound(member, members))
 		}
 	}
 
@@ -243,10 +299,10 @@ func find(candidates []Candidate, name string) (Candidate, bool) {
 	return Candidate{}, false
 }
 
-// carry propagates a candidate's own truncation into an answer drawn from its
-// members, so a prefix is never presented as the whole of what a name offers.
-func carry(from Candidate, out Result) Result {
-	out.Truncated = out.Truncated || from.Truncated
+// carry propagates a level's truncation into an answer drawn from it, so a
+// prefix is never presented as the whole of what a name offers.
+func carry(short bool, out Result) Result {
+	out.Truncated = out.Truncated || short
 
 	return out
 }

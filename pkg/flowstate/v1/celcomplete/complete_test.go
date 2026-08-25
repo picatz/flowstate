@@ -257,3 +257,121 @@ func TestEveryFunctionOfferedIsSpelledTheWayItIsWritten(t *testing.T) {
 		})
 	}
 }
+
+// TestAMemberSourceIsAskedWithWhatWasTyped pins the seam a caller needs when
+// the set it must offer is not an author's.
+//
+// A bound and a prefix filter compose in one order only. This package filters
+// after the caller has already cut, so a caller holding a workload-sized set
+// has no way to be both bounded and correct unless the prefix reaches it —
+// which it cannot compute without a second copy of this parser (Codex, #1114).
+func TestAMemberSourceIsAskedWithWhatWasTyped(t *testing.T) {
+	t.Parallel()
+
+	var asked []string
+
+	root := celcomplete.Candidate{
+		Name:   "steps",
+		Kind:   celcomplete.KindRoot,
+		Insert: "steps.",
+		MemberSource: func(prefix string) ([]celcomplete.Candidate, bool) {
+			asked = append(asked, prefix)
+
+			// The one name that matches, and a report that the set it came
+			// from held more — which is the caller's to know, since it did
+			// the cutting.
+			return []celcomplete.Candidate{{Name: "zzz_deploy", Kind: celcomplete.KindValue}}, true
+		},
+	}
+
+	answer := celcomplete.Complete("steps.zzz", celcomplete.Scope{
+		Profile: v1.CurrentProfile,
+		Roots:   []celcomplete.Candidate{root},
+	})
+
+	assert.Equal(t, []string{"zzz"}, asked,
+		"the source is asked with the prefix the cursor carries, not with nothing")
+	assert.Equal(t, []string{"zzz_deploy"}, names(answer))
+	assert.True(t, answer.Truncated,
+		"and a source that says it cut is carried into the answer, which is the "+
+			"only thing that can report it at an answer this small")
+}
+
+// TestAMemberSourceIsAskedForTheExactNameOneLevelDown covers the traversal a
+// lazy root has to survive: `steps.<id>.<output>` looks up one member by name,
+// and a source that answers a *listing* with a bound could otherwise have cut
+// away the very id being traversed.
+//
+// It cannot, and the reason is worth pinning rather than assuming: a bounded
+// source keeping the alphabetically-first matches always keeps an exact one,
+// because a string is a prefix of itself and sorts before every extension.
+func TestAMemberSourceIsAskedForTheExactNameOneLevelDown(t *testing.T) {
+	t.Parallel()
+
+	// A step whose id is a prefix of many others, so a listing of matches has
+	// to be cut and the exact one has to survive the cut.
+	root := celcomplete.Candidate{
+		Name:   "steps",
+		Kind:   celcomplete.KindRoot,
+		Insert: "steps.",
+		MemberSource: func(prefix string) ([]celcomplete.Candidate, bool) {
+			if !strings.HasPrefix("build", prefix) {
+				return nil, true
+			}
+
+			return []celcomplete.Candidate{{
+				Name: "build",
+				Kind: celcomplete.KindValue,
+				MemberSource: func(member string) ([]celcomplete.Candidate, bool) {
+					if !strings.HasPrefix("ok", member) {
+						return nil, false
+					}
+
+					return []celcomplete.Candidate{{Name: "ok", Kind: celcomplete.KindField}}, false
+				},
+			}}, true
+		},
+	}
+
+	answer := celcomplete.Complete("steps.build.o", celcomplete.Scope{
+		Profile: v1.CurrentProfile,
+		Roots:   []celcomplete.Candidate{root},
+	})
+
+	assert.Equal(t, []string{"ok"}, names(answer))
+	assert.False(t, answer.Truncated,
+		"the member asked for was found, so what else the *root* did not list says "+
+			"nothing about the names under this one")
+}
+
+// TestAMissingMemberSaysWhetherItMightHaveBeenCut is the other side of that
+// traversal, and the difference between "no such step" and "ask again".
+func TestAMissingMemberSaysWhetherItMightHaveBeenCut(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		short bool
+	}{
+		{name: "a root that listed everything it had", short: false},
+		{name: "a root that cut", short: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := celcomplete.Candidate{
+				Name: "steps", Kind: celcomplete.KindRoot, Insert: "steps.",
+				MemberSource: func(string) ([]celcomplete.Candidate, bool) { return nil, tt.short },
+			}
+
+			answer := celcomplete.Complete("steps.absent.o", celcomplete.Scope{
+				Profile: v1.CurrentProfile,
+				Roots:   []celcomplete.Candidate{root},
+			})
+
+			assert.Empty(t, answer.Candidates, "there is nothing to offer either way")
+			assert.Equal(t, tt.short, answer.Truncated,
+				"but only the root can say whether the name is absent or merely past a cut")
+		})
+	}
+}
