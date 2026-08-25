@@ -3,6 +3,7 @@ package flowdebug
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -11,36 +12,128 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
+// A command is one verb the session understands.
+//
+// The table is the vocabulary, in one place, because three things need it and a
+// verb known to two of them is a bug somebody meets rather than reads: `dispatch`
+// resolves an alias through it, `help` prints it, and the completer offers it.
+// Before it existed the aliases lived in the `case` labels and the help text was
+// a second hand-written copy of the same list — which is exactly the shape
+// CLAUDE.md names, one meaning written down twice, and a prompt that completed
+// `breakpoints` while `help` had forgotten to mention it would have been nobody's
+// fault in particular.
+type command struct {
+	// verb is the canonical spelling, and the only one the dispatch switch
+	// below has a case for.
+	verb string
+
+	// aliases are the short forms, in the order help shows them.
+	aliases []string
+
+	// argument names what follows the verb, for the help line and so the
+	// completer knows there is a second word to complete at all.
+	argument string
+
+	// help is the sentence beside the verb.
+	help string
+
+	// completes says what a surface should offer for this command's argument.
+	completes completionSubject
+}
+
+// completionSubject is what the second word of a command names.
+type completionSubject int
+
+const (
+	// completesNothing is a verb that takes no argument.
+	completesNothing completionSubject = iota
+	// completesStep takes a step id: one the run may still reach.
+	completesStep
+	// completesBreakpoint takes a step id the session already holds one at.
+	completesBreakpoint
+	// completesExpression takes CEL, completed against the paused run's scope.
+	completesExpression
+)
+
+// commands is the whole vocabulary, in the order help lists it: movement first,
+// because that is what a session does most, then breakpoints, then the two
+// questions, then leaving.
+var commands = []command{
+	{verb: "step", aliases: []string{"s"}, completes: completesNothing,
+		help: "run this step and stop at the next (also: an empty line)"},
+	{verb: "continue", aliases: []string{"c"}, completes: completesNothing,
+		help: "run until the next breakpoint, or to the end"},
+	{verb: "until", aliases: []string{"u"}, argument: "<step-id>", completes: completesStep,
+		help: "run until the step with that id"},
+	{verb: "break", aliases: []string{"b"}, argument: "<step-id>", completes: completesStep,
+		help: "stop at that step whenever it is reached"},
+	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint,
+		help: "remove that breakpoint"},
+	{verb: "breakpoints", completes: completesNothing,
+		help: "list them"},
+	{verb: "inspect", aliases: []string{"p"}, argument: "<expr>", completes: completesExpression,
+		help: "evaluate a CEL expression against this run's scope"},
+	{verb: "scope", completes: completesNothing,
+		help: "list what this run can name right now"},
+	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing,
+		help: "describe the step the run is stopped at"},
+	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
+		help: "end the run here"},
+	{verb: "help", aliases: []string{"h", "?"}, completes: completesNothing,
+		help: "list these"},
+}
+
+// resolve returns the canonical verb for what was typed, and whether it is one
+// this session knows.
+func resolve(typed string) (command, bool) {
+	for _, c := range commands {
+		if c.verb == typed || slices.Contains(c.aliases, typed) {
+			return c, true
+		}
+	}
+
+	return command{}, false
+}
+
 // dispatch runs one command line. It reports whether the run resumes, and
 // returns an error only where the session is ending the run — a mistyped
 // command is answered and asked again, never fatal, because ending someone's
 // run over a typo is the worst possible reading of an ambiguous line.
 func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scope *v1.Scope) (resumed bool, err error) {
-	verb, rest := split(line)
-	if verb == "" {
+	typed, rest := split(line)
+	if typed == "" {
 		// A bare newline repeats the most useful thing: one step. It is what
 		// every debugger a person has used already does, and a session where
 		// return does nothing is one where they press it twice.
-		verb = "step"
+		typed = "step"
+	}
+
+	// Aliases resolve through the table rather than through the case labels,
+	// so the vocabulary the completer offers and the vocabulary this
+	// understands are one list. An unknown verb keeps the spelling that was
+	// typed, because that is what the diagnostic has to quote back.
+	verb := typed
+	if known, ok := resolve(typed); ok {
+		verb = known.verb
 	}
 
 	// Recorded before the command runs and only for commands that were
 	// understood, so a replay script holds a session's decisions and not its
 	// typing mistakes.
 	switch verb {
-	case "step", "s":
+	case "step":
 		s.record("step")
 		s.resume(modeStop, "")
 
 		return true, nil
 
-	case "continue", "c":
+	case "continue":
 		s.record("continue")
 		s.resume(modeRun, "")
 
 		return true, nil
 
-	case "until", "u":
+	case "until":
 		target := strings.TrimSpace(rest)
 		if target == "" {
 			s.printfTone(ToneWarning, "until needs a step id: until <step-id>\n")
@@ -52,12 +145,12 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 		return true, nil
 
-	case "break", "b":
+	case "break":
 		s.addBreakpoint(strings.TrimSpace(rest))
 
 		return false, nil
 
-	case "delete", "d":
+	case "delete":
 		s.deleteBreakpoint(strings.TrimSpace(rest))
 
 		return false, nil
@@ -68,7 +161,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 		return false, nil
 
-	case "inspect", "p":
+	case "inspect":
 		expression := strings.TrimSpace(rest)
 		if expression == "" {
 			s.printfTone(ToneWarning, "inspect needs an expression: inspect steps.build.artifact\n")
@@ -86,13 +179,13 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 		return false, nil
 
-	case "step-info", "info":
+	case "info":
 		s.record("info")
 		s.showStep(node)
 
 		return false, nil
 
-	case "quit", "q":
+	case "quit":
 		s.record("quit")
 		// Remembered, so the autopsy stays shut: quit is the one command
 		// advertised as leaving, and it must not be answered with another
@@ -103,7 +196,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 		return false, errQuit
 
-	case "help", "h", "?":
+	case "help":
 		s.help()
 
 		return false, nil
@@ -282,18 +375,34 @@ func (s *Session) listBreakpoints() {
 	s.printf("breakpoints: %s\n", strings.Join(ids, ", "))
 }
 
+// help prints the vocabulary, rendered from [commands] rather than written out
+// beside it: a hand-kept second copy is how a verb comes to be understood and
+// undocumented, or documented and gone.
 func (s *Session) help() {
-	s.printf(`step, s          run this step and stop at the next (also: an empty line)
-continue, c      run until the next breakpoint, or to the end
-until <id>, u    run until the step with that id
-break <id>, b    stop at that step whenever it is reached
-delete <id>, d   remove that breakpoint
-breakpoints      list them
-inspect <expr>   evaluate a CEL expression against this run's scope
-scope            list what this run can name right now
-info             describe the step the run is stopped at
-quit, q          end the run here
-`)
+	// One pass to measure and one to print, so the sentences line up whatever
+	// the longest spelling turns out to be — a width constant would be a third
+	// place the vocabulary is written down.
+	width := 0
+	for _, c := range commands {
+		width = max(width, len(c.spelling()))
+	}
+	for _, c := range commands {
+		s.printf("%-*s   %s\n", width, c.spelling(), c.help)
+	}
+}
+
+// spelling renders a command the way help names it: the verb, its argument, and
+// then the short forms.
+func (c command) spelling() string {
+	out := c.verb
+	if c.argument != "" {
+		out += " " + c.argument
+	}
+	for _, alias := range c.aliases {
+		out += ", " + alias
+	}
+
+	return out
 }
 
 // sortedKeys returns a map's keys in order, for a stable listing.

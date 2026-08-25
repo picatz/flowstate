@@ -34,6 +34,55 @@ nothing here is worth learning twice.
 | `info` | describe the step it is stopped at |
 | `quit`, `q` | end the run here (which fails the case — see below) |
 
+## The prompt
+
+At a terminal, `debug>` is a real prompt rather than a reader: **tab completes**,
+the editing keys work (ctrl-a, ctrl-e, ctrl-w, ctrl-u, ctrl-k, the arrows), and
+up and down walk the commands you have already typed in this session.
+
+Tab completes over the *paused run's own scope*, which is the point:
+
+```
+debug> inspect <TAB>
+steps.        step outputs
+vars.         workflow variables
+inputs.       run inputs
+…             the profile's functions
+debug> inspect steps.<TAB>
+build   a step that has run
+price   a step that has run
+debug> inspect steps.price.<TAB>
+value   an output this step produced
+```
+
+An editor can only offer what a task *declares*. A paused run knows which steps
+have actually produced outputs and what those outputs are actually called — so
+`steps.price.<TAB>` after a shaping expression offers the names the run
+produced, not the ones the task's schema names. The rules for where each name
+may be written are the language server's own, shared, so `steps.<id>.<output>`
+means one thing in both places.
+
+Tab also completes the commands, and the step ids `break`, `until` and `delete`
+take — `break` over every step the workflow declares, including the ones inside
+a `for_each` body, because a breakpoint is for somewhere the run has not been.
+
+**A completion is a name and never a value.** No preview, no type, no length:
+a debugger's printing is behind the same redaction as everything else here (see
+*Sensitive values* below), and a popup that showed you what a name held would be
+a second door around it. Where a case's redaction would withhold a *name*, the
+offer is dropped rather than shown redacted.
+
+**ctrl-C ends the run**, exactly as `quit` does — a run abandoned at a
+breakpoint did not pass. **ctrl-D** leaves the debugger and lets the run finish
+unattended, which the session says out loud when it happens.
+
+None of this applies when stdin is not a terminal. `flow test --debug <
+script.txt` and the `flowstate_debug` tool read the same commands the same way
+they always did; the line editor is attached only where somebody is actually
+typing.
+
+## What `inspect` answers
+
 `inspect` is the reason to stop at all. It is the *engine's own* evaluator over
 the run's own activation, so it can name exactly what the file could name at
 that point — `steps.<id>.<output>`, `inputs`, `vars`, a loop's binding, `now`

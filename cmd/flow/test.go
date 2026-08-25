@@ -272,10 +272,17 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	// attached anyway would be a prompt nobody is answering.
 	debugging, _ := cmd.Flags().GetBool("debug")
 	var session *flowdebug.Session
+	restoreTerminal := func() {}
 	if debugging {
-		if session, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
+		if session, restoreTerminal, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
 			return err
 		}
+		// A terminal the session put into raw mode, put back — before this
+		// command returns and whatever it returns, because a shell handed back
+		// a raw terminal is one where nothing a person types appears. Called
+		// again below the moment the run is over, and idempotent for that
+		// reason: this one is the safety net.
+		defer restoreTerminal()
 		// The session's reader is this command's to release — see
 		// [flowdebug.Session.Close]. Free here, since the process exits after;
 		// closed anyway, because the surface where it is not free
@@ -308,6 +315,14 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			// does one context lookup and finds nothing.
 			Debugger: debuggerOrNil(session),
 		})
+		// The console owned the line for as long as the run did — the autopsy
+		// is inside that call — and no longer: the report below prints onto
+		// what should be an ordinary terminal again, and a transcript printed
+		// in raw mode walks down the screen a column at a time. Idempotent, so
+		// the loop's other iterations (there are none under `--debug`, which
+		// refuses more than one file) cost nothing.
+		restoreTerminal()
+
 		report, coverage, schedules := run.Report, run.Coverage, run.Schedules
 		result := testFileResult{report: report, coverage: coverage, schedules: schedules, filtered: run.Filtered}
 		results = append(results, result)

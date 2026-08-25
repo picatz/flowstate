@@ -169,8 +169,8 @@ func TestWaitResultCompletionAndHoverAgree(t *testing.T) {
 	require.Len(t, candidates, 3)
 
 	for _, candidate := range candidates {
-		assert.Equal(t, waitResultDoc(candidate.name), candidate.docs,
-			"completion and hover must render one text for %s", candidate.name)
+		assert.Equal(t, waitResultDoc(candidate.Name), candidate.Docs,
+			"completion and hover must render one text for %s", candidate.Name)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 )
 
 // The bounds. A debugger reads what a person or a replay script types, which
@@ -137,7 +139,80 @@ type Options struct {
 	// without this package knowing a terminal exists. Nil keeps the plain
 	// writes to Out.
 	Emit func(text string, tone Tone)
+
+	// Console, when set, is prompted through instead of reading lines from
+	// In, and In is then not read at all. See [Console].
+	Console Console
+
+	// Steps are the ids this run may reach, for completing `break` and
+	// `until` before the run has been anywhere.
+	//
+	// Optional, and a session with none still completes over the steps it has
+	// watched go past — see [Session.reachableSteps]. It is a caller's answer
+	// rather than something this package derives because the seam it is
+	// installed on ([v1.Debugger]) is handed one step at a time and never the
+	// workflow: `flow run local --debug` has the specification in hand, and an
+	// embedder with only the seam honestly does not.
+	//
+	// Unbounded here, deliberately: these are ids the caller already holds a
+	// whole workflow's worth of, so storing them costs nothing new. What is
+	// bounded is the *answer*, in [Session.Complete].
+	Steps []string
 }
+
+// Console is a line editor a session prompts through.
+//
+// It exists so that this package can be given a real prompt — completion,
+// history, the editing keys — without knowing that a terminal exists. What a
+// console is handed back is the same string a line of a script would have been,
+// so a session driven by one and a session driven by `< script.txt` take
+// exactly the same path from there. That is the property [Session] was built
+// on and this must not break: a debugger that only worked on a terminal would
+// take `flow test --debug < script.txt` and the `flowstate_debug` tool with it.
+//
+// A console is prompted from the session's own reader goroutine, one call at a
+// time, and never concurrently with itself. [Session.Complete] is not: a
+// console's completion callback runs on whichever goroutine is inside Prompt,
+// while the boundary that asked for the line is parked elsewhere.
+//
+// # A console owes [MaxCommandBytes]
+//
+// It is the one bound on this surface that moves with the reader. The other
+// four are the session's wherever the line came from — [MaxBreakpoints] and
+// [MaxInspectRunes] bound what a command does, [MaxScriptCommands] and
+// [MaxScriptBytes] bound the recording — but this one bounds the *read*, and
+// the [bufio.Scanner] that enforces it is not in a console's path. So a
+// console owes it: whatever it returns must be a line the session would have
+// accepted, however that is arranged.
+type Console interface {
+	// Prompt writes the prompt and reads one line, without its newline.
+	//
+	// It returns [io.EOF] when the input ends — a redirected script that ran
+	// out, or somebody pressing ctrl-D — which the session answers by
+	// resuming the run and saying so. It returns [ErrConsoleInterrupted] when
+	// somebody interrupted the prompt instead, which the session answers by
+	// ending the run, because the two must not be confused: resuming an
+	// unattended `flow run local --debug` is how a ctrl-C comes to run the
+	// rest of somebody's workflow for real.
+	Prompt() (string, error)
+}
+
+// Prompt is what a session asks with, and what a [Console] should draw.
+//
+// Exported so that a console styling it is styling the same string the plain
+// path writes, rather than a second copy that can drift into a different word.
+const Prompt = "debug> "
+
+// ErrConsoleInterrupted is what a [Console] returns when somebody interrupted
+// the prompt — ctrl-C at a terminal — rather than ending the input.
+//
+// The session treats it exactly as `quit`: the run stops here and the session
+// is over. That is the reading with no bad outcome. Answering an interrupt the
+// way a finished script is answered would resume the run and let it finish
+// unattended, and under `flow run local --debug` the rest of that run is real
+// HTTP requests against real systems — so the one key a person presses to stop
+// something would be the key that lets it go.
+var ErrConsoleInterrupted = errors.New("the debug console was interrupted")
 
 // mode is what the session does at the next boundary it reaches.
 type mode int
@@ -165,15 +240,21 @@ const (
 type Session struct {
 	out  io.Writer
 	emit func(text string, tone Tone)
-	// in is nil when no console was given.
-	in    *bufio.Scanner
-	clock v1.Clock
+	// in is nil when no stream was given, and unread when a console was: a
+	// console owns its own reader.
+	in *bufio.Scanner
+	// console is the line editor to prompt through, or nil to read lines from
+	// in. See [Console].
+	console Console
+	clock   v1.Clock
 
-	// lines carries what the reader goroutine scans, and closes when the
-	// stream ends; readOnce starts that goroutine at the first prompt. A
-	// goroutine rather than a synchronous Scan, because the run being held
-	// is cancellable and a Scanner is not — see [Session.readCommand].
+	// lines carries what the reader goroutine read, and closes when the input
+	// ends; wants is how a prompt asks it for one, and readOnce starts it at
+	// the first prompt. A goroutine rather than a synchronous read, because
+	// the run being held is cancellable and neither a Scanner nor a terminal
+	// is — see [Session.readCommand].
 	lines    chan string
+	wants    chan struct{}
 	readOnce sync.Once
 	// done releases the reader goroutine; see [Session.Close].
 	done     chan struct{}
@@ -244,6 +325,47 @@ type Session struct {
 	// answered with another prompt, so the autopsy checks it and stays shut
 	// (Codex, #1107).
 	ended bool
+	// interrupted is set when a console reported [ErrConsoleInterrupted]
+	// rather than a stream that ran out. The two must not be confused: a
+	// stream that ends resumes the run and lets it finish, and doing that on
+	// a ctrl-C would be answering "stop" by running the rest of somebody's
+	// workflow unattended.
+	interrupted bool
+
+	// at is what the session is prompting about right now, so that
+	// [Session.Complete] — called from the console's own goroutine while a
+	// boundary is parked — can answer against the scope the prompt is for.
+	at promptSubject
+
+	// steps are the ids a caller said this run may reach ([Options.Steps]),
+	// and seen are the ids this session has watched go past. Both feed
+	// completion for `break` and `until`; see [Session.reachableSteps].
+	steps []string
+	seen  map[string]struct{}
+
+	// seenShort reports that seen refused an id it had not already got,
+	// which makes it a *prefix* of the run rather than the run. Completion
+	// reads it; see [Session.sawStep] for why it cannot be inferred later.
+	seenShort bool
+}
+
+// A promptSubject is what one prompt is about: the scope to answer questions
+// against, whatever is bound around it, and which of the two prompts it is.
+//
+// A struct rather than three fields, because they are set and read as one thing
+// and a prompt holding this scope with that binding would answer about a
+// position the run is not in.
+type promptSubject struct {
+	// scope is what an inspection evaluates against.
+	scope *v1.Scope
+
+	// extra are the bare bindings layered over it — the autopsy's `run` and
+	// `vars`, and nothing at a breakpoint.
+	extra map[string]ref.Val
+
+	// autopsy reports which of the two prompts this is, which decides the
+	// verbs there are to offer.
+	autopsy bool
 }
 
 // New returns a session configured by opts.
@@ -255,14 +377,17 @@ func New(opts Options) (*Session, error) {
 	s := &Session{
 		out:         opts.Out,
 		emit:        opts.Emit,
+		console:     opts.Console,
 		clock:       opts.Clock,
 		breakpoints: make(map[string]struct{}, len(opts.Breakpoints)),
 		done:        make(chan struct{}),
+		steps:       slices.Clone(opts.Steps),
+		seen:        map[string]struct{}{},
 	}
 	if s.out == nil {
 		s.out = io.Discard
 	}
-	if opts.In != nil {
+	if opts.In != nil && opts.Console == nil {
 		s.in = bufio.NewScanner(opts.In)
 		// One byte over [MaxCommandBytes], and the byte is the line
 		// terminator rather than command room: bufio.Scanner grows its buffer
@@ -326,9 +451,18 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
 
+	s.sawStep(node.GetId())
+
 	if !s.shouldStop(node.GetId()) {
 		return nil
 	}
+
+	// What this prompt is about, so that a completion arriving from a console's
+	// own goroutine answers against the scope the run is actually held in.
+	// Cleared on the way out: a session that kept the last scope alive would
+	// answer questions about a position the run has left.
+	s.prompting(promptSubject{scope: scope})
+	defer s.prompting(promptSubject{})
 
 	s.announce(node)
 
@@ -341,6 +475,22 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 			return readErr
 		}
 		if !ok {
+			// Interrupted at the prompt — ctrl-C at a terminal — which ends
+			// the run exactly as `quit` does. Checked before the arms below,
+			// because those resume the run, and answering "stop" by running
+			// the rest of somebody's workflow unattended is the one outcome
+			// this must not have. Recorded as `quit` so the replay script
+			// says what the session did.
+			if s.wasInterrupted() {
+				s.record("quit")
+				s.mu.Lock()
+				s.ended = true
+				s.mu.Unlock()
+				s.printfTone(ToneWarning, "(interrupted — ending the run here, as `quit` does)\n")
+
+				return errQuit
+			}
+
 			// The console is gone: a replay script that ran out, or a
 			// terminal that closed. The run resumes and finishes rather than
 			// being held by a debugger that is not there — #928's own answer
@@ -374,6 +524,8 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 // produced, and this is the same record `flow test`'s transcript renders, from
 // the same seam, rather than a second bookkeeping of it.
 func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
+	s.sawStep(id)
+
 	text := s.stepOutcomeText(outputs, err, tolerated)
 
 	s.mu.Lock()
@@ -397,6 +549,11 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 // [Session.BeforeStep] — there is no work to hold — so this is the only place
 // a session can say the `if:` decided against it.
 func (s *Session) StepSkipped(id string) {
+	// Remembered as a step this run reaches even though it did not run: a
+	// breakpoint on a step whose `if:` was false this time is exactly what
+	// somebody sets when they are trying to find out why.
+	s.sawStep(id)
+
 	s.printf("  %s skipped (`if:` was false)\n", id)
 }
 
@@ -492,55 +649,54 @@ func (s *Session) Close() error {
 	return nil
 }
 
-// readCommand reads one line. ok is false once the stream has ended, and err
-// is the context's own error when cancellation ended the wait instead.
+// readCommand reads one line. ok is false once the input has ended, and err is
+// the context's own error when cancellation ended the wait instead.
 //
-// The scan runs on a goroutine of its own, because the run being held is
-// cancellable and a Scanner is not: ctrl-C's first signal cancels the
-// command's context for a graceful stop, and a session blocked synchronously
-// in Scan would hold the process hostage for a second, harder signal (Codex,
-// #1109). One reader goroutine per session, started at the first prompt, and
-// it exits when the session is done — either because the stream ended, or
-// because [Session.Close] or a cancelled prompt released it.
+// The read runs on a goroutine of its own, because the run being held is
+// cancellable and neither a [bufio.Scanner] nor a terminal is: ctrl-C's first
+// signal cancels the command's context for a graceful stop, and a session
+// blocked synchronously in a read would hold the process hostage for a second,
+// harder signal (Codex, #1109). One reader goroutine per session, started at
+// the first prompt, and it exits when the session is done — either because the
+// input ended, or because [Session.Close] or a cancelled prompt released it.
+//
+// It reads on request rather than continuously, which a [Console] requires and
+// a stream is no worse for. A console draws its own prompt as part of reading,
+// so a reader running ahead would paint a `debug> ` over the account of the
+// step that had just finished; and a reader that has already consumed a line
+// nobody asked for has taken it out of a stream the process may still own after
+// the session ends.
 func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err error) {
 	s.mu.Lock()
-	closed, scanner := s.closed, s.in
+	closed, scanner, console := s.closed, s.in, s.console
 	s.mu.Unlock()
 
-	if closed || scanner == nil {
+	if closed || (scanner == nil && console == nil) {
 		return "", false, nil
 	}
 
 	s.readOnce.Do(func() {
 		s.lines = make(chan string)
-		go func() {
-			// The scanner's own verdict, published before the close that a
-			// receiver reads as "the console is gone" — so a session that
-			// finds the stream closed can tell a console that ended from one
-			// that broke. Set first, closed second: a receiver woken by the
-			// close must find the reason already there.
-			defer func() {
-				s.mu.Lock()
-				s.readErr = scanner.Err()
-				s.mu.Unlock()
-
-				close(s.lines)
-			}()
-
-			for scanner.Scan() {
-				// Never a bare send: with the session done there is no
-				// receiver, and a bare send would park this goroutine for the
-				// life of the process holding everything it closed over.
-				select {
-				case s.lines <- scanner.Text():
-				case <-s.done:
-					return
-				}
-			}
-		}()
+		// Buffered by one, so that asking for a line never blocks: at most one
+		// request is outstanding, and a reader that has already exited leaves
+		// the request sitting in the buffer where nothing waits on it.
+		s.wants = make(chan struct{}, 1)
+		go s.read(scanner, console)
 	})
 
-	s.printfTone(TonePrompt, "debug> ")
+	select {
+	case s.wants <- struct{}{}:
+	case <-s.done:
+		return "", false, nil
+	}
+
+	// The prompt is the session's to draw only when it is reading a stream. A
+	// console draws its own, because a line editor has to know the prompt's
+	// width to put the cursor anywhere.
+	if console == nil {
+		s.printfTone(TonePrompt, Prompt)
+	}
+
 	select {
 	case line, open := <-s.lines:
 		if !open {
@@ -564,6 +720,122 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 
 		return "", false, ctx.Err()
 	}
+}
+
+// read is the reader goroutine: one line per request, until the input ends.
+func (s *Session) read(scanner *bufio.Scanner, console Console) {
+	// The reader's own verdict, published before the close that a receiver
+	// reads as "the input is gone" — so a session that finds it closed can
+	// tell an input that ended from one that broke, and an interrupt from
+	// either. Set first, closed second: a receiver woken by the close must
+	// find the reason already there.
+	var readErr error
+	defer func() {
+		s.mu.Lock()
+		s.readErr = readErr
+		s.interrupted = errors.Is(readErr, ErrConsoleInterrupted)
+		s.mu.Unlock()
+
+		close(s.lines)
+	}()
+
+	for {
+		select {
+		case <-s.wants:
+		case <-s.done:
+			return
+		}
+
+		var line string
+		if console != nil {
+			text, err := console.Prompt()
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					// io.EOF is the console saying the input ended, which is
+					// not a reason worth naming: it is the ordinary way a
+					// script or a terminal finishes. Anything else is.
+					readErr = err
+				}
+
+				return
+			}
+			line = text
+		} else {
+			if !scanner.Scan() {
+				readErr = scanner.Err()
+
+				return
+			}
+			line = scanner.Text()
+		}
+
+		// Never a bare send: with the session done there is no receiver, and a
+		// bare send would park this goroutine for the life of the process
+		// holding everything it closed over.
+		select {
+		case s.lines <- line:
+		case <-s.done:
+			return
+		}
+	}
+}
+
+// wasInterrupted reports whether the input ended because somebody interrupted
+// the prompt rather than because it ran out.
+func (s *Session) wasInterrupted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.interrupted
+}
+
+// prompting records what the session is currently prompting about, for
+// [Session.Complete] to answer against.
+func (s *Session) prompting(at promptSubject) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.at = at
+}
+
+// sawStep remembers a step id this session has watched go past, so that
+// `break` and `until` complete over the run even where the caller named no
+// steps.
+//
+// Bounded, because the number of ids a run produces is the workflow's rather
+// than this session's: a `call:` chain reaches steps no one file lists. Past the
+// bound it stops remembering rather than growing.
+//
+// What it refuses, it records. The bound used to be justified by the answer
+// being cut at the same number anyway — which is wrong in the one direction
+// that matters, and wrong for the same reason bounding before filtering was
+// (see [Session.reachableSteps]): the answer's cap runs *after* the prefix
+// filter, so `break zzz` over a run whose 513th id was `zzz_step` matches
+// nothing, and would say so as though nothing were there (Codex, #1114). The
+// dropped id cannot be recovered — this cache is filled in arrival order by a
+// run that has since moved past those steps, and a later prompt's scope no
+// longer carries their outputs — so what is owed the author is the notice that
+// the list is short.
+//
+// Only an id the cache does not already hold sets it: refusing a repeat loses
+// nothing, and a run that loops over one step for an hour should not report
+// itself truncated.
+func (s *Session) sawStep(id string) {
+	if id == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.seen) >= celcomplete.MaxCandidates {
+		if _, held := s.seen[id]; !held {
+			s.seenShort = true
+		}
+
+		return
+	}
+	s.seen[id] = struct{}{}
 }
 
 // consoleEnded says why the command stream stopped, in words an author can
@@ -877,6 +1149,13 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 		return
 	}
 
+	// What this prompt is about — the finished run's scope and the bindings
+	// its checks were judged under — so that completion here offers the same
+	// names an inspection here resolves. Cleared on the way out, as the
+	// boundary's is.
+	s.prompting(promptSubject{scope: scope, extra: extra, autopsy: true})
+	defer s.prompting(promptSubject{})
+
 	s.printfTone(ToneBreak, "autopsy: the case failed %d expectation(s); the run is over, but its scope is still here\n", len(failures))
 	for _, failure := range failures {
 		s.printfTone(ToneDanger, "  %s\n", failure)
@@ -892,7 +1171,11 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 			// that *broke* still says so before going — there is no run to
 			// rescue here, but an author whose command was refused should
 			// learn that rather than watch the prompt vanish (Codex, #1109).
-			if readErr == nil {
+			//
+			// An interrupt is a third way to leave and needs no sentence: the
+			// verdict was reached before this was called, so ctrl-C here ends
+			// a conversation rather than a run.
+			if readErr == nil && !s.wasInterrupted() {
 				if why := s.consoleEnded(); why != "" {
 					s.printfTone(ToneDanger, "(%s — leaving the autopsy)\n", why)
 				}

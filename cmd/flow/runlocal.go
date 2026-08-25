@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"time"
@@ -198,8 +199,47 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// opens the same `flowstate.task/<name>` span around the step, so the record
 	// carries the trace of the step that emitted it here as well.
 	surface := newSurface(cmd)
+
+	// `--debug` at a terminal takes the line, so everything this command
+	// narrates while the run is in flight has to go through the console rather
+	// than around it. Raw mode means a bare "\n" moves down without returning
+	// to column one, and a `log:` step printed straight at stderr while a
+	// prompt is drawn is a staircase down the screen with the half-typed
+	// command lost somewhere in it. Attached before the logger for exactly that
+	// reason; `narrate` is stderr itself everywhere else.
+	debugging, _ := cmd.Flags().GetBool("debug")
+	reveal := revealSensitiveRequested(cmd)
+
+	var (
+		console *debugConsole
+		narrate io.Writer = surface.Err
+		restore           = func() {}
+	)
+	if debugging {
+		// A debugger is a reveal: the session narrates each step's values as
+		// they complete and `inspect` reaches anything in scope, so on a
+		// workflow whose declarations make the final render withhold its
+		// transcript, attaching one quietly opens exactly the side channel
+		// redaction closes (Codex, #1109) — and #928's own rule is that debug
+		// output sits behind the same redaction, never a parallel copy. There
+		// is no parallel redactor here on purpose: the honest shapes are this
+		// refusal, or the explicit flag every other surface already shares.
+		//
+		// Refused before the terminal is touched, so a refusal cannot leave one
+		// in raw mode.
+		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
+			return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+				"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
+				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
+				workflow.GetName())
+		}
+
+		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
+		defer restore()
+	}
+
 	ctx = v1.ContextWithLogger(ctx,
-		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))
+		slog.New(telemetryLogHandler(newRunLogHandler(narrate, surface.ErrTheme))))
 
 	// The same session `flow test --debug` runs, attached to a real run: the
 	// engine holds at each step boundary, and `inspect` answers through the
@@ -214,29 +254,22 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// none of the test verb's refusals apply here. The session observes as
 	// well as gates, so each step's own account arrives at the prompt that
 	// paused it.
-	reveal := revealSensitiveRequested(cmd)
-	if debugging, _ := cmd.Flags().GetBool("debug"); debugging {
-		// A debugger is a reveal: the session narrates each step's values as
-		// they complete and `inspect` reaches anything in scope, so on a
-		// workflow whose declarations make the final render withhold its
-		// transcript, attaching one quietly opens exactly the side channel
-		// redaction closes (Codex, #1109) — and #928's own rule is that debug
-		// output sits behind the same redaction, never a parallel copy. There
-		// is no parallel redactor here on purpose: the honest shapes are this
-		// refusal, or the explicit flag every other surface already shares.
-		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
-			return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
-				"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
-				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
-				workflow.GetName())
-		}
+	if debugging {
 		session, err := flowdebug.New(flowdebug.Options{
-			In:   cmd.InOrStdin(),
-			Out:  surface.Err,
-			Emit: debugEmitter(surface.Err, surface.ErrTheme),
+			In:      cmd.InOrStdin(),
+			Console: consoleOrNil(console),
+			Out:     narrate,
+			Emit:    debugEmitter(narrate, surface.ErrTheme),
+			// This command holds the specification, so `break` and `until`
+			// complete over every step the run may reach rather than only the
+			// ones it has been to.
+			Steps: stepIDs(workflow),
 		})
 		if err != nil {
 			return err
+		}
+		if console != nil {
+			console.SetCompleter(session.Complete)
 		}
 		// This process is about to exit either way, so the reader parking
 		// costs nothing here — closed anyway because a session's owner closes
@@ -244,7 +277,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// will be missing where it is.
 		defer func() { _ = session.Close() }()
 
-		fmt.Fprintf(surface.Err, "%s\n", surface.ErrTheme.Accent.Render(
+		fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
 			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
 		ctx = v1.NewContextWithDebugger(ctx, session)
 		ctx = v1.NewContextWithRunObserver(ctx, session)
@@ -256,6 +289,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// the declared defaults exactly as the server does before a durable run starts.
 	// The check above is for the message; this is the one that decides.
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+
+	// The console owned the line for as long as the run did, and no longer:
+	// everything below prints an answer and an account onto what should be an
+	// ordinary terminal again. The deferred call above is the safety net for
+	// the paths that do not reach here, and it is idempotent for that reason.
+	restore()
+
 	response := localRun(outputs, runErr, cmd.Context().Err(), started, time.Now())
 
 	// This process just parsed workflow itself, so redaction here is precise
