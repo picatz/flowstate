@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/colorprofile"
 	"github.com/stretchr/testify/assert"
@@ -592,3 +593,60 @@ type looping struct{ to io.Writer }
 
 func (l *looping) Write(p []byte) (int, error) { return len(p), nil }
 func (l *looping) Unwrap() io.Writer           { return l.to }
+
+// TestTheCompletionCallbackWorksInBytesLikeTheEditorDoes pins the offset
+// contract with [term.Terminal], for a line that is not all ASCII.
+//
+// Codex read `pos` as a rune index on #1114 — the field's own doc comment says
+// bytes, and a `Terminal` does hold its line as `[]rune`, so the two readings
+// are both plausible from a distance. The call site settles it: x/term passes
+// `len(prefix)` where `prefix := string(t.line[:t.pos])`, which is a *byte*
+// length, and consumes the answer as `utf8.RuneCount([]byte(newLine)[:newPos])`
+// — a byte index converted back on the way in (terminal.go:642, :646 at
+// v0.45.0). So the editor does the conversion at both ends and a callback that
+// slices bytes is the correct one.
+//
+// The test exists because that is two facts about somebody else's package, and
+// the failure if either changes is silent corruption of the line an author is
+// editing rather than an error anyone sees.
+func TestTheCompletionCallbackWorksInBytesLikeTheEditorDoes(t *testing.T) {
+	t.Parallel()
+
+	// A line whose text before the cursor is not all ASCII, so a rune index
+	// and a byte index genuinely differ.
+	const line = "inspect stéps.bu"
+
+	console := newDebugConsole(struct {
+		io.Reader
+		io.Writer
+	}{Reader: strings.NewReader(""), Writer: io.Discard}, "(flow) ", 0)
+
+	console.SetCompleter(func(got string, pos int) flowdebug.Completion {
+		// Exactly what the editor computes, spelled the way it spells it.
+		assert.Equal(t, line, got)
+		assert.Equal(t, len([]byte(line)), pos,
+			"the cursor at the end of this line is 17 bytes in and 16 runes in")
+
+		// And the word under the cursor has to come back out of it correctly,
+		// which is the thing a rune/byte mix-up destroys.
+		assert.Equal(t, "bu", got[pos-len("bu"):])
+
+		return flowdebug.Completion{
+			Prefix:     "bu",
+			Candidates: []flowdebug.Candidate{{Text: "build"}},
+		}
+	})
+
+	written, pos, ok := console.onKey(line, len([]byte(line)), '\t')
+
+	require.True(t, ok)
+	assert.Equal(t, "inspect stéps.build ", written,
+		"the accented rune survives intact, which it does not if pos is sliced as runes")
+	assert.Equal(t, len([]byte(written)), pos,
+		"and the new position is a byte offset, which is what the editor converts back")
+
+	// The editor's own conversion, applied to what it was handed: it must land
+	// on the end of the line rather than inside it.
+	assert.Equal(t, utf8.RuneCountInString(written), utf8.RuneCount([]byte(written)[:pos]),
+		"a byte offset the editor turns into the rune position it meant")
+}

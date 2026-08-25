@@ -168,16 +168,51 @@ func workflowStepIDs(path string) []string {
 // Nested steps included, which is the point of walking rather than ranging over
 // `steps:`: a breakpoint on a step inside a `for_each` body is the one somebody
 // sets most, because a loop is where a run stops being easy to read.
+//
+// A `call:`'s callee included too, and that one is *this* function's job rather
+// than [v1.WalkWorkflow]'s. That walk deliberately does not follow
+// `Workflow.steps[].call.workflow` — see [v1.NodeRecursionEdges] — because its
+// callers report diagnostics, and a callee is a different author's workflow
+// with its own scope: counting its expressions against every caller, and
+// printing its problems on the caller's lines, is what not following it
+// prevents.
+//
+// A breakpoint is the other question. `runCall` executes the callee's nodes
+// through the same debugger context, so those ids are ids the run genuinely
+// stops at — and `break <id>` on one has always worked. Only the *list* was
+// blind to them, which is the worst version: a complete-looking inventory with
+// a whole workflow missing from it (Codex, #1114).
 func stepIDs(workflow *v1.Workflow) []string {
 	var ids []string
-	v1.WalkWorkflow(workflow, v1.Walk{Node: func(node *v1.Node) {
-		if id := node.GetId(); id != "" {
-			ids = append(ids, id)
-		}
-	}})
+
+	var walk func(wf *v1.Workflow, depth int)
+	walk = func(wf *v1.Workflow, depth int) {
+		v1.WalkWorkflow(wf, v1.Walk{Node: func(node *v1.Node) {
+			if id := node.GetId(); id != "" {
+				ids = append(ids, id)
+			}
+
+			// Bounded, because this descends a structure rather than a list.
+			// A compiled callee is embedded whole, so a file's call tree is
+			// finite by construction — but a `*v1.Workflow` built in Go is
+			// under nobody's compiler, and a completion inventory is not the
+			// place to find that out by running out of stack.
+			if call := node.GetCall(); call != nil && depth < maxCallInventoryDepth {
+				walk(call.GetWorkflow(), depth+1)
+			}
+		}})
+	}
+	walk(workflow, 0)
 
 	return ids
 }
+
+// maxCallInventoryDepth is how far [stepIDs] follows `call:` into `call:`.
+//
+// It matches the engine's own nesting bound rather than being a number chosen
+// here: an inventory deeper than the runs it describes would offer breakpoints
+// on steps no run reaches, and a shallower one would hide steps that do.
+const maxCallInventoryDepth = v1.MaxCallDepth
 
 // debugEmitter maps the session's tone vocabulary onto the theme:
 //
