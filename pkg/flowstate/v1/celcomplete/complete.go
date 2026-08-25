@@ -88,6 +88,13 @@ type Candidate struct {
 	// none — a loop iterator, whose element type is not statically known —
 	// offers nothing after the dot rather than guessing.
 	Members []Candidate
+
+	// Truncated reports that Members is a *prefix* of what this name reaches,
+	// because the caller bounded the collection rather than handing over
+	// everything it had. Completing into such a candidate sets
+	// [Result.Truncated], so an answer never quietly presents a prefix as the
+	// whole of what a name offers.
+	Truncated bool
 }
 
 // Text is what accepting this candidate writes.
@@ -176,7 +183,7 @@ func Complete(text string, scope Scope) Result {
 	// language's, and a function qualifier is only reached where no root
 	// claims the name.
 	if root, ok := find(scope.Roots, qualifier); ok {
-		return bound(member, root.Members)
+		return carry(root, bound(member, root.Members))
 	}
 	if head, rest, nested := strings.Cut(qualifier, "."); nested {
 		if root, ok := find(scope.Roots, head); ok {
@@ -188,7 +195,10 @@ func Complete(text string, scope Scope) Result {
 			// offering references the engine rejects.
 			inner, _ := find(root.Members, rest)
 
-			return bound(member, inner.Members)
+			// Either level's truncation is the answer's: a member list that is
+			// a prefix cannot be reported as complete just because the level
+			// below it was whole.
+			return carry(root, carry(inner, bound(member, inner.Members)))
 		}
 	}
 
@@ -231,6 +241,14 @@ func find(candidates []Candidate, name string) (Candidate, bool) {
 	}
 
 	return Candidate{}, false
+}
+
+// carry propagates a candidate's own truncation into an answer drawn from its
+// members, so a prefix is never presented as the whole of what a name offers.
+func carry(from Candidate, out Result) Result {
+	out.Truncated = out.Truncated || from.Truncated
+
+	return out
 }
 
 // bound filters candidates by prefix and applies [MaxCandidates].

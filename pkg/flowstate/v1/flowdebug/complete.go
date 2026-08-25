@@ -285,16 +285,50 @@ func (s *Session) completionScope(at promptSubject) celcomplete.Scope {
 	// `expect.check:` was judged under.
 	for _, name := range sortedKeys(at.extra) {
 		members := mapMembers(at.extra[name])
-		shared.Locals = append(shared.Locals, celcomplete.Candidate{
+
+		candidate := celcomplete.Candidate{
 			Name:    name,
 			Kind:    kindFor(members),
 			Detail:  "bound for this autopsy",
 			Insert:  name + dotIfMembers(members),
 			Members: members,
-		})
+		}
+
+		if len(members) == 0 {
+			shared.Locals = append(shared.Locals, candidate)
+
+			continue
+		}
+
+		// A binding with members goes in as a *root*, because only roots are
+		// traversed past a dot — a local is offered bare and treated as
+		// opaque. Left as a local, `run.<tab>` offered nothing at all (Codex,
+		// #1114).
+		//
+		// And it replaces any root of the same name rather than sitting beside
+		// it, which is the half that was actively wrong: these bindings win in
+		// [v1.Scope.ActivationWith], so at an autopsy `vars.` resolves to the
+		// case's post-run vars while the completer was still offering the
+		// workflow's. A completer that teaches a name resolving to something
+		// else is worse than one that stays quiet.
+		shared.Roots = replacingRoot(shared.Roots, candidate)
 	}
 
 	return shared
+}
+
+// replacingRoot puts a root in, replacing any of the same name and keeping the
+// order the rest were offered in.
+func replacingRoot(roots []celcomplete.Candidate, root celcomplete.Candidate) []celcomplete.Candidate {
+	for i, existing := range roots {
+		if existing.Name == root.Name {
+			roots[i] = root
+
+			return roots
+		}
+	}
+
+	return append(roots, root)
 }
 
 // kindFor says whether a binding is a value or a namespace, which is decided by
@@ -361,8 +395,11 @@ func mapMembers(bound ref.Val) []celcomplete.Candidate {
 func stepCandidates(scope *v1.Scope) []celcomplete.Candidate {
 	steps := scope.GetOutputs().GetStepValues()
 
-	out := make([]celcomplete.Candidate, 0, len(steps))
-	for _, id := range sortedKeys(steps) {
+	ids, _ := boundedNames(steps, celcomplete.MaxCandidates)
+
+	out := make([]celcomplete.Candidate, 0, len(ids))
+	for _, id := range ids {
+		members, more := namesOfOutputs(steps[id])
 		out = append(out, celcomplete.Candidate{
 			Name:   id,
 			Kind:   celcomplete.KindValue,
@@ -370,19 +407,30 @@ func stepCandidates(scope *v1.Scope) []celcomplete.Candidate {
 			// No type beside an output name, deliberately: the only source for
 			// one here is the value itself, and reading a value is what this
 			// completer does not do.
-			Members: namesOfOutputs(steps[id]),
+			Members:   members,
+			Truncated: more,
 		})
 	}
 
 	return out
 }
 
-// namesOfOutputs renders one step's recorded output names.
-func namesOfOutputs(outputs *v1.Node_Outputs) []celcomplete.Candidate {
+// namesOfOutputs renders one step's recorded output names, bounded.
+//
+// Bounded *during* collection rather than after it, and the difference is the
+// whole point: the map is the task's, so a plugin or a stubbed `returns:`
+// chooses how many names it holds, and sorting every one of them into
+// candidates before applying an answer bound leaves the work unbounded while
+// the answer looks bounded (Codex, #1114). That is the shape CLAUDE.md names —
+// bound the resource the far side controls, not a proxy for it. A tab press
+// must not cost more than the answer it produces.
+func namesOfOutputs(outputs *v1.Node_Outputs) ([]celcomplete.Candidate, bool) {
 	named := outputs.GetNamedValues()
 
-	out := make([]celcomplete.Candidate, 0, len(named))
-	for _, name := range sortedKeys(named) {
+	names, more := boundedNames(named, celcomplete.MaxCandidates)
+
+	out := make([]celcomplete.Candidate, 0, len(names))
+	for _, name := range names {
 		out = append(out, celcomplete.Candidate{
 			Name:   name,
 			Kind:   celcomplete.KindField,
@@ -390,7 +438,41 @@ func namesOfOutputs(outputs *v1.Node_Outputs) []celcomplete.Candidate {
 		})
 	}
 
-	return out
+	return out, more
+}
+
+// boundedNames returns at most limit of a map's keys in order, and whether
+// there were more than that.
+//
+// It never holds more than limit of them, which is what makes it a bound on
+// the work rather than on the answer: the alternative — collect every key,
+// sort, then cut — has already paid for the whole map by the time it cuts.
+func boundedNames[V any](values map[string]V, limit int) (names []string, more bool) {
+	if limit <= 0 {
+		return nil, len(values) > 0
+	}
+
+	names = make([]string, 0, limit)
+
+	for name := range values {
+		at, _ := slices.BinarySearch(names, name)
+
+		if len(names) == limit {
+			if at == limit {
+				// Sorts after everything kept, so it is one of the ones that
+				// does not fit.
+				more = true
+
+				continue
+			}
+			names = names[:limit-1]
+			more = true
+		}
+
+		names = slices.Insert(names, at, name)
+	}
+
+	return names, more
 }
 
 // namesOf renders a scope map's keys as candidates.

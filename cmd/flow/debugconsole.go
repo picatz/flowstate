@@ -95,6 +95,18 @@ func attachDebugConsole(in io.Reader, out io.Writer, theme ui.Theme) (console *d
 		return nil, nil, false
 	}
 
+	// The *output* has to be a terminal too, and checking only the input was a
+	// real hole: `flow test --debug` writes its console to stdout and `flow run
+	// local --debug` to stderr, so redirecting that stream while stdin stayed
+	// attached to a tty put the terminal into raw mode and wrote the prompt,
+	// the echoed keystrokes and the cursor sequences into the file (Codex,
+	// #1114). A console is a conversation between two streams; one of them
+	// being a terminal is not enough.
+	sink, isFile := out.(*os.File)
+	if !isFile || !term.IsTerminal(int(sink.Fd())) {
+		return nil, nil, false
+	}
+
 	previous, err := term.MakeRaw(int(file.Fd()))
 	if err != nil {
 		// Not an error to report: a stream that says it is a terminal and then

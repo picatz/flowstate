@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/term"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -324,7 +325,11 @@ func TestNoConsoleWhereThereIsNoTerminal(t *testing.T) {
 	t.Run("a reader that is not a file", func(t *testing.T) {
 		t.Parallel()
 
-		console, restore, ok := attachDebugConsole(strings.NewReader("step\n"), io.Discard, plain.Theme)
+		// The writer is a real terminal, so the *input* guard is what has to
+		// decline here. Passing a non-terminal for both would leave this green
+		// whichever guard fired, which is the shape a test stops being
+		// evidence in (Codex, #1114).
+		console, restore, ok := attachDebugConsole(strings.NewReader("step\n"), aTerminal(t), plain.Theme)
 
 		assert.False(t, ok)
 		assert.Nil(t, console)
@@ -338,7 +343,7 @@ func TestNoConsoleWhereThereIsNoTerminal(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = script.Close() })
 
-		console, _, ok := attachDebugConsole(script, io.Discard, plain.Theme)
+		console, _, ok := attachDebugConsole(script, aTerminal(t), plain.Theme)
 
 		// Two guards agree here and the outcome is what is pinned: the
 		// terminal check declines first, and raw mode on a regular file would
@@ -361,4 +366,63 @@ func TestNoConsoleWhereThereIsNoTerminal(t *testing.T) {
 		assert.Nil(t, consoleOrNil(console),
 			"and the session is handed a genuinely nil interface, not one holding a nil pointer")
 	})
+}
+
+// aTerminal is a pseudo-terminal master, which term.IsTerminal answers true
+// for.
+//
+// It exists because the two guards decline independently, so a test handing a
+// non-terminal to both cannot say which one fired — and the finding this file
+// now pins is precisely about one of them being absent.
+func aTerminal(t *testing.T) *os.File {
+	t.Helper()
+
+	pty, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no pseudo-terminal available on this machine: %v", err)
+	}
+	t.Cleanup(func() { _ = pty.Close() })
+
+	require.True(t, term.IsTerminal(int(pty.Fd())),
+		"the fixture has to really be a terminal or it proves the opposite of what it claims")
+
+	return pty
+}
+
+// TestNoConsoleWhereTheOutputIsRedirected (Codex, #1114): a console is a
+// conversation between two streams, and only one of them was being checked.
+//
+// `flow test --debug` writes its console to stdout and `flow run local --debug`
+// to stderr. With stdin still attached to a terminal, redirecting that stream
+// put the terminal into raw mode and wrote the prompt, the echoed keystrokes
+// and the cursor sequences into the file.
+func TestNoConsoleWhereTheOutputIsRedirected(t *testing.T) {
+	t.Parallel()
+
+	plain := ui.Plain(io.Discard, io.Discard)
+	pty := aTerminal(t)
+
+	redirected, err := os.CreateTemp(t.TempDir(), "out")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = redirected.Close() })
+
+	// What the terminal looked like before, so the claim is not merely that
+	// attach declined but that it left the terminal alone on the way out.
+	before, err := term.GetState(int(pty.Fd()))
+	require.NoError(t, err)
+
+	console, restore, ok := attachDebugConsole(pty, redirected, plain.Theme)
+
+	assert.False(t, ok, "stdin being a terminal is not enough when the console's output is a file")
+	assert.Nil(t, console)
+	assert.Nil(t, restore, "a nil restore is the evidence raw mode was never entered")
+
+	after, err := term.GetState(int(pty.Fd()))
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "the terminal was reconfigured for a console that was declined")
+
+	// And nothing was written to the file the user was redirecting into.
+	written, err := os.ReadFile(redirected.Name())
+	require.NoError(t, err)
+	assert.Empty(t, written, "prompt or escape sequences reached the redirected stream")
 }

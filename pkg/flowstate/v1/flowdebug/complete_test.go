@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/cel-go/common/types/ref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -402,4 +403,104 @@ func (w *promptWatcher) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+// TestTheAutopsyCompletesTheBindingsInspectActuallyResolves (Codex, #1114).
+//
+// The autopsy's `run` and `vars` arrive as bare bindings that win over
+// everything in v1.Scope.ActivationWith. Held as locals they were opaque past a
+// dot, so `run.` offered nothing — and worse, `vars.` still answered from the
+// workflow's ambient vars, teaching a name that resolves to something else. A
+// completer that disagrees with the evaluator beside it is the two-surfaces
+// problem CLAUDE.md legislates against, not a missing feature.
+func TestTheAutopsyCompletesTheBindingsInspectActuallyResolves(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	console := &asking{steps: []string{"quit"}, ask: [][]string{{"inspect run.", "inspect vars."}}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	// A workflow-level var, and an autopsy binding of the same root name
+	// carrying something else — which is what actually resolves.
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.AmbientVars = map[string]*v1.Value{"from_the_workflow": v1.NewValue("x")}
+
+	extra := map[string]ref.Val{
+		"run":  v1.TypeAdapter.NativeToValue(map[string]any{"failed": true, "error": "boom"}),
+		"vars": v1.TypeAdapter.NativeToValue(map[string]any{"from_the_case": "y"}),
+	}
+
+	session.Autopsy(t.Context(), scope, extra, []string{"a failure"})
+
+	require.Len(t, console.answers, 2)
+
+	assert.Equal(t, []string{"error", "failed"}, texts(console.answers[0]),
+		"`run.` has to reach the bindings the failing check was judged under")
+
+	assert.Equal(t, []string{"from_the_case"}, texts(console.answers[1]),
+		"and `vars.` has to be the autopsy's, which is what inspect resolves — "+
+			"offering the workflow's would teach a name that answers differently")
+}
+
+// TestATabPressCostsNoMoreThanTheAnswerItProduces (Codex, #1114).
+//
+// MaxCandidates bounds the *answer*, and the first cut let a task's own output
+// map decide how much work happened before that bound applied — every key
+// sorted and built into a candidate, then cut to 512. The map is the
+// workload's: a plugin's return, or a stubbed `returns:` in a document
+// submitted to flowstate_debug. So it is the resource the far side controls,
+// and bounding a proxy for it is not bounding it (CLAUDE.md).
+func TestATabPressCostsNoMoreThanTheAnswerItProduces(t *testing.T) {
+	t.Parallel()
+
+	// One step whose outputs run far past the answer bound.
+	named := make(map[string]*v1.Value, 4*celcomplete.MaxCandidates)
+	for i := range 4 * celcomplete.MaxCandidates {
+		named[fmt.Sprintf("output_%05d", i)] = v1.NewValue("v")
+	}
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Outputs = &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{"big": {NamedValues: named}},
+	}
+
+	var out strings.Builder
+
+	console := &asking{
+		steps: []string{"quit"},
+		ask:   [][]string{{"inspect steps.big.", "inspect steps.big.output_00007"}},
+	}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+
+	require.Len(t, console.answers, 2)
+
+	whole := console.answers[0]
+	assert.LessOrEqual(t, len(whole.Candidates), celcomplete.MaxCandidates)
+	assert.True(t, whole.Truncated,
+		"a prefix must never be presented as the whole of what a name offers")
+
+	// Bounded during collection, so what survives is the first names in order
+	// rather than an arbitrary subset — a completer whose answer changed
+	// between two identical tab presses would be worse than a slow one.
+	require.NotEmpty(t, whole.Candidates)
+	assert.Equal(t, "output_00000", whole.Candidates[0].Text)
+
+	// The half that only Candidate.Truncated can carry, and the reason it
+	// exists. Here the *answer* is one candidate — far inside MaxCandidates —
+	// so celcomplete's own bound has nothing to report. The member list it was
+	// drawn from was still a prefix, and saying otherwise would tell an author
+	// they had seen everything `steps.big.` offers.
+	narrow := console.answers[1]
+	assert.Len(t, narrow.Candidates, 1)
+	assert.True(t, narrow.Truncated,
+		"an answer drawn from a truncated member list is truncated, however few it holds")
 }
