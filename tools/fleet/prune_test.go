@@ -35,6 +35,113 @@ func TestPruneForAsksForTheFloorAndALane(t *testing.T) {
 	assert.Zero(t, PruneFor(after).Bytes, "a machine that already fits a lane has nothing to give back")
 }
 
+// TestPruneForWillNotPruneAFilesystemThatIsNotShort is the finding that a
+// prune can be worse than doing nothing (Codex, #1112).
+//
+// DiskFree is the *tightest* mount a lane writes to, not the cache's. A
+// machine whose GOTMPDIR is a small tmpfs while GOCACHE sits on a roomy volume
+// is short on one and fine on the other, and a target computed from the
+// aggregate would discard gigabytes of hot cache, free nothing where the bound
+// is, and leave the machine fitting exactly as many lanes as before — with a
+// cold rebuild now owed on top.
+func TestPruneForWillNotPruneAFilesystemThatIsNotShort(t *testing.T) {
+	t.Parallel()
+
+	want := PruneFor(Machine{
+		DiskFree:       64 << 20, // a small /tmp is the bound
+		CacheDiskFree:  300 * gib,
+		CacheDiskKnown: true,
+		CacheSizeBytes: 40 * gib,
+	})
+
+	assert.Positive(t, want.Short, "the machine really is short — that much is true")
+	assert.Zero(t, want.Bytes, "but not on the filesystem the cache could give bytes back to")
+	assert.False(t, want.Enough)
+}
+
+// TestPruneForTreatsAnUnreadableCacheFilesystemAsTheSameMount: unknown must not
+// mean "refuse". Most machines have one volume, and the cost of pruning where
+// it does not help is a rebuild, where the cost of refusing to prune where it
+// would have helped is the machine staying blocked — which is the outage the
+// whole lever exists to end.
+func TestPruneForTreatsAnUnreadableCacheFilesystemAsTheSameMount(t *testing.T) {
+	t.Parallel()
+
+	want := PruneFor(Machine{DiskFree: 1 * gib, CacheSizeBytes: 40 * gib})
+
+	assert.Positive(t, want.Bytes, "an unreadable cache filesystem must not refuse the prune")
+	assert.True(t, want.Enough)
+}
+
+// TestPruneForSeparatesNothingWrongFromNothingToBeDone: `Bytes == 0` carried
+// both meanings, and the caller read it as the happy one — so an empty cache
+// under a full disk reported that the disk was fine (Codex, #1112).
+func TestPruneForSeparatesNothingWrongFromNothingToBeDone(t *testing.T) {
+	t.Parallel()
+
+	fine := PruneFor(Machine{DiskFree: 100 * gib, CacheSizeBytes: 40 * gib})
+	assert.Zero(t, fine.Short, "a healthy machine is short of nothing")
+	assert.Zero(t, fine.Bytes)
+
+	empty := PruneFor(Machine{DiskFree: 1 * gib, CacheSizeBytes: 0})
+	assert.Positive(t, empty.Short, "a full disk is short whether or not the cache can help")
+	assert.Zero(t, empty.Bytes, "and an empty cache is nothing to reclaim")
+	assert.False(t, empty.Enough)
+}
+
+// TestPruneAdviceNeverCallsAShortDiskHealthy is the finding itself rather than
+// the type behind it (Codex, #1112): the defect was what got *printed*, so
+// this holds the sentences to account the way TestAdviceIsGivenWhereItCanBeActedOn
+// does for a plan.
+func TestPruneAdviceNeverCallsAShortDiskHealthy(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		machine Machine
+		says    string
+	}{
+		{
+			name:    "an empty cache under a full disk",
+			machine: Machine{DiskFree: 1 * gib, CacheSizeBytes: 0},
+			says:    "the cache is empty or unreadable",
+		},
+		{
+			name: "a cache on a filesystem that is not the short one",
+			machine: Machine{
+				DiskFree: 64 << 20, CacheDiskFree: 300 * gib, CacheDiskKnown: true,
+				CacheSizeBytes: 40 * gib,
+			},
+			says: "GOCACHE is on a filesystem with",
+		},
+		{
+			name:    "a cache too small to clear the floor",
+			machine: Machine{DiskFree: 0, CacheSizeBytes: 1 * gib},
+			says:    "the disk will still be short",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			want := PruneFor(tc.machine)
+			joined := strings.Join(want.Advice, "\n")
+
+			require.NotEmpty(t, want.Advice,
+				"a machine that fits no lanes must never be answered with silence")
+			assert.Contains(t, joined, tc.says)
+			assert.Contains(t, joined, "$GOMODCACHE",
+				"and it has to say where to look next, since this lever cannot fix it")
+			assert.NotContains(t, joined, "already past",
+				"the whole defect was reporting a short disk as a healthy one")
+		})
+	}
+
+	// And the other direction: a machine with no problem is told nothing,
+	// because advice on a healthy machine is noise that trains readers to skip
+	// it — the rule the plan's own advice test states.
+	assert.Empty(t, PruneFor(Machine{DiskFree: 100 * gib, CacheSizeBytes: 40 * gib}).Advice)
+}
+
 func TestPruneForCannotPromiseMoreThanTheCacheHolds(t *testing.T) {
 	t.Parallel()
 

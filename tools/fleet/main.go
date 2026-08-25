@@ -102,6 +102,14 @@ func readMachine() Machine {
 		}
 	}
 	machine.CacheSizeBytes = cacheSize()
+	if cache := goEnv("GOCACHE"); cache != "" {
+		// Read separately from DiskFree, which is the tightest mount rather
+		// than this one — see [Machine.CacheDiskFree]. Zero from diskFree is
+		// unreadable, not full, so it stays unknown.
+		if free := diskFree(cache); free > 0 {
+			machine.CacheDiskFree, machine.CacheDiskKnown = free, true
+		}
+	}
 
 	return machine
 }
@@ -237,20 +245,24 @@ func cacheSize() uint64 {
 // runPrune trims the build cache to what the plan needs, and says what it did.
 func runPrune(m Machine) {
 	want := PruneFor(m)
-	if want.Bytes == 0 {
+
+	// Nothing wrong and nothing this can fix are different answers, and the
+	// first cut of this reported the second as the first: an empty or
+	// unreadable cache under a full disk came back as Bytes zero and printed
+	// "already past the floor" at a machine that fits no lanes (Codex, #1112).
+	if want.Short == 0 {
 		fmt.Printf("fleet: nothing to prune — %s free is already past the %s floor and a lane's %s\n",
 			bytes(m.DiskFree), bytes(DiskFloorBytes), bytes(LaneDiskBytes))
 
 		return
 	}
 
-	if !want.Enough {
-		// Said before the work rather than after: the cache is about to give
-		// back everything it has and the disk will still be short, so whoever
-		// reads this needs to look at the worktrees and the module cache too.
-		fmt.Printf("fleet: the build cache holds %s and %s is needed, so this frees what it can "+
-			"and the disk will still be short — check worktrees (`git worktree list`) and $GOMODCACHE\n",
-			bytes(m.CacheSizeBytes), bytes(uint64(DiskFloorBytes)+LaneDiskBytes-m.DiskFree))
+	for _, line := range want.Advice {
+		fmt.Printf("fleet: %s\n", line)
+	}
+
+	if want.Bytes == 0 {
+		return
 	}
 
 	freed, removed, err := pruneCache(goEnv("GOCACHE"), want.Bytes)
