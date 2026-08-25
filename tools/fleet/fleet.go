@@ -104,6 +104,45 @@ const (
 	DiskFloorBytes = 6 << 30
 )
 
+// Prune is how much the shared build cache has to give back, and whether
+// giving back all of it would even help.
+type Prune struct {
+	// Bytes is what the cache must release for a lane to fit again. Zero means
+	// disk is not what is stopping one.
+	Bytes uint64
+
+	// Enough records that the cache holds what is needed. False means
+	// something other than the cache is holding the disk, so emptying it
+	// entirely would buy a cold rebuild for every lane and still leave the
+	// machine below the floor — worth saying before spending it.
+	Enough bool
+}
+
+// PruneFor answers how much of the build cache has to go.
+//
+// The target is the floor *plus one lane*, not the floor alone. Freeing to the
+// floor exactly earns the answer "dispatch zero lanes", which is the state
+// this exists to end: a prune that leaves no room to work has unblocked
+// nothing.
+//
+// Bounded by what the cache holds, because that is all this can reclaim. The
+// worktrees, the module cache and everything else sharing the volume belong to
+// somebody else, and a target larger than the cache would remove every entry
+// and still report the disk short.
+func PruneFor(m Machine) Prune {
+	want := uint64(DiskFloorBytes) + LaneDiskBytes
+	if m.DiskFree >= want {
+		return Prune{}
+	}
+
+	need := want - m.DiskFree
+
+	return Prune{
+		Bytes:  min(need, m.CacheSizeBytes),
+		Enough: m.CacheSizeBytes >= need,
+	}
+}
+
 // Machine is what the plan is computed from. A struct rather than direct reads
 // so that [Plan] is a pure function and its tests can describe machines this
 // one will never be.
@@ -221,12 +260,15 @@ func PlanFor(m Machine) Plan {
 
 	if m.DiskFree <= DiskFloorBytes {
 		plan.Advice = append(plan.Advice, fmt.Sprintf(
-			"disk is below the %s floor: prune the shared build cache (`go clean -cache`) or remove finished worktrees before dispatching anything",
+			"disk is below the %s floor: `go run ./tools/fleet -prune` trims the shared build cache "+
+				"oldest-entry-first until a lane fits, or remove finished worktrees, before dispatching anything",
 			bytes(DiskFloorBytes)))
 	}
 	if m.CacheSizeBytes > uint64(DiskFloorBytes) {
 		plan.Advice = append(plan.Advice, fmt.Sprintf(
-			"the shared build cache is %s; `go clean -cache` reclaims it at the price of one cold rebuild per lane",
+			"the shared build cache is %s; `go run ./tools/fleet -prune` gives back only what a lane "+
+				"needs and keeps the hot entries, where `go clean -cache` reclaims all of it at the "+
+				"price of one cold rebuild per lane",
 			bytes(m.CacheSizeBytes)))
 	}
 	if !m.MemoryKnown {

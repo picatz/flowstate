@@ -155,7 +155,14 @@ func TestAdviceIsGivenWhereItCanBeActedOn(t *testing.T) {
 		plan := PlanFor(Machine{Cores: 8, Load1: 0, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: gib})
 
 		require.NotEmpty(t, plan.Advice)
-		assert.Contains(t, strings.Join(plan.Advice, "\n"), "go clean -cache")
+
+		// The remedy has to be one that leaves the machine able to work. This
+		// used to name `go clean -cache`, which is correct and expensive: it
+		// discards every entry and charges a cold rebuild to every lane, and
+		// the rebuild is itself load enough to keep the fleet at zero for as
+		// long as it runs. `-prune` gives back what a lane needs and keeps the
+		// rest.
+		assert.Contains(t, strings.Join(plan.Advice, "\n"), "tools/fleet -prune")
 	})
 
 	t.Run("a busy machine says to wait rather than to prune", func(t *testing.T) {
