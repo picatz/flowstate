@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,15 +201,46 @@ func FuzzReturnsSomething(f *tst.F) error   { return nil }
 func fuzzTargetsInTree(t *testing.T) map[string]string {
 	t.Helper()
 
+	found := fuzzTargetsUnder(t, repoRoot)
+
+	// Every enumeration guard's own failure mode is finding nothing and
+	// reporting green because it had no site to object to. That belongs here,
+	// against the real root, rather than in the walk: the walk is also called
+	// with a tree built to contain nothing, and an emptiness check there would
+	// make the skip it exists to test unassertable.
+	if len(found) == 0 {
+		t.Fatal("walked the tree and found no fuzz targets at all, which means this test cannot fail for the reason it exists")
+	}
+
+	return found
+}
+
+// fuzzTargetsUnder is [fuzzTargetsInTree] over a named root, so the walk's own
+// filtering can be tested against a tree built for the purpose.
+func fuzzTargetsUnder(t *testing.T, root string) map[string]string {
+	t.Helper()
+
 	found := map[string]string{}
 	fset := token.NewFileSet()
-	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "plugins", "testdata", "node_modules":
+			// .claude holds agent worktrees, which are other revisions of this
+			// same tree. A target declared only on somebody's branch is not a
+			// target this tree is failing to list, and the diagnostic would
+			// send a reader to add a name to targets.txt that no file here
+			// declares — which the sibling test then rejects.
+			//
+			// This one was masked rather than absent: `found` is keyed by
+			// target *name*, `.claude` sorts before `pkg`, and WalkDir is
+			// lexical, so a worktree's copy of an existing target was
+			// overwritten by the real one a moment later. Only a target the
+			// branch adds survives to be reported — which is exactly the case
+			// a fix that relied on that ordering would keep.
+			case ".git", ".claude", "plugins", "testdata", "node_modules":
 				return filepath.SkipDir
 			}
 			return nil
@@ -220,7 +252,7 @@ func fuzzTargetsInTree(t *testing.T) map[string]string {
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		dir, err := filepath.Rel(repoRoot, filepath.Dir(path))
+		dir, err := filepath.Rel(root, filepath.Dir(path))
 		if err != nil {
 			return err
 		}
@@ -232,9 +264,7 @@ func fuzzTargetsInTree(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(found) == 0 {
-		t.Fatal("walked the tree and found no fuzz targets at all, which means this test cannot fail for the reason it exists")
-	}
+
 	return found
 }
 
@@ -312,4 +342,59 @@ func isFuzzTargetName(name string) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(rest)
 	return !unicode.IsLower(r)
+}
+
+// TestTheTargetWalkIgnoresAgentWorktrees.
+//
+// `.claude/worktrees/<branch>` is a checkout of this repository at another
+// revision, underneath this one. A fuzz target declared only on somebody's
+// branch is not a target this tree is failing to list — but the walk found it
+// and the guard reported it, sending a reader to add a name to targets.txt that
+// no file here declares, which the sibling every-listed-target-exists check then
+// rejects.
+//
+// This one was masked rather than absent, which is the part worth a test. The
+// map is keyed by target *name*, `.claude` sorts before `pkg`, and WalkDir is
+// lexical — so a worktree's copy of an existing target was overwritten by the
+// real one a moment later and nothing was ever wrong to see. Only a target the
+// branch *adds* survives to be reported, so that is what this plants.
+func TestTheTargetWalkIgnoresAgentWorktrees(t *testing.T) {
+	t.Parallel()
+
+	const target = `package v1
+
+import "testing"
+
+func FuzzSomethingOnlyOnTheBranch(f *testing.F) {
+	f.Fuzz(func(t *testing.T, s string) { _ = s })
+}
+`
+
+	root := t.TempDir()
+	write := func(dir string) {
+		t.Helper()
+
+		at := filepath.Join(root, filepath.FromSlash(dir))
+		if err := os.MkdirAll(at, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(at, "branch_fuzz_test.go"), []byte(target), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write(".claude/worktrees/some-branch/pkg/flowstate/v1")
+
+	if found := fuzzTargetsUnder(t, root); len(found) != 0 {
+		t.Errorf("a target declared on another branch is not a target this tree is missing, and yet: %v", found)
+	}
+
+	// The same file outside .claude is still found, so the assertion above is
+	// about the skip rather than about the walk finding nothing at all.
+	write("pkg/flowstate/v1")
+
+	found := fuzzTargetsUnder(t, root)
+	if want := map[string]string{"FuzzSomethingOnlyOnTheBranch": "pkg/flowstate/v1"}; !maps.Equal(found, want) {
+		t.Errorf("want %v, got %v", want, found)
+	}
 }

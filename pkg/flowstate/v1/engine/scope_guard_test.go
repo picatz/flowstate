@@ -348,17 +348,36 @@ type scopeSite struct {
 func scopeSitesInTree(t *testing.T) []scopeSite {
 	t.Helper()
 
+	return scopeSitesUnder(t, repoRootFromEngine)
+}
+
+// scopeSitesUnder is [scopeSitesInTree] over a named root, so the walk's own
+// filtering can be tested against a tree built for the purpose.
+//
+// Parameterised for the reason the filtering below needed fixing at all: the
+// walk was the part that was wrong, and a walk wired to one hardcoded root is
+// the part no test can reach.
+func scopeSitesUnder(t *testing.T, root string) []scopeSite {
+	t.Helper()
+
 	const enginePkg = "pkg/flowstate/v1/engine"
 
 	var sites []scopeSite
 	fset := token.NewFileSet()
-	err := filepath.WalkDir(repoRootFromEngine, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "plugins", "testdata", "node_modules":
+			// .claude holds agent worktrees — a *different revision* of this
+			// same tree, checked out underneath it. Every site found in one is
+			// a site in code that is not here, and the diagnostic above would
+			// tell a reader to exempt a key
+			// (`.claude/worktrees/<branch>/pkg/…`) that stops existing when
+			// that worktree is removed. A guard whose advice cannot be
+			// followed is worse than one that says nothing.
+			case ".git", ".claude", "plugins", "testdata", "node_modules":
 				return filepath.SkipDir
 			}
 			return nil
@@ -368,7 +387,7 @@ func scopeSitesInTree(t *testing.T) []scopeSite {
 			return nil
 		}
 
-		rel, err := filepath.Rel(repoRootFromEngine, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
@@ -612,4 +631,57 @@ func compositeLitOf(expr ast.Expr) *ast.CompositeLit {
 		return nil
 	}
 	return lit
+}
+
+// TestTheScopeGuardIgnoresAgentWorktrees.
+//
+// `.claude/worktrees/<branch>` is a whole checkout of this repository at some
+// other revision, sitting underneath this one. The walk used to descend into it
+// and report every scope literal there as a site of this tree's — and because
+// the exemption list is keyed by path, a site that *is* exempt here
+// (`pkg/flowstate/v1/engine/activities.go#WorkflowVars`) is not exempt under
+// the worktree's prefix, so a clean tree failed its own guard.
+//
+// The advice is what makes it worse than noise. The diagnostic tells a reader
+// to add `.claude/worktrees/<branch>/…` to exemptScopeConstruction, a key that
+// stops existing the moment that worktree is removed — and which the sibling
+// stale-exemption check then reports. A guard whose instructions cannot be
+// followed is worse than one that says nothing.
+func TestTheScopeGuardIgnoresAgentWorktrees(t *testing.T) {
+	t.Parallel()
+
+	// A scope literal carrying no identity — exactly what the guard objects to.
+	const objectionable = `package engine
+
+import v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+func WorkflowVars() *v1.Scope { return &v1.Scope{Profile: "p"} }
+`
+
+	root := t.TempDir()
+	write := func(dir string) {
+		t.Helper()
+
+		at := filepath.Join(root, filepath.FromSlash(dir))
+		if err := os.MkdirAll(at, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(at, "activities.go"), []byte(objectionable), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write(".claude/worktrees/some-branch/pkg/flowstate/v1/engine")
+
+	if sites := scopeSitesUnder(t, root); len(sites) != 0 {
+		t.Errorf("a checkout of another revision underneath this one is not this tree, and yet: %v", sites)
+	}
+
+	// The same file outside .claude is still found, so the assertion above is
+	// about the skip rather than about the walk finding nothing at all.
+	write("pkg/flowstate/v1/engine")
+
+	if sites := scopeSitesUnder(t, root); len(sites) != 1 {
+		t.Errorf("want the one site outside .claude, got %d: %v", len(sites), sites)
+	}
 }
