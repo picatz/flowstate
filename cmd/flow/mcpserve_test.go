@@ -381,6 +381,7 @@ func TestMCPServeServesAReducedToolList(t *testing.T) {
 		flowmcp.ToolName("Compile"):    true,
 		flowmcp.ToolName("GetCatalog"): true,
 		flowmcp.TestToolName:           true,
+		flowmcp.DebugToolName:          true,
 	}, served)
 
 	// Stated separately from the equality above, because these two are the
@@ -394,6 +395,10 @@ func TestMCPServeServesAReducedToolList(t *testing.T) {
 			"which is the confused deputy this surface refuses to be until it can authorize per principal")
 	require.True(t, served[flowmcp.TestToolName],
 		"flowstate_test is served (#558 Q3): a stubbed run reaches nothing by construction")
+	require.True(t, served[flowmcp.DebugToolName],
+		"flowstate_debug is served for the identical reason: it drives the same stubbed run, and "+
+			"a finite script cannot hold it open — an exhausted script resumes the run, so the "+
+			"bound that ends a flowstate_test call ends this one (#928 slice 3)")
 }
 
 // TestMCPServeReachesTheRequestByteBound crosses the byte bound rather than
@@ -1162,4 +1167,59 @@ func TestMCPServeTestCallBudgetIncludesWaitingForTheLock(t *testing.T) {
 	require.Less(t, elapsed, 5*time.Second,
 		"waiting for the lock has to be inside the call's own budget, not before it")
 	require.GreaterOrEqual(t, elapsed, budget, "and the call must actually have waited its budget out")
+}
+
+// TestMCPServeDebugToolTakesTheExclusiveRegistryLock is the direction that was
+// missing when flowstate_debug landed (Codex, #1109): it drives the identical
+// flowtest run through the identical door, so it registers a synthetic
+// definition for any task a case stubs that this build does not have — and it
+// was wrapped as a *reader*, which let a concurrent catalog read observe
+// another caller's task names.
+//
+// The discriminator is *one* held unit, and getting that wrong is how this
+// test was vacuous when first written: [mcpServeRegistryGuard.shared] takes a
+// single unit and [mcpServeRegistryGuard.exclusive] takes all of them, so
+// holding the whole semaphore blocks both and proves nothing about which path
+// a tool took. Holding one blocks only a writer — which is exactly the claim.
+func TestMCPServeDebugToolTakesTheExclusiveRegistryLock(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, registryMutatingTools[flowmcp.DebugToolName],
+		"flowstate_debug reaches flowtest.RunSourceWith, so it mutates the registry")
+
+	fixture := newMCPServeFixtureWithTestTimeout(t, 2*time.Second)
+	session := fixture.connect(t, fixture.goodToken("agent"))
+
+	// One unit, as a concurrent reader holds: a writer cannot start beside it.
+	require.NoError(t, fixture.guard.sem.Acquire(t.Context(), 1))
+
+	called := make(chan struct{})
+	go func() {
+		defer close(called)
+		_, _ = session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name: flowmcp.DebugToolName,
+			Arguments: map[string]any{
+				"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n",
+				"tests":    "tests:\n  - name: it runs\n    stubs:\n      - task: log\n        returns: {}\n    expect:\n      ran: [hi]\n",
+				"commands": []any{"continue"},
+			},
+		})
+	}()
+
+	select {
+	case <-called:
+		fixture.guard.sem.Release(1)
+		t.Fatal("a flowstate_debug call ran beside a concurrent reader, so it is taking the shared " +
+			"lock: its synthetic task names are visible to every catalog read, validate and compile " +
+			"in flight")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	fixture.guard.sem.Release(1)
+
+	select {
+	case <-called:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the debug call never ran after the lock was released")
+	}
 }

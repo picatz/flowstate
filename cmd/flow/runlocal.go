@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -200,6 +201,55 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	ctx = v1.ContextWithLogger(ctx,
 		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))
 
+	// The same session `flow test --debug` runs, attached to a real run: the
+	// engine holds at each step boundary, and `inspect` answers through the
+	// run's own evaluator and activation, so it is cost-bounded and refuses a
+	// `${secret(...)}` exactly as the file's own expressions would be.
+	//
+	// The console joins the run's account on stderr — where `log:` steps and
+	// the status pill already print — rather than taking stdout the way the
+	// test verb's does. Each verb keeps the console beside its own narration,
+	// and this one's narration was never on stdout: the answer is, and it
+	// stays a document a pipe can read under every --output, which is why
+	// none of the test verb's refusals apply here. The session observes as
+	// well as gates, so each step's own account arrives at the prompt that
+	// paused it.
+	reveal := revealSensitiveRequested(cmd)
+	if debugging, _ := cmd.Flags().GetBool("debug"); debugging {
+		// A debugger is a reveal: the session narrates each step's values as
+		// they complete and `inspect` reaches anything in scope, so on a
+		// workflow whose declarations make the final render withhold its
+		// transcript, attaching one quietly opens exactly the side channel
+		// redaction closes (Codex, #1109) — and #928's own rule is that debug
+		// output sits behind the same redaction, never a parallel copy. There
+		// is no parallel redactor here on purpose: the honest shapes are this
+		// refusal, or the explicit flag every other surface already shares.
+		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
+			return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+				"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
+				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
+				workflow.GetName())
+		}
+		session, err := flowdebug.New(flowdebug.Options{
+			In:   cmd.InOrStdin(),
+			Out:  surface.Err,
+			Emit: debugEmitter(surface.Err, surface.ErrTheme),
+		})
+		if err != nil {
+			return err
+		}
+		// This process is about to exit either way, so the reader parking
+		// costs nothing here — closed anyway because a session's owner closes
+		// it, and a habit that holds only where it is load-bearing is one that
+		// will be missing where it is.
+		defer func() { _ = session.Close() }()
+
+		fmt.Fprintf(surface.Err, "%s\n", surface.ErrTheme.Accent.Render(
+			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+		ctx = v1.NewContextWithDebugger(ctx, session)
+		ctx = v1.NewContextWithRunObserver(ctx, session)
+	}
+
 	started := time.Now()
 
 	// The local driver's own submit boundary, which binds the arguments and applies
@@ -211,7 +261,6 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// This process just parsed workflow itself, so redaction here is precise
 	// against its own `sensitive:` declarations rather than the fail-closed case
 	// a renderer with no specification falls back to — see sensitive.go.
-	reveal := revealSensitiveRequested(cmd)
 	if reveal {
 		noteRevealedSensitiveValues(surface)
 	}

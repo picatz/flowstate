@@ -33,6 +33,7 @@ rather than failing opaquely when `--address` was not given.
 | `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` |
 | `flowstate_run_local` | locally | — |
 | `flowstate_test` | locally | — |
+| `flowstate_debug` | locally | — |
 
 ## `flowstate_validate`
 
@@ -197,4 +198,18 @@ What it does not prove: that a real task behaves the way a stub's `returns:` or 
 To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` together, `namespace:` and `claims:`, and both checked by the same policy function the server calls, so `distinct_from_starter:` refuses a sender who is the run's own starter here exactly as production would. Neither is attested: a delivery stands in for its sender, which is why a gate's own `sender.local` output reads true, and `starter:` never reaches `run.identity`.
 
 Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a verdict at all (the workflow failed to compile, a stub named a task with no matching invocation, or the run failed in a way the case did not declare with `expect.failed`) reports why in `error` instead of `failures`. `refused` is set instead of any case running at all when the submitted `tests` document itself does not parse.
+
+## `flowstate_debug`
+
+Hold a test case's run at each step and ask the paused run questions: what a step produced, what an expression evaluates to, what is in scope. This is the tool for "why did that fail", after flowstate_test has told you that it did.
+
+One call is one session. `commands` is the script that drives it — the run starts held before its first step, each command answers or advances, and when the script runs out the run continues to the end. Nothing here is interactive and nothing waits for a human: submit the questions you have, read the transcript, submit more.
+
+The answer carries the session transcript (every stop, every step's own outcome, every answer), the script that produced it — re-send it with more commands appended to go further — and the case's ordinary verdict, which this tool cannot change: a debugged run is the run, and its expectations are judged exactly as flowstate_test judges them.
+
+`inspect` evaluates CEL against the paused run's own scope, through the engine's own evaluator: it is cost-bounded like every expression in the file, and it can name whatever the file could name at that point (`steps.<id>.<output>`, `inputs`, `vars`, a loop's binding). It cannot resolve a secret — `secret(...)` is compiled into a reference when a workflow is built and is never a function anything calls, so there is nothing here to call.
+
+A case that fails is held open once more after the verdict, its failures printed and the finished run still questionable — so one script can assert, see the failure, and then ask what the run actually produced.
+
+Runs on stubs, like flowstate_test: no egress, no secret resolved, a virtual clock. Debugging a real, unstubbed local run is not this tool.
 

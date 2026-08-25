@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -447,9 +449,25 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // the reason on the case; [RunSource] and [RunFile] pass a background context
 // and are unchanged by this existing.
 func RunSourceContext(ctx context.Context, label string, workflowSource, testSource []byte) *v1.TestReport {
+	return RunSourceWith(ctx, label, workflowSource, testSource, RunOptions{}).Report
+}
+
+// RunSourceWith is [RunSourceContext] with the caller's own [RunOptions] —
+// the door a front that needs more than a verdict comes through, and today
+// that is the MCP debug adapter (#928 slice 3), which needs [RunOptions.Select]
+// to name one case and [RunOptions.Debugger] to drive it.
+//
+// Label is this door's to set, not the caller's: it is the report identity and
+// the coverage identity, and both are the label argument. Everything else the
+// caller brings. skipTranscript stays on for the reason it was set here at all
+// — the submitter is not the reader on this door, so the case account is
+// memory an untrusted submission shapes for nobody. A debugging session hears
+// the same account directly through [v1.RunObserver] instead, which is what
+// makes that discard cost a debug front nothing.
+func RunSourceWith(ctx context.Context, label string, workflowSource, testSource []byte, opts RunOptions) RunResult {
 	file, err := LoadSource(testSource)
 	if err != nil {
-		return &v1.TestReport{File: label, Refused: err.Error()}
+		return RunResult{Report: &v1.TestReport{File: label, Refused: err.Error()}}
 	}
 
 	// The loader parses the one submitted workflow per case, with no delivery
@@ -461,7 +479,10 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 	// submitted workflow. Coverage riding the report through [runSuite] is
 	// what makes this door answer with the same account the CLI's does
 	// (issue #931).
-	result := runSuite(ctx, file, RunOptions{Label: label, skipTranscript: true}, func(*Test) (loader, string) {
+	opts.Label = label
+	opts.skipTranscript = true
+
+	return runSuite(ctx, file, opts, func(*Test) (loader, string) {
 		return loader{
 			load: func() (*v1.Workflow, error) {
 				workflow, err := flowfile.Unmarshal(workflowSource)
@@ -474,7 +495,6 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 			deliveryPath: "",
 		}, label
 	})
-	return result.Report
 }
 
 // runCase runs one test and reports its verdict. load resolves the workflow
@@ -720,6 +740,57 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		sensitive.values = append(sensitive.values, value)
 		sensitive.substrings = append(sensitive.substrings, value)
 	}
+	// A debugging session prints what the transcript prints, so it withholds
+	// what the transcript withholds (Codex, #1109). Capability-discovered the
+	// way the autopsy is: a debugger that does not implement it simply prints
+	// whatever it was going to, and the only implementation that exists is
+	// [flowdebug.Session]. Installed per case, because `sensitive` is this
+	// case's — its inputs, its secrets — and cleared afterward so a session
+	// driving a second case never carries the first one's rule.
+	//
+	// Installed only where it would do something, because the session reads
+	// "a redactor is installed" as "this case withholds values" and says so
+	// at the autopsy — a rule that redacts nothing would put that notice on
+	// every failing case.
+	if redact := sensitive; redact.withholdAll || len(redact.substrings) > 0 || len(redact.values) > 0 {
+		debugger := v1.DebuggerFromContext(ctx)
+
+		if redacting, ok := debugger.(interface {
+			SetRedactor(func(string) string)
+		}); ok {
+			redacting.SetRedactor(func(text string) string {
+				if redact.withholdAll {
+					return "[withheld]\n"
+				}
+
+				return redactSensitiveSubstrings(text, redact.substrings)
+			})
+			defer redacting.SetRedactor(nil)
+		}
+
+		// And the same set at the *value* seam, because the substring half of
+		// it deliberately omits short descendants — replacing every "7" in
+		// every line would make a transcript unreadable — so a sensitive
+		// `credentials: [7]` had nothing in `substrings` to catch it and
+		// `inspect inputs.credentials` printed it in full, while the ordinary
+		// transcript redacted the whole container (Codex, #1109). Values match
+		// by equality rather than by looking like something, which is exactly
+		// what a short descendant needs, and it is the same
+		// [redactSensitiveTree] every witness rendering already applies.
+		if redacting, ok := debugger.(interface {
+			SetValueRedactor(func(any) any)
+		}); ok {
+			redacting.SetValueRedactor(func(value any) any {
+				if redact.withholdAll {
+					return "[withheld]"
+				}
+
+				return redactSensitiveTree(value, redact.values)
+			})
+			defer redacting.SetValueRedactor(nil)
+		}
+	}
+
 	if recorder != nil {
 		recorder.sensitive = sensitive
 	}
@@ -789,6 +860,22 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
 
+	// An abandoned run is not a verdict about the workflow, whatever the case
+	// expected. `quit` ends the run wherever it stands, so a case declaring
+	// `expect.failed: true` would otherwise be *satisfied* by the debugger's
+	// own error and pass without ever reaching the failure it named — a
+	// debugger turning a red case green, which is the one thing `--debug` must
+	// never do (Codex, #1109). Reported as the case's error rather than as a
+	// failed expectation, because nothing about the expectations was actually
+	// judged.
+	if errors.Is(runErr, v1.ErrDebugSessionEnded) {
+		result.Error = fmt.Sprintf("the debug session ended this run before it finished, so this "+
+			"case has no verdict: %v", runErr)
+		result.Passed = false
+
+		return
+	}
+
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
@@ -805,13 +892,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// here can change the verdict — it was reached above.
 	if !result.Passed {
 		if examiner, ok := v1.DebuggerFromContext(ctx).(interface {
-			Autopsy(context.Context, *v1.Scope, []string)
+			Autopsy(context.Context, *v1.Scope, map[string]ref.Val, []string)
 		}); ok {
 			rendered := make([]string, 0, len(result.Failures))
 			for _, failure := range result.Failures {
 				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
 			}
-			examiner.Autopsy(ctx, postRunScope(workflow, bound, outputs), rendered)
+			scope := postRunScope(workflow, bound, outputs)
+			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, runErr, sensitive), rendered)
 		}
 	}
 

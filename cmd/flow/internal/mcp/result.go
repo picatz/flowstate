@@ -44,6 +44,26 @@ import (
 // rung. A rung that cannot be encoded is a defect in this surface, not a large
 // answer, and quietly reporting the next-smaller document would hide it.
 func FitResult(rungs ...func() ([]byte, error)) ([]byte, int, error) {
+	return FitResultWithin(MaxResultBytes, rungs...)
+}
+
+// FitResultWithin is [FitResult] against a budget smaller than the surface's
+// own, for an answer that will be *embedded* in another one.
+//
+// The whole difference is who spends the cap. A ladder that fits its document
+// to [MaxResultBytes] has fitted a *final* answer; wrap that document in
+// anything — one more object, one key, one note saying what was dropped — and
+// the result is over the bound, and every rung of the outer ladder retains the
+// inner document, so the outer floor is oversized by construction and
+// [FitResult]'s own contract hands it back that way (Codex, #1109). The bytes
+// the wrapper needs have to be taken out of the inner budget, because they are
+// not the inner document's to spend.
+//
+// Callers should compute the reserve rather than guess it: encode the wrapper
+// with the embedded document elided, measure what came back, and pass the
+// remainder. A guessed reserve is a second bound that can be wrong in the
+// direction this exists to prevent.
+func FitResultWithin(limit int, rungs ...func() ([]byte, error)) ([]byte, int, error) {
 	if len(rungs) == 0 {
 		// Unreachable from this package; loud rather than a nil answer if a
 		// future caller builds an empty ladder.
@@ -60,7 +80,7 @@ func FitResult(rungs ...func() ([]byte, error)) ([]byte, int, error) {
 			return nil, i, err
 		}
 
-		if len(encoded) <= MaxResultBytes {
+		if len(encoded) <= limit {
 			return encoded, i, nil
 		}
 	}

@@ -2,7 +2,6 @@ package flowtest
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"maps"
 	"path/filepath"
@@ -47,25 +46,54 @@ type dirDefaults struct {
 	Defaults *Defaults      `yaml:"defaults"`
 }
 
+// DirDefaultsError reports that the thing that could not be read was a
+// directory's [DirDefaultsName], and names which one.
+//
+// It exists so a caller can ask *where an error came from* instead of reading
+// its prose for a filename. The editor's suite diagnostics have to know: a
+// refusal originating in the sibling defaults file carries that file's
+// positions, so it is anchored at the suite's document start and shown whole
+// rather than mapped onto lines it does not describe. Deciding that by looking
+// for "testdefaults.yaml" in the message text misfiled two ordinary things as
+// defaults errors — a case *named* `testdefaults.yaml`, and any suite under a
+// directory whose name contains the string (Codex, #1109).
+//
+// The rendered message is unchanged — `<path>: <what went wrong>`, the form a
+// terminal reader already sees — because the point is to make provenance
+// answerable, not to reword anything.
+type DirDefaultsError struct {
+	// Path is the defaults file, as it would be opened.
+	Path string
+
+	// Err is what went wrong with it: unreadable, over a bound, or invalid.
+	Err error
+}
+
+func (e *DirDefaultsError) Error() string { return e.Path + ": " + e.Err.Error() }
+
+func (e *DirDefaultsError) Unwrap() error { return e.Err }
+
 // loadDirDefaults reads dir's testdefaults.yaml, or reports nil when the
 // directory states none. The file is untrusted input exactly as a suite is:
 // size-bounded before reading, alias-expansion-bounded before parsing.
 func loadDirDefaults(dir string) (*dirDefaults, error) {
 	path := filepath.Join(dir, DirDefaultsName)
+	refuse := func(err error) error { return &DirDefaultsError{Path: path, Err: err} }
+
 	data, err := readBounded(path, MaxTestFileBytes, "directory defaults file")
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, refuse(err)
 	}
 	if err := checkExpansionBounds(data); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, refuse(err)
 	}
 
 	var dd dirDefaults
 	if err := yaml.UnmarshalWithOptions(data, &dd, yaml.Strict()); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, refuse(err)
 	}
 
 	return &dd, nil

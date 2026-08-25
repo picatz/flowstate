@@ -424,13 +424,18 @@ type Test struct {
 // through the same [v1.BindRunInputs] a submit uses. A case that maps a field the
 // payload does not carry fails here exactly as it would in production.
 //
-// The verification *outcome* is declared rather than computed, because there is no
-// receiver yet and therefore no signature arithmetic anywhere in this repository.
-// `signature: invalid` does not forge a bad signature; it says "this delivery did
-// not verify" and asserts what Flowstate then does about it, which is the half that
-// is a property of the file. When the receiver lands it supplies that same boolean
-// from real material, and nothing about this shape changes — which is precisely why
-// the refusal lives in the shared function rather than in the receiver.
+// The verification *outcome* is computed when the case supplies the material, and
+// declared when it does not (#935). A case whose `secrets:` binds every key the
+// trigger's `verify:` names gets the outcome from [v1.VerifyWebhookDelivery] — the
+// same arithmetic the served receiver runs (server/webhook.go), over the fixture's
+// exact `body` bytes, at the virtual clock's epoch — so a fixture with a wrong
+// signature fails here exactly as a live delivery would be refused. With no keys
+// bound, `signature: valid|invalid` declares the boolean instead: it does not
+// forge a bad signature, it says "this delivery did not verify" and asserts what
+// Flowstate then does about it, which is the keyless rehearsal this stanza always
+// supported. Binding the keys *and* declaring `signature:` is refused, naming
+// both, because a declaration that could contradict the arithmetic is the
+// two-spellings bug as a test fixture.
 type TriggerDelivery struct {
 	// Webhook is the name one of the workflow's `- webhook:` entries declares.
 	// An unknown name is refused when the file loads, naming what the workflow
@@ -500,6 +505,12 @@ type TriggerDelivery struct {
 	// flipped — and because there is deliberately no third value. A delivery
 	// that could not be checked is refused exactly as one that failed a check
 	// is; see [v1.BindWebhookTriggerInputs].
+	//
+	// Legal only while the case binds none of the keys the trigger's `verify:`
+	// names. A case whose `secrets:` binds them all has the outcome *computed*
+	// from that material instead ([v1.VerifyWebhookDelivery], the receiver's
+	// own function), and declaring this beside the arithmetic is refused —
+	// see the type's doc.
 	Signature string `yaml:"signature"`
 }
 
@@ -1021,6 +1032,23 @@ func Load(path string) (*File, error) {
 	data, err := readBounded(path, MaxTestFileBytes, "test file")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return LoadSourceAt(data, path)
+}
+
+// LoadSourceAt is [Load] on bytes the caller already holds, with the semantics
+// the path decides — the directory's `testdefaults.yaml` folded in, the
+// workflow requirement enforced — kept exactly as [Load] applies them.
+//
+// It exists for a caller whose bytes are *newer* than the file at path: the
+// language server checks an editor's live buffer, and an unsaved edit is
+// precisely what its diagnostics have to reflect (#1110). [Load] is this
+// function behind a bounded read, so the two cannot drift.
+func LoadSourceAt(data []byte, path string) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%s: %d bytes exceeds the %d byte limit for a test file",
+			path, len(data), MaxTestFileBytes)
 	}
 
 	// The directory's shared fixture, if the suite's own directory states

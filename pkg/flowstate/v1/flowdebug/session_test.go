@@ -3,10 +3,15 @@ package flowdebug_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/cel-go/common/types/ref"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -441,7 +446,7 @@ func TestTheAutopsyAnswersFromTheFinishedRun(t *testing.T) {
 		"build": {NamedValues: map[string]*v1.Value{"ok": v1.NewLiteral("built")}},
 	}}}
 
-	session.Autopsy(t.Context(), scope, []string{`expect.check[0]: check failed: steps.build.ok == 'shipped'`})
+	session.Autopsy(t.Context(), scope, nil, []string{`expect.check[0]: check failed: steps.build.ok == 'shipped'`})
 
 	joined := ""
 	for _, f := range fragments {
@@ -475,7 +480,7 @@ func TestTheAutopsyMovementVerbsAllLeave(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
-			session.Autopsy(t.Context(), &v1.Scope{}, nil)
+			session.Autopsy(t.Context(), &v1.Scope{}, nil, nil)
 			close(done)
 		}()
 		select {
@@ -484,4 +489,431 @@ func TestTheAutopsyMovementVerbsAllLeave(t *testing.T) {
 			t.Fatalf("autopsy did not leave on %q", strings.TrimSpace(verb))
 		}
 	}
+}
+
+// TestQuitAtABreakpointSuppressesTheAutopsy: quit is the one command
+// advertised as leaving, so a session that quit mid-run is never re-opened
+// for the autopsy — abandoning the run fails the case, and answering `quit`
+// with another prompt would make it a lie (Codex, #1107).
+func TestQuitAtABreakpointSuppressesTheAutopsy(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{In: strings.NewReader("quit\n"), Out: &console})
+	require.NoError(t, err)
+
+	ran := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, ran))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	workflow := &v1.Workflow{Name: "debugged", Steps: []*v1.Node{markStep("build")}}
+	_, runErr := v1.Run(ctx, workflow)
+	require.Error(t, runErr, "quit abandons the run")
+	assert.Empty(t, ran.ids, "quit at the first breakpoint runs nothing")
+
+	before := console.String()
+	session.Autopsy(t.Context(), &v1.Scope{}, nil, []string{"expect.ran: build never ran"})
+	assert.Equal(t, before, console.String(), "a session that quit is not prompted again")
+	assert.NotContains(t, console.String(), "autopsy:")
+}
+
+// TestTheAutopsyAnswersWithTheChecksOwnBindings: an inspection at the autopsy
+// binds what the failing check was judged under — the file's `vars` and the
+// extended `run` root ride in through extra — so `inspect vars.want` asks the
+// same question the check asked, not one over a scope missing half its names
+// (Codex, #1107).
+func TestTheAutopsyAnswersWithTheChecksOwnBindings(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("inspect vars.want\ninspect run.failed\ninspect run.error\nquit\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+
+	extra := map[string]ref.Val{
+		"vars": v1.TypeAdapter.NativeToValue(map[string]any{"want": "shipped"}),
+		"run":  v1.TypeAdapter.NativeToValue(map[string]any{"failed": true, "error": "step build: exploded"}),
+	}
+	session.Autopsy(t.Context(), &v1.Scope{}, extra,
+		[]string{"expect.check[0]: check failed: steps.build.ok == vars.want"})
+
+	out := console.String()
+	assert.Contains(t, out, `"shipped"`, "vars answers as the check read it")
+	assert.Contains(t, out, "true", "run.failed answers")
+	assert.Contains(t, out, "exploded", "run.error answers")
+}
+
+// TestTheAutopsyScopeListsItsBindings: `scope` is how an author discovers
+// what to inspect, so the autopsy's extra bindings must appear in it — a
+// listing that omits `vars` while `inspect vars.x` answers hides exactly the
+// names it exists to reveal (Codex, #1109).
+func TestTheAutopsyScopeListsItsBindings(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("scope\nquit\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+
+	extra := map[string]ref.Val{
+		"vars": v1.TypeAdapter.NativeToValue(map[string]any{"want": "shipped"}),
+		"run":  v1.TypeAdapter.NativeToValue(map[string]any{"failed": true}),
+	}
+	session.Autopsy(t.Context(), &v1.Scope{}, extra, []string{"expect.check[0]: check failed"})
+
+	assert.Contains(t, console.String(), "bound: run, vars",
+		"the autopsy's own bindings are missing from the scope listing")
+}
+
+// TestACancelledContextUnblocksThePrompt: ctrl-C's first signal cancels the
+// command's context, and a session parked at a prompt has to notice — a
+// synchronous read would hold the process hostage for a second, harder
+// signal (Codex, #1109). The console here never writes, which is exactly the
+// terminal a person just interrupted.
+func TestACancelledContextUnblocksThePrompt(t *testing.T) {
+	t.Parallel()
+
+	blocked, _ := io.Pipe()
+	session, err := flowdebug.New(flowdebug.Options{In: blocked})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- session.BeforeStep(ctx, markStep("build"), &v1.Scope{})
+	}()
+
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled,
+			"the engine must see the cancellation, not a resume or a hang")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt did not notice the cancelled context")
+	}
+}
+
+// TestCloseReleasesTheReaderGoroutine (Codex, #1109): a session's reader parks
+// on an unbuffered send whenever a line arrives with nobody left to take it,
+// which is every session whose run ended with a command still in flight. In a
+// process about to exit that is free; in a server answering debug calls it is
+// a goroutine, a scanner and a script retained per call, without bound.
+//
+// Counted rather than asserted about in prose, because "does not leak" is
+// exactly the claim a test can make vacuously.
+func TestCloseReleasesTheReaderGoroutine(t *testing.T) {
+	// Not parallel: it counts goroutines, and a sibling test starting one
+	// concurrently would be indistinguishable from a leak.
+	before := runtime.NumGoroutine()
+
+	for range 20 {
+		// `step` resumes the run, so BeforeStep returns with the reader
+		// holding the *next* line and no receiver left for it — which is the
+		// shape that parks. A script of non-resuming commands would drain to
+		// EOF and exit on its own, proving nothing; that is how this test was
+		// vacuous when first written.
+		session, err := flowdebug.New(flowdebug.Options{
+			In:  strings.NewReader("step\n" + strings.Repeat("scope\n", 50)),
+			Out: io.Discard,
+		})
+		require.NoError(t, err)
+
+		// One read, then abandon it exactly as a finished call does.
+		require.NoError(t, session.BeforeStep(t.Context(), markStep("only"), &v1.Scope{}))
+		require.NoError(t, session.Close())
+	}
+
+	// The readers exit asynchronously; give them a moment rather than racing.
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	assert.LessOrEqual(t, runtime.NumGoroutine(), before+2,
+		"twenty closed sessions left readers parked: each holds its scanner and script "+
+			"for the life of the process")
+}
+
+// TestCloseIsIdempotentAndSafeWithoutAReader: a caller closing twice, or
+// closing a session whose reader never started, must not panic — a session is
+// closed by whoever owns it, and that owner does not know which of those
+// happened.
+func TestCloseIsIdempotentAndSafeWithoutAReader(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{Out: io.Discard})
+	require.NoError(t, err)
+
+	require.NoError(t, session.Close())
+	require.NoError(t, session.Close())
+}
+
+// TestConcurrentCallbacksAreSerialized holds this type's own doc to account
+// (Codex, #1109).
+//
+// [v1.RunObserver] states plainly that its callbacks arrive on the step's
+// goroutine and that an implementation storing events must synchronize itself
+// where a workflow has `parallel:` branches or `async:` steps; the Session doc
+// answers "safe for concurrent use". It was not: Emit was called with nothing
+// held, and the two emitters this repository ships both accumulate — the MCP
+// adapter appends to a slice and adds up the bytes its answer's bound is
+// computed from.
+//
+// Driven directly rather than through a workflow, deliberately. The local
+// driver is sequential today, so no Flowfile produces these callbacks — a test
+// written as a run would pass against the unsynchronized version and prove
+// nothing. What is under test is the promise, which is made here.
+func TestConcurrentCallbacksAreSerialized(t *testing.T) {
+	const (
+		writers = 8
+		each    = 50
+	)
+
+	var (
+		kept  []string
+		bytes int
+	)
+
+	// An emitter that accumulates, which is the shape both real ones have,
+	// and with no lock of its own: keeping two writers out of each other is
+	// the session's job, and this is the callback that finds out whether it
+	// did. wg.Wait below is the happens-before edge that makes reading these
+	// afterwards safe.
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(""),
+		Emit: func(text string, _ flowdebug.Tone) {
+			kept = append(kept, text)
+			bytes += len(text)
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	var wg sync.WaitGroup
+
+	for writer := range writers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for i := range each {
+				session.StepFinished(fmt.Sprintf("step-%d-%d", writer, i), nil, nil, false)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Every fragment arrived, and the running total agrees with them. A lost
+	// append and a double-counted length are the two ways the unsynchronized
+	// version was wrong, and each of them is a bound computed from a number
+	// nobody wrote down.
+	require.Len(t, kept, writers*each, "an account was lost between two goroutines")
+
+	total := 0
+	for _, text := range kept {
+		total += len(text)
+	}
+	require.Equal(t, total, bytes, "the running total disagrees with what was kept")
+}
+
+// TestConcurrentBoundariesAdmitOneAtATime: two goroutines reaching a step
+// boundary at once must not both prompt.
+//
+// One session holds one run and one command stream answers one prompt, so two
+// boundaries prompting together would split a script between two run
+// positions — each acting on a line meant for the other, and each `inspect`
+// answering from whichever branch's scope happened to win the read. Nothing
+// about that is a data race; it is a session that is simply somewhere else.
+//
+// Made deterministic with a pipe rather than a canned script: the first
+// boundary is held at its prompt with nothing written yet, the second is
+// started underneath it, and the claim is that no second prompt appears until
+// the first has been answered. The wait is a real interval because the wrong
+// behaviour is fast — a second boundary that is admitted reaches its prompt on
+// pure CPU — and it fails in the safe direction: a machine too loaded to get
+// there in time makes this test prove less, never fail wrongly.
+func TestConcurrentBoundariesAdmitOneAtATime(t *testing.T) {
+	prompts := make(chan struct{}, 8)
+
+	console, commands := io.Pipe()
+	t.Cleanup(func() { _ = commands.Close() })
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In: console,
+		Emit: func(_ string, tone flowdebug.Tone) {
+			if tone == flowdebug.TonePrompt {
+				prompts <- struct{}{}
+			}
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "concurrent", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	scope := &v1.Scope{}
+
+	first := make(chan error, 1)
+	go func() { first <- session.BeforeStep(t.Context(), node, scope) }()
+
+	select {
+	case <-prompts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first boundary never reached a prompt")
+	}
+
+	second := make(chan error, 1)
+	go func() { second <- session.BeforeStep(t.Context(), node, scope) }()
+
+	select {
+	case <-prompts:
+		t.Fatal("a second boundary prompted while the first still held the session, " +
+			"so one script was being read by two run positions")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	_, err = commands.Write([]byte("step\n"))
+	require.NoError(t, err)
+	require.NoError(t, <-first)
+
+	// And now it is the second boundary's turn, which is the other half of the
+	// claim: admitted one at a time, not shut out.
+	select {
+	case <-prompts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second boundary never got the session")
+	}
+
+	_, err = commands.Write([]byte("step\n"))
+	require.NoError(t, err)
+	require.NoError(t, <-second)
+
+	require.Equal(t, []string{"step", "step"}, session.Script(),
+		"each boundary consumed exactly one line")
+}
+
+// TestARefusedCommandSaysWhichBoundItHit (Codex, #1109).
+//
+// A [bufio.Scanner] that meets a line longer than its buffer stops exactly as
+// it stops at end of input: Scan returns false, and only Err tells the two
+// apart. The producer dropped that error, so a command over MaxCommandBytes
+// reached the author as "no more commands — continuing to the end of the run"
+// — a bound this package advertises, hit, and reported as the console having
+// wandered off. The run finishing unattended is the right behaviour once the
+// scanner is dead; saying nothing about why is not.
+func TestARefusedCommandSaysWhichBoundItHit(t *testing.T) {
+	var said strings.Builder
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(strings.Repeat("y", flowdebug.MaxCommandBytes+1) + "\n"),
+		Emit: func(text string, _ flowdebug.Tone) { said.WriteString(text) },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	out := said.String()
+	assert.Contains(t, out, "longer than the 65536 bytes one may be",
+		"the bound that was hit has to be the one named")
+	assert.Contains(t, out, "unattended",
+		"and the consequence has to be stated, since the run is now running itself")
+	assert.NotContains(t, out, "no more commands",
+		"a refused command is not a console that ran out")
+}
+
+// TestAConsoleThatRanOutStillSaysSo is the other half: the ordinary end of a
+// finite script is not an error, and must not be reported as one.
+func TestAConsoleThatRanOutStillSaysSo(t *testing.T) {
+	var said strings.Builder
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(""),
+		Emit: func(text string, _ flowdebug.Tone) { said.WriteString(text) },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	assert.Contains(t, said.String(), "no more commands")
+	assert.NotContains(t, said.String(), "could not be read")
+}
+
+// TestTheScriptIsBoundedByBytesAsWellAsCount (Codex, #1109): a hundred
+// thousand commands each just under MaxCommandBytes satisfies both advertised
+// bounds and is six gigabytes of retained recording. Neither bound implies the
+// other, and the one nobody wrote down is the one an attacker picks.
+//
+// Driven at a smaller scale than the real bound — the claim is that the byte
+// budget stops the recording and says so, not how many megabytes it takes.
+func TestTheScriptIsBoundedByBytesAsWellAsCount(t *testing.T) {
+	// Commands the session accepts and records, each large but well under the
+	// per-command bound, and enough of them to pass MaxScriptBytes long before
+	// MaxScriptCommands.
+	const each = 32 << 10
+
+	var script strings.Builder
+	for range (flowdebug.MaxScriptBytes / each) + 8 {
+		script.WriteString("inspect '" + strings.Repeat("y", each) + "'\n")
+	}
+	script.WriteString("continue\n")
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(script.String()),
+		Emit: func(string, flowdebug.Tone) {},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	recorded := 0
+	for _, line := range session.Script() {
+		recorded += len(line)
+	}
+
+	assert.LessOrEqual(t, recorded, flowdebug.MaxScriptBytes,
+		"the recording kept more than its byte budget")
+	assert.Less(t, len(session.Script()), flowdebug.MaxScriptCommands,
+		"the count bound is nowhere near reached, which is the point: it does not imply this one")
+	assert.True(t, session.ScriptTruncated(),
+		"a partial replay script has to admit it is partial, or it reproduces a different run")
+}
+
+// TestACommandOfExactlyTheBoundIsAccepted: MaxCommandBytes is advertised as
+// what one command may be, and every other bound on this surface accepts a
+// command of exactly that size — the scanner's own buffer has to hold the line
+// terminator too, so a buffer sized at the bound refused the bound (Codex,
+// #1109).
+func TestACommandOfExactlyTheBoundIsAccepted(t *testing.T) {
+	var said strings.Builder
+
+	// `inspect '<literal>'` sized so the whole line is exactly the bound.
+	const wrapper = "inspect 'y'"
+
+	command := "inspect '" + strings.Repeat("y", flowdebug.MaxCommandBytes-len(wrapper)+1) + "'"
+	require.Len(t, command, flowdebug.MaxCommandBytes, "the fixture must sit exactly on the bound")
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(command + "\ncontinue\n"),
+		Emit: func(text string, _ flowdebug.Tone) { said.WriteString(text) },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	assert.NotContains(t, said.String(), "longer than the",
+		"a command of exactly the advertised bound was refused by the reader")
+	assert.Equal(t, []string{"inspect " + command[len("inspect "):], "continue"}, session.Script(),
+		"it should have been accepted, answered, and recorded like any other")
 }

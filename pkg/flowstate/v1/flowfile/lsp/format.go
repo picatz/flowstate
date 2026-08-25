@@ -26,6 +26,9 @@ import (
 // real answer rather than being unable to tell "nothing to change" from
 // "couldn't tell".
 func formatEdits(doc *document) []lsp.TextEdit {
+	if !doc.speaksFlowfile() {
+		return nil // see [document.speaksFlowfile]
+	}
 	var (
 		workflow *v1.Workflow
 		err      error

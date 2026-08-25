@@ -73,9 +73,9 @@ import (
 //     anything that lands in this map.
 //
 //     Nothing on the one surface this verifier is wired to reads it yet.
-//     `flow mcp serve` serves Validate, Compile, GetCatalog and
-//     flowstate_test (cmd/flow/mcpserve.go's mcpServeTools), and none of
-//     those consults [PrincipalFromContext]: the three RPCs answer from the
+//     `flow mcp serve` serves Validate, Compile, GetCatalog,
+//     flowstate_test and flowstate_debug (cmd/flow/mcpserve.go's
+//     mcpServeTools), and none of those consults [PrincipalFromContext]: the three RPCs answer from the
 //     request alone (server/validate.go), and only the run-creating RPCs this
 //     surface deliberately does not serve reach FlowstateServer.identityFor.
 //     So the carry is inert today, and deliberately so — cmd/flow's MCP

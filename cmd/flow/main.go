@@ -2309,13 +2309,29 @@ flow run local examples/approval-gate/workflow.yaml --input-file examples/approv
 flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs
 
 # Rehearse a workflow whose steps use a plugin's tasks, launching the plugins here:
-flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml`,
+flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml
+
+# Step through a rehearsal, held at each step boundary (the console lives on stderr,
+# so stdout is still the document it always was):
+flow run local examples/hello-world/workflow.yaml --debug`,
 	}
 
 	addOutputFlag(runLocalCmd)
 	addRawOutputFlag(runLocalCmd)
 	addInputFlags(runLocalCmd)
 	addRevealSensitiveFlag(runLocalCmd)
+
+	// The same session `flow test --debug` runs, pointed at a real run: real
+	// tasks, real plugins, the secret refusals an activation always gives.
+	// No refusals here where the test verb has three, and each absence is a
+	// difference between the verbs rather than an oversight: the console
+	// lives on stderr beside the run's own account, so a machine format's
+	// stdout is never corrupted; there is no seeded exploration to multiply
+	// a run; and this verb already takes exactly one workflow.
+	runLocalCmd.Flags().Bool("debug", false,
+		"hold the run before each step and read commands from the terminal — step, "+
+			"continue, until, break, inspect, scope, quit; the console shares stderr "+
+			"with the run's account, so stdout stays the answer under every --output")
 
 	// Supplying signals up front is what makes an approval gate something an author
 	// can exercise on their laptop rather than first meeting in production. A local

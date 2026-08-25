@@ -204,7 +204,10 @@ own:
   session rather than global, because sessions are already bounded: the
   product bounds the surface, and one caller saturating their own session
   cannot refuse anybody else's request.
-- `--test-timeout` (default 2m) bounds one `flowstate_test` call. A submitted
+- `--test-timeout` (default 2m) bounds one `flowstate_test` call, and one
+  `flowstate_debug` call with it — the debugger drives the same stubbed run
+  through the same door, and a script that runs out resumes it rather than
+  holding it, so the two share a bound as they share a risk. A submitted
   workflow can park forever on its own — flowtest's virtual clock advances only
   when every participant is parked, so a `wait_for_signal:` with no timeout and
   no scripted signal has no deadline to advance to — and that is a legal
@@ -291,7 +294,13 @@ says plainly what it is missing.
   tenant: `flowstate_validate`, `flowstate_compile`, `flowstate_get_catalog`
   — plus `flowstate_test`, which is served deliberately (#558's Q3) because a
   stubbed run replaces every task implementation before a step executes and
-  so reaches nothing whatever the process was started with.
+  so reaches nothing whatever the process was started with, and
+  `flowstate_debug` (#928 slice 3), which drives that identical run and adds
+  only questions asked at its step boundaries. Its own authorization action
+  (`mcp.debug`) rather than `mcp.test`'s, because it answers strictly more
+  about the same run — every step's values, not just the verdicts — and an
+  operator who wants agents to rehearse without holding runs open needs the
+  two to be distinguishable.
 
 - **`--reveal-sensitive` is refused here.** Over stdio it is one deliberate
   decision by the person who started the process and is its only caller. Over

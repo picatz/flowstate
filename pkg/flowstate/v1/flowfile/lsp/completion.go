@@ -268,6 +268,9 @@ func lookupDSLKey(level, name string) (dslKey, bool) {
 // document is usually mid-edit and therefore invalid at exactly the moment
 // completion is requested.
 func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
+	if !doc.speaksFlowfile() {
+		return &lsp.CompletionList{Items: []lsp.CompletionItem{}} // see [document.speaksFlowfile]
+	}
 	// See [clampPosition]: a coordinate the protocol cannot express is brought
 	// to the origin here, so that every range this answer carries is one the
 	// client can apply.

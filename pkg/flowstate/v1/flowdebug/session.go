@@ -43,6 +43,26 @@ const (
 	// worse than one that admits it is partial.
 	MaxScriptCommands = 100_000
 
+	// MaxScriptBytes bounds the recording's *size*, which the count above does
+	// not.
+	//
+	// Bounding one resource does not bound another the peer controls the ratio
+	// to (CLAUDE.md): a hundred thousand commands each just under
+	// [MaxCommandBytes] satisfies both advertised bounds and is six gigabytes
+	// held for the life of the session. Nobody types that, and a console is
+	// not the only way in — either CLI front reads whatever is redirected at
+	// its stdin, and the MCP adapter's own `maxDebugScriptBytes` bounds one
+	// *call* rather than the session a caller builds out of several (Codex,
+	// #1109).
+	//
+	// A megabyte, the size this repository already uses for "a document a
+	// person wrote": a replay script is meant to be re-run and pasted into an
+	// issue, and one larger than a Flowfile has stopped being either. Past it
+	// the session keeps working and stops recording, exactly as past the count
+	// — the tail is admitted by [Session.ScriptTruncated] rather than dropped
+	// in silence.
+	MaxScriptBytes = 1 << 20
+
 	// MaxInspectRunes bounds the rendered length of one inspection's answer.
 	// The expression's own cost is bounded by the evaluator; this bounds the
 	// *rendering* of a result that was cheap to compute and is large to print
@@ -149,12 +169,53 @@ type Session struct {
 	in    *bufio.Scanner
 	clock v1.Clock
 
+	// lines carries what the reader goroutine scans, and closes when the
+	// stream ends; readOnce starts that goroutine at the first prompt. A
+	// goroutine rather than a synchronous Scan, because the run being held
+	// is cancellable and a Scanner is not — see [Session.readCommand].
+	lines    chan string
+	readOnce sync.Once
+	// done releases the reader goroutine; see [Session.Close].
+	done     chan struct{}
+	stopOnce sync.Once
+
+	// promptMu admits one goroutine at a time to a step boundary, and outMu
+	// to the output.
+	//
+	// Neither is paranoia about a driver that "runs branches in written
+	// order": [v1.RunObserver] says in as many words that its callbacks
+	// arrive on the step's own goroutine and that an implementation storing
+	// events must synchronize itself when a workflow has `parallel:`
+	// branches or `async:` steps, and this session both stores them and
+	// hands them to a caller's Emit. Two branches finishing at once raced
+	// this session's own fields and the MCP transcript's slice alike, on a
+	// type whose doc claims it is safe for concurrent use (Codex, #1109).
+	//
+	// promptMu covers the *whole* of [Session.BeforeStep] rather than the
+	// prompt inside it, because deciding whether to stop reads and writes
+	// the same mode two branches would be deciding against — and because a
+	// second branch prompting while the first is parked would have both of
+	// them pulling lines off one command stream, splitting one script
+	// between two run positions. A debugger holds *the* run; while it is
+	// stopped, the run is stopped.
+	//
+	// They are separate locks, and the order is only ever promptMu → outMu
+	// → mu: an account arriving on another branch (StepFinished, which never
+	// prompts) must still be able to print while a boundary is parked
+	// waiting for a command, or the account of a run would deadlock behind
+	// the run's own pause.
+	promptMu sync.Mutex
+	outMu    sync.Mutex
+
 	mu          sync.Mutex
 	mode        mode
 	until       string
 	breakpoints map[string]struct{}
-	// script records accepted commands, in order, for replay.
+	// script records accepted commands, in order, for replay, and scriptBytes
+	// is what they weigh — see [MaxScriptBytes], which the count bound beside
+	// it does not imply.
 	script          []string
+	scriptBytes     int
 	scriptTruncated bool
 	// started is the clock reading at the first boundary, so stops report
 	// time relative to the run rather than an absolute date.
@@ -167,6 +228,22 @@ type Session struct {
 	// closed is set once the command stream ended, so the session stops
 	// trying to read from it.
 	closed bool
+	// readErr is why the stream ended, when it ended for a reason. A
+	// [bufio.Scanner] that meets a line longer than [MaxCommandBytes] stops
+	// exactly as it stops at EOF, and a session that cannot tell those apart
+	// answers a refused command with "no more commands" and runs the rest of
+	// the workflow unattended (Codex, #1109).
+	readErr error
+	// redact is what every printed line passes through — see [Session.SetRedactor].
+	redact func(string) string
+	// redactValue is what every *structured* value passes through before it is
+	// rendered — see [Session.SetValueRedactor].
+	redactValue func(any) any
+	// ended is set when the session itself abandoned the run (`quit` at a
+	// breakpoint): the one command advertised as leaving must not be
+	// answered with another prompt, so the autopsy checks it and stays shut
+	// (Codex, #1107).
+	ended bool
 }
 
 // New returns a session configured by opts.
@@ -180,13 +257,20 @@ func New(opts Options) (*Session, error) {
 		emit:        opts.Emit,
 		clock:       opts.Clock,
 		breakpoints: make(map[string]struct{}, len(opts.Breakpoints)),
+		done:        make(chan struct{}),
 	}
 	if s.out == nil {
 		s.out = io.Discard
 	}
 	if opts.In != nil {
 		s.in = bufio.NewScanner(opts.In)
-		s.in.Buffer(make([]byte, 0, 4096), MaxCommandBytes)
+		// One byte over [MaxCommandBytes], and the byte is the line
+		// terminator rather than command room: bufio.Scanner grows its buffer
+		// to at most this and must hold the delimiter as well as the token,
+		// so a buffer of exactly MaxCommandBytes rejects a line of exactly
+		// MaxCommandBytes with ErrTooLong — a command every other bound on
+		// this surface accepts, refused by the reader (Codex, #1109).
+		s.in.Buffer(make([]byte, 0, 4096), MaxCommandBytes+len("\n"))
 	}
 	for _, id := range opts.Breakpoints {
 		if id = strings.TrimSpace(id); id != "" {
@@ -226,11 +310,22 @@ func (s *Session) ScriptTruncated() bool {
 
 // errQuit is what a `quit` command returns through [v1.Debugger.BeforeStep],
 // which is how a session ends a run it is holding.
-var errQuit = errors.New("debug session ended by the `quit` command")
+//
+// It wraps [v1.ErrDebugSessionEnded] so a harness can tell an *abandoned* run
+// from a failed one — see that sentinel for why the distinction decides a
+// verdict — while the message stays this session's own, naming the command the
+// person actually typed.
+var errQuit = fmt.Errorf("debug session ended by the `quit` command: %w", v1.ErrDebugSessionEnded)
 
 // BeforeStep implements [v1.Debugger]: the run is held here for as long as the
 // session's reader takes to say otherwise.
 func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope) error {
+	// Before shouldStop, deliberately: see [Session.promptMu]. Deciding to
+	// stop is a read-modify of the same mode a sibling branch is deciding
+	// against, and one script cannot answer two prompts.
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+
 	if !s.shouldStop(node.GetId()) {
 		return nil
 	}
@@ -238,7 +333,13 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	s.announce(node)
 
 	for {
-		line, ok := s.readCommand()
+		line, ok, readErr := s.readCommand(ctx)
+		if readErr != nil {
+			// Cancelled mid-prompt: the person interrupted the run this
+			// session was holding, and the engine unwinds it as the
+			// cancellation it is rather than as a console that wandered off.
+			return readErr
+		}
 		if !ok {
 			// The console is gone: a replay script that ran out, or a
 			// terminal that closed. The run resumes and finishes rather than
@@ -247,7 +348,12 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 			// debugger is an availability incident. Said out loud, because a
 			// run that finished the rest of itself unattended is something
 			// the reader has to know happened.
-			s.printfTone(ToneWarning, "(no more commands — continuing to the end of the run)\n")
+			if why := s.consoleEnded(); why != "" {
+				s.printfTone(ToneDanger,
+					"(%s — continuing to the end of the run, unattended)\n", why)
+			} else {
+				s.printfTone(ToneWarning, "(no more commands — continuing to the end of the run)\n")
+			}
 			s.resume(modeRun, "")
 
 			return nil
@@ -268,7 +374,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 // produced, and this is the same record `flow test`'s transcript renders, from
 // the same seam, rather than a second bookkeeping of it.
 func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
-	text := stepOutcomeText(outputs, err, tolerated)
+	text := s.stepOutcomeText(outputs, err, tolerated)
 
 	s.mu.Lock()
 	s.lastOutcome = id + " " + text
@@ -362,26 +468,127 @@ func (s *Session) announce(node *v1.Node) {
 	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), NodeKind(node), at)
 }
 
-// readCommand reads one line, reporting false once the stream has ended.
-func (s *Session) readCommand() (string, bool) {
+// Close releases the session's reader.
+//
+// A session reads its console on a goroutine (see [Session.readCommand]), and
+// that goroutine parks on an unbuffered send whenever a line arrives with
+// nobody left to take it — which is every session whose run ended while a
+// command was still in flight. In a process that is about to exit, parked is
+// free. In a server that answers debug calls for as long as it is up, it is a
+// goroutine, a scanner and a script retained per call, without bound (Codex,
+// #1109).
+//
+// So a caller that outlives its sessions closes them. Idempotent, safe to call
+// from any goroutine, and safe to call on a session whose reader never
+// started: it releases what exists rather than requiring the caller to know
+// what that was.
+//
+// It does not close the underlying reader — a session does not own the
+// caller's io.Reader, and closing stdin under `flow test --debug` would end
+// far more than the session.
+func (s *Session) Close() error {
+	s.stopOnce.Do(func() { close(s.done) })
+
+	return nil
+}
+
+// readCommand reads one line. ok is false once the stream has ended, and err
+// is the context's own error when cancellation ended the wait instead.
+//
+// The scan runs on a goroutine of its own, because the run being held is
+// cancellable and a Scanner is not: ctrl-C's first signal cancels the
+// command's context for a graceful stop, and a session blocked synchronously
+// in Scan would hold the process hostage for a second, harder signal (Codex,
+// #1109). One reader goroutine per session, started at the first prompt, and
+// it exits when the session is done — either because the stream ended, or
+// because [Session.Close] or a cancelled prompt released it.
+func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err error) {
 	s.mu.Lock()
 	closed, scanner := s.closed, s.in
 	s.mu.Unlock()
 
 	if closed || scanner == nil {
-		return "", false
+		return "", false, nil
 	}
 
+	s.readOnce.Do(func() {
+		s.lines = make(chan string)
+		go func() {
+			// The scanner's own verdict, published before the close that a
+			// receiver reads as "the console is gone" — so a session that
+			// finds the stream closed can tell a console that ended from one
+			// that broke. Set first, closed second: a receiver woken by the
+			// close must find the reason already there.
+			defer func() {
+				s.mu.Lock()
+				s.readErr = scanner.Err()
+				s.mu.Unlock()
+
+				close(s.lines)
+			}()
+
+			for scanner.Scan() {
+				// Never a bare send: with the session done there is no
+				// receiver, and a bare send would park this goroutine for the
+				// life of the process holding everything it closed over.
+				select {
+				case s.lines <- scanner.Text():
+				case <-s.done:
+					return
+				}
+			}
+		}()
+	})
+
 	s.printfTone(TonePrompt, "debug> ")
-	if !scanner.Scan() {
+	select {
+	case line, open := <-s.lines:
+		if !open {
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+
+			return "", false, nil
+		}
+
+		return line, true, nil
+
+	case <-ctx.Done():
+		// The run is being torn down around this prompt; closed so no later
+		// boundary or autopsy asks a console the person already interrupted,
+		// and the reader released so it does not outlive the run it was for.
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()
+		_ = s.Close()
 
-		return "", false
+		return "", false, ctx.Err()
 	}
+}
 
-	return scanner.Text(), true
+// consoleEnded says why the command stream stopped, in words an author can
+// act on, or "" where it simply ran out.
+//
+// The one reason that is not a broken pipe is the one worth naming: a command
+// longer than [MaxCommandBytes] is a bound this package advertises, and an
+// author who hit it deserves to be told which bound they hit rather than to
+// watch their run finish without them.
+func (s *Session) consoleEnded() string {
+	s.mu.Lock()
+	err := s.readErr
+	s.mu.Unlock()
+
+	switch {
+	case err == nil:
+		return ""
+
+	case errors.Is(err, bufio.ErrTooLong):
+		return fmt.Sprintf("a command was longer than the %d bytes one may be, and a scanner "+
+			"cannot carry on past it", MaxCommandBytes)
+
+	default:
+		return "the console could not be read: " + err.Error()
+	}
 }
 
 // record appends an accepted command to the replay script.
@@ -389,11 +596,12 @@ func (s *Session) record(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(s.script) >= MaxScriptCommands {
+	if len(s.script) >= MaxScriptCommands || s.scriptBytes+len(line) > MaxScriptBytes {
 		s.scriptTruncated = true
 
 		return
 	}
+	s.scriptBytes += len(line)
 	s.script = append(s.script, line)
 }
 
@@ -401,11 +609,125 @@ func (s *Session) record(line string) {
 // installed one, to Out otherwise. Every write in this package goes through
 // here, so a session is colourable without a second output path.
 func (s *Session) printfTone(tone Tone, format string, args ...any) {
+	text := s.redactText(fmt.Sprintf(format, args...))
+
+	// Held across the call, not just around a field read: Emit is the
+	// caller's, and the two this repository ships both accumulate — the MCP
+	// adapter appends to a slice and adds up bytes, the CLI writes to a
+	// terminal. Serializing here is what makes the contract [v1.RunObserver]
+	// states this session's to keep rather than every embedder's to
+	// rediscover.
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+
 	if s.emit != nil {
-		s.emit(fmt.Sprintf(format, args...), tone)
+		s.emit(text, tone)
+
 		return
 	}
-	fmt.Fprintf(s.out, format, args...)
+	fmt.Fprint(s.out, text)
+}
+
+// SetRedactor installs what every line this session prints passes through, or
+// clears it with nil.
+//
+// A debugger is a reveal — it narrates each step's values as they arrive and
+// `inspect` reaches whatever is in scope — so on a surface whose ordinary
+// rendering withholds a value, the session must withhold it too or it is a
+// second door around the first (Codex, #1109). It cannot decide that itself:
+// what is sensitive is a property of the workflow and the case, which the
+// caller running them knows and this package deliberately does not.
+//
+// So the caller hands the rule in, and hands in nil when the run it applies to
+// is over. Applied to the *rendered line* rather than to values on the way in,
+// because that is the one place everything passes: a step's account, an
+// inspection's answer, a failure at the autopsy. A redactor installed here can
+// only ever make output smaller, so a caller that installs none is exactly as
+// this behaved before.
+//
+// Evaluation is untouched. A `${...}` in the file still sees the real value,
+// and an inspection still compares against it — only what prints withholds,
+// which is the same split [flowtest]'s transcript already lives by.
+func (s *Session) SetRedactor(redact func(string) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.redact = redact
+}
+
+// redactText applies the installed redactor, if any.
+// SetValueRedactor installs what every structured value this session renders
+// passes through, or clears it with nil.
+//
+// The companion to [Session.SetRedactor], and it exists because a text
+// backstop cannot see a shape. A caller's redaction set holds both the values
+// it recognises and a set of substrings to catch them in rendered prose, and
+// the substring half deliberately omits short ones: replacing every "7" in
+// every line would make a transcript unreadable, and that omission is correct
+// for text. But a *value* is matched by equality, not by looking like
+// something — so a sensitive `credentials: [7]` is recognised whole here while
+// no substring in the world would have caught the 7 (Codex, #1109).
+//
+// So values redact by identity before rendering, and the rendered line still
+// goes through the text redactor afterwards. Two seams because there are two
+// questions: is this the value, and does this line contain it.
+func (s *Session) SetValueRedactor(redact func(any) any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.redactValue = redact
+}
+
+// redactedValue is v through the installed value redactor, or v.
+func (s *Session) redactedValue(v any) any {
+	s.mu.Lock()
+	redact := s.redactValue
+	s.mu.Unlock()
+
+	if redact == nil {
+		return v
+	}
+
+	return redact(v)
+}
+
+func (s *Session) redactText(text string) string {
+	s.mu.Lock()
+	redact := s.redact
+	s.mu.Unlock()
+
+	if redact == nil {
+		return text
+	}
+
+	return redact(text)
+}
+
+// noteWithholding says, once, that this scope is not the one the checks read.
+//
+// The bindings an autopsy evaluates against are the redacted ones, so
+// `inspect vars.token` answers `[redacted]` — which is legible — and
+// `inspect vars.token == "the real value"` answers *false*, which is not: the
+// same expression in `expect.check` saw the real binding and may well have
+// been true. That disagreement is deliberate and stays. Handing the raw value
+// to CEL and redacting only the printed line would restore the agreement and
+// turn a withheld value into a programmable oracle — `startsWith`, `size()`
+// and a slice each answer truthfully about a secret, one call at a time,
+// which is a worse door than the one printing was closed against (Codex,
+// #1109). Fail closed, and say so, rather than being quietly wrong.
+func (s *Session) noteWithholding() {
+	s.mu.Lock()
+	withholding := s.redact != nil
+	s.mu.Unlock()
+
+	if !withholding {
+		return
+	}
+
+	s.printfTone(ToneWarning,
+		"(this case withholds sensitive values: they are withheld from these bindings, not just "+
+			"from what prints, so a comparison against a real value answers false here even where "+
+			"the same check was true)\n")
 }
 
 func (s *Session) printf(format string, args ...any) {
@@ -413,7 +735,7 @@ func (s *Session) printf(format string, args ...any) {
 }
 
 // stepOutcomeText renders one step's recorded outcome for the console.
-func stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string {
+func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string {
 	if err != nil {
 		if tolerated {
 			return "failed (tolerated by continue_on_error): " + err.Error()
@@ -435,16 +757,21 @@ func stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string
 
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+valueText(named[name]))
+		parts = append(parts, name+": "+s.valueText(named[name]))
 	}
 
-	return "-> " + capRunes(strings.Join(parts, ", "), MaxInspectRunes)
+	// Redacted *before* the cap, not after. capRunes keeps the first
+	// MaxInspectRunes of the rendering, and a secret longer than that survives
+	// truncation as a prefix no substring match can find — so a cap applied
+	// first would expose the first 4096 runes of exactly the value the
+	// redactor exists to withhold (Codex, #1109). Order is the whole fix.
+	return "-> " + capRunes(s.redactText(strings.Join(parts, ", ")), MaxInspectRunes)
 }
 
 // valueText renders one output value. A value that is not a resolved literal
 // — a secret reference above all — renders as what it is rather than as what
 // it points at.
-func valueText(value *v1.Value) string {
+func (s *Session) valueText(value *v1.Value) string {
 	if ref := value.GetSecretRef(); ref != nil {
 		return fmt.Sprintf("secret(%s://%s)", ref.GetScheme(), ref.GetName())
 	}
@@ -457,7 +784,7 @@ func valueText(value *v1.Value) string {
 		return "…"
 	}
 
-	return nativeText(native)
+	return nativeText(s.redactedValue(native))
 }
 
 // nativeText renders a plain Go value the way an author reads data: as JSON,
@@ -478,7 +805,7 @@ func nativeText(native any) string {
 // exactly as EvalValueNode does — so what an inspection prints and what the
 // same expression would produce in the file are one rendering of one value,
 // rather than two that can drift.
-func refValText(out ref.Val) string {
+func (s *Session) refValText(out ref.Val) string {
 	lit, err := cel.RefValueToValue(out)
 	if err != nil {
 		return fmt.Sprint(out.Value())
@@ -488,7 +815,12 @@ func refValText(out ref.Val) string {
 		return fmt.Sprint(out.Value())
 	}
 
-	return nativeText(native)
+	// Redacted as a *value*, before it becomes text — see
+	// [Session.SetValueRedactor]. The two fallbacks above deliberately do not:
+	// a value this conversion could not read is not one an equality can
+	// recognise either, and what covers them is the text redactor the caller
+	// of this applies to whatever comes back.
+	return nativeText(s.redactedValue(native))
 }
 
 // capRunes truncates text to at most limit runes, saying that it did.
@@ -509,6 +841,13 @@ func capRunes(text string, limit int) string {
 // craft the claim with `inspect`, and leave with the `expect.check:` entry
 // the file was missing.
 //
+// extra carries the post-run bindings the case's own `expect.check:` was
+// judged under — the file's `vars` and the `run` root extended with
+// failed/error — so an inspection here answers exactly as the failing check
+// read (Codex, #1107): diagnosing `vars.x == ...` with a prompt that cannot
+// see `vars` would be an autopsy of a different body. Nil binds nothing
+// extra, which is every caller outside flowtest.
+//
 // failures are the rendered verdicts, printed as the failures they are. The
 // commands are the session's ordinary ones; the movement verbs (`step`,
 // `continue`, `until`) and `quit` all just leave, because there is no run
@@ -520,16 +859,45 @@ func capRunes(text string, limit int) string {
 // flowtest calls this only for a failing case under `--debug`, discovering
 // it by capability the way it discovers a session that observes — a
 // [v1.Debugger] that does not implement it simply ends when the run ends.
-func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, failures []string) {
+func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string]ref.Val, failures []string) {
+	// The same admission [Session.BeforeStep] takes, for the same reason:
+	// this prompts, and a prompt reads the one command stream. The run is
+	// over by the time this is called and no boundary should still be
+	// parked, but "should" is not what a lock is for.
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+
+	// A session that quit at a breakpoint said it was done: the case fails
+	// (abandoning a run is a verdict), and answering the command advertised
+	// as leaving with another prompt would make `quit` a lie (Codex, #1107).
+	s.mu.Lock()
+	ended := s.ended
+	s.mu.Unlock()
+	if ended {
+		return
+	}
+
 	s.printfTone(ToneBreak, "autopsy: the case failed %d expectation(s); the run is over, but its scope is still here\n", len(failures))
 	for _, failure := range failures {
 		s.printfTone(ToneDanger, "  %s\n", failure)
 	}
 	s.printf("(`inspect` questions the finished run; `quit` or `continue` leaves — the verdict is already in)\n")
+	s.noteWithholding()
 
 	for {
-		line, ok := s.readCommand()
-		if !ok {
+		line, ok, readErr := s.readCommand(ctx)
+		if readErr != nil || !ok {
+			// A cancellation or a finished stream both end the autopsy the
+			// same way: there is no run left for either to change. A stream
+			// that *broke* still says so before going — there is no run to
+			// rescue here, but an author whose command was refused should
+			// learn that rather than watch the prompt vanish (Codex, #1109).
+			if readErr == nil {
+				if why := s.consoleEnded(); why != "" {
+					s.printfTone(ToneDanger, "(%s — leaving the autopsy)\n", why)
+				}
+			}
+
 			return
 		}
 
@@ -547,11 +915,11 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, failures []strin
 				continue
 			}
 			s.record("inspect " + expression)
-			s.inspect(ctx, expression, scope)
+			s.inspectWith(ctx, expression, scope, extra)
 
 		case "scope":
 			s.record("scope")
-			s.showScope(scope)
+			s.showScopeWith(scope, extra)
 
 		case "help", "h", "?":
 			s.printf(`inspect <expr>   evaluate a CEL expression against the finished run

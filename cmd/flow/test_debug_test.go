@@ -171,6 +171,8 @@ steps:
 outputs: {}
 `), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+vars:
+  flavor: carrot-cake
 defaults:
   workflow: ./workflow.yaml
   stubs:
@@ -185,11 +187,170 @@ tests:
         - 1 == 2
 `), 0o600))
 
-	res := runFlowStdin(t, "continue\ninspect 1 + 1\nquit\n", "test", "--debug", "--run", "claims the wrong", dir)
+	res := runFlowStdin(t,
+		"continue\ninspect 1 + 1\ninspect vars.flavor\ninspect run.failed ? 'red-run' : 'green-run'\nquit\n",
+		"test", "--debug", "--run", "claims the wrong", dir)
 	require.Error(t, res.Err, "the autopsy must not turn a red case green")
 
 	assert.Contains(t, res.Stdout, "autopsy: the case failed 1 expectation(s)")
 	assert.Contains(t, res.Stdout, "check failed: 1 == 2")
 	assert.Contains(t, res.Stdout, "2", "the autopsy's inspect answers")
+	assert.Contains(t, res.Stdout, "carrot-cake",
+		"the file's vars bind at the autopsy exactly as the check read them")
+	assert.Contains(t, res.Stdout, "green-run",
+		"the run root answers too — the run passed; the check is what failed")
 	assert.Contains(t, res.Stdout, "FAIL", "and the report still says what it said")
+}
+
+// TestDebugAutopsyWithholdsSecretBackedVars: a file var substituted into a
+// case's `secrets:` is a secret's plaintext, and the witnesses of a failing
+// check already withhold it — so the autopsy, which prints to the same
+// console, withholds it too rather than being a second door around the one
+// shared set (Codex, #1109).
+func TestDebugAutopsyWithholdsSecretBackedVars(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: debugged
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+vars:
+  token: hunter2-swordfish
+  # The secret embedded in a nested string of a structured var — the shape the
+  # per-leaf tree redaction alone cannot catch, and the substring backstop
+  # must reach recursively (Codex, #1109).
+  request:
+    header: Bearer hunter2-swordfish
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: fails with a secret-backed var in scope
+    secrets:
+      "env:TOKEN": ${vars.token}
+    expect:
+      ran: [first]
+      check:
+        - 1 == 2
+`), 0o600))
+
+	res := runFlowStdin(t,
+		"continue\ninspect vars.token\ninspect vars.request\ninspect vars.token == 'hunter2-swordfish'\nscope\nquit\n",
+		"test", "--debug", "--run", "fails with", dir)
+	require.Error(t, res.Err, "the case is red")
+
+	assert.NotContains(t, res.Stdout+res.Stderr, "hunter2-swordfish",
+		"the secret's plaintext reached the console through the autopsy")
+	assert.Contains(t, res.Stdout, "[redacted]",
+		"the inspected var should render as the shared redaction marker")
+	assert.Contains(t, res.Stdout, "bound: run, vars",
+		"the autopsy scope listing should still name the bindings")
+
+	// The disagreement is stated rather than left to be discovered (Codex,
+	// #1109). The binding is withheld, so a comparison against the real value
+	// is false here while the same expression in `expect.check` saw the real
+	// one — which is worth knowing before an author concludes their check is
+	// wrong. Handing CEL the raw value instead would agree, and would answer
+	// `startsWith`, `size()` and a slice truthfully about a secret one call
+	// at a time.
+	out := unwrapped(res.Stdout)
+	assert.Contains(t, out, "this case withholds sensitive values")
+	assert.Contains(t, out, "answers false here even where the same check was true")
+}
+
+// TestDebugWithholdsASensitiveInput is the CLI half of the same leak (Codex,
+// #1109, found on the MCP adapter and true here too): `flow test --debug`
+// installs the same session against the same run, so a declared-sensitive
+// input must not reach the terminal through `inspect` while the transcript
+// beside it withholds the same value.
+func TestDebugWithholdsASensitiveInput(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: secretive
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: echo
+    value: ${inputs.token}
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+tests:
+  - name: it runs
+    inputs:
+      token: hunter2-swordfish
+    expect:
+      ran: [echo]
+`), 0o600))
+
+	res := runFlowStdin(t, "inspect inputs.token\ncontinue\n", "test", "--debug", "--run", "it runs", dir)
+	require.NoError(t, res.Err)
+
+	all := res.Stdout + res.Stderr
+	require.Contains(t, all, "break at echo", "the session did not run at all")
+	assert.NotContains(t, all, "hunter2-swordfish",
+		"a declared-sensitive input reached the terminal through the debug session")
+	assert.Contains(t, all, "[redacted]")
+}
+
+// TestDebugWithholdsAShortDescendantOfASensitiveInput (Codex, #1109): the
+// substring backstop cannot catch what does not look like anything.
+//
+// A declared-sensitive input's descendants are all in the redaction set, but
+// the *substring* half of that set deliberately omits short ones — replacing
+// every "7" in every line would make a transcript unreadable. So a structured
+// secret with a small leaf had nothing in the substring set to catch it, and
+// `inspect` printed the leaf while the ordinary transcript redacted the whole
+// container. Values are matched by equality now, before rendering, which is
+// exactly what a short descendant needs.
+func TestDebugWithholdsAShortDescendantOfASensitiveInput(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: secretive
+inputs:
+  credentials:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: it runs
+    inputs:
+      credentials: [7]
+    expect:
+      ran: [first]
+`), 0o600))
+
+	res := runFlowStdin(t, "inspect inputs.credentials\ncontinue\n",
+		"test", "--debug", "--run", "it runs", dir)
+	require.NoError(t, res.Err)
+
+	all := res.Stdout + res.Stderr
+	require.Contains(t, all, "break at first", "the session did not run at all")
+	assert.NotContains(t, all, "[7]",
+		"a sensitive input's short descendant reached the terminal through `inspect`")
+	assert.Contains(t, all, "[redacted]",
+		"and what it should read as is the marker every other rendering uses")
 }

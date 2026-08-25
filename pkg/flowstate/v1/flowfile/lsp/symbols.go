@@ -39,6 +39,9 @@ import (
 // documentSymbols returns the outline of a Flowfile: one symbol per step, named by
 // its id and attributed to the task it runs.
 func documentSymbols(doc *document) []lsp.SymbolInformation {
+	if !doc.speaksFlowfile() {
+		return []lsp.SymbolInformation{} // see [document.speaksFlowfile]
+	}
 	out := []lsp.SymbolInformation{}
 	if doc.parsed == nil {
 		return out
@@ -79,6 +82,9 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 // Only a reference to an earlier step resolves. A forward reference is a mistake
 // the diagnostics already report, and jumping to it would suggest it works.
 func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
+	if !doc.speaksFlowfile() {
+		return nil // see [document.speaksFlowfile]
+	}
 	pos = clampPosition(pos) // see [clampPosition]
 
 	if doc.parsed == nil {

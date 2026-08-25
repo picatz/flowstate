@@ -80,6 +80,19 @@ const (
 	AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL AuthorizationAction = 15
 	// Rehearsing a submitted workflow against stubs. No RPC either.
 	AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST AuthorizationAction = 16
+	// Holding a rehearsed run at its steps and questioning it: the step
+	// debugger's MCP front. No RPC either.
+	//
+	// Its own action rather than MCP_TEST's, because it is a strictly larger
+	// answer over the identical run. A test call reports verdicts and no step
+	// values at all; a debug call reports what each step produced and evaluates
+	// expressions against the paused scope. Everything it can see is the
+	// caller's own submission coming back — there is no server-side data on
+	// either path — so this is not a stronger authority so much as a separate
+	// one, and an operator who wants agents to rehearse without holding runs
+	// open has a lever only if the two are distinguishable. Sharing an action
+	// would have made that choice for them, permanently.
+	AuthorizationAction_AUTHORIZATION_ACTION_MCP_DEBUG AuthorizationAction = 17
 )
 
 // Enum value maps for AuthorizationAction.
@@ -102,6 +115,7 @@ var (
 		14: "AUTHORIZATION_ACTION_SCHEDULE_TRIGGER",
 		15: "AUTHORIZATION_ACTION_MCP_RUN_LOCAL",
 		16: "AUTHORIZATION_ACTION_MCP_TEST",
+		17: "AUTHORIZATION_ACTION_MCP_DEBUG",
 	}
 	AuthorizationAction_value = map[string]int32{
 		"AUTHORIZATION_ACTION_UNSPECIFIED":        0,
@@ -121,6 +135,7 @@ var (
 		"AUTHORIZATION_ACTION_SCHEDULE_TRIGGER":   14,
 		"AUTHORIZATION_ACTION_MCP_RUN_LOCAL":      15,
 		"AUTHORIZATION_ACTION_MCP_TEST":           16,
+		"AUTHORIZATION_ACTION_MCP_DEBUG":          17,
 	}
 )
 
@@ -254,7 +269,7 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12C\n" +
 	"\x06parent\x18\x02 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06parent\x12;\n" +
 	"\x04rpcs\x18\x03 \x03(\tB'\xbaH$\x92\x01!\x10\b\x18\x01\"\x1br\x19\x10\x01\x18@2\x13^[A-Z][A-Za-z0-9]*$R\x04rpcs\x12B\n" +
-	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools*\xce\x05\n" +
+	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools*\xf2\x05\n" +
 	"\x13AuthorizationAction\x12$\n" +
 	" AUTHORIZATION_ACTION_UNSPECIFIED\x10\x00\x12%\n" +
 	"!AUTHORIZATION_ACTION_WORKLOAD_RUN\x10\x01\x12&\n" +
@@ -273,7 +288,8 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"$AUTHORIZATION_ACTION_SCHEDULE_RESUME\x10\r\x12)\n" +
 	"%AUTHORIZATION_ACTION_SCHEDULE_TRIGGER\x10\x0e\x12&\n" +
 	"\"AUTHORIZATION_ACTION_MCP_RUN_LOCAL\x10\x0f\x12!\n" +
-	"\x1dAUTHORIZATION_ACTION_MCP_TEST\x10\x10B\xb1\x01\n" +
+	"\x1dAUTHORIZATION_ACTION_MCP_TEST\x10\x10\x12\"\n" +
+	"\x1eAUTHORIZATION_ACTION_MCP_DEBUG\x10\x11B\xb1\x01\n" +
 	"\x10com.flowstate.v1B\x12AuthorizationProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (

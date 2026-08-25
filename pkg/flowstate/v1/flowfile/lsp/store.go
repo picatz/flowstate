@@ -27,10 +27,56 @@ const maxDocumentBytes = 1 << 20 // 1 MiB
 // snapshot while a newer version is being built beside it. That is what makes the
 // concurrent handling implied by jsonrpc2.AsyncHandler safe without holding a lock
 // across analysis.
+// documentKind says which of the languages this server speaks a document holds.
+//
+// A `*.test.yaml` is flowtest's suite format and `testdefaults.yaml` its shared
+// directory fixture — real languages of this repository, but not the Flowfile
+// grammar. Before the kind existed, a test file handed to this server was
+// diagnosed *as a workflow*: `tests:` an unknown key, no `steps:`, every line a
+// squiggle — false diagnostics on a correct file, the exact failure this
+// package's doc names as worse than silence (#1110). The kind is what routes a
+// document to checks that speak its language and gates off the ones that do not.
+type documentKind int
+
+const (
+	docWorkflow documentKind = iota
+	docTestFile
+	docTestDefaults
+)
+
+// speaksFlowfile reports whether the workflow grammar's features may answer
+// for this document. A test document gets flowtest's diagnostics and, in
+// slice 1 of #1110, nothing else: a completion, hover, symbol tree or format
+// computed from the workflow grammar would be confidently wrong in someone's
+// editor, which is worse than the honest empty answer.
+func (doc *document) speaksFlowfile() bool { return doc.kind == docWorkflow }
+
+// kindOfURI reads the kind off the document's basename, which is also how the
+// editor configurations decide what to attach: `**/*.test.yaml` and
+// `testdefaults.yaml` name the test language, everything else the Flowfile.
+func kindOfURI(uri lsp.DocumentURI) documentKind {
+	base := string(uri)
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	switch {
+	case strings.HasSuffix(base, ".test.yaml"), strings.HasSuffix(base, ".test.yml"):
+		return docTestFile
+	case base == "testdefaults.yaml":
+		return docTestDefaults
+	default:
+		return docWorkflow
+	}
+}
+
 type document struct {
 	uri     lsp.DocumentURI
 	version int
 	text    string
+
+	// kind routes the document to the language it actually holds; see
+	// [documentKind].
+	kind documentKind
 
 	// tasks is the registry every answer about this document is derived from.
 	// Never nil: [newDocument] substitutes [v1.DefaultRegistry] so that no
@@ -133,6 +179,7 @@ func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Regist
 		uri:      uri,
 		version:  version,
 		text:     text,
+		kind:     kindOfURI(uri),
 		tasks:    tasks,
 		index:    newLineIndex(text),
 		tooLarge: len(text) > maxDocumentBytes,

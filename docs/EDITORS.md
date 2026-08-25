@@ -198,6 +198,10 @@ specific they are:
 - a file literally named `Flowfile` or `Flowfile.yaml`
 - `workflow.yaml` or `workflow.yml`
 - anything under a `workflows/` directory
+- `*.test.yaml` and `testdefaults.yaml` — `flow test`'s suite format and its
+  shared directory fixture, which the server recognizes by name and checks with
+  the test loader rather than the workflow grammar, so a test file never draws a
+  workflow's diagnostics
 
 Adjust these to your layout. Pointing the server at every `*.yaml` in a repository
 works, but you will get Flowfile diagnostics on your Kubernetes manifests.
@@ -291,9 +295,11 @@ vim.filetype.add({
     ['Flowfile.yaml'] = 'flowfile',
     ['workflow.yaml'] = 'flowfile',
     ['workflow.yml'] = 'flowfile',
+    ['testdefaults.yaml'] = 'flowfile',
   },
   pattern = {
     ['.*/workflows/.*%.ya?ml'] = 'flowfile',
+    ['.*%.test%.ya?ml'] = 'flowfile',
   },
 })
 

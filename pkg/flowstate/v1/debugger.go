@@ -1,6 +1,25 @@
 package flowstatev1
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrDebugSessionEnded is returned by a [Debugger] that abandoned the run it
+// was holding, rather than by a run that failed on its own.
+//
+// Here rather than in the debugger's own package, for the reason CLAUDE.md
+// gives about a value with one meaning written down twice: a harness judging a
+// run and a session ending one must agree about what "abandoned" is, and both
+// already import this package — a harness importing the debugger to learn it
+// would be the coupling capability discovery exists to avoid.
+//
+// The distinction is load-bearing. An abandoned run and a failed one read
+// identically as "the run returned an error", so a case declaring
+// `expect.failed: true` would otherwise be *satisfied* by a debugger quitting
+// before the run reached the failure it named — a debugger turning a red case
+// green, which is the one thing a debugger must never do (Codex, #1109).
+var ErrDebugSessionEnded = errors.New("the debug session ended this run")
 
 // Debugger decides when the local driver may run a step, one step boundary at
 // a time.
