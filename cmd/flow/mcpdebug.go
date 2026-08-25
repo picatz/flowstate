@@ -43,6 +43,15 @@ import (
 // into a session that answers different questions than the one submitted.
 const maxDebugCommands = 100
 
+// maxDebugScriptBytes bounds a script's total size, which the per-command
+// bound does not: a hundred commands each just under [flowdebug.MaxCommandBytes]
+// is six megabytes of argument, and the answer echoes the accepted script back
+// (Codex, #1109). A debugging conversation is questions, not a payload — the
+// longest sensible `inspect` is a line — so this is generous at 64 KiB across
+// the whole script and still an order of magnitude under what the per-command
+// bound alone would have allowed for one command.
+const maxDebugScriptBytes = 64 << 10
+
 // maxDebugFragments and maxDebugTranscriptBytes bound the answer at the point
 // it is collected, rather than trimming it afterward.
 //
@@ -225,7 +234,7 @@ func debugToolHandler(timeout time.Duration) mcp.ToolHandler {
 					"signal, which parks the virtual clock with no deadline to advance to", timeout)), nil
 		}
 
-		encoded, err := renderDebugResult(result.Report, transcript, session)
+		encoded, err := renderDebugResult(result.Report, transcript, session.Script(), session.ScriptTruncated())
 		if err != nil {
 			return flowmcp.ToolError(err), nil
 		}
@@ -260,6 +269,16 @@ func checkDebugArguments(args *debugToolArguments) error {
 			"submit the first %d, read the transcript, and send the rest with the answers in hand "+
 			"— which is what a debugging conversation looks like anyway",
 			maxDebugCommands, len(args.Commands), maxDebugCommands)
+	}
+	total := 0
+	for _, command := range args.Commands {
+		total += len(command)
+	}
+	if total > maxDebugScriptBytes {
+		return fmt.Errorf("this script is %d bytes and a session takes at most %d across all of its "+
+			"commands: the answer echoes the script back, so a script this large is an answer nobody "+
+			"can read. Ask shorter questions, or compute the value in the file",
+			total, maxDebugScriptBytes)
 	}
 	for i, command := range args.Commands {
 		if len(command) > flowdebug.MaxCommandBytes {
@@ -321,18 +340,32 @@ func debugCaseSelector(testSource []byte, name string) (func(string) bool, error
 
 // renderDebugResult assembles the answer and brings it under the cap.
 //
-// The transcript is already bounded at collection, so the ladder here is the
-// report's: the same [renderTestResult] rungs flowstate_test settles on,
-// reused rather than rewritten — this document embeds that one.
-func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, session *flowdebug.Session) ([]byte, error) {
+// Measured on the rendered document, not on its parts. Each part is bounded —
+// the transcript where it is collected, the report by [renderTestResult]'s own
+// ladder, the script by [maxDebugScriptBytes] — and three bounded parts still
+// add up to more than the cap, which is the arithmetic the first cut got wrong
+// (Codex, #1109). It is also the same lesson the run_local ladder learned one
+// slice earlier: JSON escaping expands a control-heavy transcript past whatever
+// its raw bytes said, so only the encoded length is the length.
+//
+// The rungs are ordered by what a caller can most afford to lose, and the first
+// two are cheap for a reason worth stating: the script is the caller's own
+// input coming back, and the transcript's oldest fragments are the ones a
+// caller has usually already read in an earlier call.
+//
+// It takes the script and the truncation flag rather than the session they
+// came from, so the arithmetic above can be tested for what it is — three
+// bounded parts against one cap — without standing up a run whose parser
+// bounds fight the fixture. Assembling an answer is not something a session
+// should have to exist for.
+func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, script []string, scriptTruncated bool) ([]byte, error) {
 	encodedReport, err := renderTestResult(report)
 	if err != nil {
 		return nil, err
 	}
 
-	script := session.Script()
 	note := transcript.note()
-	if session.ScriptTruncated() {
+	if scriptTruncated {
 		note = strings.TrimSpace(note + fmt.Sprintf(
 			" This session accepted more than %d commands, so the script above is a prefix of what ran.",
 			flowdebug.MaxScriptCommands))
@@ -345,9 +378,65 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, sessi
 		Note:    note,
 	}
 
-	encoded, err := json.Marshal(answer)
+	encode := func(a debugResult) ([]byte, error) {
+		encoded, err := json.Marshal(a)
+		if err != nil {
+			return nil, fmt.Errorf("rendering the session: %w", err)
+		}
+
+		return encoded, nil
+	}
+
+	// Appended rather than replaced at each rung, so a document that lost two
+	// things says both.
+	withNote := func(a debugResult, said string) debugResult {
+		a.Note = strings.TrimSpace(strings.TrimSpace(a.Note) + " " + said)
+
+		return a
+	}
+
+	encoded, _, err := flowmcp.FitResult(
+		func() ([]byte, error) { return encode(answer) },
+
+		// First the script: it is what the caller sent, so it is the one part
+		// of this document they already have.
+		func() ([]byte, error) {
+			answer.Script = nil
+
+			return encode(withNote(answer, fmt.Sprintf(
+				"The accepted script was dropped: the answer exceeded %d bytes. It was the commands "+
+					"you sent, in the order they were accepted.", flowmcp.MaxResultBytes)))
+		},
+
+		// Then the transcript's front. The tail is what a debugging call is
+		// for — the last answers, and the autopsy if the case failed — so the
+		// oldest fragments go first and the count says how many.
+		func() ([]byte, error) {
+			kept := len(answer.Session) / 4
+			dropped := len(answer.Session) - kept
+			answer.Session = answer.Session[dropped:]
+
+			return encode(withNote(answer, fmt.Sprintf(
+				"The first %d transcript fragments were dropped, keeping the most recent %d: the "+
+					"answer exceeded %d bytes.", dropped, kept, flowmcp.MaxResultBytes)))
+		},
+
+		// The floor: the verdict, which is the one thing this call shares with
+		// the flowstate_test call a caller could have made instead. Returned
+		// whether or not it fits, which is [flowmcp.FitResult]'s contract for a
+		// last rung — and it is [renderTestResult]'s own floor inside, already
+		// reduced by its ladder.
+		func() ([]byte, error) {
+			answer.Session = nil
+
+			return encode(withNote(answer, fmt.Sprintf(
+				"The transcript was dropped entirely: the answer exceeded %d bytes even reduced. "+
+					"Drive the run with a shorter script — `break <step-id>` and `continue` reach a "+
+					"step without narrating every one before it.", flowmcp.MaxResultBytes)))
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("rendering the session: %w", err)
+		return nil, err
 	}
 
 	return encoded, nil

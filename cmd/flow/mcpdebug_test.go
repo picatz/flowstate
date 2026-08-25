@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 // The debugger over MCP (#928 slice 3): the same session the CLI drives with a
@@ -428,4 +430,122 @@ func TestTheDebugToolCannotResolveASecret(t *testing.T) {
 		"the inspection must be refused, not silently answered")
 	assert.NotContains(t, joined, "hunter2-swordfish",
 		"an inspection resolved a secret, which no expression in a run may do")
+}
+
+// TestTheDebugAnswerIsBoundedByItsRenderedSize is the arithmetic the first cut
+// got wrong (Codex, #1109): every part of this document is bounded on its own
+// — the transcript where it is collected, the report by its own ladder, the
+// script at the door — and the encoded total is still not any of those. Only
+// the encoded length is the length.
+//
+// Against the renderer rather than through a call, deliberately. Reaching this
+// collision through a submitted workflow means fighting three *other* bounds
+// that fire first (a Flowfile's own byte limit, CEL's expression size, the
+// transcript's collection cap), and a test that spends its effort on the
+// fixture ends up proving whichever bound it tripped over. The subject here is
+// the assembly, so the assembly is what it calls.
+func TestTheDebugAnswerIsBoundedByItsRenderedSize(t *testing.T) {
+	t.Parallel()
+
+	// A transcript right at its own bound, a report right at its own, and a
+	// script the caller is entitled to have echoed: each legal, and together
+	// over the cap.
+	transcript := &debugTranscript{}
+	for transcript.bytes < maxDebugTranscriptBytes-1024 {
+		transcript.add(strings.Repeat("x", 512)+"\n", flowdebug.ToneInfo)
+	}
+	require.Zero(t, transcript.dropped, "the transcript must be within its own bound, not over it")
+
+	report := &v1.TestReport{File: "<submitted>", Cases: []*v1.TestCase{{
+		Name: "it runs",
+		Failures: []*v1.Diagnostic{{
+			Field:   "expect.outputs",
+			Message: strings.Repeat("y", 160<<10),
+		}},
+	}}}
+
+	script := []string{"step", "inspect steps.build.ok", "continue"}
+
+	encoded, err := renderDebugResult(report, transcript, script, false)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"the rendered answer escaped the cap: %d bytes", len(encoded))
+
+	var answer debugAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	// The ladder ran, and gave up the cheapest thing first: the script is what
+	// the caller sent, so it is the one part they already have.
+	assert.Nil(t, answer.Script, "the answer fit without the ladder, so this proves nothing about it")
+	assert.Contains(t, answer.Note, "exceeded",
+		"an answer the ladder reduced must say the cap is why")
+
+	// Bounded, and still an answer: a document that fits by carrying nothing
+	// would satisfy the assertion above and be useless.
+	require.NotEmpty(t, answer.Report, "the verdict is the floor and must survive")
+	assert.NotEmpty(t, answer.Session, "the transcript is what a debug call is for")
+}
+
+// TestTheDebugAnswerKeepsTheVerdictWhenNothingElseFits is the floor: a
+// transcript that cannot be reduced enough gives way entirely, and what
+// survives is the one thing this call shares with the flowstate_test call the
+// caller could have made instead.
+func TestTheDebugAnswerKeepsTheVerdictWhenNothingElseFits(t *testing.T) {
+	t.Parallel()
+
+	transcript := &debugTranscript{}
+	for transcript.bytes < maxDebugTranscriptBytes-1024 {
+		transcript.add(strings.Repeat("x", 512)+"\n", flowdebug.ToneInfo)
+	}
+
+	// A report that survives its own ladder at nearly the whole allowance —
+	// under the cap, so renderTestResult returns it untouched — leaves room
+	// for nothing else.
+	report := &v1.TestReport{File: "<submitted>", Cases: []*v1.TestCase{{
+		Name: "it runs",
+		Failures: []*v1.Diagnostic{{
+			Field:   "expect.outputs",
+			Message: strings.Repeat("y", 240<<10),
+		}},
+	}}}
+
+	encoded, err := renderDebugResult(report, transcript, []string{"continue"}, false)
+	require.NoError(t, err)
+
+	var answer debugAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	assert.Empty(t, answer.Session, "the transcript is the last thing to go, and it went")
+	require.NotEmpty(t, answer.Report, "the verdict never goes")
+	assert.Contains(t, answer.Note, "transcript was dropped entirely")
+}
+
+// TestTheDebugToolRefusesAnOversizedScript bounds the argument itself, which
+// the per-command bound does not: a hundred commands each just under
+// MaxCommandBytes is megabytes of input the answer would echo back.
+func TestTheDebugToolRefusesAnOversizedScript(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	// Ten commands, each well under the per-command bound, together over the
+	// script bound — so this can only be refused by the total.
+	commands := make([]any, 10)
+	for i := range commands {
+		commands[i] = "inspect '" + strings.Repeat("y", maxDebugScriptBytes/8) + "'"
+	}
+
+	result, _ := callDebug(t, session, map[string]any{
+		"workflow": debugWorkflow,
+		"tests": `tests:
+  - name: it ships
+    expect:
+      failed: false
+`,
+		"commands": commands,
+	})
+	require.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(*mcp.TextContent).Text,
+		fmt.Sprintf("at most %d across all of its commands", maxDebugScriptBytes))
 }
