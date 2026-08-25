@@ -381,6 +381,7 @@ func TestMCPServeServesAReducedToolList(t *testing.T) {
 		flowmcp.ToolName("Compile"):    true,
 		flowmcp.ToolName("GetCatalog"): true,
 		flowmcp.TestToolName:           true,
+		flowmcp.DebugToolName:          true,
 	}, served)
 
 	// Stated separately from the equality above, because these two are the
@@ -394,6 +395,10 @@ func TestMCPServeServesAReducedToolList(t *testing.T) {
 			"which is the confused deputy this surface refuses to be until it can authorize per principal")
 	require.True(t, served[flowmcp.TestToolName],
 		"flowstate_test is served (#558 Q3): a stubbed run reaches nothing by construction")
+	require.True(t, served[flowmcp.DebugToolName],
+		"flowstate_debug is served for the identical reason: it drives the same stubbed run, and "+
+			"a finite script cannot hold it open — an exhausted script resumes the run, so the "+
+			"bound that ends a flowstate_test call ends this one (#928 slice 3)")
 }
 
 // TestMCPServeReachesTheRequestByteBound crosses the byte bound rather than

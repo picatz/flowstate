@@ -144,7 +144,7 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 // documentedLocalTools names every tool on this surface that is not the
 // projection of an RPC.
 //
-// There is one, and it should stay hard to add to. A tool with no service method
+// There are three, and it should stay hard to add to. A tool with no service method
 // behind it is a capability that exists only here — no Connect client, no CLI
 // verb, nothing else to compare its behavior against — so each one is a
 // deliberate exception rather than a category.
@@ -161,9 +161,19 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 // verdicts — and a single tool choosing between them by which arguments were
 // set is the shape [runLocalArguments]'s own doc comment already rejected for
 // `vars`: an implicit mode a caller has to infer.
+// flowstate_debug: the step debugger's MCP front (#928 slice 3), driving the
+// same flowtest run flowstate_test drives. Not an RPC because a debug session
+// is a *conversation* with a run held open in this process, and the durable
+// half of that — pausing a run on a worker somewhere else — is #928's own
+// slice 2, whose wire messages are schema decided there rather than invented
+// here. And not folded into flowstate_test's tool for the reason given just
+// above: a verdict and a transcript of questions are different documents, and
+// a tool choosing between them by which arguments were set is the implicit
+// mode this surface keeps refusing.
 var documentedLocalTools = map[string]bool{
 	flowmcp.RunLocalToolName: true,
 	flowmcp.TestToolName:     true,
+	flowmcp.DebugToolName:    true,
 }
 
 func documentedLocalToolNames() []string {
@@ -329,10 +339,9 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 // runMCP registers, so a test connects to the identical tool set an agent
 // does.
 func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
-	return []flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(posture)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
-	}
+	// The command's own list, not a copy of it: a tool registered for an agent
+	// and missing here is a tool no test ever calls.
+	return stdioExtraTools(posture)
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a

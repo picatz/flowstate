@@ -755,6 +755,17 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) (*mc
 		// afterward, and this surface does not serve it. Same schema, same
 		// handler, one paragraph that is true here.
 		flowmcp.ToolRegistration{Tool: flowmcp.ReducedTestTool(), Handler: testToolHandler(testTimeout)},
+
+		// The debug tool is served here for the reason the test tool is: it
+		// runs the identical stubbed run — no egress, no secret resolved, a
+		// virtual clock — and adds only questions asked at its step
+		// boundaries. It takes the same timeout and the same registry guard,
+		// because it reaches [flowtest.RunSourceWith] through the same door
+		// and can stub a task this build does not register exactly as a test
+		// case can. A finite script cannot hold the run open: when it runs
+		// out the session resumes, so the bound that ends a test call ends
+		// this one.
+		flowmcp.ToolRegistration{Tool: flowmcp.DebugTool(), Handler: debugToolHandler(testTimeout)},
 	)
 
 	return srv, nil

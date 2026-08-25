@@ -121,6 +121,11 @@ func mcpToolDocs() []docsgen.MCPTool {
 		Description: flowmcp.TestToolDescription,
 		Local:       true,
 	})
+	tools = append(tools, docsgen.MCPTool{
+		Name:        flowmcp.DebugToolName,
+		Description: flowmcp.DebugToolDescription,
+		Local:       true,
+	})
 
 	return tools
 }

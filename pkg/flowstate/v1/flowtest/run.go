@@ -448,9 +448,25 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // the reason on the case; [RunSource] and [RunFile] pass a background context
 // and are unchanged by this existing.
 func RunSourceContext(ctx context.Context, label string, workflowSource, testSource []byte) *v1.TestReport {
+	return RunSourceWith(ctx, label, workflowSource, testSource, RunOptions{}).Report
+}
+
+// RunSourceWith is [RunSourceContext] with the caller's own [RunOptions] —
+// the door a front that needs more than a verdict comes through, and today
+// that is the MCP debug adapter (#928 slice 3), which needs [RunOptions.Select]
+// to name one case and [RunOptions.Debugger] to drive it.
+//
+// Label is this door's to set, not the caller's: it is the report identity and
+// the coverage identity, and both are the label argument. Everything else the
+// caller brings. skipTranscript stays on for the reason it was set here at all
+// — the submitter is not the reader on this door, so the case account is
+// memory an untrusted submission shapes for nobody. A debugging session hears
+// the same account directly through [v1.RunObserver] instead, which is what
+// makes that discard cost a debug front nothing.
+func RunSourceWith(ctx context.Context, label string, workflowSource, testSource []byte, opts RunOptions) RunResult {
 	file, err := LoadSource(testSource)
 	if err != nil {
-		return &v1.TestReport{File: label, Refused: err.Error()}
+		return RunResult{Report: &v1.TestReport{File: label, Refused: err.Error()}}
 	}
 
 	// The loader parses the one submitted workflow per case, with no delivery
@@ -462,7 +478,10 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 	// submitted workflow. Coverage riding the report through [runSuite] is
 	// what makes this door answer with the same account the CLI's does
 	// (issue #931).
-	result := runSuite(ctx, file, RunOptions{Label: label, skipTranscript: true}, func(*Test) (loader, string) {
+	opts.Label = label
+	opts.skipTranscript = true
+
+	return runSuite(ctx, file, opts, func(*Test) (loader, string) {
 		return loader{
 			load: func() (*v1.Workflow, error) {
 				workflow, err := flowfile.Unmarshal(workflowSource)
@@ -475,7 +494,6 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 			deliveryPath: "",
 		}, label
 	})
-	return result.Report
 }
 
 // runCase runs one test and reports its verdict. load resolves the workflow

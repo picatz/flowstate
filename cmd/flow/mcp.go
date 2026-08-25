@@ -169,15 +169,27 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	}
 
 	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
-	extra := []flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
-		// No timeout: stdio's single caller is the process that launched this
-		// one, and this surface is unchanged by the bound `flow mcp serve`
-		// applies for its own reasons. See [testToolHandler].
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
-	}
 
-	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps, extra...)
+	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
+		stdioExtraTools(cmd)...)
+}
+
+// stdioExtraTools is the three tools on this surface that are not RPCs, in one
+// place because the tests stand the same server up and a second list is the
+// two-copies defect [flowmcp.AddCapabilities] states for the registration it
+// owns — a tool added here and forgotten there is a tool nothing exercises.
+//
+// None takes a timeout: stdio's single caller is the process that launched
+// this one, and this surface is unchanged by the bound `flow mcp serve`
+// applies for its own reasons. See [testToolHandler].
+func stdioExtraTools(cmd *cobra.Command) []flowmcp.ToolRegistration {
+	return []flowmcp.ToolRegistration{
+		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
+		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
+		// The debugger's own front (#928 slice 3), beside the tool whose
+		// verdicts it explains.
+		{Tool: flowmcp.DebugTool(), Handler: debugToolHandler(0)},
+	}
 }
 
 // The one tool that is not an RPC.
