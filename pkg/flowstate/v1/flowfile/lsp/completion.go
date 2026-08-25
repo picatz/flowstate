@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
 )
@@ -405,36 +406,6 @@ func openExpression(before string) (string, bool) {
 	return flowfile.OpenFence(before)
 }
 
-// A refCandidate is one name an expression at the cursor may reference, together
-// with what it exposes after a dot.
-type refCandidate struct {
-	name string
-
-	// detail and docs describe the candidate in the popup.
-	detail string
-	docs   string
-
-	// outputs are the names reachable after a dot, with their rendered types.
-	// A candidate with none — a loop iterator, whose element type is not known
-	// statically — offers nothing after the dot rather than guessing.
-	outputs []refOutput
-
-	// insert is the text an editor writes when the candidate is accepted, when
-	// that differs from the name. The root is the only one that does: it is never
-	// the whole of a reference, so the dot that continues it comes with it.
-	insert string
-
-	// kind distinguishes a step from a bound variable, for the popup's icon.
-	kind lsp.CompletionItemKind
-}
-
-// A refOutput is one name reachable after a dot.
-type refOutput struct {
-	name   string
-	detail string
-	docs   string
-}
-
 // A refScope is what an expression at the cursor may name, in the two namespaces
 // the grammar keeps apart.
 //
@@ -442,15 +413,22 @@ type refOutput struct {
 // offering a name the compiler would refuse is the one failure this package must
 // not have, and a scope shaped like the compiler's cannot drift into one that
 // merges them again.
+//
+// The three lists become a [celcomplete.Scope] on the way out ([refScope.shared]),
+// which is where the rules about them live: a candidate is that package's type
+// already, so this is a builder for one scope rather than a second model of a
+// name. What stays here is the *document's* half — which names a parsed Flowfile
+// puts in each list, and which roots an editor offers — because those are answers
+// about a file being typed rather than about the language.
 type refScope struct {
 	// steps are the steps whose outputs exist at this point, offered after
 	// `steps.` and never bare.
-	steps []refCandidate
+	steps []celcomplete.Candidate
 
 	// locals are the names bound bare where the cursor is: a loop's iterator, a
 	// step's own `vars:` keys, and `now` where a wait binds it. Offered bare and
 	// never after the root.
-	locals []refCandidate
+	locals []celcomplete.Candidate
 
 	// vars are the workflow's declared variables, offered after `vars.` and never
 	// bare — the crossing [v1.Scope.Activation] describes, met from the editor's
@@ -461,7 +439,7 @@ type refScope struct {
 	// two namespaces: a step called `region` and a var called `region` are different
 	// things and completing one as the other is the mistake this package exists to
 	// avoid.
-	vars []refCandidate
+	vars []celcomplete.Candidate
 }
 
 // referenceScope returns the names an expression at pos may reference.
@@ -503,14 +481,14 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 		// why it is added here rather than living in the scope every expression gets. A task
 		// input has no clock that survives a retry, and the validator says so with
 		// a diagnostic; offering the name there would be walking an author into it.
-		scope.locals = append(scope.locals, refCandidate{
-			name:   v1.NowIdentifier,
-			kind:   lsp.CIKVariable,
-			detail: "timestamp",
+		scope.locals = append(scope.locals, celcomplete.Candidate{
+			Name:   v1.NowIdentifier,
+			Kind:   celcomplete.KindValue,
+			Detail: "timestamp",
 			// The same text hover shows, for the same reason a CEL library's is
 			// shared: accepting a candidate and then hovering what was accepted
 			// must not produce two accounts of one name.
-			docs: nowDoc(),
+			Docs: nowDoc(),
 		})
 	}
 	return scope
@@ -606,7 +584,7 @@ func withinWaitOutputsShaping(path []string) bool {
 // `outputs:` alone is not enough to decide it — the workflow's own declared
 // outputs and the http task's shaping use the same word, and neither binds these
 // — so the path must show the wait above it.
-func waitResultCandidates(path []string) []refCandidate {
+func waitResultCandidates(path []string) []celcomplete.Candidate {
 	if !endsWith(path, "wait_for_signal", "outputs") {
 		return nil
 	}
@@ -617,24 +595,24 @@ func waitResultCandidates(path []string) []refCandidate {
 	// menu, and the hover over what the menu inserted. Now the schema's sentence
 	// about `payload` and `sender` reaches both, and there is one place left to
 	// edit when any of it changes.
-	return []refCandidate{
+	return []celcomplete.Candidate{
 		{
-			name:   v1.PayloadOutput,
-			kind:   lsp.CIKVariable,
-			detail: "map",
-			docs:   waitResultDoc(v1.PayloadOutput),
+			Name:   v1.PayloadOutput,
+			Kind:   celcomplete.KindValue,
+			Detail: "map",
+			Docs:   waitResultDoc(v1.PayloadOutput),
 		},
 		{
-			name:   v1.SenderOutput,
-			kind:   lsp.CIKVariable,
-			detail: "map",
-			docs:   waitResultDoc(v1.SenderOutput),
+			Name:   v1.SenderOutput,
+			Kind:   celcomplete.KindValue,
+			Detail: "map",
+			Docs:   waitResultDoc(v1.SenderOutput),
 		},
 		{
-			name:   v1.TimedOutOutput,
-			kind:   lsp.CIKVariable,
-			detail: "bool",
-			docs:   waitResultDoc(v1.TimedOutOutput),
+			Name:   v1.TimedOutOutput,
+			Kind:   celcomplete.KindValue,
+			Detail: "bool",
+			Docs:   waitResultDoc(v1.TimedOutOutput),
 		},
 	}
 }
@@ -674,11 +652,11 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	// binds nothing, which iteratorName answering "" already says.
 	if ls == loopScopeAfterBody && from.loopEntry != nil {
 		if name := from.iteratorName(); name != "" {
-			scope.locals = append(scope.locals, refCandidate{
-				name:   name,
-				kind:   lsp.CIKVariable,
-				detail: "carried value",
-				docs: fmt.Sprintf(
+			scope.locals = append(scope.locals, celcomplete.Candidate{
+				Name:   name,
+				Kind:   celcomplete.KindValue,
+				Detail: "carried value",
+				Docs: fmt.Sprintf(
 					"The value the %s loop carries between iterations: init sets it, the body reads it, update computes the next one.",
 					from.id),
 			})
@@ -703,11 +681,11 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 				"The value the %s loop carries between iterations: init sets it, the body reads it, update computes the next one.",
 				loop.id)
 		}
-		scope.locals = append(scope.locals, refCandidate{
-			name:   name,
-			kind:   lsp.CIKVariable,
-			detail: detail,
-			docs:   docs,
+		scope.locals = append(scope.locals, celcomplete.Candidate{
+			Name:   name,
+			Kind:   celcomplete.KindValue,
+			Detail: detail,
+			Docs:   docs,
 		})
 	}
 
@@ -753,21 +731,21 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 // One function for both positions, because the block is one grammar rule written at
 // several sites — the same reason the compiler compiles it in one place. What
 // differs is only what to call it, which is what detail says.
-func varsCandidates(vars *entry, detail string) []refCandidate {
+func varsCandidates(vars *entry, detail string) []celcomplete.Candidate {
 	if vars == nil || vars.value == nil {
 		return nil
 	}
 
-	var out []refCandidate
+	var out []celcomplete.Candidate
 	for _, e := range vars.value.entries {
 		if e.key == "" {
 			continue
 		}
-		out = append(out, refCandidate{
-			name:   e.key,
-			kind:   lsp.CIKVariable,
-			detail: detail,
-			docs:   varDoc(e),
+		out = append(out, celcomplete.Candidate{
+			Name:   e.key,
+			Kind:   celcomplete.KindValue,
+			Detail: detail,
+			Docs:   varDoc(e),
 		})
 	}
 
@@ -812,16 +790,16 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 		}
 	}
 
-	scope := refScope{steps: make([]refCandidate, 0, len(earlier))}
+	scope := refScope{steps: make([]celcomplete.Candidate, 0, len(earlier))}
 	for i := len(earlier) - 1; i >= 0; i-- {
 		s := earlier[i]
 		if s.id == "" || s.indent > currentIndent || ancestors[s] {
 			continue
 		}
-		c := refCandidate{name: s.id, kind: lsp.CIKVariable, detail: "step"}
+		c := celcomplete.Candidate{Name: s.id, Kind: celcomplete.KindValue, Detail: "step"}
 		if def, ok := tasks.Lookup(s.taskName); ok {
-			c.detail = def.Name
-			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
+			c.Detail = def.Name
+			c.Docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			// The line scan sees input keys but not their values, so a step
 			// that shapes — the same rule the validator and the model use, now
 			// a declared capability rather than a name — gets no output
@@ -829,7 +807,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 			// removed. Offering too little is the scan's stated posture;
 			// offering a name nothing produces is the failure.
 			if !s.shapes(tasks) {
-				c.outputs = taskOutputs(def)
+				c.Members = taskOutputs(def)
 			}
 		}
 		scope.steps = append(scope.steps, c)
@@ -838,26 +816,27 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 }
 
 // stepCandidate describes one step as a reference candidate.
-func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
-	c := refCandidate{name: s.id, kind: lsp.CIKVariable, detail: s.kind()}
+func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
+	c := celcomplete.Candidate{Name: s.id, Kind: celcomplete.KindValue, Detail: s.kind()}
 
 	switch {
 	case s.forEachEntry != nil:
 		// A loop reports every iteration through one output; its body's outputs
 		// are not reachable from outside it.
-		c.detail = "for_each"
-		c.docs = fmt.Sprintf(
+		c.Detail = "for_each"
+		c.Docs = fmt.Sprintf(
 			"A loop. Reports one entry per iteration in %s, each a map of body step id to that step's outputs. Body outputs do not escape the loop.",
 			rootedRef(s.id, loopResultsOutput))
-		c.outputs = []refOutput{{
-			name:   loopResultsOutput,
-			detail: "list",
-			docs:   "One entry per iteration, each a map of body step id to that step's named outputs.",
+		c.Members = []celcomplete.Candidate{{
+			Name:   loopResultsOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "list",
+			Docs:   "One entry per iteration, each a map of body step id to that step's named outputs.",
 		}}
 
 	case s.parallelEntry != nil:
-		c.detail = "parallel"
-		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
+		c.Detail = "parallel"
+		c.Docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
 
 	case s.loopEntry != nil, s.waitUntilEntry != nil, s.sleepEntry != nil,
 		s.waitForSignalEntry != nil, s.hasKey(waitUntilKey), s.hasKey(sleepKey), s.hasKey("wait_for_signal"):
@@ -869,18 +848,19 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		// reads, so accepting a candidate here and then hovering it cannot
 		// describe two different things.
 		if node := constructOutputNode(s); node != nil {
-			c.detail = s.kind()
-			if c.detail == "" {
-				c.detail = "wait"
+			c.Detail = s.kind()
+			if c.Detail == "" {
+				c.Detail = "wait"
 			}
 			names, _ := v1.OutputNames(node, tasks)
 			for _, n := range names {
 				if n.Name == "" {
 					continue
 				}
-				c.outputs = append(c.outputs, refOutput{
-					name: n.Name,
-					docs: n.Description,
+				c.Members = append(c.Members, celcomplete.Candidate{
+					Name: n.Name,
+					Kind: celcomplete.KindField,
+					Docs: n.Description,
 				})
 			}
 		}
@@ -891,14 +871,15 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		// So it is the one menu that can be complete with nothing consulted, and
 		// the one that has exactly one honest answer after the dot, which is the
 		// ergonomic half of the argument the `.value` spelling was chosen on.
-		c.detail = "value"
-		c.docs = fmt.Sprintf(
+		c.Detail = "value"
+		c.Docs = fmt.Sprintf(
 			"A computed value, evaluated in the workflow where it is written. Read the whole of it as %s.",
 			rootedRef(s.id, v1.ValueOutput))
-		c.outputs = []refOutput{{
-			name:   v1.ValueOutput,
-			detail: "the computed value",
-			docs: "What the step's expression evaluated to. A `value:` step produces exactly this one output, " +
+		c.Members = []celcomplete.Candidate{{
+			Name:   v1.ValueOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "the computed value",
+			Docs: "What the step's expression evaluated to. A `value:` step produces exactly this one output, " +
 				"so this is the whole of what it contributes.",
 		}}
 
@@ -906,34 +887,36 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		// Like a `value:`, the output set is the grammar's own: the observed
 		// discriminant and the case that took it. Body step outputs are read
 		// under their own ids, not this one.
-		c.detail = "switch"
-		c.docs = fmt.Sprintf(
+		c.Detail = "switch"
+		c.Docs = fmt.Sprintf(
 			"A dispatch on one value. Records what it observed as %s and which case took it as %s; the taken body's step outputs merge into this scope under their own ids.",
 			rootedRef(s.id, v1.SwitchValueOutput), rootedRef(s.id, v1.SwitchCaseOutput))
-		c.outputs = []refOutput{{
-			name:   v1.SwitchValueOutput,
-			detail: "the observed value",
-			docs:   "What the switch's `value:` evaluated to, recorded whether or not any case matched.",
+		c.Members = []celcomplete.Candidate{{
+			Name:   v1.SwitchValueOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "the observed value",
+			Docs:   "What the switch's `value:` evaluated to, recorded whether or not any case matched.",
 		}, {
-			name:   v1.SwitchCaseOutput,
-			detail: "the matching case literal, or null",
-			docs:   "The case literal that took the value, and `null` when none did — whether the `default:` body ran or nothing did.",
+			Name:   v1.SwitchCaseOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "the matching case literal, or null",
+			Docs:   "The case literal that took the value, and `null` when none did — whether the `default:` body ran or nothing did.",
 		}}
 
 	default:
 		if def, ok := tasks.Lookup(s.taskName); ok {
-			c.detail = def.Name
-			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
+			c.Detail = def.Name
+			c.Docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			if shaping := s.shapingEntry(tasks); shaping != nil {
 				// The declared outputs are exactly what shaping removed, so they
 				// are not candidates: accepting one would write a reference
 				// nothing produces. The shaping's own names are offered when
 				// they are statically knowable, and nothing is offered when they
 				// are not — a fabricated name is worse than an empty menu.
-				c.docs = fmt.Sprintf("Runs the %s task. Its %s: replaces the task's declared outputs with names of its own.", def.Name, taskShapingKey)
-				c.outputs = shapedOutputCandidates(s, def, tasks)
+				c.Docs = fmt.Sprintf("Runs the %s task. Its %s: replaces the task's declared outputs with names of its own.", def.Name, taskShapingKey)
+				c.Members = shapedOutputCandidates(s, def, tasks)
 			} else {
-				c.outputs = taskOutputs(def)
+				c.Members = taskOutputs(def)
 			}
 		}
 	}
@@ -942,19 +925,20 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 
 // shapedOutputCandidates renders a shaped step's own output names, or nothing
 // when the shaping expression keeps them to itself.
-func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) []refOutput {
+func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) []celcomplete.Candidate {
 	names, ok := shapedOutputNames(s.shapingEntry(tasks))
 	if !ok {
 		return nil
 	}
-	out := make([]refOutput, 0, len(names))
+	out := make([]celcomplete.Candidate, 0, len(names))
 	for _, name := range names {
-		out = append(out, refOutput{
-			name: name,
+		out = append(out, celcomplete.Candidate{
+			Name: name,
+			Kind: celcomplete.KindField,
 			// The type is whatever the shaping expression yields for this key,
 			// which is not statically known, so none is claimed.
-			detail: "shaped output",
-			docs: fmt.Sprintf("Shaped output of step %s: its %s: names this output itself, replacing what the %s task declares.",
+			Detail: "shaped output",
+			Docs: fmt.Sprintf("Shaped output of step %s: its %s: names this output itself, replacing what the %s task declares.",
 				s.id, taskShapingKey, def.Name),
 		})
 	}
@@ -962,197 +946,96 @@ func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) [
 }
 
 // taskOutputs renders a task's declared outputs as reference candidates.
-func taskOutputs(def v1.TaskDef) []refOutput {
+func taskOutputs(def v1.TaskDef) []celcomplete.Candidate {
 	if def.Outputs == nil {
 		return nil
 	}
 	fields := def.Outputs.Fields()
-	out := make([]refOutput, 0, fields.Len())
+	out := make([]celcomplete.Candidate, 0, fields.Len())
 	for i := range fields.Len() {
 		fd := fields.Get(i)
-		out = append(out, refOutput{
-			name:   string(fd.Name()),
-			detail: typeName(fd),
-			docs: fmt.Sprintf("%s output of the %s task, of type %s.",
+		out = append(out, celcomplete.Candidate{
+			Name:   string(fd.Name()),
+			Kind:   celcomplete.KindField,
+			Detail: typeName(fd),
+			Docs: fmt.Sprintf("%s output of the %s task, of type %s.",
 				fd.Name(), def.Name, typeName(fd)),
 		})
 	}
 	return out
 }
 
+// shared renders this scope as the one [celcomplete] answers over.
+//
+// The two judgements an editor makes about roots are made here, and nowhere
+// else, because they are answers about a document rather than about the
+// language. The steps root is offered unconditionally, because the first step of
+// a file is written before there is anything to reference and the name is still
+// what an author needs to learn. The vars root is offered only where the file
+// declares one, because a root that resolves to an empty map is a name nobody
+// should be taught. There is no inputs root, and that is a gap rather than a
+// decision: a Flowfile's `inputs:` are declared in the file and an editor could
+// offer them — see the note on [refScope.vars].
+func (s refScope) shared() celcomplete.Scope {
+	shared := celcomplete.Scope{
+		// The editor completes against the vocabulary this build compiles
+		// with, which is the one a file being typed will be compiled by.
+		Profile: v1.CurrentProfile,
+		Locals:  s.locals,
+		Roots:   []celcomplete.Candidate{celcomplete.StepsRoot(s.steps)},
+	}
+	if len(s.vars) > 0 {
+		shared.Roots = append(shared.Roots, celcomplete.VarsRoot(s.vars))
+	}
+
+	return shared
+}
+
 // completeInExpression offers what an expression may name at the cursor.
 //
-// Three positions, because the root has depth: bare at the start of an
-// expression, step ids after `steps.`, and one step's outputs after
-// `steps.<id>.`. Splitting on the *last* dot is what makes the middle one
-// reachable — the qualifier there is two segments, `steps.<id>`, where before
-// rooting every qualifier was one.
+// The rules are [celcomplete.Complete]'s — which names a scope holds where, in
+// what order, and what a dot reaches — and what is left here is the protocol:
+// turning each candidate into an item with the range it replaces.
 func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.CompletionList {
-	word := trailingWord(inner, func(c byte) bool {
-		return c == '_' || c == '.' ||
-			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-	})
+	result := celcomplete.Complete(inner, scope.shared())
+	replace := rangeBack(pos, result.Prefix)
 
-	dot := strings.LastIndex(word, ".")
-	if dot < 0 {
-		return list(bareCandidates(word, rangeBack(pos, word), scope))
-	}
-
-	qualifier, member := word[:dot], word[dot+1:]
-	replace := rangeBack(pos, member)
-	switch {
-	case qualifier == v1.StepsRoot:
-		return list(offer(scope.steps, member, replace))
-	case qualifier == v1.VarsRoot:
-		// The other root, which was reachable by typing it and by nothing else:
-		// `vars` was not offered bare and `vars.` fell through to the arm below,
-		// which treats an unknown qualifier as a binding and offers nothing. One
-		// root answered and one silent, for two names the grammar treats alike.
-		return list(offer(scope.vars, member, replace))
-	case functionsAfter(qualifier) != nil:
-		// A namespace the profile declares — `math.`, `regex.`, `json.`. Checked
-		// after the root and before the bare-qualifier fallthrough below, which
-		// treats an unknown qualifier as a binding and offers nothing.
-		return list(offer(functionsAfter(qualifier), member, replace))
-	case strings.HasPrefix(qualifier, v1.StepsRoot+"."):
-		id := strings.TrimPrefix(qualifier, v1.StepsRoot+".")
-		if strings.Contains(id, ".") {
-			// Past the output: selecting into a value whose shape the schema does
-			// not describe. There is nothing to offer that would not be a guess.
-			return list(nil)
-		}
-		return list(outputCandidates(id, member, replace, scope.steps))
-	}
-	// A bare qualifier. Either a binding, whose element type is not known
-	// statically, or the retired spelling of a step reference — and offering that
-	// one's outputs would keep an author writing a form `flow validate` refuses.
-	return list(nil)
-}
-
-// bareCandidates offers what may be written bare at the start of an expression:
-// the names bound where the cursor is, the root every step hangs from, and then the
-// profile's functions.
-//
-// Bindings come first because they are the nearer thing — bound by the block the
-// cursor stands in, where the root spans the whole document — and because inside a
-// loop body the item is usually what is wanted.
-//
-// Functions come last, and there are a lot of them. That ordering is the whole of
-// the design decision: an author who knows the name they want types it and the
-// prefix filter does the work, while one who does not gets the names in scope first
-// rather than having to scroll past sixty functions to find the loop variable they
-// bound two lines up.
-func bareCandidates(prefix string, replace lsp.Range, scope refScope) []lsp.CompletionItem {
-	candidates := slices.Clone(scope.locals)
-	candidates = append(candidates, stepsRootCandidate(scope))
-
-	// Both roots, and `vars` only where the file has one. The steps root is offered
-	// unconditionally because the first step is written before there is anything to
-	// reference and the name is still what an author needs to learn; a `vars:` block
-	// that does not exist is a different case — offering the root would be teaching
-	// a name that resolves to an empty map.
-	if len(scope.vars) > 0 {
-		candidates = append(candidates, varsRootCandidate(scope))
-	}
-
-	return offer(append(candidates, functionCandidates()...), prefix, replace)
-}
-
-// varsRootCandidate describes the workflow's variables root.
-func varsRootCandidate(scope refScope) refCandidate {
-	return refCandidate{
-		name: v1.VarsRoot,
-		// A value with named members, the same shape as the steps root.
-		kind:   lsp.CIKStruct,
-		detail: "workflow variables",
-		docs: "The workflow's declared variables, keyed by name: write " + v1.VarsRoot +
-			".<name>. They are evaluated once before the first step runs, so every step " +
-			"sees the same values. A step's own `vars:` are written bare instead.",
-		// The dot comes with it, as the steps root's does.
-		insert: v1.VarsRoot + ".",
-	}
-}
-
-// stepsRootCandidate describes the root itself.
-//
-// It is offered even when no step is in scope yet, because the first step of a
-// file is written before there is anything to reference and the name is still the
-// one an author needs to learn.
-func stepsRootCandidate(scope refScope) refCandidate {
-	docs := "Every step's outputs, keyed by step id: write " + v1.StepsRoot + ".<id>.<output>. " +
-		"Only steps that have already run are in scope here."
-	if len(scope.steps) == 0 {
-		docs = "Every step's outputs, keyed by step id. No step has run at this point, so there " +
-			"is nothing to select yet."
-	}
-	return refCandidate{
-		name: v1.StepsRoot,
-		// A value with named members, which is what the root is: a map from step
-		// id to that step's outputs.
-		kind:   lsp.CIKStruct,
-		detail: "step outputs",
-		docs:   docs,
-		// The root is never the whole of a reference, so the dot that continues it
-		// is inserted too — the same reason a key is offered with its colon.
-		insert: v1.StepsRoot + ".",
-	}
-}
-
-// offer renders candidates as completion items, keeping the order they arrive in.
-func offer(candidates []refCandidate, prefix string, replace lsp.Range) []lsp.CompletionItem {
-	var items []lsp.CompletionItem
-	for i, c := range candidates {
-		if !strings.HasPrefix(c.name, prefix) {
-			continue
-		}
-		text := c.insert
-		if text == "" {
-			text = c.name
-		}
+	items := make([]lsp.CompletionItem, 0, len(result.Candidates))
+	for i, c := range result.Candidates {
 		items = append(items, lsp.CompletionItem{
-			Label:         c.name,
-			Kind:          c.kind,
-			Detail:        c.detail,
-			Documentation: plainText(c.docs),
+			Label:         c.Name,
+			Kind:          itemKind(c.Kind),
+			Detail:        c.Detail,
+			Documentation: plainText(c.Docs),
 			// The list is already nearest-first, and the nearest name is usually
 			// the one being referenced.
-			SortText: fmt.Sprintf("%04d", i),
-			TextEdit: &lsp.TextEdit{Range: replace, NewText: text},
+			SortText: fmt.Sprintf("%04d%s", i, c.Name),
+			TextEdit: &lsp.TextEdit{Range: replace, NewText: c.Text()},
 		})
 	}
-	return items
+
+	// An answer that reached [celcomplete.MaxCandidates] is a prefix of what
+	// matched, and `isIncomplete` is the protocol's word for exactly that: the
+	// client re-asks as more is typed rather than filtering a list it was told
+	// is whole.
+	return &lsp.CompletionList{IsIncomplete: result.Truncated, Items: items}
 }
 
-// outputCandidates offers what one step exposes after `steps.<id>.`.
-func outputCandidates(id, prefix string, replace lsp.Range, steps []refCandidate) []lsp.CompletionItem {
-	var target *refCandidate
-	for i := range steps {
-		if steps[i].name == id {
-			target = &steps[i]
-			break
-		}
+// itemKind maps the completer's small vocabulary onto the protocol's icons.
+func itemKind(kind celcomplete.Kind) lsp.CompletionItemKind {
+	switch kind {
+	case celcomplete.KindRoot:
+		// A value with named members, which is what a root is.
+		return lsp.CIKStruct
+	case celcomplete.KindField:
+		return lsp.CIKField
+	case celcomplete.KindFunction:
+		return lsp.CIKFunction
+	case celcomplete.KindNamespace:
+		return lsp.CIKModule
+	default:
+		return lsp.CIKVariable
 	}
-	if target == nil {
-		// Not a step whose outputs exist here. Offering them would suggest a
-		// reference the engine rejects.
-		return nil
-	}
-
-	var items []lsp.CompletionItem
-	for i, o := range target.outputs {
-		if !strings.HasPrefix(o.name, prefix) {
-			continue
-		}
-		items = append(items, lsp.CompletionItem{
-			Label:         o.name,
-			Kind:          lsp.CIKField,
-			Detail:        o.detail,
-			Documentation: plainText(o.docs),
-			SortText:      fmt.Sprintf("%04d%s", i, o.name),
-			TextEdit:      &lsp.TextEdit{Range: replace, NewText: o.name},
-		})
-	}
-	return items
 }
 
 // A completion list is ordered by the order an author writes a step in, not

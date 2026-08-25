@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -81,9 +82,9 @@ func TestANamespacesMembersCompile(t *testing.T) {
 
 	for _, namespace := range namespacesOffered(t, c) {
 		t.Run(namespace, func(t *testing.T) {
-			for _, member := range functionsAfter(namespace) {
-				t.Run(member.name, func(t *testing.T) {
-					assertWritable(t, namespace+"."+member.name)
+			for _, member := range celcomplete.FunctionsAfter(v1.CurrentProfile, namespace) {
+				t.Run(member.Name, func(t *testing.T) {
+					assertWritable(t, namespace+"."+member.Name)
 				})
 			}
 		})
@@ -107,8 +108,8 @@ func TestTheNamespacedMacrosAreReachable(t *testing.T) {
 			t.Parallel()
 
 			var offered []string
-			for _, member := range functionsAfter(want.namespace) {
-				offered = append(offered, member.name)
+			for _, member := range celcomplete.FunctionsAfter(v1.CurrentProfile, want.namespace) {
+				offered = append(offered, member.Name)
 			}
 
 			assert.Contains(t, offered, want.member,
