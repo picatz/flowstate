@@ -50,3 +50,22 @@ func TestTheEnvironmentCacheIsBounded(t *testing.T) {
 	assert.Equal(t, maxCachedEnvs, held,
 		"the bound was never reached, so this does not test the bound")
 }
+
+// TestTheUnknownFunctionAdviceNamesBothVenues: this diagnostic is advice, and
+// advice is only advice where the reader can act on it.
+//
+// Validation runs in three places — a terminal, an editor, and
+// `flowstate_validate` over MCP — and the message sent every one of them to a
+// shell command. An agent that reached this by submitting a Flowfile has no
+// shell; what it has is the same catalog under another name. Naming both is
+// one sentence rather than a venue-aware rewrite of one.
+func TestTheUnknownFunctionAdviceNamesBothVenues(t *testing.T) {
+	t.Parallel()
+
+	said := forAnAuthor("undeclared reference to 'sum' (in container '')")
+
+	assert.Contains(t, said, `no function called "sum"`)
+	assert.Contains(t, said, "flow tasks", "the terminal reader keeps their verb")
+	assert.Contains(t, said, "flowstate_get_catalog",
+		"and the reader with no terminal gets the tool that answers the same question")
+}
