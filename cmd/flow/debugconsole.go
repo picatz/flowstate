@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/charmbracelet/colorprofile"
 	"golang.org/x/term"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
@@ -113,6 +114,53 @@ func newDebugConsole(rw io.ReadWriter, prompt string, raw int) *debugConsole {
 	return console
 }
 
+// terminalFile finds the file a writer eventually reaches, through whatever is
+// wrapping it.
+//
+// A bare type assertion is not enough and the reason is the whole CLI: `ui.New`
+// stores `colorprofile.NewWriter(...)` in the surface's Out and Err, so the
+// writer both debug commands hand over is a *colorprofile.Writer and never an
+// *os.File. Asserting directly declined the console on every real invocation
+// while every test kept passing, because the tests hand this a file themselves
+// (Codex, #1114). A guard that only holds where it is tested is not a guard.
+//
+// Unwrapped through an interface rather than by naming that type, because the
+// property wanted here is "writes end up at this descriptor", and any wrapper
+// that answers the question can say so. `Unwrap() io.Writer` is the shape the
+// standard library uses for the same idea in errors, and colorprofile's
+// exported Forward field is read directly since it predates saying it that way.
+//
+// Bounded, because a wrapper chain is a linked list somebody else builds and a
+// cycle in it would hang the command before it printed anything.
+func terminalFile(w io.Writer) (*os.File, bool) {
+	for range maxWriterUnwraps {
+		switch next := w.(type) {
+		case *os.File:
+			return next, true
+
+		case *colorprofile.Writer:
+			w = next.Forward
+
+		case interface{ Unwrap() io.Writer }:
+			w = next.Unwrap()
+
+		default:
+			return nil, false
+		}
+
+		if w == nil {
+			return nil, false
+		}
+	}
+
+	return nil, false
+}
+
+// maxWriterUnwraps bounds [terminalFile]'s walk. Two is the depth this
+// repository builds today; ten leaves room for a wrapper somebody adds without
+// leaving room for a cycle.
+const maxWriterUnwraps = 10
+
 // attachDebugConsole puts a terminal into raw mode and returns the console to
 // prompt through, or reports that there is no terminal here.
 //
@@ -134,7 +182,7 @@ func attachDebugConsole(in io.Reader, out io.Writer, theme ui.Theme) (console *d
 	// the echoed keystrokes and the cursor sequences into the file (Codex,
 	// #1114). A console is a conversation between two streams; one of them
 	// being a terminal is not enough.
-	sink, isFile := out.(*os.File)
+	sink, isFile := terminalFile(out)
 	if !isFile || !term.IsTerminal(int(sink.Fd())) {
 		return nil, nil, false
 	}

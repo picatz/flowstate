@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/term"
@@ -496,3 +497,98 @@ func TestRawModeIsHeldOnlyForTheLengthOfARead(t *testing.T) {
 	assert.Equal(t, before, after,
 		"and it has to give it back, or the run continues with the terminal's signals switched off")
 }
+
+// TestTheConsoleAttachesThroughTheSurfaceTheCLIActuallyBuilds (Codex, #1114)
+// is the test whose absence let a P1 through, so it is worth saying what it
+// does differently rather than only what it asserts.
+//
+// Every other test in this file hands attachDebugConsole an *os.File. The CLI
+// does not: ui.New stores colorprofile.NewWriter(...) in the surface's Out and
+// Err, so what both debug commands pass is a *colorprofile.Writer. A guard
+// added as a bare `out.(*os.File)` assertion therefore declined the console on
+// every real invocation — no completion, no editing, no history, the whole
+// feature silently off — while this file stayed green from top to bottom.
+//
+// So this one builds the surface the way newSurface does and goes in through
+// debugConsoleFor, which is the seam runlocal.go and testdebug.go use. A guard
+// that only holds where it is tested is not a guard.
+func TestTheConsoleAttachesThroughTheSurfaceTheCLIActuallyBuilds(t *testing.T) {
+	t.Parallel()
+
+	pty := aTerminal(t)
+
+	// Exactly ui.New's arguments, which is what newSurface calls.
+	surface := ui.New(pty, pty, pty, []string{"TERM=xterm-256color"})
+
+	require.NotImplements(t, (*interface{ Fd() uintptr })(nil), surface.Out,
+		"the fixture must reproduce the wrapping — if the surface ever hands over a raw "+
+			"file this test stops covering the thing it exists for")
+
+	console, writer, restore := debugConsoleFor(pty, surface.Out, surface.Theme)
+	t.Cleanup(restore)
+
+	require.NotNil(t, console,
+		"the console was declined at a real terminal, so `--debug` falls back to the "+
+			"scanner and the prompt this PR is about does not exist")
+	assert.Same(t, console, writer, "and the session writes through the console it prompts on")
+}
+
+// TestTerminalFileFindsTheDescriptorThroughWhateverWrapsIt covers the unwrap
+// itself, including the bound — a wrapper chain is a linked list somebody else
+// builds, and a cycle in it would hang the command before it printed anything.
+func TestTerminalFileFindsTheDescriptorThroughWhateverWrapsIt(t *testing.T) {
+	t.Parallel()
+
+	pty := aTerminal(t)
+
+	t.Run("a bare file", func(t *testing.T) {
+		t.Parallel()
+
+		got, ok := terminalFile(pty)
+		require.True(t, ok)
+		assert.Same(t, pty, got)
+	})
+
+	t.Run("through the color-profile writer the CLI wraps with", func(t *testing.T) {
+		t.Parallel()
+
+		got, ok := terminalFile(colorprofile.NewWriter(pty, []string{"TERM=xterm-256color"}))
+		require.True(t, ok)
+		assert.Same(t, pty, got)
+	})
+
+	t.Run("through anything that says what it wraps", func(t *testing.T) {
+		t.Parallel()
+
+		got, ok := terminalFile(unwrapping{to: unwrapping{to: pty}})
+		require.True(t, ok)
+		assert.Same(t, pty, got)
+	})
+
+	t.Run("a writer that reaches no file at all", func(t *testing.T) {
+		t.Parallel()
+
+		_, ok := terminalFile(io.Discard)
+		assert.False(t, ok, "a discard is not a terminal however politely it is asked")
+	})
+
+	t.Run("a cycle is refused rather than followed", func(t *testing.T) {
+		t.Parallel()
+
+		loop := &looping{}
+		loop.to = loop
+
+		_, ok := terminalFile(loop)
+		assert.False(t, ok, "an unbounded walk here would hang the command before it printed anything")
+	})
+}
+
+type unwrapping struct{ to io.Writer }
+
+func (u unwrapping) Write(p []byte) (int, error) { return u.to.Write(p) }
+func (u unwrapping) Unwrap() io.Writer           { return u.to }
+
+type looping struct{ to io.Writer }
+
+func (l *looping) Write(p []byte) (int, error) { return len(p), nil }
+func (l *looping) Unwrap() io.Writer           { return l.to }
