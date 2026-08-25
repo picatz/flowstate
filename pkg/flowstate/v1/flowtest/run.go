@@ -752,8 +752,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// "a redactor is installed" as "this case withholds values" and says so
 	// at the autopsy — a rule that redacts nothing would put that notice on
 	// every failing case.
-	if redact := sensitive; redact.withholdAll || len(redact.substrings) > 0 {
-		if redacting, ok := v1.DebuggerFromContext(ctx).(interface {
+	if redact := sensitive; redact.withholdAll || len(redact.substrings) > 0 || len(redact.values) > 0 {
+		debugger := v1.DebuggerFromContext(ctx)
+
+		if redacting, ok := debugger.(interface {
 			SetRedactor(func(string) string)
 		}); ok {
 			redacting.SetRedactor(func(text string) string {
@@ -764,6 +766,28 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 				return redactSensitiveSubstrings(text, redact.substrings)
 			})
 			defer redacting.SetRedactor(nil)
+		}
+
+		// And the same set at the *value* seam, because the substring half of
+		// it deliberately omits short descendants — replacing every "7" in
+		// every line would make a transcript unreadable — so a sensitive
+		// `credentials: [7]` had nothing in `substrings` to catch it and
+		// `inspect inputs.credentials` printed it in full, while the ordinary
+		// transcript redacted the whole container (Codex, #1109). Values match
+		// by equality rather than by looking like something, which is exactly
+		// what a short descendant needs, and it is the same
+		// [redactSensitiveTree] every witness rendering already applies.
+		if redacting, ok := debugger.(interface {
+			SetValueRedactor(func(any) any)
+		}); ok {
+			redacting.SetValueRedactor(func(value any) any {
+				if redact.withholdAll {
+					return "[withheld]"
+				}
+
+				return redactSensitiveTree(value, redact.values)
+			})
+			defer redacting.SetValueRedactor(nil)
 		}
 	}
 

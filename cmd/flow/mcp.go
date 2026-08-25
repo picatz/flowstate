@@ -647,9 +647,30 @@ func capText(text string, max int) string {
 		return text
 	}
 
-	return strings.ToValidUTF8(text[:max], "") +
-		fmt.Sprintf("... (truncated, exceeded %d bytes)", max)
+	// The suffix comes out of max rather than being added to it. A caller
+	// dividing a budget between strings and capping each at its share was
+	// overrunning by the length of this sentence per string, which across a
+	// thousand of them is forty kilobytes the budget never accounted for
+	// (Codex, #1109). "At most max bytes" is what a caller reads this as, so
+	// it is what it does.
+	suffix := fmt.Sprintf("... (truncated, exceeded %d bytes)", max)
+	if len(suffix) >= max {
+		// No room to both cut and say so. Cutting wins: a caller that asked
+		// for this few bytes is already past the point of explaining.
+		return strings.ToValidUTF8(text[:max], "")
+	}
+
+	return strings.ToValidUTF8(text[:max-len(suffix)], "") + suffix
 }
+
+// maxTestFloorPasses bounds the floor's remeasuring in [renderTestResultWithin].
+//
+// Each pass halves the share, so five of them is a sixteenth of the first
+// guess and the loop is over long before this. The bound is on passes because
+// a floor that cannot fit at all exists — five hundred cases have structure
+// as well as strings, and at a small enough budget that structure is the whole
+// of it — and that answer is the floor whether or not it fits.
+const maxTestFloorPasses = 5
 
 // renderTestResult brings a v1.TestReport under [flowmcp.MaxResultBytes] —
 // [renderRunLocalResult]'s own bound and its own discipline, reused rather
@@ -725,41 +746,64 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 			// the *document's* choice: [flowtest.MaxTestsPerFile] is 500 and
 			// [flowtest.MaxTestFileBytes] is a megabyte, so five hundred cases
 			// with two-kilobyte names is an ordinary submitted document and a
-			// floor keeping them whole is four times this cap. Half the budget
-			// across the strings leaves the other half for the structure
-			// around them, and the share shrinks as the budget does — which is
-			// what lets [renderDebugResult]'s floor converge by handing this a
-			// smaller number rather than by having a rung of its own.
-			share := limit / (2 * (len(trimmed.GetCases()) + 1))
-			if share < 64 {
-				// A name cut to nothing is not a verdict anyone can read. At a
-				// budget this small the answer is the floor whether or not it
-				// fits, which is what a floor is.
-				share = 64
-			}
+			// floor keeping them whole is four times this cap.
+			//
+			// Counted rather than estimated, because the first cut of this
+			// divided by the number of *cases* while emitting two strings per
+			// case, so a document with long names and long errors alike got
+			// twice the budget it was allotted (Codex, #1109). What is kept is
+			// the file, the refusal, and a name and an error each.
+			kept := 2 + 2*len(trimmed.GetCases())
 
-			summary := &v1.TestReport{
-				File:    capText(report.GetFile(), share),
-				Refused: capText(trimmed.GetRefused(), share),
-			}
-			for _, c := range trimmed.GetCases() {
-				caseError := c.GetError()
-				if caseError == "" && len(c.GetFailures()) > 0 {
-					caseError = fmt.Sprintf(
-						"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
-						len(c.GetFailures()), limit)
+			// And then measured rather than trusted. Half the budget goes to
+			// the strings and half to the structure around them, which is a
+			// guess about JSON overhead this has no business making twice: if
+			// the guess was wrong the share halves and the summary is built
+			// again, so the arithmetic is a starting point instead of a
+			// promise.
+			share := limit / (2 * kept)
+
+			var encoded []byte
+
+			for pass := 0; pass < maxTestFloorPasses; pass++ {
+				summary := &v1.TestReport{
+					File:    capText(report.GetFile(), share),
+					Refused: capText(trimmed.GetRefused(), share),
 				}
-				summary.Cases = append(summary.Cases, &v1.TestCase{
-					Name:     capText(c.GetName(), share),
-					Passed:   c.GetPassed(),
-					Duration: c.GetDuration(),
-					Error:    capText(caseError, share),
-				})
-			}
+				for _, c := range trimmed.GetCases() {
+					caseError := c.GetError()
+					if caseError == "" && len(c.GetFailures()) > 0 {
+						caseError = fmt.Sprintf(
+							"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
+							len(c.GetFailures()), limit)
+					}
+					summary.Cases = append(summary.Cases, &v1.TestCase{
+						Name:     capText(c.GetName(), share),
+						Passed:   c.GetPassed(),
+						Duration: c.GetDuration(),
+						Error:    capText(caseError, share),
+					})
+				}
 
-			encoded, err := marshalJSON(summary, false)
-			if err != nil {
-				return nil, fmt.Errorf("rendering the report: %w", err)
+				var err error
+
+				encoded, err = marshalJSON(summary, false)
+				if err != nil {
+					return nil, fmt.Errorf("rendering the report: %w", err)
+				}
+
+				if len(encoded) <= limit {
+					return encoded, nil
+				}
+
+				// Halved rather than recomputed from the overshoot: the
+				// overshoot here is mostly structure, which shrinking the
+				// strings does not touch, so subtracting it would converge on
+				// a share of zero one byte at a time.
+				share /= 2
+				if share < 16 {
+					break
+				}
 			}
 
 			return encoded, nil

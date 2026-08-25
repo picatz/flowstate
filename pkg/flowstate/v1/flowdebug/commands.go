@@ -167,7 +167,7 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// Redacted before the cap, for the reason [Session.stepOutcomeText] gives:
 	// truncating first would leave the first MaxInspectRunes of a long secret
 	// in a string no substring match can recognise (Codex, #1109).
-	s.printf("%s\n", capRunes(s.redactText(refValText(out)), MaxInspectRunes))
+	s.printf("%s\n", capRunes(s.redactText(s.refValText(out)), MaxInspectRunes))
 }
 
 // showScope lists what the paused run can name, which is the question an

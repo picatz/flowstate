@@ -1049,3 +1049,56 @@ func TestTheDebugAnswerBoundsFiveHundredCaseNames(t *testing.T) {
 	assert.Contains(t, carried.GetCases()[0].GetName(), "case-000",
 		"and each name keeps the part that identifies it")
 }
+
+// TestTheReportFloorBoundsFiveHundredNamesAndErrors is the case the first
+// budget missed (Codex, #1109): the floor emits *two* strings per case, and
+// the share was divided as though it emitted one, so a document with long
+// names and long errors alike got twice its allotment. `capText` also appended
+// its truncation sentence past the share it was given, which across a thousand
+// strings is another forty kilobytes nothing accounted for.
+//
+// Asked of renderTestResultWithin rather than of the debug answer, and that
+// distinction is the whole reason this test exists as written: the debug floor
+// converges, so it *rescues* an over-budget report by handing the ladder a
+// smaller limit and asking again — a version of this driven through
+// renderDebugResult passes against the bug. `flowstate_test` has no such loop.
+// Its floor is the answer, and the answer went out oversized.
+func TestTheReportFloorBoundsFiveHundredNamesAndErrors(t *testing.T) {
+	t.Parallel()
+
+	report := &v1.TestReport{File: "submitted"}
+	for i := range 500 {
+		report.Cases = append(report.Cases, &v1.TestCase{
+			Name:   fmt.Sprintf("case-%03d-%s", i, strings.Repeat("y", 1<<10)),
+			Passed: false,
+			Error:  fmt.Sprintf("error-%03d-%s", i, strings.Repeat("z", 1<<10)),
+		})
+	}
+
+	encoded, err := renderTestResultWithin(report, flowmcp.MaxResultBytes)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"both strings of five hundred cases carried the report past the cap")
+
+	var carried v1.TestReport
+	require.NoError(t, protojson.Unmarshal(encoded, &carried))
+	require.Len(t, carried.GetCases(), 500, "every verdict survives; the strings are what gave way")
+	assert.Contains(t, carried.GetCases()[0].GetName(), "case-000",
+		"and each keeps the part that identifies it")
+	assert.Contains(t, carried.GetCases()[0].GetError(), "error-000")
+}
+
+// TestCapTextKeepsItsOwnPromise: a caller that divides a budget between
+// strings and caps each at its share is relying on this returning at most that
+// many bytes. It was returning the share plus a sentence.
+func TestCapTextKeepsItsOwnPromise(t *testing.T) {
+	t.Parallel()
+
+	for _, max := range []int{16, 64, 128, 4096} {
+		got := capText(strings.Repeat("y", 100<<10), max)
+		assert.LessOrEqual(t, len(got), max, "capText(_, %d) overran its own bound", max)
+	}
+
+	assert.Equal(t, "short", capText("short", 64), "what fits is returned untouched")
+}

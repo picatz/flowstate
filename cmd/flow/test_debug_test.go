@@ -303,3 +303,54 @@ tests:
 		"a declared-sensitive input reached the terminal through the debug session")
 	assert.Contains(t, all, "[redacted]")
 }
+
+// TestDebugWithholdsAShortDescendantOfASensitiveInput (Codex, #1109): the
+// substring backstop cannot catch what does not look like anything.
+//
+// A declared-sensitive input's descendants are all in the redaction set, but
+// the *substring* half of that set deliberately omits short ones — replacing
+// every "7" in every line would make a transcript unreadable. So a structured
+// secret with a small leaf had nothing in the substring set to catch it, and
+// `inspect` printed the leaf while the ordinary transcript redacted the whole
+// container. Values are matched by equality now, before rendering, which is
+// exactly what a short descendant needs.
+func TestDebugWithholdsAShortDescendantOfASensitiveInput(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: secretive
+inputs:
+  credentials:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: it runs
+    inputs:
+      credentials: [7]
+    expect:
+      ran: [first]
+`), 0o600))
+
+	res := runFlowStdin(t, "inspect inputs.credentials\ncontinue\n",
+		"test", "--debug", "--run", "it runs", dir)
+	require.NoError(t, res.Err)
+
+	all := res.Stdout + res.Stderr
+	require.Contains(t, all, "break at first", "the session did not run at all")
+	assert.NotContains(t, all, "[7]",
+		"a sensitive input's short descendant reached the terminal through `inspect`")
+	assert.Contains(t, all, "[redacted]",
+		"and what it should read as is the marker every other rendering uses")
+}

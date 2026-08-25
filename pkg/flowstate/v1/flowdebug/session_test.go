@@ -845,3 +845,75 @@ func TestAConsoleThatRanOutStillSaysSo(t *testing.T) {
 	assert.Contains(t, said.String(), "no more commands")
 	assert.NotContains(t, said.String(), "could not be read")
 }
+
+// TestTheScriptIsBoundedByBytesAsWellAsCount (Codex, #1109): a hundred
+// thousand commands each just under MaxCommandBytes satisfies both advertised
+// bounds and is six gigabytes of retained recording. Neither bound implies the
+// other, and the one nobody wrote down is the one an attacker picks.
+//
+// Driven at a smaller scale than the real bound — the claim is that the byte
+// budget stops the recording and says so, not how many megabytes it takes.
+func TestTheScriptIsBoundedByBytesAsWellAsCount(t *testing.T) {
+	// Commands the session accepts and records, each large but well under the
+	// per-command bound, and enough of them to pass MaxScriptBytes long before
+	// MaxScriptCommands.
+	const each = 32 << 10
+
+	var script strings.Builder
+	for range (flowdebug.MaxScriptBytes / each) + 8 {
+		script.WriteString("inspect '" + strings.Repeat("y", each) + "'\n")
+	}
+	script.WriteString("continue\n")
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(script.String()),
+		Emit: func(string, flowdebug.Tone) {},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	recorded := 0
+	for _, line := range session.Script() {
+		recorded += len(line)
+	}
+
+	assert.LessOrEqual(t, recorded, flowdebug.MaxScriptBytes,
+		"the recording kept more than its byte budget")
+	assert.Less(t, len(session.Script()), flowdebug.MaxScriptCommands,
+		"the count bound is nowhere near reached, which is the point: it does not imply this one")
+	assert.True(t, session.ScriptTruncated(),
+		"a partial replay script has to admit it is partial, or it reproduces a different run")
+}
+
+// TestACommandOfExactlyTheBoundIsAccepted: MaxCommandBytes is advertised as
+// what one command may be, and every other bound on this surface accepts a
+// command of exactly that size — the scanner's own buffer has to hold the line
+// terminator too, so a buffer sized at the bound refused the bound (Codex,
+// #1109).
+func TestACommandOfExactlyTheBoundIsAccepted(t *testing.T) {
+	var said strings.Builder
+
+	// `inspect '<literal>'` sized so the whole line is exactly the bound.
+	const wrapper = "inspect 'y'"
+
+	command := "inspect '" + strings.Repeat("y", flowdebug.MaxCommandBytes-len(wrapper)+1) + "'"
+	require.Len(t, command, flowdebug.MaxCommandBytes, "the fixture must sit exactly on the bound")
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:   strings.NewReader(command + "\ncontinue\n"),
+		Emit: func(text string, _ flowdebug.Tone) { said.WriteString(text) },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	node := &v1.Node{Id: "held", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	require.NoError(t, session.BeforeStep(t.Context(), node, &v1.Scope{}))
+
+	assert.NotContains(t, said.String(), "longer than the",
+		"a command of exactly the advertised bound was refused by the reader")
+	assert.Equal(t, []string{"inspect " + command[len("inspect "):], "continue"}, session.Script(),
+		"it should have been accepted, answered, and recorded like any other")
+}

@@ -43,6 +43,26 @@ const (
 	// worse than one that admits it is partial.
 	MaxScriptCommands = 100_000
 
+	// MaxScriptBytes bounds the recording's *size*, which the count above does
+	// not.
+	//
+	// Bounding one resource does not bound another the peer controls the ratio
+	// to (CLAUDE.md): a hundred thousand commands each just under
+	// [MaxCommandBytes] satisfies both advertised bounds and is six gigabytes
+	// held for the life of the session. Nobody types that, and a console is
+	// not the only way in — either CLI front reads whatever is redirected at
+	// its stdin, and the MCP adapter's own `maxDebugScriptBytes` bounds one
+	// *call* rather than the session a caller builds out of several (Codex,
+	// #1109).
+	//
+	// A megabyte, the size this repository already uses for "a document a
+	// person wrote": a replay script is meant to be re-run and pasted into an
+	// issue, and one larger than a Flowfile has stopped being either. Past it
+	// the session keeps working and stops recording, exactly as past the count
+	// — the tail is admitted by [Session.ScriptTruncated] rather than dropped
+	// in silence.
+	MaxScriptBytes = 1 << 20
+
 	// MaxInspectRunes bounds the rendered length of one inspection's answer.
 	// The expression's own cost is bounded by the evaluator; this bounds the
 	// *rendering* of a result that was cheap to compute and is large to print
@@ -191,8 +211,11 @@ type Session struct {
 	mode        mode
 	until       string
 	breakpoints map[string]struct{}
-	// script records accepted commands, in order, for replay.
+	// script records accepted commands, in order, for replay, and scriptBytes
+	// is what they weigh — see [MaxScriptBytes], which the count bound beside
+	// it does not imply.
 	script          []string
+	scriptBytes     int
 	scriptTruncated bool
 	// started is the clock reading at the first boundary, so stops report
 	// time relative to the run rather than an absolute date.
@@ -213,6 +236,9 @@ type Session struct {
 	readErr error
 	// redact is what every printed line passes through — see [Session.SetRedactor].
 	redact func(string) string
+	// redactValue is what every *structured* value passes through before it is
+	// rendered — see [Session.SetValueRedactor].
+	redactValue func(any) any
 	// ended is set when the session itself abandoned the run (`quit` at a
 	// breakpoint): the one command advertised as leaving must not be
 	// answered with another prompt, so the autopsy checks it and stays shut
@@ -238,7 +264,13 @@ func New(opts Options) (*Session, error) {
 	}
 	if opts.In != nil {
 		s.in = bufio.NewScanner(opts.In)
-		s.in.Buffer(make([]byte, 0, 4096), MaxCommandBytes)
+		// One byte over [MaxCommandBytes], and the byte is the line
+		// terminator rather than command room: bufio.Scanner grows its buffer
+		// to at most this and must hold the delimiter as well as the token,
+		// so a buffer of exactly MaxCommandBytes rejects a line of exactly
+		// MaxCommandBytes with ErrTooLong — a command every other bound on
+		// this surface accepts, refused by the reader (Codex, #1109).
+		s.in.Buffer(make([]byte, 0, 4096), MaxCommandBytes+len("\n"))
 	}
 	for _, id := range opts.Breakpoints {
 		if id = strings.TrimSpace(id); id != "" {
@@ -564,11 +596,12 @@ func (s *Session) record(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(s.script) >= MaxScriptCommands {
+	if len(s.script) >= MaxScriptCommands || s.scriptBytes+len(line) > MaxScriptBytes {
 		s.scriptTruncated = true
 
 		return
 	}
+	s.scriptBytes += len(line)
 	s.script = append(s.script, line)
 }
 
@@ -623,6 +656,41 @@ func (s *Session) SetRedactor(redact func(string) string) {
 }
 
 // redactText applies the installed redactor, if any.
+// SetValueRedactor installs what every structured value this session renders
+// passes through, or clears it with nil.
+//
+// The companion to [Session.SetRedactor], and it exists because a text
+// backstop cannot see a shape. A caller's redaction set holds both the values
+// it recognises and a set of substrings to catch them in rendered prose, and
+// the substring half deliberately omits short ones: replacing every "7" in
+// every line would make a transcript unreadable, and that omission is correct
+// for text. But a *value* is matched by equality, not by looking like
+// something — so a sensitive `credentials: [7]` is recognised whole here while
+// no substring in the world would have caught the 7 (Codex, #1109).
+//
+// So values redact by identity before rendering, and the rendered line still
+// goes through the text redactor afterwards. Two seams because there are two
+// questions: is this the value, and does this line contain it.
+func (s *Session) SetValueRedactor(redact func(any) any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.redactValue = redact
+}
+
+// redactedValue is v through the installed value redactor, or v.
+func (s *Session) redactedValue(v any) any {
+	s.mu.Lock()
+	redact := s.redactValue
+	s.mu.Unlock()
+
+	if redact == nil {
+		return v
+	}
+
+	return redact(v)
+}
+
 func (s *Session) redactText(text string) string {
 	s.mu.Lock()
 	redact := s.redact
@@ -689,7 +757,7 @@ func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated
 
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+valueText(named[name]))
+		parts = append(parts, name+": "+s.valueText(named[name]))
 	}
 
 	// Redacted *before* the cap, not after. capRunes keeps the first
@@ -703,7 +771,7 @@ func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated
 // valueText renders one output value. A value that is not a resolved literal
 // — a secret reference above all — renders as what it is rather than as what
 // it points at.
-func valueText(value *v1.Value) string {
+func (s *Session) valueText(value *v1.Value) string {
 	if ref := value.GetSecretRef(); ref != nil {
 		return fmt.Sprintf("secret(%s://%s)", ref.GetScheme(), ref.GetName())
 	}
@@ -716,7 +784,7 @@ func valueText(value *v1.Value) string {
 		return "…"
 	}
 
-	return nativeText(native)
+	return nativeText(s.redactedValue(native))
 }
 
 // nativeText renders a plain Go value the way an author reads data: as JSON,
@@ -737,7 +805,7 @@ func nativeText(native any) string {
 // exactly as EvalValueNode does — so what an inspection prints and what the
 // same expression would produce in the file are one rendering of one value,
 // rather than two that can drift.
-func refValText(out ref.Val) string {
+func (s *Session) refValText(out ref.Val) string {
 	lit, err := cel.RefValueToValue(out)
 	if err != nil {
 		return fmt.Sprint(out.Value())
@@ -747,7 +815,12 @@ func refValText(out ref.Val) string {
 		return fmt.Sprint(out.Value())
 	}
 
-	return nativeText(native)
+	// Redacted as a *value*, before it becomes text — see
+	// [Session.SetValueRedactor]. The two fallbacks above deliberately do not:
+	// a value this conversion could not read is not one an equality can
+	// recognise either, and what covers them is the text redactor the caller
+	// of this applies to whatever comes back.
+	return nativeText(s.redactedValue(native))
 }
 
 // capRunes truncates text to at most limit runes, saying that it did.
