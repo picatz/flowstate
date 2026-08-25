@@ -168,6 +168,25 @@ func TestEverythingACandidatePrintsGoesThroughTheRedactor(t *testing.T) {
 		"the name is safe and its description is not, so the offer goes rather than the description")
 }
 
+// TestACaseThatWithholdsEverythingOffersNothing is the strongest posture
+// flowtest has, met by the strongest answer there is.
+//
+// Its redactor replaces *any* text with `[withheld]` (run.go's `withholdAll`),
+// so every candidate is one the redactor would change and every one goes. That
+// is the honest reading rather than an overreach: on such a case the session
+// prints `[withheld]` for the whole transcript, and a prompt whose tab key
+// still enumerated the workflow would be answering a question the case's own
+// posture says is not being answered.
+func TestACaseThatWithholdsEverythingOffersNothing(t *testing.T) {
+	t.Parallel()
+
+	console, _ := disclosureSession(t, func(string) string { return "[withheld]\n" })
+
+	for i, answer := range console.answers {
+		assert.Empty(t, answer.Candidates, "answer %d", i)
+	}
+}
+
 // TestWithoutARedactorTheSameNamesAreOffered is the control the two tests above
 // need: withholding that also happens when nothing is being withheld is not
 // withholding, it is a broken completer.

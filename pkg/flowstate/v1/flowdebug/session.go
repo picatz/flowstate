@@ -334,17 +334,13 @@ type Session struct {
 	seen  map[string]struct{}
 }
 
-// A promptSubject is what one prompt is about: the step the run is held at, the
-// scope to answer questions against, and whatever is bound around it.
+// A promptSubject is what one prompt is about: the scope to answer questions
+// against, whatever is bound around it, and which of the two prompts it is.
 //
-// A struct rather than four fields, because they are set and read as one thing
-// and a prompt holding this scope with that node would answer questions about a
+// A struct rather than three fields, because they are set and read as one thing
+// and a prompt holding this scope with that binding would answer about a
 // position the run is not in.
 type promptSubject struct {
-	// node is the step the run is held at, and nil at the autopsy, where
-	// there is no next step.
-	node *v1.Node
-
 	// scope is what an inspection evaluates against.
 	scope *v1.Scope
 
@@ -450,7 +446,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	// own goroutine answers against the scope the run is actually held in.
 	// Cleared on the way out: a session that kept the last scope alive would
 	// answer questions about a position the run has left.
-	s.prompting(promptSubject{node: node, scope: scope})
+	s.prompting(promptSubject{scope: scope})
 	defer s.prompting(promptSubject{})
 
 	s.announce(node)

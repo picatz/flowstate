@@ -289,6 +289,23 @@ func TestNothingIsOfferedForAVerbWithNoArgument(t *testing.T) {
 		"and a misspelled verb has no argument to complete")
 }
 
+// TestTheVerbIsReadTheWayTheSessionReadsIt: the completer and [Session.dispatch]
+// must agree about where the verb ends, or a line with a leading space
+// completes as nothing and then runs perfectly.
+func TestTheVerbIsReadTheWayTheSessionReadsIt(t *testing.T) {
+	t.Parallel()
+
+	console, _ := completingRun(t,
+		flowdebug.Options{Steps: []string{"deploy"}},
+		[]string{"continue"},
+		[][]string{{"   break de", "break\tde", "  br"}})
+
+	require.Len(t, console.answers, 3)
+	assert.Equal(t, []string{"deploy"}, texts(console.answers[0]), "a leading space")
+	assert.Equal(t, []string{"deploy"}, texts(console.answers[1]), "a tab between the verb and its argument")
+	assert.Equal(t, []string{"break ", "breakpoints"}, texts(console.answers[2]), "and a verb still being typed")
+}
+
 // TestCompletionIsBounded.
 //
 // A workflow with more steps than the bound is a workflow somebody wrote, so

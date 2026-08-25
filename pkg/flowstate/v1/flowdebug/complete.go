@@ -93,24 +93,30 @@ func (s *Session) Complete(line string, pos int) Completion {
 	before := line[:pos]
 
 	s.mu.Lock()
-	at := s.at
+	subject := s.at
 	s.mu.Unlock()
 
-	typed, rest, hasArgument := strings.Cut(before, " ")
-	if !hasArgument {
+	// The verb is separated exactly as [split] separates it, so what the
+	// completer thinks was typed and what [Session.dispatch] would run are the
+	// same reading of the same line — a leading space or a tab must not make
+	// one of them see a command and the other see nothing.
+	trimmed := strings.TrimLeft(before, " \t")
+	cut := strings.IndexAny(trimmed, " \t")
+	if cut < 0 {
 		// Still on the first word: the verbs themselves.
-		return s.offerCommands(at, typed)
+		return s.offerCommands(subject, trimmed)
 	}
+	typed, rest := trimmed[:cut], trimmed[cut+1:]
 
-	known, ok := resolve(strings.TrimSpace(typed))
+	known, ok := resolve(typed)
 	if !ok {
 		return Completion{}
 	}
 	switch known.completes {
 	case completesExpression:
-		return s.offerExpression(at, rest)
+		return s.offerExpression(subject, rest)
 	case completesStep:
-		return s.offerNames(lastWord(rest), s.reachableSteps(at), "a step this run may reach")
+		return s.offerNames(lastWord(rest), s.reachableSteps(subject), "a step this run may reach")
 	case completesBreakpoint:
 		return s.offerNames(lastWord(rest), s.breakpointIDs(), "a breakpoint this session holds")
 	default:
