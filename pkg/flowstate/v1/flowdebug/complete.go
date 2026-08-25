@@ -612,6 +612,7 @@ func (s *Session) reachableSteps(at promptSubject, prefix string) ([]string, boo
 	for id := range s.seen {
 		add(id)
 	}
+	short := s.seenShort
 	s.mu.Unlock()
 
 	// A step whose outputs are in scope has certainly run, so the paused run's
@@ -620,7 +621,18 @@ func (s *Session) reachableSteps(at promptSubject, prefix string) ([]string, boo
 		add(id)
 	}
 
-	return kept.result()
+	// [Session.sawStep]'s own truncation, unioned in. The set above cannot see
+	// it: an id that cache refused was never offered to add, so a prefix
+	// matching only dropped ids fills nothing and the set reports itself
+	// complete — which is the whole defect, an empty answer that looks like an
+	// answer. Whether any *dropped* id would have matched this prefix is
+	// unknowable from here, so the notice is the conservative one: the list
+	// may be short. Saying so where it turns out not to be costs an author a
+	// line; not saying it where it is costs them the name they were reaching
+	// for.
+	names, more := kept.result()
+
+	return names, more || short
 }
 
 // breakpointIDs are the ids `delete` may name.

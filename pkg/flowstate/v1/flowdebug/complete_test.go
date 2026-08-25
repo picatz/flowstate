@@ -641,3 +641,76 @@ func TestAStepPastTheBoundIsStillReachableByTypingIt(t *testing.T) {
 	assert.False(t, console.answers[0].Truncated,
 		"and one match out of one is not a truncated answer")
 }
+
+// TestASeenStepPastTheCacheLeavesTheAnswerSayingItIsShort covers the one
+// truncation the answer's own cap cannot see.
+//
+// [flowdebug.Options.Steps] is deliberately omitted, which is the embedder's
+// case: a caller handed the [v1.RunObserver] seam and nothing else knows the
+// run only by watching it. Past 512 distinct ids the session stops remembering,
+// and a prompt whose scope no longer carries those outputs has no other source
+// for them — so `break zzz` matches nothing. Answering nothing is unavoidable;
+// answering nothing *silently* is the defect, because a complete-looking empty
+// list tells an author the step does not exist.
+func TestASeenStepPastTheCacheLeavesTheAnswerSayingItIsShort(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	console := &asking{steps: []string{"quit"}, ask: [][]string{{"break zzz"}}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	// The run walks past more ids than the cache holds, and the one an author
+	// would go looking for arrives after it is full.
+	for i := range celcomplete.MaxCandidates {
+		session.StepSkipped(fmt.Sprintf("step_%05d", i))
+	}
+	session.StepSkipped("zzz_the_one_you_want")
+
+	// A scope carrying none of it: the autopsy of a run whose outputs are not
+	// the steps that were skipped.
+	session.Autopsy(t.Context(), v1.NewScope(v1.CurrentProfile, nil), nil, []string{"a failure"})
+
+	require.Len(t, console.answers, 1)
+
+	assert.Empty(t, texts(console.answers[0]),
+		"the id is genuinely gone, and the test would be about something else if it were not")
+	assert.True(t, console.answers[0].Truncated,
+		"an empty answer drawn from a cache that dropped ids has to say the list is short")
+}
+
+// TestARunLoopingOverOneStepDoesNotCallItselfShort is the other direction of
+// the same flag: a full cache that refuses an id it already holds has lost
+// nothing, and a session that reported truncation on every repeat would print
+// the notice for the rest of the run.
+func TestARunLoopingOverOneStepDoesNotCallItselfShort(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	console := &asking{steps: []string{"quit"}, ask: [][]string{{"break step"}}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	for i := range celcomplete.MaxCandidates {
+		session.StepSkipped(fmt.Sprintf("step_%05d", i))
+	}
+	// Full now, and the loop goes round again over ids it already has.
+	for i := range celcomplete.MaxCandidates {
+		session.StepSkipped(fmt.Sprintf("step_%05d", i))
+	}
+
+	session.Autopsy(t.Context(), v1.NewScope(v1.CurrentProfile, nil), nil, []string{"a failure"})
+
+	require.Len(t, console.answers, 1)
+
+	assert.Len(t, texts(console.answers[0]), celcomplete.MaxCandidates,
+		"every id the cache holds still matches")
+	assert.False(t, console.answers[0].Truncated,
+		"a cache that refused only repeats is not short")
+}

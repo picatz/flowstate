@@ -342,6 +342,11 @@ type Session struct {
 	// completion for `break` and `until`; see [Session.reachableSteps].
 	steps []string
 	seen  map[string]struct{}
+
+	// seenShort reports that seen refused an id it had not already got,
+	// which makes it a *prefix* of the run rather than the run. Completion
+	// reads it; see [Session.sawStep] for why it cannot be inferred later.
+	seenShort bool
 }
 
 // A promptSubject is what one prompt is about: the scope to answer questions
@@ -799,9 +804,22 @@ func (s *Session) prompting(at promptSubject) {
 //
 // Bounded, because the number of ids a run produces is the workflow's rather
 // than this session's: a `call:` chain reaches steps no one file lists. Past the
-// bound it stops remembering rather than growing — a completion list is
-// truncated at the same number anyway, so what is lost is a name that would not
-// have been printed.
+// bound it stops remembering rather than growing.
+//
+// What it refuses, it records. The bound used to be justified by the answer
+// being cut at the same number anyway — which is wrong in the one direction
+// that matters, and wrong for the same reason bounding before filtering was
+// (see [Session.reachableSteps]): the answer's cap runs *after* the prefix
+// filter, so `break zzz` over a run whose 513th id was `zzz_step` matches
+// nothing, and would say so as though nothing were there (Codex, #1114). The
+// dropped id cannot be recovered — this cache is filled in arrival order by a
+// run that has since moved past those steps, and a later prompt's scope no
+// longer carries their outputs — so what is owed the author is the notice that
+// the list is short.
+//
+// Only an id the cache does not already hold sets it: refusing a repeat loses
+// nothing, and a run that loops over one step for an hour should not report
+// itself truncated.
 func (s *Session) sawStep(id string) {
 	if id == "" {
 		return
@@ -811,6 +829,10 @@ func (s *Session) sawStep(id string) {
 	defer s.mu.Unlock()
 
 	if len(s.seen) >= celcomplete.MaxCandidates {
+		if _, held := s.seen[id]; !held {
+			s.seenShort = true
+		}
+
 		return
 	}
 	s.seen[id] = struct{}{}
