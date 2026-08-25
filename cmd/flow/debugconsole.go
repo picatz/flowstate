@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"golang.org/x/term"
@@ -110,11 +111,18 @@ func attachDebugConsole(in io.Reader, out io.Writer, theme ui.Theme) (console *d
 	// characters are.
 	prompt := theme.Muted.Render(flowdebug.Prompt)
 
+	// Idempotent, because a caller restores at two moments for two reasons: as
+	// soon as the run is over, so that whatever the command prints afterward
+	// prints onto an ordinary terminal, and again on the way out whatever
+	// happened, so that no error path hands somebody back a shell where
+	// nothing they type appears.
+	var once sync.Once
+
 	return newDebugConsole(struct {
 			io.Reader
 			io.Writer
 		}{Reader: in, Writer: out}, prompt), func() {
-			_ = term.Restore(int(file.Fd()), previous)
+			once.Do(func() { _ = term.Restore(int(file.Fd()), previous) })
 		}, true
 }
 
