@@ -104,6 +104,107 @@ const (
 	DiskFloorBytes = 6 << 30
 )
 
+// Prune is what the shared build cache can do about a full disk.
+type Prune struct {
+	// Short is how much the binding filesystem lacks before a lane fits. Zero
+	// means nothing is wrong and there is nothing to do.
+	Short uint64
+
+	// Bytes is what to reclaim from the cache. Zero alongside a non-zero Short
+	// means the cache *cannot help* — it is empty, unreadable, or on a
+	// filesystem that is not the one that is short — which is a different
+	// answer from "nothing is wrong" and must not be reported as one (Codex,
+	// #1112).
+	Bytes uint64
+
+	// Enough records that reclaiming Bytes clears Short. False means the disk
+	// will still be below the floor afterwards, so whoever reads it needs to
+	// look at the worktrees and the module cache too.
+	Enough bool
+
+	// Advice is what to say about all of that, in the same shape [Plan] uses
+	// and for the same reason: "0 lanes" with no sentence is a dead end for
+	// the agent that reads it, and so is a prune that quietly did nothing.
+	// Carried on the answer rather than composed at the print site so the
+	// wording is a pure function that a test can hold to account — the first
+	// cut said "already past the floor" at a machine short by seven gigabytes
+	// (Codex, #1112).
+	Advice []string
+}
+
+// PruneFor answers how much of the build cache has to go.
+//
+// The target is the floor *plus one lane*, not the floor alone. Freeing to the
+// floor exactly earns the answer "dispatch zero lanes", which is the state
+// this exists to end: a prune that leaves no room to work has unblocked
+// nothing.
+//
+// Bounded by what the cache holds, because that is all this can reclaim. The
+// worktrees, the module cache and everything else sharing the volume belong to
+// somebody else, and a target larger than the cache would remove every entry
+// and still report the disk short.
+func PruneFor(m Machine) Prune {
+	want := uint64(DiskFloorBytes) + LaneDiskBytes
+	if m.DiskFree >= want {
+		return Prune{}
+	}
+
+	short := want - m.DiskFree
+
+	// Where the cache actually lives. Unknown reads as "the same mount",
+	// which is true of most machines and is the direction that keeps a
+	// blocked one moving — see [Machine.CacheDiskFree].
+	cacheFree := m.DiskFree
+	if m.CacheDiskKnown {
+		cacheFree = m.CacheDiskFree
+	}
+
+	elsewhere := fmt.Sprintf(
+		"the disk is %s short of the %s floor plus a lane's %s, and the build cache cannot reach it",
+		bytes(short), bytes(DiskFloorBytes), bytes(LaneDiskBytes))
+	lookElsewhere := "check worktrees (`git worktree list`) and $GOMODCACHE"
+
+	if cacheFree >= want {
+		// The cache's own filesystem has room. Something else is short, and
+		// no amount of pruning reaches it. Named specifically, because the
+		// obvious reading of a full disk is that the cache did it.
+		return Prune{Short: short, Advice: []string{
+			fmt.Sprintf("%s — GOCACHE is on a filesystem with %s free, so what is short is somewhere else",
+				elsewhere, bytes(cacheFree)),
+			lookElsewhere,
+		}}
+	}
+
+	cacheShort := want - cacheFree
+
+	prune := Prune{
+		Short: short,
+		Bytes: min(cacheShort, m.CacheSizeBytes),
+
+		// Clearing the *machine's* bound needs two things: the cache holds
+		// what its own filesystem is short of, and that filesystem is the one
+		// binding. A cache mount that is short by less than the tightest mount
+		// is not the bound, so emptying it leaves the plan where it was.
+		Enough: m.CacheSizeBytes >= cacheShort && cacheShort >= short,
+	}
+
+	switch {
+	case prune.Bytes == 0:
+		prune.Advice = []string{elsewhere + " — the cache is empty or unreadable", lookElsewhere}
+
+	case !prune.Enough:
+		// Said before the work rather than after: the cache is about to give
+		// back everything it has and the disk will still be short.
+		prune.Advice = []string{
+			fmt.Sprintf("the build cache can give back %s and the disk is %s short, so this frees "+
+				"what it can and the disk will still be short", bytes(prune.Bytes), bytes(short)),
+			lookElsewhere,
+		}
+	}
+
+	return prune
+}
+
 // Machine is what the plan is computed from. A struct rather than direct reads
 // so that [Plan] is a pure function and its tests can describe machines this
 // one will never be.
@@ -150,6 +251,22 @@ type Machine struct {
 	// and it is cache growth this budgets.
 	DiskFree       uint64
 	CacheSizeBytes uint64
+
+	// CacheDiskFree is free space on the filesystem holding GOCACHE, which is
+	// not necessarily the one DiskFree reports: DiskFree is the *tightest* of
+	// the mounts a lane writes to, and the cache can only ever give bytes back
+	// to its own. A machine whose GOTMPDIR is a 64 MiB tmpfs while its cache
+	// sits on a 300 GiB volume is short on the first and roomy on the second,
+	// and pruning would discard gigabytes of hot cache without moving the
+	// bound an inch — a cold rebuild bought for nothing (Codex, #1112).
+	//
+	// CacheDiskKnown false means it could not be read, and is treated as "the
+	// same mount as everything else". That direction is deliberate: the cost
+	// of pruning where it does not help is a rebuild, and the cost of refusing
+	// to prune where it would have helped is the machine staying blocked,
+	// which is the outage this whole lever exists to end.
+	CacheDiskFree  uint64
+	CacheDiskKnown bool
 
 	// LoadIsHostWide records that Load1 was read from a host-scoped source
 	// while Cores describes a container's quota. Comparing those two mixes
@@ -221,12 +338,15 @@ func PlanFor(m Machine) Plan {
 
 	if m.DiskFree <= DiskFloorBytes {
 		plan.Advice = append(plan.Advice, fmt.Sprintf(
-			"disk is below the %s floor: prune the shared build cache (`go clean -cache`) or remove finished worktrees before dispatching anything",
+			"disk is below the %s floor: `go run ./tools/fleet -prune` trims the shared build cache "+
+				"oldest-entry-first until a lane fits, or remove finished worktrees, before dispatching anything",
 			bytes(DiskFloorBytes)))
 	}
 	if m.CacheSizeBytes > uint64(DiskFloorBytes) {
 		plan.Advice = append(plan.Advice, fmt.Sprintf(
-			"the shared build cache is %s; `go clean -cache` reclaims it at the price of one cold rebuild per lane",
+			"the shared build cache is %s; `go run ./tools/fleet -prune` gives back only what a lane "+
+				"needs and keeps the hot entries, where `go clean -cache` reclaims all of it at the "+
+				"price of one cold rebuild per lane",
 			bytes(m.CacheSizeBytes)))
 	}
 	if !m.MemoryKnown {

@@ -944,6 +944,36 @@ When several agents edit interlocking packages:
   defaults this exists to prevent while the shell shows the value and `go test`
   never sees it.
 
+  When disk is the bound, it can fix it rather than only naming it:
+
+      go run ./tools/fleet -prune             # give back what a lane needs
+
+  This exists because Go has no size budget for its build cache and cannot be
+  given one. `go help cache` offers exactly two levers, and on a busy day
+  neither works: a sweep of entries unused for *five days*, run at most once a
+  day, and `go clean -cache`, which discards everything. A machine that fills
+  twenty-three gigabytes between breakfast and lunch has nothing five days old
+  to sweep, so the first is a no-op — and the second charges a cold rebuild to
+  every lane, which is itself load enough to hold the fleet at zero for as long
+  as it runs. That is not hypothetical: it happened here, and the tool sat
+  correctly reporting "dispatch nothing" until somebody noticed.
+
+  `-prune` is the missing middle — cmd/go's own `trimSubdir` with a *size*
+  cutoff where it has a *time* one. It takes oldest entries first until a lane
+  fits and stops, so the hot entries survive. Its rules are Go's, because the
+  cache is Go's format: only `-a` and `-d` names are entries, an entry may be a
+  *directory* (an executable cache entry) needing `RemoveAll`, and mtime is a
+  real last-used signal because Go refreshes it on use. One rule is ours: the
+  fuzz corpus is never touched — those inputs cost machine-hours to rediscover
+  and `go help cache` says plainly that removing them makes fuzzing less
+  effective.
+
+  Safe to run while builds are in flight, and that safety is the same property
+  the disk floor protects: the cache is content-addressed, so a removed entry
+  is a miss and a miss is a rebuild. What is *not* safe is running out of disk
+  mid-write, which leaves a partial object that surfaces later as a corrupt
+  cache entry and reads like a compiler bug.
+
   It reads cores, memory, disk and the current load, and the smallest bound
   wins. Load matters as much as capacity: it counts work this process cannot
   see — a sibling session's suite, a lane that has not reported — and a box

@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
 	number := flag.Bool("n", false, "print only the lane count, for a script to read")
 	env := flag.Bool("env", false, "print only the environment a lane must be given")
+	prune := flag.Bool("prune", false, "trim the shared build cache until a lane fits, oldest entry first")
 	flag.Parse()
 
 	if *env {
@@ -26,6 +28,13 @@ func main() {
 	}
 
 	machine := readMachine()
+
+	if *prune {
+		runPrune(machine)
+
+		return
+	}
+
 	plan := PlanFor(machine)
 
 	if *number {
@@ -93,6 +102,14 @@ func readMachine() Machine {
 		}
 	}
 	machine.CacheSizeBytes = cacheSize()
+	if cache := goEnv("GOCACHE"); cache != "" {
+		// Read separately from DiskFree, which is the tightest mount rather
+		// than this one — see [Machine.CacheDiskFree]. Zero from diskFree is
+		// unreadable, not full, so it stays unknown.
+		if free := diskFree(cache); free > 0 {
+			machine.CacheDiskFree, machine.CacheDiskKnown = free, true
+		}
+	}
 
 	return machine
 }
@@ -219,10 +236,175 @@ func cacheSize() uint64 {
 		return 0
 	}
 
+	// The same walk [pruneCache] sizes a directory entry with: an unreadable
+	// subtree makes the number smaller, which is the right direction for a
+	// figure that only ever decides advice.
+	return treeSize(dir)
+}
+
+// runPrune trims the build cache to what the plan needs, and says what it did.
+func runPrune(m Machine) {
+	want := PruneFor(m)
+
+	// Nothing wrong and nothing this can fix are different answers, and the
+	// first cut of this reported the second as the first: an empty or
+	// unreadable cache under a full disk came back as Bytes zero and printed
+	// "already past the floor" at a machine that fits no lanes (Codex, #1112).
+	if want.Short == 0 {
+		fmt.Printf("fleet: nothing to prune — %s free is already past the %s floor and a lane's %s\n",
+			bytes(m.DiskFree), bytes(DiskFloorBytes), bytes(LaneDiskBytes))
+
+		return
+	}
+
+	for _, line := range want.Advice {
+		fmt.Printf("fleet: %s\n", line)
+	}
+
+	if want.Bytes == 0 {
+		return
+	}
+
+	freed, removed, err := pruneCache(goEnv("GOCACHE"), want.Bytes)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("fleet: freed %s across %d cache entries, oldest first\n", bytes(freed), removed)
+
+	// Re-read rather than compute: the number that matters is what the
+	// filesystem says now, and something else may have been writing to it
+	// throughout.
+	after := readMachine()
+	plan := PlanFor(after)
+	fmt.Printf("fleet: %s free now — %d lane(s), %s is the bound\n",
+		bytes(after.DiskFree), plan.Lanes, plan.Bound)
+}
+
+// pruneCache trims the shared build cache, least recently used first, until it
+// has given back target bytes.
+//
+// This is cmd/go's own trimSubdir with a *size* cutoff where it has a *time*
+// one, and that difference is the whole reason it exists. Go trims entries
+// unused for five days, at most once a day ([cache.DiskCache.Trim]), which
+// cannot help a machine that filled twenty-three gigabytes between breakfast
+// and lunch: nothing in that cache is five days old. And Go has no size budget
+// at all — `go help cache` offers exactly two levers, that five-day sweep and
+// `go clean -cache`, which discards everything and charges a cold rebuild to
+// every lane. This is the missing middle, and it is the difference between a
+// machine that unblocks itself and one that waits for somebody to notice.
+//
+// The rules are Go's, deliberately, because the cache is its format and not
+// ours: only `-a` and `-d` names are entries, an entry may be a *directory*
+// (an executable cache entry) and needs RemoveAll rather than Remove, and only
+// the 256 hex subdirectories hold them. Everything else the directory contains
+// is left alone — trim.txt, the lock, and the fuzz corpus especially. Those
+// corpus entries are inputs that once expanded coverage; they cost
+// machine-hours to rediscover, and `go help cache` says plainly that removing
+// them makes fuzzing less effective.
+//
+// mtime is the "last used" signal because that is what Go maintains it as, and
+// its own accuracy note applies here unchanged: an entry's mtime is refreshed
+// on use only when it is already more than an hour stale, a deliberate trade
+// against disk churn. An hour of imprecision is nothing against a cache whose
+// entries span days, and it is the same signal Go's own trim sorts on.
+//
+// Safe while builds are in flight. The cache is content-addressed, so a removed
+// entry is a miss and a miss is a rebuild. That is exactly what separates this
+// from the failure [DiskFloorBytes] exists to prevent, where a write meets
+// ENOSPC halfway and leaves a partial object that surfaces later as a corrupt
+// cache entry and reads like a compiler bug.
+func pruneCache(dir string, target uint64) (freed uint64, removed int, err error) {
+	if dir == "" || target == 0 {
+		return 0, 0, nil
+	}
+
+	type entry struct {
+		path  string
+		size  uint64
+		used  time.Time
+		isDir bool
+	}
+
+	var entries []entry
+
+	for i := range 256 {
+		subdir := filepath.Join(dir, fmt.Sprintf("%02x", i))
+
+		// Read the whole directory before removing anything, for the reason
+		// cmd/go gives at the same point: removing files during a scan can
+		// invalidate the offset the scan is walking.
+		f, err := os.Open(subdir)
+		if err != nil {
+			continue
+		}
+		names, _ := f.Readdirnames(-1)
+		_ = f.Close()
+
+		for _, name := range names {
+			if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") {
+				continue
+			}
+
+			path := filepath.Join(subdir, name)
+
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+
+			size := uint64(info.Size())
+			if info.IsDir() {
+				size = treeSize(path)
+			}
+
+			entries = append(entries, entry{
+				path:  path,
+				size:  size,
+				used:  info.ModTime(),
+				isDir: info.IsDir(),
+			})
+		}
+	}
+
+	// Oldest first, which is the order the cache can most afford to lose.
+	slices.SortFunc(entries, func(a, b entry) int { return a.used.Compare(b.used) })
+
+	for _, e := range entries {
+		if freed >= target {
+			break
+		}
+
+		if e.isDir {
+			err = os.RemoveAll(e.path)
+		} else {
+			err = os.Remove(e.path)
+		}
+		if err != nil {
+			// A racing `go build` may have removed or replaced this entry
+			// already, which is not a failure of the prune: the bytes are gone
+			// either way and the next entry is still there to take.
+			if !os.IsNotExist(err) {
+				return freed, removed, fmt.Errorf("pruning %s: %w", e.path, err)
+			}
+			err = nil
+
+			continue
+		}
+
+		freed += e.size
+		removed++
+	}
+
+	return freed, removed, nil
+}
+
+// treeSize totals a directory entry, which an executable cache entry is.
+func treeSize(root string) uint64 {
 	var total uint64
-	_ = filepath.WalkDir(dir, func(_ string, entry os.DirEntry, err error) error {
-		// An unreadable subtree makes the number smaller, which is the right
-		// direction for a figure that only ever prints advice.
+
+	_ = filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return nil
 		}
