@@ -543,17 +543,44 @@ func (s *FlowstateServer) decodedFailureMessage(failure *failurepb.Failure) stri
 	if failure == nil {
 		return ""
 	}
-
-	if failure.GetEncodedAttributes() != nil {
-		decoded, ok := proto.Clone(failure).(*failurepb.Failure)
-		if ok {
-			converter.DecodeCommonFailureAttributes(s.dataConverter, decoded)
-			failure = decoded
-		}
+	if failure.GetEncodedAttributes() == nil {
+		return failure.GetMessage()
 	}
 
-	return failure.GetMessage()
+	decoded, ok := proto.Clone(failure).(*failurepb.Failure)
+	if !ok {
+		return unreadableFailure
+	}
+	converter.DecodeCommonFailureAttributes(s.dataConverter, decoded)
+
+	// [converter.DecodeCommonFailureAttributes] returns nothing and swallows its
+	// own decode error, leaving the message exactly as it found it — so an
+	// unchanged message is how a failed decode is detected, and there is no
+	// error to check. That happens for real: a key rotated since the run, a
+	// codec the operator has since reconfigured, a payload written by a
+	// deployment this one is not.
+	//
+	// Saying so matters more than it looks. The message left behind is the
+	// SDK's own sentinel, "Encoded failure", which reads like a diagnosis
+	// rather than like the placeholder it is — and now that most failures
+	// decode, the few that do not would be the ones a reader trusted (Codex,
+	// #1119). Compared against the message rather than against that string,
+	// because the sentinel is the SDK's to change and "the decode did nothing"
+	// is the fact actually being tested.
+	if decoded.GetMessage() == failure.GetMessage() {
+		return unreadableFailure
+	}
+
+	return decoded.GetMessage()
 }
+
+// unreadableFailure is what a failure says when this deployment cannot read it.
+//
+// A sentence rather than silence, because a reader has to be able to tell "this
+// failure carried no message" from "there is a message and it is not readable
+// here" — the second names something an operator can go and fix, and the first
+// does not.
+const unreadableFailure = "(failure message unavailable: encoded with a codec this server cannot read)"
 
 // boundedFailure is a failure's message, cut to [maxTimelineFailureBytes].
 //

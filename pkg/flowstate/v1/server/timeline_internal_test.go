@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
 	enums "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
@@ -262,4 +263,47 @@ func TestAnEncodedFailureStillSaysWhatWentWrong(t *testing.T) {
 	assert.Equal(t, "connection refused",
 		server.failureMessage(&failurepb.Failure{Message: "connection refused"}))
 	assert.Empty(t, server.failureMessage(nil))
+}
+
+// TestAnUnreadableFailureSaysSoRatherThanShowingThePlaceholder covers what a
+// codec-configured deployment does with a failure it cannot decode: a key
+// rotated since the run, a codec since reconfigured, a payload written by a
+// deployment this one is not.
+//
+// [converter.DecodeCommonFailureAttributes] returns nothing and swallows its
+// own decode error, leaving the message exactly as it found it — which is the
+// SDK's sentinel, "Encoded failure". Reporting that reads like a diagnosis
+// rather than like the placeholder it is, and the fix for the encoded-failure
+// case made it worse rather than better: once most failures decode, the few
+// that do not are the ones a reader would trust (Codex, #1119).
+func TestAnUnreadableFailureSaysSoRatherThanShowingThePlaceholder(t *testing.T) {
+	t.Parallel()
+
+	server := mustNew(t, nil)
+
+	// Encoded attributes this server cannot read: a payload whose bytes are
+	// not what its own converter would have written.
+	unreadable := &failurepb.Failure{
+		Message: "Encoded failure",
+		EncodedAttributes: &commonpb.Payload{
+			Metadata: map[string][]byte{"encoding": []byte("binary/rotated-key")},
+			Data:     []byte("\x00 not something this deployment can decrypt"),
+		},
+	}
+
+	got := server.failureMessage(unreadable)
+
+	assert.NotEqual(t, "Encoded failure", got,
+		"the SDK's placeholder was reported as the diagnosis, and it reads like one")
+	assert.NotEmpty(t, got,
+		"silence cannot be told apart from a failure that carried no message, and the "+
+			"difference is whether there is something an operator can go and fix")
+	assert.Contains(t, got, "unavailable")
+
+	// And the readable case still reads, so this is about the decode failing
+	// rather than about encoded failures in general.
+	readable := &failurepb.Failure{Message: "connection refused"}
+	require.NoError(t, converter.EncodeCommonFailureAttributes(
+		converter.GetDefaultDataConverter(), readable))
+	assert.Equal(t, "connection refused", server.failureMessage(readable))
 }
