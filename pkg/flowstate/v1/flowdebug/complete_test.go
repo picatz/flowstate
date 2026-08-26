@@ -908,3 +908,41 @@ func TestCompletionAfterAnIfOffersTheExpressionNotStepIDs(t *testing.T) {
 		"and a bare word past the `if` is no longer read as a step id, so the "+
 			"step that shares its prefix is not written into the condition")
 }
+
+// TestCompletingAfterASpaceInAConditionDoesNotEatTheWordBeforeIt
+// (Codex, #1116).
+//
+// The console replaces the bytes immediately before the cursor with the
+// candidate, and it is told how many by the answer's prefix. So a prefix that
+// disagrees with what is actually before the cursor does not merely offer the
+// wrong names — it *corrupts the line*.
+//
+// `break body if inp <tab>` did exactly that. The condition was handed to the
+// completer trimmed, so the answer reported the prefix `inp` while the three
+// bytes before the cursor were `np `; accepting a candidate wrote `iinputs.`.
+//
+// Whitespace before a cursor is not nothing: it is what says the current word
+// is empty and everything is on offer.
+func TestCompletingAfterASpaceInAConditionDoesNotEatTheWordBeforeIt(t *testing.T) {
+	t.Parallel()
+
+	console, _ := completingRun(t,
+		flowdebug.Options{},
+		[]string{"step", "continue"},
+		[][]string{nil, {"break build if inp", "break build if inp ", "break build if "}})
+
+	require.Len(t, console.answers, 3)
+
+	assert.Equal(t, "inp", console.answers[0].Prefix,
+		"a partial word is the prefix, and that is what the console will replace")
+
+	assert.Empty(t, console.answers[1].Prefix,
+		"but past a space the word is empty, and claiming three characters here "+
+			"makes the console cut into the word before the space")
+	assert.Contains(t, texts(console.answers[1]), "inputs.",
+		"and everything is on offer, as after any other space")
+
+	assert.Empty(t, console.answers[2].Prefix,
+		"the same immediately after `if `, where there is no word at all yet")
+	assert.Contains(t, texts(console.answers[2]), "steps.")
+}

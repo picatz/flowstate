@@ -214,6 +214,23 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 }
 
 // split separates the first word of a line from the rest.
+// cutWord is [split] without the trimming, for a line whose end is a cursor
+// position rather than a command.
+//
+// The two are deliberately not one function. `split` reads a line somebody has
+// finished typing, where trailing space is noise; this reads a line somebody is
+// *still* typing, where trailing space is the thing that says the current word
+// is empty. Trimming it told the completer the cursor sat three characters
+// left of where it was, and the console — which replaces exactly the reported
+// prefix — cut into the word before the space (Codex, #1116).
+func cutWord(line string) (word, rest string) {
+	if index := strings.IndexFunc(line, func(r rune) bool { return r == ' ' || r == '\t' }); index >= 0 {
+		return line[:index], line[index+1:]
+	}
+
+	return line, ""
+}
+
 func split(line string) (verb, rest string) {
 	line = strings.TrimSpace(line)
 	if index := strings.IndexFunc(line, func(r rune) bool { return r == ' ' || r == '\t' }); index >= 0 {
@@ -414,7 +431,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 		return
 	}
-	s.printf("breakpoint at %s if %s\n", id, condition)
+	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
 }
 
 // splitCondition reads `<step-id>` or `<step-id> if <expr>`.
@@ -439,18 +456,28 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // is a typo, and a typo whose punishment is "your breakpoint means something
 // else now" is one this prompt should not administer quietly.
 func splitCondition(rest string) (id, condition string, conditional bool, err error) {
-	id, tail := split(strings.TrimSpace(rest))
-	tail = strings.TrimSpace(tail)
+	id, tail := cutWord(strings.TrimLeft(rest, " \t"))
+	tail = strings.TrimLeft(tail, " \t")
 	if tail == "" {
 		return id, "", false, nil
 	}
 
-	keyword, expression := split(tail)
+	keyword, expression := cutWord(tail)
+	expression = strings.TrimLeft(expression, " \t")
 	if keyword != "if" {
 		return "", "", false, fmt.Errorf("expected `if` after the step id, got %q: break <step-id> [if <expr>]", keyword)
 	}
 
-	return id, strings.TrimSpace(expression), true, nil
+	// Returned exactly as typed, trailing space included. The completer reads
+	// this to find where the expression begins, and a trimmed answer told it
+	// the cursor was three characters further left than it was: `break body if
+	// inp ` reported the prefix `inp`, so the console cut `np ` from in front
+	// of the cursor and wrote `iinputs.` (Codex, #1116). Whitespace before a
+	// cursor is not nothing — it is what says the current word is empty.
+	//
+	// Nothing downstream minds: CEL's parser takes the surrounding space, and
+	// the emptiness check below trims for its own question.
+	return id, expression, true, nil
 }
 
 // compileCondition parses a breakpoint's condition against the run's own
@@ -460,7 +487,7 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 // [v1.EvalConditionInScope] — the engine's own function — rather than a second
 // implementation that could disagree with it.
 func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
-	if expression == "" {
+	if strings.TrimSpace(expression) == "" {
 		return nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
 	}
 
