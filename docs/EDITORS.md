@@ -525,6 +525,104 @@ driving eglot to that point under `emacs --batch` depends on idle timers and
 `post-command-hook` and proves more about batch mode than about anybody's editor.
 Take the connection as confirmed and the squiggles as expected.
 
+## Stepping a run: `flow dap`
+
+Everything above is `flow lsp`, which answers questions about a *file*. `flow dap`
+is the other half: it speaks the Debug Adapter Protocol, so an editor's step and
+continue buttons drive a real local run of the workflow you are looking at.
+
+```console
+$ flow dap
+```
+
+Run by hand it prints a banner saying so and waits — like `flow lsp`, it is meant
+to be launched by an editor rather than typed. For a terminal debugger, use
+`flow run local --debug`, which is the same session behind the same commands.
+
+**Breakpoints are step ids, not source lines.** The debugger is handed steps and
+not files — the engine calls it with a node, and a node carries an `id` and no
+position — so there is nothing to hang a gutter dot on. Set them as *function*
+breakpoints named after a step. A line breakpoint is answered rather than
+ignored, unverified and carrying that reason, so an editor shows a hollow marker
+instead of a filled one you would wait at forever.
+
+Two more consequences of the same seam, so nothing here is discovered: a stack
+frame names the step and cannot be navigated to, and a run is one thread even
+where a `parallel:` block is running several steps at once — the debugger
+deliberately does not stop inside one.
+
+### Visual Studio Code
+
+Add to `.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "flowstate",
+      "request": "launch",
+      "name": "Debug this Flowfile",
+      "program": "${workspaceFolder}/examples/hello-world/workflow.yaml"
+    }
+  ]
+}
+```
+
+`program` is the workflow to run, and it is read from the launch configuration
+rather than from the adapter's own arguments — one `flow dap` serves whatever you
+point it at. Registering the `flowstate` debug type needs an extension
+contribution; `editors/vscode/` does not ship one yet.
+
+Function breakpoints go in the Breakpoints view's own section — the **+** beside
+*Function Breakpoints* — typed as a step's `id`.
+
+### Helix
+
+Add a `[language.debugger]` stanza to the `[[language]]` block from
+[Helix](#helix) above:
+
+```toml
+[language.debugger]
+name = "flowstate"
+transport = "stdio"
+command = "flow"
+args = ["dap"]
+
+[[language.debugger.templates]]
+name = "workflow"
+request = "launch"
+completion = [{ name = "workflow", completion = "filename" }]
+args = { program = "{0}" }
+```
+
+`hx --health flowfile` then reports the adapter where it used to say
+`Configured debug adapter: None`, and Helix's debug menu (`<space>g` by default)
+has something to open.
+
+### What the debug console can do
+
+The `evaluate` request is wired to the same CEL evaluator the terminal debugger's
+`inspect` uses, against the scope the run is actually paused in — so the debug
+console is a REPL over the paused run:
+
+```
+> steps.build.value
+"web.tar.gz"
+> steps.build.value.endsWith('.tar.gz')
+true
+```
+
+The variables pane is the same scope, grouped as `scope` groups it: `steps`,
+`vars`, `inputs`, the workflow's declared vars, `run` and `trigger`. A very large
+scope is rendered up to a bound and then says how many it did not render, rather
+than stopping silently.
+
+Secrets are withheld here exactly as they are at the terminal prompt. The
+redaction is a property of the session rather than of the front end, so a value a
+`flow test` run would not print is not one an editor's variables pane can read
+out of it either.
+
 ## Checking it works
 
 Open a Flowfile and try each of these:
@@ -636,6 +734,16 @@ $ nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/pro
 **Verified by hand, not by CI:** Helix 25.07.1 (`hx --health flowfile`, including
 the missing-queries finding above) and GNU Emacs 29.3 (eglot connects). Both are
 recorded in their own sections with the part that was *not* reached.
+
+**`flow dap` is exercised end to end, and not inside an editor.**
+`cmd/flow/dap_test.go` runs the real binary as a subprocess and speaks the
+protocol to it over real `Content-Length` framing — initialize, launch, a
+function breakpoint on a step id, `configurationDone`, continue, the stopped
+event, a stack frame naming the step, an `evaluate` reading an earlier step's
+output, and the variables pane — so the conversation is checked on every pull
+request the way the Neovim job checks `flow lsp`. What is *not* checked is the
+half above that is a settings key: neither the `launch.json` nor the Helix
+`[language.debugger]` stanza has been loaded by the editor it is written for.
 
 **Not verified inside a real editor:** Visual Studio Code and Zed. Both are GUI
 applications with no headless mode worth scripting. The VS Code extension under

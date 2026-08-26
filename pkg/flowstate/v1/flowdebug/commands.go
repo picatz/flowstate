@@ -560,18 +560,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		at.condition = compiled
 	}
 
-	s.mu.Lock()
-	_, replacing := s.breakpoints[id]
-	full := !replacing && len(s.breakpoints) >= MaxBreakpoints
-	if !full {
-		s.breakpoints[id] = at
-		// A replacement is a different question, so it gets its own chance to
-		// say it could not be asked. Carrying the old notice over would leave
-		// a second unbound condition skipped in silence, after the prompt said
-		// it was set (Codex, #1116).
-		delete(s.notedUnbound, id)
-	}
-	s.mu.Unlock()
+	full := !s.holdBreakpoint(id, at)
 
 	if full {
 		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
@@ -585,6 +574,31 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+}
+
+// holdBreakpoint puts one breakpoint in the set, reporting whether there was
+// room.
+//
+// The one place that knows [MaxBreakpoints] and what a replacement means, so
+// that the prompt's `break` and [Session.SetBreakpoints] cannot come to
+// disagree about either — the bound especially, since a second copy of it is a
+// second number to move.
+func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, replacing := s.breakpoints[id]; !replacing && len(s.breakpoints) >= MaxBreakpoints {
+		return false
+	}
+
+	s.breakpoints[id] = at
+	// A replacement is a different question, so it gets its own chance to say
+	// it could not be asked. Carrying the old notice over would leave a second
+	// unbound condition skipped in silence, after the prompt said it was set
+	// (Codex, #1116).
+	delete(s.notedUnbound, id)
+
+	return true
 }
 
 // splitCondition reads `<step-id>` or `<step-id> if <expr>`.

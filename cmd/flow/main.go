@@ -3182,6 +3182,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 
 	runCmd.AddCommand(runLocalCmd)
 	rootCmd.AddCommand(lspCmd)
+	rootCmd.AddCommand(newDAPCommand())
 	rootCmd.AddCommand(keysCmd)
 	rootCmd.AddCommand(jwtCmd)
 	rootCmd.AddCommand(versionCmd)

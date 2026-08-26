@@ -2,6 +2,7 @@ package flowdebug_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -750,6 +751,108 @@ func TestTheValueSurfaceAnswersAtAControlledStop(t *testing.T) {
 	groups, err := session.Scope()
 	require.NoError(t, err)
 	assert.Equal(t, []string{"build"}, namesOf(groups, "steps"))
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
+
+// TestBreakpointsCanBeSetBeforeTheRunStarts is the whole reason this is a
+// method and not a command line.
+//
+// Setting a breakpoint is a question about the future, not a movement, so it
+// does not need a pause to be delivered into — and a debug adapter sets them
+// *before* the run starts, which is what DAP's `configurationDone` exists to
+// order. Routed through [flowdebug.Session.Control] it deadlocks exactly
+// there: no run, no prompt, no way to configure the run you are about to
+// start. That is not a hypothetical; it is how the adapter's first draft hung.
+func TestBreakpointsCanBeSetBeforeTheRunStarts(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	// Nothing is running, and this returns rather than waiting for something
+	// to run.
+	require.NoError(t, session.SetBreakpoints([]string{"deploy"}))
+
+	finished := walked(t, session, "build", "test", "deploy", "ship")
+
+	// A session with breakpoints runs *to* the first one rather than stopping
+	// at the first step, so the run is already held at `deploy`.
+	at, err := session.Continue(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "deploy", at.Step,
+		"the run did not stop at the breakpoint set before it started")
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
+
+// TestSetBreakpointsReplacesRatherThanAdds is what a client means by the call.
+//
+// DAP sends the whole set for a source each time one of them changes, so
+// anything kept from the previous call is a breakpoint the person removed —
+// and a run stopping somewhere the editor shows no breakpoint is worse than
+// one that does not stop.
+func TestSetBreakpointsReplacesRatherThanAdds(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	require.NoError(t, session.SetBreakpoints([]string{"test"}))
+	require.NoError(t, session.SetBreakpoints([]string{"ship"}))
+
+	finished := walked(t, session, "build", "test", "deploy", "ship")
+
+	at, err := session.Continue(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "ship", at.Step,
+		"the run stopped at a breakpoint the second call replaced, so a person would be "+
+			"held at a step their editor shows nothing at")
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
+
+// TestSetBreakpointsRefusesWithoutDisturbingWhatIsSet is the bound, and the
+// direction a refusal has to leave things in.
+//
+// A partially applied set is the worst outcome: the caller is told no, and the
+// run stops somewhere neither the old set nor the new one describes.
+func TestSetBreakpointsRefusesWithoutDisturbingWhatIsSet(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	require.NoError(t, session.SetBreakpoints([]string{"deploy"}))
+
+	// Past the bound.
+	tooMany := make([]string, flowdebug.MaxBreakpoints+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("step-%d", i)
+	}
+	require.Error(t, session.SetBreakpoints(tooMany))
+
+	// An id that could not have been typed: the prompt splits on spaces, so
+	// `break "a b"` is two arguments by the time it is read.
+	require.Error(t, session.SetBreakpoints([]string{"a b"}))
+	require.Error(t, session.SetBreakpoints([]string{"deploy\x1b[31m"}))
+
+	// And what was set is still set: the run stops where it did.
+	finished := walked(t, session, "build", "deploy", "ship")
+
+	at, err := session.Continue(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "deploy", at.Step,
+		"a refused call disturbed the breakpoints that were already held")
 
 	require.NoError(t, session.Control(t.Context(), "continue"))
 	require.NoError(t, <-finished)

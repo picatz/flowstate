@@ -359,3 +359,53 @@ func (s *Session) waitForPause(ctx context.Context, after uint64) (Position, err
 		}
 	}
 }
+
+// SetBreakpoints replaces the session's breakpoints with the named step ids,
+// from any goroutine and whether or not a run is under way.
+//
+// A direct method rather than a line through [Session.Control], and the reason
+// is when a client needs it. Setting a breakpoint is not moving the run — it
+// changes where the run will stop, which is a question about the future — so it
+// does not need a pause to be delivered into. A debug adapter sets breakpoints
+// *before* the run starts, which is what DAP's `configurationDone` exists to
+// order, and a command that waited for a boundary would deadlock exactly there:
+// no run, no prompt, no way to configure the run you are about to start.
+//
+// Unconditional, which is the honest limit of a method that can run before
+// anything else does. A `break <id> if <expr>` compiles its condition against
+// the scope the run is paused in, and before the run there is no scope to
+// compile against — so conditions stay with the prompt, where a scope exists.
+//
+// It replaces rather than adds, because that is what a client means: DAP sends
+// the whole set for a source each time one changes, so anything kept from the
+// last call is a breakpoint the person removed.
+func (s *Session) SetBreakpoints(ids []string) error {
+	// Bounded before anything is replaced, so a refusal leaves the session with
+	// the set it had rather than half of a new one.
+	if len(ids) > MaxBreakpoints {
+		return fmt.Errorf("flowdebug: a session may hold %d breakpoints and %d were named",
+			MaxBreakpoints, len(ids))
+	}
+
+	for _, id := range ids {
+		if err := oneArgument(id); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	clear(s.breakpoints)
+	clear(s.notedUnbound)
+	s.mu.Unlock()
+
+	for _, id := range ids {
+		if !s.holdBreakpoint(id, breakpoint{source: id}) {
+			// Unreachable given the bound above — the set was just emptied —
+			// and reported rather than ignored, because the alternative is a
+			// breakpoint a caller was told nothing about.
+			return fmt.Errorf("flowdebug: could not hold a breakpoint at %q", id)
+		}
+	}
+
+	return nil
+}
