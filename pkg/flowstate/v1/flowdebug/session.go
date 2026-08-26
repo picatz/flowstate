@@ -476,7 +476,15 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 
 	s.sawStep(node.GetId())
 
-	if !s.shouldStop(ctx, node.GetId(), scope) {
+	stop, err := s.shouldStop(ctx, node.GetId(), scope)
+	if err != nil {
+		// Cancellation, and the only thing that reaches here as an error. It
+		// unwinds the run exactly as a cancellation at the prompt does: a
+		// person who interrupted a run while its condition was being evaluated
+		// asked for the same thing as one who interrupted it at the prompt.
+		return err
+	}
+	if !stop {
 		return nil
 	}
 
@@ -602,23 +610,29 @@ func (s *Session) WaitStarted(id, signal string, timeout time.Duration, bounded 
 // a step nobody named; it could not, because no boundary is reached without a
 // resume in between, and a mutation removing it failed no test. Answering the
 // question and changing nothing is the honest shape.
-func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) bool {
+func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) (bool, error) {
 	s.mu.Lock()
 	at, isBreakpoint := s.breakpoints[id]
 	mode, until := s.mode, s.until
 	s.mu.Unlock()
 
-	if isBreakpoint && s.breakpointHolds(ctx, id, at, scope) {
-		return true
+	if isBreakpoint {
+		holds, err := s.breakpointHolds(ctx, id, at, scope)
+		if err != nil {
+			return false, err
+		}
+		if holds {
+			return true, nil
+		}
 	}
 
 	switch mode {
 	case modeStop:
-		return true
+		return true, nil
 	case modeUntil:
-		return until == id
+		return until == id, nil
 	default:
-		return false
+		return false, nil
 	}
 }
 
@@ -654,9 +668,9 @@ type breakpoint struct {
 // a breakpoint that looks set and silently never fires is the outcome with no
 // symptom. Stopping also makes the reporting free — the session is parked, so
 // the reason prints once rather than once per arrival.
-func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint, scope *v1.Scope) bool {
+func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint, scope *v1.Scope) (bool, error) {
 	if at.condition == nil {
-		return true
+		return true, nil
 	}
 
 	// # A condition that cannot be evaluated does not stop
@@ -691,13 +705,23 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 	// notice does not, and cost a hold in the wrong loop on every legal
 	// workflow that reuses an id.
 	holds, err := v1.EvalConditionInScope(ctx, at.condition, scope)
-	if err != nil {
+	switch {
+	case ctx.Err() != nil:
+		// Not an unanswerable condition: the operator interrupted the run
+		// while this was being evaluated, and a costly condition is exactly
+		// when they would. Declining here would let `continue` walk into the
+		// step *after* the cancel, which is the one thing an interrupt must
+		// not do — and is the opposite of what cancellation at the prompt
+		// does, three lines of call stack away (Codex, #1116).
+		return false, ctx.Err()
+
+	case err != nil:
 		s.noteDeclined(id, err)
 
-		return false
+		return false, nil
 	}
 
-	return holds
+	return holds, nil
 }
 
 // resume sets what happens at the next boundary.
