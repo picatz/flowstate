@@ -218,9 +218,10 @@ modernize:
 # places. `unasserted` — a test that reaches no assertion at all — is at zero,
 # with the two deliberate sites carrying a `//vacuity:ignore` naming their
 # reason, so a finding is one a diff introduced. `conditional` — every claim
-# inside a loop over something nothing says is non-empty — stands at 167 and
-# is reported only; enforcing a number that large would mean a sweep this
-# repository has twice paid for, or an allowlist that rots.
+# inside a loop over something nothing says is non-empty — stands in the
+# hundreds and is reported only; enforcing a number that size would mean a
+# sweep this repository has twice paid for, or an allowlist that rots. The
+# current figure is what the command prints, which is where a number belongs.
 #
 # Nothing needs to run this for the gate to hold: `tools/vacuity`'s own
 # TestTheRepositoryHasNoUnassertedTest walks the tree under `go test ./...`,

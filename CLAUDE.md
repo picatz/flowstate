@@ -633,7 +633,9 @@ what a corpus becomes when somebody moves the last case out of it. This is
 would not have noticed either, because both numbers were the number the code
 produced.
 
-The tree has 167 of those and they are **reported, never enforced**. A number
+The tree had 167 of those when this landed, and they are **reported, never
+enforced** — read the current figure out of the command rather than out of this
+sentence. A number
 that size can only be a map: enforcing it would mean a sweep, which this
 repository has twice paid for, or an allowlist, which rots. What the number is
 for is that a *new* one arrives in a diff somebody is reading, where the answer

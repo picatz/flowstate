@@ -100,13 +100,28 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 			return
 		}
 
-		defer server.Finished()
-		// Releases anything still waiting for a stop that will not come: the
-		// adapter cannot see a run end, so this is what says so.
-		defer func() { _ = session.Close() }()
+		// What the client is told the run exited with. Set on every path that
+		// ends without a completed run, because an editor reads the `exited`
+		// event to decide what happened — and a zero there says a workflow
+		// that never started succeeded.
+		exit := 0
+
+		// Ordered rather than deferred separately, because the three steps
+		// have to happen in this order. Recording the code first means a
+		// movement released by the close — which learns the run is over
+		// through ErrRunOver and reports it — reports the same code this
+		// goroutine would have. Closing then releases anything still waiting
+		// for a stop that will not come, since the adapter cannot see a run
+		// end and this is what says so.
+		defer func() {
+			server.Exited(exit)
+			_ = session.Close()
+			server.Finished()
+		}()
 
 		program := server.Program()
 		if program == "" {
+			exit = 1
 			server.Output("flowdap: the launch configuration named no `program`, so there is " +
 				"no workflow to run\n")
 
@@ -124,6 +139,7 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			// The client's console is the only place a person will look, and
 			// the diagnostics are the whole answer to why nothing ran.
+			exit = 1
 			server.Output(fmt.Sprintf("flowdap: %v\n", err))
 
 			return
@@ -133,6 +149,7 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		ctx = v1.NewContextWithRunObserver(ctx, session)
 
 		if _, err := v1.RunWithInputs(ctx, workflow, nil); err != nil {
+			exit = 1
 			server.Output(fmt.Sprintf("run failed: %v\n", err))
 		}
 	}(server)

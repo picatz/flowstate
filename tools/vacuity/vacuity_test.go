@@ -25,14 +25,24 @@ import (
 func analyzedFixture(t *testing.T, source string) []Finding {
 	t.Helper()
 
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "fixture_test.go"),
-		[]byte("package fixture\n\nimport (\n\t\"testing\"\n\n\t\"github.com/stretchr/testify/require\"\n)\n\nvar _ = require.NotEmpty\n\n"+source), 0o600))
-
-	findings, _, err := Analyze(dir)
-	require.NoError(t, err)
+	findings, _ := analyzedFile(t, "fixture_test.go",
+		"package fixture\n\nimport (\n\t\"testing\"\n\n\t\"github.com/stretchr/testify/require\"\n)\n\nvar _ = require.NotEmpty\n\n"+source)
 
 	return findings
+}
+
+// analyzedFile writes one complete file under a chosen name and analyses it,
+// for the claims that are about the *file* rather than about its contents.
+func analyzedFile(t *testing.T, name, source string) ([]Finding, int) {
+	t.Helper()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(source), 0o600))
+
+	findings, tests, err := Analyze(dir)
+	require.NoError(t, err)
+
+	return findings, tests
 }
 
 // checksFound is the findings' checks, for comparing against what a fixture
@@ -205,15 +215,16 @@ func TestEveryCaseHolds(t *testing.T) {
 	assert.Equal(t, "conformance.Cases()", findings[0].Detail,
 		"the report has to name what to assert about, not only that something is missing")
 	assert.False(t, findings[0].Fatal(),
-		"the tree stands at 134 of these, and a number that large can only be a map")
+		"a conditional finding must never fail the command: the tree holds these by the "+
+			"hundred, and enforcing that number would mean a sweep or an allowlist")
 }
 
 // TestATableAReaderCanCountIsNotAFinding is the clause that keeps the ordinary
 // table test out of the report.
 //
-// Without it the check found 253 sites and the ones that mattered were buried
-// among them. A literal — inline, or assigned to a name a few lines up — is one
-// whoever is reading the test can count.
+// Without it the check reported about twice as many sites, and the ones that
+// mattered were buried among them. A literal — inline, or assigned to a name a
+// few lines up — is one whoever is reading the test can count.
 func TestATableAReaderCanCountIsNotAFinding(t *testing.T) {
 	t.Parallel()
 
@@ -344,6 +355,126 @@ func FuzzSomething(f *testing.F) {
 	})
 }
 `), "a benchmark or a fuzz target was judged as a test")
+}
+
+// TestOnlyWhatTheRunnerCallsIsJudged keeps the checks off functions that look
+// like tests and are not.
+//
+// Three ways to look like one and not be, and all three would fail a build over
+// something `go test` never invokes (Copilot and Codex, #1125). A `Test…`
+// function in an ordinary file is a helper for other packages to call —
+// `func TestFixture(t testing.TB)` is a real shape in real repositories. And a
+// `Test…` taking a `*testing.B` or a `*testing.F` is a benchmark or a fuzz
+// target that has been misnamed, which is a style question rather than a
+// vacuous claim.
+func TestOnlyWhatTheRunnerCallsIsJudged(t *testing.T) {
+	t.Parallel()
+
+	// A reusable suite an ordinary file exports for downstream `_test.go`
+	// files to call. It has the runner's exact signature and the runner never
+	// calls it, because the runner only reads `_test.go` files — so the file it
+	// sits in is the only thing that tells them apart. This repository has
+	// `Test…`-named functions in ordinary files today
+	// (`cmd/flow/internal/mcp/mcp.go:1046`), which is what makes the shape
+	// worth excluding rather than hypothetical.
+	const suite = `package fixture
+
+import "testing"
+
+func TestConformance(t *testing.T) {
+	_ = 1
+}
+`
+	findings, tests := analyzedFile(t, "suite.go", suite)
+	assert.Empty(t, findings,
+		"a `Test…` in an ordinary file was judged, so a build fails over a function "+
+			"`go test` never invokes")
+	assert.Zero(t, tests, "a `Test…` in an ordinary file was counted as a test")
+
+	// The same declaration in a file the runner does read is a test.
+	findings, tests = analyzedFile(t, "suite_test.go", suite)
+	assert.Len(t, findings, 1, "the same declaration in a _test.go file was not judged")
+	assert.Equal(t, 1, tests)
+
+	// And the handle has to be the one the runner passes, wherever it lives.
+	const helper = `package fixture
+
+import "testing"
+
+func TestFixture(t testing.TB) {
+	_ = 1
+}
+`
+	findings, tests = analyzedFile(t, "fixture.go", helper)
+	assert.Empty(t, findings, "a helper in an ordinary file was judged as a test")
+	assert.Zero(t, tests, "a helper in an ordinary file was counted as a test")
+
+	findings, tests = analyzedFile(t, "fixture_test.go", helper)
+	assert.Empty(t, findings, "a `Test…` taking a testing.TB was judged as a test")
+	assert.Zero(t, tests, "a `Test…` taking a testing.TB was counted as a test")
+
+	// And the real thing, in the right file, is.
+	findings, tests = analyzedFile(t, "fixture_test.go", `package fixture
+
+import "testing"
+
+func TestReal(t *testing.T) {
+	_ = 1
+}
+`)
+	assert.Len(t, findings, 1, "a real test asserting nothing was not judged")
+	assert.Equal(t, 1, tests)
+}
+
+// TestTheTestingImportIsResolvedToItsLocalName is the alias, which `go test`
+// honours and a literal match does not.
+//
+// `import tst "testing"` is legal and the runner calls
+// `func TestAliased(t *tst.T)` exactly as it calls any other test. An analysis
+// insisting on the identifier `testing` misses it entirely — neither reported
+// nor counted — and a count that silently omits what it could not recognise is
+// the failure this whole tool is about, wearing the checker's own clothes
+// (Codex, #1125).
+func TestTheTestingImportIsResolvedToItsLocalName(t *testing.T) {
+	t.Parallel()
+
+	findings, tests := analyzedFile(t, "aliased_test.go", `package fixture
+
+import tst "testing"
+
+func TestAliased(t *tst.T) {
+	_ = 1
+}
+`)
+	require.Equal(t, 1, tests, "an aliased test was not counted")
+	require.Len(t, findings, 1, "an aliased test asserting nothing was not reported")
+	assert.Equal(t, "TestAliased", findings[0].Test)
+
+	// A dot import puts the names in the file's own scope, so there is no
+	// selector to match at all.
+	findings, tests = analyzedFile(t, "dotted_test.go", `package fixture
+
+import . "testing"
+
+func TestDotted(t *T) {
+	_ = 1
+}
+`)
+	require.Equal(t, 1, tests, "a dot-imported test was not counted")
+	assert.Len(t, findings, 1, "a dot-imported test asserting nothing was not reported")
+
+	// And a file that does not import testing at all has no tests in it,
+	// whatever it names its functions.
+	findings, tests = analyzedFile(t, "unrelated_test.go", `package fixture
+
+type T struct{}
+
+func TestNotATest(t *T) {
+	_ = 1
+}
+`)
+	assert.Zero(t, tests, "a function taking an unrelated type named T was counted as a test")
+	assert.Empty(t, findings)
 }
 
 // TestTestdataIsNotWalked keeps fixtures for other tests out of the report.

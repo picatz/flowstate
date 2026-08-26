@@ -9,14 +9,10 @@ import (
 	"strings"
 )
 
-// Command vacuity reports tests that pass without proving anything.
+// main runs the report.
 //
-//	go run ./tools/vacuity           # counts, and every unasserted site
-//	go run ./tools/vacuity -sites    # every site, both checks
-//	go run ./tools/vacuity ./pkg/... # one subtree
-//
-// It changes nothing and has no fix mode, for the reason `tools/modernize` has
-// none: what it names is a *claim* somebody has to decide is the right one, and
+// The command changes nothing and has no fix mode, for the reason
+// `tools/modernize` has none: what it names is a *claim* somebody has to decide is the right one, and
 // a tool cannot write an assertion nobody has thought about. The one-line
 // answer to a conditional finding — assert the corpus is non-empty — is only
 // correct if the corpus should be non-empty, which is a question about the

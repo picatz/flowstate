@@ -1,4 +1,8 @@
-// Package vacuity finds tests that pass without proving anything.
+// Command vacuity reports tests that pass without proving anything.
+//
+//	go run ./tools/vacuity           # counts, and every unasserted site
+//	go run ./tools/vacuity -sites    # every site, both checks
+//	go run ./tools/vacuity ./pkg/... # one subtree
 //
 // A vacuous test is not a failing test and not a missing one. It runs, it is
 // green, it appears in the coverage report, and it makes no claim — so the
@@ -51,10 +55,10 @@ const (
 	// CheckConditional is a test whose every claim is inside a loop over
 	// something nothing establishes is non-empty.
 	//
-	// Reported and never fatal. The repository has 134 of these and most are
-	// fine; what the number is for is that a *new* one arrives in a diff
-	// somebody is reading, where the one-line answer — assert the corpus is
-	// non-empty — is obvious and cheap.
+	// Reported and never fatal. The repository has these by the hundred and
+	// most are fine; what the count is for is that a *new* one arrives in a
+	// diff somebody is reading, where the one-line answer — assert the corpus
+	// is non-empty — is obvious and cheap.
 	CheckConditional Check = "conditional"
 )
 
@@ -76,10 +80,13 @@ type Finding struct {
 // Fatal reports whether a finding fails the command.
 //
 // Only [CheckUnasserted] does, and that is a claim about the tree rather than
-// about the check: it stands at zero, with the two deliberate sites marked, so
-// a finding now is one a diff introduced. [CheckConditional] stands at 134 and
-// a number that large can only be a map — enforcing it would mean either a
-// sweep this repository has twice paid for, or an allowlist that rots.
+// about the check: it stands at zero, with the deliberate sites marked, so a
+// finding now is one a diff introduced. [CheckConditional] stands in the
+// hundreds, and a number that size can only be a map — enforcing it would mean
+// either a sweep this repository has twice paid for, or an allowlist that rots.
+// The current figures are in `make vacuity`'s own output, which is where a
+// number belongs: printed from the tree rather than copied into a comment
+// beside it (Copilot, #1125).
 func (f Finding) Fatal() bool { return f.Check == CheckUnasserted }
 
 // marker is how a test says that proving nothing is the point.

@@ -17,8 +17,9 @@ import (
 // the report, and the third is doing most of the work. `for _, c := range
 // []case{…}` and `for _, c := range cases` where `cases :=` a literal above are
 // both countable by the person reading the test, and flagging them would bury
-// the finding that matters under the whole tree — 253 sites became 134 when
-// that clause was added, and the ones it removed were all the same idiom.
+// the finding that matters under the whole tree: adding that clause removed
+// about half the sites, and every one it removed was the same idiom. Run
+// `make vacuity SITES=1` for what is left.
 func conditionalClaim(fn *analyzed, asserters map[string]bool) (loop ast.Node, subject string, found bool) {
 	var ranges []*ast.RangeStmt
 	ast.Inspect(fn.decl.Body, func(node ast.Node) bool {
