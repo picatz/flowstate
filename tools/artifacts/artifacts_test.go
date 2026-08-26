@@ -26,6 +26,7 @@ package artifacts
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,19 +38,54 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// executables are the leading bytes of a compiled program, by platform.
+// executables are the leading bytes of a compiled program, by format.
 //
 // Matched on magic rather than on size or on a name pattern, because the
 // question is "is this a program" and those two answer something else. The
 // largest thing this repository legitimately tracks is a 412 KB protobuf
 // descriptor set, which a size rule would have to be tuned around and which
 // this does not look at twice.
+//
+// The list is *measured* rather than remembered, and the first version was
+// remembered — ELF, Mach-O and PE, which is what a person thinks of and leaves
+// five of Go's own targets able to commit a binary past a check named "no
+// compiled executable" (Codex, #1126). Building a trivial program for every
+// entry in `go tool dist list` gives eight distinct prefixes:
+//
+//	7f 45 4c 46  every Linux, BSD, Solaris and illumos target, and Android
+//	cf fa ed fe  darwin/amd64, darwin/arm64
+//	4d 5a 90 00  windows/386, windows/amd64, windows/arm64
+//	00 61 73 6d  js/wasm, wasip1/wasm
+//	01 f7 00 0a  aix/ppc64
+//	00 00 8a 97  plan9/amd64
+//	00 00 01 eb  plan9/386
+//	00 00 06 47  plan9/arm
+//
+// Plan 9's magic is per-architecture, which is why three of them are here and
+// why a fourth architecture would need a fourth line — the cost of a format
+// that puts the machine in the header. Re-run the measurement after a toolchain
+// bump that adds a port.
+//
+// The two Mach-O entries no current Go target emits are kept anyway: this asks
+// whether a tracked file is a program, and a program can arrive from somewhere
+// other than this repository's own `go build`.
+// sweep asks for the cross-build calibration below, which `make check` sets.
+const sweep = "FLOWSTATE_ARTIFACT_SWEEP"
+
 var executables = map[string][]byte{
 	"ELF":              {0x7f, 'E', 'L', 'F'},
 	"Mach-O 64":        {0xcf, 0xfa, 0xed, 0xfe},
 	"Mach-O 32":        {0xce, 0xfa, 0xed, 0xfe},
 	"Mach-O universal": {0xca, 0xfe, 0xba, 0xbe},
-	"PE":               {'M', 'Z'},
+	// Two bytes, not the four a Go build writes: "MZ" is the whole of what
+	// makes a DOS or PE image, and matching it covers a program this
+	// repository's toolchain did not produce.
+	"PE":           {'M', 'Z'},
+	"WebAssembly":  {0x00, 'a', 's', 'm'},
+	"XCOFF (AIX)":  {0x01, 0xf7, 0x00, 0x0a},
+	"Plan 9 amd64": {0x00, 0x00, 0x8a, 0x97},
+	"Plan 9 386":   {0x00, 0x00, 0x01, 0xeb},
+	"Plan 9 arm":   {0x00, 0x00, 0x06, 0x47},
 }
 
 // TestNoCompiledExecutableIsTracked is the check.
@@ -151,4 +187,101 @@ func removals(paths []string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// TestEveryGoTargetsExecutableIsRecognised keeps the list from being the three
+// formats a person thinks of.
+//
+// The first version was ELF, Mach-O and PE, which left five of Go's own
+// targets able to commit a binary straight past a check named "no compiled
+// executable" (Codex, #1126). This builds a trivial program for every entry in
+// `go tool dist list` and asserts that what comes out is recognised — so the
+// list is checked against the toolchain rather than against my memory of it,
+// and a port added by a future toolchain fails here rather than silently
+// widening the hole.
+//
+// Cross-compilation without cgo needs nothing installed, but a target can still
+// refuse to build in a given environment; those are skipped individually, and
+// the count below is what keeps the whole test from passing by building
+// nothing.
+func TestEveryGoTargetsExecutableIsRecognised(t *testing.T) {
+	t.Parallel()
+
+	// Opt-in, and the number is why. Building a program for every entry in
+	// `go tool dist list` takes about 107 seconds, and what it buys is notice
+	// that Go has added a port with an executable format nobody has seen — a
+	// thing that happens perhaps once in several years. Paying that on every
+	// pull request would be the most expensive check in the suite guarding the
+	// rarest event in it.
+	//
+	// So the *gate* is the tracked-file scan above, which costs about twenty
+	// milliseconds and runs always; this is the calibration behind its list,
+	// run when the toolchain moves. `make check` sets the variable, so the full
+	// local rehearsal covers it.
+	if os.Getenv(sweep) == "" {
+		t.Skipf("set %s=1 to build one program per Go target (~2 minutes); the tracked-file "+
+			"check above runs unconditionally", sweep)
+	}
+
+	targets, err := exec.Command("go", "tool", "dist", "list").Output()
+	if err != nil {
+		t.Skipf("go tool dist list: %v", err)
+	}
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"),
+		[]byte("package main\n\nfunc main() {}\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module probe\n\ngo 1.24\n"), 0o600))
+
+	built := 0
+
+	var unrecognised []string
+	for _, target := range strings.Fields(string(targets)) {
+		goos, goarch, ok := strings.Cut(target, "/")
+		if !ok {
+			continue
+		}
+
+		out := filepath.Join(dir, "out.bin")
+		build := exec.Command("go", "build", "-o", out, ".")
+		build.Dir = dir
+		build.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
+		if err := build.Run(); err != nil {
+			// A target this environment cannot cross-build. Not a finding: the
+			// count below is what says whether enough of them worked.
+			continue
+		}
+
+		head, err := os.ReadFile(out)
+		require.NoError(t, err)
+		_ = os.Remove(out)
+		built++
+
+		found := false
+		for _, magic := range executables {
+			if bytes.HasPrefix(head, magic) {
+				found = true
+
+				break
+			}
+		}
+		if !found {
+			leading := head
+			if len(leading) > 4 {
+				leading = leading[:4]
+			}
+			unrecognised = append(unrecognised, fmt.Sprintf("%s (% x)", target, leading))
+		}
+	}
+
+	require.Greater(t, built, 20,
+		"only %d target(s) built, which is too few to say anything about the list — a "+
+			"check that compiled nothing and reported every format covered is the failure "+
+			"this file is about", built)
+
+	assert.Empty(t, unrecognised,
+		"a Go target produces an executable this check does not recognise, so committing "+
+			"one passes a gate named for refusing exactly that. Add its magic to "+
+			"`executables`:\n\n%s", strings.Join(unrecognised, "\n"))
 }

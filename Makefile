@@ -69,7 +69,7 @@ check:
 		echo "$$fmt_out"; \
 		exit 1; \
 	fi
-	$(MAKE) test
+	$(MAKE) test ARTIFACT_SWEEP=1
 	$(MAKE) test-plugins
 	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
@@ -115,8 +115,13 @@ fuzz-smoke:
 # than its own copy of the command, so the bound cannot drift between the two —
 # a copy of a command list is a thing that drifts, and the whole point of this
 # file is that it is what CI runs.
+# ARTIFACT_SWEEP=1 additionally cross-builds one program per entry in `go tool
+# dist list`, to confirm `tools/artifacts` recognises every executable format
+# Go can emit. `check` sets it; the PR lane does not, because it costs a couple
+# of minutes on a cold cache to guard a thing that changes when Go adds a port.
+# The tracked-file gate that check exists for runs either way, in milliseconds.
 test:
-	GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -race -timeout 900s ./...
 
 # The plugins are separate modules, which is the point of them: `./...` above
 # does not reach them, and a plugin that does not compile would leave every

@@ -477,7 +477,7 @@ func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyze
 	// syntactic walk has no scopes: the cost is that a name shadowed in one
 	// block stops counting in the others too, which errs toward *reporting* —
 	// the direction that gets looked at rather than the one that hides.
-	for name := range shadowed(fn.Body) {
+	for name := range shadowedBy(fn) {
 		delete(out.testify, name)
 		out.shadowed[name] = true
 	}
@@ -722,15 +722,23 @@ func assertion(call *ast.CallExpr, handles, testify, shadowed map[string]bool) b
 	return isHandle(selector.X, handles)
 }
 
-// shadowed are the names a function body binds, whether by `:=`, by `var`, by
-// a parameter of a closure, or by a local type or function declaration.
+// shadowedBy are the names a function binds: its receiver, its parameters, its
+// named results, and everything its body declares.
+//
+// The signature half was missing at first, and the hole it left is worth
+// recording because it is the same defect the body half was written to close,
+// one step out. In a file importing testify as `req`, a helper
+// `func helper(req loader) { req.Load() }` binds `req` in its *signature* — so
+// the helper read as asserting, and the propagation then marked every test
+// calling it as asserting too. One un-shadowed parameter hid an arbitrary
+// number of vacuous tests (Codex, #1126).
 //
 // Deliberately generous about what counts as binding and deliberately blind to
 // where the binding is in scope: this is a syntax walk. What it is for is
 // deciding when a name can no longer be trusted to mean the package or builtin
 // it usually means, and over-reporting there costs a finding somebody looks at
 // rather than a claim nobody checks.
-func shadowed(body ast.Node) map[string]bool {
+func shadowedBy(fn *ast.FuncDecl) map[string]bool {
 	names := map[string]bool{}
 
 	add := func(expr ast.Expr) {
@@ -739,7 +747,26 @@ func shadowed(body ast.Node) map[string]bool {
 		}
 	}
 
-	ast.Inspect(body, func(node ast.Node) bool {
+	fields := func(list *ast.FieldList) {
+		if list == nil {
+			return
+		}
+		for _, field := range list.List {
+			for _, name := range field.Names {
+				add(name)
+			}
+		}
+	}
+
+	fields(fn.Recv)
+	fields(fn.Type.Params)
+	fields(fn.Type.Results)
+
+	if fn.Body == nil {
+		return names
+	}
+
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.AssignStmt:
 			if node.Tok == token.DEFINE {
