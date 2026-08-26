@@ -877,3 +877,34 @@ func TestEachScopeLineNamesItsOwnNamespace(t *testing.T) {
 	assert.NotContains(t, lines["vars"], "inspect",
 		"and must not send a reader to a command that cannot reach them")
 }
+
+// TestCompletionAfterAnIfOffersTheExpressionNotStepIDs (Codex, #1116).
+//
+// `break` completes step ids, but past an `if` the argument stops being a step
+// id and becomes an expression. Left as ids, `break body if de<tab>` offered —
+// and, with one match, *inserted* — a step called `deploy` into the middle of a
+// condition. A completion that writes a name the expression cannot mean is
+// worse than one that offers nothing.
+func TestCompletionAfterAnIfOffersTheExpressionNotStepIDs(t *testing.T) {
+	t.Parallel()
+
+	console, _ := completingRun(t,
+		flowdebug.Options{},
+		[]string{"step", "continue"},
+		[][]string{nil, {"break bu", "break build if steps.", "break build if bu"}})
+
+	require.Len(t, console.answers, 3)
+
+	assert.Equal(t, []string{"build"}, texts(console.answers[0]),
+		"before an `if` the argument is a step id, and that has not changed")
+
+	// The discriminator: `steps.` is a name only the expression completer can
+	// answer — no step id begins with it — so an answer here proves the
+	// routing rather than merely being consistent with it.
+	assert.Equal(t, []string{"build"}, texts(console.answers[1]),
+		"past the `if` the expression completer answers, over the paused run's own scope")
+
+	assert.NotContains(t, texts(console.answers[2]), "build",
+		"and a bare word past the `if` is no longer read as a step id, so the "+
+			"step that shares its prefix is not written into the condition")
+}

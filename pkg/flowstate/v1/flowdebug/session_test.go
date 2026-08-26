@@ -1092,3 +1092,51 @@ func TestANearMissKeywordIsRefusedRatherThanDiscarded(t *testing.T) {
 		})
 	}
 }
+
+// TestAConditionThatCannotCompileIsRefusedWhenItIsTyped (Codex, #1116).
+//
+// Parsing is syntax only, so `1 + true` and `missing_function(n)` both parse.
+// An accepted condition that cannot compile then fails at *every* arrival —
+// and because an errored condition stops, that is a stop at every iteration:
+// the exact behaviour a condition is typed to escape, reached by a typo the
+// prompt reported as accepted.
+//
+// The check declares the names the expression mentions rather than the names
+// in scope, which is what keeps a condition about a future binding legal. The
+// last case is the one that pins it: `n` does not exist when `break` is typed,
+// only once the loop body runs.
+func TestAConditionThatCannotCompileIsRefusedWhenItIsTyped(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, condition, want string }{
+		{name: "an operator over types that cannot combine", condition: "1 + true", want: "condition:"},
+		{name: "a function nothing declares", condition: "missing_function(n)", want: "condition:"},
+		{name: "an expression that is not a boolean", condition: "n + 1", want: "must be a boolean"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, ran := loopingRun(t, 4, "break body if "+tc.condition+"\nbreakpoints\ncontinue\n")
+
+			assert.Len(t, ran, 4)
+			assert.Contains(t, out, tc.want, "the refusal says what is wrong with the condition")
+			assert.Contains(t, out, "no breakpoints", "and nothing is set")
+			assert.NotContains(t, out, "break at body",
+				"an accepted-but-uncompilable condition would stop at every iteration")
+		})
+	}
+
+	// The other direction, and the reason the check declares what the
+	// expression mentions rather than what is in scope: this is typed before
+	// the loop has run, so `n` is bound nowhere yet, and it must still be
+	// accepted and still fire at the iteration it names.
+	t.Run("a condition about a binding that does not exist yet", func(t *testing.T) {
+		t.Parallel()
+
+		out, ran := loopingRun(t, 6, "break body if n == 3\ncontinue\ncontinue\n")
+
+		assert.Len(t, ran, 6)
+		assert.Contains(t, out, "breakpoint at body if n == 3", "accepted, though `n` is bound nowhere yet")
+		assert.Equal(t, 1, strings.Count(out, "break at body"), "and it fires once, at the iteration it names")
+	})
+}

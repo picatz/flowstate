@@ -3,12 +3,13 @@ package flowdebug
 import (
 	"context"
 	"fmt"
-	"github.com/google/cel-go/cel"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -466,12 +467,123 @@ func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
 	if issues != nil && issues.Err() != nil {
 		return nil, fmt.Errorf("parse condition: %w", issues.Err())
 	}
+
+	// Parsing is syntax only, so `1 + true` and `missing_function(n)` both
+	// parse — and an accepted condition that cannot be compiled fails at every
+	// arrival, which with the stop-on-error rule above means stopping at every
+	// iteration. That is the exact behaviour a condition is typed to escape,
+	// reached by a typo the prompt reported as accepted (Codex, #1116).
+	//
+	// Checked against an environment declaring the names *the expression
+	// itself mentions*, which is `flowfile`'s spelling for this same problem
+	// (`celcheck.go:177`, `envDeclaring(referencedNames(...))`) and the only
+	// one that works here. A breakpoint is usually set before the run reaches
+	// the step it names, so the binding a condition reads — a loop's `as:` —
+	// does not exist in the scope this is typed in. Declaring what is in scope
+	// now would reject `n == 7` typed at the first step, which is a false
+	// diagnostic about a condition that will be perfectly valid when it fires.
+	checked, err := checkedInScope(env, ast)
+	if err != nil {
+		return nil, err
+	}
+
+	// And it has to be a boolean, refused here rather than at the first
+	// arrival — the same shape `compileMustIn` uses for the other place this
+	// repository compiles an author's boolean rule (`constraints.go:238-245`).
+	if checked.OutputType() != cel.BoolType && checked.OutputType() != cel.DynType {
+		return nil, fmt.Errorf("a condition must be a boolean, and this one is %s", checked.OutputType())
+	}
+
 	parsed, err := cel.AstToParsedExpr(ast)
 	if err != nil {
 		return nil, fmt.Errorf("parse condition: %w", err)
 	}
 
 	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, nil
+}
+
+// checkedInScope type-checks an expression against an environment extended
+// with every identifier it references, declared dynamically.
+//
+// Dynamic because nothing here knows the type: a step output's shape is the
+// task's, and a loop binding's is the collection's. What the check is for is
+// the errors that do not depend on those — an unknown function, an operator
+// applied to types that can never combine.
+func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
+	parsed, err := cel.AstToParsedExpr(ast)
+	if err != nil {
+		return nil, fmt.Errorf("parse condition: %w", err)
+	}
+
+	names := map[string]struct{}{}
+	collectIdentifiers(parsed.GetExpr(), names)
+
+	declarations := make([]cel.EnvOption, 0, len(names))
+	for name := range names {
+		declarations = append(declarations, cel.Variable(name, cel.DynType))
+	}
+
+	declaring, err := env.Extend(declarations...)
+	if err != nil {
+		// Extending failed, which is this build's problem rather than the
+		// author's, so the condition is accepted unchecked rather than
+		// refused: leaving the failure to evaluation is where it was before
+		// this check existed, and blaming an author for it is worse.
+		return ast, nil
+	}
+
+	checked, issues := declaring.Check(ast)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("condition: %w", issues.Err())
+	}
+
+	return checked, nil
+}
+
+// collectIdentifiers gathers every bare name an expression reads.
+//
+// Only the *root* of a selection: `steps.build.ok` reads the identifier
+// `steps`, and declaring `steps` dynamically is what makes the whole chain
+// legal without claiming to know its shape.
+func collectIdentifiers(e *expr.Expr, into map[string]struct{}) {
+	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		into[kind.IdentExpr.GetName()] = struct{}{}
+
+	case *expr.Expr_SelectExpr:
+		collectIdentifiers(kind.SelectExpr.GetOperand(), into)
+
+	case *expr.Expr_CallExpr:
+		collectIdentifiers(kind.CallExpr.GetTarget(), into)
+		for _, arg := range kind.CallExpr.GetArgs() {
+			collectIdentifiers(arg, into)
+		}
+
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			collectIdentifiers(element, into)
+		}
+
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			collectIdentifiers(entry.GetMapKey(), into)
+			collectIdentifiers(entry.GetValue(), into)
+		}
+
+	case *expr.Expr_ComprehensionExpr:
+		// A macro binds its own iteration variable, so that name is the
+		// comprehension's rather than the scope's — declaring it would be
+		// harmless, and not declaring it would make `items.exists(i, i > 2)`
+		// fail the check for a name CEL itself provides.
+		comprehension := kind.ComprehensionExpr
+		into[comprehension.GetIterVar()] = struct{}{}
+		into[comprehension.GetAccuVar()] = struct{}{}
+		collectIdentifiers(comprehension.GetIterRange(), into)
+		collectIdentifiers(comprehension.GetAccuInit(), into)
+		collectIdentifiers(comprehension.GetLoopCondition(), into)
+		collectIdentifiers(comprehension.GetLoopStep(), into)
+		collectIdentifiers(comprehension.GetResult(), into)
+	}
 }
 
 func (s *Session) deleteBreakpoint(id string) {
