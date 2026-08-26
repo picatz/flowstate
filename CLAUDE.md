@@ -670,6 +670,13 @@ run with their eyes closed, and this one has to be believed, because it fails
 a build. Eleven of the first thirteen findings were this shape before the rule
 existed.
 
+What it counts as an assertion is deliberately generous and deliberately
+*resolved*: `panic` fails a test and so counts, and `assert`/`require` are
+matched by import path rather than by the bare identifier, because both are
+ordinary Go names a test may bind to something else. Both directions were
+review findings on the same day it landed, and both are the same lesson — a
+gate is only worth as much as the precision of what it will accept as proof.
+
 And **nothing in CI had to learn a new job.** `tools/vacuity`'s own
 `TestTheRepositoryHasNoUnassertedTest` walks the tree under `go test ./...`,
 so the gate holds in the venue everybody already watches; `make vacuity` is
@@ -677,6 +684,26 @@ for reading the report. It also asserts it found more than a thousand tests
 before reporting a clean sweep — a checker that walks nothing and says
 everything is fine is the failure this whole tool is about, and it would have
 been the easiest one to ship.
+
+## No compiled binary is ever committed (`tools/artifacts`)
+
+`go build ./some/tool` writes its binary into whatever directory you are in,
+and the next `git add -A` commits it. That has happened three times here —
+`embedding` at 46 MB (ff6131b, removed by #922), `gate` at five megabytes, and
+`vacuity` at 3.3 MB, which reached `main` in #1125 after being removed from
+the index once and coming back, because a later build recreated it and a later
+`git add -A` picked it up again.
+
+Each was answered with a `.gitignore` entry naming that one path, which
+prevents that one recurrence and nothing else. `tools/artifacts` is the part
+that generalises: one test walking the tracked set and failing on anything
+carrying an executable's magic bytes. It matches on magic rather than on size
+or on a name, because the question is "is this a program" — the largest thing
+legitimately tracked here is a 412 KB descriptor set, which a size rule would
+have to be tuned around.
+
+Prefer `go run ./tools/whatever` over `go build`, and if you must build, send
+it somewhere outside the tree with `-o`.
 
 ## Test the traversal, not just the step
 
