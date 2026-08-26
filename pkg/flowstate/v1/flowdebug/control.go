@@ -103,19 +103,37 @@ type controlTaken struct {
 // not something to arbitrate between; serializing makes it an ordering rather
 // than two commands interleaved into one prompt.
 func (s *Session) Control(ctx context.Context, line string) error {
-	_, err := s.deliver(ctx, line)
+	release, err := s.takeControl(ctx, line)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	_, err = s.deliver(ctx, line)
 
 	return err
 }
 
-// deliver is [Session.Control], also reporting which pause took the command.
-func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error) {
+// takeControl refuses a line this session will not accept and then takes the
+// serialization slot, returning what gives it back.
+//
+// Split from [Session.deliver] so that the *movement* verbs can hold the slot
+// across their wait as well as their send. Releasing it when the send is
+// acknowledged orders deliveries and nothing else: a second command could then
+// be consumed at the very pause the first caller was waiting to observe, and
+// resume the run out from under it — after which that caller reports a stop two
+// ahead of the one it asked for, or none at all. Serializing the send is not
+// serializing the movement (Codex, #1122).
+//
+// Refusals come first, so a command this session was never going to accept is
+// answered immediately rather than queued behind somebody else's run.
+func (s *Session) takeControl(ctx context.Context, line string) (func(), error) {
 	s.mu.Lock()
 	controlled := s.controlled
 	s.mu.Unlock()
 
 	if !controlled {
-		return controlTaken{}, ErrNotControlled
+		return nil, ErrNotControlled
 	}
 
 	// The same bound a console owes on a typed line, applied where this line
@@ -123,7 +141,7 @@ func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error
 	// caller reaching this method arrives on no reader at all — the identical
 	// asymmetry [Session.Evaluate] has for expressions.
 	if len(line) > MaxCommandBytes {
-		return controlTaken{}, fmt.Errorf("flowdebug: a command may be %d bytes and this one is %d",
+		return nil, fmt.Errorf("flowdebug: a command may be %d bytes and this one is %d",
 			MaxCommandBytes, len(line))
 	}
 
@@ -132,23 +150,29 @@ func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error
 	// something no prompt could have produced — with the second one landing
 	// wherever the first left the run.
 	if strings.ContainsAny(line, "\r\n") {
-		return controlTaken{}, errors.New("flowdebug: a command is one line, and this one holds a line break")
+		return nil, errors.New("flowdebug: a command is one line, and this one holds a line break")
 	}
 
-	// The serialization slot, taken cancellably. Waiting for it is part of the
-	// wait this method's context is promised to bound, and a [sync.Mutex] has
-	// no cancellable acquire — so a second caller would block *before* reaching
-	// either select below, and never return at all if the first command is
-	// never consumed (Codex, #1122).
+	// Taken cancellably. Waiting for the slot is part of the wait a caller's
+	// context is promised to bound, and a [sync.Mutex] has no cancellable
+	// acquire — so a second caller would block *before* reaching any of the
+	// selects below, and never return at all if the first command is never
+	// consumed (Codex, #1122).
 	select {
 	case s.controlSlot <- struct{}{}:
-		defer func() { <-s.controlSlot }()
+		return func() { <-s.controlSlot }, nil
 	case <-ctx.Done():
-		return controlTaken{}, ctx.Err()
+		return nil, ctx.Err()
 	case <-s.done:
-		return controlTaken{}, ErrRunOver
+		return nil, ErrRunOver
 	}
+}
 
+// deliver hands one line to a parked boundary and reports which pause took it.
+//
+// The caller holds the serialization slot; see [Session.takeControl] for why
+// that is the caller's to decide rather than this function's.
+func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error) {
 	// Buffered, so the boundary's answer never depends on this goroutine still
 	// being here to hear it: a caller whose context expires between the send
 	// and the answer must not leave a parked run blocked on writing to nobody.
@@ -248,6 +272,21 @@ func oneArgument(step string) error {
 // because the end-to-end walk cannot: it passes under either version on every
 // scheduler tried.
 func (s *Session) move(ctx context.Context, line string) (Position, error) {
+	// Held across the wait as well as the send, which is what makes concurrent
+	// movements an ordering rather than an interleaving: see
+	// [Session.takeControl].
+	//
+	// The cost, stated: a `continue` on a run that never stops again holds the
+	// slot until the context expires or the session closes, so another
+	// caller's command waits that long too. That is the contract — a run has
+	// one position — and [Session.Close] is in every select, so a caller
+	// tearing the session down is never the one left waiting.
+	release, err := s.takeControl(ctx, line)
+	if err != nil {
+		return Position{}, err
+	}
+	defer release()
+
 	took, err := s.deliver(ctx, line)
 	if err != nil {
 		return Position{}, err

@@ -110,3 +110,75 @@ func TestDeliverReportsThePauseThatTookTheCommand(t *testing.T) {
 		require.NoError(t, <-finished)
 	})
 }
+
+// TestTheControlSlotIsHeldThroughTheWait is the difference between ordering
+// deliveries and ordering movements.
+//
+// [Session.Control] documents that commands are serialized because a run has
+// one position. Releasing the slot when the *send* is acknowledged does not
+// deliver that: a second command can then be consumed at the very pause the
+// first caller is waiting to observe, and resume the run out from under it —
+// after which that caller reports a stop two ahead of the one it asked for, or
+// waits for one that never comes (Codex, #1122).
+//
+// The interleaving itself is a scheduling race and not worth trying to
+// reproduce. What is exactly checkable is the property that forecloses it: the
+// slot stays taken for as long as a movement is outstanding. The run below is
+// held between two steps by a gate this test owns, so nothing but the defect
+// could free it during the window.
+func TestTheControlSlotIsHeldThroughTheWait(t *testing.T) {
+	t.Parallel()
+
+	session, err := New(Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	step := func(id string) *v1.Node {
+		return &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	}
+
+	reached := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		if stepErr := session.BeforeStep(t.Context(), step("build"), scope); stepErr != nil {
+			finished <- stepErr
+
+			return
+		}
+		// The command has been taken and the run cannot advance past here
+		// until this test says so.
+		reached <- struct{}{}
+		<-gate
+
+		finished <- session.BeforeStep(t.Context(), step("test"), scope)
+	}()
+
+	moved := make(chan Position, 1)
+	go func() {
+		at, moveErr := session.Step(t.Context())
+		assert.NoError(t, moveErr)
+		moved <- at
+	}()
+
+	// Delivery has happened — the boundary consumed the command and returned —
+	// so the slot was certainly taken before this point.
+	<-reached
+
+	require.Never(t, func() bool { return len(session.controlSlot) == 0 },
+		300*time.Millisecond, 5*time.Millisecond,
+		"the slot was given back while a movement was still waiting for its stop, so a "+
+			"second command could be consumed at the pause this one is watching for")
+
+	close(gate)
+
+	at := <-moved
+	assert.Equal(t, "test", at.Step)
+
+	// The run is stopped again at that step, so it needs letting go before the
+	// walk can finish. The slot is free by now: move gives it back when it
+	// returns, which is what `moved` receiving says.
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
