@@ -63,12 +63,20 @@ const (
 	// maxTimelineScan bounds how many history events one request may examine,
 	// whatever it finds among them.
 	//
-	// Higher than the entry bound by an order of magnitude on purpose: a run's
-	// history holds several events per reportable one — a workflow task
-	// scheduled, started and completed around each — so a budget equal to the
-	// entry bound would answer a perfectly ordinary run with a truncated
-	// account.
-	maxTimelineScan = 50_000
+	// Far above the entry bound, and not merely because a history holds several
+	// events per reportable one. Resumption re-walks: a request carrying
+	// [v1.GetTimelineRequest.AfterEventId] reads the history from the start and
+	// skips what the caller already has, so the budget has to cover a whole
+	// run's history rather than one answer's worth of it — a budget that ran
+	// out before reaching the cursor would make the tail of a long run
+	// unreachable, which is the dead end this resumption exists to remove.
+	//
+	// Comfortably above what Temporal will let one run's history grow to under
+	// its own defaults, so the ordinary case is that the walk always reaches
+	// the end. A deployment that raised those limits far enough gets a
+	// truncated answer rather than a wrong one, and an empty truncated answer
+	// says so plainly — see [v1.GetTimelineResponse.Truncated].
+	maxTimelineScan = 200_000
 )
 
 // GetTimeline reports what a run did, event by event.
@@ -103,11 +111,17 @@ func (s *FlowstateServer) GetTimeline(
 
 	out := &v1.GetTimelineResponse{}
 
-	// Labels resolved as the walk goes. A terminal event carries only a
-	// reference back to the scheduling that was labelled, so this is the join
-	// while both are in reach; the reference itself is reported too, for a
-	// reader whose answer was truncated between them.
-	labels := map[int64]string{}
+	// What the walk carries about work still in flight, keyed by the event that
+	// scheduled it: the label written onto that scheduling, and the attempt the
+	// latest start reported. Temporal writes each once and the events that say
+	// how the work ended carry only a reference back, so this is the join.
+	//
+	// Both are dropped when that work ends, which is what bounds them: an
+	// entry lives from a scheduling to its own ending, so what is held is the
+	// work in flight rather than everything the run has ever done. Without
+	// that a walk over a long history would accumulate a row per activity on
+	// the read path, charged to whoever asked.
+	inFlight := map[int64]*activityInFlight{}
 
 	history := temporal.GetWorkflowHistory(ctx, execution.GetWorkflowId(), execution.GetRunId(),
 		// Never a long poll. Waiting for a new event would turn a read into a
@@ -115,6 +129,7 @@ func (s *FlowstateServer) GetTimeline(
 		// at unattended.
 		false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 
+	after := req.Msg.GetAfterEventId()
 	scanned := 0
 	ended := false
 
@@ -130,18 +145,36 @@ func (s *FlowstateServer) GetTimeline(
 		}
 		scanned++
 
+		// Where this run sits in the chain, off the history's own first event.
+		// Both directions, because forward alone is a trap: omitting a run id
+		// resolves the latest segment, whose successor is by definition empty.
+		if started := event.GetWorkflowExecutionStartedEventAttributes(); started != nil {
+			out.PreviousRunId = started.GetContinuedExecutionRunId()
+			out.FirstRunId = started.GetFirstExecutionRunId()
+		}
 		if next := event.GetWorkflowExecutionContinuedAsNewEventAttributes().GetNewExecutionRunId(); next != "" {
 			out.NextRunId = next
 		}
 
-		entry := s.timelineEntry(event, labels)
+		entry := s.timelineEntry(event, inFlight)
 		if entry == nil {
 			continue
 		}
+		// The run reached its own ending, which is the claim [v1.GetTimelineResponse.Truncated]
+		// is checked against. Recorded from the walk rather than from what was
+		// reported, so a resumption that skips past the ending still knows the
+		// account is whole.
 		if entry.GetKind() == v1.TimelineEntry_KIND_RUN_ENDED ||
 			entry.GetKind() == v1.TimelineEntry_KIND_RUN_CONTINUED {
 			ended = true
 		}
+
+		// Skipped after the joins are made, never before: the scheduling a
+		// resumption walks past is what names the rows it will report.
+		if entry.GetEventId() <= after {
+			continue
+		}
+
 		out.Entries = append(out.Entries, entry)
 	}
 
@@ -163,6 +196,21 @@ func isClosed(status v1.RunResponse_Status) bool {
 	return status != v1.RunResponse_STATUS_UNSPECIFIED && status != v1.RunResponse_STATUS_RUNNING
 }
 
+// activityInFlight is what a walk knows about one scheduled activity until it
+// ends: the label Temporal recorded on the scheduling, and the attempt the
+// latest start reported.
+//
+// The attempt is here rather than read off the ending because Temporal does not
+// put it there. `ActivityTaskFailed`, `…TimedOut`, `…Completed` and `…Canceled`
+// carry a reference to the scheduling and to the start, and no attempt number
+// at all — so a failed row left to itself cannot say which try failed, which is
+// exactly what [v1.TimelineEntry.Attempt] promises and exactly what makes a
+// stuck run legible (Codex, #1119).
+type activityInFlight struct {
+	label   string
+	attempt int32
+}
+
 // timelineEntry maps one history event to an entry, or to nil where the event
 // is not something the workload did.
 //
@@ -170,10 +218,24 @@ func isClosed(status v1.RunResponse_Status) bool {
 // most of them bookkeeping about workflow tasks and about the worker; a caller
 // made to filter those is a caller reimplementing this, and one that did not
 // would read a run's own scheduling as things the workload did.
-func (s *FlowstateServer) timelineEntry(event *historypb.HistoryEvent, labels map[int64]string) *v1.TimelineEntry {
+func (s *FlowstateServer) timelineEntry(
+	event *historypb.HistoryEvent, inFlight map[int64]*activityInFlight,
+) *v1.TimelineEntry {
 	entry := &v1.TimelineEntry{
 		EventId: event.GetEventId(),
 		Time:    event.GetEventTime(),
+	}
+
+	// ended closes out an activity: it names the row from what the walk
+	// collected at the scheduling and at the latest start, then forgets it,
+	// which is what keeps the map to work in flight.
+	ended := func(scheduled int64) {
+		entry.ScheduledEventId = scheduled
+		if work, ok := inFlight[scheduled]; ok {
+			entry.Step = work.label
+			entry.Attempt = work.attempt
+			delete(inFlight, scheduled)
+		}
 	}
 
 	switch event.GetEventType() {
@@ -182,54 +244,54 @@ func (s *FlowstateServer) timelineEntry(event *historypb.HistoryEvent, labels ma
 		entry.Step = s.summaryText(event)
 		entry.ScheduledEventId = event.GetEventId()
 		// Recorded for the events that report how this work ended, which carry
-		// a reference here and no label of their own.
-		if entry.Step != "" {
-			labels[event.GetEventId()] = entry.Step
-		}
+		// a reference here and nothing else about it.
+		inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step}
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
-		attrs := event.GetActivityTaskCompletedEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_COMPLETED
-		entry.ScheduledEventId = attrs.GetScheduledEventId()
-		entry.Step = labels[attrs.GetScheduledEventId()]
+		ended(event.GetActivityTaskCompletedEventAttributes().GetScheduledEventId())
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_FAILED:
 		attrs := event.GetActivityTaskFailedEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_FAILED
-		entry.ScheduledEventId = attrs.GetScheduledEventId()
-		entry.Step = labels[attrs.GetScheduledEventId()]
+		ended(attrs.GetScheduledEventId())
 		entry.Failure = attrs.GetFailure().GetMessage()
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
 		attrs := event.GetActivityTaskTimedOutEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_TIMED_OUT
-		entry.ScheduledEventId = attrs.GetScheduledEventId()
-		entry.Step = labels[attrs.GetScheduledEventId()]
+		ended(attrs.GetScheduledEventId())
 		entry.Failure = attrs.GetFailure().GetMessage()
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
-		attrs := event.GetActivityTaskCanceledEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_CANCELED
-		entry.ScheduledEventId = attrs.GetScheduledEventId()
-		entry.Step = labels[attrs.GetScheduledEventId()]
+		ended(event.GetActivityTaskCanceledEventAttributes().GetScheduledEventId())
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_STARTED:
 		// The attempt lives here rather than on the scheduling: Temporal
 		// schedules an activity once and starts it once per attempt, so this is
-		// the only event that says which try is running. Reported as a
-		// scheduled entry rather than a kind of its own, because "handed to a
-		// worker, attempt 3" is the fact a reader wants and a separate started
-		// row beside every scheduled row is noise.
+		// the only event that says which try is running — and the only place
+		// the *ending* can learn it from either, which is why it is kept.
+		//
+		// Reported as a scheduled entry rather than a kind of its own, because
+		// "handed to a worker, attempt 3" is the fact a reader wants and a
+		// separate started row beside every scheduled row is noise.
 		attrs := event.GetActivityTaskStartedEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_SCHEDULED
 		entry.ScheduledEventId = attrs.GetScheduledEventId()
-		entry.Step = labels[attrs.GetScheduledEventId()]
 		entry.Attempt = attrs.GetAttempt()
 		entry.Failure = attrs.GetLastFailure().GetMessage()
 
+		if work, ok := inFlight[attrs.GetScheduledEventId()]; ok {
+			entry.Step = work.label
+			work.attempt = attrs.GetAttempt()
+		}
+
 		// The first attempt is already reported by the scheduling itself, so
 		// only a retry earns a row. This is what makes a stuck run legible
-		// without making an ordinary one twice as long.
+		// without making an ordinary one twice as long. The attempt is recorded
+		// above either way, since the ending needs it whether or not the start
+		// is worth a row of its own.
 		if attrs.GetAttempt() <= 1 {
 			return nil
 		}
@@ -238,14 +300,26 @@ func (s *FlowstateServer) timelineEntry(event *historypb.HistoryEvent, labels ma
 		entry.Kind = v1.TimelineEntry_KIND_TIMER_STARTED
 		entry.Step = s.summaryText(event)
 		// Recorded under this event's own id, which is what a TimerFired
-		// refers back to — the same join an activity's terminal events make.
+		// refers back to — the same join an activity's ending makes.
 		if entry.Step != "" {
-			labels[event.GetEventId()] = entry.Step
+			inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step}
 		}
 
 	case enumspb.EVENT_TYPE_TIMER_FIRED:
 		entry.Kind = v1.TimelineEntry_KIND_TIMER_FIRED
-		entry.Step = labels[event.GetTimerFiredEventAttributes().GetStartedEventId()]
+		if work, ok := inFlight[event.GetTimerFiredEventAttributes().GetStartedEventId()]; ok {
+			entry.Step = work.label
+			delete(inFlight, event.GetTimerFiredEventAttributes().GetStartedEventId())
+		}
+
+	case enumspb.EVENT_TYPE_TIMER_CANCELED:
+		// Not a row: a cancelled timer is a wait that ended because the thing
+		// it was bounding happened, and the account already says that — the
+		// signal that answered a gate is right there. Forgotten, though, or a
+		// run parked and released many times would carry every lapsed timer.
+		delete(inFlight, event.GetTimerCanceledEventAttributes().GetStartedEventId())
+
+		return nil
 
 	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
 		// Named, never carrying its payload: a signal's payload is somebody's

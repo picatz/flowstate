@@ -278,9 +278,26 @@ the one verb about a live workload that an agent can be pointed at unattended �
 A step that retried appears once per attempt, with the attempt number and the
 sentence the previous one failed with, which is what makes a stuck run legible:
 the same step failing five times the same way is a different fact from five
-steps failing once. A run that continued as new has an account per segment;
-`nextRunId` names the next. And `truncated` says the account is not the whole
-of a segment — never something to infer from a short answer.
+steps failing once. The row saying how a step *ended* carries that attempt
+number too, which Temporal does not record on it — a terminal event references
+the scheduling and the start and names no attempt, so the account carries it
+forward from the start it belongs to.
+
+`truncated` says the account is not the whole of a segment — never something to
+infer from a short answer. Continue it with `--after-event-id` set to the last
+row's event id. Raising `--max-entries` is not the way past it: the ceiling is
+a ceiling, and one segment can legitimately hold several times the largest
+answer the server returns. Each read walks the run's history from the start,
+which is what lets a resumed page still name its steps: a label is written onto
+a step's *scheduling* and nowhere else, so a reader that began in the middle
+would have rows it could not name.
+
+A run that continued as new has an account per segment, and the chain is
+walkable in both directions — `nextRunId`, `previousRunId`, and `firstRunId`
+for where the workload began. Both directions matter because omitting a run id
+reads the *latest* segment, whose successor is by definition empty: forward
+links alone would leave a caller holding only a workflow id unable to reach any
+earlier segment at all.
 
 What it never reads is an activity's payload. That is the resolved task, and
 decoding it to label a row would put an author's inputs on the read path where

@@ -34,10 +34,14 @@ func newTimelineCommand() *cobra.Command {
 			"`flow get` answers what a run is doing. This answers what it did, which is the " +
 			"question left when a run has already finished and there is no present to " +
 			"report. It starts nothing, signals nothing and changes nothing.\n\n" +
-			"A run that continued as new has an account per segment. `nextRunId` names the " +
-			"next one; pass it with --run-id to keep reading. `truncated` says the account " +
-			"is not the whole of that segment, which is the answer to a very long history " +
-			"and never something to infer from a short one.",
+			"A run that continued as new has an account per segment. `nextRunId` and " +
+			"`previousRunId` name the neighbours and `firstRunId` names where the workload " +
+			"began; pass one with --run-id to read it. Both directions, because omitting " +
+			"--run-id reads the *latest* segment, which by definition has no next one.\n\n" +
+			"`truncated` says the account is not the whole of that segment — resume with " +
+			"--after-event-id set to the last row's event id. Raising --max-entries is not " +
+			"the way past it: the ceiling is a ceiling, and one segment can hold several " +
+			"times the largest answer this returns.",
 		Args: cobra.ExactArgs(1),
 		RunE: runTimeline,
 		Example: `# What did this run actually do?
@@ -47,7 +51,10 @@ flow timeline flowstate-workflow-3f7c
 flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure != null)'
 
 # The next segment of a workload that continued as new:
-flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...`,
+flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...
+
+# Continue an account the server clipped:
+flow timeline flowstate-workflow-3f7c --after-event-id 4821`,
 	}
 
 	addOutputFlag(cmd)
@@ -56,6 +63,8 @@ flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 		"read one segment of the workload; unset reads whichever is current")
 	cmd.Flags().Int32("max-entries", 0,
 		"stop after this many entries; unset uses the server's default")
+	cmd.Flags().Int64("after-event-id", 0,
+		"resume past an entry already read, by its event id; unset starts at the beginning")
 
 	return cmd
 }
@@ -73,11 +82,13 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 
 	runID, _ := cmd.Flags().GetString("run-id")
 	maxEntries, _ := cmd.Flags().GetInt32("max-entries")
+	afterEventID, _ := cmd.Flags().GetInt64("after-event-id")
 
 	request := &v1.GetTimelineRequest{
-		WorkflowId: workflowID,
-		RunId:      runID,
-		MaxEntries: maxEntries,
+		WorkflowId:   workflowID,
+		RunId:        runID,
+		MaxEntries:   maxEntries,
+		AfterEventId: afterEventID,
 	}
 	if err := v1.Validate(request); err != nil {
 		return err
@@ -118,16 +129,32 @@ func renderTimeline(surface *ui.UI, msg *v1.GetTimelineResponse) {
 	}
 	_ = table.Flush()
 
-	// Both said on the error stream, because both are about the answer rather
-	// than part of it: a reader piping this into `jq` or a file wants the rows.
+	// All of these go to the error stream, because they are about the answer
+	// rather than part of it: a reader piping this into `jq` or a file wants
+	// the rows.
 	if msg.GetTruncated() {
-		fmt.Fprintln(surface.Err,
-			"this is not the whole of this run's account — ask for more with --max-entries, "+
-				"or read it as JSON where `truncated` says so")
+		// The command to run next, not the fact that there is more. A reader
+		// told only that an answer is partial has to work out how to continue
+		// it, and the whole point of reporting the event id is that they do not
+		// have to.
+		if entries := msg.GetEntries(); len(entries) > 0 {
+			fmt.Fprintf(surface.Err,
+				"this is not the whole of this run's account — continue with "+
+					"--after-event-id %d\n", entries[len(entries)-1].GetEventId())
+		} else {
+			fmt.Fprintln(surface.Err,
+				"this run's history is longer than this server will walk, so nothing past "+
+					"here is readable; the same request will do the same thing")
+		}
 	}
 	if next := msg.GetNextRunId(); next != "" {
 		fmt.Fprintf(surface.Err,
 			"this run continued as new; the next segment is --run-id %s\n", next)
+	}
+	if previous := msg.GetPreviousRunId(); previous != "" {
+		fmt.Fprintf(surface.Err,
+			"it continued from --run-id %s (the workload began at --run-id %s)\n",
+			previous, msg.GetFirstRunId())
 	}
 }
 

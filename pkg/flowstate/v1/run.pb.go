@@ -1614,16 +1614,15 @@ type TimelineEntry struct {
 	//
 	// It exists because a label is written onto the *scheduling* command and
 	// nowhere else: Temporal records the metadata once, and the events that
-	// report how that work ended carry only a reference back to it. Within one
-	// page the server resolves that reference and fills [TimelineEntry.step] in
-	// for the reader. Across pages it cannot — a page is a window on a history,
-	// and the scheduling may have happened outside it — so the reference itself
-	// is reported and a caller walking pages in order, which is the only order
-	// that makes sense of an account, has already read the row it names.
+	// report how that work ended carry only a reference back to it. The server
+	// resolves that reference and fills [TimelineEntry.step] in — every read
+	// walks the run's history from the start, including the part a resumption
+	// skips, so the scheduling is always in reach by the time its ending is read.
 	//
-	// Handing back the join rather than re-reading history to resolve it, because
-	// re-reading is unbounded work on the read path charged to whoever asked, and
-	// this is the same join Temporal itself models.
+	// Reported anyway, because it is the join a reader needs for the other
+	// direction: which of several rows naming one step is *this* step's ending,
+	// when a run scheduled the same step id more than once. It is the same join
+	// Temporal itself models.
 	ScheduledEventId int64 `protobuf:"varint,7,opt,name=scheduled_event_id,json=scheduledEventId,proto3" json:"scheduled_event_id,omitempty"`
 	// Failure is the message of the failure, and only its message.
 	//

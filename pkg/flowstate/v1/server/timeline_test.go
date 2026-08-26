@@ -215,3 +215,196 @@ func indexOfStep(msg *v1.GetTimelineResponse, step string) int {
 
 	return -1
 }
+
+// TestATruncatedTimelineCanBeResumed is the fix for a ceiling with nothing past
+// it.
+//
+// A bound that cannot be walked past is a dead end rather than a bound, and this
+// one is genuinely reachable: a single suspension-opaque block may schedule
+// v1.MaxAtomicBlockActivities activities, and a *successful* activity already
+// contributes two entries, so one valid segment can hold several times the
+// largest answer the server will return (Codex, #1119).
+//
+// The claim is set equality, not "the second page is non-empty": walking a
+// clipped account to its end has to reach every entry the whole account has,
+// each exactly once. That is the shape `List`'s paging bug hid behind — a page
+// test cannot see a cursor that skips.
+func TestATruncatedTimelineCanBeResumed(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	whole, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+	require.False(t, whole.Msg.GetTruncated())
+	require.Greater(t, len(whole.Msg.GetEntries()), 2,
+		"this run is too short for one entry at a time to be a walk")
+
+	// One at a time, which is the setting most likely to expose a cursor that
+	// moves too far: every step of the walk is a boundary.
+	var walked []int64
+	var after int64
+	for range len(whole.Msg.GetEntries()) + 2 {
+		page, perr := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+			WorkflowId:   workflowID,
+			MaxEntries:   1,
+			AfterEventId: after,
+		}))
+		require.NoError(t, perr)
+
+		if len(page.Msg.GetEntries()) == 0 {
+			require.False(t, page.Msg.GetTruncated(),
+				"an empty page that still claims there is more is a walk that cannot finish")
+
+			break
+		}
+
+		require.Len(t, page.Msg.GetEntries(), 1)
+		walked = append(walked, page.Msg.GetEntries()[0].GetEventId())
+		after = page.Msg.GetEntries()[0].GetEventId()
+	}
+
+	assert.Equal(t, timelineEventIDs(whole.Msg), walked,
+		"walking the account one entry at a time did not reach the same entries, in the "+
+			"same order, as reading it whole")
+}
+
+// TestAResumedTimelineStillNamesItsSteps is the property that makes resumption
+// by event id worth its cost.
+//
+// A label is written onto the scheduling command and nowhere else, so a row
+// saying how work *ended* is named only by a reader that saw the scheduling.
+// Because every read walks the history from the start — including the part a
+// resumption skips — the join is always in reach, and a resumed page names its
+// steps exactly as the first one does. A cursor that let the server start
+// reading in the middle would not have this.
+func TestAResumedTimelineStillNamesItsSteps(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	whole, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	// Resume from the first entry, so the rows that follow are ones whose
+	// scheduling the caller has already been sent and the server must re-read.
+	entries := whole.Msg.GetEntries()
+	require.Greater(t, len(entries), 1)
+
+	resumed, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId:   workflowID,
+		AfterEventId: entries[0].GetEventId(),
+	}))
+	require.NoError(t, err)
+
+	assert.Equal(t, entries[1:], resumed.Msg.GetEntries(),
+		"a resumed account differs from the same rows read whole — the walk that skips "+
+			"is not collecting what the rows it reports refer back to")
+}
+
+// TestATimelineNamesTheSegmentsAroundIt is the other half of a chain.
+//
+// Forward traversal alone is a trap: omitting a run id resolves the *latest*
+// segment, whose successor is by definition empty, so a caller holding nothing
+// but a workflow id could reach no earlier segment at all (Codex, #1119). This
+// asserts the pointers exist and are self-consistent on a run that has not
+// continued — the first segment is itself, and there is nothing behind it.
+func TestATimelineNamesTheSegmentsAroundIt(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	account, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	assert.Empty(t, account.Msg.GetPreviousRunId(),
+		"a run that never continued from anything reports a predecessor")
+	assert.Equal(t, started.Msg.GetRunId(), account.Msg.GetFirstRunId(),
+		"a workload's first segment is not itself, so a caller sent to the beginning "+
+			"would be sent somewhere else")
+}
+
+// TestATerminalStepEntrySaysWhichAttemptEnded closes the gap between what the
+// schema promises and what Temporal records.
+//
+// `ActivityTaskFailed`, `…TimedOut`, `…Completed` and `…Canceled` carry a
+// reference to the scheduling and to the start, and no attempt number — so a
+// row left to itself cannot say which try ended, while TimelineEntry.attempt
+// promises exactly that (Codex, #1119). The walk carries it forward from the
+// start instead.
+func TestATerminalStepEntrySaysWhichAttemptEnded(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	account, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	completed := 0
+	for _, entry := range account.Msg.GetEntries() {
+		if entry.GetKind() != v1.TimelineEntry_KIND_STEP_COMPLETED {
+			continue
+		}
+		completed++
+
+		assert.GreaterOrEqual(t, entry.GetAttempt(), int32(1),
+			"the row for %q ending says attempt %d, so nothing in the account says which "+
+				"try succeeded", entry.GetStep(), entry.GetAttempt())
+		assert.NotZero(t, entry.GetScheduledEventId(),
+			"the row for %q ending does not join back to what scheduled it", entry.GetStep())
+		assert.NotEmpty(t, entry.GetStep(),
+			"a step ended and the row does not name it")
+	}
+
+	require.Positive(t, completed, "no step finished, so this asserts nothing")
+}
+
+// timelineEventIDs is the addresses of an account's entries, in order.
+func timelineEventIDs(msg *v1.GetTimelineResponse) []int64 {
+	ids := make([]int64, 0, len(msg.GetEntries()))
+	for _, entry := range msg.GetEntries() {
+		ids = append(ids, entry.GetEventId())
+	}
+
+	return ids
+}

@@ -1748,7 +1748,29 @@ type GetTimelineRequest struct {
 	//
 	// A ceiling as well as a default, because a history is as long as a workload
 	// is busy and the caller does not pay for reading it.
-	MaxEntries    int32 `protobuf:"varint,3,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
+	MaxEntries int32 `protobuf:"varint,3,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
+	// AfterEventId resumes an account past the last entry a caller already read:
+	// pass [TimelineEntry.event_id] from the last row of the previous answer.
+	//
+	// This exists because a ceiling with no way past it is a dead end, and the
+	// ceiling is genuinely reachable — one suspension-opaque block may schedule
+	// [MaxAtomicBlockActivities] activities, and a *successful* activity already
+	// contributes two entries, so a single valid segment can hold several times
+	// the largest answer this will return (Codex, #1119).
+	//
+	// An event id rather than an opaque cursor, and that is the decision worth
+	// stating. Temporal's own page token would be the obvious cursor and cannot
+	// be used: the raw history API takes a Temporal namespace, and this server
+	// does not hold one — a client is dialed for a namespace and never asked
+	// which. An event id needs nothing but the history itself.
+	//
+	// The cost, stated rather than glossed: each request walks the run's history
+	// from the start, so resuming re-reads what it skips. That is bounded work —
+	// a single run's history is bounded by Temporal, and by this server's own
+	// scan budget besides — and it buys something a token would not, since the
+	// walk that reaches the cursor has also collected the labels the rows after
+	// it refer back to.
+	AfterEventId  int64 `protobuf:"varint,4,opt,name=after_event_id,json=afterEventId,proto3" json:"after_event_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1804,6 +1826,13 @@ func (x *GetTimelineRequest) GetMaxEntries() int32 {
 	return 0
 }
 
+func (x *GetTimelineRequest) GetAfterEventId() int64 {
+	if x != nil {
+		return x.AfterEventId
+	}
+	return 0
+}
+
 // GetTimelineResponse is what one run did.
 type GetTimelineResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1812,29 +1841,47 @@ type GetTimelineResponse struct {
 	Entries []*TimelineEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
 	// Truncated is true when this is not the whole of this run's account.
 	//
-	// A flag rather than a cursor, and that is the design decision worth stating.
-	// A cursor over history would have to be Temporal's own, which means naming
-	// the Temporal namespace on the raw API — a fact this server does not hold,
-	// since a client is dialed for a namespace and never asked which. The unit
-	// that *is* bounded here is a run: the interpreter suspends through
-	// Continue-As-New precisely to keep one segment's history short, so "one
-	// run's account, whole" is a request this system is built to satisfy, and
-	// [GetTimelineResponse.next_run_id] walks the segments.
+	// Resume with [GetTimelineRequest.after_event_id] set to the last entry's
+	// [TimelineEntry.event_id]. Raising [GetTimelineRequest.max_entries] is not
+	// the way past it: the ceiling is a ceiling, and a segment can legitimately
+	// hold several times the largest answer this returns.
 	//
-	// Set for either of two reasons, deliberately not told apart: the answer hit
-	// its own bound, or the history read stopped short of the run's end. The
-	// second is checked against the *data* rather than the transport — a closed
+	// Set for any of three reasons, deliberately not told apart, because a reader
+	// does the same thing with all of them: the answer hit its entry ceiling, the
+	// read hit its scan budget, or the walk stopped short of the run's end. The
+	// last is checked against the *data* rather than the transport — a closed
 	// run's history ends with an event saying how it ended, so an account of a
 	// closed run that does not reach one is short however it came to be. That is
 	// the "not short, but claiming to be the whole of it" failure CLAUDE.md names,
 	// and the only defence against it is a check that does not trust the reader.
+	//
+	// One shape a caller has to handle: truncated with *no* entries at all. It
+	// means the scan budget was spent before reaching the cursor, on a history
+	// larger than this server will walk, and it is a stopping point rather than
+	// something to retry — the same request will do the same thing.
 	Truncated bool `protobuf:"varint,2,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	// NextRunId is the segment this one handed over to, set when this run
 	// continued as new.
 	//
 	// Because a timeline is per run and a workload is not: a long-lived entity is
 	// a chain of segments, and a caller reading its whole account follows this.
-	NextRunId     string `protobuf:"bytes,3,opt,name=next_run_id,json=nextRunId,proto3" json:"next_run_id,omitempty"`
+	NextRunId string `protobuf:"bytes,3,opt,name=next_run_id,json=nextRunId,proto3" json:"next_run_id,omitempty"`
+	// PreviousRunId is the segment that handed over to this one, empty on the
+	// first.
+	//
+	// Forward traversal alone is a trap, which is what makes this worth its own
+	// field: omitting [GetTimelineRequest.run_id] resolves the *latest* segment,
+	// whose next_run_id is by definition empty — so a caller holding nothing but
+	// a workflow id could reach no earlier segment at all, and the chain was
+	// walkable only by somebody who had kept the original run id elsewhere
+	// (Codex, #1119).
+	PreviousRunId string `protobuf:"bytes,4,opt,name=previous_run_id,json=previousRunId,proto3" json:"previous_run_id,omitempty"`
+	// FirstRunId is the segment the workload began at, which is where a caller
+	// reading the whole of a long-lived entity should start.
+	//
+	// Both this and previous_run_id come off the history's own first event, which
+	// this read has in hand either way, so neither costs a round trip.
+	FirstRunId    string `protobuf:"bytes,5,opt,name=first_run_id,json=firstRunId,proto3" json:"first_run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1886,6 +1933,20 @@ func (x *GetTimelineResponse) GetTruncated() bool {
 func (x *GetTimelineResponse) GetNextRunId() string {
 	if x != nil {
 		return x.NextRunId
+	}
+	return ""
+}
+
+func (x *GetTimelineResponse) GetPreviousRunId() string {
+	if x != nil {
+		return x.PreviousRunId
+	}
+	return ""
+}
+
+func (x *GetTimelineResponse) GetFirstRunId() string {
+	if x != nil {
+		return x.FirstRunId
 	}
 	return ""
 }
@@ -2458,7 +2519,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x05files\x18\x01 \x03(\v2\x18.flowstate.v1.SourceFileB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10@R\x05files\"J\n" +
 	"\x10ValidateResponse\x126\n" +
-	"\x06report\x18\x01 \x01(\v2\x1e.flowstate.v1.ValidationReportR\x06report\"\x96\x01\n" +
+	"\x06report\x18\x01 \x01(\v2\x1e.flowstate.v1.ValidationReportR\x06report\"\xc5\x01\n" +
 	"\x12GetTimelineRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\n" +
@@ -2466,11 +2527,15 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x05runId\x12+\n" +
 	"\vmax_entries\x18\x03 \x01(\x05B\n" +
 	"\xbaH\a\x1a\x05\x18\x88'(\x00R\n" +
-	"maxEntries\"\x8a\x01\n" +
+	"maxEntries\x12-\n" +
+	"\x0eafter_event_id\x18\x04 \x01(\x03B\a\xbaH\x04\"\x02(\x00R\fafterEventId\"\xd4\x01\n" +
 	"\x13GetTimelineResponse\x125\n" +
 	"\aentries\x18\x01 \x03(\v2\x1b.flowstate.v1.TimelineEntryR\aentries\x12\x1c\n" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1e\n" +
-	"\vnext_run_id\x18\x03 \x01(\tR\tnextRunId\"J\n" +
+	"\vnext_run_id\x18\x03 \x01(\tR\tnextRunId\x12&\n" +
+	"\x0fprevious_run_id\x18\x04 \x01(\tR\rpreviousRunId\x12 \n" +
+	"\ffirst_run_id\x18\x05 \x01(\tR\n" +
+	"firstRunId\"J\n" +
 	"\x0eCompileRequest\x128\n" +
 	"\x04file\x18\x01 \x01(\v2\x18.flowstate.v1.SourceFileB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04file\"}\n" +
