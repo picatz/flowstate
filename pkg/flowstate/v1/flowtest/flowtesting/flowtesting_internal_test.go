@@ -839,3 +839,81 @@ func TestAPanicInTheRunFailsTheCaseRatherThanTheBinary(t *testing.T) {
 		"the original stack did not travel with the panic, so the report names this "+
 			"defer rather than where the run broke")
 }
+
+// TestTheRunGoroutinePublishesHoweverItEnds is the matrix, asserted rather
+// than reasoned about.
+//
+// The subtest waits on exactly one value from the goroutine running the case,
+// so any way that goroutine can end without publishing is a test that hangs
+// instead of failing. It can end three ways, and the third is the quiet one:
+// [runtime.Goexit], which is what [testing.TB.FailNow] does when a task
+// callback asserts against a [testing.T] it captured. Deferred functions run,
+// `recover` returns nil, and a handler written only for panics publishes
+// nothing at all (Codex, #1123).
+//
+// Enumerated here because this file has now been wrong about goroutine
+// ownership three times, each fix uncovering the next corner, and a list is
+// cheaper than another round.
+func TestTheRunGoroutinePublishesHoweverItEnds(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name string
+		run  func(v1.Debugger) flowtest.RunResult
+		want string
+	}{
+		{
+			name: "returns normally",
+			run:  func(v1.Debugger) flowtest.RunResult { return flowtest.RunResult{} },
+		},
+		{
+			name: "panics",
+			run:  func(v1.Debugger) flowtest.RunResult { panic("the stub exploded") },
+			want: "panicked",
+		},
+		{
+			// A callback inside the run calling require on a captured *testing.T.
+			name: "ends without returning",
+			run:  func(v1.Debugger) flowtest.RunResult { runtime.Goexit(); return flowtest.RunResult{} },
+			want: "without returning",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			subtest := &recorder{TB: t}
+			cfg := config{walkSet: true, walkCase: "it ships", walkDrive: func(*Walk) {}}
+
+			var raised string
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				// Standing in for what testing does around a subtest.
+				defer func() {
+					if value := recover(); value != nil {
+						raised = fmt.Sprint(value)
+					}
+				}()
+
+				walked(subtest, cfg, testCase.run)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the run goroutine ended by %s and published nothing, so the subtest "+
+					"waits forever instead of failing", testCase.name)
+			}
+
+			reported := raised + strings.Join(subtest.errors, "\n")
+			if testCase.want == "" {
+				assert.Empty(t, reported, "a run that returned normally reported a failure")
+
+				return
+			}
+
+			assert.Contains(t, reported, testCase.want,
+				"the run ended by %s and the case did not say so", testCase.name)
+		})
+	}
+}

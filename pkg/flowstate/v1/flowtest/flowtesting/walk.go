@@ -207,7 +207,13 @@ type ranCase struct {
 	result   flowtest.RunResult
 	panicked bool
 	value    any
-	stack    []byte
+
+	// abandoned is the third way that goroutine can end: [runtime.Goexit],
+	// which is what [testing.TB.FailNow] does, with no panic to recover and
+	// nothing returned.
+	abandoned bool
+
+	stack []byte
 }
 
 // walked runs one case under a session drive can move, and returns the case's
@@ -257,17 +263,35 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 	// takes a context and a file and reports what happened.
 	ran := make(chan ranCase, 1)
 	go func() {
-		// A panic in here — a stub's own callback, anything `flowtest.Run`
-		// reaches — is on a goroutine `testing` does not wrap, where it takes
-		// the whole test binary down instead of failing this case. It is the
-		// exact hazard that moving drive *off* a helper goroutine removed,
-		// arriving on the half that moved onto one, and the answer is to carry
-		// it back rather than to move the run again (Codex, #1123).
+		// This goroutine publishes exactly once, whichever of the three ways it
+		// ends, because the subtest is waiting on that one value and anything
+		// unpublished is a test that hangs rather than fails.
+		//
+		// It returns normally; or it panics — a stub's own callback, anything
+		// `flowtest.Run` reaches — which on a goroutine `testing` does not wrap
+		// would take the whole test binary down instead of failing this case;
+		// or it *Goexits*, because such a callback called `require` on a
+		// captured [testing.T] and [testing.TB.FailNow] is [runtime.Goexit].
+		// The last is the quiet one: deferred functions run, `recover` returns
+		// nil, and a handler that only publishes on a recovered panic publishes
+		// nothing at all (Codex, #1123).
+		returned := false
 		defer func() {
-			if value := recover(); value != nil {
-				_ = session.Close()
-				ran <- ranCase{panicked: true, value: value, stack: debug.Stack()}
+			if returned {
+				return
 			}
+
+			// Closed before publishing either way, so a driver still waiting
+			// for a stop is released rather than left to the join.
+			_ = session.Close()
+
+			if value := recover(); value != nil {
+				ran <- ranCase{panicked: true, value: value, stack: debug.Stack()}
+
+				return
+			}
+
+			ran <- ranCase{abandoned: true, stack: debug.Stack()}
 		}()
 
 		result := run(session)
@@ -282,6 +306,7 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 		// other hat.
 		_ = session.Close()
 
+		returned = true
 		ran <- ranCase{result: result}
 	}()
 
@@ -320,10 +345,32 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 				t.Log("walk:\n" + printed)
 			}
 
+			// A run that ended by failing an assertion of its own: some
+			// callback called `require` on a [testing.T] it had captured, and
+			// FailNow there stops that goroutine rather than this case. Said
+			// through Errorf rather than raised, because there is no panic to
+			// re-raise and the failure it names has already been recorded
+			// against whatever test the callback held.
+			if finished.abandoned {
+				t.Errorf("flowtesting: the walked case ended without returning, which is what "+
+					"require does when a task callback asserts against a testing.T it captured; "+
+					"FailNow there stops the run rather than failing this case\n\n%s",
+					finished.stack)
+
+				return
+			}
+
 			// Raised here, on the subtest's own goroutine, where `testing`
 			// recovers it into this case's failure. The original stack travels
 			// with it because the one this panic would otherwise carry is this
 			// defer's, which says nothing about where the run broke.
+			//
+			// The cost, since a defer is a place where two failures can meet: a
+			// driver that panicked *and* a run that panicked leaves only the
+			// run's, because raising here replaces the panic being unwound. The
+			// case fails either way and both are defects; losing one message in
+			// that pair is the price of not needing to ask whether this defer is
+			// already unwinding one.
 			if finished.panicked {
 				panic(fmt.Sprintf("flowtesting: the walked case panicked: %v\n\n%s",
 					finished.value, finished.stack))
