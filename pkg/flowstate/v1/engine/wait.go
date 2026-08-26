@@ -104,10 +104,16 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 // waitFor sleeps on a durable timer.
 func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 	if d > 0 {
-		// Sleep returns an error only when the run is cancelled, which must
+		// `NewTimerWithOptions` rather than `workflow.Sleep`, which is the same
+		// command with a fixed `Sleep` summary — see [sleepSummary] for why the
+		// step's own name is worth the extra line.
+		//
+		// The future returns an error only when the run is cancelled, which must
 		// propagate: a cancelled run has to stop waiting, and swallowing this
 		// would make a waiting step the one place cancellation does not reach.
-		if err := workflow.Sleep(e.ctx, d); err != nil {
+		timer := workflow.NewTimerWithOptions(e.ctx, d,
+			workflow.TimerOptions{Summary: sleepSummary(node.GetId())})
+		if err := timer.Get(e.ctx, nil); err != nil {
 			return nodeFailed(err)
 		}
 	}
@@ -251,7 +257,9 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
 		}
-		selector.AddFuture(workflow.NewTimer(timerCtx, timeout), func(workflow.Future) {})
+		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, timeout,
+			workflow.TimerOptions{Summary: waitTimeoutSummary(node.GetId())}),
+			func(workflow.Future) {})
 	}
 	selector.Select(e.ctx)
 

@@ -438,7 +438,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	vars := st.GetVars()
 	if len(vars) == 0 && len(st.GetWorkflow().GetVars()) > 0 {
 		var evaluated v1.Scope
-		if err := workflow.ExecuteActivity(ctx, WorkflowVars, &v1.Scope{
+		if err := workflow.ExecuteActivity(withSummary(ctx, runVarsSummary), WorkflowVars, &v1.Scope{
 			AmbientVars: st.GetWorkflow().GetVars(),
 			Profile:     st.GetWorkflow().GetProfile(),
 

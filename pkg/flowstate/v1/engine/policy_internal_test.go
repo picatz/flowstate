@@ -49,7 +49,7 @@ func TestDefaultActivityOptionsAreUnchangedByTheMove(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, want, activityOptionsFor(nil),
+	assert.Equal(t, want, activityOptionsFor(nil, ""),
 		"the durations moved to v1 and the behavior moved with them")
 
 	// Stated twice on purpose: the literals above are what the constants used to
@@ -94,7 +94,7 @@ func TestDeclaredTimeoutPrecedenceIsUnchangedByTheMove(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := activityOptionsFor(test.policy)
+			opts := activityOptionsFor(test.policy, "")
 			assert.Equal(t, test.startToClose, opts.StartToCloseTimeout)
 			assert.Equal(t, test.scheduleTo, opts.ScheduleToCloseTimeout)
 		})
@@ -137,7 +137,7 @@ func TestAStepWaitsForItsOwnCancellation(t *testing.T) {
 			BackoffCoefficient: 3,
 			MaxInterval:        durationpb.New(time.Minute),
 		},
-	})
+	}, stepSummary("declares_a_policy"))
 
 	assert.True(t, declared.WaitForCancellation,
 		"a step that declares a retry or a timeout stopped waiting for its own "+

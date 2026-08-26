@@ -555,7 +555,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		vars = e.resume[calleeDepth].GetCallVars()
 	} else if len(callee.GetVars()) > 0 {
 		var evaluated v1.Scope
-		if err := workflow.ExecuteActivity(e.ctx, WorkflowVars, &v1.Scope{
+		if err := workflow.ExecuteActivity(withSummary(e.ctx, callVarsSummary(node.GetId())), WorkflowVars, &v1.Scope{
 			AmbientVars: callee.GetVars(),
 			Profile:     v1.CalleeProfile(e.scope, callee),
 
@@ -767,7 +767,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		return nodeFailed(err)
 	}
 
-	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy()))
+	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy(), stepSummary(node.GetId())))
 
 	var out v1.Node_Outputs
 	var evalErr error
@@ -993,8 +993,11 @@ func (e *executor) dispatch(
 // deployment's task-shape policy evaluates a compensation against its real caller.
 //
 // The activity options are the ones a step with no `retry:` and no `timeout:`
-// gets, from `activityOptionsFor(nil)`. The local driver reaches the same defaults
-// through `runStepWithPolicy` with a nil policy, from the same constants.
+// gets, from `activityOptionsFor(nil, …)`. The local driver reaches the same
+// defaults through `runStepWithPolicy` with a nil policy, from the same
+// constants. The summary is the exception it does not share: history is a
+// durable-only object, and [undoStepSummary] is what keeps a saga unwinding
+// six steps from reading as six more steps running.
 //
 // The context is a parameter rather than `e.ctx` because a compensation triggered
 // by a cancellation must not run on the cancelled context — see [compensate],
@@ -1023,7 +1026,7 @@ func (e *executor) dispatch(
 func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, within time.Duration) error {
 	task := entry.GetTask()
 
-	opts := activityOptionsFor(nil)
+	opts := activityOptionsFor(nil, undoStepSummary(entry.GetStepId()))
 	budgetLimited := false
 	if within > 0 {
 		// Narrowed and never widened: a budget with more room left than a step's
