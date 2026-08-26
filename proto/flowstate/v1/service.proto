@@ -868,6 +868,32 @@ service WorkflowService {
   // caller: a short or empty page is not the end of the listing.
   rpc List(ListRequest) returns (ListResponse) {}
 
+  // GetTimeline reports what a run did, event by event, read back from its own
+  // durable history.
+  //
+  // [Get] answers what a run *is* — its status, where it has reached, what is
+  // mid-retry, what it is parked on. None of that survives the moment somebody
+  // most wants it: a run that has already failed has no now left to describe,
+  // and "which step, on which attempt, with what sentence, and what was it
+  // waiting for before that" is a question about the past. Locally the debugger
+  // answers it. For a run on a worker somewhere else this is the answer, and
+  // before it there was none through this service at all — an operator had to
+  // leave the tenancy boundary and ask the temporal CLI, exactly as they did
+  // for [GetResponse.pending_activities] before that field existed.
+  //
+  // Read-only in the strongest sense available: it starts nothing, signals
+  // nothing and changes nothing, so it is the one verb about a live workload
+  // that an agent can be pointed at unattended, as [Validate] is for a file.
+  //
+  // Authorized like every other verb addressing a run, and refused the same way
+  // — see [GetRequest]. A history is the whole account of a workload, so a
+  // timeline readable by whoever guessed an id would be a larger disclosure
+  // than [Get]'s, not a smaller one.
+  //
+  // Bounded, and it says when a bound was reached rather than letting a short
+  // answer read as a complete one — see [GetTimelineResponse.truncated].
+  rpc GetTimeline(GetTimelineRequest) returns (GetTimelineResponse) {}
+
   // Cancel asks a run to stop and lets it clean up on the way out.
   //
   // [CancelResponse] is empty: it says the stop request was accepted, not that
@@ -1048,6 +1074,71 @@ message ValidateResponse {
   // (which version of the grammar answered, how long it took) without changing
   // the shape a caller already parses.
   ValidationReport report = 1;
+}
+
+// GetTimelineRequest addresses one run and asks for a page of its account.
+message GetTimelineRequest {
+  // WorkflowId is the run to read, as [RunResponse.workflow_id] reports it.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 1024
+    }
+  ];
+
+  // RunId names one attempt of that workflow. Empty reads the latest, which is
+  // what a caller holding only a workflow id wants.
+  //
+  // Unlike [SignalRequest], where addressing a run rather than the workflow is
+  // a mistake with consequences, naming one here is ordinary: a workload that
+  // continued as new has a timeline per segment, and walking back through them
+  // is what [GetTimelineResponse.next_run_id] is for.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 1024}];
+
+  // MaxEntries bounds the answer. Zero means the server's default.
+  //
+  // A ceiling as well as a default, because a history is as long as a workload
+  // is busy and the caller does not pay for reading it.
+  int32 max_entries = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 5000
+  }];
+}
+
+// GetTimelineResponse is what one run did.
+message GetTimelineResponse {
+  // Entries are in the order they happened, oldest first, which is the order a
+  // history is written and the order an account is read.
+  repeated TimelineEntry entries = 1;
+
+  // Truncated is true when this is not the whole of this run's account.
+  //
+  // A flag rather than a cursor, and that is the design decision worth stating.
+  // A cursor over history would have to be Temporal's own, which means naming
+  // the Temporal namespace on the raw API — a fact this server does not hold,
+  // since a client is dialed for a namespace and never asked which. The unit
+  // that *is* bounded here is a run: the interpreter suspends through
+  // Continue-As-New precisely to keep one segment's history short, so "one
+  // run's account, whole" is a request this system is built to satisfy, and
+  // [GetTimelineResponse.next_run_id] walks the segments.
+  //
+  // Set for either of two reasons, deliberately not told apart: the answer hit
+  // its own bound, or the history read stopped short of the run's end. The
+  // second is checked against the *data* rather than the transport — a closed
+  // run's history ends with an event saying how it ended, so an account of a
+  // closed run that does not reach one is short however it came to be. That is
+  // the "not short, but claiming to be the whole of it" failure CLAUDE.md names,
+  // and the only defence against it is a check that does not trust the reader.
+  bool truncated = 2;
+
+  // NextRunId is the segment this one handed over to, set when this run
+  // continued as new.
+  //
+  // Because a timeline is per run and a workload is not: a long-lived entity is
+  // a chain of segments, and a caller reading its whole account follows this.
+  string next_run_id = 3;
 }
 
 // CompileRequest is one Flowfile to compile.

@@ -44,6 +44,9 @@ const (
 	WorkflowServiceSignalWithStartProcedure = "/flowstate.v1.WorkflowService/SignalWithStart"
 	// WorkflowServiceListProcedure is the fully-qualified name of the WorkflowService's List RPC.
 	WorkflowServiceListProcedure = "/flowstate.v1.WorkflowService/List"
+	// WorkflowServiceGetTimelineProcedure is the fully-qualified name of the WorkflowService's
+	// GetTimeline RPC.
+	WorkflowServiceGetTimelineProcedure = "/flowstate.v1.WorkflowService/GetTimeline"
 	// WorkflowServiceCancelProcedure is the fully-qualified name of the WorkflowService's Cancel RPC.
 	WorkflowServiceCancelProcedure = "/flowstate.v1.WorkflowService/Cancel"
 	// WorkflowServiceTerminateProcedure is the fully-qualified name of the WorkflowService's Terminate
@@ -150,6 +153,31 @@ type WorkflowServiceClient interface {
 	// walk all of them. See ListResponse.next_page_token for what that means for a
 	// caller: a short or empty page is not the end of the listing.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
+	// GetTimeline reports what a run did, event by event, read back from its own
+	// durable history.
+	//
+	// [Get] answers what a run *is* — its status, where it has reached, what is
+	// mid-retry, what it is parked on. None of that survives the moment somebody
+	// most wants it: a run that has already failed has no now left to describe,
+	// and "which step, on which attempt, with what sentence, and what was it
+	// waiting for before that" is a question about the past. Locally the debugger
+	// answers it. For a run on a worker somewhere else this is the answer, and
+	// before it there was none through this service at all — an operator had to
+	// leave the tenancy boundary and ask the temporal CLI, exactly as they did
+	// for [GetResponse.pending_activities] before that field existed.
+	//
+	// Read-only in the strongest sense available: it starts nothing, signals
+	// nothing and changes nothing, so it is the one verb about a live workload
+	// that an agent can be pointed at unattended, as [Validate] is for a file.
+	//
+	// Authorized like every other verb addressing a run, and refused the same way
+	// — see [GetRequest]. A history is the whole account of a workload, so a
+	// timeline readable by whoever guessed an id would be a larger disclosure
+	// than [Get]'s, not a smaller one.
+	//
+	// Bounded, and it says when a bound was reached rather than letting a short
+	// answer read as a complete one — see [GetTimelineResponse.truncated].
+	GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// [CancelResponse] is empty: it says the stop request was accepted, not that
@@ -319,6 +347,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("List")),
 			connect.WithClientOptions(opts...),
 		),
+		getTimeline: connect.NewClient[v1.GetTimelineRequest, v1.GetTimelineResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetTimelineProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetTimeline")),
+			connect.WithClientOptions(opts...),
+		),
 		cancel: connect.NewClient[v1.CancelRequest, v1.CancelResponse](
 			httpClient,
 			baseURL+WorkflowServiceCancelProcedure,
@@ -401,6 +435,7 @@ type workflowServiceClient struct {
 	signal           *connect.Client[v1.SignalRequest, v1.SignalResponse]
 	signalWithStart  *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
 	list             *connect.Client[v1.ListRequest, v1.ListResponse]
+	getTimeline      *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
 	cancel           *connect.Client[v1.CancelRequest, v1.CancelResponse]
 	terminate        *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 	validate         *connect.Client[v1.ValidateRequest, v1.ValidateResponse]
@@ -438,6 +473,11 @@ func (c *workflowServiceClient) SignalWithStart(ctx context.Context, req *connec
 // List calls flowstate.v1.WorkflowService.List.
 func (c *workflowServiceClient) List(ctx context.Context, req *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
 	return c.list.CallUnary(ctx, req)
+}
+
+// GetTimeline calls flowstate.v1.WorkflowService.GetTimeline.
+func (c *workflowServiceClient) GetTimeline(ctx context.Context, req *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error) {
+	return c.getTimeline.CallUnary(ctx, req)
 }
 
 // Cancel calls flowstate.v1.WorkflowService.Cancel.
@@ -570,6 +610,31 @@ type WorkflowServiceHandler interface {
 	// walk all of them. See ListResponse.next_page_token for what that means for a
 	// caller: a short or empty page is not the end of the listing.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
+	// GetTimeline reports what a run did, event by event, read back from its own
+	// durable history.
+	//
+	// [Get] answers what a run *is* — its status, where it has reached, what is
+	// mid-retry, what it is parked on. None of that survives the moment somebody
+	// most wants it: a run that has already failed has no now left to describe,
+	// and "which step, on which attempt, with what sentence, and what was it
+	// waiting for before that" is a question about the past. Locally the debugger
+	// answers it. For a run on a worker somewhere else this is the answer, and
+	// before it there was none through this service at all — an operator had to
+	// leave the tenancy boundary and ask the temporal CLI, exactly as they did
+	// for [GetResponse.pending_activities] before that field existed.
+	//
+	// Read-only in the strongest sense available: it starts nothing, signals
+	// nothing and changes nothing, so it is the one verb about a live workload
+	// that an agent can be pointed at unattended, as [Validate] is for a file.
+	//
+	// Authorized like every other verb addressing a run, and refused the same way
+	// — see [GetRequest]. A history is the whole account of a workload, so a
+	// timeline readable by whoever guessed an id would be a larger disclosure
+	// than [Get]'s, not a smaller one.
+	//
+	// Bounded, and it says when a bound was reached rather than letting a short
+	// answer read as a complete one — see [GetTimelineResponse.truncated].
+	GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// [CancelResponse] is empty: it says the stop request was accepted, not that
@@ -735,6 +800,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("List")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceGetTimelineHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetTimelineProcedure,
+		svc.GetTimeline,
+		connect.WithSchema(workflowServiceMethods.ByName("GetTimeline")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceCancelHandler := connect.NewUnaryHandler(
 		WorkflowServiceCancelProcedure,
 		svc.Cancel,
@@ -819,6 +890,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceSignalWithStartHandler.ServeHTTP(w, r)
 		case WorkflowServiceListProcedure:
 			workflowServiceListHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetTimelineProcedure:
+			workflowServiceGetTimelineHandler.ServeHTTP(w, r)
 		case WorkflowServiceCancelProcedure:
 			workflowServiceCancelHandler.ServeHTTP(w, r)
 		case WorkflowServiceTerminateProcedure:
@@ -870,6 +943,10 @@ func (UnimplementedWorkflowServiceHandler) SignalWithStart(context.Context, *con
 
 func (UnimplementedWorkflowServiceHandler) List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.List is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetTimeline is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {

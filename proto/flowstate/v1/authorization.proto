@@ -72,7 +72,7 @@ enum AuthorizationAction {
   // Starting work: Run and SignalWithStart, which starts a run.
   AUTHORIZATION_ACTION_WORKLOAD_RUN = 1;
 
-  // Reading a run: Get and List.
+  // Reading a run: Get, GetTimeline and List.
   AUTHORIZATION_ACTION_WORKLOAD_READ = 2;
 
   // Signaling a run that is already going.

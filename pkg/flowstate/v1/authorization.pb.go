@@ -54,7 +54,7 @@ const (
 	AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED AuthorizationAction = 0
 	// Starting work: Run and SignalWithStart, which starts a run.
 	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN AuthorizationAction = 1
-	// Reading a run: Get and List.
+	// Reading a run: Get, GetTimeline and List.
 	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ AuthorizationAction = 2
 	// Signaling a run that is already going.
 	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL AuthorizationAction = 3
