@@ -108,15 +108,18 @@ func parseDir(fset *token.FileSet, dir string) map[string][]source {
 		}
 
 		name := file.Name.Name
+		testing := testingImport(file)
 		packages[name] = append(packages[name], source{
-			file: file,
+			aliases: handleAliases(file, testing),
+			file:    file,
+			testify: testifyImports(file),
 			// Only a `_test.go` file holds tests the runner will call. An
 			// ordinary file may perfectly well declare `func TestFixture(t
 			// testing.TB)` as a helper for other packages to use, and judging
 			// that as a test would fail a build over a function `go test`
 			// never invokes (Codex, #1125).
 			isTest:  strings.HasSuffix(entry.Name(), "_test.go"),
-			testing: testingImport(file),
+			testing: testing,
 		})
 	}
 
@@ -134,6 +137,81 @@ type source struct {
 	// an alias where the file wrote one, "." for a dot import, and "" where the
 	// file does not import it at all.
 	testing string
+
+	// testify are the local names this file knows testify's assert and require
+	// packages by.
+	testify map[string]bool
+
+	// aliases maps a local name declared as an alias of a testing handle —
+	// `type T = testing.T` — to which handle it names. The runner honours such
+	// a declaration and a match on the qualified name alone does not.
+	aliases map[string]string
+}
+
+// testifyImports are the names a file knows testify's assertion packages by.
+//
+// Resolved rather than assumed, because the bare identifiers `assert` and
+// `require` are ordinary Go names that a test may perfectly well bind to
+// something else — and a call on one of those was reading as an assertion, so a
+// vacuous test holding an unrelated `require.Load()` walked past a check that
+// fails builds (Codex, #1125). Matched on the import path, so an alias works
+// and a local variable does not.
+func testifyImports(file *ast.File) map[string]bool {
+	names := map[string]bool{}
+
+	for _, imported := range file.Imports {
+		if imported.Path == nil {
+			continue
+		}
+
+		path := strings.Trim(imported.Path.Value, `"`)
+		if path != "github.com/stretchr/testify/assert" && path != "github.com/stretchr/testify/require" {
+			continue
+		}
+
+		if imported.Name != nil {
+			names[imported.Name.Name] = true
+
+			continue
+		}
+		names[path[strings.LastIndexByte(path, '/')+1:]] = true
+	}
+
+	return names
+}
+
+// handleAliases are the local names a file declares as an alias of a testing
+// handle.
+//
+// `type T = testing.T` is legal, and `go test` runs `func TestAliased(t *T)`
+// exactly as it runs any other — so a signature match on the qualified name
+// alone misses a real test entirely, neither reporting nor counting it
+// (Codex, #1125). Aliases only: `type T testing.T` is a *new* type the runner
+// will not accept, so it is correctly not one of these.
+func handleAliases(file *ast.File, testing string) map[string]string {
+	names := map[string]string{}
+
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.TypeSpec)
+		if !ok || !spec.Assign.IsValid() {
+			return true
+		}
+
+		// Which handle, not merely that it is one: the runner calls a `Test…`
+		// taking `*testing.T` and nothing else, so an alias of `testing.B` must
+		// not make one look like a test.
+		for _, handle := range []string{"T", "B", "F", "TB"} {
+			if named(spec.Type, testing, handle) {
+				names[spec.Name.Name] = handle
+
+				break
+			}
+		}
+
+		return true
+	})
+
+	return names
 }
 
 // testingImport is the name a file knows the standard `testing` package by.
@@ -176,6 +254,9 @@ type analyzed struct {
 	// handles are the names this function knows a *testing.T by, its own
 	// parameter and every closure's.
 	handles map[string]bool
+
+	// testify are the names its file knows testify's packages by.
+	testify map[string]bool
 }
 
 // analyzePackage reports the findings in one parsed package, and how many test
@@ -192,7 +273,14 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 		collectHandleFields(from, fields)
 	}
 
-	functions := map[string]*analyzed{}
+	// Keyed by name and holding *every* declaration of it, because two
+	// build-tagged files in one package may each declare `TestPlatform` — and
+	// storing one per name kept whichever the directory listing reached last,
+	// so the count was short and a vacuous variant could be hidden by an
+	// asserting one, depending on filename order (Codex, #1125). This walk
+	// groups by the `package` clause and ignores build tags on purpose, which
+	// is what makes the collision reachable here where it is not in a build.
+	functions := map[string][]*analyzed{}
 
 	// Methods are analysed too, and kept apart from the plain functions.
 	//
@@ -222,7 +310,7 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 
 				continue
 			}
-			functions[fn.Name.Name] = analysed
+			functions[fn.Name.Name] = append(functions[fn.Name.Name], analysed)
 		}
 	}
 
@@ -230,17 +318,22 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 	// helper is ordinary here. Iterated to a fixpoint rather than recursed,
 	// because mutual recursion between two test helpers is legal Go and a
 	// naive walk of it does not come back.
-	every := make([]*analyzed, 0, len(functions)+len(methods))
-	for _, fn := range functions {
-		every = append(every, fn)
+	var every []*analyzed
+	for _, sameName := range functions {
+		every = append(every, sameName...)
 	}
 	for _, sameName := range methods {
 		every = append(every, sameName...)
 	}
 
+	// Any declaration of the name asserting makes a call to it assert, which is
+	// the same safe direction the method collapsing takes: erring toward
+	// silence for a check that fails a build.
 	asserted := func(name string) bool {
-		if called, known := functions[name]; known && called.asserts {
-			return true
+		for _, called := range functions[name] {
+			if called.asserts {
+				return true
+			}
 		}
 		for _, called := range methods[name] {
 			if called.asserts {
@@ -286,37 +379,41 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 	var findings []Finding
 	tests := 0
 
-	for name, fn := range functions {
-		if !fn.isTest() {
-			continue
-		}
-		tests++
+	// Every declaration judged on its own, so a vacuous build-tagged variant is
+	// reported even where its sibling asserts.
+	for name, sameName := range functions {
+		for _, fn := range sameName {
+			if !fn.isTest() {
+				continue
+			}
+			tests++
 
-		if !fn.asserts {
-			if _, excused := suppressed(fn.decl.Doc, CheckUnasserted); excused {
+			if !fn.asserts {
+				if _, excused := suppressed(fn.decl.Doc, CheckUnasserted); excused {
+					continue
+				}
+
+				findings = append(findings, Finding{
+					Check: CheckUnasserted,
+					Test:  name,
+					Pos:   fset.Position(fn.decl.Pos()).String(),
+				})
+
 				continue
 			}
 
-			findings = append(findings, Finding{
-				Check: CheckUnasserted,
-				Test:  name,
-				Pos:   fset.Position(fn.decl.Pos()).String(),
-			})
+			if _, excused := suppressed(fn.decl.Doc, CheckConditional); excused {
+				continue
+			}
 
-			continue
-		}
-
-		if _, excused := suppressed(fn.decl.Doc, CheckConditional); excused {
-			continue
-		}
-
-		if loop, subject, found := conditionalClaim(fn, asserters); found {
-			findings = append(findings, Finding{
-				Check:  CheckConditional,
-				Test:   name,
-				Pos:    fset.Position(loop.Pos()).String(),
-				Detail: subject,
-			})
+			if loop, subject, found := conditionalClaim(fn, asserters); found {
+				findings = append(findings, Finding{
+					Check:  CheckConditional,
+					Test:   name,
+					Pos:    fset.Position(loop.Pos()).String(),
+					Detail: subject,
+				})
+			}
 		}
 	}
 
@@ -325,19 +422,25 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 
 // analyzeFunc reads one function for what it asserts and whom it calls.
 func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyzed {
-	out := &analyzed{decl: fn, from: from, calls: map[string]bool{}, handles: map[string]bool{}}
+	out := &analyzed{
+		decl:    fn,
+		from:    from,
+		calls:   map[string]bool{},
+		handles: map[string]bool{},
+		testify: from.testify,
+	}
 
 	for name := range fields {
 		out.handles[name] = true
 	}
-	namesHandles(fn.Type, from.testing, out.handles)
+	namesHandles(fn.Type, from, out.handles)
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		if lit, ok := node.(*ast.FuncLit); ok {
 			// A subtest's own `t`, and every other closure parameter that is
 			// one. Collected across the whole body rather than per-scope: this
 			// is a syntax walk, so the worst a shadowed name costs is that a
 			// call is read as an assertion, which is the safe direction.
-			namesHandles(lit.Type, from.testing, out.handles)
+			namesHandles(lit.Type, from, out.handles)
 		}
 
 		call, ok := node.(*ast.CallExpr)
@@ -345,7 +448,7 @@ func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyze
 			return true
 		}
 
-		if assertion(call, out.handles) {
+		if assertion(call, out.handles, out.testify) {
 			out.asserts = true
 		}
 		switch callee := call.Fun.(type) {
@@ -413,7 +516,7 @@ func collectHandleFields(from source, names map[string]bool) {
 		}
 
 		for _, field := range structure.Fields.List {
-			if !isTestingHandle(field.Type, from.testing) {
+			if !isTestingHandle(field.Type, from) {
 				continue
 			}
 			for _, name := range field.Names {
@@ -426,13 +529,13 @@ func collectHandleFields(from source, names map[string]bool) {
 }
 
 // namesHandles adds every parameter of a testing-handle type to names.
-func namesHandles(signature *ast.FuncType, testing string, names map[string]bool) {
+func namesHandles(signature *ast.FuncType, from source, names map[string]bool) {
 	if signature.Params == nil {
 		return
 	}
 
 	for _, param := range signature.Params.List {
-		if !isTestingHandle(param.Type, testing) {
+		if !isTestingHandle(param.Type, from) {
 			continue
 		}
 		for _, name := range param.Names {
@@ -469,6 +572,13 @@ func (a *analyzed) isTest() bool {
 	if !ok {
 		return false
 	}
+	// `testing.T` specifically. An alias of `testing.B` is a benchmark's
+	// handle, and the runner does not call a `Test…` taking one — which is why
+	// [handleAliases] records *which* handle each alias names rather than only
+	// that it is one.
+	if alias, ok := star.X.(*ast.Ident); ok && a.from.aliases[alias.Name] == "T" {
+		return true
+	}
 
 	return named(star.X, a.from.testing, "T")
 }
@@ -479,12 +589,15 @@ func (a *analyzed) isTest() bool {
 // Wider than [analyzed.isTest] deliberately: this decides which parameters are
 // a *handle to fail the test with*, and a helper taking `testing.TB` or a
 // benchmark's `*testing.B` can fail one just as well.
-func isTestingHandle(expr ast.Expr, testing string) bool {
+func isTestingHandle(expr ast.Expr, from source) bool {
 	if star, ok := expr.(*ast.StarExpr); ok {
 		expr = star.X
 	}
+	if alias, ok := expr.(*ast.Ident); ok && from.aliases[alias.Name] != "" {
+		return true
+	}
 
-	return named(expr, testing, "T", "B", "F", "TB")
+	return named(expr, from.testing, "T", "B", "F", "TB")
 }
 
 // named reports whether an expression is one of the given type names, qualified
@@ -532,17 +645,23 @@ func named(expr ast.Expr, testing string, names ...string) bool {
 // So a handle it is: the identifier the function knows its `*testing.T` by, or
 // a field of that type reached through one selector — `c.t.Fatalf(…)`, the
 // shape a test client wrapping the handle uses.
-func assertion(call *ast.CallExpr, handles map[string]bool) bool {
+func assertion(call *ast.CallExpr, handles, testify map[string]bool) bool {
+	// `if got != want { panic("mismatch") }` is a manual assertion, and the
+	// testing runner turns the panic into a failure. Checked before the
+	// selector below, because `panic` is a builtin called on nothing — so a
+	// test written that way was being reported fatally unasserted while doing
+	// the very thing the check looks for (Codex, #1125).
+	if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "panic" {
+		return true
+	}
+
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}
 
-	if pkg, ok := selector.X.(*ast.Ident); ok {
-		switch pkg.Name {
-		case "assert", "require":
-			return true
-		}
+	if pkg, ok := selector.X.(*ast.Ident); ok && testify[pkg.Name] {
+		return true
 	}
 
 	name := selector.Sel.Name

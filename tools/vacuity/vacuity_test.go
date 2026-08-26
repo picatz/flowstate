@@ -680,6 +680,216 @@ func TestThroughAQuietMethod(t *testing.T) {
 `)), "delegating to a method that asserts nothing was read as asserting")
 }
 
+// TestAManualFailureCountsAsAnAssertion covers the ways to fail a test that
+// are not a call on the handle.
+//
+// `if got != want { panic("mismatch") }` is a manual assertion — the testing
+// runner turns the panic into a failure — and it was being reported fatally
+// unasserted for doing exactly what the check looks for, because `panic` is a
+// builtin called on nothing and the walk wanted a selector (Codex, #1125). A
+// false positive on a check that fails a build is the expensive direction.
+func TestAManualFailureCountsAsAnAssertion(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyzedFixture(t, `
+func TestPanics(t *testing.T) {
+	got, want := 1, 2
+	if got != want {
+		panic("mismatch")
+	}
+}
+`), "a test that fails by panicking was called vacuous")
+
+	// And it propagates, so a helper written that way carries its callers.
+	assert.Empty(t, analyzedFixture(t, `
+func mustMatch(got, want int) {
+	if got != want {
+		panic("mismatch")
+	}
+}
+
+func TestThroughAPanickingHelper(t *testing.T) {
+	mustMatch(1, 1)
+}
+`), "a helper that fails by panicking did not carry its caller")
+}
+
+// TestTheAssertionPackagesAreResolvedNotGuessed keeps an unrelated name from
+// silencing the check.
+//
+// `assert` and `require` are ordinary Go identifiers. A call on one was read as
+// an assertion whatever it was bound to, so a vacuous test holding a fixture
+// call like `require.Load()` walked past a check that fails builds
+// (Codex, #1125). They are matched by import path now, so an alias works and a
+// local variable does not.
+func TestTheAssertionPackagesAreResolvedNotGuessed(t *testing.T) {
+	t.Parallel()
+
+	findings, _ := analyzedFile(t, "shadowed_test.go", `package fixture
+
+import "testing"
+
+type loader struct{}
+
+func (l loader) Load() int { return 1 }
+
+func TestShadowed(t *testing.T) {
+	require := loader{}
+	_ = require.Load()
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a local value named `require` silenced the check")
+
+	// An alias of the real package is the real thing.
+	findings, _ = analyzedFile(t, "aliased_testify_test.go", `package fixture
+
+import (
+	"testing"
+
+	req "github.com/stretchr/testify/require"
+)
+
+func TestAliasedTestify(t *testing.T) {
+	req.NotZero(t, 1)
+}
+`)
+	assert.Empty(t, findings, "testify imported under an alias was not recognised")
+}
+
+// TestASkipIsAboutTheCollectionItNames matches the guard to the loop.
+//
+// A boolean answer settled every finding in the function, so a skip on one
+// collection stood in for a claim about another: `if len(optional) == 0 {
+// t.Skip(…) }` before a loop over `Cases()` silenced a finding about `Cases()`,
+// which is still empty and still makes every assertion disappear
+// (Codex, #1125).
+func TestASkipIsAboutTheCollectionItNames(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, []string{string(CheckConditional)}, checksFound(analyzedFixture(t, `
+func TestGuardsTheWrongThing(t *testing.T) {
+	optional := conformance.Optional()
+	if len(optional) == 0 {
+		t.Skip("nothing optional here")
+	}
+
+	for _, one := range conformance.Cases() {
+		require.NotZero(t, one)
+	}
+}
+`)), "a skip about one collection settled a finding about another")
+
+	// Naming the loop's own subject settles it.
+	assert.Empty(t, analyzedFixture(t, `
+func TestGuardsTheRightThing(t *testing.T) {
+	cases := conformance.Cases()
+	if len(cases) == 0 {
+		t.Skip("nothing to check")
+	}
+
+	for _, one := range cases {
+		require.NotZero(t, one)
+	}
+}
+`), "a skip about the loop's own subject did not settle it")
+}
+
+// TestBuildTaggedDeclarationsAreEachJudged keeps one variant from hiding
+// another.
+//
+// This walk groups files by their `package` clause and ignores build tags on
+// purpose, which is what lets it read every variant — and is also what makes
+// two files declaring `TestPlatform` land on one key. Storing one per name kept
+// whichever the directory listing reached last, so the count was short and a
+// vacuous variant could be hidden by an asserting one depending on filename
+// order (Codex, #1125).
+func TestBuildTaggedDeclarationsAreEachJudged(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a_linux_test.go"), []byte(`//go:build linux
+
+package fixture
+
+import "testing"
+
+func TestPlatform(t *testing.T) {
+	_ = 1
+}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "z_windows_test.go"), []byte(`//go:build windows
+
+package fixture
+
+import "testing"
+
+func TestPlatform(t *testing.T) {
+	t.Fatal("no")
+}
+`), 0o600))
+
+	findings, tests, err := Analyze(dir)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, tests, "two declarations of one name were counted as %d", tests)
+	require.Len(t, findings, 1,
+		"the vacuous variant was hidden by its asserting sibling, or reported twice")
+	assert.Contains(t, findings[0].Pos, "a_linux_test.go",
+		"the finding names the wrong variant")
+}
+
+// TestALocalAliasOfTheHandleIsOne is the other spelling `go test` honours.
+//
+// `type T = testing.T; func TestAliased(t *T)` runs like any other test, and a
+// match on the qualified name alone misses it entirely — neither reported nor
+// counted, where the test-count floor cannot reveal one omission
+// (Codex, #1125).
+func TestALocalAliasOfTheHandleIsOne(t *testing.T) {
+	t.Parallel()
+
+	findings, tests := analyzedFile(t, "alias_test.go", `package fixture
+
+import "testing"
+
+type T = testing.T
+
+func TestAliased(t *T) {
+	_ = 1
+}
+`)
+	require.Equal(t, 1, tests, "a test taking a local alias of the handle was not counted")
+	assert.Len(t, findings, 1, "a vacuous test taking an alias was not reported")
+
+	// An alias of a *different* handle is not the runner's signature: it calls
+	// a `Test…` taking `*testing.T` and nothing else.
+	_, tests = analyzedFile(t, "benchalias_test.go", `package fixture
+
+import "testing"
+
+type B = testing.B
+
+func TestNotReally(t *B) {
+	_ = 1
+}
+`)
+	assert.Zero(t, tests, "a `Test…` taking an alias of testing.B was counted as a test")
+
+	// And a defined type is a new type the runner will not accept, however it
+	// is spelled.
+	_, tests = analyzedFile(t, "defined_test.go", `package fixture
+
+import "testing"
+
+type Own testing.T
+
+func TestDefined(t *Own) {
+	_ = 1
+}
+`)
+	assert.Zero(t, tests, "a defined type over the handle was counted as the handle")
+}
+
 // TestTestdataIsNotWalked keeps fixtures for other tests out of the report.
 //
 // `testdata` is Go's own convention for source that is not the package's, and

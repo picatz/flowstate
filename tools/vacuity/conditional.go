@@ -45,16 +45,23 @@ func conditionalClaim(fn *analyzed, asserters map[string]bool) (loop ast.Node, s
 	// above cannot see: a skip is not a failure, so nothing in it looks like an
 	// assertion — but a test that skips itself rather than passing silently is
 	// reporting the emptiness, which is the whole ask.
-	if skipsWhenEmpty(fn.decl.Body) {
-		return nil, "", false
-	}
+	//
+	// Matched to the loop rather than to the test. A boolean here settled every
+	// finding in the function, so `if len(optional) == 0 { t.Skip(…) }` before a
+	// loop over `Cases()` silenced a finding about `Cases()` — a guard on one
+	// collection standing in for a claim about another (Codex, #1125).
+	guarded := skipsWhenEmpty(fn.decl.Body)
 
 	for _, stmt := range ranges {
 		name, countable := rangeSubject(stmt, fn.decl)
 		if countable {
 			continue
 		}
-		if !holdsAssertion(stmt, fn.handles, asserters) {
+		if guarded[render(stmt.X)] {
+			// This loop's own subject is the one the skip is about.
+			continue
+		}
+		if !holdsAssertion(stmt, fn.handles, fn.testify, asserters) {
 			continue
 		}
 
@@ -74,7 +81,7 @@ func assertsOutsideLoops(fn *analyzed, asserters map[string]bool) bool {
 		if !ok {
 			return true
 		}
-		if assertion(call, fn.handles) || handsOverTheHandle(call.Args, fn.handles) {
+		if assertion(call, fn.handles, fn.testify) || handsOverTheHandle(call.Args, fn.handles) {
 			outside = true
 		}
 		if name, ok := call.Fun.(*ast.Ident); ok && asserters[name.Name] {
@@ -118,8 +125,8 @@ func inspectOutsideLoops(body ast.Node, visit func(ast.Node) bool) {
 //
 // A skip is the one guard that does not read as an assertion and still means
 // the emptiness was noticed.
-func skipsWhenEmpty(body ast.Node) bool {
-	skips := false
+func skipsWhenEmpty(body ast.Node) map[string]bool {
+	skips := map[string]bool{}
 
 	inspectOutsideLoops(body, func(node ast.Node) bool {
 		stmt, ok := node.(*ast.IfStmt)
@@ -132,8 +139,8 @@ func skipsWhenEmpty(body ast.Node) bool {
 		// times and the test still passes having claimed nothing — while the
 		// report goes quiet about it, which is worse than never having looked
 		// (Codex, #1125).
-		if emptiness(stmt.Cond) && skipsWithin(stmt.Body) {
-			skips = true
+		if subject, ok := emptiness(stmt.Cond); ok && skipsWithin(stmt.Body) {
+			skips[render(subject)] = true
 		}
 
 		return true
@@ -162,17 +169,17 @@ func skipsWithin(block ast.Node) bool {
 }
 
 // emptiness reports whether a condition is true exactly when something is
-// empty.
+// empty, and what that something is.
 //
 // The three spellings people use — `len(x) == 0`, `len(x) < 1`, `len(x) <= 0` —
 // in either operand order. Anything else is refused rather than guessed at: a
 // condition this cannot read is one whose taken branch might be the non-empty
 // case, and settling a finding on that basis is how a check goes quiet about
 // the thing it was written for.
-func emptiness(expr ast.Expr) bool {
-	compare, ok := expr.(*ast.BinaryExpr)
-	if !ok {
-		return false
+func emptiness(expr ast.Expr) (subject ast.Expr, ok bool) {
+	compare, is := expr.(*ast.BinaryExpr)
+	if !is {
+		return nil, false
 	}
 
 	length, bound, operator := compare.X, compare.Y, compare.Op
@@ -191,19 +198,24 @@ func emptiness(expr ast.Expr) bool {
 		}
 	}
 	if !callsLen(length) {
-		return false
+		return nil, false
+	}
+	// What `len` was called on, which is what the guard is a claim about.
+	inside := length.(*ast.CallExpr).Args
+	if len(inside) != 1 {
+		return nil, false
 	}
 
 	switch operator {
 	case token.EQL:
-		return isInt(bound, 0)
+		return inside[0], isInt(bound, 0)
 	case token.LSS:
-		return isInt(bound, 1)
+		return inside[0], isInt(bound, 1)
 	case token.LEQ:
-		return isInt(bound, 0)
+		return inside[0], isInt(bound, 0)
 	}
 
-	return false
+	return nil, false
 }
 
 // callsLen reports whether an expression is a call to len.
@@ -229,14 +241,14 @@ func isInt(expr ast.Expr, want int) bool {
 }
 
 // holdsAssertion reports whether a node contains a claim.
-func holdsAssertion(node ast.Node, handles, asserters map[string]bool) bool {
+func holdsAssertion(node ast.Node, handles, testify, asserters map[string]bool) bool {
 	found := false
 	ast.Inspect(node, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if assertion(call, handles) || handsOverTheHandle(call.Args, handles) {
+		if assertion(call, handles, testify) || handsOverTheHandle(call.Args, handles) {
 			found = true
 		}
 		if name, ok := call.Fun.(*ast.Ident); ok && asserters[name.Name] {
