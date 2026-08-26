@@ -8,7 +8,9 @@ import (
 
 	"connectrpc.com/connect"
 	enums "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -361,13 +363,13 @@ func (s *FlowstateServer) timelineEntry(
 		attrs := event.GetActivityTaskFailedEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_FAILED
 		ended(attrs.GetScheduledEventId())
-		entry.Failure = boundedFailure(attrs.GetFailure().GetMessage())
+		entry.Failure = s.failureMessage(attrs.GetFailure())
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
 		attrs := event.GetActivityTaskTimedOutEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_TIMED_OUT
 		ended(attrs.GetScheduledEventId())
-		entry.Failure = boundedFailure(attrs.GetFailure().GetMessage())
+		entry.Failure = s.failureMessage(attrs.GetFailure())
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_CANCELED
@@ -406,7 +408,7 @@ func (s *FlowstateServer) timelineEntry(
 		//
 		// The row is about the attempt that ended, not the one starting now.
 		entry.Attempt = attrs.GetAttempt() - 1
-		entry.Failure = boundedFailure(attrs.GetLastFailure().GetMessage())
+		entry.Failure = s.failureMessage(attrs.GetLastFailure())
 
 		// A timeout and an error are different diagnoses and read identically
 		// in a message-only report, so the failure's own shape decides the
@@ -461,7 +463,7 @@ func (s *FlowstateServer) timelineEntry(
 
 	case enums.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
 		entry.Kind = v1.TimelineEntry_KIND_RUN_ENDED
-		entry.Failure = boundedFailure(event.GetWorkflowExecutionFailedEventAttributes().GetFailure().GetMessage())
+		entry.Failure = s.failureMessage(event.GetWorkflowExecutionFailedEventAttributes().GetFailure())
 
 	default:
 		return nil
@@ -483,6 +485,57 @@ func (s *FlowstateServer) timelineEntry(
 // there is more".
 func timelineFits(assembled, size, entries int) bool {
 	return entries == 0 || assembled+size <= maxTimelineBytes
+}
+
+// failureMessage is what a failure says, read through the deployment's own
+// converter and cut to [maxTimelineFailureBytes].
+//
+// The decode is not an optimisation. When a payload codec is configured,
+// Flowstate turns on the SDK's failure encoding with it (see
+// `payloadcodec.Config.FailureConverter`), which is what keeps a rejected
+// value out of history in the clear — and it does that by moving the real
+// message into `encoded_attributes` and writing the literal string "Encoded
+// failure" in its place. So reading `GetMessage()` on such a deployment
+// reports "Encoded failure" for every failure in the account: the timeline
+// would be structurally perfect and diagnostically empty on exactly the
+// deployments that care most about what their runs did (Codex, #1119).
+//
+// Only when something was encoded, so a deployment without a codec takes the
+// path it always took. And through [converter.DecodeCommonFailureAttributes]
+// rather than the failure converter's FailureToError, because that builds the
+// whole error chain and its Error() would then carry every level's text — the
+// one thing [v1.TimelineEntry.Failure] promises not to report.
+//
+// On a copy, because the failure belongs to a history event this walk is
+// reading rather than owning.
+func (s *FlowstateServer) failureMessage(failure *failurepb.Failure) string {
+	return boundedFailure(s.decodedFailureMessage(failure))
+}
+
+// decodedFailureMessage is the decode without the bound, for the reader that
+// needs the first and must not have the second.
+//
+// [FlowstateServer.pendingActivities] reports a handful of retrying steps on a
+// response about one run, not thousands of entries assembled against a byte
+// budget — so the aggregate the timeline's cap exists for does not arise there,
+// and quietly shortening a message [v1.PendingActivity.LastFailure] has always
+// returned whole would be changing that RPC's contract as a side effect of
+// fixing a different defect. Whether it should be bounded too is a real
+// question and a separate one.
+func (s *FlowstateServer) decodedFailureMessage(failure *failurepb.Failure) string {
+	if failure == nil {
+		return ""
+	}
+
+	if failure.GetEncodedAttributes() != nil {
+		decoded, ok := proto.Clone(failure).(*failurepb.Failure)
+		if ok {
+			converter.DecodeCommonFailureAttributes(s.dataConverter, decoded)
+			failure = decoded
+		}
+	}
+
+	return failure.GetMessage()
 }
 
 // boundedFailure is a failure's message, cut to [maxTimelineFailureBytes].

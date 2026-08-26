@@ -2055,7 +2055,15 @@ func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkfl
 			// The message alone rather than the whole failure chain: the chain
 			// repeats what the attempt count already says, and the outermost
 			// message is the sentence the task classified its own failure into.
-			LastFailure: info.GetLastFailure().GetMessage(),
+			//
+			// Through the deployment's own converter, because a codec-configured
+			// deployment has the real message in `encoded_attributes` and the
+			// literal string "Encoded failure" in its place — so this reported
+			// "Encoded failure" as the reason every retrying step was retrying,
+			// which is the answer to "why has this been RUNNING for six hours"
+			// made useless on the deployments most likely to be asking. Found
+			// while fixing the same read one file over (Codex, #1119).
+			LastFailure: s.decodedFailureMessage(info.GetLastFailure()),
 		}
 
 		// Only when Temporal set one: an attempt running right now has no next

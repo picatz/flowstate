@@ -296,6 +296,14 @@ terminal event names an attempt at all: `ActivityTaskFailed` references the
 scheduling and the start and stops there, so the account carries the number
 forward from the start it belongs to.
 
+Failure text is read through the deployment's own converter, which matters on
+one shape in particular: a deployment running a payload codec has Flowstate's
+failure encoding on with it — that is what keeps a rejected value out of history
+in the clear — and the encoding moves the real message into `encoded_attributes`
+and writes the literal string `Encoded failure` in its place. Read naively, a
+timeline there would be structurally perfect and diagnostically empty. `flow
+get`'s account of a retrying step reads it the same way, for the same reason.
+
 A failure's message is bounded, and says so when it was cut. A task fails with
 whatever string it likes, and a run started by an outside party is not ours to
 assume anything about; the answer as a whole stops against a byte budget too,

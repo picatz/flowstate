@@ -220,3 +220,46 @@ func TestASegmentThatContinuedAsNewIsClosed(t *testing.T) {
 		assert.Equal(t, closed, segmentClosed(status), "status %s", status)
 	}
 }
+
+// TestAnEncodedFailureStillSaysWhatWentWrong covers the deployments that care
+// most about what their runs did.
+//
+// When a payload codec is configured, Flowstate turns on the SDK's failure
+// encoding with it — that is what keeps a rejected value out of history in the
+// clear — and the encoding works by moving the real message into
+// `encoded_attributes` and writing the literal string "Encoded failure" in its
+// place. Reading `GetMessage()` there gives a timeline that is structurally
+// perfect and diagnostically empty: every failure row says "Encoded failure"
+// (Codex, #1119).
+//
+// The encoding step is the same whether or not the payload is then encrypted —
+// a codec only changes what the payload bytes look like — so this exercises the
+// real round trip through the SDK's own encoder without needing a codec.
+func TestAnEncodedFailureStillSaysWhatWentWrong(t *testing.T) {
+	t.Parallel()
+
+	const message = "refused: card ending 4242 is not accepted"
+
+	server := mustNew(t, nil)
+
+	encoded := &failurepb.Failure{Message: message}
+	require.NoError(t, converter.EncodeCommonFailureAttributes(
+		converter.GetDefaultDataConverter(), encoded))
+
+	// The premise, asserted rather than assumed: this is what history holds.
+	require.Equal(t, "Encoded failure", encoded.GetMessage())
+	require.NotNil(t, encoded.GetEncodedAttributes())
+
+	assert.Equal(t, message, server.failureMessage(encoded),
+		"a timeline on a codec-configured deployment reports the placeholder instead "+
+			"of the diagnosis, for every failure it has")
+
+	// The failure the walk read is not the one it changed.
+	assert.Equal(t, "Encoded failure", encoded.GetMessage(),
+		"reading a failure rewrote the history event it came from")
+
+	// A deployment with no codec takes the path it always took.
+	assert.Equal(t, "connection refused",
+		server.failureMessage(&failurepb.Failure{Message: "connection refused"}))
+	assert.Empty(t, server.failureMessage(nil))
+}
