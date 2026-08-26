@@ -361,6 +361,7 @@ const (
 	scopeGroupSteps        = "steps"
 	scopeGroupVars         = "vars"
 	scopeGroupWorkflowVars = "workflow vars"
+	scopeGroupInputs       = "inputs"
 )
 
 // scopeNames is what the paused run can reach, grouped as the prompt groups it.
@@ -406,6 +407,13 @@ func (s *Session) scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names 
 	// `vars:`, and those are what `vars.` reaches (complete.go:280-282).
 	add(scopeGroupVars, "", sortedKeys(scope.GetVars()))
 	add(scopeGroupWorkflowVars, "inspect vars.", sortedKeys(scope.GetAmbientVars()))
+
+	// The arguments the run was started with, which completion has offered
+	// since it learned the `inputs.` root (complete.go:305) and this collector
+	// did not. A value surface narrower than what [Session.Evaluate] resolves
+	// is the failure this function's own comment warns about, so leaving it out
+	// made the warning describe the code (Codex, #1120).
+	add(scopeGroupInputs, "inspect inputs.", sortedKeys(scope.GetInputs()))
 
 	return groups
 }

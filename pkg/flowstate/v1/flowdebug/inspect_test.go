@@ -1,6 +1,7 @@
 package flowdebug_test
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -107,12 +108,25 @@ func TestTheValueSurfaceWithholdsWhatThePromptWithholds(t *testing.T) {
 	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
 		defer close(answers)
 
-		text, _, err := s.Evaluate(t.Context(), "steps.deploy.token")
+		text, value, err := s.Evaluate(t.Context(), "steps.deploy.token")
 		if assert.NoError(t, err) {
 			assert.NotContains(t, text, "hunter2",
 				"a secret the prompt redacts came back in the clear to a caller that "+
 					"asked for it as a value instead of typing `inspect`")
 			assert.Contains(t, text, "redacted")
+
+			// The half the first draft of this test missed, and the half that
+			// matters most: an adapter expanding a variable in a pane reads
+			// the *value*, not the rendering. Asserting only on the text is
+			// perfectly satisfied by a method that redacts what it prints and
+			// hands the secret out beside it (Codex, #1120).
+			//
+			// This session has a text redactor and no value redactor, which is
+			// a reachable configuration — the two are installed independently
+			// — and it is the one that must fail closed: told there is
+			// something to withhold, with no way to withhold it structurally.
+			assert.Nil(t, value,
+				"a session that cannot redact a structured value handed one out anyway")
 		}
 	}}
 
@@ -172,4 +186,145 @@ func (a *probing) Prompt() (string, error) {
 	a.at++
 
 	return line, nil
+}
+
+// TestEvaluateRefusesAnExpressionTooLargeToParse is the bound a console reader
+// owes and a caller reaching past it does not.
+//
+// `MaxCommandBytes` is enforced on the way in by whatever reads a typed line,
+// so the text path was bounded by the surface it arrives on — and this method
+// arrives on no surface at all. `DefaultCostLimit` bounds *evaluation*, which
+// happens after a parse, so an expression large enough to be a problem is one
+// the cost limit never sees (Codex, #1120).
+func TestEvaluateRefusesAnExpressionTooLargeToParse(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		huge := strings.Repeat("a+", flowdebug.MaxCommandBytes)
+
+		_, _, err := s.Evaluate(t.Context(), huge)
+		require.Error(t, err, "an expression past the bound reached the parser")
+		assert.ErrorIs(t, err, flowdebug.ErrExpressionTooLarge,
+			"the refusal is indistinguishable from an expression that did not compile")
+
+		// And the bound is a bound rather than a wall: an ordinary expression
+		// still answers.
+		_, _, err = s.Evaluate(t.Context(), "1 + 1")
+		assert.NoError(t, err)
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), v1.NewScope(v1.CurrentProfile, nil), nil, []string{"a failure"})
+	<-done
+}
+
+// TestScopeNamesTheInputsEvaluateCanResolve keeps the value surface as wide as
+// the run.
+//
+// `inputs.<name>` resolves through the same activation `Evaluate` uses and has
+// been offered by completion since it learned the root, so a collector that
+// omitted it made the value surface narrower than both — which is the failure
+// its own comment warns about (Codex, #1120).
+func TestScopeNamesTheInputsEvaluateCanResolve(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Inputs = map[string]*v1.Value{
+		"environment": v1.NewLiteral("staging"),
+		"release":     v1.NewLiteral("v2.1.0"),
+	}
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		groups, err := s.Scope()
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"environment", "release"}, namesOf(groups, "inputs"),
+			"the arguments the run was started with are resolvable and unlistable")
+
+		// The join that makes it a real claim rather than a listing: every name
+		// the scope offers is one Evaluate can actually answer.
+		for _, name := range namesOf(groups, "inputs") {
+			_, _, evalErr := s.Evaluate(t.Context(), "inputs."+name)
+			assert.NoError(t, evalErr, "scope named %q and Evaluate cannot resolve it", name)
+		}
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+	<-done
+}
+
+// TestAValueRedactorIsWhatMakesTheStructuredAnswerAvailable is the other arm of
+// the same decision.
+//
+// Failing closed is only defensible if the open path exists: a session that
+// *can* redact a structured value hands back the redacted one, so an adapter
+// on a properly configured deployment gets what it needs to expand a variable.
+// Without this, "withhold when unsure" would be indistinguishable from "never
+// return a value at all".
+func TestAValueRedactorIsWhatMakesTheStructuredAnswerAvailable(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		text, value, err := s.Evaluate(t.Context(), "steps.deploy.token")
+		require.NoError(t, err)
+
+		assert.NotContains(t, text, "hunter2")
+		require.NotNil(t, value,
+			"a session that can redact a structured value withheld it anyway, so an "+
+				"adapter can never expand a variable")
+		assert.NotContains(t, fmt.Sprintf("%v", value.Value()), "hunter2",
+			"the structured value carried the secret")
+		assert.Contains(t, fmt.Sprintf("%v", value.Value()), "redacted")
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.SetRedactor(func(text string) string {
+		if strings.Contains(text, "hunter2") {
+			return "[redacted]"
+		}
+
+		return text
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && strings.Contains(text, "hunter2") {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	session.Autopsy(t.Context(), &v1.Scope{
+		Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+			"deploy": {NamedValues: map[string]*v1.Value{"token": v1.NewLiteral("hunter2")}},
+		}},
+	}, nil, []string{"a failure"})
+	<-done
 }
