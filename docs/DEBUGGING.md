@@ -282,8 +282,8 @@ different fact from five steps failing once.
 ```
 TIME      WHAT     STEP        DETAIL
 10:14:02  step     `charge`    attempt 1
-10:14:04  failed   `charge`    attempt 1 after: connection refused
-10:14:09  failed   `charge`    attempt 2 after: connection refused
+10:14:04  failed   `charge`    attempt 1: connection refused
+10:14:09  failed   `charge`    attempt 2: connection refused
 10:14:24  done     `charge`    attempt 3
 ```
 

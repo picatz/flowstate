@@ -187,19 +187,33 @@ func timelineKindLabel(kind v1.TimelineEntry_Kind) string {
 	}
 }
 
-// timelineDetail is the rightmost column: the attempt when there was more than
-// one, and the failure's sentence when there was one.
+// timelineDetail is the rightmost column: which try this row is about, and the
+// failure's sentence when there was one.
 //
-// The attempt is shown only past the first, because "attempt 1" on every row is
-// a column of noise, and a run that never retried should read as one that never
-// retried.
+// The two halves have different rules, and getting that wrong is how a column
+// becomes noise or a fact goes missing.
+//
+// A row carrying a failure always names its attempt, because that is the whole
+// reason to read a failure row: a step failing on attempt 1 and a step failing
+// on attempt 5 are different situations, and the sentence is usually identical
+// in both. Zero is the exception — a run-level failure is not an attempt at
+// anything — so it prints the sentence alone.
+//
+// A row that succeeded names its attempt only past the first, because every
+// scheduling now carries attempt 1 and "attempt 1" down the whole column says
+// nothing. A run that never retried should read as one that never retried.
 func timelineDetail(entry *v1.TimelineEntry) string {
+	failure := entry.GetFailure()
+	attempt := entry.GetAttempt()
+
 	switch {
-	case entry.GetAttempt() > 1 && entry.GetFailure() != "":
-		return fmt.Sprintf("attempt %d after: %s", entry.GetAttempt(), entry.GetFailure())
-	case entry.GetAttempt() > 1:
-		return fmt.Sprintf("attempt %d", entry.GetAttempt())
+	case failure != "" && attempt > 0:
+		return fmt.Sprintf("attempt %d: %s", attempt, failure)
+	case failure != "":
+		return failure
+	case attempt > 1:
+		return fmt.Sprintf("attempt %d", attempt)
 	default:
-		return entry.GetFailure()
+		return ""
 	}
 }

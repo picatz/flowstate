@@ -73,11 +73,15 @@ const (
 	// out before reaching the cursor would make the tail of a long run
 	// unreachable, which is the dead end this resumption exists to remove.
 	//
-	// Comfortably above what Temporal will let one run's history grow to under
-	// its own defaults, so the ordinary case is that the walk always reaches
-	// the end. A deployment that raised those limits far enough gets a
-	// truncated answer rather than a wrong one, and an empty truncated answer
-	// says so plainly — see [v1.GetTimelineResponse.Truncated].
+	// Sized against the number rather than against a feeling: Temporal
+	// force-terminates an execution at 51,200 history events, which is the
+	// figure [v1.MaxAtomicBlockActivities] is itself derived from. So this
+	// covers any history that can exist under those defaults several times
+	// over, and the ordinary case is that the walk always reaches the end.
+	//
+	// A deployment that raised that cap far enough gets a truncated answer
+	// rather than a wrong one, and an empty truncated answer says so plainly —
+	// see [v1.GetTimelineResponse.Truncated].
 	maxTimelineScan = 200_000
 
 	// maxTimelineFailureBytes bounds one failure message.
@@ -139,9 +143,12 @@ func (s *FlowstateServer) GetTimeline(
 	//
 	// Both are dropped when that work ends, which is what bounds them: an
 	// entry lives from a scheduling to its own ending, so what is held is the
-	// work in flight rather than everything the run has ever done. Without
-	// that a walk over a long history would accumulate a row per activity on
-	// the read path, charged to whoever asked.
+	// work in flight rather than everything the run has ever done — and the
+	// engine already bounds that, at [v1.MaxAtomicBlockActivities], since work
+	// in flight at once is exactly what a suspension-opaque block's ceiling
+	// counts. Without the drop, a walk over a long history would instead
+	// accumulate a row per activity the run has *ever* scheduled, on the read
+	// path, charged to whoever asked.
 	inFlight := map[int64]*activityInFlight{}
 
 	history := temporal.GetWorkflowHistory(ctx, execution.GetWorkflowId(), execution.GetRunId(),

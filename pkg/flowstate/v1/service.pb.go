@@ -1855,6 +1855,13 @@ type GetTimelineResponse struct {
 	// the "not short, but claiming to be the whole of it" failure CLAUDE.md names,
 	// and the only defence against it is a check that does not trust the reader.
 	//
+	// Conservative in one direction on purpose. An answer that exactly filled
+	// its entry ceiling is reported as truncated whether or not anything follows
+	// it, because knowing would mean reading further and the ceiling is the
+	// instruction not to. So a walk can end with one request that returns
+	// nothing and says it is whole — a wasted round trip, and the right trade
+	// against the alternative, which is a prefix that claims to be an account.
+	//
 	// One shape a caller has to handle: truncated with *no* entries at all. It
 	// means the scan budget was spent before reaching the cursor, on a history
 	// larger than this server will walk, and it is a stopping point rather than
