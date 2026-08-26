@@ -287,7 +287,14 @@ TIME      WHAT     STEP        DETAIL
 10:14:24  done     `charge`    attempt 3
 ```
 
-Getting that right needed two facts Temporal does not hand over directly. Only
+An attempt that has failed and is *waiting out its retry backoff* is the one
+thing this does not show. History holds nothing about it yet — the fact lives in
+the worker's pending state until the next attempt starts — so `flow get` is the
+verb that answers it, which is the same split as everywhere else: `get` for now,
+`timeline` for what happened. The row appears here as soon as the next attempt
+begins.
+
+Getting the rest right needed two facts Temporal does not hand over directly. Only
 a *final*, retries-exhausted failure gets an event of its own; a failure that
 will be retried is carried on the next attempt's start, so reporting it as
 detail on a scheduling row would leave anything filtering on failures seeing

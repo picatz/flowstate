@@ -43,15 +43,31 @@ const (
 	// KIND_STEP_COMPLETED is a step's work finishing successfully.
 	TimelineEntry_KIND_STEP_COMPLETED TimelineEntry_Kind = 2
 	// KIND_STEP_FAILED is an attempt failing. A step that Temporal retries
-	// produces one of these per attempt, which is what makes a stuck run
-	// legible: the same step failing five times with the same sentence is a
-	// different fact from five steps failing once.
+	// produces one of these per attempt *history records*, which is what makes
+	// a stuck run legible: the same step failing five times with the same
+	// sentence is a different fact from five steps failing once.
 	//
 	// Only a *final*, retries-exhausted failure gets an event of its own in a
 	// history; a failure Temporal will retry is carried on the next attempt's
 	// start. Both become one of these, because a consumer filtering on this
 	// kind wanting only the final one is not a consumer this can imagine — the
 	// retrying run is the case anybody reads a timeline for.
+	//
+	// That is also where the "history records" qualifier earns its place, and
+	// it is a boundary rather than a gap. An attempt that has failed and is
+	// *waiting out its backoff* has no next start yet, so history holds nothing
+	// about it: the fact lives in the worker's pending state, and
+	// [GetResponse.pending_activities] is the field that reports it — which
+	// verb answers what a run is doing *now* is the whole distinction between
+	// Get and GetTimeline. The row appears here the moment the next attempt
+	// starts.
+	//
+	// One case loses it for good, and is named so nobody hunts for it: a run
+	// cancelled or terminated during that backoff. Temporal's
+	// `ActivityTaskCanceled` carries a scheduled id, a started id and details,
+	// and no failure at all, so the sentence the last attempt failed with was
+	// never written down anywhere durable. That is Temporal's history model
+	// rather than a choice this makes.
 	TimelineEntry_KIND_STEP_FAILED TimelineEntry_Kind = 3
 	// KIND_STEP_TIMED_OUT is an attempt exceeding a timeout rather than
 	// returning an error, which is a different diagnosis and reads identically
