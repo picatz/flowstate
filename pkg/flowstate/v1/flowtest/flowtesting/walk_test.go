@@ -83,14 +83,14 @@ tests:
 
 	flowtesting.RunFile(t, path, flowtesting.WithWalk("it ships", func(walk *flowtesting.Walk) {
 		at, ok := walk.Until("deploy")
-		require.True(t, ok, "the run finished before reaching the step named")
-		assert.Equal(t, "deploy", at.Step)
+		require.True(walk.T(), ok, "the run finished before reaching the step named")
+		assert.Equal(walk.T(), "deploy", at.Step)
 
 		// What the earlier steps produced, read as a plain Go value — which is
 		// what an assertion wants, and the reason Value exists beside the
 		// session's own rendered and typed answers.
-		assert.Equal(t, "web.tar.gz", walk.Value("steps.build.value"))
-		assert.Equal(t, "3 passed", walk.Value("steps.test.value"))
+		assert.Equal(walk.T(), "web.tar.gz", walk.Value("steps.build.value"))
+		assert.Equal(walk.T(), "3 passed", walk.Value("steps.test.value"))
 
 		// And the run can say what it can name, which is what an adapter fills
 		// a variables pane from.
@@ -100,7 +100,7 @@ tests:
 				steps = group.Names
 			}
 		}
-		assert.Equal(t, []string{"build", "test"}, steps,
+		assert.Equal(walk.T(), []string{"build", "test"}, steps,
 			"the paused run did not name the steps that had produced outputs")
 	}))
 }
@@ -132,7 +132,7 @@ tests:
 	// unblocked: this subtest fails if the walk swallowed the rest of it.
 	flowtesting.RunFile(t, path, flowtesting.WithWalk("it ships", func(walk *flowtesting.Walk) {
 		_, ok := walk.Step()
-		require.True(t, ok)
+		require.True(walk.T(), ok)
 	}))
 }
 
@@ -155,21 +155,21 @@ tests:
 
 	flowtesting.RunFile(t, path, flowtesting.WithWalk("it ships", func(walk *flowtesting.Walk) {
 		session := walk.Session()
-		require.NotNil(t, session)
+		require.NotNil(walk.T(), session)
 
 		// A verb with no method here, reaching the same dispatch a person's
 		// typing reaches.
-		require.NoError(t, session.Control(t.Context(), "break deploy"))
+		require.NoError(walk.T(), session.Control(walk.T().Context(), "break deploy"))
 
 		at, ok := walk.Continue()
-		require.True(t, ok)
+		require.True(walk.T(), ok)
 		assert.Equal(t, "deploy", at.Step,
 			"a breakpoint set through the session did not hold the run")
 
 		position, paused := session.Paused()
-		require.True(t, paused)
-		assert.Equal(t, "deploy", position.Step)
-		assert.False(t, position.Autopsy)
+		require.True(walk.T(), paused)
+		assert.Equal(walk.T(), "deploy", position.Step)
+		assert.False(walk.T(), position.Autopsy)
 
 		_ = flowdebug.ErrRunOver
 	}))

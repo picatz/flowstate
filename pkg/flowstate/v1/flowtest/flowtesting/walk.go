@@ -62,6 +62,7 @@ import (
 // several is a question with no answer.
 func WithWalk(caseName string, drive func(*Walk)) Option {
 	return func(c *config) {
+		c.walkSet = true
 		c.walkCase = caseName
 		c.walkDrive = drive
 	}
@@ -73,6 +74,16 @@ type Walk struct {
 	ctx     context.Context
 	session *flowdebug.Session
 }
+
+// T is the [testing.TB] of the subtest this case is running as, for assertions
+// the methods below do not cover.
+//
+// It is the one to assert against, and not the `t` of the function that called
+// [RunFile]. drive runs on this subtest's own goroutine, so `require`'s
+// [testing.TB.FailNow] does what it says here and would be undefined behaviour
+// against an enclosing test's — `testing` only supports FailNow from the
+// goroutine running that test (Codex, #1123).
+func (w *Walk) T() testing.TB { return w.t }
 
 // Session is the whole vocabulary, for anything these methods do not cover:
 // breakpoints, the completer, the raw text of an answer, a verb added later.
@@ -87,6 +98,10 @@ func (w *Walk) Session() *flowdebug.Session { return w.session }
 //	for at, ok := walk.Step(); ok; at, ok = walk.Step() {
 //		…
 //	}
+//
+// Assert against [Walk.T], not the `t` of the function that called [RunFile]:
+// drive runs on the subtest's own goroutine, and that is the only one
+// `require`'s FailNow is defined on.
 //
 // A run that has ended is not a failure and must not be reported as one — a
 // walk cannot know in advance how many stops a case has — so it is the boolean
@@ -214,30 +229,46 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 		return flowtest.RunResult{}
 	}
 
-	drove := make(chan struct{})
+	// The *run* goes to the helper goroutine and drive stays on this one, which
+	// is the subtest's. That direction is not a preference: drive is the
+	// caller's code, and the caller writes `require`, whose [testing.TB.FailNow]
+	// is only defined on the goroutine running the test — from anywhere else it
+	// stops that goroutine and the failure is recorded somewhere nobody reads.
+	// A panic is worse: outside the runner's own recovery it takes the whole
+	// test binary down instead of failing this case (Codex, #1123).
+	//
+	// `flowtest.Run` is safe to move because it touches no [testing.TB]; it
+	// takes a context and a file and reports what happened.
+	ran := make(chan flowtest.RunResult, 1)
 	go func() {
-		defer close(drove)
-		// Whatever happens in drive — a return, a failed assertion unwinding
-		// it — the run is let go. Closing is what does that: a boundary with
-		// nothing left to hear from resumes and lets the case finish.
+		result := run(session)
+
+		// The run is over, and this package cannot learn that any other way:
+		// [v1.Debugger] is called before each step and [v1.RunObserver] after
+		// each one, so a session whose run completed is indistinguishable from
+		// one whose next step has not arrived. Closing here is what tells a
+		// walk still waiting for a stop that none is coming — without it, a
+		// loop that steps to exhaustion waits forever on a run that finished,
+		// which is the same hang this option exists to prevent wearing the
+		// other hat.
+		_ = session.Close()
+
+		ran <- result
+	}()
+
+	// Whatever happens in drive — a return, a failed assertion unwinding it —
+	// the run is let go. Closing is what does that, and it covers the case that
+	// never reaches a step boundary at all: a workflow that does not load runs
+	// no steps, so nothing takes the walk's first command, and without this the
+	// walk parks and hangs the test instead of reporting the case's own
+	// diagnostic. Every waiting movement ends with [flowdebug.ErrRunOver].
+	func() {
 		defer func() { _ = session.Close() }()
 
 		cfg.walkDrive(&Walk{t: t, ctx: t.Context(), session: session})
 	}()
 
-	result := run(session)
-
-	// Closed here as well as in the goroutine, and this one is the important
-	// half: a case can finish — or fail to start at all, on a workflow that
-	// does not load — without ever reaching a step boundary, and then nothing
-	// is left to take the walk's first command. Without this, such a case hangs
-	// the test instead of failing it, which is the exact outcome this option
-	// exists to prevent. Closing releases every waiting movement with
-	// [flowdebug.ErrRunOver], so the walk ends and the case's own verdict is
-	// what the subtest reports. Idempotent, so the two closes cannot fight.
-	_ = session.Close()
-
-	<-drove
+	result := <-ran
 
 	mu.Lock()
 	printed := lines.String()
@@ -266,7 +297,33 @@ func (c config) walkedCase(name string) bool {
 func refuseUnknownWalk(t testing.TB, file *flowtest.File, cfg config) {
 	t.Helper()
 
+	if !cfg.walkSet {
+		return
+	}
+
+	// A nil function is not "no walk asked for". Treating it as one accepts any
+	// case name, runs no assertions, and reports green — the silent no-op the
+	// name check below exists to prevent, arriving through the argument instead
+	// of the name (Codex, #1123).
 	if cfg.walkDrive == nil {
+		t.Fatalf("flowtesting: WithWalk was given a nil function, so the walk would run no " +
+			"assertions and the suite would still report green; pass the driver, or drop the option")
+
+		return
+	}
+
+	// The same conflict `flow test --debug` refuses, for the same reason it
+	// gives: a seeded exploration runs each case many times under different
+	// schedules, and stepping through "the" run of a case that is about to be
+	// run many times is a question with no answer. Here it is worse than
+	// unanswerable — one session spans every execution, so a walk stepping to
+	// exhaustion would run off the end of the baseline into the first step of
+	// the next seed and report the lot as one continuous walk.
+	if cfg.budget.Schedules > 0 || cfg.budget.Pinned != nil {
+		t.Fatalf("flowtesting: WithWalk steps through one run and WithSchedules runs each case " +
+			"many times under different schedules; the walk would step out of one execution " +
+			"into the next. Drop one of them")
+
 		return
 	}
 

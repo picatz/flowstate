@@ -15,6 +15,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -475,22 +477,27 @@ func TestARowsNameSurvivesAsANestedSubtestPath(t *testing.T) {
 	}
 }
 
-// TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing is the argument a caller
-// can get wrong in the one way that is invisible.
+// TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing covers the three ways
+// [WithWalk] can be asked for and quietly do nothing.
 //
-// A walk pinned to a name the suite does not have runs no assertions at all,
-// and the suite still passes — the report says exactly what it says when
-// everything worked. So the name is checked before anything runs, and the
-// refusal names the cases the suite does have, because a caller who misspelled
-// one is looking for the spelling.
+// All three end the same way — no assertions run, and the suite reports
+// exactly what it reports when everything worked — which is the worst outcome
+// available to a test option and the reason each is refused before anything
+// runs rather than discovered afterwards.
 func TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing(t *testing.T) {
 	t.Parallel()
 
 	file := &flowtest.File{Tests: []flowtest.Test{{Name: "it ships"}, {Name: "it rolls back"}}}
+	asked := func(mutate func(*config)) config {
+		cfg := config{walkSet: true, walkCase: "it ships", walkDrive: func(*Walk) {}}
+		mutate(&cfg)
 
-	// The name is right: nothing is said, and the walk is left to run.
+		return cfg
+	}
+
+	// The name is right and the driver is real: nothing is said.
 	quiet := &recorder{TB: t}
-	refuseUnknownWalk(quiet, file, config{walkCase: "it ships", walkDrive: func(*Walk) {}})
+	refuseUnknownWalk(quiet, file, asked(func(*config) {}))
 	assert.Empty(t, quiet.errors, "a walk naming a real case was refused")
 
 	// No walk asked for at all: still nothing to say.
@@ -498,9 +505,10 @@ func TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing(t *testing.T) {
 	refuseUnknownWalk(none, file, config{})
 	assert.Empty(t, none.errors)
 
-	// And the misspelling, which is the case this exists for.
+	// A misspelled name, which names what the suite does have — a caller who
+	// got it wrong is looking for the spelling.
 	wrong := &recorder{TB: t}
-	refuseUnknownWalk(wrong, file, config{walkCase: "it shipps", walkDrive: func(*Walk) {}})
+	refuseUnknownWalk(wrong, file, asked(func(c *config) { c.walkCase = "it shipps" }))
 	require.Len(t, wrong.errors, 1,
 		"a walk naming no case was allowed to run, so its assertions would never happen "+
 			"and the suite would still report green")
@@ -508,72 +516,25 @@ func TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing(t *testing.T) {
 	assert.Contains(t, wrong.errors[0], `"it ships"`,
 		"the refusal did not say which cases the suite has, which is what a misspelling needs")
 	assert.Contains(t, wrong.errors[0], `"it rolls back"`)
-}
 
-// TestACaseThatNeverStopsFailsRatherThanHangs is the failure [WithWalk] must
-// not have, found by getting a fixture wrong rather than by thinking of it.
-//
-// A case can finish — or never start, on a workflow that does not load —
-// without reaching a single step boundary, and then nothing is left to take the
-// walk's first command. The walk parks, the case's verdict is never reported,
-// and the test hangs until the package timeout takes the whole run with it. A
-// hung test says far less than a failed one and costs far more.
-//
-// Driven through [runCase] against the recorder because the point is that the
-// subtest *fails* — a real one would take this test down with it — and because
-// what has to be observed is that the walk ended at all.
-func TestACaseThatNeverStopsFailsRatherThanHangs(t *testing.T) {
-	t.Parallel()
+	// A nil function is not "no walk asked for". Treated as one, it accepts any
+	// case name — the same silent no-op arriving through the argument rather
+	// than the name (Codex, #1123).
+	empty := &recorder{TB: t}
+	refuseUnknownWalk(empty, file, asked(func(c *config) { c.walkDrive = nil }))
+	require.Len(t, empty.errors, 1,
+		"a walk with no driver was accepted, so the option did nothing and said nothing")
+	assert.Contains(t, empty.errors[0], "nil function")
 
-	// A `value:` that is not a valid expression, so the workflow does not load
-	// and no step ever runs.
-	path := writeSuite(t, `
-edition: v2026.3
-name: broken
-steps:
-  - id: build
-    value: "3 passed"
-outputs: {}
-`, `
-tests:
-  - name: it ships
-    workflow: ./workflow.yaml
-    expect:
-      ran: [build]
-`)
-	file, err := flowtest.Load(path)
-	require.NoError(t, err)
-
-	stepped := make(chan bool, 1)
-	cfg := config{
-		dir:      filepath.Dir(path),
-		walkCase: "it ships",
-		walkDrive: func(w *Walk) {
-			_, ok := w.Step()
-			stepped <- ok
-		},
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runCase(&recorder{TB: t}, file, path, cfg, "it ships")
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("a case that never reached a step boundary left the walk parked, so the " +
-			"subtest hung instead of reporting the case's own failure")
-	}
-
-	select {
-	case ok := <-stepped:
-		assert.False(t, ok,
-			"the walk was told the run had stopped somewhere, on a case that never ran a step")
-	default:
-		t.Fatal("the walk never returned from its first command")
-	}
+	// And the combination that cannot mean anything: one session spans every
+	// execution a seeded exploration runs, so a walk stepping to exhaustion
+	// would run out of the baseline into the first step of the next seed.
+	seeded := &recorder{TB: t}
+	refuseUnknownWalk(seeded, file, asked(func(c *config) { c.budget = dst.Budget{Schedules: 2} }))
+	require.Len(t, seeded.errors, 1,
+		"walking one run while exploring many schedules was accepted, so the walk would "+
+			"step out of the execution it was asserting about")
+	assert.Contains(t, seeded.errors[0], "WithSchedules")
 }
 
 // TestEveryRefusalIsActuallyCalled closes the gap the two tests above leave.
@@ -622,4 +583,130 @@ func TestEveryRefusalIsActuallyCalled(t *testing.T) {
 				"tests that exercise it directly stay green while nothing checks anything",
 			refusal)
 	}
+}
+
+// TestACaseThatNeverStopsFailsRatherThanHangs is the failure [WithWalk] must
+// not have, found by getting a fixture wrong rather than by thinking of it.
+//
+// A case can finish — or never start, on a workflow that does not load —
+// without reaching a single step boundary, and then nothing takes the walk's
+// first command. The walk parks, the case's verdict is never reported, and the
+// test hangs until the package timeout takes the whole run with it. A hung test
+// says far less than a failed one and costs far more.
+//
+// Driven through [runCase] against the recorder because the point is that the
+// subtest *fails* — a real one would take this test down with it — and because
+// what has to be observed is that the walk ended at all.
+func TestACaseThatNeverStopsFailsRatherThanHangs(t *testing.T) {
+	t.Parallel()
+
+	// A `value:` that is not a valid expression, so the workflow does not load
+	// and no step ever runs.
+	path := writeSuite(t, `
+edition: v2026.3
+name: broken
+steps:
+  - id: build
+    value: "3 passed"
+outputs: {}
+`, `
+tests:
+  - name: it ships
+    workflow: ./workflow.yaml
+    expect:
+      ran: [build]
+`)
+	file, err := flowtest.Load(path)
+	require.NoError(t, err)
+
+	stepped := make(chan bool, 1)
+	cfg := config{
+		dir:      filepath.Dir(path),
+		walkSet:  true,
+		walkCase: "it ships",
+		walkDrive: func(w *Walk) {
+			_, ok := w.Step()
+			stepped <- ok
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runCase(&recorder{TB: t}, file, path, cfg, "it ships")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a case that never reached a step boundary left the walk parked, so the " +
+			"subtest hung instead of reporting the case's own failure")
+	}
+
+	select {
+	case ok := <-stepped:
+		assert.False(t, ok,
+			"the walk was told the run had stopped somewhere, on a case that never ran a step")
+	default:
+		t.Fatal("the walk never returned from its first command")
+	}
+}
+
+// TestTheWalkDriverRunsOnTheSubtestsOwnGoroutine pins the mechanism behind
+// [WithWalk]'s only rule about where assertions go.
+//
+// A driver is the caller's code and the caller writes `require`, whose
+// [testing.TB.FailNow] is defined only on the goroutine running that test: from
+// anywhere else it stops that goroutine and records the failure where nothing
+// reads it. A panic is worse — outside the runner's own recovery it takes the
+// whole test binary down instead of failing this case (Codex, #1123).
+//
+// The first version ran the driver on a helper goroutine and the *run* on the
+// subtest's, which is backwards; `flowtest.Run` touches no [testing.TB] and is
+// the half that can move.
+//
+// Asserted from the stack rather than by trusting the shape, because "which
+// goroutine" is exactly what a later refactor changes without noticing — this
+// one did. A driver called from the subtest's own goroutine has runCase in its
+// call chain; one started with `go` does not.
+func TestTheWalkDriverRunsOnTheSubtestsOwnGoroutine(t *testing.T) {
+	t.Parallel()
+
+	path := writeSuite(t, internalGreetWorkflow, `
+tests:
+  - name: it greets
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [hello]
+`)
+	file, err := flowtest.Load(path)
+	require.NoError(t, err)
+
+	var (
+		stack string
+		given testing.TB
+	)
+
+	subtest := &recorder{TB: t}
+	runCase(subtest, file, path, config{
+		dir:      filepath.Dir(path),
+		walkSet:  true,
+		walkCase: "it greets",
+		walkDrive: func(w *Walk) {
+			buf := make([]byte, 8192)
+			stack = string(buf[:runtime.Stack(buf, false)])
+			given = w.T()
+		},
+	}, "it greets")
+
+	assert.Contains(t, stack, "flowtesting.runCase",
+		"the walk driver was called from a goroutine of its own, where require's FailNow "+
+			"is undefined and a panic escapes the test runner:\n\n%s", stack)
+
+	assert.Same(t, subtest, given,
+		"Walk.T is not the TB of the subtest this case is running as, so assertions made "+
+			"through it would report against the wrong test")
 }

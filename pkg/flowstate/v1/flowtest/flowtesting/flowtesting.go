@@ -82,6 +82,7 @@ type config struct {
 
 	// walkCase and walkDrive are [WithWalk]'s: the one case held at every step
 	// boundary, and what moves it. See walk.go.
+	walkSet   bool
 	walkCase  string
 	walkDrive func(*Walk)
 }
