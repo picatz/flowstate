@@ -3,6 +3,7 @@ package flowtesting
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -50,12 +51,18 @@ import (
 // anything runs: a walk that quietly never happened is a test asserting nothing
 // while reporting green.
 //
-// drive runs on its own goroutine, because the case is running on this one and
-// a debugger holds it. When drive returns — normally, or because an assertion
-// stopped it — the session is closed, which releases the run to finish. That is
-// deliberate and is the reason this is an option rather than a pattern to copy:
-// a walk that ends without letting go leaves the case parked forever, and a
-// hung test says far less than a failed one.
+// drive runs on the walked subtest's own goroutine, and the case runs on a
+// helper one. That direction is the whole contract: drive is your code, it will
+// contain `require`, and [testing.TB.FailNow] is defined only on the goroutine
+// running the test. Assert through [Walk.T], which is that subtest — not the
+// `t` of the function that called [RunFile], which belongs to an enclosing
+// test.
+//
+// When drive returns — normally, or because an assertion stopped it — the
+// session is closed and the run is waited for. That is the reason this is an
+// option rather than a pattern to copy: a walk that ends without letting go
+// leaves the case parked forever, and one that ends without waiting leaves a
+// run holding the task registry the next case needs.
 //
 // Only one case is walked. Interactive by nature, and `flow test --debug`
 // refuses more than one for the same reason: stepping through "the" run of
@@ -194,6 +201,15 @@ func isRunOver(err error) bool {
 	return err != nil && strings.Contains(err.Error(), flowdebug.ErrRunOver.Error())
 }
 
+// ranCase is what the helper goroutine reports back: the case's result, or the
+// panic it met on a goroutine that had nobody to report it to.
+type ranCase struct {
+	result   flowtest.RunResult
+	panicked bool
+	value    any
+	stack    []byte
+}
+
 // walked runs one case under a session drive can move, and returns the case's
 // result exactly as an unwalked run would.
 //
@@ -239,8 +255,21 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 	//
 	// `flowtest.Run` is safe to move because it touches no [testing.TB]; it
 	// takes a context and a file and reports what happened.
-	ran := make(chan flowtest.RunResult, 1)
+	ran := make(chan ranCase, 1)
 	go func() {
+		// A panic in here — a stub's own callback, anything `flowtest.Run`
+		// reaches — is on a goroutine `testing` does not wrap, where it takes
+		// the whole test binary down instead of failing this case. It is the
+		// exact hazard that moving drive *off* a helper goroutine removed,
+		// arriving on the half that moved onto one, and the answer is to carry
+		// it back rather than to move the run again (Codex, #1123).
+		defer func() {
+			if value := recover(); value != nil {
+				_ = session.Close()
+				ran <- ranCase{panicked: true, value: value, stack: debug.Stack()}
+			}
+		}()
+
 		result := run(session)
 
 		// The run is over, and this package cannot learn that any other way:
@@ -253,7 +282,7 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 		// other hat.
 		_ = session.Close()
 
-		ran <- result
+		ran <- ranCase{result: result}
 	}()
 
 	// Whatever happens in drive, the run is let go *and waited for*, and both
@@ -279,7 +308,7 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 	func() {
 		defer func() {
 			_ = session.Close()
-			result = <-ran
+			finished := <-ran
 
 			// Logged here too, so a walk that ended by failing still shows what
 			// the session printed — which is exactly when a reader wants it.
@@ -290,6 +319,17 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 			if printed != "" {
 				t.Log("walk:\n" + printed)
 			}
+
+			// Raised here, on the subtest's own goroutine, where `testing`
+			// recovers it into this case's failure. The original stack travels
+			// with it because the one this panic would otherwise carry is this
+			// defer's, which says nothing about where the run broke.
+			if finished.panicked {
+				panic(fmt.Sprintf("flowtesting: the walked case panicked: %v\n\n%s",
+					finished.value, finished.stack))
+			}
+
+			result = finished.result
 		}()
 
 		cfg.walkDrive(&Walk{t: t, ctx: t.Context(), session: session})

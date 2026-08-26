@@ -781,3 +781,61 @@ func TestWalkedJoinsTheRunWhenTheDriverGoexits(t *testing.T) {
 
 	assert.True(t, ranToCompletion)
 }
+
+// TestAPanicInTheRunFailsTheCaseRatherThanTheBinary is the inverse of the
+// hazard [WithWalk] fixed by moving the driver, arriving on the half that
+// moved the other way.
+//
+// A panic inside `flowtest.Run` — a stub's own callback, anything the run
+// reaches — is now on a goroutine `testing` does not wrap, where it takes the
+// whole test binary down instead of failing this case. Moving the run back is
+// not the answer, since that is where the driver's `require` has to be; the
+// panic is carried to the subtest's goroutine and raised there, with the
+// original stack, because the one a re-panic would otherwise carry says
+// nothing about where the run broke (Codex, #1123).
+func TestAPanicInTheRunFailsTheCaseRatherThanTheBinary(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{
+		walkSet:   true,
+		walkCase:  "it ships",
+		walkDrive: func(*Walk) {},
+	}
+
+	run := func(v1.Debugger) flowtest.RunResult {
+		panic("the stub exploded")
+	}
+
+	var raised any
+	stack := ""
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Standing in for what `testing` does around a subtest: recover, so
+		// this test observes the panic instead of dying with it.
+		defer func() {
+			if value := recover(); value != nil {
+				raised = value
+				stack = fmt.Sprint(value)
+			}
+		}()
+
+		walked(&recorder{TB: t}, cfg, run)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a panic inside the run left walked waiting instead of reporting it")
+	}
+
+	require.NotNil(t, raised,
+		"a panic inside the run was swallowed on the helper goroutine, so it would have "+
+			"taken the test binary down rather than failing this case")
+	assert.Contains(t, stack, "the stub exploded",
+		"the panic reached the subtest without saying what it was")
+	assert.Contains(t, stack, "flowtesting.walked",
+		"the original stack did not travel with the panic, so the report names this "+
+			"defer rather than where the run broke")
+}
