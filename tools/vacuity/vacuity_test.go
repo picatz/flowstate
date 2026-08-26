@@ -322,39 +322,96 @@ func TestReallyAsserts(t *testing.T) {
 	// the test as surely as `t.Fatalf(…)` does, and the receiver is a selector
 	// rather than the identifier the function was handed — so the field names
 	// the package declares as handles are part of its vocabulary too.
+	//
+	// The harness arrives from a constructor this fixture does not hand the
+	// test's own `t` to, deliberately: nothing else here can save the test, so
+	// the field receiver is the whole of what is being asserted.
 	assert.Empty(t, analyzedFixture(t, `
 type harness struct {
 	t *testing.T
 }
 
+func newHarness() *harness { return &harness{} }
+
 func TestThroughAField(t *testing.T) {
-	h := harness{}
-	h.t = t
+	h := newHarness()
 	if 1 != 1 {
 		h.t.Fatalf("impossible")
 	}
 }
 `), "failing through a handle held in a field was not read as asserting")
+}
 
-	// Giving the handle away by *storing* it is the same delegation as passing
-	// it to a call: the value now holds the power to fail, and this analysis
-	// cannot follow it into the methods that use it. It is the shape a test
-	// client takes — `cmd/flow/dap_test.go`'s `&dapConn{t: t, …}` — so leaving
-	// it out would call every test driven through one vacuous.
+// TestEveryWayOfGivingTheHandleAwayCountsAsAsserting covers the four shapes one
+// at a time.
+//
+// They overlap in real code — `cmd/flow/dap_test.go` builds `&dapConn{t: t, …}`
+// *and* calls methods on it that use the handle — so a fixture written the way
+// a person writes tests is saved several times over and pins none of them.
+// Each case below is written so that exactly one mechanism can save it, which
+// is what makes removing any one of them fail something.
+//
+// Kept rather than trimmed, and that is a decision worth stating: none of the
+// four changes a single answer on this tree today. But this check fails a
+// build, so a false positive costs more than a false negative, and each shape
+// is ordinary Go that somebody will write next week. That is the opposite call
+// from the dead clause deleted earlier in this package — the difference being
+// that clause could never fire, where these are reachable and merely not yet
+// reached.
+func TestEveryWayOfGivingTheHandleAwayCountsAsAsserting(t *testing.T) {
+	t.Parallel()
+
+	// Passed to a call. The helper is in another package, so nothing here can
+	// see whether it asserts.
 	assert.Empty(t, analyzedFixture(t, `
-type conn struct {
+func TestPassed(t *testing.T) {
+	conformance.AssertTheOutcome(t, 1)
+}
+`), "a handle passed to a call was not read as given away")
+
+	// Stored in a literal, and nothing is done with the result: no method to
+	// propagate through, no field read.
+	assert.Empty(t, analyzedFixture(t, `
+type sink struct {
 	t *testing.T
 }
 
-func (c *conn) mustWork() {
-	c.t.Fatalf("it did not")
+func TestStored(t *testing.T) {
+	_ = &sink{t: t}
+}
+`), "a handle stored in a literal was not read as given away")
+
+	// Assigned into a field, with the same isolation.
+	assert.Empty(t, analyzedFixture(t, `
+type slot struct {
+	t *testing.T
 }
 
-func TestThroughAWrapper(t *testing.T) {
-	c := &conn{t: t}
-	c.mustWork()
+func TestAssigned(t *testing.T) {
+	var s slot
+	s.t = t
+	_ = s
 }
-`), "a wrapper handed the handle in a literal was not read as asserting")
+`), "a handle assigned into a field was not read as given away")
+
+	// Delegated to a method, where the handle is never given away in the test
+	// at all — so only following the receiver's method can save it.
+	assert.Empty(t, analyzedFixture(t, `
+type suite struct {
+	t *testing.T
+}
+
+func newSuite() *suite { return &suite{} }
+
+func (s *suite) check(got int) {
+	require.NotZero(s.t, got)
+}
+
+func TestDelegated(t *testing.T) {
+	s := newSuite()
+	s.check(1)
+}
+`), "a test delegating to an asserting method was called vacuous")
 }
 
 // TestASkipMustBeTakenWhenTheCorpusIsEmpty is the guard's direction.
@@ -593,6 +650,36 @@ func TestNotATest(t *T) {
 	assert.Empty(t, findings)
 }
 
+// TestAQuietMethodDoesNotLaunderItsCaller is the limit of following the
+// receiver.
+//
+// Methods participate in the propagation because a test that hands its checks
+// to one — `s.check(got)` — reaches its assertion through a declaration a
+// function-only walk drops on the floor (Codex, #1125). The risk in widening
+// it that way is that *every* method call starts reading as an assertion,
+// which would hollow the check out entirely.
+func TestAQuietMethodDoesNotLaunderItsCaller(t *testing.T) {
+	t.Parallel()
+
+	// The positive direction is
+	// [TestEveryWayOfGivingTheHandleAwayCountsAsAsserting]'s last case, where
+	// it is isolated. This is the direction that keeps the mechanism from
+	// swallowing the check whole: a method that asserts nothing does not
+	// launder its caller.
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(analyzedFixture(t, `
+type quiet struct{}
+
+func (q *quiet) look(got int) {
+	_ = got
+}
+
+func TestThroughAQuietMethod(t *testing.T) {
+	q := &quiet{}
+	q.look(1)
+}
+`)), "delegating to a method that asserts nothing was read as asserting")
+}
+
 // TestTestdataIsNotWalked keeps fixtures for other tests out of the report.
 //
 // `testdata` is Go's own convention for source that is not the package's, and
@@ -611,6 +698,42 @@ func TestTestdataIsNotWalked(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, findings, "a test under testdata was judged")
 	assert.Zero(t, tests, "a test under testdata was counted")
+}
+
+// TestAnotherAgentsWorktreeIsNotWalked keeps somebody else's unfinished
+// checkout from deciding whether this one passes.
+//
+// `.worktrees/` and `.claude/` are where an isolated agent checkout
+// materializes, and `.gitignore:46-53` keeps both out of the repository for the
+// same reason they are kept out of this walk: each is a copy of this tree
+// holding work in progress. A half-written test in one is not tracked, is not
+// in CI, and must not fail the check here (Codex, #1125).
+func TestAnotherAgentsWorktreeIsNotWalked(t *testing.T) {
+	t.Parallel()
+
+	const vacuous = "package other\n\nimport \"testing\"\n\nfunc TestHalfWritten(t *testing.T) {}\n"
+
+	for _, scratch := range []string{
+		filepath.Join(".worktrees", "lane-one", "pkg"),
+		filepath.Join(".claude", "worktrees", "lane-two", "pkg"),
+	} {
+		dir := t.TempDir()
+		nested := filepath.Join(dir, scratch)
+		require.NoError(t, os.MkdirAll(nested, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(nested, "half_test.go"), []byte(vacuous), 0o600))
+
+		// And one real test beside them, so a walk that reached nothing at all
+		// would fail this too rather than look like a pass.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "real_test.go"),
+			[]byte("package fixture\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {\n\tt.Fatal(\"no\")\n}\n"), 0o600))
+
+		findings, tests, err := Analyze(dir)
+		require.NoError(t, err)
+		assert.Empty(t, findings,
+			"a test inside %s decided the result for a checkout that does not contain it", scratch)
+		assert.Equal(t, 1, tests,
+			"the walk did not reach the checkout's own test, so a clean report means nothing")
+	}
 }
 
 // TestTheRepositoryHasNoUnassertedTest is the claim that makes this a gate

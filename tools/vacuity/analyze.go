@@ -42,6 +42,21 @@ func Analyze(root string) ([]Finding, int, error) {
 			// testdata is Go's own convention for source that is not the
 			// package's: a fixture there is input to a test rather than one.
 			return fs.SkipDir
+
+		case ".worktrees", ".claude":
+			// Where an agent's isolated checkout materializes, both of them
+			// ignored by `.gitignore:46-53` — and ignored here for the reason
+			// that decides it there: each is a *copy of this tree* holding
+			// somebody else's unfinished work. Walking into one lets a
+			// half-written test in a checkout that is not this one, not
+			// tracked, and not present in CI decide whether this checkout
+			// passes: the shared-tree failure CLAUDE.md warns about, arriving
+			// through a checker (Codex, #1125).
+			//
+			// `.claude` whole rather than `.claude/worktrees`, because the
+			// directory is the agent's own — configuration and scratch — and
+			// holds no source belonging to this module either way.
+			return fs.SkipDir
 		}
 
 		for _, files := range parseDir(fset, path) {
@@ -178,13 +193,36 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 	}
 
 	functions := map[string]*analyzed{}
+
+	// Methods are analysed too, and kept apart from the plain functions.
+	//
+	// A test that delegates its checks to a method on a type holding the
+	// handle — `s := suite{}; s.t = t; s.check(got)` — reaches its assertion
+	// through a declaration that used to be dropped on the floor: not
+	// propagated as a helper, because the call is a selector rather than a bare
+	// name, and not a handoff either. The repository-wide check then rejected a
+	// test that asserts perfectly well (Codex, #1125).
+	//
+	// Keyed by method name, with every receiver's collapsed together. Two types
+	// may declare `check` and only one of them assert, and this will read a
+	// call to either as asserting — which is the safe direction for a check
+	// that fails a build, and the same trade [handsOverTheHandle] makes.
+	methods := map[string][]*analyzed{}
+
 	for _, from := range files {
 		for _, decl := range from.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || fn.Recv != nil {
+			if !ok || fn.Body == nil {
 				continue
 			}
-			functions[fn.Name.Name] = analyzeFunc(fn, from, fields)
+
+			analysed := analyzeFunc(fn, from, fields)
+			if fn.Recv != nil {
+				methods[fn.Name.Name] = append(methods[fn.Name.Name], analysed)
+
+				continue
+			}
+			functions[fn.Name.Name] = analysed
 		}
 	}
 
@@ -192,14 +230,35 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 	// helper is ordinary here. Iterated to a fixpoint rather than recursed,
 	// because mutual recursion between two test helpers is legal Go and a
 	// naive walk of it does not come back.
-	for range len(functions) + 1 {
+	every := make([]*analyzed, 0, len(functions)+len(methods))
+	for _, fn := range functions {
+		every = append(every, fn)
+	}
+	for _, sameName := range methods {
+		every = append(every, sameName...)
+	}
+
+	asserted := func(name string) bool {
+		if called, known := functions[name]; known && called.asserts {
+			return true
+		}
+		for _, called := range methods[name] {
+			if called.asserts {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	for range len(every) + 1 {
 		changed := false
-		for _, fn := range functions {
+		for _, fn := range every {
 			if fn.asserts {
 				continue
 			}
 			for callee := range fn.calls {
-				if called, known := functions[callee]; known && called.asserts {
+				if asserted(callee) {
 					fn.asserts = true
 					changed = true
 
@@ -213,8 +272,13 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 	}
 
 	asserters := map[string]bool{}
-	for name, fn := range functions {
-		if fn.asserts {
+	for name := range functions {
+		if asserted(name) {
+			asserters[name] = true
+		}
+	}
+	for name := range methods {
+		if asserted(name) {
 			asserters[name] = true
 		}
 	}
@@ -284,8 +348,14 @@ func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyze
 		if assertion(call, out.handles) {
 			out.asserts = true
 		}
-		if name, ok := call.Fun.(*ast.Ident); ok {
-			out.calls[name.Name] = true
+		switch callee := call.Fun.(type) {
+		case *ast.Ident:
+			out.calls[callee.Name] = true
+		case *ast.SelectorExpr:
+			// `s.check(got)`. Resolved against this package's own methods
+			// below, so a selector into another package contributes a name
+			// nothing matches rather than a false assertion.
+			out.calls[callee.Sel.Name] = true
 		}
 
 		return true
@@ -297,6 +367,15 @@ func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyze
 		switch node := node.(type) {
 		case *ast.CallExpr:
 			if handsOverTheHandle(node.Args, out.handles) {
+				out.asserts = true
+			}
+
+		case *ast.AssignStmt:
+			// `h.t = t` gives the handle away exactly as passing or storing it
+			// does. Without this a test that assigns its handle into a helper
+			// and then calls a method on it looks like it kept the handle to
+			// itself and did nothing with it.
+			if handsOverTheHandle(node.Rhs, out.handles) {
 				out.asserts = true
 			}
 
