@@ -307,3 +307,43 @@ func TestAnUnreadableFailureSaysSoRatherThanShowingThePlaceholder(t *testing.T) 
 		converter.GetDefaultDataConverter(), readable))
 	assert.Equal(t, "connection refused", server.failureMessage(readable))
 }
+
+// TestAFailureWhoseMessageIsTheSentinelIsStillReadable is the edge the
+// message-comparison heuristic got wrong.
+//
+// A workload can fail with the literal string the SDK uses as its placeholder.
+// Decoding then succeeds and produces exactly what the persisted message
+// already said, so "did the message change" answers no and a perfectly
+// readable diagnosis would be replaced by "unavailable" (Codex, #1119).
+//
+// Asking the codec whether the payload reads at all has no such blind spot —
+// and it is also the only check available, since nothing in this SDK clears
+// `encoded_attributes` after a decode, so "were they cleared" would report
+// every encoded failure as unreadable.
+func TestAFailureWhoseMessageIsTheSentinelIsStillReadable(t *testing.T) {
+	t.Parallel()
+
+	server := mustNew(t, nil)
+
+	// The pathological input: a task that failed with the placeholder's own text.
+	failure := &failurepb.Failure{Message: "Encoded failure"}
+	require.NoError(t, converter.EncodeCommonFailureAttributes(
+		converter.GetDefaultDataConverter(), failure))
+
+	// Which is indistinguishable from an undecoded one by message alone.
+	require.Equal(t, "Encoded failure", failure.GetMessage())
+
+	assert.Equal(t, "Encoded failure", server.failureMessage(failure),
+		"a readable diagnosis was reported as unavailable because it happened to read "+
+			"like the placeholder")
+
+	// And the SDK still leaves the attributes in place after a successful
+	// decode, which is why "were they cleared" is not the test either.
+	decoded := &failurepb.Failure{Message: "connection refused"}
+	require.NoError(t, converter.EncodeCommonFailureAttributes(
+		converter.GetDefaultDataConverter(), decoded))
+	converter.DecodeCommonFailureAttributes(converter.GetDefaultDataConverter(), decoded)
+	require.NotNil(t, decoded.GetEncodedAttributes(),
+		"this SDK now clears encoded_attributes on a successful decode, so the check "+
+			"in decodedFailureMessage can be simplified to ask about that instead")
+}
