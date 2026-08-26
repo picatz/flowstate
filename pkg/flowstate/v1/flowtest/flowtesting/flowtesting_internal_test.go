@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -709,4 +710,74 @@ tests:
 	assert.Same(t, subtest, given,
 		"Walk.T is not the TB of the subtest this case is running as, so assertions made "+
 			"through it would report against the wrong test")
+}
+
+// TestWalkedJoinsTheRunWhenTheDriverGoexits is the leak a failing walk used to
+// leave behind.
+//
+// `require` ends a subtest with [testing.TB.FailNow], which is
+// [runtime.Goexit]: deferred work runs and the statements after the call never
+// do. With the join written as a plain statement, a driver that failed an
+// assertion exited its goroutine while `flowtest.Run` carried on in the other
+// one — holding [v1.LockDefaultRegistry], which the next case needs — so a
+// later case would block on, or overlap with, a run whose subtest had already
+// reported (Codex, #1123).
+//
+// Driven through [walked] directly because that is where the ordering lives,
+// and because a run this test supplies itself is the only way to observe
+// whether it was waited for. Goexit stands in for FailNow exactly: it is what
+// FailNow does.
+func TestWalkedJoinsTheRunWhenTheDriverGoexits(t *testing.T) {
+	t.Parallel()
+
+	released := make(chan struct{})
+	ranToCompletion := false
+
+	run := func(debugger v1.Debugger) flowtest.RunResult {
+		// A run that stops once and then finishes when the session lets it go,
+		// which is what closing does.
+		_ = debugger.BeforeStep(t.Context(),
+			&v1.Node{Id: "build", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}},
+			v1.NewScope(v1.CurrentProfile, nil))
+
+		ranToCompletion = true
+		close(released)
+
+		return flowtest.RunResult{}
+	}
+
+	cfg := config{
+		walkSet:  true,
+		walkCase: "it ships",
+		walkDrive: func(w *Walk) {
+			// Wait until the run is actually parked, so the goroutine this
+			// leaves behind would have real work still to do.
+			require.Eventually(t, func() bool { _, paused := w.Session().Paused(); return paused },
+				10*time.Second, time.Millisecond)
+
+			// Exactly what require does on a failed assertion.
+			runtime.Goexit()
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		walked(&recorder{TB: t}, cfg, run)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("walked never returned after its driver ended the goroutine")
+	}
+
+	select {
+	case <-released:
+	default:
+		t.Fatal("the subtest finished while its run was still going, so the next case would " +
+			"contend with a run nobody is waiting for — the registry lock included")
+	}
+
+	assert.True(t, ranToCompletion)
 }

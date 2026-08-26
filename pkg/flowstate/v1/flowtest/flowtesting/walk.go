@@ -256,27 +256,44 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 		ran <- result
 	}()
 
-	// Whatever happens in drive — a return, a failed assertion unwinding it —
-	// the run is let go. Closing is what does that, and it covers the case that
-	// never reaches a step boundary at all: a workflow that does not load runs
-	// no steps, so nothing takes the walk's first command, and without this the
-	// walk parks and hangs the test instead of reporting the case's own
-	// diagnostic. Every waiting movement ends with [flowdebug.ErrRunOver].
+	// Whatever happens in drive, the run is let go *and waited for*, and both
+	// halves are deferred because of how a driver most often ends: `require`
+	// calls [testing.TB.FailNow], which is [runtime.Goexit], so the statements
+	// after this call are never reached. Deferred work still runs.
+	//
+	// Closing releases the run — it covers the case that never reaches a step
+	// boundary at all, a workflow that does not load, where nothing would take
+	// the walk's first command and the walk would park and hang the test
+	// instead of reporting the case's own diagnostic. Every waiting movement
+	// ends with [flowdebug.ErrRunOver].
+	//
+	// Joining is what keeps a failed subtest from leaving a run behind. Without
+	// it, a driver that fails an assertion exits this goroutine while
+	// `flowtest.Run` carries on in the other one — holding
+	// [v1.LockDefaultRegistry], which the *next* case needs — so a later case
+	// blocks or overlaps with a run whose subtest has already reported
+	// (Codex, #1123). Close first, then join: the close is what lets the run
+	// reach its end.
+	var result flowtest.RunResult
+
 	func() {
-		defer func() { _ = session.Close() }()
+		defer func() {
+			_ = session.Close()
+			result = <-ran
+
+			// Logged here too, so a walk that ended by failing still shows what
+			// the session printed — which is exactly when a reader wants it.
+			mu.Lock()
+			printed := lines.String()
+			mu.Unlock()
+
+			if printed != "" {
+				t.Log("walk:\n" + printed)
+			}
+		}()
 
 		cfg.walkDrive(&Walk{t: t, ctx: t.Context(), session: session})
 	}()
-
-	result := <-ran
-
-	mu.Lock()
-	printed := lines.String()
-	mu.Unlock()
-
-	if printed != "" {
-		t.Log("walk:\n" + printed)
-	}
 
 	return result
 }
