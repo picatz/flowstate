@@ -182,6 +182,30 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
 |---|---|---|---|---|
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
+## `flow dap`
+
+Debug a workflow from an editor, over the Debug Adapter Protocol
+
+```
+flow dap
+```
+
+Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and continue buttons drive a real local run.
+
+The workflow to run comes from the client's launch configuration, as `program`, so one adapter serves whatever the editor points it at.
+
+Breakpoints are step ids rather than source lines. The debugger is handed steps and not files, so there is no line to break on — set them as *function* breakpoints named after a step. A line breakpoint is answered, unverified, saying so.
+
+Examples:
+
+```sh
+# What an editor's launch configuration runs, rather than a person:
+flow dap
+
+# The terminal debugger, for a person:
+flow run local --debug examples/hello-world/workflow.yaml
+```
+
 ## `flow fix`
 
 Rewrite Flowfiles into the current edition

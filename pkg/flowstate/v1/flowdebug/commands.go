@@ -560,18 +560,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		at.condition = compiled
 	}
 
-	s.mu.Lock()
-	_, replacing := s.breakpoints[id]
-	full := !replacing && len(s.breakpoints) >= MaxBreakpoints
-	if !full {
-		s.breakpoints[id] = at
-		// A replacement is a different question, so it gets its own chance to
-		// say it could not be asked. Carrying the old notice over would leave
-		// a second unbound condition skipped in silence, after the prompt said
-		// it was set (Codex, #1116).
-		delete(s.notedUnbound, id)
-	}
-	s.mu.Unlock()
+	full := !s.holdBreakpoint(id, at)
 
 	if full {
 		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
@@ -585,6 +574,33 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+}
+
+// holdBreakpoint puts one breakpoint in the set, reporting whether there was
+// room.
+//
+// The one place that knows what *adding* one costs: whether there is room, and
+// that replacing an existing id is not an addition. [Session.SetBreakpoints]
+// answers the same question over a whole set instead, before it touches
+// anything, because a replacement that emptied the set and refilled it through
+// here would take the lock per entry and leave a window with no breakpoints in
+// it (#1124). Both read [MaxBreakpoints], which is the number, written once.
+func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, replacing := s.breakpoints[id]; !replacing && len(s.breakpoints) >= MaxBreakpoints {
+		return false
+	}
+
+	s.breakpoints[id] = at
+	// A replacement is a different question, so it gets its own chance to say
+	// it could not be asked. Carrying the old notice over would leave a second
+	// unbound condition skipped in silence, after the prompt said it was set
+	// (Codex, #1116).
+	delete(s.notedUnbound, id)
+
+	return true
 }
 
 // splitCondition reads `<step-id>` or `<step-id> if <expr>`.

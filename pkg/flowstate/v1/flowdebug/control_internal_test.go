@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -261,4 +262,157 @@ func TestABrokenStreamIsReportedBeforeControlTakesOver(t *testing.T) {
 	assert.Contains(t, printed, "still held",
 		"the notice did not say the run was still being held, which is the part that "+
 			"tells a controller it has not lost the session:\n\n%s", printed)
+}
+
+// TestReplacingBreakpointsNeverUncoversOneThatStays is the concurrency the
+// method's own word — "replaces" — promises.
+//
+// The first draft emptied the set under the lock, released it, and refilled it
+// an entry at a time through [Session.holdBreakpoint], which takes the lock per
+// entry. A run stepping concurrently could therefore look a step up in the
+// window between and find nothing: it passes a breakpoint the client had just
+// been told was installed, and a run that does not come back that way never
+// stops at all.
+//
+// An editor changes function breakpoints while a run is under way — that is the
+// ordinary thing to do with a debugger — so this is not an exotic interleaving.
+// The assertion is the one that describes the promise: an id in the old set
+// *and* in the new one is never absent from it, whatever a reader's timing.
+//
+// Iterations, because a window is a race and a race is a probability. The
+// shutdown fix on #1122 needed two thousand before it reproduced two runs in
+// three, and 200 reproduced none — the lesson being that a structural argument
+// about a window is worth exactly as much as the number of times it was looked
+// for (#1122).
+func TestReplacingBreakpointsNeverUncoversOneThatStays(t *testing.T) {
+	t.Parallel()
+
+	session, err := New(Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	require.NoError(t, session.SetBreakpoints([]string{"always"}))
+
+	// The reader takes the lock exactly as the step boundary does
+	// (`session.go:698`), which is what makes this the interleaving a run sees
+	// rather than one invented for the test.
+	stop := make(chan struct{})
+	uncovered := make(chan int, 1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		for reads := 0; ; reads++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			session.mu.Lock()
+			_, held := session.breakpoints["always"]
+			session.mu.Unlock()
+
+			if !held {
+				select {
+				case uncovered <- reads:
+				default:
+				}
+
+				return
+			}
+		}
+	}()
+
+	for i := range 2000 {
+		// `always` is in every set, so no observation of it can be a
+		// legitimate absence — only a partially rebuilt one.
+		require.NoError(t, session.SetBreakpoints([]string{"always", fmt.Sprintf("other%04d", i)}))
+	}
+
+	close(stop)
+	<-done
+
+	select {
+	case reads := <-uncovered:
+		t.Fatalf("a reader found no breakpoint at `always` after %d reads, though every "+
+			"replacement kept it — so a step reached in that window passes a breakpoint "+
+			"the client was told was installed", reads)
+	default:
+	}
+}
+
+// TestWaitForPauseAnswersTheHeldPauseAndThenTheNextOne is the seam a front that
+// did not cause a stop reads it through.
+//
+// Two properties, and the first is the one that is easy to get backwards: it
+// answers *now* where the session is already holding a run, because "wait until
+// it stops" and "where is it stopped" are the same question asked at two
+// moments and a caller cannot know which one it is asking. The second is that a
+// session between steps is not holding a pause, so the wait continues rather
+// than handing back the last place it stopped.
+func TestWaitForPauseAnswersTheHeldPauseAndThenTheNextOne(t *testing.T) {
+	t.Parallel()
+
+	session, err := New(Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{},
+	})
+
+	ran := make(chan error, 1)
+	go func() {
+		for _, id := range []string{"build", "test"} {
+			node := &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+			if err := session.BeforeStep(t.Context(), node, scope); err != nil {
+				ran <- err
+
+				return
+			}
+		}
+		ran <- nil
+	}()
+
+	first, err := session.WaitForPause(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "build", first.Step)
+
+	// Asked again while the same pause is still held, it answers with it rather
+	// than waiting for a stop that would never come — nothing has moved.
+	again, err := session.WaitForPause(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "build", again.Step,
+		"asked where a held run is stopped, the wait went looking for a later stop instead")
+
+	second, err := session.Step(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "test", second.Step)
+
+	held, err := session.WaitForPause(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "test", held.Step)
+
+	// Letting the last step go ends the run, which this package cannot see
+	// coming: [v1.Debugger] fires before each step and nothing says "that was
+	// the last". So the movement is still outstanding when the run returns, and
+	// what resolves it is the owner closing the session — which is the whole
+	// contract [ErrRunOver] states.
+	released := make(chan error, 1)
+	go func() {
+		_, err := session.Continue(t.Context())
+		released <- err
+	}()
+
+	require.NoError(t, <-ran)
+	require.NoError(t, session.Close())
+
+	assert.ErrorIs(t, <-released, ErrRunOver,
+		"a movement outstanding when the run ended was left hanging by the close")
+
+	_, err = session.WaitForPause(t.Context())
+	assert.ErrorIs(t, err, ErrRunOver,
+		"a closed session left a waiter hanging on a stop that cannot come")
 }

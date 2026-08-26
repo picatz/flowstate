@@ -359,3 +359,93 @@ func (s *Session) waitForPause(ctx context.Context, after uint64) (Position, err
 		}
 	}
 }
+
+// WaitForPause returns the pause the session is holding, waiting for one if it
+// is not holding a pause now.
+//
+// The exported face of the wait the movement verbs already do, for the front
+// that has to observe a stop *it did not cause*. A debug adapter is that front:
+// a client starts a run and then waits to be told where it stopped, so the
+// first pause — the one nobody stepped into — has to be reportable. Without
+// this the adapter can only announce a stop it asked for, and an editor sits
+// with its step buttons disabled watching a run that is, as far as it can tell,
+// still going (Codex, #1124).
+//
+// It returns immediately where the session is already paused, because "wait
+// until stopped" and "where is it stopped" are the same question asked at two
+// moments and a caller cannot know which one it is asking. [ErrRunOver] once
+// the session closes, for the reason that error exists: this package cannot see
+// a run end, so a session that finished without stopping again is answered
+// rather than waited on forever.
+func (s *Session) WaitForPause(ctx context.Context) (Position, error) {
+	// Generation zero: any pause at all satisfies it. A pause increments the
+	// counter on the way in and again on the way out, so a session between
+	// steps has a non-zero generation and no scope, and the wait continues —
+	// which is what makes this "the pause it is holding" rather than "the last
+	// one it held".
+	return s.waitForPause(ctx, 0)
+}
+
+// SetBreakpoints replaces the session's breakpoints with the named step ids,
+// from any goroutine and whether or not a run is under way.
+//
+// A direct method rather than a line through [Session.Control], and the reason
+// is when a client needs it. Setting a breakpoint is not moving the run — it
+// changes where the run will stop, which is a question about the future — so it
+// does not need a pause to be delivered into. A debug adapter sets breakpoints
+// *before* the run starts, which is what DAP's `configurationDone` exists to
+// order, and a command that waited for a boundary would deadlock exactly there:
+// no run, no prompt, no way to configure the run you are about to start.
+//
+// Unconditional, which is the honest limit of a method that can run before
+// anything else does. A `break <id> if <expr>` compiles its condition against
+// the scope the run is paused in, and before the run there is no scope to
+// compile against — so conditions stay with the prompt, where a scope exists.
+//
+// It replaces rather than adds, because that is what a client means: DAP sends
+// the whole set for a source each time one changes, so anything kept from the
+// last call is a breakpoint the person removed.
+func (s *Session) SetBreakpoints(ids []string) error {
+	// Bounded before anything is replaced, so a refusal leaves the session with
+	// the set it had rather than half of a new one.
+	if len(ids) > MaxBreakpoints {
+		return fmt.Errorf("flowdebug: a session may hold %d breakpoints and %d were named",
+			MaxBreakpoints, len(ids))
+	}
+
+	for _, id := range ids {
+		if err := oneArgument(id); err != nil {
+			return err
+		}
+	}
+
+	// One critical section, and that is the correctness of the method rather
+	// than a tidiness. The first draft emptied the set under the lock, released
+	// it, and then re-added each id through [Session.holdBreakpoint] — which
+	// takes the lock per entry, so a run stepping concurrently could look up a
+	// step in the window between and find an empty or half-rebuilt set. A step
+	// reached there passes a breakpoint the client was just told was installed,
+	// and a run that does not come back that way never stops at all
+	// (Copilot and Codex, #1124, the same finding from both).
+	//
+	// "It replaces" therefore has to be true from every other goroutine's point
+	// of view and not only from this one's: an id in the old set *and* the new
+	// one is never absent, because nothing observes the set between the clear
+	// and the fill.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	clear(s.breakpoints)
+	clear(s.notedUnbound)
+
+	for _, id := range ids {
+		// The bound was checked on the way in, over the whole slice, which is
+		// the whole-set analogue of the per-entry check [Session.holdBreakpoint]
+		// makes: this set replaces rather than adds, so what it may cost is
+		// decided before anything is touched. Duplicates only make the result
+		// smaller than the number checked.
+		s.breakpoints[id] = breakpoint{source: id}
+	}
+
+	return nil
+}
