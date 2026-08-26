@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -87,7 +88,14 @@ func TestNoCompiledExecutableIsTracked(t *testing.T) {
 
 	examined := 0
 
-	var committed []string
+	// The paths on their own beside the annotated lines, because the message
+	// below builds a command out of one. Deriving it by splitting the
+	// annotation on spaces broke for any path containing one, which is a
+	// command that looks right and removes the wrong file (Copilot, #1126).
+	var (
+		committed []string
+		paths2    []string
+	)
 	for _, path := range paths {
 		if path == "" {
 			continue
@@ -109,6 +117,7 @@ func TestNoCompiledExecutableIsTracked(t *testing.T) {
 		for kind, magic := range executables {
 			if n >= len(magic) && bytes.HasPrefix(head[:n], magic) {
 				committed = append(committed, path+" ("+kind+")")
+				paths2 = append(paths2, path)
 
 				break
 			}
@@ -123,8 +132,23 @@ func TestNoCompiledExecutableIsTracked(t *testing.T) {
 		"a compiled executable is tracked in this repository. It is in every clone "+
 			"forever and is wrong for every machine but the one that built it. Remove it "+
 			"and ignore the path it is built to:\n\n"+
-			"    git rm --cached %s\n\n"+
-			"then add that path to .gitignore beside /flow, /gate, /vacuity and "+
-			"/embedding, which are there for this.\n\nFound: %s",
-		strings.Split(strings.Join(committed, " "), " ")[0], strings.Join(committed, "\n"))
+			"%s\n\n"+
+			"then add those paths to .gitignore beside /flow, /gate, /vacuity and "+
+			"/embedding, which are there for this.\n\nFound:\n%s",
+		removals(paths2), strings.Join(committed, "\n"))
+}
+
+// removals is the command to run, one line per path.
+//
+// `--` before the paths, so one beginning with a dash is a path rather than a
+// flag; and quoted, so one containing a space survives a copy and paste. Both
+// are properties of a *message*, which is the whole product of a failing check:
+// a command that looks right and does something else is worse than no command.
+func removals(paths []string) string {
+	lines := make([]string, 0, len(paths))
+	for _, path := range paths {
+		lines = append(lines, "    git rm --cached -- "+strconv.Quote(path))
+	}
+
+	return strings.Join(lines, "\n")
 }

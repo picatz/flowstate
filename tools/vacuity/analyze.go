@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -255,8 +256,13 @@ type analyzed struct {
 	// parameter and every closure's.
 	handles map[string]bool
 
-	// testify are the names its file knows testify's packages by.
+	// testify are the names its file knows testify's packages by, less any this
+	// function binds for itself.
 	testify map[string]bool
+
+	// shadowed are the names this function binds, so a builtin it re-declares
+	// is not the builtin.
+	shadowed map[string]bool
 }
 
 // analyzePackage reports the findings in one parsed package, and how many test
@@ -271,6 +277,22 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 	fields := map[string]bool{}
 	for _, from := range files {
 		collectHandleFields(from, fields)
+	}
+
+	// Type aliases are scoped to the *package*, not the file that declares
+	// them: `type T = testing.T` in one file and `func TestCrossFile(t *T)` in
+	// another is ordinary Go and `go test` runs it. Collected per file, because
+	// resolving one needs that file's own name for the `testing` import, then
+	// unioned — which is where they were being read from before, leaving a test
+	// in the second file neither counted nor reported (Codex, #1126).
+	aliases := map[string]string{}
+	for _, from := range files {
+		for name, handle := range from.aliases {
+			aliases[name] = handle
+		}
+	}
+	for i := range files {
+		files[i].aliases = aliases
 	}
 
 	// Keyed by name and holding *every* declaration of it, because two
@@ -406,7 +428,7 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 				continue
 			}
 
-			if loop, subject, found := conditionalClaim(fn, asserters); found {
+			if loop, subject, found := conditionalClaim(fset, fn, asserters); found {
 				findings = append(findings, Finding{
 					Check:  CheckConditional,
 					Test:   name,
@@ -423,16 +445,43 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 // analyzeFunc reads one function for what it asserts and whom it calls.
 func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyzed {
 	out := &analyzed{
-		decl:    fn,
-		from:    from,
-		calls:   map[string]bool{},
-		handles: map[string]bool{},
-		testify: from.testify,
+		decl:     fn,
+		from:     from,
+		calls:    map[string]bool{},
+		handles:  map[string]bool{},
+		shadowed: map[string]bool{},
+
+		// Copied, because the shadowing below removes from it and the file's
+		// own map is shared with every other function in it.
+		testify: maps.Clone(from.testify),
+	}
+	if out.testify == nil {
+		out.testify = map[string]bool{}
 	}
 
 	for name := range fields {
 		out.handles[name] = true
 	}
+	// Before the walk below, which is the whole of it: these names decide what
+	// that walk will read as an assertion, and the first version computed them
+	// afterwards — so nothing was shadowed at the moment it mattered and the
+	// test written to prove it failed. Caught by that test rather than by
+	// reading, which is the argument for having written it.
+	//
+	// `import req "…/require"` followed by `req := loader{}` makes `req.Load()`
+	// an ordinary method call, and `panic := func(any) {}` makes `panic("x")`
+	// return normally. Both were being read as assertions, so a test with no
+	// claim in it passed a check that fails builds (Codex, #1126).
+	//
+	// Collected for the whole function rather than per scope, because a
+	// syntactic walk has no scopes: the cost is that a name shadowed in one
+	// block stops counting in the others too, which errs toward *reporting* —
+	// the direction that gets looked at rather than the one that hides.
+	for name := range shadowed(fn.Body) {
+		delete(out.testify, name)
+		out.shadowed[name] = true
+	}
+
 	namesHandles(fn.Type, from, out.handles)
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		if lit, ok := node.(*ast.FuncLit); ok {
@@ -448,7 +497,7 @@ func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyze
 			return true
 		}
 
-		if assertion(call, out.handles, out.testify) {
+		if assertion(call, out.handles, out.testify, out.shadowed) {
 			out.asserts = true
 		}
 		switch callee := call.Fun.(type) {
@@ -645,13 +694,13 @@ func named(expr ast.Expr, testing string, names ...string) bool {
 // So a handle it is: the identifier the function knows its `*testing.T` by, or
 // a field of that type reached through one selector — `c.t.Fatalf(…)`, the
 // shape a test client wrapping the handle uses.
-func assertion(call *ast.CallExpr, handles, testify map[string]bool) bool {
+func assertion(call *ast.CallExpr, handles, testify, shadowed map[string]bool) bool {
 	// `if got != want { panic("mismatch") }` is a manual assertion, and the
 	// testing runner turns the panic into a failure. Checked before the
 	// selector below, because `panic` is a builtin called on nothing — so a
 	// test written that way was being reported fatally unasserted while doing
 	// the very thing the check looks for (Codex, #1125).
-	if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "panic" {
+	if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "panic" && !shadowed["panic"] {
 		return true
 	}
 
@@ -671,6 +720,61 @@ func assertion(call *ast.CallExpr, handles, testify map[string]bool) bool {
 	}
 
 	return isHandle(selector.X, handles)
+}
+
+// shadowed are the names a function body binds, whether by `:=`, by `var`, by
+// a parameter of a closure, or by a local type or function declaration.
+//
+// Deliberately generous about what counts as binding and deliberately blind to
+// where the binding is in scope: this is a syntax walk. What it is for is
+// deciding when a name can no longer be trusted to mean the package or builtin
+// it usually means, and over-reporting there costs a finding somebody looks at
+// rather than a claim nobody checks.
+func shadowed(body ast.Node) map[string]bool {
+	names := map[string]bool{}
+
+	add := func(expr ast.Expr) {
+		if name, ok := expr.(*ast.Ident); ok && name.Name != "_" {
+			names[name.Name] = true
+		}
+	}
+
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			if node.Tok == token.DEFINE {
+				for _, left := range node.Lhs {
+					add(left)
+				}
+			}
+
+		case *ast.ValueSpec:
+			for _, name := range node.Names {
+				add(name)
+			}
+
+		case *ast.TypeSpec:
+			add(node.Name)
+
+		case *ast.FuncLit:
+			if node.Type.Params == nil {
+				return true
+			}
+			for _, param := range node.Type.Params.List {
+				for _, name := range param.Names {
+					add(name)
+				}
+			}
+
+		case *ast.RangeStmt:
+			add(node.Key)
+			add(node.Value)
+		}
+
+		return true
+	})
+
+	return names
 }
 
 // isHandle reports whether an expression is something this function can fail

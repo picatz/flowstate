@@ -890,6 +890,128 @@ func TestDefined(t *Own) {
 	assert.Zero(t, tests, "a defined type over the handle was counted as the handle")
 }
 
+// TestAShadowedNameIsNotThePackageItShadows keeps a local binding from
+// silencing the check.
+//
+// `assert`, `require` and `panic` are ordinary Go names. Reading them by their
+// usual meaning wherever they appear means a test can bind one to something
+// harmless, call it, and pass a check that fails builds (Codex, #1126).
+func TestAShadowedNameIsNotThePackageItShadows(t *testing.T) {
+	t.Parallel()
+
+	// Testify imported under an alias, then shadowed by a local of the same
+	// name: `req.Load()` is an ordinary method call on a `loader`.
+	findings, _ := analyzedFile(t, "shadowed_alias_test.go", `package fixture
+
+import (
+	"testing"
+
+	req "github.com/stretchr/testify/require"
+)
+
+type loader struct{}
+
+func (l loader) Load() int { return 1 }
+
+var _ = req.NotZero
+
+func TestShadowsTheAlias(t *testing.T) {
+	req := loader{}
+	_ = req.Load()
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a local value shadowing the testify alias silenced the check")
+
+	// And the builtin, which returns normally once it is a local func.
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(analyzedFixture(t, `
+func TestShadowsPanic(t *testing.T) {
+	panic := func(any) {}
+	panic("this returns")
+}
+`)), "a local func named panic was read as the builtin that fails a test")
+}
+
+// TestAnAliasReachesTheWholePackage is Go's scoping, which is not the file's.
+//
+// `type T = testing.T` in one file and `func TestCrossFile(t *T)` in another is
+// ordinary Go, and `go test` runs it. Reading aliases only from the file that
+// declares them left such a test neither counted nor reported (Codex, #1126).
+func TestAnAliasReachesTheWholePackage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "alias_test.go"), []byte(`package fixture
+
+import "testing"
+
+type T = testing.T
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "use_test.go"), []byte(`package fixture
+
+func TestCrossFile(t *T) {
+	_ = 1
+}
+`), 0o600))
+
+	findings, tests, err := Analyze(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 1, tests, "a test using an alias declared in another file was not counted")
+	assert.Len(t, findings, 1, "a vacuous test using an alias from another file was not reported")
+}
+
+// TestAGuardIsMatchedToTheExpressionItNames is why the key is the printed
+// expression rather than the report's summary.
+//
+// [render] is for a person reading the report and is deliberately lossy: it
+// drops index values and call arguments, so `corpora[0]` and `corpora[1]` are
+// one string to it, and so are `Cases(optional)` and `Cases(required)`. Used as
+// a guard key that let a skip about one collection settle a loop over another —
+// which is the finding this whole guard was tightened for, one level down
+// (Codex and Copilot, #1126).
+func TestAGuardIsMatchedToTheExpressionItNames(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, []string{string(CheckConditional)}, checksFound(analyzedFixture(t, `
+func TestIndexedCorpora(t *testing.T) {
+	corpora := conformance.Corpora()
+	if len(corpora[0]) == 0 {
+		t.Skip("the first is empty")
+	}
+
+	for _, one := range corpora[1] {
+		require.NotZero(t, one)
+	}
+}
+`)), "a guard on corpora[0] settled a loop over corpora[1]")
+
+	assert.Equal(t, []string{string(CheckConditional)}, checksFound(analyzedFixture(t, `
+func TestDifferentArguments(t *testing.T) {
+	if len(conformance.Cases("optional")) == 0 {
+		t.Skip("no optional cases")
+	}
+
+	for _, one := range conformance.Cases("required") {
+		require.NotZero(t, one)
+	}
+}
+`)), "a guard on Cases(\"optional\") settled a loop over Cases(\"required\")")
+
+	// The same expression, written the same way, still settles it.
+	assert.Empty(t, analyzedFixture(t, `
+func TestSameIndex(t *testing.T) {
+	corpora := conformance.Corpora()
+	if len(corpora[1]) == 0 {
+		t.Skip("empty")
+	}
+
+	for _, one := range corpora[1] {
+		require.NotZero(t, one)
+	}
+}
+`), "a guard naming the loop's own subject exactly did not settle it")
+}
+
 // TestTestdataIsNotWalked keeps fixtures for other tests out of the report.
 //
 // `testdata` is Go's own convention for source that is not the package's, and
