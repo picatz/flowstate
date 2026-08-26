@@ -1472,3 +1472,51 @@ func TestAConditionOnAMemberIsDeclinedWhereTheMemberIsMissing(t *testing.T) {
 	assert.Contains(t, out, "could not be evaluated here",
 		"and the arrivals that could not answer say so")
 }
+
+// TestAConditionMayCompareRuntimeTypes (Codex, #1116).
+//
+// The accept-time check declares every identifier a condition mentions as a
+// dynamic variable, and `type(n) == int` mentions `int` — a type constant CEL
+// already provides. The concern is exact: redeclaring it could shadow the type
+// and make a valid condition unwritable, which is a false diagnostic, the
+// failure this repository ranks worst.
+//
+// It does not, and both halves are pinned because neither is visible from the
+// code. Extending an environment with a variable named for a type constant is
+// not a conflict, so the condition is accepted and fires; and the check is
+// still doing its job alongside it, which is the half a test asserting only
+// "it was accepted" would miss — an Extend failure is swallowed on purpose
+// (blaming an author for this build's problem is worse than checking nothing),
+// so a conflict would have turned the type check silently off rather than
+// loudly wrong.
+func TestAConditionMayCompareRuntimeTypes(t *testing.T) {
+	t.Parallel()
+
+	for _, condition := range []string{
+		"type(n) == int",
+		"type(n) == int && n == 3",
+		`type("x") == string && n == 3`,
+	} {
+		t.Run(condition, func(t *testing.T) {
+			t.Parallel()
+
+			out, ran := loopingRun(t, 6, "break body if "+condition+"\ncontinue\ncontinue\n")
+
+			require.Len(t, ran, 6)
+			assert.NotContains(t, out, "condition:",
+				"a type constant CEL provides is not a type error")
+			assert.NotContains(t, out, "could not be evaluated here",
+				"and it evaluates rather than declining at every arrival")
+		})
+	}
+
+	// The half that matters more: the check is still effective. A type error
+	// in the *same* condition as a type constant is still refused, so the
+	// declaration cannot have quietly turned checking off.
+	out, ran := loopingRun(t, 3, "break body if type(n) == int && (1 + true)\nbreakpoints\ncontinue\n")
+
+	assert.Len(t, ran, 3)
+	assert.Contains(t, out, "no matching overload",
+		"the type check still runs alongside the type constant")
+	assert.Contains(t, out, "no breakpoints", "and nothing is set")
+}
