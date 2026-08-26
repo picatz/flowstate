@@ -1644,6 +1644,55 @@ flow test -o jsonl examples/
 | `--seed0 <uint64>` | `uint64` | `1` | — | the first seed --seeds walks upward from, to move the search to a different part of the seed space |
 | `--seeds <int>` | `int` | `0` | — | also run every case under N seeded schedules of the local driver's own choices (`parallel:` branch order, where an `async:` step's work happens), and fail when a case's observables depend on which one ran; 0, the default, runs written order only |
 
+## `flow timeline`
+
+Report what a run did, in the order it did it
+
+```
+flow timeline [workflow-id] [flags]
+```
+
+Read a run's own account of itself: which step ran, which attempt, what it waited for, what failed and with what sentence.
+
+`flow get` answers what a run is doing. This answers what it did, which is the question left when a run has already finished and there is no present to report. It starts nothing, signals nothing and changes nothing.
+
+A run that continued as new has an account per segment. `nextRunId` and `previousRunId` name the neighbours and `firstRunId` names where the workload began; pass one with --run-id to read it. Both directions, because omitting --run-id reads the *latest* segment, which by definition has no next one.
+
+`truncated` says the account is not the whole of that segment — resume with --run-id and --after-event-id set to the last row's event id, which the command prints for you. Both, because event ids restart in each segment: a cursor means nothing until the segment it counts within is named. Raising --max-entries is not the way past it either: the ceiling is a ceiling, and one segment can hold several times the largest answer this returns.
+
+Examples:
+
+```sh
+# What did this run actually do?
+flow timeline flowstate-workflow-3f7c
+
+# Just the failures, for a script. Non-empty rather than non-null: this
+# command emits unpopulated fields, so every entry has a failure and a step
+# that succeeded carries it as the empty string.
+flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure != "")'
+
+# The next segment of a workload that continued as new:
+flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...
+
+# Continue an account the server clipped, which names the segment as well
+# because event ids restart in each one (the command prints both for you):
+flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-... --after-event-id 4821
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--after-event-id <int64>` | `int64` | `0` | — | resume past an entry already read, by its event id; requires --run-id, since event ids restart in each segment; unset starts at the beginning |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `--max-entries <int32>` | `int32` | `0` | — | stop after this many entries; unset uses the server's default |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--run-id <string>` | `string` | — | — | read one segment of the workload; unset reads whichever is current |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
 ## `flow validate`
 
 Check workflows for problems without running them

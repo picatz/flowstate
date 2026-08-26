@@ -370,6 +370,12 @@ message PendingActivity {
 
   // LastFailure is the message of the most recent failed attempt, which is the
   // sentence that usually contains the whole diagnosis.
+  //
+  // Read through the deployment's own converter, so a codec-configured
+  // deployment gets the diagnosis rather than the "Encoded failure" sentinel
+  // the SDK writes in its place — and bounded, because the length of it is the
+  // workload's choice and a run may be retrying thousands of steps at once. A
+  // message that was cut says so in its own text.
   string last_failure = 2;
 
   // NextAttemptScheduledTime is when the next attempt is due. Unset when an
@@ -766,4 +772,173 @@ message RunState {
   // validate` cannot tell those apart and neither can a workflow, which is
   // correct: "no trigger recorded" is one fact, not two.
   TriggerContext trigger = 12;
+}
+
+// TimelineEntry is one thing a run did, read back from its own durable history.
+//
+// # Why a run needs this at all
+//
+// Everything else this service reports about a run is its *state*: what it is
+// doing now ([RunProgress]), what is mid-retry now ([PendingActivity]), what it
+// is parked on now ([PendingWait]), what it produced ([RunOutputs]). None of
+// those answers "what happened", and a run that has already failed has no now
+// left to describe — which is exactly the moment somebody wants to know. The
+// local driver answers that question with the debugger; a run executing on a
+// worker somewhere else could not be asked it at all.
+//
+// # What it is read from, and what it is never read from
+//
+// A history event, and the summary the interpreter wrote onto the command that
+// produced it. Nothing here decodes an activity's *payload*, which is the
+// resolved task: inputs an author wrote, and references to values a task
+// resolves inside itself. Reading those to label a row would be reading
+// workflow history for the material CLAUDE.md spends a section keeping out of
+// it, and it would do so on the read path, where the caller is whoever asked.
+//
+// So a step is named by its label or not at all. A run started by an
+// interpreter that predates those labels reports its events with an empty
+// [TimelineEntry.step], which is honest: the fact was never recorded, and
+// inventing one from a payload is the thing this refuses to do.
+message TimelineEntry {
+  // Kind is what happened, as the small set a reader is actually asking about.
+  //
+  // Deliberately not one arm per Temporal event type. A history carries dozens,
+  // most of them bookkeeping about workflow tasks and about the worker, and a
+  // caller made to filter those is a caller reimplementing this. What survives
+  // is the set that answers "what did the workload do": a step started, a step
+  // ended one of the ways a step can end, the run waited, the run handed over.
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+
+    // KIND_STEP_SCHEDULED is a step's work being handed to a worker. One per
+    // activity, carrying attempt 1: a retry is reported as the *failure* that
+    // caused it rather than as a second scheduling, since that is the fact a
+    // reader is looking for and Temporal records the two together anyway.
+    KIND_STEP_SCHEDULED = 1;
+
+    // KIND_STEP_COMPLETED is a step's work finishing successfully.
+    KIND_STEP_COMPLETED = 2;
+
+    // KIND_STEP_FAILED is an attempt failing. A step that Temporal retries
+    // produces one of these per attempt *history records*, which is what makes
+    // a stuck run legible: the same step failing five times with the same
+    // sentence is a different fact from five steps failing once.
+    //
+    // Only a *final*, retries-exhausted failure gets an event of its own in a
+    // history; a failure Temporal will retry is carried on the next attempt's
+    // start. Both become one of these, because a consumer filtering on this
+    // kind wanting only the final one is not a consumer this can imagine — the
+    // retrying run is the case anybody reads a timeline for.
+    //
+    // That is also where the "history records" qualifier earns its place, and
+    // it is a boundary rather than a gap. An attempt that has failed and is
+    // *waiting out its backoff* has no next start yet, so history holds nothing
+    // about it: the fact lives in the worker's pending state, and
+    // [GetResponse.pending_activities] is the field that reports it — which
+    // verb answers what a run is doing *now* is the whole distinction between
+    // Get and GetTimeline. The row appears here the moment the next attempt
+    // starts.
+    //
+    // One case loses it for good, and is named so nobody hunts for it: a run
+    // cancelled or terminated during that backoff. Temporal's
+    // `ActivityTaskCanceled` carries a scheduled id, a started id and details,
+    // and no failure at all, so the sentence the last attempt failed with was
+    // never written down anywhere durable. That is Temporal's history model
+    // rather than a choice this makes.
+    KIND_STEP_FAILED = 3;
+
+    // KIND_STEP_TIMED_OUT is an attempt exceeding a timeout rather than
+    // returning an error, which is a different diagnosis and reads identically
+    // in a message-only report.
+    KIND_STEP_TIMED_OUT = 4;
+
+    // KIND_STEP_CANCELED is a step stopping because the run was cancelled.
+    KIND_STEP_CANCELED = 5;
+
+    // KIND_TIMER_STARTED is the run beginning to wait — a `sleep:`, or the
+    // bound on a `wait_for_signal:`. Which one the label says.
+    KIND_TIMER_STARTED = 6;
+
+    // KIND_TIMER_FIRED is that wait elapsing. A `wait_for_signal:` whose timer
+    // fired is a gate nobody answered, which is the fact an operator is looking
+    // for and the one a status of FAILED does not carry.
+    KIND_TIMER_FIRED = 7;
+
+    // KIND_SIGNAL_RECEIVED is a signal arriving. Named, never carrying its
+    // payload: a signal's payload is a decision somebody made and is exactly
+    // the kind of thing a read surface must not spread.
+    KIND_SIGNAL_RECEIVED = 8;
+
+    // KIND_RUN_CONTINUED is a segment handing over to the next through
+    // Continue-As-New. It is why a timeline can end while the workload has not,
+    // and [GetTimelineResponse.next_run_id] is where it goes on.
+    KIND_RUN_CONTINUED = 9;
+
+    // KIND_RUN_ENDED is the workload finishing, whichever way. The run's status
+    // says which; this says when.
+    KIND_RUN_ENDED = 10;
+  }
+
+  // EventId is the history event this entry is drawn from, monotonically
+  // increasing within one run. It is the stable address of a row: two entries
+  // for one step differ by it and by nothing else a reader can rely on.
+  int64 event_id = 1;
+
+  // Time is when Temporal recorded the event.
+  google.protobuf.Timestamp time = 2;
+
+  Kind kind = 3 [(buf.validate.field).enum.defined_only = true];
+
+  // Step is the label the interpreter wrote onto the command — the step's
+  // position and what the command is, as `` `pages` > `page` · sleep ``.
+  //
+  // Empty is a real answer and there are two of them: an event the interpreter
+  // does not label (a signal arriving is the caller's doing, not a step's), and
+  // a run started before labels existed. Neither is worth a second field to
+  // tell apart, because a reader does the same thing with both.
+  string step = 4;
+
+  // Attempt is which try this was, starting at 1, on the entries where trying
+  // more than once is possible. Zero elsewhere.
+  //
+  // On a failure it is the attempt that *ended*, not the one starting after it,
+  // so the numbers read as an account: attempt 1 failed, attempt 2 failed,
+  // attempt 3 finished.
+  int32 attempt = 5;
+
+  // ScheduledEventId joins an entry about a step's work to the
+  // KIND_STEP_SCHEDULED entry that began it, and is zero on entries that are
+  // not about a step's work.
+  //
+  // It exists because a label is written onto the *scheduling* command and
+  // nowhere else: Temporal records the metadata once, and the events that
+  // report how that work ended carry only a reference back to it. The server
+  // resolves that reference and fills [TimelineEntry.step] in — every read
+  // walks the run's history from the start, including the part a resumption
+  // skips, so the scheduling is always in reach by the time its ending is read.
+  //
+  // Reported anyway, because it is the join a reader needs for the other
+  // direction: which of several rows naming one step is *this* step's ending,
+  // when a run scheduled the same step id more than once. It is the same join
+  // Temporal itself models.
+  int64 scheduled_event_id = 7;
+
+  // Failure is the message of the failure, and only its message, cut to a
+  // bound the workload does not choose.
+  //
+  // The outermost sentence rather than the chain, exactly as
+  // [PendingActivity.last_failure] reports it and for that field's reason: the
+  // chain repeats what the attempt count already says, and Temporal's failure
+  // converter writes *every* level of an unwrapped error into what it
+  // persists, so a chain is the one shape most likely to carry something a
+  // scrubbed outer message deliberately dropped.
+  //
+  // Bounded because a task fails with whatever string it likes and a run
+  // started by an outside party is not ours to assume anything about — and
+  // bounded twice, since a per-message cap times an entry ceiling is still
+  // several megabytes: the answer as a whole stops against a serialized-size
+  // budget too, and says that it stopped. A cut message says so in its own
+  // text, because a diagnosis silently shortened is one a reader may act on
+  // believing they have all of it.
+  string failure = 6;
 }

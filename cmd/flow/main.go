@@ -2776,12 +2776,13 @@ flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'
 	// without an address — the way `get` and `signal` were first written.
 	lifecycleCmds := lifecycleCommands()
 	watchCmd := newWatchCommand()
+	timelineCmd := newTimelineCommand()
 
 	// The schedule verbs add their own server flags to each sub-command, because
 	// they are one level down and a flag on the group would not reach them.
 	scheduleCmd := newScheduleCommand()
 
-	serverCmds := append([]*cobra.Command{runCmd, getCmd, signalCmd, watchCmd}, lifecycleCmds...)
+	serverCmds := append([]*cobra.Command{runCmd, getCmd, timelineCmd, signalCmd, watchCmd}, lifecycleCmds...)
 
 	for _, c := range serverCmds {
 		addServerFlags(c)
@@ -3164,6 +3165,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(getCmd)
+	rootCmd.AddCommand(timelineCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(signalCmd)
 	rootCmd.AddCommand(scheduleCmd)

@@ -19,6 +19,7 @@ rather than failing opaquely when `--address` was not given.
 | `flowstate_get_catalog` | locally | `flowstate.v1.GetCatalogRequest` |
 | `flowstate_run` | via a server | `flowstate.v1.RunRequest` |
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` |
+| `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` |
 | `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` |
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` |
@@ -88,6 +89,18 @@ To answer a gate, call `Signal` with the gate's signal name and a payload carryi
 On this surface that call is flowstate_signal, with this run's workflowId, name set to the gate's signalName, and payload.namedValues.approved set to {"literal": {"boolValue": true}} or false.
 
 Over stdio the signal is delivered as this process's own identity, not as the identity of whoever asked for it. Nothing on this transport can attest that a particular human approved anything, and an interactive card rendering this result changes none of that; an attested approver waits on the remote MCP surface.
+
+## `flowstate_get_timeline`
+
+GetTimeline reports what a run did, event by event, read back from its own durable history.
+
+`Get` answers what a run *is* — its status, where it has reached, what is mid-retry, what it is parked on. None of that survives the moment somebody most wants it: a run that has already failed has no now left to describe, and "which step, on which attempt, with what sentence, and what was it waiting for before that" is a question about the past. Locally the debugger answers it. For a run on a worker somewhere else this is the answer, and before it there was none through this service at all — an operator had to leave the tenancy boundary and ask the temporal CLI, exactly as they did for `GetResponse.pending_activities` before that field existed.
+
+Read-only in the strongest sense available: it starts nothing, signals nothing and changes nothing, so it is the one verb about a live workload that an agent can be pointed at unattended, as `Validate` is for a file.
+
+Authorized like every other verb addressing a run, and refused the same way — see `GetRequest`. A history is the whole account of a workload, so a timeline readable by whoever guessed an id would be a larger disclosure than `Get`'s, not a smaller one.
+
+Bounded, and it says when a bound was reached rather than letting a short answer read as a complete one — see `GetTimelineResponse.truncated`.
 
 ## `flowstate_signal`
 

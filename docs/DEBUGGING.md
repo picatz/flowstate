@@ -249,13 +249,112 @@ The debugger is a local-driver instrument, so the question for a run already
 executing on a worker somewhere else is what it can *tell* you rather than
 where you can stop it.
 
-`flow get <id>` is the verb: it reports the run's status and timing, where it
-has reached, the steps Temporal is retrying right now and why the last attempt
-failed, the gates it is parked on, and — for a run shaped as an entity, which
-never finishes and therefore never has outputs — a bounded snapshot of the
-state it is carrying.
+Two verbs, answering two questions.
 
-Underneath that, the run's own history names its steps. Every command the
+`flow get <id>` answers what a run **is** doing: its status and timing, where
+it has reached, the steps Temporal is retrying right now and why the last
+attempt failed, the gates it is parked on, and — for a run shaped as an entity,
+which never finishes and therefore never has outputs — a bounded snapshot of
+the state it is carrying.
+
+`flow timeline <id>` answers what it **did**, which is the question left when a
+run has already finished and there is no present to report:
+
+```
+TIME      WHAT     STEP                        DETAIL
+10:14:02  step     `request`
+10:14:02  done     `request`
+10:14:02  waiting  `approval` · wait timeout
+10:16:31  signal   deploy-approved
+10:16:31  step     `deploy`
+10:16:32  done     `deploy`
+10:16:32  ended
+```
+
+It starts nothing, signals nothing and changes nothing, which is what makes it
+the one verb about a live workload that an agent can be pointed at unattended —
+`flowstate_get_timeline` over MCP is the same answer.
+
+A step that retried appears once per attempt as a `failed` row, which is what
+makes a stuck run legible: the same step failing five times the same way is a
+different fact from five steps failing once.
+
+```
+TIME      WHAT     STEP        DETAIL
+10:14:02  step     `charge`    attempt 1
+10:14:04  failed   `charge`    attempt 1: connection refused
+10:14:09  failed   `charge`    attempt 2: connection refused
+10:14:24  done     `charge`    attempt 3
+```
+
+An attempt that has failed and is *waiting out its retry backoff* is the one
+thing this does not show. History holds nothing about it yet — the fact lives in
+the worker's pending state until the next attempt starts — so `flow get` is the
+verb that answers it, which is the same split as everywhere else: `get` for now,
+`timeline` for what happened. The row appears here as soon as the next attempt
+begins.
+
+Getting the rest right needed two facts Temporal does not hand over directly. Only
+a *final*, retries-exhausted failure gets an event of its own; a failure that
+will be retried is carried on the next attempt's start, so reporting it as
+detail on a scheduling row would leave anything filtering on failures seeing
+none of them — which is to say none of the failures a retrying run has. And no
+terminal event names an attempt at all: `ActivityTaskFailed` references the
+scheduling and the start and stops there, so the account carries the number
+forward from the start it belongs to.
+
+Failure text is read through the deployment's own converter, which matters on
+one shape in particular: a deployment running a payload codec has Flowstate's
+failure encoding on with it — that is what keeps a rejected value out of history
+in the clear — and the encoding moves the real message into `encoded_attributes`
+and writes the literal string `Encoded failure` in its place. Read naively, a
+timeline there would be structurally perfect and diagnostically empty. `flow
+get`'s account of a retrying step reads it the same way, for the same reason.
+
+A failure's message is bounded, and says so when it was cut. A task fails with
+whatever string it likes, and a run started by an outside party is not ours to
+assume anything about; the answer as a whole stops against a byte budget too,
+because a per-message cap times an entry ceiling is still several megabytes.
+
+`truncated` says the account is not the whole of a segment — never something to
+infer from a short answer. Continue it with `--run-id` and `--after-event-id`,
+which the command prints for you:
+
+```
+this is not the whole of this run's account — continue with --run-id 0198f1e2-… --after-event-id 4821
+```
+
+Both flags, and a cursor without a run id is refused rather than guessed at.
+Event ids restart at 1 in every segment, so a cursor counts within one and means
+nothing until that one is named — and an unnamed run resolves to *whichever is
+latest*, which is a different segment the moment the workload continues as new
+between two calls. Applied there, the old cursor would skip the new segment's
+beginning or mix two segments into one account, with nothing in the answer
+saying so.
+
+Raising `--max-entries` is not the way past a truncation either: the ceiling is
+a ceiling, and one segment can legitimately hold several times the largest
+answer the server returns. Each read walks the run's history from the start,
+which is what lets a resumed page still name its steps: a label is written onto
+a step's *scheduling* and nowhere else, so a reader that began in the middle
+would have rows it could not name.
+
+A run that continued as new has an account per segment, and the chain is
+walkable in both directions — `nextRunId`, `previousRunId`, and `firstRunId`
+for where the workload began. Both directions matter because omitting a run id
+reads the *latest* segment, whose successor is by definition empty: forward
+links alone would leave a caller holding only a workflow id unable to reach any
+earlier segment at all.
+
+What it never reads is an activity's payload. That is the resolved task, and
+decoding it to label a row would put an author's inputs on the read path where
+the caller is whoever asked. A step is named by its label or not at all. The one
+payload-shaped thing reported is a failure's outermost *message*, exactly as
+`flow get` already reports the last failure of a retrying step — never the
+chain, because Temporal's failure converter writes every level of an unwrapped
+error into what it persists.
+
+Underneath both, the run's own history names its steps. Every command the
 interpreter writes carries a one-line summary, so a run is legible in the two
 tools an operator already has — Temporal Web, and `temporal workflow show`:
 

@@ -575,6 +575,18 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
+			Name:  "GetTimeline",
+			Input: (&v1.GetTimelineRequest{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().GetTimeline(ctx, connect.NewRequest(in.(*v1.GetTimelineRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
 			Name:  "Signal",
 			Input: (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
