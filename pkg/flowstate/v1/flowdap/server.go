@@ -68,12 +68,6 @@ type Server struct {
 	launched chan struct{}
 	once     sync.Once
 
-	// configures reports that the client said it can send `configurationDone`.
-	// A client that cannot is released at its `launch` instead, because
-	// otherwise it never sends the request this waits for and the run never
-	// starts at all (Copilot, #1124).
-	configures bool
-
 	// entered is closed once the run's *first* pause has been reported, or once
 	// it is established there will not be one.
 	//
@@ -93,6 +87,9 @@ type Server struct {
 	// whoever owns the run watching it return — and a client told twice puts
 	// its session away twice.
 	ended sync.Once
+
+	// exit is what the `exited` event will report. See [Server.Exited].
+	exit int
 }
 
 // NewServer returns a server that drives session over stream.
@@ -106,22 +103,31 @@ func NewServer(session *flowdebug.Session, stream Stream) *Server {
 	}
 }
 
-// Launched is closed once the client has finished configuring — its
-// `configurationDone`, or its `launch` where it told us at `initialize` that it
-// cannot send one.
+// Launched is closed by the client's `configurationDone`, and by nothing else.
 //
 // A caller starts the run when this fires and not before. Breakpoints arrive
 // *after* launch in DAP's own order, so a run started at the launch request is
 // a run already past the step somebody set a breakpoint on, and the person is
 // left watching a session that will never stop.
 //
-// The fallback is not a nicety. `configurationDone` is optional in the
-// protocol and a client announces at `initialize` whether it sends one, so
-// waiting unconditionally hangs forever against a client that does not — the
-// same never-starts outcome, reached from the other side. This comment claimed
-// the fallback before the code had it, which is the kind of doc that is worse
-// than none: it describes a behaviour a caller would then rely on
-// (Copilot, #1124).
+// There is no `launch` fallback, and the reason is worth stating because a
+// previous version of this adapter had one and it was wrong in the direction
+// that matters. `supportsConfigurationDoneRequest` is a field of the
+// *adapter's* `Capabilities` response, not of `InitializeRequestArguments` —
+// the client never sends it. So an adapter that reads it out of the initialize
+// *request* finds it absent from every real client, concludes none of them can
+// configure, and releases every one of them at `launch`: precisely the
+// premature start this ordering exists to prevent, arrived at by way of the
+// mechanism meant to prevent it (Codex, #1124, on a fix for an earlier
+// finding by Copilot on this same comment).
+//
+// What the specification actually says is "clients should only call this
+// request if the corresponding capability `supportsConfigurationDoneRequest`
+// is true". This adapter advertises it as true, so a conforming client sends
+// it, so waiting is both correct and complete. A client that advertises
+// nothing and sends nothing would wait forever — and the answer to that is not
+// to guess from a field that means something else, it is to stop advertising
+// the capability, which would be a different adapter.
 func (s *Server) Launched() <-chan struct{} { return s.launched }
 
 // Program is what the client's launch configuration named, or "" where it
@@ -149,6 +155,29 @@ func (s *Server) Output(text string) {
 	s.emit("output", map[string]string{"category": "stdout", "output": text})
 }
 
+// Exited records the code the run ended with, for the `exited` event.
+//
+// Separate from [Server.Finished] because of who knows what, and when. Only
+// the owner of the run knows whether it succeeded; the adapter cannot see a
+// run end at all. But the owner is not necessarily the one that *reports* the
+// end — a movement outstanding when the session closes learns the same thing
+// through [flowdebug.ErrRunOver] and may get there first.
+//
+// So the owner records the outcome *before* closing the session, and whichever
+// path then reports the end reports the same code. Called after the close, it
+// is a code nobody will read.
+//
+// It matters because a client reads this event to decide what the run did. Left
+// at the zero value, a validation refusal, a failed step and a missing
+// `program` all report as a clean exit — an editor then says the workflow
+// succeeded, having watched it not run (Codex, #1124).
+func (s *Server) Exited(code int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.exit = code
+}
+
 // Finished tells the client the run is over.
 //
 // Called by whoever owns the run when it returns, because the adapter cannot
@@ -159,8 +188,12 @@ func (s *Server) Output(text string) {
 // away twice.
 func (s *Server) Finished() {
 	s.ended.Do(func() {
+		s.mu.Lock()
+		code := s.exit
+		s.mu.Unlock()
+
 		s.emit("terminated", nil)
-		s.emit("exited", exitedBody{})
+		s.emit("exited", exitedBody{ExitCode: code})
 	})
 }
 
@@ -194,18 +227,6 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	switch request.Command {
 	case "initialize":
-		// Whether this client will send `configurationDone`. It is optional in
-		// the protocol, so a client that says no has to be released at its
-		// `launch` or it waits for a request it is never going to make.
-		var client struct {
-			SupportsConfigurationDoneRequest bool `json:"supportsConfigurationDoneRequest"`
-		}
-		_ = json.Unmarshal(request.Arguments, &client)
-
-		s.mu.Lock()
-		s.configures = client.SupportsConfigurationDoneRequest
-		s.mu.Unlock()
-
 		// The `initialized` event is what tells a client it may start sending
 		// breakpoints, and it must follow the response rather than precede it.
 		s.reply(request, capabilities{
@@ -227,19 +248,12 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 
 		s.mu.Lock()
 		s.program = asked.Program
-		configures := s.configures
 		s.mu.Unlock()
 
+		// Answered and nothing more. The run starts at `configurationDone`,
+		// which is the whole of the ordering — see [Server.Launched] for why
+		// there is no fallback here.
 		s.reply(request, nil)
-
-		if !configures {
-			// This client told us at `initialize` that it does not send
-			// `configurationDone`, so this is the last thing it will say before
-			// expecting the run to be under way. Its breakpoints, if it has
-			// any, arrived before this — which is the ordering the request
-			// exists to guarantee for clients that do send it.
-			s.release(ctx)
-		}
 
 	case "configurationDone":
 		s.reply(request, nil)

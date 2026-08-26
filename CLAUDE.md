@@ -602,6 +602,82 @@ provider is namespaced *every* tenant gets a segment including the default one
 So: an isolation test asserting that each party reaches its own resource is a
 functionality test wearing a security test's clothes. Write the negative direction.
 
+## A green test that asserts nothing (`make vacuity`)
+
+The two sections below say what to test. This one is about the failure where
+you did write the test, it runs, it is green, it appears in the coverage
+report — and it makes no claim at all, so the defect it was written to catch
+walks straight past it. That is worse than a missing test, because an absent
+test is visible and a green one is an assurance nobody has any reason to
+doubt.
+
+    make vacuity            # the counts, and every unasserted site
+    make vacuity SITES=1    # every site, conditional ones included
+
+Two shapes, both of which this repository has shipped, enforced differently
+because the tree stands in two different places.
+
+**`unasserted`** — a test that reaches no assertion. The tree is at zero, and
+the two deliberate sites carry a `//vacuity:ignore unasserted <reason>` naming
+why (a subprocess entry point, whose assertions belong to whoever launched it).
+So a finding now is one a diff introduced. The reason is required: a marker
+without one is ignored, because "this test is making the mistake the check
+describes, on purpose" is a sentence somebody has to be willing to write —
+which is the rule `//lint:ignore` already carries elsewhere in this file.
+
+**`conditional`** — every claim a test makes is inside a loop, over something
+nothing says is non-empty. `for _, c := range Cases() { … assert … }` proves
+precisely nothing when `Cases()` returns an empty slice, and an empty slice is
+what a corpus becomes when somebody moves the last case out of it. This is
+`ZeroValueCases` one section down, wearing a different hat: a count of cases
+would not have noticed either, because both numbers were the number the code
+produced.
+
+The tree had 167 of those when this landed, and they are **reported, never
+enforced** — read the current figure out of the command rather than out of this
+sentence. A number
+that size can only be a map: enforcing it would mean a sweep, which this
+repository has twice paid for, or an allowlist, which rots. What the number is
+for is that a *new* one arrives in a diff somebody is reading, where the answer
+— assert the corpus is non-empty, outside the loop — is one line.
+
+The largest single cluster is the conformance corpus, and that one is better
+answered at its source than at forty call sites: a test in
+`pkg/flowstate/v1/internal/conformance` asserting that every exported case
+function returns cases, beside `callers_test.go`, which already walks that
+package for the two-callers rule and already cites `ZeroValueCases` for why.
+Named here as the next thing rather than swept.
+
+Three properties worth knowing.
+
+It **parses rather than builds**, and groups files by the `package` clause they
+carry rather than by build tag — which is why it reaches `plugins/*` when
+`make coverage` and `make modernize` do not — a separate module is just
+another directory to a syntax tree, and a plugin's containment tests are
+exactly where a vacuous claim costs the most. `plugins/codex`'s is the
+worked example the tool's doc uses: two adjacent tests loop over the same
+`childEnv` result, one counts what it found and fails on the wrong number,
+and its neighbour — asserting that the child's environment never carries a
+host variable — is satisfied by an environment with nothing in it. Same file,
+one line apart, which is the best evidence available that these are oversights
+rather than a style.
+
+It **errs toward silence, deliberately**. Handing the test handle to anything
+counts as asserting, because whatever received it may fail the test and a
+syntactic analysis cannot follow the call across a package. That trades false
+negatives for false positives on purpose: a check that cries wolf is one people
+run with their eyes closed, and this one has to be believed, because it fails
+a build. Eleven of the first thirteen findings were this shape before the rule
+existed.
+
+And **nothing in CI had to learn a new job.** `tools/vacuity`'s own
+`TestTheRepositoryHasNoUnassertedTest` walks the tree under `go test ./...`,
+so the gate holds in the venue everybody already watches; `make vacuity` is
+for reading the report. It also asserts it found more than a thousand tests
+before reporting a clean sweep — a checker that walks nothing and says
+everything is fine is the failure this whole tool is about, and it would have
+been the easiest one to ship.
+
 ## Test the traversal, not just the step
 
 The same mistake has a second shape. Where the tenancy tests covered one direction

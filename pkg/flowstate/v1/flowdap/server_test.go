@@ -192,22 +192,7 @@ func TestAnEditorCanStepARun(t *testing.T) {
 
 	c, _, finished := walked(t, "build", "test", "deploy")
 
-	// The capability matters here and nowhere else in this file, because this
-	// is the one test that sends `launch`: a client that does not claim it is
-	// released at its launch instead, since it has told us the request this
-	// would otherwise wait for is not coming. Claiming it and then sending
-	// `configurationDone` is what a conforming client does.
-	//
-	// Getting it wrong did not fail — it hung, and only at `-cpu=1`. Released
-	// at `launch`, the entry stop is emitted while the client is still reading
-	// the launch response, and [client.await] *skips* what it is not looking
-	// for: the stop was consumed by the wait for that response and then waited
-	// for forever. Eight of twenty iterations, and none at all on a
-	// multi-core run.
-	c.send(1, "initialize", map[string]any{
-		"adapterID":                        "flowstate",
-		"supportsConfigurationDoneRequest": true,
-	})
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
 
 	// Read in order, not skipped to. The `initialized` event is what tells a
 	// client it may start sending breakpoints, and the specification has it
@@ -292,14 +277,7 @@ func TestTheRunDoesNotStartBeforeTheClientHasConfigured(t *testing.T) {
 	server := flowdap.NewServer(session, c)
 	go func() { _ = server.Serve(t.Context()) }()
 
-	// Claiming the capability, which is what makes the wait below the right
-	// wait: a client that says it sends `configurationDone` is one whose
-	// `launch` is not the last word. See
-	// [TestAClientThatCannotConfigureIsReleasedAtLaunch] for the other client.
-	c.send(1, "initialize", map[string]any{
-		"adapterID":                        "flowstate",
-		"supportsConfigurationDoneRequest": true,
-	})
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 
@@ -350,16 +328,19 @@ func TestTheRunDoesNotStartBeforeTheClientHasConfigured(t *testing.T) {
 	}
 }
 
-// TestAClientThatCannotConfigureIsReleasedAtLaunch is the other half of the
-// same ordering, and the direction that hangs forever.
+// TestLaunchAloneNeverStartsTheRun is the ordering, from the side that a
+// previous version of this adapter got wrong.
 //
-// `configurationDone` is optional in the protocol: a client says at
-// `initialize` whether it sends one. Waiting for it unconditionally means a
-// client that does not send one never starts the run — the same never-starts
-// outcome the wait exists to prevent, reached from the other side. Its
-// breakpoints arrived before `launch`, which is the ordering the request
-// guarantees for clients that do send it.
-func TestAClientThatCannotConfigureIsReleasedAtLaunch(t *testing.T) {
+// `supportsConfigurationDoneRequest` is a field of the *adapter's*
+// `Capabilities` response, not of `InitializeRequestArguments`. An adapter that
+// reads it out of the initialize *request* therefore finds it absent from every
+// real client, concludes none of them can configure, and releases every one of
+// them at `launch` — the exact premature start this ordering exists to prevent,
+// arrived at by way of the mechanism meant to prevent it.
+//
+// The client below sends what a real one sends: an `adapterID` and the client
+// capabilities that do exist. Nothing releases the run but `configurationDone`.
+func TestLaunchAloneNeverStartsTheRun(t *testing.T) {
 	t.Parallel()
 
 	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
@@ -372,20 +353,94 @@ func TestAClientThatCannotConfigureIsReleasedAtLaunch(t *testing.T) {
 	server := flowdap.NewServer(session, c)
 	go func() { _ = server.Serve(t.Context()) }()
 
-	// The capability it does *not* claim is the whole of the test.
-	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	// What VS Code actually sends. Note what is *not* here, and cannot be:
+	// there is no client capability by that name to send.
+	c.send(1, "initialize", map[string]any{
+		"clientID":                     "vscode",
+		"adapterID":                    "flowstate",
+		"linesStartAt1":                true,
+		"columnsStartAt1":              true,
+		"supportsRunInTerminalRequest": true,
+		"supportsProgressReporting":    true,
+	})
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 
-	c.send(2, "launch", map[string]any{})
+	c.send(2, "launch", map[string]any{"program": "/tmp/workflow.yaml"})
 	c.await("response", "launch")
+
+	// The breakpoints a real client sends here, *after* launch, which is the
+	// whole reason the run must not have started.
+	c.send(3, "setFunctionBreakpoints", map[string]any{
+		"breakpoints": []map[string]any{{"name": "deploy"}},
+	})
+	c.await("response", "setFunctionBreakpoints")
+
+	select {
+	case <-server.Launched():
+		t.Fatal("a client that sent launch and then its breakpoints had the run started " +
+			"underneath it, so a breakpoint set here is set on a step that may already " +
+			"have run")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
 
 	select {
 	case <-server.Launched():
 	case <-time.After(10 * time.Second):
-		t.Fatal("a client that cannot send configurationDone was left waiting for it, so " +
-			"its run never starts at all")
+		t.Fatal("configurationDone did not release the run")
 	}
+}
+
+// TestTheExitCodeSaysWhetherTheRunWorked keeps an editor from reporting a
+// success it did not see.
+//
+// A client reads the `exited` event to decide what the debuggee did. Left at
+// the zero value it says every run succeeded — a validation refusal, a failed
+// step and a missing `program` alike (Codex, #1124).
+//
+// Recorded before the session closes, because the close is what releases a
+// movement that learns the run is over and reports it: whichever path gets
+// there first has to report the same code.
+func TestTheExitCodeSaysWhetherTheRunWorked(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []int{0, 1} {
+		session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+		require.NoError(t, err)
+
+		c := newClient(t)
+		server := flowdap.NewServer(session, c)
+
+		server.Exited(want)
+		server.Finished()
+
+		exited := c.await("event", "exited")
+		assert.Equal(t, float64(want), exited["body"].(map[string]any)["exitCode"],
+			"the run ended with %d and the client was told otherwise", want)
+
+		_ = session.Close()
+		_ = c.Close()
+	}
+
+	// And a code recorded after the end has been reported changes nothing,
+	// which is what the ordering above is protecting.
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(session, c)
+	server.Finished()
+	server.Exited(1)
+
+	exited := c.await("event", "exited")
+	assert.Equal(t, float64(0), exited["body"].(map[string]any)["exitCode"],
+		"a code set after the exit was reported rewrote what the client had already been told")
 }
 
 // TestTheFirstStopIsAnnouncedWithoutBeingAskedFor is what makes an editor's
@@ -406,10 +461,7 @@ func TestTheFirstStopIsAnnouncedWithoutBeingAskedFor(t *testing.T) {
 
 	c, _, finished := walked(t, "build", "test")
 
-	c.send(1, "initialize", map[string]any{
-		"adapterID":                        "flowstate",
-		"supportsConfigurationDoneRequest": true,
-	})
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 

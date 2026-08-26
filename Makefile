@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize docs docs-preview appearance appearance-update coverage coverage-plugins
+.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -208,6 +208,31 @@ fmt:
 # than landed here.
 modernize:
 	go run ./tools/modernize $(if $(PKGS),$(PKGS),./...)
+
+# Report tests that pass without proving anything.
+#
+#     make vacuity            # the counts, and every unasserted site
+#     make vacuity SITES=1    # every site, conditional ones included
+#
+# Two checks, enforced differently because the tree stands in two different
+# places. `unasserted` — a test that reaches no assertion at all — is at zero,
+# with the two deliberate sites carrying a `//vacuity:ignore` naming their
+# reason, so a finding is one a diff introduced. `conditional` — every claim
+# inside a loop over something nothing says is non-empty — stands in the
+# hundreds and is reported only; enforcing a number that size would mean a
+# sweep this repository has twice paid for, or an allowlist that rots. The
+# current figure is what the command prints, which is where a number belongs.
+#
+# Nothing needs to run this for the gate to hold: `tools/vacuity`'s own
+# TestTheRepositoryHasNoUnassertedTest walks the tree under `go test ./...`,
+# so the enforcing venue is the one everybody already watches, and no CI
+# workflow had to learn a new job. This target is for reading the report.
+#
+# Unlike `modernize` and `coverage`, it does reach plugins/*: it parses rather
+# than builds, so a separate module is just another directory — and a plugin's
+# containment tests are where a vacuous claim costs the most.
+vacuity:
+	go run ./tools/vacuity $(if $(SITES),-sites,)
 
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result

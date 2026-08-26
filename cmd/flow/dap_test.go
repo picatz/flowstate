@@ -140,10 +140,7 @@ outputs: {}
 
 	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
 
-	conn.send("initialize", map[string]any{
-		"adapterID":                        "flowstate",
-		"supportsConfigurationDoneRequest": true,
-	})
+	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
 	initialize := conn.await("response", "initialize")
 	require.Equal(t, true, initialize["success"])
 	assert.Equal(t, true, initialize["body"].(map[string]any)["supportsFunctionBreakpoints"])
@@ -284,10 +281,7 @@ outputs: {}
 
 	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
 
-	conn.send("initialize", map[string]any{
-		"adapterID":                        "flowstate",
-		"supportsConfigurationDoneRequest": true,
-	})
+	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
 	conn.await("response", "initialize")
 	conn.await("event", "initialized")
 
@@ -320,6 +314,14 @@ outputs: {}
 
 	assert.Contains(t, said.String(), `requires input "url"`,
 		"the console was not told why nothing ran:\n\n%s", said.String())
+
+	// And the editor is told the run failed. A client reads the `exited` event
+	// to decide what the debuggee did, so a zero here says a workflow that was
+	// refused before it started succeeded — the console message says otherwise
+	// and nothing machine-readable agrees with it.
+	exited := conn.await("event", "exited")
+	assert.Equal(t, float64(1), exited["body"].(map[string]any)["exitCode"],
+		"a workflow refused by validation reported a clean exit")
 }
 
 // TestFlowDAPAtATerminalSaysWhatItIs keeps `flow dap` from reading as a hang.

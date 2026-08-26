@@ -201,8 +201,19 @@ func TestAPhaseSaysOnlyItsOwnName(t *testing.T) {
 func TestReportingAPhaseWithNobodyListeningIsFine(t *testing.T) {
 	t.Parallel()
 
-	v1.ReportProgress(t.Context(), v1.PhaseRequesting)
-	v1.ReportProgress(v1.ContextWithProgress(t.Context(), nil), v1.PhaseRequesting)
+	// Asserted rather than merely executed. Written as two bare calls, this
+	// test made its claim only by not crashing — which is a real claim and an
+	// invisible one: it reads identically to a test somebody forgot to finish,
+	// and `tools/vacuity` cannot tell them apart either. Saying "does not
+	// panic" out loud costs one line and makes the second-hardest thing about
+	// the test — what it is for — the first thing on the page.
+	require.NotPanics(t, func() {
+		v1.ReportProgress(t.Context(), v1.PhaseRequesting)
+	}, "a task reporting a phase with no reporter installed is every unit test in the tree")
+
+	require.NotPanics(t, func() {
+		v1.ReportProgress(v1.ContextWithProgress(t.Context(), nil), v1.PhaseRequesting)
+	}, "a nil reporter is what a caller installs to turn reporting off")
 }
 
 // TestAnInstalledReporterHearsEveryPhase is the positive direction.

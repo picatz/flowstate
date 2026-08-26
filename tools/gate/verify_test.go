@@ -104,7 +104,14 @@ func newTestRepo(t *testing.T) string {
 
 func git(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+
+	// Auto-maintenance off, for the reason `runGitTest` in cmd/flow states at
+	// length: since git 2.43 a commit's `git maintenance run --auto` detaches,
+	// and a detached one writing into `.git/objects/pack` while `t.TempDir`'s
+	// cleanup is removing that directory fails the test after its body passed.
+	// Same fixture shape here — `git init` into a temporary directory, then
+	// commits — so the same exposure.
+	cmd := exec.Command("git", append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
