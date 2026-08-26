@@ -768,3 +768,44 @@ func TestARunLoopingOverOneStepDoesNotCallItselfShort(t *testing.T) {
 	assert.False(t, console.answers[0].Truncated,
 		"a cache that refused only repeats is not short")
 }
+
+// TestScopeSaysHowManyNamesItDidNotList (scale audit, #1111 follow-up).
+//
+// `scope` answers "what can I name right now". At a run of hundreds of steps
+// it used to answer with one unbroken comma-separated wall — every step id,
+// joined, on a single line: unreadable in a terminal and expensive in an
+// agent's context, which is the same cost the completer was bounded for two
+// commits earlier while this line was missed.
+//
+// The bound is only half of it. A list cut at twenty with nothing said tells a
+// reader their run has twenty steps, which is the misleading-about-being-
+// incomplete failure the truncation notices exist to prevent.
+func TestScopeSaysHowManyNamesItDidNotList(t *testing.T) {
+	t.Parallel()
+
+	steps := make(map[string]*v1.Node_Outputs, 4*flowdebug.MaxScopeNames)
+	for i := range 4 * flowdebug.MaxScopeNames {
+		steps[fmt.Sprintf("step_%05d", i)] = &v1.Node_Outputs{}
+	}
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Outputs = &v1.Workflow_StepOutputs{StepValues: steps}
+
+	var out strings.Builder
+
+	console := &asking{steps: []string{"scope", "quit"}, ask: [][]string{nil, nil}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+
+	printed := out.String()
+
+	assert.Contains(t, printed, "step_00000", "the names it does list are the first in order")
+	assert.NotContains(t, printed, fmt.Sprintf("step_%05d", 4*flowdebug.MaxScopeNames-1),
+		"and it stops rather than printing every id a large run produced")
+	assert.Contains(t, printed, fmt.Sprintf("and %d more", 4*flowdebug.MaxScopeNames-flowdebug.MaxScopeNames),
+		"saying how many it did not list, or the reader thinks that was all of them")
+}

@@ -275,7 +275,7 @@ func (s *Session) showScope(scope *v1.Scope) {
 // hiding exactly the names it is for discovering (Codex, #1109).
 func (s *Session) showScopeWith(scope *v1.Scope, extra map[string]ref.Val) {
 	if len(extra) > 0 {
-		s.printf("bound: %s\n", strings.Join(sortedKeys(extra), ", "))
+		s.printf("bound: %s\n", namesLine(sortedKeys(extra)))
 	}
 	steps := scope.GetOutputs().GetStepValues()
 	if len(steps) == 0 {
@@ -286,15 +286,29 @@ func (s *Session) showScopeWith(scope *v1.Scope, extra map[string]ref.Val) {
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		s.printf("steps: %s\n", strings.Join(names, ", "))
+		s.printf("steps: %s\n", namesLine(names))
 	}
 
 	if vars := scope.GetVars(); len(vars) > 0 {
-		s.printf("vars: %s\n", strings.Join(sortedKeys(vars), ", "))
+		s.printf("vars: %s\n", namesLine(sortedKeys(vars)))
 	}
 	if ambient := scope.GetAmbientVars(); len(ambient) > 0 {
-		s.printf("workflow vars: %s\n", strings.Join(sortedKeys(ambient), ", "))
+		s.printf("workflow vars: %s\n", namesLine(sortedKeys(ambient)))
 	}
+}
+
+// namesLine renders one scope line's names, bounded by [MaxScopeNames].
+//
+// The remainder is counted rather than dropped, for the reason every other
+// truncation in this package carries a notice: a list silently cut at twenty
+// tells a reader their run has twenty steps.
+func namesLine(names []string) string {
+	if len(names) <= MaxScopeNames {
+		return strings.Join(names, ", ")
+	}
+
+	return fmt.Sprintf("%s … and %d more (tab completes them; `inspect steps.` lists them)",
+		strings.Join(names[:MaxScopeNames], ", "), len(names)-MaxScopeNames)
 }
 
 // showStep prints what the run is stopped at.

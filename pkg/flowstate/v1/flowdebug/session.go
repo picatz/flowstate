@@ -70,6 +70,24 @@ const (
 	// *rendering* of a result that was cheap to compute and is large to print
 	// — `${inputs.rows}` on a long list.
 	MaxInspectRunes = 4096
+
+	// MaxScopeNames bounds how many names one `scope` line lists before it
+	// says how many more there are.
+	//
+	// A count rather than a rune cap, unlike [MaxInspectRunes], because the
+	// thing being bounded is a *list* and cutting it by width truncates a
+	// name down the middle — the reader learns neither what the name was nor
+	// that there were others. Twenty is what a terminal line holds while
+	// staying scannable.
+	//
+	// `scope` answers "what can I name right now", and past a few dozen names
+	// a complete answer stops answering it: a run of hundreds of steps
+	// produced one unbroken comma-separated wall, unreadable in a terminal
+	// and expensive in an agent's context. So the bound is not a loss of the
+	// command's purpose but the thing that restores it — orientation here,
+	// enumeration through tab completion and `inspect steps.`, which are
+	// bounded and prefix-filtered for exactly this.
+	MaxScopeNames = 20
 )
 
 // Tone classifies one fragment of session output, so a terminal can colour
