@@ -976,6 +976,32 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			return text, true, nil
 
 		case request := <-s.control:
+			// Shutdown outranks admission. Both this arm and the done arm are
+			// ready when [Session.Close] lands on a controller already parked
+			// in its send, and a select picks between ready arms at random —
+			// so half the time a pending `quit` turned the clean release Close
+			// promises into an abandoned run, while its sender could still be
+			// told [ErrRunOver] (Codex, #1122).
+			//
+			// Re-checked *after* the receive rather than before, because a
+			// check before it settles nothing: the close can land in between.
+			// What this makes true is the property worth having — a command is
+			// either dispatched and acknowledged or neither, never dispatched
+			// and reported as refused. It does not order a close against a
+			// command admitted moments earlier, and nothing could: admission
+			// happened first, and that is the honest answer.
+			select {
+			case <-s.done:
+				s.mu.Lock()
+				s.closed = true
+				s.mu.Unlock()
+
+				// Deliberately unacknowledged, which is what the sender reads
+				// as "not delivered": its own done arm answers ErrRunOver.
+				return "", false, nil
+			default:
+			}
+
 			// The other way a line arrives, and it is deliberately the same
 			// kind of thing: one command, delivered here, dispatched by the
 			// loop above exactly as a typed one is. A programmatic front that

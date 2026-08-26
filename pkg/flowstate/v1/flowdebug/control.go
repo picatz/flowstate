@@ -186,6 +186,18 @@ func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error
 		return controlTaken{}, ErrRunOver
 	}
 
+	// An acknowledgement that is already here wins over a close that has also
+	// already happened. The boundary only acknowledges a command it dispatched
+	// (see the control arm of [Session.readCommand]), so preferring the answer
+	// is what keeps the pair honest: dispatched-and-reported, or neither. A
+	// plain select would pick at random between the two ready arms and could
+	// report [ErrRunOver] for a command that had taken effect.
+	select {
+	case taken := <-at:
+		return taken, nil
+	default:
+	}
+
 	select {
 	case taken := <-at:
 		return taken, nil

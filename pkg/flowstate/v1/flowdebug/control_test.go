@@ -501,6 +501,141 @@ func TestASecondCallerCanGiveUpWaitingForTheControlSlot(t *testing.T) {
 			"bounded nothing")
 }
 
+// TestACommandRacingCloseIsEitherDispatchedOrRefusedButNotBoth is the shutdown
+// race, asserted as the invariant rather than as an outcome.
+//
+// When [Session.Close] lands on a controller already parked in its send, both
+// the control arm and the done arm of the boundary's select are ready, and Go
+// picks between ready arms at random. So a pending `quit` could be dispatched
+// *after* shutdown — turning the clean release Close promises into an
+// abandoned run — while its sender was told [ErrRunOver] by the same race one
+// layer up (Codex, #1122).
+//
+// Which side wins is not the property and is not worth pinning: a close and a
+// command issued at the same instant have no true order. What must hold is
+// that the two agree. A caller told its command was refused must be able to
+// rely on the run not having taken it, because "refused" is what it will act
+// on.
+//
+// Run many times because each iteration only samples one interleaving; the
+// assertion inside one iteration is exact either way, so this fails on the
+// first inconsistent pair rather than on a distribution.
+//
+// What it does *not* do is pin the two guards that make the invariant hold.
+// Checked by reintroducing each, and neither fails this: they are complementary,
+// so each is masked by the other, and the window they close needs the boundary
+// and the sender to choose their non-shutdown arms at the same instant. This is
+// the end-to-end statement of the property; the guards themselves are argued in
+// their own comments rather than asserted here, because nothing outside this
+// package can tell them apart.
+func TestACommandRacingCloseIsEitherDispatchedOrRefusedButNotBoth(t *testing.T) {
+	t.Parallel()
+
+	dispatched, refused := 0, 0
+
+	for range 200 {
+		var out strings.Builder
+		session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+		require.NoError(t, err)
+
+		finished := walked(t, session, "build", "test")
+
+		require.Eventually(t, func() bool { _, paused := session.Paused(); return paused },
+			10*time.Second, time.Millisecond, "the run never stopped")
+
+		// Released together, so the close and the command genuinely contend.
+		start := make(chan struct{})
+		controlled := make(chan error, 1)
+		go func() {
+			<-start
+			controlled <- session.Control(t.Context(), "quit")
+		}()
+		go func() {
+			<-start
+			_ = session.Close()
+		}()
+		close(start)
+
+		controlErr := <-controlled
+		runErr := <-finished
+
+		// `quit` at a breakpoint ends the run; a session let go by Close
+		// instead resumes it. So the run's own answer says which happened.
+		took := runErr != nil
+
+		switch {
+		case took:
+			dispatched++
+			assert.NoError(t, controlErr,
+				"the run took the command and its sender was told it had not been delivered")
+			assert.Contains(t, session.Script(), "quit",
+				"the run ended on a command the session did not record")
+		default:
+			refused++
+			assert.ErrorIs(t, controlErr, flowdebug.ErrRunOver,
+				"the command was refused and its sender was told it had been delivered")
+		}
+
+		if t.Failed() {
+			return
+		}
+	}
+
+	// Not an assertion about the split — either side may dominate on any
+	// machine — but a session that only ever took one path would make the
+	// consistency above true for a reason that has nothing to do with the fix.
+	t.Logf("dispatched %d, refused %d", dispatched, refused)
+}
+
+// TestCloseUnparksASenderRatherThanLeavingItsCommandToBeTaken is why the
+// shutdown race is narrow, stated so the guards that close it are not mistaken
+// for the whole story.
+//
+// A command parked in its send is not left lying there for a later boundary to
+// pick up: [Session.deliver]'s send waits on the session's done channel too, so
+// [Session.Close] releases the sender with [ErrRunOver] and the command is
+// never handed over. That is what makes "dispatched after shutdown" require
+// genuine simultaneity — the boundary choosing the control arm at the same
+// instant the sender chooses its own send — rather than being the ordinary
+// outcome of closing a session somebody is driving.
+//
+// Worth stating plainly: this passes with the guards removed. It pins the
+// surrounding behaviour, not them. See the reply on #1122 for why neither
+// guard is separately observable from outside.
+func TestCloseUnparksASenderRatherThanLeavingItsCommandToBeTaken(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+
+	sent := make(chan struct{})
+	refused := make(chan error, 1)
+	go func() {
+		close(sent)
+		// Parks: there is no run, so nothing can take it.
+		refused <- session.Control(t.Context(), "quit")
+	}()
+	<-sent
+
+	require.NoError(t, session.Close())
+
+	select {
+	case err := <-refused:
+		assert.ErrorIs(t, err, flowdebug.ErrRunOver,
+			"closing the session did not release a caller parked on a command nobody could take")
+	case <-time.After(10 * time.Second):
+		t.Fatal("a parked sender outlived the session it was sending to")
+	}
+
+	// And the command really is gone rather than queued: a run started
+	// afterwards is released to finish, not abandoned by a late `quit`.
+	require.NoError(t, <-walked(t, session, "build", "test"),
+		"a command sent before Close was taken by a boundary after it")
+	assert.NotContains(t, session.Script(), "quit",
+		"a closed session recorded a command it should never have taken")
+}
+
 // TestAControlledCommandIsOneLineAndBounded is the bound this surface owes.
 //
 // [MaxCommandBytes] is enforced by whatever reads a typed line, so the text
