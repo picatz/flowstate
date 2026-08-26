@@ -10,13 +10,21 @@ package flowtesting
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -467,5 +475,445 @@ func TestARowsNameSurvivesAsANestedSubtestPath(t *testing.T) {
 
 	if got := subtestName("the entry/the first row"); got != "the_entry/the_first_row" {
 		t.Errorf("subtestName rewrote a row path to %q; the `/` is what go test reads as a level", got)
+	}
+}
+
+// TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing covers the three ways
+// [WithWalk] can be asked for and quietly do nothing.
+//
+// All three end the same way — no assertions run, and the suite reports
+// exactly what it reports when everything worked — which is the worst outcome
+// available to a test option and the reason each is refused before anything
+// runs rather than discovered afterwards.
+func TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing(t *testing.T) {
+	t.Parallel()
+
+	file := &flowtest.File{Tests: []flowtest.Test{{Name: "it ships"}, {Name: "it rolls back"}}}
+	asked := func(mutate func(*config)) config {
+		cfg := config{walkSet: true, walkCase: "it ships", walkDrive: func(*Walk) {}}
+		mutate(&cfg)
+
+		return cfg
+	}
+
+	// The name is right and the driver is real: nothing is said.
+	quiet := &recorder{TB: t}
+	refuseUnknownWalk(quiet, file, asked(func(*config) {}))
+	assert.Empty(t, quiet.errors, "a walk naming a real case was refused")
+
+	// No walk asked for at all: still nothing to say.
+	none := &recorder{TB: t}
+	refuseUnknownWalk(none, file, config{})
+	assert.Empty(t, none.errors)
+
+	// A misspelled name, which names what the suite does have — a caller who
+	// got it wrong is looking for the spelling.
+	wrong := &recorder{TB: t}
+	refuseUnknownWalk(wrong, file, asked(func(c *config) { c.walkCase = "it shipps" }))
+	require.Len(t, wrong.errors, 1,
+		"a walk naming no case was allowed to run, so its assertions would never happen "+
+			"and the suite would still report green")
+	assert.Contains(t, wrong.errors[0], `"it shipps"`)
+	assert.Contains(t, wrong.errors[0], `"it ships"`,
+		"the refusal did not say which cases the suite has, which is what a misspelling needs")
+	assert.Contains(t, wrong.errors[0], `"it rolls back"`)
+
+	// A nil function is not "no walk asked for". Treated as one, it accepts any
+	// case name — the same silent no-op arriving through the argument rather
+	// than the name (Codex, #1123).
+	empty := &recorder{TB: t}
+	refuseUnknownWalk(empty, file, asked(func(c *config) { c.walkDrive = nil }))
+	require.Len(t, empty.errors, 1,
+		"a walk with no driver was accepted, so the option did nothing and said nothing")
+	assert.Contains(t, empty.errors[0], "nil function")
+
+	// And the combination that cannot mean anything: one session spans every
+	// execution a seeded exploration runs, so a walk stepping to exhaustion
+	// would run out of the baseline into the first step of the next seed.
+	seeded := &recorder{TB: t}
+	refuseUnknownWalk(seeded, file, asked(func(c *config) { c.budget = dst.Budget{Schedules: 2} }))
+	require.Len(t, seeded.errors, 1,
+		"walking one run while exploring many schedules was accepted, so the walk would "+
+			"step out of the execution it was asserting about")
+	assert.Contains(t, seeded.errors[0], "WithSchedules")
+}
+
+// TestEveryRefusalIsActuallyCalled closes the gap the two tests above leave.
+//
+// Both refusals are exercised by calling them, which proves what they say and
+// not that anything says it. A guard that is defined, tested and never called
+// is exactly the failure they exist to prevent — a suite reporting green about
+// work it never did — and it is invisible to a unit test of the guard itself:
+// deleting the call from [run] leaves both of those green.
+//
+// So the call is read out of the source, the way flowdebug reads the autopsy's
+// own switch rather than restating it. A refusal added later and not wired in
+// fails here, which is the only moment anyone would notice.
+func TestEveryRefusalIsActuallyCalled(t *testing.T) {
+	t.Parallel()
+
+	file, err := parser.ParseFile(token.NewFileSet(), "flowtesting.go", nil, 0)
+	require.NoError(t, err)
+
+	called := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "run" {
+			return true
+		}
+		ast.Inspect(fn.Body, func(inner ast.Node) bool {
+			call, ok := inner.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if name, ok := call.Fun.(*ast.Ident); ok {
+				called[name.Name] = true
+			}
+
+			return true
+		})
+
+		return false
+	})
+
+	require.NotEmpty(t, called, "walked run and found no calls at all, so this test cannot fail for the reason it exists")
+
+	for _, refusal := range []string{"refusal", "refuseUnknownWalk"} {
+		assert.True(t, called[refusal],
+			"run does not call %s, so the refusal it makes never reaches a suite and the "+
+				"tests that exercise it directly stay green while nothing checks anything",
+			refusal)
+	}
+}
+
+// TestACaseThatNeverStopsFailsRatherThanHangs is the failure [WithWalk] must
+// not have, found by getting a fixture wrong rather than by thinking of it.
+//
+// A case can finish — or never start, on a workflow that does not load —
+// without reaching a single step boundary, and then nothing takes the walk's
+// first command. The walk parks, the case's verdict is never reported, and the
+// test hangs until the package timeout takes the whole run with it. A hung test
+// says far less than a failed one and costs far more.
+//
+// Driven through [runCase] against the recorder because the point is that the
+// subtest *fails* — a real one would take this test down with it — and because
+// what has to be observed is that the walk ended at all.
+func TestACaseThatNeverStopsFailsRatherThanHangs(t *testing.T) {
+	t.Parallel()
+
+	// A `value:` that is not a valid expression, so the workflow does not load
+	// and no step ever runs.
+	path := writeSuite(t, `
+edition: v2026.3
+name: broken
+steps:
+  - id: build
+    value: "3 passed"
+outputs: {}
+`, `
+tests:
+  - name: it ships
+    workflow: ./workflow.yaml
+    expect:
+      ran: [build]
+`)
+	file, err := flowtest.Load(path)
+	require.NoError(t, err)
+
+	stepped := make(chan bool, 1)
+	cfg := config{
+		dir:      filepath.Dir(path),
+		walkSet:  true,
+		walkCase: "it ships",
+		walkDrive: func(w *Walk) {
+			_, ok := w.Step()
+			stepped <- ok
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runCase(&recorder{TB: t}, file, path, cfg, "it ships")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a case that never reached a step boundary left the walk parked, so the " +
+			"subtest hung instead of reporting the case's own failure")
+	}
+
+	select {
+	case ok := <-stepped:
+		assert.False(t, ok,
+			"the walk was told the run had stopped somewhere, on a case that never ran a step")
+	default:
+		t.Fatal("the walk never returned from its first command")
+	}
+}
+
+// TestTheWalkDriverRunsOnTheSubtestsOwnGoroutine pins the mechanism behind
+// [WithWalk]'s only rule about where assertions go.
+//
+// A driver is the caller's code and the caller writes `require`, whose
+// [testing.TB.FailNow] is defined only on the goroutine running that test: from
+// anywhere else it stops that goroutine and records the failure where nothing
+// reads it. A panic is worse — outside the runner's own recovery it takes the
+// whole test binary down instead of failing this case (Codex, #1123).
+//
+// The first version ran the driver on a helper goroutine and the *run* on the
+// subtest's, which is backwards; `flowtest.Run` touches no [testing.TB] and is
+// the half that can move.
+//
+// Asserted from the stack rather than by trusting the shape, because "which
+// goroutine" is exactly what a later refactor changes without noticing — this
+// one did. A driver called from the subtest's own goroutine has runCase in its
+// call chain; one started with `go` does not.
+func TestTheWalkDriverRunsOnTheSubtestsOwnGoroutine(t *testing.T) {
+	t.Parallel()
+
+	path := writeSuite(t, internalGreetWorkflow, `
+tests:
+  - name: it greets
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [hello]
+`)
+	file, err := flowtest.Load(path)
+	require.NoError(t, err)
+
+	var (
+		stack string
+		given testing.TB
+	)
+
+	subtest := &recorder{TB: t}
+	runCase(subtest, file, path, config{
+		dir:      filepath.Dir(path),
+		walkSet:  true,
+		walkCase: "it greets",
+		walkDrive: func(w *Walk) {
+			buf := make([]byte, 8192)
+			stack = string(buf[:runtime.Stack(buf, false)])
+			given = w.T()
+		},
+	}, "it greets")
+
+	assert.Contains(t, stack, "flowtesting.runCase",
+		"the walk driver was called from a goroutine of its own, where require's FailNow "+
+			"is undefined and a panic escapes the test runner:\n\n%s", stack)
+
+	assert.Same(t, subtest, given,
+		"Walk.T is not the TB of the subtest this case is running as, so assertions made "+
+			"through it would report against the wrong test")
+}
+
+// TestWalkedJoinsTheRunWhenTheDriverGoexits is the leak a failing walk used to
+// leave behind.
+//
+// `require` ends a subtest with [testing.TB.FailNow], which is
+// [runtime.Goexit]: deferred work runs and the statements after the call never
+// do. With the join written as a plain statement, a driver that failed an
+// assertion exited its goroutine while `flowtest.Run` carried on in the other
+// one — holding [v1.LockDefaultRegistry], which the next case needs — so a
+// later case would block on, or overlap with, a run whose subtest had already
+// reported (Codex, #1123).
+//
+// Driven through [walked] directly because that is where the ordering lives,
+// and because a run this test supplies itself is the only way to observe
+// whether it was waited for. Goexit stands in for FailNow exactly: it is what
+// FailNow does.
+func TestWalkedJoinsTheRunWhenTheDriverGoexits(t *testing.T) {
+	t.Parallel()
+
+	released := make(chan struct{})
+	ranToCompletion := false
+
+	run := func(debugger v1.Debugger) flowtest.RunResult {
+		// A run that stops once and then finishes when the session lets it go,
+		// which is what closing does.
+		_ = debugger.BeforeStep(t.Context(),
+			&v1.Node{Id: "build", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}},
+			v1.NewScope(v1.CurrentProfile, nil))
+
+		ranToCompletion = true
+		close(released)
+
+		return flowtest.RunResult{}
+	}
+
+	cfg := config{
+		walkSet:  true,
+		walkCase: "it ships",
+		walkDrive: func(w *Walk) {
+			// Wait until the run is actually parked, so the goroutine this
+			// leaves behind would have real work still to do.
+			require.Eventually(t, func() bool { _, paused := w.Session().Paused(); return paused },
+				10*time.Second, time.Millisecond)
+
+			// Exactly what require does on a failed assertion.
+			runtime.Goexit()
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		walked(&recorder{TB: t}, cfg, run)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("walked never returned after its driver ended the goroutine")
+	}
+
+	select {
+	case <-released:
+	default:
+		t.Fatal("the subtest finished while its run was still going, so the next case would " +
+			"contend with a run nobody is waiting for — the registry lock included")
+	}
+
+	assert.True(t, ranToCompletion)
+}
+
+// TestAPanicInTheRunFailsTheCaseRatherThanTheBinary is the inverse of the
+// hazard [WithWalk] fixed by moving the driver, arriving on the half that
+// moved the other way.
+//
+// A panic inside `flowtest.Run` — a stub's own callback, anything the run
+// reaches — is now on a goroutine `testing` does not wrap, where it takes the
+// whole test binary down instead of failing this case. Moving the run back is
+// not the answer, since that is where the driver's `require` has to be; the
+// panic is carried to the subtest's goroutine and raised there, with the
+// original stack, because the one a re-panic would otherwise carry says
+// nothing about where the run broke (Codex, #1123).
+func TestAPanicInTheRunFailsTheCaseRatherThanTheBinary(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{
+		walkSet:   true,
+		walkCase:  "it ships",
+		walkDrive: func(*Walk) {},
+	}
+
+	run := func(v1.Debugger) flowtest.RunResult {
+		panic("the stub exploded")
+	}
+
+	var raised any
+	stack := ""
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Standing in for what `testing` does around a subtest: recover, so
+		// this test observes the panic instead of dying with it.
+		defer func() {
+			if value := recover(); value != nil {
+				raised = value
+				stack = fmt.Sprint(value)
+			}
+		}()
+
+		walked(&recorder{TB: t}, cfg, run)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a panic inside the run left walked waiting instead of reporting it")
+	}
+
+	require.NotNil(t, raised,
+		"a panic inside the run was swallowed on the helper goroutine, so it would have "+
+			"taken the test binary down rather than failing this case")
+	assert.Contains(t, stack, "the stub exploded",
+		"the panic reached the subtest without saying what it was")
+	assert.Contains(t, stack, "flowtesting.walked",
+		"the original stack did not travel with the panic, so the report names this "+
+			"defer rather than where the run broke")
+}
+
+// TestTheRunGoroutinePublishesHoweverItEnds is the matrix, asserted rather
+// than reasoned about.
+//
+// The subtest waits on exactly one value from the goroutine running the case,
+// so any way that goroutine can end without publishing is a test that hangs
+// instead of failing. It can end three ways, and the third is the quiet one:
+// [runtime.Goexit], which is what [testing.TB.FailNow] does when a task
+// callback asserts against a [testing.T] it captured. Deferred functions run,
+// `recover` returns nil, and a handler written only for panics publishes
+// nothing at all (Codex, #1123).
+//
+// Enumerated here because this file has now been wrong about goroutine
+// ownership three times, each fix uncovering the next corner, and a list is
+// cheaper than another round.
+func TestTheRunGoroutinePublishesHoweverItEnds(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name string
+		run  func(v1.Debugger) flowtest.RunResult
+		want string
+	}{
+		{
+			name: "returns normally",
+			run:  func(v1.Debugger) flowtest.RunResult { return flowtest.RunResult{} },
+		},
+		{
+			name: "panics",
+			run:  func(v1.Debugger) flowtest.RunResult { panic("the stub exploded") },
+			want: "panicked",
+		},
+		{
+			// A callback inside the run calling require on a captured *testing.T.
+			name: "ends without returning",
+			run:  func(v1.Debugger) flowtest.RunResult { runtime.Goexit(); return flowtest.RunResult{} },
+			want: "without returning",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			subtest := &recorder{TB: t}
+			cfg := config{walkSet: true, walkCase: "it ships", walkDrive: func(*Walk) {}}
+
+			var raised string
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				// Standing in for what testing does around a subtest.
+				defer func() {
+					if value := recover(); value != nil {
+						raised = fmt.Sprint(value)
+					}
+				}()
+
+				walked(subtest, cfg, testCase.run)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the run goroutine ended by %s and published nothing, so the subtest "+
+					"waits forever instead of failing", testCase.name)
+			}
+
+			reported := raised + strings.Join(subtest.errors, "\n")
+			if testCase.want == "" {
+				assert.Empty(t, reported, "a run that returned normally reported a failure")
+
+				return
+			}
+
+			assert.Contains(t, reported, testCase.want,
+				"the run ended by %s and the case did not say so", testCase.name)
+		})
 	}
 }
