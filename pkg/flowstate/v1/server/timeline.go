@@ -258,13 +258,30 @@ func (s *FlowstateServer) GetTimeline(
 		out.Entries = append(out.Entries, entry)
 	}
 
-	// A closed run's history ends with an event saying how it ended. Reaching
-	// none means this account stopped short — because a bound was hit, or
-	// because the walk gave up on an empty page and reported nothing about it.
-	// The caller is told either way rather than handed a prefix that reads
-	// whole.
-	if !ended && segmentClosed(described.GetWorkflowExecutionInfo().GetStatus()) {
-		out.Truncated = true
+	// Whether the walk reached the end of what was there, checked two ways
+	// because neither covers the other.
+	//
+	// The count is the general one and the only one a *running* segment has:
+	// Describe reported how many events the history held a moment ago, and a
+	// walk that read fewer than that — without stopping for a bound of its own
+	// — gave up early. The SDK's history iterator does exactly that on an empty
+	// page, silently (Codex, #1119). A running segment's history grows after
+	// Describe, so reading *more* than it reported is ordinary and only reading
+	// fewer is evidence.
+	//
+	// The ending event is the second, and it catches what a count cannot: a
+	// history of the right length whose last event is not the one a finished
+	// segment must end with. It applies only to a closed segment, since a
+	// running one has no ending to reach yet.
+	if !out.Truncated {
+		info := described.GetWorkflowExecutionInfo()
+
+		switch {
+		case info.GetHistoryLength() > 0 && int64(scanned) < info.GetHistoryLength():
+			out.Truncated = true
+		case !ended && segmentClosed(info.GetStatus()):
+			out.Truncated = true
+		}
 	}
 
 	return connect.NewResponse(out), nil

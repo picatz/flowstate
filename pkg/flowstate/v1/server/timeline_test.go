@@ -461,3 +461,82 @@ func TestACursorWithoutItsSegmentIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, pinned.Msg.GetEntries())
 }
+
+// TestARunningRunsAccountIsCheckedForCompletenessToo closes the gap the
+// segment-closed check left open by construction.
+//
+// That check asks whether the history reached the event a *finished* segment
+// must end with, so it says nothing at all about a segment that is still going
+// — and a running run is the live-debugging case, the one somebody is staring
+// at. The SDK's history iterator gives up on an empty page whether or not more
+// remains, so a running run's account could come back short and claim to be
+// whole (Codex, #1119).
+//
+// The count is what a running segment has instead: Describe says how many
+// events the history held a moment ago, and a walk that read fewer without
+// stopping for a bound of its own gave up early.
+func TestARunningRunsAccountIsCheckedForCompletenessToo(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	// Still running, and the whole account is readable, so nothing is
+	// truncated. This is the direction that would break if the count check
+	// were wrong the other way — a running history grows after Describe, and
+	// reading more events than it reported must not read as short.
+	running, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	require.Equal(t, v1.RunResponse_STATUS_RUNNING, statusOf(t, fixture, workflowID),
+		"this asserts nothing unless the run is actually still going")
+
+	// Both directions, and the second is the one that needs saying. Asserting
+	// only that a complete account is not flagged catches a check that fires
+	// too eagerly and is perfectly satisfied by a walk that stopped after two
+	// events and said nothing — which is the defect. So the account is also
+	// required to hold what the run actually did by this point: a short walk
+	// fails here rather than passing quietly.
+	assert.False(t, running.Msg.GetTruncated(),
+		"a running run's whole account came back marked as not the whole of it, so a "+
+			"history that grew between the Describe and the walk reads as one that was cut")
+
+	kinds := timelineKinds(running.Msg)
+	assert.Contains(t, timelineSteps(running.Msg), "`request`")
+	assert.Contains(t, kinds, v1.TimelineEntry_KIND_STEP_COMPLETED,
+		"the account claims to be whole and does not reach the first step finishing")
+	assert.Contains(t, kinds, v1.TimelineEntry_KIND_TIMER_STARTED,
+		"the account claims to be whole and does not reach the gate the run is parked on, "+
+			"which is the last thing that happened")
+
+	// And clipped, where the bound is the reason rather than a short walk —
+	// the same flag, and it must still be set on a running run.
+	clipped, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId: workflowID,
+		MaxEntries: 1,
+	}))
+	require.NoError(t, err)
+	assert.True(t, clipped.Msg.GetTruncated())
+}
+
+// statusOf is what the run is doing right now, so a test can say that its
+// premise held rather than assume it.
+func statusOf(t *testing.T, fixture *tenantFixture, workflowID string) v1.RunResponse_Status {
+	t.Helper()
+
+	got, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	return got.Msg.GetStatus()
+}
