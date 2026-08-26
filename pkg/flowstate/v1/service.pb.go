@@ -498,6 +498,22 @@ type GetResponse struct {
 	// reasoning progress is; empty for a running run means nothing is mid-retry,
 	// which is itself the answer: the run is waiting or between steps, not stuck.
 	PendingActivities []*PendingActivity `protobuf:"bytes,9,rep,name=pending_activities,json=pendingActivities,proto3" json:"pending_activities,omitempty"`
+	// PendingActivitiesTruncated is true when this run is retrying more steps
+	// than the answer reports.
+	//
+	// A count bound and a flag, exactly as [RunProgress.pending_waits_truncated]
+	// does it, and for the same reason: a reader must never mistake some of the
+	// retrying steps for all of them. The first of them are still the answer to
+	// "what is this stuck on" rather than a partial map whose keys a caller might
+	// index by.
+	//
+	// It exists because "a handful of retrying steps" was an assumption rather
+	// than a fact. A suspension-opaque block may schedule
+	// [MaxAtomicBlockActivities] activities, and nothing stops all of them from
+	// retrying at once — so both the number of entries and the length of each
+	// one's message are the workload's choice, and an unbounded projection of
+	// them is a read one authorized caller can make expensive (Codex, #1119).
+	PendingActivitiesTruncated bool `protobuf:"varint,13,opt,name=pending_activities_truncated,json=pendingActivitiesTruncated,proto3" json:"pending_activities_truncated,omitempty"`
 	// Outputs are the values the workflow declared it would report, computed by
 	// this run: the answer, as against the transcript `outputs` above holds.
 	//
@@ -675,6 +691,13 @@ func (x *GetResponse) GetPendingActivities() []*PendingActivity {
 		return x.PendingActivities
 	}
 	return nil
+}
+
+func (x *GetResponse) GetPendingActivitiesTruncated() bool {
+	if x != nil {
+		return x.PendingActivitiesTruncated
+	}
+	return false
 }
 
 func (x *GetResponse) GetRunOutputs() *RunOutputs {
@@ -2461,7 +2484,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\n" +
 	"workflowId\x12$\n" +
 	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\x05runId\x88\x01\x01B\t\n" +
-	"\a_run_id\"\xa4\x05\n" +
+	"\a_run_id\"\xe6\x05\n" +
 	"\vGetResponse\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
@@ -2475,7 +2498,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\n" +
 	"close_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcloseTime\x125\n" +
 	"\bprogress\x18\b \x01(\v2\x19.flowstate.v1.RunProgressR\bprogress\x12L\n" +
-	"\x12pending_activities\x18\t \x03(\v2\x1d.flowstate.v1.PendingActivityR\x11pendingActivities\x129\n" +
+	"\x12pending_activities\x18\t \x03(\v2\x1d.flowstate.v1.PendingActivityR\x11pendingActivities\x12@\n" +
+	"\x1cpending_activities_truncated\x18\r \x01(\bR\x1apendingActivitiesTruncated\x129\n" +
 	"\vrun_outputs\x18\n" +
 	" \x01(\v2\x18.flowstate.v1.RunOutputsR\n" +
 	"runOutputs\x12<\n" +

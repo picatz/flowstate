@@ -818,6 +818,12 @@ type PendingActivity struct {
 	Attempt int32 `protobuf:"varint,1,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	// LastFailure is the message of the most recent failed attempt, which is the
 	// sentence that usually contains the whole diagnosis.
+	//
+	// Read through the deployment's own converter, so a codec-configured
+	// deployment gets the diagnosis rather than the "Encoded failure" sentinel
+	// the SDK writes in its place — and bounded, because the length of it is the
+	// workload's choice and a run may be retrying thousands of steps at once. A
+	// message that was cut says so in its own text.
 	LastFailure string `protobuf:"bytes,2,opt,name=last_failure,json=lastFailure,proto3" json:"last_failure,omitempty"`
 	// NextAttemptScheduledTime is when the next attempt is due. Unset when an
 	// attempt is running right now.

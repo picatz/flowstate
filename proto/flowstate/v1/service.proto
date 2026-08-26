@@ -296,6 +296,23 @@ message GetResponse {
   // which is itself the answer: the run is waiting or between steps, not stuck.
   repeated PendingActivity pending_activities = 9;
 
+  // PendingActivitiesTruncated is true when this run is retrying more steps
+  // than the answer reports.
+  //
+  // A count bound and a flag, exactly as [RunProgress.pending_waits_truncated]
+  // does it, and for the same reason: a reader must never mistake some of the
+  // retrying steps for all of them. The first of them are still the answer to
+  // "what is this stuck on" rather than a partial map whose keys a caller might
+  // index by.
+  //
+  // It exists because "a handful of retrying steps" was an assumption rather
+  // than a fact. A suspension-opaque block may schedule
+  // [MaxAtomicBlockActivities] activities, and nothing stops all of them from
+  // retrying at once — so both the number of entries and the length of each
+  // one's message are the workload's choice, and an unbounded projection of
+  // them is a read one authorized caller can make expensive (Codex, #1119).
+  bool pending_activities_truncated = 13;
+
   // Outputs are the values the workflow declared it would report, computed by
   // this run: the answer, as against the transcript `outputs` above holds.
   //

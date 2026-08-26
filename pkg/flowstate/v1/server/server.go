@@ -1620,6 +1620,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	switch respStatus := getWorkflowExecutionStatus(resp); respStatus {
 	case v1.RunResponse_STATUS_RUNNING:
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		pending, pendingTruncated := s.pendingActivities(resp)
 
 		return connect.NewResponse(
 			&v1.GetResponse{
@@ -1639,7 +1640,8 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// answer to "why has this been RUNNING for six hours" costs no
 				// further round trip. See pendingActivities for what is and is
 				// not claimed.
-				PendingActivities: s.pendingActivities(resp),
+				PendingActivities:          pending,
+				PendingActivitiesTruncated: pendingTruncated,
 				// The one field on this response that answers what a healthy
 				// entity actually holds — see [entityState]'s own comment for
 				// why a run that is, by design, always RUNNING was otherwise
@@ -2042,10 +2044,28 @@ func entityState(ctx context.Context, temporal client.Client, resp *workflowserv
 // of fields Temporal already answered with — no further round trip, and
 // nothing inferred: an activity mid-retry has an attempt count and a last
 // failure, and which *step* it is remains the progress query's answer.
-func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkflowExecutionResponse) []*v1.PendingActivity {
+func (s *FlowstateServer) pendingActivities(
+	resp *workflowservice.DescribeWorkflowExecutionResponse,
+) ([]*v1.PendingActivity, bool) {
 	infos := resp.GetPendingActivities()
 	if len(infos) == 0 {
-		return nil
+		return nil, false
+	}
+
+	// Bounded by count, and each message bounded by length, because "a handful
+	// of retrying steps" was an assumption rather than a fact: a
+	// suspension-opaque block may schedule [v1.MaxAtomicBlockActivities], and
+	// nothing stops all of them from retrying at once. Both the number of
+	// entries and the length of each one's sentence are the workload's choice,
+	// so both are bounded rather than one of them (Codex, #1119).
+	//
+	// The same shape [v1.RunProgress.PendingWaitsTruncated] uses, down to
+	// keeping the entries it did collect: the bound is a count rather than a
+	// size, and the first retrying steps of a run holding thousands are still
+	// the answer to "what is this stuck on".
+	truncated := len(infos) > maxPendingActivities
+	if truncated {
+		infos = infos[:maxPendingActivities]
 	}
 
 	out := make([]*v1.PendingActivity, 0, len(infos))
@@ -2063,7 +2083,7 @@ func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkfl
 			// which is the answer to "why has this been RUNNING for six hours"
 			// made useless on the deployments most likely to be asking. Found
 			// while fixing the same read one file over (Codex, #1119).
-			LastFailure: s.decodedFailureMessage(info.GetLastFailure()),
+			LastFailure: boundedFailure(s.decodedFailureMessage(info.GetLastFailure())),
 		}
 
 		// Only when Temporal set one: an attempt running right now has no next
@@ -2088,5 +2108,13 @@ func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkfl
 		out = append(out, pending)
 	}
 
-	return out
+	return out, truncated
 }
+
+// maxPendingActivities bounds how many retrying steps one answer reports.
+//
+// Sized like [v1.MaxPendingWaits] rather than derived from anything: past a
+// few dozen, "which step is stuck" has stopped being the question and "this
+// whole fan-out is stuck" has become it, which the count and the flag together
+// already say.
+const maxPendingActivities = 64
