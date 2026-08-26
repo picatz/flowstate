@@ -809,3 +809,71 @@ func TestScopeSaysHowManyNamesItDidNotList(t *testing.T) {
 	assert.Contains(t, printed, fmt.Sprintf("and %d more", 4*flowdebug.MaxScopeNames-flowdebug.MaxScopeNames),
 		"saying how many it did not list, or the reader thinks that was all of them")
 }
+
+// TestEachScopeLineNamesItsOwnNamespace (Codex, #1115).
+//
+// One truncation notice served four lines drawn from three completion sources,
+// and it named `inspect steps.` on all of them. That is worse than naming
+// nothing: after the cut the notice is the only thing left saying those names
+// exist, so pointing it at a command that cannot reach them sends a reader
+// somewhere the names are provably absent.
+//
+// The pairing is easy to get backwards, which is why it is pinned rather than
+// read. The line labelled `vars:` holds `Scope.Vars` — a loop's `as:`, a step's
+// own `vars:` — which complete *bare*, under no root. The line labelled
+// `workflow vars:` holds `Scope.AmbientVars`, and those are what `vars.`
+// reaches.
+func TestEachScopeLineNamesItsOwnNamespace(t *testing.T) {
+	t.Parallel()
+
+	many := func(prefix string) map[string]*v1.Value {
+		out := make(map[string]*v1.Value, 2*flowdebug.MaxScopeNames)
+		for i := range 2 * flowdebug.MaxScopeNames {
+			out[fmt.Sprintf("%s_%03d", prefix, i)] = v1.NewLiteral("v")
+		}
+
+		return out
+	}
+
+	steps := make(map[string]*v1.Node_Outputs, 2*flowdebug.MaxScopeNames)
+	for i := range 2 * flowdebug.MaxScopeNames {
+		steps[fmt.Sprintf("step_%03d", i)] = &v1.Node_Outputs{}
+	}
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Outputs = &v1.Workflow_StepOutputs{StepValues: steps}
+	scope.Vars = many("bare")
+	scope.AmbientVars = many("declared")
+
+	var out strings.Builder
+
+	console := &asking{steps: []string{"scope", "quit"}, ask: [][]string{nil, nil}}
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+
+	lines := map[string]string{}
+	for _, line := range strings.Split(out.String(), "\n") {
+		label, rest, ok := strings.Cut(line, ": ")
+		if ok {
+			lines[label] = rest
+		}
+	}
+
+	require.Contains(t, lines, "steps")
+	assert.Contains(t, lines["steps"], "`inspect steps.` lists them",
+		"step outputs are what `steps.` reaches")
+
+	require.Contains(t, lines, "workflow vars")
+	assert.Contains(t, lines["workflow vars"], "`inspect vars.` lists them",
+		"the workflow's declared vars are what `vars.` reaches, despite the label")
+
+	require.Contains(t, lines, "vars")
+	assert.Contains(t, lines["vars"], "more (tab completes them)",
+		"bare bindings belong to no namespace, so the notice names none")
+	assert.NotContains(t, lines["vars"], "inspect",
+		"and must not send a reader to a command that cannot reach them")
+}
