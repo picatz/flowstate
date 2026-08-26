@@ -1312,3 +1312,52 @@ func TestReplacingABreakpointRestoresItsNotice(t *testing.T) {
 	assert.Contains(t, out, `"absent_two" is not bound here`,
 		"and the replacement gets its own notice rather than inheriting the first's")
 }
+
+// TestAMacroBindingDoesNotHideAnOuterNameOfTheSameSpelling (Codex, #1116).
+//
+// `n == 3 && [1].exists(n, n == 1)` binds an `n` inside the macro and reads a
+// different `n` outside it. Excluding macro bindings by *name* dropped both,
+// so the condition required nothing, the unbound guard was bypassed, and the
+// sibling-loop stop this guard exists for came back — three stops, and not
+// even a notice, because nothing was thought to be missing.
+//
+// Free-ness is a property of a reference, not of a spelling, so it is decided
+// per expression node and joined to the checker's reference map by id.
+func TestAMacroBindingDoesNotHideAnOuterNameOfTheSameSpelling(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("break page if n == 3 && [1].exists(n, n == 1)\ncontinue\ncontinue\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	seen := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, seen))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	// Only the second loop binds `n`. The first binds a differently-named
+	// iterator, so the condition cannot be asked there.
+	siblings := &v1.Workflow{Name: "siblings", Steps: []*v1.Node{
+		{Id: "first", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList("a", "b"), Iterator: "other",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+		{Id: "second", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList(3, 4), Iterator: "n",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+	}}
+
+	_, err = v1.Run(ctx, siblings)
+	require.NoError(t, err)
+
+	out := console.String()
+
+	assert.Equal(t, 1, strings.Count(out, "break at page"),
+		"the outer `n` is a required name despite the macro binding one too")
+	assert.Contains(t, out, `"n" is not bound here`,
+		"and the loop that cannot answer says so")
+}
