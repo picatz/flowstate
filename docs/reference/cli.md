@@ -1658,7 +1658,7 @@ Read a run's own account of itself: which step ran, which attempt, what it waite
 
 A run that continued as new has an account per segment. `nextRunId` and `previousRunId` name the neighbours and `firstRunId` names where the workload began; pass one with --run-id to read it. Both directions, because omitting --run-id reads the *latest* segment, which by definition has no next one.
 
-`truncated` says the account is not the whole of that segment — resume with --after-event-id set to the last row's event id. Raising --max-entries is not the way past it: the ceiling is a ceiling, and one segment can hold several times the largest answer this returns.
+`truncated` says the account is not the whole of that segment — resume with --run-id and --after-event-id set to the last row's event id, which the command prints for you. Both, because event ids restart in each segment: a cursor means nothing until the segment it counts within is named. Raising --max-entries is not the way past it either: the ceiling is a ceiling, and one segment can hold several times the largest answer this returns.
 
 Examples:
 
@@ -1672,14 +1672,15 @@ flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure
 # The next segment of a workload that continued as new:
 flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...
 
-# Continue an account the server clipped:
-flow timeline flowstate-workflow-3f7c --after-event-id 4821
+# Continue an account the server clipped, which names the segment as well
+# because event ids restart in each one (the command prints both for you):
+flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-... --after-event-id 4821
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--after-event-id <int64>` | `int64` | `0` | — | resume past an entry already read, by its event id; unset starts at the beginning |
+| `--after-event-id <int64>` | `int64` | `0` | — | resume past an entry already read, by its event id; requires --run-id, since event ids restart in each segment; unset starts at the beginning |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--max-entries <int32>` | `int32` | `0` | — | stop after this many entries; unset uses the server's default |

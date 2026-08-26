@@ -302,8 +302,22 @@ assume anything about; the answer as a whole stops against a byte budget too,
 because a per-message cap times an entry ceiling is still several megabytes.
 
 `truncated` says the account is not the whole of a segment — never something to
-infer from a short answer. Continue it with `--after-event-id` set to the last
-row's event id. Raising `--max-entries` is not the way past it: the ceiling is
+infer from a short answer. Continue it with `--run-id` and `--after-event-id`,
+which the command prints for you:
+
+```
+this is not the whole of this run's account — continue with --run-id 0198f1e2-… --after-event-id 4821
+```
+
+Both flags, and a cursor without a run id is refused rather than guessed at.
+Event ids restart at 1 in every segment, so a cursor counts within one and means
+nothing until that one is named — and an unnamed run resolves to *whichever is
+latest*, which is a different segment the moment the workload continues as new
+between two calls. Applied there, the old cursor would skip the new segment's
+beginning or mix two segments into one account, with nothing in the answer
+saying so.
+
+Raising `--max-entries` is not the way past a truncation either: the ceiling is
 a ceiling, and one segment can legitimately hold several times the largest
 answer the server returns. Each read walks the run's history from the start,
 which is what lets a resumed page still name its steps: a label is written onto

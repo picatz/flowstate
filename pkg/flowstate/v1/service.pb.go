@@ -1770,6 +1770,15 @@ type GetTimelineRequest struct {
 	// scan budget besides — and it buys something a token would not, since the
 	// walk that reaches the cursor has also collected the labels the rows after
 	// it refer back to.
+	//
+	// Requires run_id, and is refused without it. Event ids restart at 1 in every
+	// segment, so a cursor means nothing until the segment it counts within is
+	// named — and an empty run_id means "the latest", which is a *different*
+	// segment the moment the workload continues as new between two calls. Applied
+	// to the new segment, the old cursor silently skips its beginning or mixes
+	// two segments' entries into one account (Codex, #1119). Refusing beats
+	// guessing: [GetTimelineResponse.run_id] reports the segment every answer was
+	// read from, so a caller resuming has the value in hand.
 	AfterEventId  int64 `protobuf:"varint,4,opt,name=after_event_id,json=afterEventId,proto3" json:"after_event_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1839,6 +1848,15 @@ type GetTimelineResponse struct {
 	// Entries are in the order they happened, oldest first, which is the order a
 	// history is written and the order an account is read.
 	Entries []*TimelineEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// RunId is the segment this account was read from, always set — including
+	// when the request named none and the server resolved the latest.
+	//
+	// It exists so that resuming is possible at all: event ids restart in every
+	// segment, so [GetTimelineRequest.after_event_id] requires the run id, and a
+	// caller who asked for "the latest" would otherwise not know what that
+	// resolved to. Reporting it turns "read more of what I just read" into
+	// something a caller can express.
+	RunId string `protobuf:"bytes,6,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// Truncated is true when this is not the whole of this run's account.
 	//
 	// Resume with [GetTimelineRequest.after_event_id] set to the last entry's
@@ -1928,6 +1946,13 @@ func (x *GetTimelineResponse) GetEntries() []*TimelineEntry {
 		return x.Entries
 	}
 	return nil
+}
+
+func (x *GetTimelineResponse) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
 }
 
 func (x *GetTimelineResponse) GetTruncated() bool {
@@ -2535,9 +2560,10 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\vmax_entries\x18\x03 \x01(\x05B\n" +
 	"\xbaH\a\x1a\x05\x18\x88'(\x00R\n" +
 	"maxEntries\x12-\n" +
-	"\x0eafter_event_id\x18\x04 \x01(\x03B\a\xbaH\x04\"\x02(\x00R\fafterEventId\"\xd4\x01\n" +
+	"\x0eafter_event_id\x18\x04 \x01(\x03B\a\xbaH\x04\"\x02(\x00R\fafterEventId\"\xeb\x01\n" +
 	"\x13GetTimelineResponse\x125\n" +
-	"\aentries\x18\x01 \x03(\v2\x1b.flowstate.v1.TimelineEntryR\aentries\x12\x1c\n" +
+	"\aentries\x18\x01 \x03(\v2\x1b.flowstate.v1.TimelineEntryR\aentries\x12\x15\n" +
+	"\x06run_id\x18\x06 \x01(\tR\x05runId\x12\x1c\n" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1e\n" +
 	"\vnext_run_id\x18\x03 \x01(\tR\tnextRunId\x12&\n" +
 	"\x0fprevious_run_id\x18\x04 \x01(\tR\rpreviousRunId\x12 \n" +

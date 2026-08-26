@@ -39,9 +39,11 @@ func newTimelineCommand() *cobra.Command {
 			"began; pass one with --run-id to read it. Both directions, because omitting " +
 			"--run-id reads the *latest* segment, which by definition has no next one.\n\n" +
 			"`truncated` says the account is not the whole of that segment — resume with " +
-			"--after-event-id set to the last row's event id. Raising --max-entries is not " +
-			"the way past it: the ceiling is a ceiling, and one segment can hold several " +
-			"times the largest answer this returns.",
+			"--run-id and --after-event-id set to the last row's event id, which the " +
+			"command prints for you. Both, because event ids restart in each segment: a " +
+			"cursor means nothing until the segment it counts within is named. Raising " +
+			"--max-entries is not the way past it either: the ceiling is a ceiling, and " +
+			"one segment can hold several times the largest answer this returns.",
 		Args: cobra.ExactArgs(1),
 		RunE: runTimeline,
 		Example: `# What did this run actually do?
@@ -53,8 +55,9 @@ flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure
 # The next segment of a workload that continued as new:
 flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...
 
-# Continue an account the server clipped:
-flow timeline flowstate-workflow-3f7c --after-event-id 4821`,
+# Continue an account the server clipped, which names the segment as well
+# because event ids restart in each one (the command prints both for you):
+flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-... --after-event-id 4821`,
 	}
 
 	addOutputFlag(cmd)
@@ -64,7 +67,8 @@ flow timeline flowstate-workflow-3f7c --after-event-id 4821`,
 	cmd.Flags().Int32("max-entries", 0,
 		"stop after this many entries; unset uses the server's default")
 	cmd.Flags().Int64("after-event-id", 0,
-		"resume past an entry already read, by its event id; unset starts at the beginning")
+		"resume past an entry already read, by its event id; requires --run-id, since "+
+			"event ids restart in each segment; unset starts at the beginning")
 
 	return cmd
 }
@@ -145,9 +149,15 @@ func renderTimeline(surface *ui.UI, msg *v1.GetTimelineResponse) {
 		// it, and the whole point of reporting the event id is that they do not
 		// have to.
 		if entries := msg.GetEntries(); len(entries) > 0 {
+			// Both flags, always. An event id counts within one segment, so
+			// resuming without naming the segment is refused — and it would be
+			// wrong even if it were not, since an unnamed run resolves to
+			// whichever is latest and a workload can continue as new between
+			// two calls.
 			fmt.Fprintf(surface.Err,
 				"this is not the whole of this run's account — continue with "+
-					"--after-event-id %d\n", entries[len(entries)-1].GetEventId())
+					"--run-id %s --after-event-id %d\n",
+				msg.GetRunId(), entries[len(entries)-1].GetEventId())
 		} else {
 			fmt.Fprintln(surface.Err,
 				"this run's history is longer than this server will walk, so nothing past "+

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 
@@ -76,13 +77,30 @@ const (
 	// Sized against the number rather than against a feeling: Temporal
 	// force-terminates an execution at 51,200 history events, which is the
 	// figure [v1.MaxAtomicBlockActivities] is itself derived from. So this
-	// covers any history that can exist under those defaults several times
-	// over, and the ordinary case is that the walk always reaches the end.
+	// covers any history that can exist under those defaults with room to
+	// spare, and the ordinary case is that the walk always reaches the end.
 	//
-	// A deployment that raised that cap far enough gets a truncated answer
-	// rather than a wrong one, and an empty truncated answer says so plainly —
-	// see [v1.GetTimelineResponse.Truncated].
-	maxTimelineScan = 200_000
+	// It is also, transitively, the bound on *round trips*, and that is why it
+	// is this number rather than a comfortable multiple of it. The SDK's
+	// history iterator fetches at most one page per HasNext, and the loop calls
+	// HasNext once per event consumed, so pages fetched never exceeds events
+	// scanned. A peer answering with one event per page therefore costs one
+	// request per event — bounded, but only by this — so every unit of headroom
+	// here is a unit of request amplification a single authorized call can
+	// spend (Codex, #1119).
+	//
+	// A tighter, *independent* request budget is what `list.go` has and what
+	// this wants. It needs the raw history API, which takes a Temporal
+	// namespace this server does not hold — a client is dialed for a namespace
+	// and never asked which — so it is a named follow-up rather than something
+	// smuggled in here: plumbing a namespace through the client pool and every
+	// construction site is a change that misroutes a tenant's reads when it is
+	// wrong.
+	//
+	// A deployment that raised Temporal's own cap far enough gets a truncated
+	// answer rather than a wrong one, and an empty truncated answer says so
+	// plainly — see [v1.GetTimelineResponse.Truncated].
+	maxTimelineScan = 60_000
 
 	// maxTimelineFailureBytes bounds one failure message.
 	//
@@ -116,6 +134,21 @@ func (s *FlowstateServer) GetTimeline(
 	// made with — see [FlowstateServer.authorizeRun]. A history is the whole
 	// account of a workload, so a timeline readable by whoever guessed an id
 	// would be a larger disclosure than Get's rather than a smaller one.
+	// Refused before the run is even addressed, because it is a property of the
+	// request rather than of anything the server would find. Event ids restart
+	// at 1 in every segment, so a cursor counts within one and says nothing
+	// without it — and an empty run id resolves to *the latest*, which is a
+	// different segment the moment the workload continues as new between two
+	// calls. The old cursor applied to the new segment silently skips its
+	// beginning or mixes two segments into one account (Codex, #1119).
+	if req.Msg.GetAfterEventId() > 0 && req.Msg.GetRunId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(
+			"after_event_id counts within one run, and event ids restart in every "+
+				"segment of a workload — so name the segment with run_id. The answer "+
+				"you are continuing reports it as run_id; resuming without it would "+
+				"read the latest segment, which may not be the one you were reading"))
+	}
+
 	temporal, described, err := s.authorizeRun(ctx, req.Msg.GetWorkflowId(), req.Msg.GetRunId())
 	if err != nil {
 		return nil, err
@@ -134,7 +167,10 @@ func (s *FlowstateServer) GetTimeline(
 	// history read and the authorization on the same execution.
 	execution := described.GetWorkflowExecutionInfo().GetExecution()
 
-	out := &v1.GetTimelineResponse{}
+	// Always the resolved run rather than the one the caller named, which is
+	// the point: an empty run id means "the latest", and a caller who asked
+	// that way needs to be told what it resolved to before they can resume.
+	out := &v1.GetTimelineResponse{RunId: execution.GetRunId()}
 
 	// What the walk carries about work still in flight, keyed by the event that
 	// scheduled it: the label written onto that scheduling, and the attempt the

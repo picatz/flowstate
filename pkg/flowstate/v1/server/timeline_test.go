@@ -250,13 +250,19 @@ func TestATruncatedTimelineCanBeResumed(t *testing.T) {
 	require.Greater(t, len(whole.Msg.GetEntries()), 2,
 		"this run is too short for one entry at a time to be a walk")
 
+	require.Equal(t, started.Msg.GetRunId(), whole.Msg.GetRunId(),
+		"an answer does not say which segment it was read from, so a caller who asked "+
+			"for the latest cannot name it to resume")
+
 	// One at a time, which is the setting most likely to expose a cursor that
-	// moves too far: every step of the walk is a boundary.
+	// moves too far: every step of the walk is a boundary. The run id is
+	// carried from the answer, which is the only way a cursor is accepted.
 	var walked []int64
 	var after int64
 	for range len(whole.Msg.GetEntries()) + 2 {
 		page, perr := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
 			WorkflowId:   workflowID,
+			RunId:        whole.Msg.GetRunId(),
 			MaxEntries:   1,
 			AfterEventId: after,
 		}))
@@ -313,6 +319,7 @@ func TestAResumedTimelineStillNamesItsSteps(t *testing.T) {
 
 	resumed, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
 		WorkflowId:   workflowID,
+		RunId:        whole.Msg.GetRunId(),
 		AfterEventId: entries[0].GetEventId(),
 	}))
 	require.NoError(t, err)
@@ -407,4 +414,50 @@ func timelineEventIDs(msg *v1.GetTimelineResponse) []int64 {
 	}
 
 	return ids
+}
+
+// TestACursorWithoutItsSegmentIsRefused is fail-closed over a silent
+// corruption.
+//
+// Event ids restart at 1 in every segment of a workload, so a cursor counts
+// within one and says nothing without it. An empty run id means "the latest",
+// which is a *different* segment the moment the workload continues as new
+// between two calls — and the old cursor applied to the new segment skips its
+// beginning or mixes two segments' entries into one account, with nothing in
+// the answer saying so (Codex, #1119).
+//
+// Refusing beats guessing, and the refusal has to teach: the answer being
+// continued reports its own run id, so the caller has the value in hand.
+func TestACursorWithoutItsSegmentIsRefused(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	_, err = fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId:   workflowID,
+		AfterEventId: 5,
+	}))
+	require.Error(t, err, "a cursor with no segment named was accepted, so it counts within "+
+		"whichever segment happened to be latest when it arrived")
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "run_id",
+		"the refusal does not name the field that fixes it")
+
+	// And accepted once the segment is named, so the refusal is about the
+	// missing run id rather than about cursors.
+	pinned, err := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+		WorkflowId:   workflowID,
+		RunId:        started.Msg.GetRunId(),
+		AfterEventId: 1,
+	}))
+	require.NoError(t, err)
+	assert.NotEmpty(t, pinned.Msg.GetEntries())
 }
