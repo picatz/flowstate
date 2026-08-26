@@ -1062,3 +1062,33 @@ func TestABareIfIsRefusedRatherThanArmingEveryIteration(t *testing.T) {
 		})
 	}
 }
+
+// TestANearMissKeywordIsRefusedRatherThanDiscarded (Codex, #1116).
+//
+// `break body iff n == 7` used to install an unconditional breakpoint: a tail
+// that was not `if` was discarded rather than rejected, so the condition the
+// author wrote was silently not applied and the run stopped on every
+// iteration. Same failure as a bare `if`, one typo over — which is why the
+// rule is now that a tail is either nothing or a condition, rather than a
+// list of the spellings noticed so far.
+func TestANearMissKeywordIsRefusedRatherThanDiscarded(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, script string }{
+		{name: "a misspelled keyword", script: "break body iff n == 7\nbreakpoints\ncontinue\n"},
+		{name: "a condition with no keyword", script: "break body n == 7\nbreakpoints\ncontinue\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, ran := loopingRun(t, 4, tc.script)
+
+			assert.Len(t, ran, 4)
+			assert.Contains(t, out, "expected `if` after the step id",
+				"the refusal names the grammar rather than only rejecting")
+			assert.Contains(t, out, "no breakpoints",
+				"and nothing is set, because an unconditional breakpoint here stops on every iteration")
+			assert.NotContains(t, out, "break at body")
+		})
+	}
+}

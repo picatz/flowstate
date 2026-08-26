@@ -366,7 +366,12 @@ func (s *Session) showStep(node *v1.Node) {
 // condition gating whether something happens, and the parse is positional — a
 // step legally named `if` is still the id, since the first word always is.
 func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scope) {
-	id, condition, conditional := splitCondition(rest)
+	id, condition, conditional, err := splitCondition(rest)
+	if err != nil {
+		s.printfTone(ToneWarning, "break: %v\n", err)
+
+		return
+	}
 	if id == "" {
 		s.printfTone(ToneWarning, "break needs a step id: break <step-id> [if <expr>]\n")
 
@@ -412,20 +417,34 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // taking the first word and handing the rest on ([Session.dispatch]), and
 // `inspect` already treats its whole rest as an expression. Anything after the
 // `if` is the expression, spaces and all.
-// The third return is what makes `break body if` refusable: without it an
-// empty condition and an absent one are the same value, so a trailing `if`
-// with nothing after it falls through to an *unconditional* breakpoint — a
-// typo that arms exactly the stop-on-every-iteration behaviour a condition is
-// typed to avoid, and the opposite of what this command promises about
-// malformed conditions (Codex, #1116).
-func splitCondition(rest string) (id, condition string, conditional bool) {
+// splitCondition reads `<step-id>` or `<step-id> if <expr>`, and refuses
+// anything else.
+//
+// Refusing is the whole of it, and it took two review rounds to get there
+// because the failure is silent and its shape is generous: every way of
+// mistyping a condition used to fall back to an *unconditional* breakpoint.
+// `break body if` did, because an empty condition and an absent one were one
+// value; `break body iff n == 7` did, because a tail that was not `if` was
+// discarded rather than rejected. Both arm exactly the stop-on-every-iteration
+// behaviour somebody types a condition to escape, from a command that printed
+// success (Codex, #1116).
+//
+// So the rule is that a tail is either nothing or a condition. Anything else
+// is a typo, and a typo whose punishment is "your breakpoint means something
+// else now" is one this prompt should not administer quietly.
+func splitCondition(rest string) (id, condition string, conditional bool, err error) {
 	id, tail := split(strings.TrimSpace(rest))
-	keyword, expression := split(tail)
-	if keyword != "if" {
-		return id, "", false
+	tail = strings.TrimSpace(tail)
+	if tail == "" {
+		return id, "", false, nil
 	}
 
-	return id, strings.TrimSpace(expression), true
+	keyword, expression := split(tail)
+	if keyword != "if" {
+		return "", "", false, fmt.Errorf("expected `if` after the step id, got %q: break <step-id> [if <expr>]", keyword)
+	}
+
+	return id, strings.TrimSpace(expression), true, nil
 }
 
 // compileCondition parses a breakpoint's condition against the run's own
