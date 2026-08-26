@@ -109,7 +109,9 @@ func (s *Session) Paused() (Position, bool) {
 //
 // An expression that does not compile is an ordinary answer here rather than an
 // error on the session, for the reason the prompt treats it as one: somebody
-// asking questions will ask some that do not parse.
+// asking questions will ask some that do not parse. The error is redacted too —
+// see [withheld], because an error names what caused it and what caused it can
+// be the value being withheld.
 func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.Val, error) {
 	s.mu.Lock()
 	subject := s.at
@@ -143,7 +145,7 @@ func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.
 
 	out, err := v1.DefaultEvaluator().EvalString(ctx, expression, libs, activation)
 	if err != nil {
-		return "", nil, err
+		return "", nil, withheld(subject.redactText, err)
 	}
 
 	// Redacted with the redactors this *pause* began under, taken from the
@@ -176,6 +178,33 @@ func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.
 	}
 
 	return text, v1.TypeAdapter.NativeToValue(native), nil
+}
+
+// withheld is err with the pause's text redactor applied to its message.
+//
+// A CEL runtime error interpolates the value that caused it — `hours(n)` past
+// the duration ceiling prints n itself (`celenv.go:642-645`) — so an error is a
+// way for a value to leave, and the prompt has always known this: it prints one
+// through `printfTone`, which redacts. This surface returned the error raw, so
+// the same failing expression withheld its value when typed and disclosed it
+// when asked for (Codex, #1120).
+//
+// Rebuilt rather than wrapped, which is the part worth stating. Wrapping keeps
+// the original reachable through [errors.Unwrap], and the whole message is what
+// had to be withheld — the same leak CLAUDE.md records for Temporal's failure
+// converter, which walks the unwrap chain and persists every level. So the
+// redacted sentence is the whole of what comes back.
+//
+// With no redactor installed the error is returned exactly as it is: identity
+// is preserved precisely where there is nothing to withhold, and the sentinels
+// this method returns are all returned before evaluation, so none of them
+// passes through here.
+func withheld(redact func(string) string, err error) error {
+	if redact == nil || err == nil {
+		return err
+	}
+
+	return errors.New(redact(err.Error()))
 }
 
 // applyText is text through redact, or text.

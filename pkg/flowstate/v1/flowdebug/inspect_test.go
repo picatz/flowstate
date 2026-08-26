@@ -484,3 +484,138 @@ func TestAnAnswerUsesTheWithholdingThePauseBeganUnder(t *testing.T) {
 	}, nil, []string{"a failure"})
 	<-done
 }
+
+// TestAnEvaluationErrorWithholdsWhatItInterpolates closes the last way a value
+// had of leaving through this method.
+//
+// A CEL runtime error names what caused it: `hours(n)` past the duration
+// ceiling prints n itself (`celenv.go:642-645`). The prompt has always redacted
+// one, because it prints errors through `printfTone` — so before this, the same
+// failing expression withheld its value when typed and disclosed it when asked
+// for through the value surface (Codex, #1120).
+func TestAnEvaluationErrorWithholdsWhatItInterpolates(t *testing.T) {
+	t.Parallel()
+
+	// Past the duration ceiling, so the unit function refuses and says the
+	// number back.
+	const secret = 999999999999
+
+	paused := func(redact func(string) string, ask func(*flowdebug.Session)) {
+		var out strings.Builder
+
+		done := make(chan struct{})
+		console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+			defer close(done)
+			ask(s)
+		}}
+
+		session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = session.Close() })
+		console.session = session
+
+		if redact != nil {
+			session.SetRedactor(redact)
+		}
+
+		scope := v1.NewScope(v1.CurrentProfile, nil)
+		scope.Inputs = map[string]*v1.Value{"limit": v1.NewLiteral(int64(secret))}
+
+		session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+		<-done
+	}
+
+	// The premise first: with nothing installed to withhold it, the number is
+	// genuinely in the error. A test that only asserted the redacted arm would
+	// pass just as well against an error that never carried it.
+	paused(nil, func(s *flowdebug.Session) {
+		_, _, err := s.Evaluate(t.Context(), "hours(inputs.limit)")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), fmt.Sprint(secret),
+			"this expression no longer interpolates its argument, so the redacted arm "+
+				"below is asserting nothing")
+	})
+
+	paused(func(text string) string {
+		return strings.ReplaceAll(text, fmt.Sprint(secret), "[redacted]")
+	}, func(s *flowdebug.Session) {
+		_, _, err := s.Evaluate(t.Context(), "hours(inputs.limit)")
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), fmt.Sprint(secret),
+			"a sensitive value left through the error rather than through the answer")
+		assert.Contains(t, err.Error(), "redacted")
+	})
+}
+
+// TestAPauseAnswersFromTheScopeItBeganWith is the separation that keeps a
+// cross-goroutine question from being a race.
+//
+// The engine owns `Scope.Outputs.StepValues` and writes each step's outcome
+// into it as the run proceeds (`eval.go:1494-1514`). A caller admitted to a
+// pause reads that scope from its own goroutine, and the pause ends the moment
+// the prompt returns a line — so a reader still working when the run resumes
+// was reading a map the engine had started writing. That is not a stale answer:
+// it is a concurrent map read and write, which Go answers with a fatal throw no
+// recover reaches (Codex, #1120).
+//
+// The window is not observable from outside, so this does the stronger thing
+// and writes into the original scope *while the pause is held*. Against a
+// session that froze nothing the loop below is that fatal throw; against one
+// that did, the answers are the ones the pause began with.
+func TestAPauseAnswersFromTheScopeItBeganWith(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"build": {NamedValues: map[string]*v1.Value{"artifact": v1.NewLiteral("web.tar.gz")}},
+		},
+	})
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"continue"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		// Exactly what resuming does to this map, arriving while the pause
+		// still holds.
+		writing := make(chan struct{})
+		go func() {
+			defer close(writing)
+			for i := range 500 {
+				scope.Outputs.StepValues[fmt.Sprintf("later-%d", i)] = &v1.Node_Outputs{
+					NamedValues: map[string]*v1.Value{"n": v1.NewLiteral(int64(i))},
+				}
+			}
+		}()
+
+		for range 500 {
+			_, _ = s.Scope()
+			_, _, _ = s.Evaluate(t.Context(), "steps.build.artifact")
+		}
+		<-writing
+
+		// And the answer is the pause's, not the run's latest: a variables
+		// pane that grew 500 rows while nobody resumed anything would be
+		// describing a position this session never advertised.
+		groups, err := s.Scope()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"build"}, namesOf(groups, "steps"),
+			"the pause handed out a scope the run kept writing to")
+
+		text, _, err := s.Evaluate(t.Context(), "steps.build.artifact")
+		require.NoError(t, err)
+		assert.Equal(t, `"web.tar.gz"`, text)
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	held := make(chan error, 1)
+	go func() { held <- session.BeforeStep(t.Context(), markStep("deploy"), scope) }()
+
+	<-done
+	require.NoError(t, <-held)
+}

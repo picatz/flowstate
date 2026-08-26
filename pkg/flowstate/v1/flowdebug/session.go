@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
@@ -945,11 +946,53 @@ func (s *Session) prompting(at promptSubject) {
 	// The withholding in force is part of what a pause *is*, so it is captured
 	// here with everything else rather than read later by whoever answers. See
 	// [promptSubject.redactText].
+	//
+	// And so is the scope, for the same reason one step further out: the engine
+	// owns `Scope.Outputs.StepValues` and resumes writing to it the moment the
+	// pause ends (`eval.go:1494-1514`), while a caller admitted to this pause
+	// may still be reading it from its own goroutine. A live map read there is
+	// not a stale answer, it is a concurrent map read and write — which Go
+	// answers with a fatal throw no recover reaches (Codex, #1120).
 	if at.scope != nil {
 		at.redactText, at.redactValue = s.redact, s.redactValue
+		at.scope = frozen(at.scope)
 	}
 
 	s.at = at
+}
+
+// frozen is the scope as it was when a pause began, copied so that nothing the
+// run does after resuming can be seen through it — or race with a reader.
+//
+// A copy rather than a lock held across the pause, and that direction is the
+// decision. Holding the engine until every admitted query finishes would make a
+// debug client able to delay a resume, which on the durable driver is an
+// activity not heartbeating; and it would leave the reader looking at a live
+// map that is merely *ordered* against the writer rather than separated from
+// it. Copying makes "a pause is a snapshot" true in the same way the redactors
+// above make it true of the withholding: one idea, applied to everything the
+// pause hands out.
+//
+// The cost, stated rather than glossed: one deep copy per pause. It is paid
+// only where the run actually stops — [Session.prompting] is reached from
+// [Session.BeforeStep] only once `shouldStop` says so — and it copies state the
+// run is already holding in memory, so it briefly doubles a bounded thing
+// rather than introducing growth of its own. A stop is the slowest moment this
+// system has; a copy is not what makes it slow.
+//
+// [promptSubject.extra] is deliberately not copied. It holds the autopsy's bare
+// bindings and nothing at a breakpoint, and an autopsy runs after the engine has
+// finished with the run — so there is no writer to be separated from.
+func frozen(scope *v1.Scope) *v1.Scope {
+	clone, ok := proto.Clone(scope).(*v1.Scope)
+	if !ok {
+		// Unreachable for a generated type, and the answer if it ever were
+		// reached is the pause with nothing to hand out rather than a live map
+		// handed to another goroutine.
+		return nil
+	}
+
+	return clone
 }
 
 // sawStep remembers a step id this session has watched go past, so that
