@@ -1102,3 +1102,55 @@ func TestCapTextKeepsItsOwnPromise(t *testing.T) {
 
 	assert.Equal(t, "short", capText("short", 64), "what fits is returned untouched")
 }
+
+// TestTheDebugToolCompletes is the parity claim, end to end.
+//
+// The completion built for the prompt was reachable only through a terminal's
+// tab key, because `SetCompleter` is installed on a console and a console
+// exists only where both streams are terminals. So the surface agents drive
+// this project through could not ask what may be written at a paused run,
+// though the answer is a pure function of a scope the session already holds.
+//
+// That is the same shape as every other gap this session's review kept finding
+// — a capability complete on one front and unreachable from another — and the
+// fix is a command rather than a second mechanism, so the two fronts share one
+// answer and one renderer.
+func TestTheDebugToolCompletes(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callDebug(t, session, map[string]any{
+		"workflow": debugWorkflow,
+		"tests": `tests:
+  - name: it ships
+    inputs:
+      release: "2026.9.0"
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [build, ship]
+`,
+		"commands": []any{"step", "complete inspect ", "complete inspect steps.", "complete break ", "continue"},
+	})
+	require.False(t, result.IsError, "the case passes: %s", result.Content[0].(*mcp.TextContent).Text)
+
+	joined := answer.transcript()
+
+	assert.Contains(t, joined, "steps.        step outputs",
+		"the roots a bare expression may name, with the detail a terminal shows beside them")
+	assert.Contains(t, joined, "inputs.       run inputs",
+		"including the run's own arguments, since this run was started with some")
+	assert.Contains(t, joined, "join          strings",
+		"and the profile's own functions, which is what makes this worth asking rather than guessing")
+	assert.Contains(t, joined, "a step that has run",
+		"`steps.` answers from the paused run's own outputs")
+	assert.Contains(t, joined, "a step this run may reach",
+		"and `break ` from the step inventory")
+
+	assert.Equal(t,
+		[]string{"step", "complete inspect ", "complete inspect steps.", "complete break ", "continue"},
+		answer.Script,
+		"a completion is recorded like any other question, so the script still replays the session")
+}

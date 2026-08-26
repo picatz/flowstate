@@ -708,3 +708,46 @@ func (s *Session) breakpointIDs() []string {
 
 	return ids
 }
+
+// RenderCompletion is how a completion answer is written down, for whichever
+// front is doing the writing.
+//
+// One formatter, two sinks, and that is the whole reason it is exported. A
+// terminal writes this straight to the descriptor so the line editor repaints
+// underneath it; a session writes it through its own emit seam so it lands in
+// a transcript an agent reads. Those are different destinations and the same
+// list, and a second copy of the padding rules is how the two come to disagree
+// about what a candidate looks like.
+func RenderCompletion(answer Completion) string {
+	width := 0
+	for _, candidate := range answer.Candidates {
+		width = max(width, len(candidate.Text))
+	}
+
+	var out strings.Builder
+	for _, candidate := range answer.Candidates {
+		if candidate.Detail == "" {
+			out.WriteString(candidate.Text + "\n")
+
+			continue
+		}
+		out.WriteString(padRight(candidate.Text, width) + "   " + candidate.Detail + "\n")
+	}
+	if answer.Truncated {
+		// Said out loud, because a list somebody scans for a name that is not
+		// in it should tell them the list was cut rather than let them
+		// conclude the name does not exist.
+		out.WriteString("… and more, not listed\n")
+	}
+
+	return out.String()
+}
+
+// padRight pads to width, for the column a detail starts at.
+func padRight(s string, width int) string {
+	if len(s) >= width {
+		return s
+	}
+
+	return s + strings.Repeat(" ", width-len(s))
+}
