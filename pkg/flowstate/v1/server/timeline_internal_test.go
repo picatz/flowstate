@@ -416,3 +416,73 @@ func TestAFailureRecordWithNoMessageFieldIsUnreadable(t *testing.T) {
 		EncodedAttributes: payload,
 	}), "a failure whose message is empty was reported as unreadable")
 }
+
+// canceledEvent is a cancellation confirmation. started is the id of the
+// ACTIVITY_TASK_STARTED it corresponds to, or zero where it corresponds to
+// none — which is what a cancellation delivered between attempts looks like.
+func canceledEvent(id, scheduled, started int64) *historypb.HistoryEvent {
+	return &historypb.HistoryEvent{
+		EventId:   id,
+		EventType: enums.EVENT_TYPE_ACTIVITY_TASK_CANCELED,
+		Attributes: &historypb.HistoryEvent_ActivityTaskCanceledEventAttributes{
+			ActivityTaskCanceledEventAttributes: &historypb.ActivityTaskCanceledEventAttributes{
+				ScheduledEventId: scheduled,
+				StartedEventId:   started,
+			},
+		},
+	}
+}
+
+// TestACancellationClaimsAnAttemptOnlyWhenOneWasRunning is the row that could
+// say a thing that did not happen.
+//
+// Cancellation is the one ending an activity can meet while it is not running:
+// a step sitting in retry backoff is cancelled as an *activity*, and the last
+// attempt to have started ended some time earlier, by failing. The walk carries
+// that attempt's number for the endings that need it, so copying it here
+// reported "attempt 3 was cancelled" about an attempt that had already failed —
+// a sentence contradicted by the failure row two lines above it (#1119).
+//
+// The event itself settles it. `started_event_id` is "the id of the
+// ACTIVITY_TASK_STARTED event this cancel confirmation corresponds to", so an
+// unset one is Temporal saying this corresponds to no run of the activity.
+func TestACancellationClaimsAnAttemptOnlyWhenOneWasRunning(t *testing.T) {
+	t.Parallel()
+
+	server := mustNew(t, nil)
+
+	// Cancelled while attempt 2 was running: the row is about that attempt, and
+	// says so.
+	running := map[int64]*activityInFlight{}
+	require.NotNil(t, server.timelineEntry(scheduledEvent(t, 5, "`deploy`"), running))
+	require.Nil(t, server.timelineEntry(startedEvent(6, 5, 1, nil), running))
+	require.NotNil(t, server.timelineEntry(startedEvent(9, 5, 2,
+		&failurepb.Failure{Message: "connection refused"}), running))
+
+	cancelled := server.timelineEntry(canceledEvent(12, 5, 9), running)
+	require.NotNil(t, cancelled)
+	assert.Equal(t, v1.TimelineEntry_KIND_STEP_CANCELED, cancelled.GetKind())
+	assert.Equal(t, "`deploy`", cancelled.GetStep())
+	assert.Equal(t, int32(2), cancelled.GetAttempt(),
+		"a cancellation that ended a running attempt does not name it")
+	assert.Empty(t, running, "cancelled work is still being carried")
+
+	// Cancelled between attempts: attempt 2 failed, nothing started after it,
+	// and the cancellation is about the activity rather than about any try of
+	// it. Zero is the schema's own "this row is not about an attempt".
+	betweenAttempts := map[int64]*activityInFlight{}
+	require.NotNil(t, server.timelineEntry(scheduledEvent(t, 5, "`deploy`"), betweenAttempts))
+	require.Nil(t, server.timelineEntry(startedEvent(6, 5, 1, nil), betweenAttempts))
+	require.NotNil(t, server.timelineEntry(startedEvent(9, 5, 2,
+		&failurepb.Failure{Message: "connection refused"}), betweenAttempts))
+
+	idle := server.timelineEntry(canceledEvent(12, 5, 0), betweenAttempts)
+	require.NotNil(t, idle)
+	assert.Equal(t, v1.TimelineEntry_KIND_STEP_CANCELED, idle.GetKind())
+	assert.Equal(t, "`deploy`", idle.GetStep(),
+		"a cancellation between attempts stopped naming its step as well")
+	assert.Zero(t, idle.GetAttempt(),
+		"the cancellation claimed the attempt that had already failed, so the account "+
+			"says a try was cancelled that ended some other way")
+	assert.Empty(t, betweenAttempts, "cancelled work is still being carried")
+}

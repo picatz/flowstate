@@ -92,7 +92,7 @@ type Deps struct {
 
 	// PendingActivityLines renders what Temporal is retrying, one sentence
 	// each, against the moment the answer was observed.
-	PendingActivityLines func([]*v1.PendingActivity, time.Time) []string
+	PendingActivityLines func(*v1.GetResponse, time.Time) []string
 
 	// PendingWaitLines renders the gates a run is parked on, one sentence
 	// each, against the moment the answer was observed.
@@ -349,7 +349,7 @@ func (s *State) Absorb(at time.Time, response *v1.GetResponse, err error) Progre
 
 	steps := CompletedSteps(response)
 	position := s.deps.PositionPath(response.GetProgress())
-	pendingKeys := pendingActivityKeys(response.GetPendingActivities())
+	pendingKeys := pendingActivityKeys(response)
 	waitKeys := pendingWaitKeys(response.GetProgress())
 
 	// No separate "is this the first answer" flag: the zero value of status
@@ -375,7 +375,7 @@ func (s *State) Absorb(at time.Time, response *v1.GetResponse, err error) Progre
 	s.status = response.GetStatus()
 	s.steps = steps
 	s.position = position
-	s.pending = s.deps.PendingActivityLines(response.GetPendingActivities(), at)
+	s.pending = s.deps.PendingActivityLines(response, at)
 	s.waits = s.deps.PendingWaitLines(response.GetProgress(), at)
 	s.pendingKeys = pendingKeys
 	s.waitKeys = waitKeys
@@ -578,15 +578,34 @@ func (s *State) OutageSince() time.Time { return s.outageSince }
 // pendingActivityKeys reduces the retries to what a reader would call news:
 // the attempt count and the last failure, and nothing else — the countdown
 // is left out and kept only in the rendered line.
-func pendingActivityKeys(pending []*v1.PendingActivity) []string {
-	if len(pending) == 0 {
+//
+// The truncation flag is news too, and that is the part this had wrong. When
+// more steps start retrying than the server projects, the reported prefix can
+// be identical attempt for attempt and failure for failure while the answer
+// stops being the whole of it — so an identity built from the prefix alone does
+// not move, `Absorb` reports no change, and the loop never prints the notice
+// the renderer had already produced. The reverse is worse: a watch goes on
+// saying there are hidden retries after the list becomes complete (Codex,
+// #1121).
+//
+// So it takes the response rather than the slice, which is the same pairing
+// [pendingActivityLines] takes and for the same reason: the list and the fact
+// that it is partial are one answer, and reading either without the other is
+// how they drift.
+func pendingActivityKeys(response *v1.GetResponse) []string {
+	pending := response.GetPendingActivities()
+	if len(pending) == 0 && !response.GetPendingActivitiesTruncated() {
 		return nil
 	}
 
-	keys := make([]string, 0, len(pending))
+	keys := make([]string, 0, len(pending)+1)
 	for _, activity := range pending {
 		keys = append(keys, fmt.Sprintf("%d\x00%s", activity.GetAttempt(), activity.GetLastFailure()))
 	}
+
+	// Last, and shaped so it cannot collide with an activity's key: this is a
+	// fact about the list rather than a member of it.
+	keys = append(keys, fmt.Sprintf("truncated\x00%t", response.GetPendingActivitiesTruncated()))
 
 	return keys
 }
@@ -596,16 +615,24 @@ func pendingActivityKeys(pending []*v1.PendingActivity) []string {
 // deadline's fixed instant rather than the countdown to it.
 func pendingWaitKeys(progress *v1.RunProgress) []string {
 	waits := progress.GetPendingWaits()
-	if len(waits) == 0 {
+	if len(waits) == 0 && !progress.GetPendingWaitsTruncated() {
 		return nil
 	}
 
-	keys := make([]string, 0, len(waits))
+	keys := make([]string, 0, len(waits)+1)
 	for _, wait := range waits {
 		keys = append(keys, fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%d",
 			wait.GetStepId(), wait.GetPath(), wait.GetSignalName(), wait.GetPoliced(),
 			wait.GetDeadline().GetSeconds()))
 	}
+
+	// The gates have the identical hole, and it predates the retries' one
+	// rather than arriving with it: `pendingWaitLines` has said "and more gates
+	// than this run reports" since its bound landed, and this identity has
+	// never been able to see that sentence appear or go away. Fixed beside its
+	// twin, because fixing one of two spellings of a bug leaves the other
+	// looking deliberate (Codex, #1121).
+	keys = append(keys, fmt.Sprintf("truncated\x00%t", progress.GetPendingWaitsTruncated()))
 
 	return keys
 }
