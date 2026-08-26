@@ -1140,3 +1140,48 @@ func TestAConditionThatCannotCompileIsRefusedWhenItIsTyped(t *testing.T) {
 		assert.Equal(t, 1, strings.Count(out, "break at body"), "and it fires once, at the iteration it names")
 	})
 }
+
+// TestAConditionMayCallTheProfilesNamespacedFunctions (Codex, #1116).
+//
+// The accept-time check declares every identifier the condition mentions as a
+// dynamic variable, and the call target of `math.abs(n)` is the identifier
+// `math` — so the check declares a variable with the same name as a namespace
+// the profile provides. The concern is exact: a `math` variable could shadow
+// the `math.` function namespace and make a valid condition unwritable.
+//
+// It does not, for two reasons worth pinning rather than trusting. cel-go
+// resolves a qualified function name in preference to a same-named variable,
+// so the check passes; and the declarations exist only for the *check* — the
+// expression is evaluated through the profile's own environment, which has the
+// libraries and none of these variables.
+//
+// Both halves are load-bearing and neither is visible from the code, so this
+// walks every namespace the profile actually declares. A future change to the
+// checking environment that broke either one would otherwise make profile
+// functions silently unusable in a condition, which is a false diagnostic —
+// the failure this repository ranks worst.
+func TestAConditionMayCallTheProfilesNamespacedFunctions(t *testing.T) {
+	t.Parallel()
+
+	for _, condition := range []string{
+		"math.abs(n - 3) == 0",
+		"math.ceil(1.2) == 2.0 && n == 3",
+		"lists.range(2).size() == 2 && n == 3",
+		`json.encode(n) == "3"`,
+		"cel.bind(doubled, n * 2, doubled == 6)",
+	} {
+		t.Run(condition, func(t *testing.T) {
+			t.Parallel()
+
+			out, ran := loopingRun(t, 6, "break body if "+condition+"\ncontinue\ncontinue\n")
+
+			require.Len(t, ran, 6)
+			assert.NotContains(t, out, "condition:",
+				"a namespaced function the profile declares is not a type error")
+			assert.NotContains(t, out, "cannot be trusted",
+				"and it evaluates, rather than erroring at each arrival")
+			assert.Equal(t, 1, strings.Count(out, "break at body"),
+				"stopping once, at the iteration the condition picks out")
+		})
+	}
+}
