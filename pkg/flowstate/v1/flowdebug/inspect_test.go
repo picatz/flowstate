@@ -328,3 +328,159 @@ func TestAValueRedactorIsWhatMakesTheStructuredAnswerAvailable(t *testing.T) {
 	}, nil, []string{"a failure"})
 	<-done
 }
+
+// TestAStructuredValueIsRedactedThroughItsContainers is the hole a scalar-only
+// test cannot see, and it is why the value surface shares the printing path's
+// conversion instead of having one of its own.
+//
+// CEL hands back its own backing representation from [ref.Val.Value] —
+// `map[ref.Val]ref.Val` for a map, `[]ref.Val` for a list — and a redactor
+// written against native Go walks neither. `flowtest`'s switches on
+// `map[string]any` and `[]any` (`flowtest/stub.go:940-957`), so handed CEL's
+// map it matches nothing, returns the container unchanged, and every secret
+// inside it travels. A test that only ever asks about a string passes the
+// whole way through that (Codex, #1120).
+func TestAStructuredValueIsRedactedThroughItsContainers(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		for _, expression := range []string{"steps.deploy.config", "steps.deploy.hosts"} {
+			text, value, err := s.Evaluate(t.Context(), expression)
+			if !assert.NoError(t, err, expression) {
+				continue
+			}
+
+			assert.NotContains(t, text, "hunter2",
+				"%s: a secret inside a container came back in the rendered answer", expression)
+			require.NotNil(t, value, "%s: the structured answer was withheld", expression)
+			assert.NotContains(t, fmt.Sprintf("%v", value.Value()), "hunter2",
+				"%s: the container was handed back holding the secret, because the redactor "+
+					"never saw a shape it could walk", expression)
+			assert.Contains(t, fmt.Sprintf("%v", value.Value()), "redacted", expression)
+		}
+
+		// And the walk is a walk rather than a blanket withholding: what was
+		// not sensitive is still readable, which is the whole reason a caller
+		// asks for the value rather than the rendering.
+		_, value, err := s.Evaluate(t.Context(), "steps.deploy.config.region")
+		if assert.NoError(t, err) && assert.NotNil(t, value) {
+			assert.Equal(t, "us-east-1", value.Value())
+		}
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	// Deliberately the shape `flowtest` installs: equality at the leaves, and a
+	// recursion that knows only about native Go containers. A redactor that
+	// happened to handle CEL's own types would test this file's fix against a
+	// redactor no caller writes.
+	var walk func(any) any
+	walk = func(value any) any {
+		if text, ok := value.(string); ok && text == "hunter2" {
+			return "[redacted]"
+		}
+		switch container := value.(type) {
+		case map[string]any:
+			redacted := make(map[string]any, len(container))
+			for name, element := range container {
+				redacted[name] = walk(element)
+			}
+
+			return redacted
+		case []any:
+			redacted := make([]any, len(container))
+			for i, element := range container {
+				redacted[i] = walk(element)
+			}
+
+			return redacted
+		default:
+			return value
+		}
+	}
+	session.SetValueRedactor(walk)
+
+	session.Autopsy(t.Context(), &v1.Scope{
+		Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+			"deploy": {NamedValues: map[string]*v1.Value{
+				"config": v1.NewLiteralMap(map[string]any{
+					"token":  "hunter2",
+					"region": "us-east-1",
+				}),
+				"hosts": v1.NewLiteralList("web-1", "hunter2"),
+			}},
+		}},
+	}, nil, []string{"a failure"})
+	<-done
+}
+
+// TestAnAnswerUsesTheWithholdingThePauseBeganUnder pins the redactors to the
+// pause rather than to the session.
+//
+// `flow test` clears both the moment [flowdebug.Session.Autopsy] returns
+// (`flowtest/run.go:768,790`), and a caller asking from its own goroutine
+// snapshots the pause and then spends real time evaluating — so redactors read
+// at the end of that work can be the cleared ones, and the answer comes back
+// carrying what they existed to withhold (Codex, #1120).
+//
+// The window itself is not observable from outside, so this clears them before
+// the call instead, which covers it: an evaluation entered *after* the clear
+// must still withhold, and one that entered before it holds a snapshot taken
+// earlier still. The pause is what decides, and the pause has not ended.
+func TestAnAnswerUsesTheWithholdingThePauseBeganUnder(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		// Exactly what leaving the autopsy does, arriving while the autopsy is
+		// still held.
+		s.SetRedactor(nil)
+		s.SetValueRedactor(nil)
+
+		text, value, err := s.Evaluate(t.Context(), "steps.deploy.token")
+		require.NoError(t, err)
+
+		assert.NotContains(t, text, "hunter2",
+			"the answer was rendered with the session's redactors read after the fact, "+
+				"and by then there were none")
+		require.NotNil(t, value)
+		assert.NotContains(t, fmt.Sprintf("%v", value.Value()), "hunter2",
+			"the structured answer outlived the withholding that was in force when the "+
+				"run was paused")
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, "hunter2", "[redacted]")
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && text == "hunter2" {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	session.Autopsy(t.Context(), &v1.Scope{
+		Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+			"deploy": {NamedValues: map[string]*v1.Value{"token": v1.NewLiteral("hunter2")}},
+		}},
+	}, nil, []string{"a failure"})
+	<-done
+}

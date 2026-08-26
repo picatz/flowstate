@@ -395,6 +395,20 @@ type promptSubject struct {
 	// at an autopsy, where the run is over and there is no step to be at.
 	step string
 	kind string
+
+	// redactText and redactValue are the withholding that was in force when
+	// this pause began, captured with the scope rather than read when an
+	// answer is returned.
+	//
+	// The two have to be taken together or a race opens between them. A caller
+	// evaluating from its own goroutine snapshots the subject, and evaluation
+	// takes time; `flow test` clears both redactors the moment [Session.Autopsy]
+	// returns (`flowtest/run.go:768,790`), so a console that exits the autopsy
+	// while an evaluation is in flight would leave that evaluation reading a
+	// session with no redactors at all — and returning what they existed to
+	// withhold (Codex, #1120).
+	redactText  func(string) string
+	redactValue func(any) any
 }
 
 // New returns a session configured by opts.
@@ -928,6 +942,13 @@ func (s *Session) prompting(at promptSubject) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// The withholding in force is part of what a pause *is*, so it is captured
+	// here with everything else rather than read later by whoever answers. See
+	// [promptSubject.redactText].
+	if at.scope != nil {
+		at.redactText, at.redactValue = s.redact, s.redactValue
+	}
+
 	s.at = at
 }
 
@@ -1238,21 +1259,51 @@ func nativeText(native any) string {
 // same expression would produce in the file are one rendering of one value,
 // rather than two that can drift.
 func (s *Session) refValText(out ref.Val) string {
-	lit, err := cel.RefValueToValue(out)
-	if err != nil {
-		return fmt.Sprint(out.Value())
-	}
-	native, err := v1.LiteralToGo(lit)
-	if err != nil {
+	s.mu.Lock()
+	redact := s.redactValue
+	s.mu.Unlock()
+
+	native, ok := redactedNative(out, redact)
+	if !ok {
 		return fmt.Sprint(out.Value())
 	}
 
-	// Redacted as a *value*, before it becomes text — see
-	// [Session.SetValueRedactor]. The two fallbacks above deliberately do not:
-	// a value this conversion could not read is not one an equality can
-	// recognise either, and what covers them is the text redactor the caller
-	// of this applies to whatever comes back.
-	return nativeText(s.redactedValue(native))
+	return nativeText(native)
+}
+
+// redactedNative is out as the native Go value a renderer sees, with redact
+// applied to it, and whether the conversion was possible.
+//
+// The one normalization, which is the point. CEL hands back its own backing
+// representation from [ref.Val.Value] — `map[ref.Val]ref.Val` for a map,
+// `[]ref.Val` for a list — and a redactor written against native Go walks
+// neither, so it returns such a container unchanged. `flowtest`'s
+// `redactSensitiveTree` switches on `map[string]any` and `[]any`
+// (`flowtest/stub.go:940-957`).
+//
+// So a second path that reached for `Value()` directly would redact a scalar
+// and hand a map straight through, which is exactly what happened when the
+// structured answer was built beside this instead of from it (Codex, #1120).
+// There is one conversion now, and both the text and the structured answer are
+// taken from its result.
+//
+// A value the conversion cannot read is reported as such rather than redacted
+// by guesswork: it is not one an equality can recognise either, and what covers
+// it is the text redactor a caller applies to whatever comes back.
+func redactedNative(out ref.Val, redact func(any) any) (any, bool) {
+	lit, err := cel.RefValueToValue(out)
+	if err != nil {
+		return nil, false
+	}
+	native, err := v1.LiteralToGo(lit)
+	if err != nil {
+		return nil, false
+	}
+	if redact == nil {
+		return native, true
+	}
+
+	return redact(native), true
 }
 
 // capRunes truncates text to at most limit runes, saying that it did.

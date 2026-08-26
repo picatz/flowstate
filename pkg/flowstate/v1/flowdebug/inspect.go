@@ -103,9 +103,9 @@ func (s *Session) Paused() (Position, bool) {
 //
 // The [ref.Val] is still returned, because a caller does need the value's shape
 // to decide whether a variable is expandable. It is the redacted one — or, on a
-// session that has a text redactor and no value redactor, nothing at all. See
-// [Session.redactedRefVal] for why that case fails closed rather than handing
-// back what it cannot redact.
+// session that has a text redactor and no value redactor, nothing at all: see
+// the withholding branch below for why that case fails closed rather than
+// handing back what it cannot redact.
 //
 // An expression that does not compile is an ordinary answer here rather than an
 // error on the session, for the reason the prompt treats it as one: somebody
@@ -146,7 +146,45 @@ func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.
 		return "", nil, err
 	}
 
-	return capRunes(s.redactText(s.refValText(out)), MaxInspectRunes), s.redactedRefVal(out), nil
+	// Redacted with the redactors this *pause* began under, taken from the
+	// subject snapshotted at the top rather than read from the session now.
+	// Evaluation takes time, and a console exiting the pause meanwhile clears
+	// them — so reading them here would hand back exactly what they existed to
+	// withhold. See [promptSubject.redactText].
+	//
+	// One conversion, shared with the printing path, because a second one that
+	// reached for [ref.Val.Value] directly would redact a scalar and hand a map
+	// straight through. See [redactedNative].
+	native, converted := redactedNative(out, subject.redactValue)
+	if !converted {
+		// Nothing structured to offer for a value the conversion cannot read,
+		// and the text redactor still covers what comes back as prose.
+		return capRunes(applyText(subject.redactText, fmt.Sprint(out.Value())), MaxInspectRunes), nil, nil
+	}
+
+	text := capRunes(applyText(subject.redactText, nativeText(native)), MaxInspectRunes)
+
+	// The structured half is withheld entirely when this session cannot redact
+	// one. Told there is something to withhold, with no way to withhold it
+	// structurally, and a component that allows when it cannot decide will
+	// eventually allow everything — CLAUDE.md's rule, which bites here because
+	// the two redactors are installed independently
+	// (`flowtest/run.go:755-790`). The redacted text still comes back, so what
+	// is withheld is a representation rather than the answer.
+	if subject.redactValue == nil && subject.redactText != nil {
+		return text, nil, nil
+	}
+
+	return text, v1.TypeAdapter.NativeToValue(native), nil
+}
+
+// applyText is text through redact, or text.
+func applyText(redact func(string) string, text string) string {
+	if redact == nil {
+		return text
+	}
+
+	return redact(text)
 }
 
 // ErrExpressionTooLarge reports an expression past [MaxCommandBytes].
@@ -156,42 +194,6 @@ func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.
 // caller can tell a refusal to look at an expression from an expression that
 // did not compile.
 var ErrExpressionTooLarge = errors.New("flowdebug: expression too large")
-
-// redactedRefVal is out through the installed value redactor, or nothing.
-//
-// Three cases, and the middle one is the reason this is a function rather than
-// a call.
-//
-// With a value redactor installed, the value goes through the same seam the
-// structured printing path uses, so there is one answer to "may this value be
-// handed out" rather than one per surface.
-//
-// With *no* redactor of any kind, the value is returned untouched rather than
-// round-tripped through the adapter: a conversion nobody asked for is a way for
-// a type to change on a path that was meant to be a no-op.
-//
-// With a text redactor and no value redactor, nothing is returned. The session
-// has been told there is something to withhold and has no way to withhold it
-// structurally, and a component that allows when it cannot decide will
-// eventually allow everything — CLAUDE.md's fail-closed rule, which applies
-// here because the two redactors are installed independently
-// (`flowtest/run.go:755-790` sets them in two separate blocks behind two
-// separate interface assertions). The caller still gets the redacted *text*, so
-// this withholds a representation rather than the answer.
-func (s *Session) redactedRefVal(out ref.Val) ref.Val {
-	s.mu.Lock()
-	redactValue, redactText := s.redactValue, s.redact
-	s.mu.Unlock()
-
-	switch {
-	case redactValue != nil:
-		return v1.TypeAdapter.NativeToValue(redactValue(out.Value()))
-	case redactText != nil:
-		return nil
-	default:
-		return out
-	}
-}
 
 // Names are the bindings the paused run can reach, which is what `scope`
 // prints.
