@@ -1,10 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/charmbracelet/colorprofile"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -66,4 +73,96 @@ func TestTheTimelineDetailColumnSaysWhichTry(t *testing.T) {
 			assert.Equal(t, c.want, timelineDetail(c.entry), c.because)
 		})
 	}
+}
+
+// TestTheRenderedTimelineKeepsEachEventToItsOwnRow is the claim end to end: a
+// workload's own text reaches a terminal through this command, and a row
+// promises one event.
+//
+// The two columns that carry text this process did not write are the step — a
+// signal row's is the name whoever sent it chose — and the detail, which holds
+// the workload's failure sentence. Either can hold a newline, a tab, or an
+// escape, and the table is a tabwriter, so a tab is a column break and a
+// newline is a row (Codex, #1119).
+func TestTheRenderedTimelineKeepsEachEventToItsOwnRow(t *testing.T) {
+	t.Parallel()
+
+	var out, errs bytes.Buffer
+	surface := &ui.UI{
+		Out:     &out,
+		Err:     &errs,
+		Caps:    ui.Capabilities{Profile: colorprofile.NoTTY},
+		ErrCaps: ui.Capabilities{Profile: colorprofile.NoTTY},
+	}
+
+	msg := &v1.GetTimelineResponse{Entries: []*v1.TimelineEntry{
+		{
+			EventId: 5,
+			Kind:    v1.TimelineEntry_KIND_STEP_FAILED,
+			Step:    "`deploy`",
+			Attempt: 1,
+			Failure: "boom\n09:00:00  done     `deploy`\x1b[31m\tnope",
+		},
+		{
+			EventId: 6,
+			Kind:    v1.TimelineEntry_KIND_SIGNAL_RECEIVED,
+			Step:    "approved\nfake-row",
+		},
+	}}
+
+	renderTimeline(surface, msg)
+
+	printed := out.String()
+
+	// Two entries, so two rows plus the header. A newline that reached the
+	// terminal would make more.
+	assert.Equal(t, 3, len(strings.Split(strings.TrimRight(printed, "\n"), "\n")),
+		"a failure message with a newline in it invented rows that read as this "+
+			"command's own output:\n%s", printed)
+
+	assert.NotContains(t, printed, "\x1b[31m",
+		"a workload's failure text chose how the reader's terminal looks")
+	assert.Contains(t, printed, `\n`, "the newline was dropped rather than shown")
+	assert.Contains(t, printed, `\t`, "the tab was dropped rather than shown")
+	assert.Contains(t, printed, `\x1b`, "the escape was dropped rather than shown")
+
+	// The sentence itself survives — escaping is not redaction, and a
+	// diagnosis a reader cannot read is no better than one they cannot trust.
+	assert.Contains(t, printed, "boom")
+	assert.Contains(t, printed, "approved")
+}
+
+// TestTheJSONTimelineKeepsTheValueAsItIs is the other half: escaping is for a
+// terminal interpreting bytes, and a consumer parsing JSON is not one.
+//
+// Handing back an escaped message there would return something that is not what
+// the run produced — a diagnosis rewritten on the way out, which is worse than
+// one rendered awkwardly.
+func TestTheJSONTimelineKeepsTheValueAsItIs(t *testing.T) {
+	t.Parallel()
+
+	raw := "boom\nsecond line\there"
+
+	var out, errs bytes.Buffer
+	surface := &ui.UI{
+		Out:     &out,
+		Err:     &errs,
+		Caps:    ui.Capabilities{Profile: colorprofile.NoTTY},
+		ErrCaps: ui.Capabilities{Profile: colorprofile.NoTTY},
+	}
+
+	require.NoError(t, writeJSON(surface, FormatJSON, &v1.GetTimelineResponse{
+		Entries: []*v1.TimelineEntry{{
+			EventId: 5,
+			Kind:    v1.TimelineEntry_KIND_STEP_FAILED,
+			Failure: raw,
+		}},
+	}))
+
+	var back v1.GetTimelineResponse
+	require.NoError(t, protojson.Unmarshal(out.Bytes(), &back))
+
+	require.Len(t, back.GetEntries(), 1)
+	assert.Equal(t, raw, back.GetEntries()[0].GetFailure(),
+		"the machine-readable answer no longer round-trips what the run produced")
 }

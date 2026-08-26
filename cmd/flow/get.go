@@ -319,8 +319,13 @@ func pendingActivityLines(pending []*v1.PendingActivity, now time.Time) []string
 	lines := make([]string, 0, len(pending))
 	for _, activity := range pending {
 		line := fmt.Sprintf("retrying, attempt %d", activity.GetAttempt())
+		// The workload's own sentence, escaped for the same reason
+		// `flow timeline` escapes one: it is text this process did not write,
+		// and a newline in it fabricates a line that reads as another retrying
+		// step while an escape restyles the terminal. Found while fixing the
+		// same hole one command over, rather than reported here (Codex, #1119).
 		if failure := activity.GetLastFailure(); failure != "" {
-			line += ": " + failure
+			line += ": " + ui.EscapeControl(failure)
 		}
 		if next := activity.GetNextAttemptScheduledTime(); next != nil {
 			if wait := next.AsTime().Sub(now); wait > 0 {

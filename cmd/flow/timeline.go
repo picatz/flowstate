@@ -120,11 +120,18 @@ func renderTimeline(surface *ui.UI, msg *v1.GetTimelineResponse) {
 	}
 
 	for _, entry := range msg.GetEntries() {
+		// Both of the last two columns carry text this process did not write —
+		// a failure's message is the workload's, and a signal row's step is the
+		// name whoever sent it chose. Handed to a tabwriter bare, a newline in
+		// either fabricates rows that look like this command's own output, a
+		// tab breaks the alignment a reader scans down, and an escape restyles
+		// the terminal (Codex, #1119). The JSON form below keeps the value as
+		// it is: a consumer parsing JSON is not a terminal interpreting bytes.
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n",
 			formatRunTime(entry.GetTime().AsTime(), entry.GetTime() != nil),
 			timelineKindLabel(entry.GetKind()),
-			entry.GetStep(),
-			timelineDetail(entry),
+			ui.EscapeControl(entry.GetStep()),
+			ui.EscapeControl(timelineDetail(entry)),
 		)
 	}
 	_ = table.Flush()

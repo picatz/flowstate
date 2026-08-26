@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -501,4 +502,33 @@ func TestAPendingActivityWithNoPhaseSaysNothingAboutIt(t *testing.T) {
 	}, time.Now())
 
 	require.Equal(t, []string{"retrying, attempt 2: boom"}, lines)
+}
+
+// TestAPendingActivityLineCannotBeSplitByItsOwnFailure covers a hole this
+// function had before `flow timeline` was written, and which reviewing that
+// command's rendering is what surfaced.
+//
+// A pending activity's `last_failure` is the workload's own sentence, and it
+// was concatenated into a printed line bare. A newline in it makes what looks
+// like a second retrying step, and an ANSI escape restyles the terminal from
+// inside a `flow get` answer. Both surfaces that render this — `flow get` and
+// `flow watch` — got it, because there is one renderer.
+func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
+	t.Parallel()
+
+	lines := pendingActivityLines([]*v1.PendingActivity{{
+		Attempt:     2,
+		LastFailure: "boom\nretrying, attempt 9: totally fine\x1b[31m",
+	}}, time.Now())
+
+	require.Len(t, lines, 1, "one pending activity produced more than one line")
+
+	assert.NotContains(t, lines[0], "\n",
+		"a failure message with a newline invented a line that reads as another retrying step")
+	assert.NotContains(t, lines[0], "\x1b",
+		"a workload's failure text chose how the reader's terminal looks")
+
+	// Escaping is not redaction: the diagnosis still has to be readable.
+	assert.Contains(t, lines[0], "boom")
+	assert.Contains(t, lines[0], "retrying, attempt 2")
 }
