@@ -42,12 +42,19 @@ boolean. So inside a `for_each` the loop's binding is in scope —
 instead of all ten thousand — and a condition cannot mean something different
 here than it would written on the step.
 
-It is compiled when you type it, not at each arrival. A malformed expression is
-refused there and then, with nothing set: a breakpoint accepted broken looks
-armed and never fires, which is the failure with no symptom. A condition that
-*evaluates* to an error stops the run and says why, for the same reason — a
-debugger that waved a run past a gate it could not evaluate would be deciding
-"no" on the strength of not knowing.
+It is compiled when you type it, not at each arrival: a malformed expression is
+refused there and then, with nothing set, and so is one that cannot type-check
+or is not a boolean. A breakpoint accepted broken looks armed and never fires,
+which is a failure with no symptom.
+
+A condition that cannot be *evaluated* at some arrival does not hold the run
+there, and says so once. That case is ordinary rather than exceptional: a step
+id is unique within a visibility domain rather than within a file, so two
+sibling loops may each have a body step called `page`, and a condition written
+about one of them cannot be answered in the other. Not holding the run is what
+keeps `break page if total == 3` from parking you in the loop you were not
+debugging — and the notice is what keeps a condition that can never be answered
+from looking like one whose answer was always no.
 
 Over MCP this is the difference between reachable and not. A script is bounded
 at a hundred commands, so `break charge if item.id == "x"` then `continue` is

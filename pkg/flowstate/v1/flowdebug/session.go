@@ -311,9 +311,9 @@ type Session struct {
 	until       string
 	breakpoints map[string]breakpoint
 
-	// notedUnbound remembers which breakpoints have already reported an
-	// unbound condition name, so the notice is one line rather than one per
-	// iteration. See [Session.noteUnbound].
+	// notedUnbound remembers which breakpoints have already reported a
+	// condition they could not evaluate, so the notice is one line rather than
+	// one per iteration. See [Session.noteDeclined].
 	notedUnbound map[string]struct{}
 	// script records accepted commands, in order, for replay, and scriptBytes
 	// is what they weigh — see [MaxScriptBytes], which the count bound beside
@@ -633,10 +633,6 @@ func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) bo
 type breakpoint struct {
 	source    string
 	condition *v1.Value
-
-	// names are what the condition needs bound to be a question about a scope
-	// at all. See [Session.breakpointHolds].
-	names []string
 }
 
 // breakpointHolds answers whether an arrival at a breakpoint should stop.
@@ -663,37 +659,42 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 		return true
 	}
 
-	// A step id names a *visibility domain*, not a step: two sibling loops may
-	// each declare a body step called `page`, and this map is keyed by id, so
-	// one `break page if total == 3` is a breakpoint at both. Where the
-	// condition's names are not bound, it is not a question about that
-	// occurrence — asking anyway errors, and the rule below would then stop
-	// the run in the first loop for a condition written about the second
-	// (Codex, #1116).
+	// # A condition that cannot be evaluated does not stop
 	//
-	// Answered by asking the activation rather than by reading the error text
-	// it would produce: what the condition needs is a property of the
-	// expression, known when it was accepted, and a message is a thing that
-	// changes between cel-go releases.
+	// A step id names a *visibility domain* rather than a step: two sibling
+	// loops may each declare a body step called `page`, and this map is keyed
+	// by id, so one `break page if total == 3` is a breakpoint at both. In the
+	// loop that binds no `total` the condition cannot be asked at all — a
+	// different thing from a question whose answer is no — and holding the run
+	// there parks it in the loop the author was not debugging (Codex, #1116).
 	//
-	// Not silent, because the fail-closed argument below still applies to a
-	// mistyped name: a condition that never fires anywhere must not look like
-	// one whose answer was always no. The notice prints once per breakpoint,
-	// so a run of ten thousand iterations says it once.
-	activation := scope.Activation(ctx)
-	for _, name := range at.names {
-		if _, bound := activation.ResolveName(name); !bound {
-			s.noteUnbound(id, name)
-
-			return false
-		}
-	}
-
+	// An earlier version answered that by requiring every name the condition
+	// reads to be bound before evaluating. That was wrong in both directions
+	// at once, which is what settled this design. Too strict:
+	// `n == 3 || fallback == 4` is true whenever `n` is 3, because CEL
+	// short-circuits, and a preflight over both names declined it. Too weak:
+	// `steps.setup.ok` reads the root `steps`, which resolves everywhere, so
+	// the check passed and evaluation failed on the member anyway. No set of
+	// names satisfies both, because *which references a condition needs* is a
+	// question only the evaluator can answer: it depends on the values.
+	//
+	// So the evaluator answers it. An error means this occurrence could not
+	// answer, and the run is not held here.
+	//
+	// That reverses this change's first fail-closed reading, and the notice is
+	// what makes the reversal safe. The argument for stopping was that a
+	// breakpoint which looks armed and never fires is a failure with no
+	// symptom — true, and it is the *silence* that makes it so rather than the
+	// not-stopping. A declined arrival says why, once per breakpoint, so a
+	// mistyped name reports and never fires while a condition about a sibling
+	// domain reports and fires where it belongs. Stopping bought nothing the
+	// notice does not, and cost a hold in the wrong loop on every legal
+	// workflow that reuses an id.
 	holds, err := v1.EvalConditionInScope(ctx, at.condition, scope)
 	if err != nil {
-		s.printfTone(ToneWarning, "breakpoint at %s: %v (stopping, because a condition that cannot be evaluated cannot be trusted to say no)\n", id, err)
+		s.noteDeclined(id, err)
 
-		return true
+		return false
 	}
 
 	return holds
@@ -940,14 +941,18 @@ func (s *Session) sawStep(id string) {
 	s.seen[id] = struct{}{}
 }
 
-// noteUnbound reports, once per breakpoint, that a condition could not be
-// asked at a step because a name it reads is not bound there.
+// noteDeclined reports, once per breakpoint, that a condition could not be
+// evaluated at a step, so the run was not held there.
 //
 // Once, because the alternative is a line per arrival — and the case this
 // exists for is a loop, where that is a line per iteration. Once is enough to
 // tell a mistyped name from a condition about a different `page`: the first
 // never fires anywhere and says so, the second fires where it belongs.
-func (s *Session) noteUnbound(id, name string) {
+//
+// This notice is what makes not-stopping safe rather than silent — see
+// [Session.breakpointHolds], which reversed a fail-closed rule on the strength
+// of it.
+func (s *Session) noteDeclined(id string, err error) {
 	s.mu.Lock()
 	if s.notedUnbound == nil {
 		s.notedUnbound = map[string]struct{}{}
@@ -960,7 +965,7 @@ func (s *Session) noteUnbound(id, name string) {
 		return
 	}
 
-	s.printfTone(ToneWarning, "breakpoint at %s: %q is not bound here, so the condition is not asked at this step\n", id, name)
+	s.printfTone(ToneWarning, "breakpoint at %s: the condition could not be evaluated here, so the run was not held: %v\n", id, err)
 }
 
 // consoleEnded says why the command stream stopped, in words an author can

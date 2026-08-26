@@ -381,13 +381,13 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 	at := breakpoint{source: rest}
 	if conditional {
-		compiled, names, err := compileCondition(condition, scope)
+		compiled, err := compileCondition(condition, scope)
 		if err != nil {
 			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
 
 			return
 		}
-		at.condition, at.names = compiled, names
+		at.condition = compiled
 	}
 
 	s.mu.Lock()
@@ -459,18 +459,18 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 // A [v1.Value] holding a parsed expression, so that evaluating it is literally
 // [v1.EvalConditionInScope] — the engine's own function — rather than a second
 // implementation that could disagree with it.
-func compileCondition(expression string, scope *v1.Scope) (*v1.Value, []string, error) {
+func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
 	if expression == "" {
-		return nil, nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
+		return nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
 	}
 
 	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	ast, issues := env.Parse(expression)
 	if issues != nil && issues.Err() != nil {
-		return nil, nil, fmt.Errorf("parse condition: %w", issues.Err())
+		return nil, fmt.Errorf("parse condition: %w", issues.Err())
 	}
 
 	// Parsing is syntax only, so `1 + true` and `missing_function(n)` both
@@ -489,128 +489,22 @@ func compileCondition(expression string, scope *v1.Scope) (*v1.Value, []string, 
 	// diagnostic about a condition that will be perfectly valid when it fires.
 	checked, err := checkedInScope(env, ast)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// And it has to be a boolean, refused here rather than at the first
 	// arrival — the same shape `compileMustIn` uses for the other place this
 	// repository compiles an author's boolean rule (`constraints.go:238-245`).
 	if checked.OutputType() != cel.BoolType && checked.OutputType() != cel.DynType {
-		return nil, nil, fmt.Errorf("a condition must be a boolean, and this one is %s", checked.OutputType())
+		return nil, fmt.Errorf("a condition must be a boolean, and this one is %s", checked.OutputType())
 	}
 
 	parsed, err := cel.AstToParsedExpr(ast)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse condition: %w", err)
+		return nil, fmt.Errorf("parse condition: %w", err)
 	}
 
-	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, conditionNames(checked, parsed), nil
-}
-
-// conditionNames are the names a condition needs bound to be a question about
-// a scope at all.
-//
-// Two independent facts decide it, and each was learned by getting it wrong.
-//
-// Which references are *values* comes from the checker, not from syntactic
-// position: `total.startsWith("3")` reads `total` from the scope and
-// `math.abs(n)` reads `math` from nowhere, and those are the same shape. A
-// reference carrying overload ids is a function; one carrying only a name is a
-// variable (Codex, #1116).
-//
-// Which references are *free* comes from the parse tree, per node rather than
-// per name. `n == 3 && [1].exists(n, n == 1)` binds an `n` inside the macro
-// and reads a different `n` outside it, so excluding the name globally dropped
-// a genuinely free reference and reopened the sibling-loop stop this guard
-// exists for (Codex, #1116). The reference map is keyed by expression id, and
-// so is the scope walk, so the two are joined on the node rather than on the
-// spelling.
-func conditionNames(checked *cel.Ast, parsed *expr.ParsedExpr) []string {
-	free := map[int64]struct{}{}
-	collectFreeIdents(parsed.GetExpr(), map[string]int{}, free)
-
-	required := map[string]struct{}{}
-	for id, reference := range checked.NativeRep().ReferenceMap() {
-		if len(reference.OverloadIDs) > 0 || reference.Name == "" {
-			continue
-		}
-		if _, isFree := free[id]; !isFree {
-			continue
-		}
-		required[reference.Name] = struct{}{}
-	}
-
-	out := make([]string, 0, len(required))
-	for name := range required {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-
-	return out
-}
-
-// collectFreeIdents records the id of every identifier an expression reads
-// from outside itself.
-//
-// bound counts how many enclosing comprehensions bind each name, so a name
-// shadowed at one depth is still free at another — a count rather than a set
-// because macros nest, and `[1].exists(n, [2].exists(n, n == 2)) && n == 3`
-// has to leave the last `n` free while the middle one is not.
-func collectFreeIdents(e *expr.Expr, bound map[string]int, into map[int64]struct{}) {
-	switch kind := e.GetExprKind().(type) {
-	case *expr.Expr_IdentExpr:
-		if bound[kind.IdentExpr.GetName()] == 0 {
-			into[e.GetId()] = struct{}{}
-		}
-
-	case *expr.Expr_SelectExpr:
-		collectFreeIdents(kind.SelectExpr.GetOperand(), bound, into)
-
-	case *expr.Expr_CallExpr:
-		collectFreeIdents(kind.CallExpr.GetTarget(), bound, into)
-		for _, arg := range kind.CallExpr.GetArgs() {
-			collectFreeIdents(arg, bound, into)
-		}
-
-	case *expr.Expr_ListExpr:
-		for _, element := range kind.ListExpr.GetElements() {
-			collectFreeIdents(element, bound, into)
-		}
-
-	case *expr.Expr_StructExpr:
-		for _, entry := range kind.StructExpr.GetEntries() {
-			collectFreeIdents(entry.GetMapKey(), bound, into)
-			collectFreeIdents(entry.GetValue(), bound, into)
-		}
-
-	case *expr.Expr_ComprehensionExpr:
-		comprehension := kind.ComprehensionExpr
-
-		// The range and the accumulator's initial value are evaluated before
-		// the loop binds anything, so they are the enclosing scope's.
-		collectFreeIdents(comprehension.GetIterRange(), bound, into)
-		collectFreeIdents(comprehension.GetAccuInit(), bound, into)
-
-		// Every name the comprehension binds, which is a closed set of three:
-		// cel-go's own ComprehensionExpr exposes IterVar, IterVar2 and
-		// AccuVar and nothing else. Two-variable macros — `exists(i, v, …)`
-		// over a map or an indexed list — bind the second, and omitting it
-		// made a macro-local name look like a scope name the step had to
-		// have, so a true condition never fired (Codex, #1116).
-		//
-		// [comprehensionBindings] is where that set is written down, with a
-		// test that fails if the schema grows a fourth.
-		bindings := comprehensionBindings(comprehension)
-		for _, name := range bindings {
-			bound[name]++
-		}
-		collectFreeIdents(comprehension.GetLoopCondition(), bound, into)
-		collectFreeIdents(comprehension.GetLoopStep(), bound, into)
-		collectFreeIdents(comprehension.GetResult(), bound, into)
-		for _, name := range bindings {
-			bound[name]--
-		}
-	}
+	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, nil
 }
 
 // checkedInScope type-checks an expression against an environment extended
@@ -649,26 +543,6 @@ func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
 	}
 
 	return checked, nil
-}
-
-// comprehensionBindings are the names a comprehension binds for its body.
-//
-// One place, because two walks need the same answer and a list written twice
-// is how one of them comes to be missing a member — which is exactly how
-// IterVar2 went missing from one of them. An empty name is skipped rather than
-// bound: a one-variable macro leaves IterVar2 unset, and binding "" would
-// shadow nothing while making the count bookkeeping lie.
-func comprehensionBindings(comprehension *expr.Expr_Comprehension) []string {
-	all := []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()}
-
-	bindings := make([]string, 0, len(all))
-	for _, name := range all {
-		if name != "" {
-			bindings = append(bindings, name)
-		}
-	}
-
-	return bindings
 }
 
 // collectIdentifiers gathers every bare name an expression reads, for the
@@ -710,9 +584,9 @@ func collectIdentifiers(e *expr.Expr, into map[string]struct{}) {
 
 	case *expr.Expr_ComprehensionExpr:
 		comprehension := kind.ComprehensionExpr
-		for _, name := range comprehensionBindings(comprehension) {
-			into[name] = struct{}{}
-		}
+		into[comprehension.GetIterVar()] = struct{}{}
+		into[comprehension.GetIterVar2()] = struct{}{}
+		into[comprehension.GetAccuVar()] = struct{}{}
 		collectIdentifiers(comprehension.GetIterRange(), into)
 		collectIdentifiers(comprehension.GetAccuInit(), into)
 		collectIdentifiers(comprehension.GetLoopCondition(), into)

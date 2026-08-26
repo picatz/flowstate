@@ -994,24 +994,34 @@ func TestAConditionThatIsNeverTrueNeverStops(t *testing.T) {
 		"a condition no iteration satisfies is a breakpoint that never fires")
 }
 
-// TestABreakpointConditionThatErrorsStopsAndSaysWhy.
+// TestABreakpointConditionThatErrorsDoesNotHoldTheRun.
 //
-// Fail closed, read for a debugger: the component that allows when it cannot
-// decide is the one that lets a run proceed unattended past the point somebody
-// asked to hold it. A breakpoint that looks armed and silently never fires is
-// the outcome with no symptom, so an errored condition stops.
+// This assertion is the reverse of the one it replaces, and the reversal is
+// the point. The first design stopped on an errored condition, reading fail
+// closed as "a debugger that cannot decide must not let the run past". Two
+// findings showed that reading costs more than it buys: a condition is
+// legitimately unanswerable at a same-named step in a sibling loop, so
+// stopping parks the run where the author was not looking, on a workflow that
+// is entirely legal.
 //
-// `n.missing` parses — it is a field selection — and fails at evaluation,
-// which is exactly the shape that cannot be caught when `break` accepts it.
-func TestABreakpointConditionThatErrorsStopsAndSaysWhy(t *testing.T) {
+// What made stopping seem necessary was the fear of a breakpoint that looks
+// armed and never fires. That failure is the *silence*, not the not-stopping,
+// and the notice removes it: an author sees which arrivals declined and why.
+//
+// `n.missing` parses and fails at evaluation, which is exactly the shape that
+// cannot be caught when `break` accepts it.
+func TestABreakpointConditionThatErrorsDoesNotHoldTheRun(t *testing.T) {
 	t.Parallel()
 
-	out, ran := loopingRun(t, 3, "break body if n.missing\ncontinue\ncontinue\ncontinue\ncontinue\n")
+	out, ran := loopingRun(t, 3, "break body if n.missing\ncontinue\n")
 
 	assert.Len(t, ran, 3)
-	assert.Contains(t, out, "break at body", "an unevaluatable condition holds the run rather than waving it past")
-	assert.Contains(t, out, "cannot be trusted to say no",
-		"and says why, or the stop looks like the condition having been true")
+	assert.NotContains(t, out, "break at body",
+		"an unanswerable condition does not hold the run")
+	assert.Contains(t, out, "could not be evaluated here",
+		"but it says so, which is what keeps a never-firing breakpoint from being silent")
+	assert.Equal(t, 1, strings.Count(out, "could not be evaluated here"),
+		"once per breakpoint, not once per iteration")
 }
 
 // TestABreakpointWithAMalformedConditionIsRefusedWhenItIsTyped.
@@ -1186,7 +1196,7 @@ func TestAConditionMayCallTheProfilesNamespacedFunctions(t *testing.T) {
 	}
 }
 
-// TestAConditionIsAskedOnlyWhereItsNamesAreBound (Codex, #1116).
+// TestAConditionFiresOnlyInTheDomainThatCanAnswerIt (Codex, #1116).
 //
 // A step id names a *visibility domain*, not a step: two sibling loops may
 // each declare a body step called `page`, which `flowfile` has a whole test
@@ -1196,10 +1206,11 @@ func TestAConditionMayCallTheProfilesNamespacedFunctions(t *testing.T) {
 // stop-on-error rule then held the run in the loop the author was not
 // debugging. Three stops where one was meant.
 //
-// The condition is now asked only where its names are bound. Where they are
-// not it is not a question about that occurrence at all, which is a different
-// thing from a question whose answer is no.
-func TestAConditionIsAskedOnlyWhereItsNamesAreBound(t *testing.T) {
+// A condition that cannot be evaluated at an occurrence does not hold the run
+// there. That is not a question whose answer is no — it is not a question
+// about that occurrence at all, and the notice says so rather than leaving the
+// author to infer it.
+func TestAConditionFiresOnlyInTheDomainThatCanAnswerIt(t *testing.T) {
 	t.Parallel()
 
 	var console strings.Builder
@@ -1233,12 +1244,12 @@ func TestAConditionIsAskedOnlyWhereItsNamesAreBound(t *testing.T) {
 	out := console.String()
 
 	assert.Equal(t, 1, strings.Count(out, "break at page"),
-		"once, in the loop that binds the name the condition reads — not in the sibling that does not")
+		"once, in the loop that can answer the condition — not in the sibling that cannot")
 
 	// And it is not silent about the occurrences it declined to ask at, so a
 	// mistyped name still reports rather than looking like an answer of no.
-	assert.Contains(t, out, `"total" is not bound here`)
-	assert.Equal(t, 1, strings.Count(out, "is not bound here"),
+	assert.Contains(t, out, "could not be evaluated here")
+	assert.Equal(t, 1, strings.Count(out, "could not be evaluated here"),
 		"once per breakpoint, not once per iteration — the case this exists for is a loop")
 }
 
@@ -1285,7 +1296,7 @@ func TestAReceiverVariableIsStillARequiredName(t *testing.T) {
 
 	assert.Equal(t, 1, strings.Count(out, "break at page"),
 		"a receiver has to resolve like any other name, so the first loop is declined rather than stopped in")
-	assert.Contains(t, out, `"total" is not bound here`)
+	assert.Contains(t, out, "could not be evaluated here")
 }
 
 // TestReplacingABreakpointRestoresItsNotice (Codex, #1116).
@@ -1307,10 +1318,11 @@ func TestReplacingABreakpointRestoresItsNotice(t *testing.T) {
 		"break body if absent_one == 1\nstep\nbreak body if absent_two == 2\ncontinue\n")
 
 	assert.Len(t, ran, 4)
-	assert.Contains(t, out, `"absent_one" is not bound here`,
-		"the first condition reports before it is replaced, which is what makes the state stale")
-	assert.Contains(t, out, `"absent_two" is not bound here`,
-		"and the replacement gets its own notice rather than inheriting the first's")
+	assert.Equal(t, 2, strings.Count(out, "could not be evaluated here"),
+		"the first condition reports before it is replaced, and the replacement reports too — "+
+			"one notice each rather than the first's carried over")
+	assert.Contains(t, out, "absent_two",
+		"and the replacement's own failure is what the second notice names")
 }
 
 // TestAMacroBindingDoesNotHideAnOuterNameOfTheSameSpelling (Codex, #1116).
@@ -1358,7 +1370,7 @@ func TestAMacroBindingDoesNotHideAnOuterNameOfTheSameSpelling(t *testing.T) {
 
 	assert.Equal(t, 1, strings.Count(out, "break at page"),
 		"the outer `n` is a required name despite the macro binding one too")
-	assert.Contains(t, out, `"n" is not bound here`,
+	assert.Contains(t, out, "could not be evaluated here",
 		"and the loop that cannot answer says so")
 }
 
@@ -1378,6 +1390,85 @@ func TestATwoVariableMacroBindsBothOfItsVariables(t *testing.T) {
 	assert.Len(t, ran, 6)
 	assert.Equal(t, 1, strings.Count(out, "break at body"),
 		"the macro's second variable is the macro's, not a name the step must bind")
-	assert.NotContains(t, out, "is not bound here",
+	assert.NotContains(t, out, "could not be evaluated here",
 		"so nothing is declined for a name the expression provides itself")
+}
+
+// TestAConditionShortCircuitsThroughAnUnboundName (Codex, #1116).
+//
+// `n == 3 || fallback == 4` is true whenever `n` is 3, because CEL
+// short-circuits and never looks at `fallback`. A preflight requiring every
+// name a condition mentions declined it at every arrival, so a true condition
+// never fired.
+//
+// This is half of what settled the design. Which references a condition
+// actually needs depends on the *values*, so it is a question only the
+// evaluator can answer, and any answer computed before evaluation is wrong in
+// one direction or the other.
+func TestAConditionShortCircuitsThroughAnUnboundName(t *testing.T) {
+	t.Parallel()
+
+	out, ran := loopingRun(t, 6, "break body if n == 3 || fallback == 4\ncontinue\ncontinue\n")
+
+	assert.Len(t, ran, 6)
+	assert.Equal(t, 1, strings.Count(out, "break at body"),
+		"the left side is true at n == 3, and CEL never reaches the unbound name — "+
+			"which a preflight over both names made impossible")
+
+	// The iterations where `n` is not 3 genuinely cannot answer: CEL has to
+	// reach the right-hand side there, and `fallback` is bound nowhere. Those
+	// decline, and say so once. Both halves are correct and only the evaluator
+	// can tell them apart, which is the whole argument for asking it.
+	assert.Equal(t, 1, strings.Count(out, "could not be evaluated here"),
+		"the arrivals that had to reach the unbound name decline, once between them")
+}
+
+// TestAConditionOnAMemberIsDeclinedWhereTheMemberIsMissing (Codex, #1116).
+//
+// The other half. `steps.setup.ok` reads the root `steps`, which resolves in
+// every scope — so a preflight over roots passed, and evaluation then failed
+// on the member anyway, holding the run at the first `page` for a condition
+// written about the second. Checking a root's binding never established that
+// the selected output exists.
+//
+// Letting the evaluator decide covers roots and members with one rule, because
+// it is the same rule: could this occurrence answer the question.
+func TestAConditionOnAMemberIsDeclinedWhereTheMemberIsMissing(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("break page if steps.setup.ok == \"setup\"\ncontinue\ncontinue\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	seen := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, seen))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	// `setup` runs between the two loops, so its outputs exist for the second
+	// loop's `page` and not for the first's.
+	staged := &v1.Workflow{Name: "staged", Steps: []*v1.Node{
+		{Id: "first", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList(1, 2), Iterator: "n",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+		markStep("setup"),
+		{Id: "second", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList(3, 4), Iterator: "n",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+	}}
+
+	_, err = v1.Run(ctx, staged)
+	require.NoError(t, err)
+
+	out := console.String()
+
+	assert.Equal(t, 2, strings.Count(out, "break at page"),
+		"both iterations of the second loop can answer; neither of the first's can")
+	assert.Contains(t, out, "could not be evaluated here",
+		"and the arrivals that could not answer say so")
 }
