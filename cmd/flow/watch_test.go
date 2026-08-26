@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1470,4 +1471,110 @@ func TestFollowRefusesAMisconfiguredCredentialSourceImmediately(t *testing.T) {
 	require.False(t, errors.As(err, &transient),
 		"a configuration error was classified as transient and would be retried for the outage allowance: %v", err)
 	require.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+}
+
+// TestAWatchReportsEveryChangeItWouldRender is the invariant behind the bug
+// rather than the bug, so a field added to a renderer and not to the identity
+// fails here instead of being found by the next reviewer.
+//
+// A watch decides whether to say anything from a reduced *identity* of the
+// answer, and separately renders lines from the answer itself. Those are two
+// readings of one message, and when the identity is short a field the renderer
+// reads, the loop computes a new line and never prints it. That is what
+// happened when the retry list gained a truncation notice: the reported prefix
+// can be identical attempt for attempt while the answer stops being the whole
+// of it, so nothing in the identity moved (Codex, #1121).
+//
+// The claim is one-directional on purpose. A poll may be reported as changed
+// for reasons that do not alter these lines — a status moving, a step
+// completing — and that is not a defect. What must never happen is the
+// rendering changing and the reader not being told.
+func TestAWatchReportsEveryChangeItWouldRender(t *testing.T) {
+	t.Parallel()
+
+	running := func(mutate func(*v1.GetResponse)) *v1.GetResponse {
+		response := &v1.GetResponse{
+			WorkflowId: "wf",
+			RunId:      "run",
+			Status:     v1.RunResponse_STATUS_RUNNING,
+			PendingActivities: []*v1.PendingActivity{
+				{Attempt: 2, LastFailure: "connection refused"},
+			},
+			Progress: &v1.RunProgress{
+				StepId: "deploy",
+				PendingWaits: []*v1.PendingWait{
+					{StepId: "approve", SignalName: "approval"},
+				},
+			},
+		}
+		mutate(response)
+
+		return response
+	}
+
+	for _, testCase := range []struct {
+		name   string
+		before *v1.GetResponse
+		after  *v1.GetResponse
+	}{
+		{
+			// The reported retries are identical; only the fact that there are
+			// more of them than this reports has changed.
+			name:   "retries become partial",
+			before: running(func(*v1.GetResponse) {}),
+			after:  running(func(r *v1.GetResponse) { r.PendingActivitiesTruncated = true }),
+		},
+		{
+			// The worse direction: a watch that goes on saying there are hidden
+			// retries after the list becomes complete.
+			name:   "retries stop being partial",
+			before: running(func(r *v1.GetResponse) { r.PendingActivitiesTruncated = true }),
+			after:  running(func(*v1.GetResponse) {}),
+		},
+		{
+			// The same hole one field over, which predates the retries' one.
+			name:   "gates become partial",
+			before: running(func(*v1.GetResponse) {}),
+			after:  running(func(r *v1.GetResponse) { r.Progress.PendingWaitsTruncated = true }),
+		},
+		{
+			name:   "gates stop being partial",
+			before: running(func(r *v1.GetResponse) { r.Progress.PendingWaitsTruncated = true }),
+			after:  running(func(*v1.GetResponse) {}),
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newWatchState("wf", nil)
+			state.Absorb(observed, testCase.before, nil)
+
+			was := append(slices.Clone(state.Pending()), state.Waits()...)
+			progress := state.Absorb(observed, testCase.after, nil)
+			now := append(slices.Clone(state.Pending()), state.Waits()...)
+
+			require.False(t, slices.Equal(was, now),
+				"this case renders identically before and after, so it cannot detect "+
+					"an identity that is short a field:\n%v", now)
+
+			require.True(t, progress.Changed,
+				"the watch computed different lines and reported nothing, so a reader "+
+					"watching this run is shown:\n  %v\nwhile the answer says:\n  %v",
+				was, now)
+		})
+	}
+
+	// And the other side of it, so "report everything" is not satisfied by
+	// reporting every poll: an answer that has not moved is not news.
+	t.Run("nothing moved", func(t *testing.T) {
+		t.Parallel()
+
+		state := newWatchState("wf", nil)
+		state.Absorb(observed, running(func(*v1.GetResponse) {}), nil)
+
+		progress := state.Absorb(observed, running(func(*v1.GetResponse) {}), nil)
+		require.False(t, progress.Changed,
+			"an unchanged answer was reported as news, so a watch would repeat itself "+
+				"on every poll")
+	})
 }
