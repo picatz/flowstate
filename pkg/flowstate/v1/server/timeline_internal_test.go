@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	enumspb "go.temporal.io/api/enums/v1"
+	enums "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
 	sdkpb "go.temporal.io/api/sdk/v1"
@@ -36,7 +36,7 @@ func scheduledEvent(t *testing.T, id int64, label string) *historypb.HistoryEven
 
 	return &historypb.HistoryEvent{
 		EventId:      id,
-		EventType:    enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
+		EventType:    enums.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
 		UserMetadata: &sdkpb.UserMetadata{Summary: payload},
 		Attributes: &historypb.HistoryEvent_ActivityTaskScheduledEventAttributes{
 			ActivityTaskScheduledEventAttributes: &historypb.ActivityTaskScheduledEventAttributes{},
@@ -49,7 +49,7 @@ func scheduledEvent(t *testing.T, id int64, label string) *historypb.HistoryEven
 func startedEvent(id, scheduled int64, attempt int32, last *failurepb.Failure) *historypb.HistoryEvent {
 	return &historypb.HistoryEvent{
 		EventId:   id,
-		EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_STARTED,
+		EventType: enums.EVENT_TYPE_ACTIVITY_TASK_STARTED,
 		Attributes: &historypb.HistoryEvent_ActivityTaskStartedEventAttributes{
 			ActivityTaskStartedEventAttributes: &historypb.ActivityTaskStartedEventAttributes{
 				ScheduledEventId: scheduled,
@@ -100,7 +100,7 @@ func TestARetryIsReportedAsTheFailureThatCausedIt(t *testing.T) {
 	// Temporal does not record on it.
 	ended := server.timelineEntry(&historypb.HistoryEvent{
 		EventId:   12,
-		EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED,
+		EventType: enums.EVENT_TYPE_ACTIVITY_TASK_COMPLETED,
 		Attributes: &historypb.HistoryEvent_ActivityTaskCompletedEventAttributes{
 			ActivityTaskCompletedEventAttributes: &historypb.ActivityTaskCompletedEventAttributes{
 				ScheduledEventId: 5,
@@ -127,7 +127,7 @@ func TestARetryAfterATimeoutSaysItTimedOut(t *testing.T) {
 		Message: "activity StartToClose timeout",
 		FailureInfo: &failurepb.Failure_TimeoutFailureInfo{
 			TimeoutFailureInfo: &failurepb.TimeoutFailureInfo{
-				TimeoutType: enumspb.TIMEOUT_TYPE_START_TO_CLOSE,
+				TimeoutType: enums.TIMEOUT_TYPE_START_TO_CLOSE,
 			},
 		},
 	}), inFlight)
@@ -177,4 +177,46 @@ func TestTheAnswerStopsAgainstItsByteBudget(t *testing.T) {
 	assert.True(t, timelineFits(maxTimelineBytes-100, 100, 1), "an entry that exactly fills the budget was refused")
 	assert.False(t, timelineFits(maxTimelineBytes-100, 101, 1), "an entry past the budget was accepted")
 	assert.False(t, timelineFits(maxTimelineBytes, 1, 1))
+}
+
+// TestASegmentThatContinuedAsNewIsClosed pins the one place a timeline must
+// disagree with [runStatus], and the reason.
+//
+// [runStatus] maps CONTINUED_AS_NEW to STATUS_RUNNING deliberately: callers
+// address *workloads*, and a workload that continued as new is still going.
+// A timeline is per segment, and a segment that continued as new is finished —
+// it must end with the event saying so. Borrowing the workload-level answer
+// made the completeness check silently inapplicable to exactly the segments the
+// predecessor pointers had just made reachable (Codex, #1119).
+//
+// Both directions are asserted here rather than one, because the divergence is
+// the point: a future reader "unifying" these two answers would be undoing a
+// decision, and this fails when they do.
+func TestASegmentThatContinuedAsNewIsClosed(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, segmentClosed(enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW),
+		"a segment that handed over to a successor is finished, and its history must "+
+			"reach the event saying so — a walk that stops short of one is short")
+
+	assert.Equal(t, v1.RunResponse_STATUS_RUNNING,
+		runStatus(enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW),
+		"the workload-level answer changed, so the two questions no longer diverge and "+
+			"segmentClosed has nothing left to be")
+
+	// Everything a run can be, decided. A status Temporal adds later reads as
+	// closed, which is the safe direction: a spurious truncation costs a round
+	// trip, and the other way round is a prefix presented as a whole account.
+	for status, closed := range map[enums.WorkflowExecutionStatus]bool{
+		enums.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED:      false,
+		enums.WORKFLOW_EXECUTION_STATUS_RUNNING:          false,
+		enums.WORKFLOW_EXECUTION_STATUS_COMPLETED:        true,
+		enums.WORKFLOW_EXECUTION_STATUS_FAILED:           true,
+		enums.WORKFLOW_EXECUTION_STATUS_CANCELED:         true,
+		enums.WORKFLOW_EXECUTION_STATUS_TERMINATED:       true,
+		enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW: true,
+		enums.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:        true,
+	} {
+		assert.Equal(t, closed, segmentClosed(status), "status %s", status)
+	}
 }

@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
-	enumspb "go.temporal.io/api/enums/v1"
+	enums "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"google.golang.org/protobuf/proto"
 
@@ -155,7 +155,7 @@ func (s *FlowstateServer) GetTimeline(
 		// Never a long poll. Waiting for a new event would turn a read into a
 		// held connection, on the one verb meant to be safe to point an agent
 		// at unattended.
-		false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+		false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 
 	after := req.Msg.GetAfterEventId()
 	scanned := 0
@@ -225,17 +225,38 @@ func (s *FlowstateServer) GetTimeline(
 	// because the walk gave up on an empty page and reported nothing about it.
 	// The caller is told either way rather than handed a prefix that reads
 	// whole.
-	if !ended && isClosed(getWorkflowExecutionStatus(described)) {
+	if !ended && segmentClosed(described.GetWorkflowExecutionInfo().GetStatus()) {
 		out.Truncated = true
 	}
 
 	return connect.NewResponse(out), nil
 }
 
-// isClosed reports whether a run has finished, which is what makes "the history
-// must reach an ending event" a checkable claim.
-func isClosed(status v1.RunResponse_Status) bool {
-	return status != v1.RunResponse_STATUS_UNSPECIFIED && status != v1.RunResponse_STATUS_RUNNING
+// segmentClosed reports whether this execution has finished, which is what
+// makes "the history must reach an ending event" a checkable claim.
+//
+// Asked of Temporal's own status rather than of [runStatus]'s answer, and that
+// is the whole point of the function existing. [runStatus] maps
+// CONTINUED_AS_NEW to RUNNING deliberately and correctly: callers address
+// *workloads*, and a workload that continued as new is still going, so
+// reporting a segment as ended would answer a question about the workload with
+// a fact about its bookkeeping.
+//
+// A timeline asks the other question. It is per segment — that is what
+// [v1.GetTimelineResponse.NextRunId] and PreviousRunId are for — and a segment
+// that continued as new is finished, and must end with the event saying so.
+// Borrowing the workload-level answer here made the completeness check silently
+// inapplicable to exactly the segments the predecessor pointers had just made
+// reachable: an earlier segment read by run id, where a walk that stopped short
+// would come back looking whole (Codex, #1119).
+//
+// Anything that is not running is closed, rather than a list of the statuses
+// that are: a status Temporal adds later that means "finished" then reads as
+// finished, and the failure direction is a spurious truncation rather than a
+// prefix presented as an account.
+func segmentClosed(status enums.WorkflowExecutionStatus) bool {
+	return status != enums.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED &&
+		status != enums.WORKFLOW_EXECUTION_STATUS_RUNNING
 }
 
 // activityInFlight is what a walk knows about one scheduled activity until it
@@ -281,7 +302,7 @@ func (s *FlowstateServer) timelineEntry(
 	}
 
 	switch event.GetEventType() {
-	case enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
+	case enums.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_SCHEDULED
 		entry.Step = s.summaryText(event)
 		entry.ScheduledEventId = event.GetEventId()
@@ -296,27 +317,27 @@ func (s *FlowstateServer) timelineEntry(
 		// a reference here and nothing else about it.
 		inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step, attempt: 1}
 
-	case enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
+	case enums.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_COMPLETED
 		ended(event.GetActivityTaskCompletedEventAttributes().GetScheduledEventId())
 
-	case enumspb.EVENT_TYPE_ACTIVITY_TASK_FAILED:
+	case enums.EVENT_TYPE_ACTIVITY_TASK_FAILED:
 		attrs := event.GetActivityTaskFailedEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_FAILED
 		ended(attrs.GetScheduledEventId())
 		entry.Failure = boundedFailure(attrs.GetFailure().GetMessage())
 
-	case enumspb.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
+	case enums.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
 		attrs := event.GetActivityTaskTimedOutEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_TIMED_OUT
 		ended(attrs.GetScheduledEventId())
 		entry.Failure = boundedFailure(attrs.GetFailure().GetMessage())
 
-	case enumspb.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
+	case enums.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_CANCELED
 		ended(event.GetActivityTaskCanceledEventAttributes().GetScheduledEventId())
 
-	case enumspb.EVENT_TYPE_ACTIVITY_TASK_STARTED:
+	case enums.EVENT_TYPE_ACTIVITY_TASK_STARTED:
 		// Temporal schedules an activity once and starts it once per attempt,
 		// so this is the only event that says which try is running — and the
 		// only place an *ending* can learn it from either, which is why the
@@ -360,7 +381,7 @@ func (s *FlowstateServer) timelineEntry(
 			entry.Kind = v1.TimelineEntry_KIND_STEP_FAILED
 		}
 
-	case enumspb.EVENT_TYPE_TIMER_STARTED:
+	case enums.EVENT_TYPE_TIMER_STARTED:
 		entry.Kind = v1.TimelineEntry_KIND_TIMER_STARTED
 		entry.Step = s.summaryText(event)
 		// Recorded under this event's own id, which is what a TimerFired
@@ -369,14 +390,14 @@ func (s *FlowstateServer) timelineEntry(
 			inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step}
 		}
 
-	case enumspb.EVENT_TYPE_TIMER_FIRED:
+	case enums.EVENT_TYPE_TIMER_FIRED:
 		entry.Kind = v1.TimelineEntry_KIND_TIMER_FIRED
 		if work, ok := inFlight[event.GetTimerFiredEventAttributes().GetStartedEventId()]; ok {
 			entry.Step = work.label
 			delete(inFlight, event.GetTimerFiredEventAttributes().GetStartedEventId())
 		}
 
-	case enumspb.EVENT_TYPE_TIMER_CANCELED:
+	case enums.EVENT_TYPE_TIMER_CANCELED:
 		// Not a row: a cancelled timer is a wait that ended because the thing
 		// it was bounding happened, and the account already says that — the
 		// signal that answered a gate is right there. Forgotten, though, or a
@@ -385,7 +406,7 @@ func (s *FlowstateServer) timelineEntry(
 
 		return nil
 
-	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
+	case enums.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
 		// Named, never carrying its payload: a signal's payload is somebody's
 		// decision, and it is exactly the kind of thing a read surface must not
 		// spread. The name is the fact a reader needs — which gate was
@@ -393,16 +414,16 @@ func (s *FlowstateServer) timelineEntry(
 		entry.Kind = v1.TimelineEntry_KIND_SIGNAL_RECEIVED
 		entry.Step = event.GetWorkflowExecutionSignaledEventAttributes().GetSignalName()
 
-	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW:
+	case enums.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW:
 		entry.Kind = v1.TimelineEntry_KIND_RUN_CONTINUED
 
-	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED,
-		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED,
-		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED,
-		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
+	case enums.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED,
+		enums.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED,
+		enums.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED,
+		enums.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
 		entry.Kind = v1.TimelineEntry_KIND_RUN_ENDED
 
-	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
+	case enums.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
 		entry.Kind = v1.TimelineEntry_KIND_RUN_ENDED
 		entry.Failure = boundedFailure(event.GetWorkflowExecutionFailedEventAttributes().GetFailure().GetMessage())
 
