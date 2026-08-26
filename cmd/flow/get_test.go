@@ -463,9 +463,9 @@ func TestAPendingActivityLineSaysWhatItIsDoing(t *testing.T) {
 
 	now := time.Now()
 
-	lines := pendingActivityLines([]*v1.PendingActivity{
+	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 		{Attempt: 1, Phase: "reading the response"},
-	}, now)
+	}}, now)
 
 	require.Equal(t, []string{"retrying, attempt 1, reading the response"}, lines)
 
@@ -473,12 +473,12 @@ func TestAPendingActivityLineSaysWhatItIsDoing(t *testing.T) {
 	// describe attempts that are over. So the phase goes last, and the order is
 	// asserted rather than the presence of each part — a line that reported what a
 	// finished attempt is doing would read as a contradiction.
-	lines = pendingActivityLines([]*v1.PendingActivity{{
+	lines = pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
 		Attempt:                  3,
 		LastFailure:              "connection refused",
 		NextAttemptScheduledTime: timestamppb.New(now.Add(4 * time.Second)),
 		Phase:                    "requesting",
-	}}, now)
+	}}}, now)
 
 	require.Equal(t,
 		[]string{"retrying, attempt 3: connection refused (next attempt in 4s), requesting"},
@@ -497,9 +497,9 @@ func TestAPendingActivityLineSaysWhatItIsDoing(t *testing.T) {
 func TestAPendingActivityWithNoPhaseSaysNothingAboutIt(t *testing.T) {
 	t.Parallel()
 
-	lines := pendingActivityLines([]*v1.PendingActivity{
+	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 		{Attempt: 2, LastFailure: "boom"},
-	}, time.Now())
+	}}, time.Now())
 
 	require.Equal(t, []string{"retrying, attempt 2: boom"}, lines)
 }
@@ -516,10 +516,10 @@ func TestAPendingActivityWithNoPhaseSaysNothingAboutIt(t *testing.T) {
 func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
 	t.Parallel()
 
-	lines := pendingActivityLines([]*v1.PendingActivity{{
+	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
 		Attempt:     2,
 		LastFailure: "boom\nretrying, attempt 9: totally fine\x1b[31m",
-	}}, time.Now())
+	}}}, time.Now())
 
 	require.Len(t, lines, 1, "one pending activity produced more than one line")
 
@@ -531,4 +531,44 @@ func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
 	// Escaping is not redaction: the diagnosis still has to be readable.
 	assert.Contains(t, lines[0], "boom")
 	assert.Contains(t, lines[0], "retrying, attempt 2")
+}
+
+// TestAPendingActivityListSaysWhenItIsPartial is the notice that existed on the
+// wire and reached nobody.
+//
+// The server bounds how many retrying steps it projects and reports
+// `pending_activities_truncated` beside them, exactly as it does for gates —
+// and no reader here read it, so a run retrying sixty-four steps printed four
+// lines and stopped, which reads as a run retrying four. That is the difference
+// between a slow run and a stuck one, and it is the whole question `flow get`
+// grew pending activities to answer (#1119).
+//
+// Both surfaces render through this function, so there is one test rather than
+// two.
+func TestAPendingActivityListSaysWhenItIsPartial(t *testing.T) {
+	t.Parallel()
+
+	partial := pendingActivityLines(&v1.GetResponse{
+		PendingActivities: []*v1.PendingActivity{
+			{Attempt: 2, LastFailure: "boom"},
+		},
+		PendingActivitiesTruncated: true,
+	}, time.Now())
+
+	require.Equal(t, []string{
+		"retrying, attempt 2: boom",
+		"and more retrying steps than this run reports",
+	}, partial, "a bounded list of retrying steps was presented as the whole of it")
+
+	// The negative direction, which is what keeps the notice meaningful: an
+	// answer that *is* complete must not carry it, or every run reads as one
+	// with more going on than it says.
+	whole := pendingActivityLines(&v1.GetResponse{
+		PendingActivities: []*v1.PendingActivity{
+			{Attempt: 2, LastFailure: "boom"},
+		},
+	}, time.Now())
+
+	require.Equal(t, []string{"retrying, attempt 2: boom"}, whole,
+		"a complete list of retrying steps claimed there were more")
 }

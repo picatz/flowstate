@@ -92,7 +92,7 @@ type Deps struct {
 
 	// PendingActivityLines renders what Temporal is retrying, one sentence
 	// each, against the moment the answer was observed.
-	PendingActivityLines func([]*v1.PendingActivity, time.Time) []string
+	PendingActivityLines func(*v1.GetResponse, time.Time) []string
 
 	// PendingWaitLines renders the gates a run is parked on, one sentence
 	// each, against the moment the answer was observed.
@@ -375,7 +375,7 @@ func (s *State) Absorb(at time.Time, response *v1.GetResponse, err error) Progre
 	s.status = response.GetStatus()
 	s.steps = steps
 	s.position = position
-	s.pending = s.deps.PendingActivityLines(response.GetPendingActivities(), at)
+	s.pending = s.deps.PendingActivityLines(response, at)
 	s.waits = s.deps.PendingWaitLines(response.GetProgress(), at)
 	s.pendingKeys = pendingKeys
 	s.waitKeys = waitKeys

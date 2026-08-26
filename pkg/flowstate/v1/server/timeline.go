@@ -346,11 +346,19 @@ func (s *FlowstateServer) timelineEntry(
 	// ended closes out an activity: it names the row from what the walk
 	// collected at the scheduling and at the latest start, then forgets it,
 	// which is what keeps the map to work in flight.
-	ended := func(scheduled int64) {
+	//
+	// attempted says whether this ending is about a *run* of the activity. It
+	// is, for everything that can only happen to something that started — a
+	// completion, a terminal failure — and the number is the latest start's,
+	// which is the one that was running, because Temporal runs one attempt at a
+	// time.
+	ended := func(scheduled int64, attempted bool) {
 		entry.ScheduledEventId = scheduled
 		if work, ok := inFlight[scheduled]; ok {
 			entry.Step = work.label
-			entry.Attempt = work.attempt
+			if attempted {
+				entry.Attempt = work.attempt
+			}
 			delete(inFlight, scheduled)
 		}
 	}
@@ -373,23 +381,44 @@ func (s *FlowstateServer) timelineEntry(
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_COMPLETED
-		ended(event.GetActivityTaskCompletedEventAttributes().GetScheduledEventId())
+		ended(event.GetActivityTaskCompletedEventAttributes().GetScheduledEventId(), true)
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_FAILED:
 		attrs := event.GetActivityTaskFailedEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_FAILED
-		ended(attrs.GetScheduledEventId())
+		ended(attrs.GetScheduledEventId(), true)
 		entry.Failure = s.failureMessage(attrs.GetFailure())
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
 		attrs := event.GetActivityTaskTimedOutEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_TIMED_OUT
-		ended(attrs.GetScheduledEventId())
+		// True here on the reading that a timeout with no start is a
+		// schedule-to-start timeout, where the attempt that timed out is the
+		// one being *scheduled* — a number the walk does not hold, since it
+		// only learns an attempt from a start. Reporting the last started
+		// attempt is wrong there and so is reporting none, so this keeps the
+		// existing answer rather than trading one wrong number for another;
+		// see the follow-up noted on #1119.
+		ended(attrs.GetScheduledEventId(), true)
 		entry.Failure = s.failureMessage(attrs.GetFailure())
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
+		attrs := event.GetActivityTaskCanceledEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_CANCELED
-		ended(event.GetActivityTaskCanceledEventAttributes().GetScheduledEventId())
+		// The one ending that can happen to an activity which is not running.
+		// A cancellation delivered while a step sits in retry backoff ends the
+		// *activity*, and the last attempt to have started ended some time
+		// earlier and ended by failing — so copying that number onto this row
+		// says attempt 3 was cancelled when attempt 3 had already failed.
+		//
+		// Asked of the event rather than inferred from the walk:
+		// `started_event_id` is "the id of the ACTIVITY_TASK_STARTED event this
+		// cancel confirmation corresponds to", so an unset one is the event
+		// itself saying it corresponds to no run of the activity. Then no
+		// attempt is claimed, which the schema already spells as zero — the
+		// same "this row is not about an attempt" a run-level failure uses
+		// (#1119).
+		ended(attrs.GetScheduledEventId(), attrs.GetStartedEventId() != 0)
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_STARTED:
 		// Temporal schedules an activity once and starts it once per attempt,

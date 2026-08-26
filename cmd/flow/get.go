@@ -111,7 +111,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// The same sentence `flow watch` shows, from the same function: a person who
 	// asks once and a person who watches are reading about one run, and two
 	// renderers for it would eventually describe it two ways.
-	for _, line := range pendingActivityLines(msg.GetPendingActivities(), time.Now()) {
+	for _, line := range pendingActivityLines(msg, time.Now()) {
 		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
 	}
 
@@ -311,7 +311,8 @@ func pendingWaitLines(progress *v1.RunProgress, now time.Time) []string {
 // *some* moment: `flow get` reads the clock as it prints, and a watch uses the time
 // the answer was observed — which is what makes the line a fact about the poll
 // rather than about when it happened to be rendered.
-func pendingActivityLines(pending []*v1.PendingActivity, now time.Time) []string {
+func pendingActivityLines(msg *v1.GetResponse, now time.Time) []string {
+	pending := msg.GetPendingActivities()
 	if len(pending) == 0 {
 		return nil
 	}
@@ -348,6 +349,24 @@ func pendingActivityLines(pending []*v1.PendingActivity, now time.Time) []string
 		}
 
 		lines = append(lines, line)
+	}
+
+	// And that these are some of the retrying steps rather than all of them,
+	// said in the same words and for the same reason [pendingWaitLines] says it
+	// about gates: a reader who takes a bounded list for the whole of it
+	// concludes a run is retrying four steps when it is retrying sixty-four,
+	// which is the difference between a slow run and a stuck one.
+	//
+	// The server has reported this since the bound landed and nothing here read
+	// it, so the notice existed on the wire and reached nobody — the shape a
+	// capability takes when it stops one surface short (#1119).
+	//
+	// Taking the whole response rather than the slice is what makes that hard
+	// to repeat: the count and the flag arrive together and are now passed
+	// together, exactly as the gate renderer takes the progress that carries
+	// both of its halves.
+	if msg.GetPendingActivitiesTruncated() {
+		lines = append(lines, "and more retrying steps than this run reports")
 	}
 
 	return lines
