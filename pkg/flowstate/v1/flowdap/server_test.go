@@ -192,7 +192,22 @@ func TestAnEditorCanStepARun(t *testing.T) {
 
 	c, _, finished := walked(t, "build", "test", "deploy")
 
-	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	// The capability matters here and nowhere else in this file, because this
+	// is the one test that sends `launch`: a client that does not claim it is
+	// released at its launch instead, since it has told us the request this
+	// would otherwise wait for is not coming. Claiming it and then sending
+	// `configurationDone` is what a conforming client does.
+	//
+	// Getting it wrong did not fail — it hung, and only at `-cpu=1`. Released
+	// at `launch`, the entry stop is emitted while the client is still reading
+	// the launch response, and [client.await] *skips* what it is not looking
+	// for: the stop was consumed by the wait for that response and then waited
+	// for forever. Eight of twenty iterations, and none at all on a
+	// multi-core run.
+	c.send(1, "initialize", map[string]any{
+		"adapterID":                        "flowstate",
+		"supportsConfigurationDoneRequest": true,
+	})
 
 	// Read in order, not skipped to. The `initialized` event is what tells a
 	// client it may start sending breakpoints, and the specification has it
@@ -223,7 +238,12 @@ func TestAnEditorCanStepARun(t *testing.T) {
 	c.await("response", "configurationDone")
 
 	// The run starts and stops at its first step, and the adapter says so
-	// without being asked again.
+	// without being asked to. A client waits for exactly this before it will
+	// enable a step button.
+	entry := c.await("event", "stopped")
+	assert.Equal(t, "entry", entry["body"].(map[string]any)["reason"],
+		"the first stop is not one anybody asked for, and DAP has a word for that")
+
 	c.send(4, "next", map[string]any{"threadId": 1})
 	c.await("response", "next")
 
@@ -272,7 +292,14 @@ func TestTheRunDoesNotStartBeforeTheClientHasConfigured(t *testing.T) {
 	server := flowdap.NewServer(session, c)
 	go func() { _ = server.Serve(t.Context()) }()
 
-	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	// Claiming the capability, which is what makes the wait below the right
+	// wait: a client that says it sends `configurationDone` is one whose
+	// `launch` is not the last word. See
+	// [TestAClientThatCannotConfigureIsReleasedAtLaunch] for the other client.
+	c.send(1, "initialize", map[string]any{
+		"adapterID":                        "flowstate",
+		"supportsConfigurationDoneRequest": true,
+	})
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 
@@ -323,69 +350,171 @@ func TestTheRunDoesNotStartBeforeTheClientHasConfigured(t *testing.T) {
 	}
 }
 
-// TestABreakpointIsAStepIdAndALineIsRefusedSaying is the honest half of the
-// seam's limitation.
+// TestAClientThatCannotConfigureIsReleasedAtLaunch is the other half of the
+// same ordering, and the direction that hangs forever.
 //
-// The debugger is handed steps and not files, so there is no line to break on.
-// A client still sends `setBreakpoints` for every source it has one in, and
-// refusing the request outright makes the session look broken — so each is
-// answered unverified, carrying the reason, which is where the person is
-// already looking.
-func TestABreakpointIsAStepIdAndALineIsRefusedSaying(t *testing.T) {
+// `configurationDone` is optional in the protocol: a client says at
+// `initialize` whether it sends one. Waiting for it unconditionally means a
+// client that does not send one never starts the run — the same never-starts
+// outcome the wait exists to prevent, reached from the other side. Its
+// breakpoints arrived before `launch`, which is the ordering the request
+// guarantees for clients that do send it.
+func TestAClientThatCannotConfigureIsReleasedAtLaunch(t *testing.T) {
 	t.Parallel()
 
-	c, _, finished := walked(t, "build", "test", "deploy")
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
 
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	// The capability it does *not* claim is the whole of the test.
 	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 
-	// A step id, which this adapter can honour.
-	c.send(2, "setFunctionBreakpoints", map[string]any{
-		"breakpoints": []map[string]any{{"name": "deploy"}},
+	c.send(2, "launch", map[string]any{})
+	c.await("response", "launch")
+
+	select {
+	case <-server.Launched():
+	case <-time.After(10 * time.Second):
+		t.Fatal("a client that cannot send configurationDone was left waiting for it, so " +
+			"its run never starts at all")
+	}
+}
+
+// TestTheFirstStopIsAnnouncedWithoutBeingAskedFor is what makes an editor's
+// buttons work.
+//
+// A DAP client considers the target *running* after launch and waits to be told
+// it stopped before enabling movement. An adapter that emits `stopped` only
+// from a movement it was asked for is therefore one no client will ever ask to
+// move: the person watches a run that is, as far as the editor can tell, still
+// going, with every button greyed out.
+//
+// This went unnoticed because the tests sent `continue` straight after
+// configuring, which is a thing no client does — so the run was always moved by
+// something that did not need to be told where it was (Codex, #1124). Nothing
+// is sent here after `configurationDone` at all.
+func TestTheFirstStopIsAnnouncedWithoutBeingAskedFor(t *testing.T) {
+	t.Parallel()
+
+	c, _, finished := walked(t, "build", "test")
+
+	c.send(1, "initialize", map[string]any{
+		"adapterID":                        "flowstate",
+		"supportsConfigurationDoneRequest": true,
 	})
-	set := c.await("response", "setFunctionBreakpoints")
-	points := set["body"].(map[string]any)["breakpoints"].([]any)
-	require.Len(t, points, 1)
-	assert.Equal(t, true, points[0].(map[string]any)["verified"],
-		"a breakpoint named after a real step was not accepted")
+	c.await("response", "initialize")
+	c.await("event", "initialized")
 
-	// A source line, which it cannot.
-	c.send(3, "setBreakpoints", map[string]any{
-		"source":      map[string]any{"path": "/tmp/workflow.yaml"},
-		"breakpoints": []map[string]any{{"line": 7}},
-	})
-	refused := c.await("response", "setBreakpoints")
-	assert.Equal(t, true, refused["success"],
-		"refusing the request outright makes the whole session look broken; the "+
-			"breakpoints are what carry the refusal")
-
-	lines := refused["body"].(map[string]any)["breakpoints"].([]any)
-	require.Len(t, lines, 1)
-	assert.Equal(t, false, lines[0].(map[string]any)["verified"])
-	assert.Contains(t, lines[0].(map[string]any)["message"], "step ids",
-		"an unverified breakpoint with no reason leaves a person waiting for a stop "+
-			"that cannot come")
-
-	c.send(4, "configurationDone", nil)
+	c.send(2, "configurationDone", nil)
 	c.await("response", "configurationDone")
 
-	// The breakpoint holds: continuing from the first stop lands on `deploy`
-	// rather than running to the end.
-	c.send(5, "continue", map[string]any{"threadId": 1})
-	c.await("response", "continue")
-	c.await("event", "stopped")
+	// Nothing further is sent. The stop has to arrive on its own.
+	stopped := c.await("event", "stopped")
+	body := stopped["body"].(map[string]any)
+	assert.Equal(t, "entry", body["reason"],
+		"the arrival stop is not one anybody asked for, and `entry` is DAP's word for it")
+	assert.Equal(t, float64(1), body["threadId"])
 
-	c.send(6, "stackTrace", map[string]any{"threadId": 1})
-	trace := c.await("response", "stackTrace")
-	frames := trace["body"].(map[string]any)["stackFrames"].([]any)
+	// And it is a real position, not a placeholder: the frame names the step
+	// the run is actually held at.
+	c.send(3, "stackTrace", map[string]any{"threadId": 1})
+	frames := c.await("response", "stackTrace")["body"].(map[string]any)["stackFrames"].([]any)
 	require.Len(t, frames, 1)
-	assert.Contains(t, frames[0].(map[string]any)["name"], "deploy",
-		"the run did not stop at the step the function breakpoint named")
+	assert.Contains(t, frames[0].(map[string]any)["name"], "build",
+		"the entry stop was announced somewhere other than where the run is held")
 
-	c.send(7, "continue", map[string]any{"threadId": 1})
+	c.send(4, "continue", map[string]any{"threadId": 1})
 	c.await("response", "continue")
 	<-finished
+}
+
+// TestTheEntryStopIsAnnouncedEvenWhenAClientMovesFirst is the entry stop's own
+// race, and the reason movement waits for it.
+//
+// Two things report a pause: the announcement on arrival, and a movement. A
+// client that moves before hearing the first stop lets them race for it — and
+// the movement wins by *consuming* the pause, so the announcement then finds
+// either a later pause or, on a run with nothing after it, no pause at all. The
+// arrival is never reported and the person is never told where the run began.
+//
+// A conforming client waits for `stopped` before it will move, so it never
+// produces this ordering. That is exactly why the guarantee has to be the
+// adapter's rather than the client's: a promise kept only by well-behaved peers
+// is not a promise, and this repository's rule is that a bound nothing reaches
+// is a bound nothing tests.
+//
+// One step, so that a movement which got there first leaves no second pause to
+// find, which is what turns a mislabelled stop into a missing one. Iterations,
+// because a window is a probability: the shutdown race on #1122 needed two
+// thousand attempts before it showed twice in three runs, and two hundred
+// showed none.
+func TestTheEntryStopIsAnnouncedEvenWhenAClientMovesFirst(t *testing.T) {
+	t.Parallel()
+
+	for attempt := range 60 {
+		session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+		require.NoError(t, err)
+
+		c := newClient(t)
+
+		server := flowdap.NewServer(session, c)
+		go func() { _ = server.Serve(t.Context()) }()
+
+		scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+			StepValues: map[string]*v1.Node_Outputs{},
+		})
+
+		ran := make(chan struct{})
+		go func() {
+			defer close(ran)
+			<-server.Launched()
+
+			node := &v1.Node{Id: "only", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+			_ = session.BeforeStep(t.Context(), node, scope)
+
+			// The run is over, and this package cannot see that for itself —
+			// so the owner says so, which is what releases the movement still
+			// waiting for a stop that is not coming.
+			_ = session.Close()
+			server.Finished()
+		}()
+
+		c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+		c.await("response", "initialize")
+		c.await("event", "initialized")
+
+		// Configured and moved in the same breath: the ordering a conforming
+		// client never produces, and the one the guarantee is for.
+		c.send(2, "configurationDone", nil)
+		c.send(3, "next", map[string]any{"threadId": 1})
+
+		stops := 0
+		for {
+			message := c.next()
+			if message["event"] == "stopped" {
+				stops++
+			}
+			if message["event"] == "terminated" {
+				break
+			}
+		}
+
+		require.Equal(t, 1, stops,
+			"attempt %d: the run reached one pause and the client was told about it %d "+
+				"times — a movement that arrived first consumed the arrival, so nobody "+
+				"was ever told where the run began", attempt, stops)
+
+		<-ran
+		_ = c.Close()
+	}
 }
 
 // TestAScopeAddressIsGoodForOnePauseOnly is why the adapter forgets its
@@ -409,6 +538,10 @@ func TestAScopeAddressIsGoodForOnePauseOnly(t *testing.T) {
 	c.await("event", "initialized")
 	c.send(2, "configurationDone", nil)
 	c.await("response", "configurationDone")
+
+	// The entry stop, which arrives without being asked for. See
+	// [TestTheFirstStopIsAnnouncedWithoutBeingAskedFor].
+	c.await("event", "stopped")
 
 	c.send(3, "next", map[string]any{"threadId": 1})
 	c.await("response", "next")
@@ -508,6 +641,10 @@ func TestAHugeScopeIsBoundedAndSaysWhatItDropped(t *testing.T) {
 	c.await("event", "initialized")
 	c.send(2, "configurationDone", nil)
 	c.await("response", "configurationDone")
+
+	// The entry stop, which arrives without being asked for. See
+	// [TestTheFirstStopIsAnnouncedWithoutBeingAskedFor].
+	c.await("event", "stopped")
 
 	c.send(3, "next", map[string]any{"threadId": 1})
 	c.await("response", "next")
@@ -629,6 +766,10 @@ func TestDisconnectingReleasesTheRun(t *testing.T) {
 	c.send(2, "configurationDone", nil)
 	c.await("response", "configurationDone")
 
+	// The entry stop, which arrives without being asked for. See
+	// [TestTheFirstStopIsAnnouncedWithoutBeingAskedFor].
+	c.await("event", "stopped")
+
 	c.send(3, "next", map[string]any{"threadId": 1})
 	c.await("response", "next")
 	c.await("event", "stopped")
@@ -711,6 +852,10 @@ func TestAnExpressionThatDoesNotCompileFailsTheRequestNotTheSession(t *testing.T
 	c.await("event", "initialized")
 	c.send(2, "configurationDone", nil)
 	c.await("response", "configurationDone")
+
+	// The entry stop, which arrives without being asked for. See
+	// [TestTheFirstStopIsAnnouncedWithoutBeingAskedFor].
+	c.await("event", "stopped")
 
 	c.send(3, "next", map[string]any{"threadId": 1})
 	c.await("response", "next")

@@ -63,10 +63,26 @@ type Server struct {
 	// stream is where responses and events go.
 	stream Stream
 
-	// launched reports that configurationDone has been seen, so the run may
+	// launched reports that the client has finished configuring, so the run may
 	// start. See [Server.Launched].
 	launched chan struct{}
 	once     sync.Once
+
+	// configures reports that the client said it can send `configurationDone`.
+	// A client that cannot is released at its `launch` instead, because
+	// otherwise it never sends the request this waits for and the run never
+	// starts at all (Copilot, #1124).
+	configures bool
+
+	// entered is closed once the run's *first* pause has been reported, or once
+	// it is established there will not be one.
+	//
+	// Movement waits on it, which is what keeps the entry stop first. A client
+	// only sends `next` after a `stopped`, so for a conforming one this is
+	// already true and the wait costs nothing; what it buys is that the two
+	// cannot race to report the same pause when something moves early.
+	entered   chan struct{}
+	enteredAt sync.Once
 
 	// program is what the client's launch configuration named, read once the
 	// launch request arrives and only meaningful after [Server.Launched].
@@ -86,17 +102,26 @@ func NewServer(session *flowdebug.Session, stream Stream) *Server {
 		stream:   stream,
 		scopes:   map[int]string{},
 		launched: make(chan struct{}),
+		entered:  make(chan struct{}),
 	}
 }
 
 // Launched is closed once the client has finished configuring — its
-// `configurationDone`, or its `launch` where it declared no interest in
-// configuring first.
+// `configurationDone`, or its `launch` where it told us at `initialize` that it
+// cannot send one.
 //
 // A caller starts the run when this fires and not before. Breakpoints arrive
 // *after* launch in DAP's own order, so a run started at the launch request is
 // a run already past the step somebody set a breakpoint on, and the person is
 // left watching a session that will never stop.
+//
+// The fallback is not a nicety. `configurationDone` is optional in the
+// protocol and a client announces at `initialize` whether it sends one, so
+// waiting unconditionally hangs forever against a client that does not — the
+// same never-starts outcome, reached from the other side. This comment claimed
+// the fallback before the code had it, which is the kind of doc that is worse
+// than none: it describes a behaviour a caller would then rely on
+// (Copilot, #1124).
 func (s *Server) Launched() <-chan struct{} { return s.launched }
 
 // Program is what the client's launch configuration named, or "" where it
@@ -169,6 +194,18 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	switch request.Command {
 	case "initialize":
+		// Whether this client will send `configurationDone`. It is optional in
+		// the protocol, so a client that says no has to be released at its
+		// `launch` or it waits for a request it is never going to make.
+		var client struct {
+			SupportsConfigurationDoneRequest bool `json:"supportsConfigurationDoneRequest"`
+		}
+		_ = json.Unmarshal(request.Arguments, &client)
+
+		s.mu.Lock()
+		s.configures = client.SupportsConfigurationDoneRequest
+		s.mu.Unlock()
+
 		// The `initialized` event is what tells a client it may start sending
 		// breakpoints, and it must follow the response rather than precede it.
 		s.reply(request, capabilities{
@@ -190,13 +227,23 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 
 		s.mu.Lock()
 		s.program = asked.Program
+		configures := s.configures
 		s.mu.Unlock()
 
 		s.reply(request, nil)
 
+		if !configures {
+			// This client told us at `initialize` that it does not send
+			// `configurationDone`, so this is the last thing it will say before
+			// expecting the run to be under way. Its breakpoints, if it has
+			// any, arrived before this — which is the ordering the request
+			// exists to guarantee for clients that do send it.
+			s.release(ctx)
+		}
+
 	case "configurationDone":
 		s.reply(request, nil)
-		s.once.Do(func() { close(s.launched) })
+		s.release(ctx)
 
 	case "setFunctionBreakpoints":
 		s.reply(request, s.setBreakpoints(request.Arguments))
@@ -222,6 +269,14 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 
 	case "evaluate":
 		s.evaluate(ctx, request)
+
+	case "pause":
+		// A run under this adapter is either stopped or between steps, and it
+		// stops at every step boundary on its own — so there is nothing to
+		// interrupt and the next stop is already coming. Answered rather than
+		// refused, because a client greys the button out on a failure and a
+		// person then has one fewer thing that works.
+		s.reply(request, nil)
 
 	case "next", "stepIn", "stepOut":
 		// One granularity: a run's steps are its steps, and there is nothing
@@ -251,6 +306,45 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	return false
 }
 
+// release starts the run and reports where it first stops.
+//
+// The stop is the half that was missing. A DAP client considers the target
+// *running* after launch and waits to be told it stopped before enabling its
+// movement buttons — so an adapter that only emits `stopped` from a movement it
+// was asked for is one no client will ever ask to move. The tests hid it by
+// sending `continue` straight after configuring, which is a thing a client does
+// not do (Codex, #1124).
+//
+// On its own goroutine because the first pause arrives whenever the run reaches
+// it, which is after this request has to be answered.
+func (s *Server) release(ctx context.Context) {
+	s.once.Do(func() {
+		close(s.launched)
+
+		go func() {
+			// Closed however this ends, so that movement is never waiting on a
+			// stop that is not coming: a workflow with no steps, or a run
+			// released and then disconnected, both reach here with no pause.
+			defer s.enteredAt.Do(func() { close(s.entered) })
+
+			at, err := s.session.WaitForPause(ctx)
+			if err != nil {
+				return
+			}
+
+			s.newStop()
+			s.emit("stopped", stoppedBody{
+				// DAP's own word for the stop a debugger makes on arrival,
+				// rather than one somebody asked for.
+				Reason:            "entry",
+				Description:       at.Kind,
+				ThreadID:          runThreadID,
+				AllThreadsStopped: true,
+			})
+		}()
+	})
+}
+
 // move runs one movement verb and reports where the run stopped.
 //
 // On its own goroutine, because a DAP request is answered immediately and the
@@ -258,6 +352,18 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 // would show a frozen UI for as long as the step takes, and one that timed out
 // would give up on a run that was working.
 func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug.Position, error), reason string) {
+	// After the entry stop, always. Both this and [Server.release] report a
+	// pause, and a client that moves before the first one is announced would
+	// otherwise have them race for the same pause and be told about it twice —
+	// which reads as a run that stopped, moved, and stopped again in the same
+	// place. A conforming client never gets here first, so this costs it
+	// nothing.
+	select {
+	case <-s.entered:
+	case <-ctx.Done():
+		return
+	}
+
 	at, err := step(ctx)
 	if err != nil {
 		if errors.Is(err, flowdebug.ErrRunOver) {

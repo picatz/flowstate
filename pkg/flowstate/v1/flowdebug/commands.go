@@ -579,10 +579,12 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was
 // room.
 //
-// The one place that knows [MaxBreakpoints] and what a replacement means, so
-// that the prompt's `break` and [Session.SetBreakpoints] cannot come to
-// disagree about either — the bound especially, since a second copy of it is a
-// second number to move.
+// The one place that knows what *adding* one costs: whether there is room, and
+// that replacing an existing id is not an addition. [Session.SetBreakpoints]
+// answers the same question over a whole set instead, before it touches
+// anything, because a replacement that emptied the set and refilled it through
+// here would take the lock per entry and leave a window with no breakpoints in
+// it (#1124). Both read [MaxBreakpoints], which is the number, written once.
 func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

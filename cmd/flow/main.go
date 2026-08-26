@@ -3095,6 +3095,20 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	jwtCmd.GroupID = "development"
 	versionCmd.GroupID = "development"
 
+	// The four that had fallen through, found by the test that now refuses to
+	// let one fall through again (TestEveryCommandIsInAGroup). Cobra files an
+	// ungrouped command under a bare "Commands" heading beside `help` and
+	// `completion` — which, as the note on `fix` below already says, is where
+	// an author stops looking. Nothing announces it: the command works, the
+	// help renders, and the only symptom is that nobody finds the verb.
+	//
+	// `plugins` and `timeline` read something a workflow produced, so they go
+	// where the rest of that reading is. `mcp` and `dap` serve a protocol on
+	// stdio for a tool to drive, which is `lsp`'s group exactly.
+	pluginsCmd.GroupID = "workflow"
+	timelineCmd.GroupID = "workflow"
+	mcpCmd.GroupID = "development"
+
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(validateCmd)
@@ -3182,7 +3196,13 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 
 	runCmd.AddCommand(runLocalCmd)
 	rootCmd.AddCommand(lspCmd)
-	rootCmd.AddCommand(newDAPCommand())
+
+	// Beside `lsp`, which is the other verb an editor launches and a person
+	// almost never does: one answers questions about the file, this one steps
+	// the run.
+	dapCmd := newDAPCommand()
+	dapCmd.GroupID = "development"
+	rootCmd.AddCommand(dapCmd)
 	rootCmd.AddCommand(keysCmd)
 	rootCmd.AddCommand(jwtCmd)
 	rootCmd.AddCommand(versionCmd)

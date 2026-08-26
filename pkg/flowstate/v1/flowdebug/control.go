@@ -360,6 +360,32 @@ func (s *Session) waitForPause(ctx context.Context, after uint64) (Position, err
 	}
 }
 
+// WaitForPause returns the pause the session is holding, waiting for one if it
+// is not holding a pause now.
+//
+// The exported face of the wait the movement verbs already do, for the front
+// that has to observe a stop *it did not cause*. A debug adapter is that front:
+// a client starts a run and then waits to be told where it stopped, so the
+// first pause — the one nobody stepped into — has to be reportable. Without
+// this the adapter can only announce a stop it asked for, and an editor sits
+// with its step buttons disabled watching a run that is, as far as it can tell,
+// still going (Codex, #1124).
+//
+// It returns immediately where the session is already paused, because "wait
+// until stopped" and "where is it stopped" are the same question asked at two
+// moments and a caller cannot know which one it is asking. [ErrRunOver] once
+// the session closes, for the reason that error exists: this package cannot see
+// a run end, so a session that finished without stopping again is answered
+// rather than waited on forever.
+func (s *Session) WaitForPause(ctx context.Context) (Position, error) {
+	// Generation zero: any pause at all satisfies it. A pause increments the
+	// counter on the way in and again on the way out, so a session between
+	// steps has a non-zero generation and no scope, and the wait continues —
+	// which is what makes this "the pause it is holding" rather than "the last
+	// one it held".
+	return s.waitForPause(ctx, 0)
+}
+
 // SetBreakpoints replaces the session's breakpoints with the named step ids,
 // from any goroutine and whether or not a run is under way.
 //
@@ -393,18 +419,32 @@ func (s *Session) SetBreakpoints(ids []string) error {
 		}
 	}
 
+	// One critical section, and that is the correctness of the method rather
+	// than a tidiness. The first draft emptied the set under the lock, released
+	// it, and then re-added each id through [Session.holdBreakpoint] — which
+	// takes the lock per entry, so a run stepping concurrently could look up a
+	// step in the window between and find an empty or half-rebuilt set. A step
+	// reached there passes a breakpoint the client was just told was installed,
+	// and a run that does not come back that way never stops at all
+	// (Copilot and Codex, #1124, the same finding from both).
+	//
+	// "It replaces" therefore has to be true from every other goroutine's point
+	// of view and not only from this one's: an id in the old set *and* the new
+	// one is never absent, because nothing observes the set between the clear
+	// and the fill.
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	clear(s.breakpoints)
 	clear(s.notedUnbound)
-	s.mu.Unlock()
 
 	for _, id := range ids {
-		if !s.holdBreakpoint(id, breakpoint{source: id}) {
-			// Unreachable given the bound above — the set was just emptied —
-			// and reported rather than ignored, because the alternative is a
-			// breakpoint a caller was told nothing about.
-			return fmt.Errorf("flowdebug: could not hold a breakpoint at %q", id)
-		}
+		// The bound was checked on the way in, over the whole slice, which is
+		// the whole-set analogue of the per-entry check [Session.holdBreakpoint]
+		// makes: this set replaces rather than adds, so what it may cost is
+		// decided before anything is touched. Duplicates only make the result
+		// smaller than the number checked.
+		s.breakpoints[id] = breakpoint{source: id}
 	}
 
 	return nil

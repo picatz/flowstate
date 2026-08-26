@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // `flow dap` driven the way an editor drives it: a real binary, real
@@ -138,7 +140,10 @@ outputs: {}
 
 	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
 
-	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+	conn.send("initialize", map[string]any{
+		"adapterID":                        "flowstate",
+		"supportsConfigurationDoneRequest": true,
+	})
 	initialize := conn.await("response", "initialize")
 	require.Equal(t, true, initialize["success"])
 	assert.Equal(t, true, initialize["body"].(map[string]any)["supportsFunctionBreakpoints"])
@@ -161,8 +166,13 @@ outputs: {}
 	conn.send("configurationDone", nil)
 	conn.await("response", "configurationDone")
 
-	// The run is under way and held at the breakpoint. Continuing from where it
-	// starts lands there.
+	// The run starts and announces where it stopped, with nothing asked of it.
+	// A client waits for exactly this before it will enable a step button, so
+	// an adapter that stayed silent here is one an editor never drives.
+	entry := conn.await("event", "stopped")
+	assert.Equal(t, "entry", entry["body"].(map[string]any)["reason"])
+
+	// Continuing from there lands on the breakpoint.
 	conn.send("continue", map[string]any{"threadId": 1})
 	conn.await("response", "continue")
 	conn.await("event", "stopped")
@@ -211,6 +221,105 @@ outputs: {}
 	conn.send("continue", map[string]any{"threadId": 1})
 	conn.await("response", "continue")
 	conn.await("event", "terminated")
+}
+
+// TestFlowDAPValidatesBeforeItRunsAnything is the side effect somebody cannot
+// take back.
+//
+// A Flowfile can parse and still be wrong — a step missing a required input is
+// this one, and it parses clean because the shape is legal and only the task's
+// own rules refuse it. A run started on such a file performs every step *before*
+// the bad one and then fails, and under this adapter that is an unstubbed local
+// run, so those steps are real. Every other verb that executes a Flowfile goes
+// through `loadWorkflow` for exactly this reason, and this one reached past it
+// (Codex, #1124).
+//
+// What the assertion turns on is that a `stopped` event *is* a run under way:
+// this debugger stops before every step, so a stop means the engine is at a
+// boundary and the person's next `continue` performs the step behind it. So the
+// claim is that the adapter says why nothing ran, and never says where it
+// stopped.
+//
+// The first fixture written for this proved nothing — an unknown task key is
+// refused by the parser, so it failed identically with the fix reverted. It was
+// the mutation that said so, which is the only reason this test is worth
+// anything.
+func TestFlowDAPValidatesBeforeItRunsAnything(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`
+edition: v2026.3
+name: partial
+steps:
+  - id: first
+    log:
+      message: "'this step would run'"
+  - id: second
+    http: {}
+outputs: {}
+`), 0o600))
+
+	// It parses. Only the task's own rules refuse it, which is what makes this
+	// a validation test rather than a parse test.
+	_, _, err := flowfile.ParseFile(workflow)
+	require.NoError(t, err, "the fixture is refused by the parser, so it cannot test validation")
+
+	diagnostics, err := flowfile.ValidateSourceFile(workflow)
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics, "the fixture validates, so there is nothing for this to catch")
+
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+
+	conn.send("initialize", map[string]any{
+		"adapterID":                        "flowstate",
+		"supportsConfigurationDoneRequest": true,
+	})
+	conn.await("response", "initialize")
+	conn.await("event", "initialized")
+
+	conn.send("launch", map[string]any{"program": workflow})
+	conn.await("response", "launch")
+
+	conn.send("configurationDone", nil)
+	conn.await("response", "configurationDone")
+
+	// The refusal reaches the debug console, which is the only place a person
+	// is looking — the adapter's own standard output is the protocol stream.
+	var said strings.Builder
+	for range 30 {
+		message := conn.read()
+
+		require.NotEqual(t, "stopped", message["event"],
+			"the adapter stopped a run on a workflow that cannot finish, so the person's "+
+				"next continue performs the earlier steps for a file that was never going "+
+				"to work")
+
+		if message["event"] != "output" {
+			continue
+		}
+
+		said.WriteString(message["body"].(map[string]any)["output"].(string))
+		if strings.Contains(said.String(), "http") {
+			break
+		}
+	}
+
+	assert.Contains(t, said.String(), `requires input "url"`,
+		"the console was not told why nothing ran:\n\n%s", said.String())
 }
 
 // TestFlowDAPAtATerminalSaysWhatItIs keeps `flow dap` from reading as a hang.

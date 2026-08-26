@@ -10,7 +10,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdap"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 )
 
@@ -114,10 +113,17 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 			return
 		}
 
-		workflow, _, err := flowfile.ParseFile(program)
+		// Validated, not merely parsed, and the difference is a side effect
+		// somebody cannot take back. A Flowfile can parse and still be wrong —
+		// an unknown task name is the standing example — and a run started on
+		// one performs every step before the bad one and *then* fails. This is
+		// an unstubbed local run, so those steps make real requests. Every
+		// other verb that executes a Flowfile goes through [loadWorkflow] for
+		// exactly this reason, and this one reached past it (Codex, #1124).
+		workflow, err := loadWorkflow(program)
 		if err != nil {
 			// The client's console is the only place a person will look, and
-			// the parse error is the whole answer to why nothing ran.
+			// the diagnostics are the whole answer to why nothing ran.
 			server.Output(fmt.Sprintf("flowdap: %v\n", err))
 
 			return
