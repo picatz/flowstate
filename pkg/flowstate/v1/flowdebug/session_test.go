@@ -1032,3 +1032,33 @@ func TestABreakpointWithAMalformedConditionIsRefusedWhenItIsTyped(t *testing.T) 
 	assert.Contains(t, out, "no breakpoints",
 		"which `breakpoints` confirms rather than leaving to inference")
 }
+
+// TestABareIfIsRefusedRatherThanArmingEveryIteration (Codex, #1116).
+//
+// `break body if` with nothing after it used to install an *unconditional*
+// breakpoint: an empty condition and an absent one were the same value, so the
+// guard that compiles a condition simply skipped. The result is the worst
+// reading of a typo — a stop on every iteration, which is exactly what typing
+// a condition is meant to avoid, arrived at by a command that looked accepted.
+func TestABareIfIsRefusedRatherThanArmingEveryIteration(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, script string }{
+		{name: "if with nothing after it", script: "break body if\nbreakpoints\ncontinue\n"},
+		{name: "if with only spaces after it", script: "break body if   \nbreakpoints\ncontinue\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, ran := loopingRun(t, 4, tc.script)
+
+			assert.Len(t, ran, 4)
+			assert.Contains(t, out, "`if` needs an expression",
+				"the refusal names what is missing")
+			assert.Contains(t, out, "no breakpoints",
+				"and nothing is set — an unconditional breakpoint here would stop on every iteration")
+			assert.NotContains(t, out, "break at body",
+				"which is the behaviour the typo used to produce")
+		})
+	}
+}

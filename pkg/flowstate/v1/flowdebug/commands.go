@@ -366,7 +366,7 @@ func (s *Session) showStep(node *v1.Node) {
 // condition gating whether something happens, and the parse is positional — a
 // step legally named `if` is still the id, since the first word always is.
 func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scope) {
-	id, condition := splitCondition(rest)
+	id, condition, conditional := splitCondition(rest)
 	if id == "" {
 		s.printfTone(ToneWarning, "break needs a step id: break <step-id> [if <expr>]\n")
 
@@ -374,7 +374,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 	}
 
 	at := breakpoint{source: rest}
-	if condition != "" {
+	if conditional {
 		compiled, err := compileCondition(condition, scope)
 		if err != nil {
 			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
@@ -412,14 +412,20 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // taking the first word and handing the rest on ([Session.dispatch]), and
 // `inspect` already treats its whole rest as an expression. Anything after the
 // `if` is the expression, spaces and all.
-func splitCondition(rest string) (id, condition string) {
+// The third return is what makes `break body if` refusable: without it an
+// empty condition and an absent one are the same value, so a trailing `if`
+// with nothing after it falls through to an *unconditional* breakpoint — a
+// typo that arms exactly the stop-on-every-iteration behaviour a condition is
+// typed to avoid, and the opposite of what this command promises about
+// malformed conditions (Codex, #1116).
+func splitCondition(rest string) (id, condition string, conditional bool) {
 	id, tail := split(strings.TrimSpace(rest))
 	keyword, expression := split(tail)
 	if keyword != "if" {
-		return id, ""
+		return id, "", false
 	}
 
-	return id, strings.TrimSpace(expression)
+	return id, strings.TrimSpace(expression), true
 }
 
 // compileCondition parses a breakpoint's condition against the run's own
