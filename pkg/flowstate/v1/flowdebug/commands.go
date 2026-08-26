@@ -362,6 +362,8 @@ const (
 	scopeGroupVars         = "vars"
 	scopeGroupWorkflowVars = "workflow vars"
 	scopeGroupInputs       = "inputs"
+	scopeGroupRun          = "run"
+	scopeGroupTrigger      = "trigger"
 )
 
 // scopeNames is what the paused run can reach, grouped as the prompt groups it.
@@ -415,7 +417,65 @@ func (s *Session) scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names 
 	// made the warning describe the code (Codex, #1120).
 	add(scopeGroupInputs, "inspect inputs.", sortedKeys(scope.GetInputs()))
 
+	// The last two roots, and the ones that are not keyed by anything in the
+	// scope: `run` and `trigger` are answered *whole* by the activation
+	// (`eval.go:349-358`), so their members come from that answer rather than
+	// from a list written here. A list would be a second spelling of
+	// [v1.RunRoot]'s and [v1.TriggerRoot]'s own field sets, which is the thing
+	// that drifts — and this collector has now been short a root twice, both
+	// times because it enumerated what it thought a run could name instead of
+	// asking (Codex, #1120).
+	//
+	// Always present, unlike the groups above, because these are facts about
+	// the run rather than contents of it: `run.local` is a real answer when it
+	// is false, and both roots resolve for every run there is.
+	activation := scope.Activation(context.Background())
+	add(scopeGroupRun, "inspect run.", rootNames(activation, v1.RunRoot))
+	add(scopeGroupTrigger, "inspect trigger.", rootNames(activation, v1.TriggerRoot))
+
 	return groups
+}
+
+// rootNames are the members of one whole-answered root, read out of the answer.
+//
+// [context.Background] is what builds the activation above, and it is correct
+// rather than convenient: these two roots are plain values, so resolving one
+// evaluates no stored expression and there is nothing for a context to bound.
+// The roots that *can* evaluate are keyed by the scope and are collected from
+// it directly, above.
+func rootNames(activation cel.Activation, root string) []string {
+	resolved, ok := activation.ResolveName(root)
+	if !ok {
+		return nil
+	}
+	value, ok := resolved.(ref.Val)
+	if !ok {
+		return nil
+	}
+
+	// The same conversion the answers themselves take, so a root's members are
+	// named here exactly as `inspect run.` renders them.
+	native, ok := redactedNative(value, nil)
+	if !ok {
+		return nil
+	}
+	members, ok := native.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	return sortedKeysOf(members)
+}
+
+// sortedKeysOf is [sortedKeys] for a map this package holds natively.
+func sortedKeysOf(m map[string]any) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return names
 }
 
 // namesLine renders one scope line's names, bounded by [MaxScopeNames].

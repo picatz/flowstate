@@ -619,3 +619,135 @@ func TestAPauseAnswersFromTheScopeItBeganWith(t *testing.T) {
 	<-done
 	require.NoError(t, <-held)
 }
+
+// TestAComposedStringIsWithheldFromTheStructuredAnswerToo is the second seam,
+// which the structured half was missing.
+//
+// A value redactor matches by *equality* — `flowtest`'s does
+// (`stub.go:935-963`) — so `"Bearer " + inputs.token` is not the secret and
+// passes it through whole. The rendered text never had that problem, because
+// the text redactor is a substring backstop over the whole rendering. So the
+// same expression withheld the token in prose and handed it over as a value
+// (Codex, #1120).
+func TestAComposedStringIsWithheldFromTheStructuredAnswerToo(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		text, value, err := s.Evaluate(t.Context(), `"Bearer " + inputs.token`)
+		require.NoError(t, err)
+
+		assert.NotContains(t, text, "hunter2")
+		require.NotNil(t, value)
+		assert.NotContains(t, fmt.Sprintf("%v", value.Value()), "hunter2",
+			"the secret left inside a larger string, which the equality half of the "+
+				"redaction cannot recognise and the substring half never saw")
+
+		// A key is material as much as a value is, so the walk covers both.
+		_, value, err = s.Evaluate(t.Context(), `{"tok-" + inputs.token: 1}`)
+		require.NoError(t, err)
+		require.NotNil(t, value)
+		assert.NotContains(t, fmt.Sprintf("%v", value.Value()), "hunter2",
+			"the secret left as a map key")
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	// Both seams as `flowtest` installs them: equality at the value, substring
+	// over the text. Neither alone covers a composed string.
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, "hunter2", "[redacted]")
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && text == "hunter2" {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Inputs = map[string]*v1.Value{"token": v1.NewLiteral("hunter2")}
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+	<-done
+}
+
+// TestScopeNamesEveryRootARunCanReach is the class rather than the instance.
+//
+// This collector has now been short a root twice — `inputs` in one round,
+// `run` and `trigger` in the next — both times because it enumerated what
+// somebody thought a run could name instead of asking. So the check is against
+// [v1.Catalog]'s own `ValueRoots`, the list the docs and the MCP surface are
+// derived from: a sixth root added anywhere fails here rather than being found
+// by the next reviewer (Codex, #1120).
+//
+// It asserts the join, not the listing. For each root there must be a group
+// whose every name [flowdebug.Session.Evaluate] resolves under that root, which
+// is a claim about the surfaces agreeing rather than about this one function.
+func TestScopeNamesEveryRootARunCanReach(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"build": {NamedValues: map[string]*v1.Value{"artifact": v1.NewLiteral("web.tar.gz")}},
+		},
+	})
+	scope.Inputs = map[string]*v1.Value{"environment": v1.NewLiteral("staging")}
+	scope.AmbientVars = map[string]*v1.Value{"registry": v1.NewLiteral("ghcr.io")}
+
+	roots := v1.Catalog().GetValueRoots()
+	require.NotEmpty(t, roots)
+
+	done := make(chan struct{})
+	console := &probing{steps: []string{"quit"}, before: func(s *flowdebug.Session) {
+		defer close(done)
+
+		groups, err := s.Scope()
+		require.NoError(t, err)
+
+		for _, root := range roots {
+			covered := false
+			for _, group := range groups {
+				if len(group.Names) == 0 {
+					continue
+				}
+				resolves := true
+				for _, name := range group.Names {
+					if _, _, evalErr := s.Evaluate(t.Context(), root+"."+name); evalErr != nil {
+						resolves = false
+
+						break
+					}
+				}
+				if resolves {
+					covered = true
+
+					break
+				}
+			}
+
+			assert.True(t, covered,
+				"a run can name %[1]q and `scope` lists no group under it, so an adapter "+
+					"cannot discover what `%[1]s.` reaches even though Evaluate answers it",
+				root)
+		}
+	}}
+
+	session, err := flowdebug.New(flowdebug.Options{Console: console, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	console.session = session
+
+	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+	<-done
+}

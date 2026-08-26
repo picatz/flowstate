@@ -177,7 +177,68 @@ func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.
 		return text, nil, nil
 	}
 
-	return text, v1.TypeAdapter.NativeToValue(native), nil
+	// The second seam, which the structured half was missing. A value redactor
+	// matches by *equality* — `flowtest`'s does (`stub.go:935-963`) — so a
+	// composed string like `"Bearer " + inputs.token` is not the secret and
+	// passes it through whole. The rendered text has never had that problem,
+	// because the text redactor is a substring backstop applied to the whole
+	// rendering; the structured answer got only the equality half, so the same
+	// expression withheld the token in prose and handed it over as a value
+	// (Codex, #1120).
+	//
+	// Both seams, then, exactly as [Session.SetValueRedactor] says there are
+	// two questions: is this the value, and does this text contain it.
+	return text, v1.TypeAdapter.NativeToValue(withheldLeaves(subject.redactText, native)), nil
+}
+
+// withheldLeaves is native with the text redactor applied to every string in
+// it, keys included.
+//
+// The traversal mirrors `flowtest`'s `redactSensitiveTree` and is deliberately
+// not shared with it: that one asks whether a value *is* the secret, this one
+// asks whether a string *contains* it, and the two live on opposite sides of an
+// import direction that serves neither (`flowtest` drives a session; a session
+// cannot reach back into it). What they must agree on is the shape they walk,
+// which is the two containers [v1.LiteralToGo] can produce.
+//
+// Unbounded on purpose, and this is the one place in this package where that is
+// the answer rather than an oversight. The value handed here has already been
+// through [cel.RefValueToValue] and [v1.LiteralToGo], both of which recurse
+// over this exact structure — so anything deep enough to be a problem is deep
+// enough to have been one before this function was reached, and a bound here
+// would be a bound nothing can reach, which CLAUDE.md is explicit is a bound
+// nothing tests.
+func withheldLeaves(redact func(string) string, native any) any {
+	if redact == nil {
+		return native
+	}
+
+	switch value := native.(type) {
+	case string:
+		return redact(value)
+
+	case map[string]any:
+		withheld := make(map[string]any, len(value))
+		for name, element := range value {
+			// Keys too. A sensitive value used as a key is the material just
+			// as much as one used as a value, which is the case
+			// `redactSensitiveTree` learned by being wrong about it first.
+			withheld[redact(name)] = withheldLeaves(redact, element)
+		}
+
+		return withheld
+
+	case []any:
+		withheld := make([]any, len(value))
+		for i, element := range value {
+			withheld[i] = withheldLeaves(redact, element)
+		}
+
+		return withheld
+
+	default:
+		return native
+	}
 }
 
 // withheld is err with the pause's text redactor applied to its message.
