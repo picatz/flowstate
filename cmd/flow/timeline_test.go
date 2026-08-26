@@ -205,3 +205,29 @@ func renderedTimeline(t *testing.T, resumed bool, msg *v1.GetTimelineResponse) s
 
 	return out.String() + errs.String()
 }
+
+// TestAnEmptyTruncatedAnswerIsNotPresentedAsComplete is the dead end the schema
+// documents, reaching a reader.
+//
+// A resumed request whose scan budget ran out before it reached the cursor comes
+// back with no entries and `truncated` set — deliberately, and it is a stopping
+// point rather than something to retry. Announcing an end there presents an
+// incomplete account as a complete one, which is the failure the truncation flag
+// exists to prevent (Codex, #1119).
+func TestAnEmptyTruncatedAnswerIsNotPresentedAsComplete(t *testing.T) {
+	t.Parallel()
+
+	deadEnd := renderedTimeline(t, true, &v1.GetTimelineResponse{Truncated: true})
+
+	assert.NotContains(t, deadEnd, "end of this run's account",
+		"an account that stopped short was announced as the end of the run's")
+	assert.NotContains(t, deadEnd, "recorded nothing yet")
+	assert.Contains(t, deadEnd, "nothing past here is readable",
+		"the one thing a caller needs to know here — that the same request will do "+
+			"the same thing — was not said")
+
+	// The complete continuation still reads as one, so this is about the flag
+	// rather than about empty answers.
+	ended := renderedTimeline(t, true, &v1.GetTimelineResponse{})
+	assert.Contains(t, ended, "end of this run's account")
+}

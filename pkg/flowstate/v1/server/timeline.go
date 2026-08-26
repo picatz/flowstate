@@ -575,14 +575,24 @@ func (s *FlowstateServer) decodedFailureMessage(failure *failurepb.Failure) stri
 	// own encoder, so a release that renamed either one fails there rather
 	// than quietly reporting every failure as empty.
 	var attributes struct {
-		Message    string `json:"message"`
-		StackTrace string `json:"stack_trace"`
+		Message    *string `json:"message"`
+		StackTrace string  `json:"stack_trace"`
 	}
 	if err := s.dataConverter.FromPayload(failure.GetEncodedAttributes(), &attributes); err != nil {
 		return unreadableFailure
 	}
 
-	return attributes.Message
+	// A pointer, because a plain string cannot tell an absent field from an
+	// empty one. `{}` and `{"message": null}` decode without error and leave
+	// it zero, so a corrupted or version-skewed record would read as an
+	// ordinary failure that happened to carry no message — which is a fact
+	// about the workload rather than about this deployment's ability to read
+	// it, and the wrong one (Codex, #1119).
+	if attributes.Message == nil {
+		return unreadableFailure
+	}
+
+	return *attributes.Message
 }
 
 // unreadableFailure is what a failure says when this deployment cannot read it.

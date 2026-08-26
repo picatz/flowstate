@@ -371,3 +371,48 @@ func TestAFailureRecordOfTheWrongShapeIsUnreadable(t *testing.T) {
 		"a record the SDK's own decode cannot read was reported as a diagnosis")
 	assert.Contains(t, got, "unavailable")
 }
+
+// TestAFailureRecordWithNoMessageFieldIsUnreadable is the presence half of the
+// shape check.
+//
+// A plain string field catches a `message` that is a number and not one that is
+// absent: `{}` and `{"message": null}` decode without error and leave it zero,
+// so a corrupted or version-skewed record reads as an ordinary failure that
+// carried no message. That is a fact about the workload rather than about this
+// deployment's ability to read it, and the wrong one (Codex, #1119).
+func TestAFailureRecordWithNoMessageFieldIsUnreadable(t *testing.T) {
+	t.Parallel()
+
+	server := mustNew(t, nil)
+
+	for name, record := range map[string]map[string]any{
+		"absent": {"stack_trace": ""},
+		"null":   {"message": nil, "stack_trace": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			payload, err := converter.GetDefaultDataConverter().ToPayload(record)
+			require.NoError(t, err)
+
+			got := server.failureMessage(&failurepb.Failure{
+				Message:           "Encoded failure",
+				EncodedAttributes: payload,
+			})
+
+			assert.Contains(t, got, "unavailable",
+				"a record with no message field read as a failure that carried no message")
+		})
+	}
+
+	// A message that is genuinely empty is a different fact and stays one: the
+	// field is there, and what it says is nothing.
+	payload, err := converter.GetDefaultDataConverter().ToPayload(
+		map[string]any{"message": "", "stack_trace": ""})
+	require.NoError(t, err)
+
+	assert.Empty(t, server.failureMessage(&failurepb.Failure{
+		Message:           "Encoded failure",
+		EncodedAttributes: payload,
+	}), "a failure whose message is empty was reported as unreadable")
+}

@@ -118,25 +118,34 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 
 // renderTimeline writes the account for a person.
 func renderTimeline(surface *ui.UI, resumed bool, msg *v1.GetTimelineResponse) {
-	// Two different facts, and only the caller knows which is which. An empty
-	// first answer means the run has done nothing yet; an empty *continuation*
-	// means the account ended at the cursor — which happens for real, because
-	// an answer that exactly fills its entry ceiling is reported as truncated
-	// whether or not anything follows it. Telling a caller who just read four
-	// pages that the run recorded nothing would be the command contradicting
-	// what it had already printed (Codex, #1119).
-	if len(msg.GetEntries()) == 0 {
+	// Three different facts behind one empty answer, and the truncation flag is
+	// what tells two of them apart.
+	//
+	// An empty first answer means the run has done nothing yet. An empty
+	// *continuation* means the account ended at the cursor — which happens for
+	// real, since an answer that exactly fills its entry ceiling is reported as
+	// truncated whether or not anything follows it. And an empty answer that is
+	// itself *truncated* is neither: it is the documented dead end, where the
+	// scan budget was spent before reaching the cursor.
+	//
+	// The last of those is reported below with everything else truncation has
+	// to say, so this stays quiet about it rather than announcing an end. An
+	// earlier version returned here and skipped that entirely, which presented
+	// an incomplete account as a complete one — the same defect this whole
+	// paragraph exists to prevent, introduced while fixing its sibling (Codex,
+	// #1119).
+	if len(msg.GetEntries()) == 0 && !msg.GetTruncated() {
 		if resumed {
 			fmt.Fprintln(surface.Err, "no further entries: that was the end of this run's account")
 		} else {
 			fmt.Fprintln(surface.Err, "this run has recorded nothing yet")
 		}
-
-		return
 	}
 
 	table := tabwriter.NewWriter(surface.Out, 0, 8, 2, ' ', 0)
-	fmt.Fprintln(table, "TIME\tWHAT\tSTEP\tDETAIL")
+	if len(msg.GetEntries()) > 0 {
+		fmt.Fprintln(table, "TIME\tWHAT\tSTEP\tDETAIL")
+	}
 
 	for _, entry := range msg.GetEntries() {
 		// Both of the last two columns carry text this process did not write —
