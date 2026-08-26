@@ -49,8 +49,10 @@ func newTimelineCommand() *cobra.Command {
 		Example: `# What did this run actually do?
 flow timeline flowstate-workflow-3f7c
 
-# Just the failures, for a script:
-flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure != null)'
+# Just the failures, for a script. Non-empty rather than non-null: this
+# command emits unpopulated fields, so every entry has a failure and a step
+# that succeeded carries it as the empty string.
+flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure != "")'
 
 # The next segment of a workload that continued as new:
 flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...
@@ -107,21 +109,34 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 		return writeJSON(surface, format, response.Msg)
 	}
 
-	renderTimeline(surface, response.Msg)
+	// Whether this answer continues one the caller already read, which decides
+	// what an empty answer means.
+	renderTimeline(surface, afterEventID > 0, response.Msg)
 
 	return nil
 }
 
 // renderTimeline writes the account for a person.
-func renderTimeline(surface *ui.UI, msg *v1.GetTimelineResponse) {
+func renderTimeline(surface *ui.UI, resumed bool, msg *v1.GetTimelineResponse) {
+	// Two different facts, and only the caller knows which is which. An empty
+	// first answer means the run has done nothing yet; an empty *continuation*
+	// means the account ended at the cursor — which happens for real, because
+	// an answer that exactly fills its entry ceiling is reported as truncated
+	// whether or not anything follows it. Telling a caller who just read four
+	// pages that the run recorded nothing would be the command contradicting
+	// what it had already printed (Codex, #1119).
 	if len(msg.GetEntries()) == 0 {
-		fmt.Fprintln(surface.Err, "this run has recorded nothing yet")
+		if resumed {
+			fmt.Fprintln(surface.Err, "no further entries: that was the end of this run's account")
+		} else {
+			fmt.Fprintln(surface.Err, "this run has recorded nothing yet")
+		}
+
+		return
 	}
 
 	table := tabwriter.NewWriter(surface.Out, 0, 8, 2, ' ', 0)
-	if len(msg.GetEntries()) > 0 {
-		fmt.Fprintln(table, "TIME\tWHAT\tSTEP\tDETAIL")
-	}
+	fmt.Fprintln(table, "TIME\tWHAT\tSTEP\tDETAIL")
 
 	for _, entry := range msg.GetEntries() {
 		// Both of the last two columns carry text this process did not write —

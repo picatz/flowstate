@@ -110,7 +110,7 @@ func TestTheRenderedTimelineKeepsEachEventToItsOwnRow(t *testing.T) {
 		},
 	}}
 
-	renderTimeline(surface, msg)
+	renderTimeline(surface, false, msg)
 
 	printed := out.String()
 
@@ -165,4 +165,43 @@ func TestTheJSONTimelineKeepsTheValueAsItIs(t *testing.T) {
 	require.Len(t, back.GetEntries(), 1)
 	assert.Equal(t, raw, back.GetEntries()[0].GetFailure(),
 		"the machine-readable answer no longer round-trips what the run produced")
+}
+
+// TestAnExhaustedContinuationDoesNotClaimTheRunDidNothing keeps the command
+// from contradicting what it has already printed.
+//
+// An answer that exactly fills its entry ceiling is reported as truncated
+// whether or not anything follows it, so a caller who resumes can legitimately
+// get an empty, complete page — after having read every entry the run has. The
+// two empty answers are different facts and only the caller knows which is
+// which (Codex, #1119).
+func TestAnExhaustedContinuationDoesNotClaimTheRunDidNothing(t *testing.T) {
+	t.Parallel()
+
+	empty := &v1.GetTimelineResponse{}
+
+	first := renderedTimeline(t, false, empty)
+	assert.Contains(t, first, "recorded nothing yet",
+		"a first answer with no entries is a run that has not done anything")
+
+	continued := renderedTimeline(t, true, empty)
+	assert.NotContains(t, continued, "recorded nothing yet",
+		"a caller who just read four pages was told the run recorded nothing")
+	assert.Contains(t, continued, "end of this run's account")
+}
+
+// renderedTimeline is what a person sees, both streams joined, since the
+// account goes to one and the notes about it to the other.
+func renderedTimeline(t *testing.T, resumed bool, msg *v1.GetTimelineResponse) string {
+	t.Helper()
+
+	var out, errs bytes.Buffer
+	renderTimeline(&ui.UI{
+		Out:     &out,
+		Err:     &errs,
+		Caps:    ui.Capabilities{Profile: colorprofile.NoTTY},
+		ErrCaps: ui.Capabilities{Profile: colorprofile.NoTTY},
+	}, resumed, msg)
+
+	return out.String() + errs.String()
 }

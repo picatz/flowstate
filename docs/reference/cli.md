@@ -1666,8 +1666,10 @@ Examples:
 # What did this run actually do?
 flow timeline flowstate-workflow-3f7c
 
-# Just the failures, for a script:
-flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure != null)'
+# Just the failures, for a script. Non-empty rather than non-null: this
+# command emits unpopulated fields, so every entry has a failure and a step
+# that succeeded carries it as the empty string.
+flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure != "")'
 
 # The next segment of a workload that continued as new:
 flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...
