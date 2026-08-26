@@ -1,0 +1,462 @@
+package flowdebug_test
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+)
+
+// Moving a run without typing at it.
+
+// walked runs a session over a list of steps on a goroutine of its own, the way
+// the engine does, and reports what came back.
+//
+// The channel is buffered so the run's goroutine never outlives the test
+// waiting to hand over a result nobody read — a leaked goroutine holding a
+// session is exactly what these tests would otherwise produce on every failure.
+func walked(t *testing.T, session *flowdebug.Session, ids ...string) <-chan error {
+	t.Helper()
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{},
+	})
+
+	finished := make(chan error, 1)
+	go func() {
+		for _, id := range ids {
+			if err := session.BeforeStep(t.Context(), markStep(id), scope); err != nil {
+				finished <- err
+
+				return
+			}
+		}
+		finished <- nil
+	}()
+
+	return finished
+}
+
+// TestARunCanBeWalkedWithoutATerminal is the seam, end to end: a session with
+// no In, no Console and nothing to type at holds the run and moves it on
+// command.
+//
+// This is the shape a debug adapter is: no stream anywhere, a request arriving
+// on a socket, and a run that has to stop and start on it. Before this the
+// session had no way to be told anything — [Session.BeforeStep] parks blocked
+// on a line of text, and a session with nothing to read resumed at every stop
+// rather than waiting.
+func TestARunCanBeWalkedWithoutATerminal(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	finished := walked(t, session, "build", "test", "deploy")
+
+	// The run stops before its first step, which is what `--debug` with no
+	// breakpoints means. Nothing is polled for here: the command waits for the
+	// run to reach a prompt, so the test does not race the run's goroutine.
+	at, err := session.Step(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "test", at.Step,
+		"stepping from the first stop did not arrive at the second step")
+	assert.False(t, at.Autopsy)
+
+	at, err = session.Step(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "deploy", at.Step)
+
+	// And letting it go finishes the run rather than holding it.
+	require.NoError(t, session.Control(t.Context(), "continue"))
+
+	select {
+	case runErr := <-finished:
+		require.NoError(t, runErr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run did not finish after being told to continue")
+	}
+}
+
+// TestACommandIssuedBeforeTheRunStartsWaitsForTheStopAfterIt is the ordering
+// the seam turns on, and the one a test written the obvious way cannot see.
+//
+// A caller may command a run that has not started: an adapter configures its
+// breakpoints and asks for the first stop before handing the workflow to the
+// engine, which is `launch` then `configurationDone` in DAP's own order. The
+// command then waits for a prompt, and the pause it is delivered into is one
+// that did not exist when the caller asked.
+//
+// So "wait for a pause newer than the one I left" cannot be measured by the
+// caller. The first version of this read the generation before sending and
+// walked a three-step run reporting step one twice — and every test that
+// commanded an *already paused* run passed it, because there the two readings
+// agree. The generation therefore comes back from the boundary that took the
+// command, which is the only place it is knowable.
+//
+// The window below is what puts the command in flight before the run exists;
+// it is not what the assertion rests on. Nothing can answer a command while
+// there is no boundary to receive it, and the whole sequence is asserted, so a
+// walk shifted by one stop fails whichever way the scheduler goes.
+func TestACommandIssuedBeforeTheRunStartsWaitsForTheStopAfterIt(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	first := make(chan flowdebug.Position, 1)
+	go func() {
+		at, stepErr := session.Step(t.Context())
+		assert.NoError(t, stepErr)
+		first <- at
+	}()
+
+	// With no run there is no boundary to take the command, so an answer here
+	// would mean the session invented one.
+	select {
+	case at := <-first:
+		t.Fatalf("a command was answered before the run existed, at %q", at.Step)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	finished := walked(t, session, "build", "test", "deploy")
+
+	at := <-first
+	assert.Equal(t, "test", at.Step,
+		"the command was taken at the run's first stop, so the run should have moved "+
+			"past it rather than reporting the stop that took it")
+
+	at, err = session.Step(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "deploy", at.Step, "the walk is a stop behind where it should be")
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
+
+// TestTypedAndProgrammaticControlWalkTheSameRun is the property that makes the
+// seam worth having rather than a second debugger.
+//
+// A command delivered through [Session.Control] is dispatched by the same loop,
+// through the same `dispatch`, as one somebody typed — so the two fronts cannot
+// disagree about what `step` does. A programmatic front that resumed the run by
+// writing the session's own fields would be a second implementation of every
+// verb, and this repository's most-paid-for shape is one meaning written down
+// twice.
+//
+// Asserted as the *same walk* rather than as two walks that each look
+// plausible: the positions and the account both have to match, position for
+// position.
+func TestTypedAndProgrammaticControlWalkTheSameRun(t *testing.T) {
+	t.Parallel()
+
+	steps := []string{"build", "test", "deploy"}
+
+	// Typed: the same three commands down a stream, with no console anywhere.
+	var typedOut strings.Builder
+	typed, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("step\nstep\ncontinue\n"),
+		Out: &typedOut,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = typed.Close() })
+
+	require.NoError(t, <-walked(t, typed, steps...))
+
+	// Programmatic: the same three commands, no stream at all.
+	var drivenOut strings.Builder
+	driven, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &drivenOut})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = driven.Close() })
+
+	finished := walked(t, driven, steps...)
+
+	var reached []string
+	for range 2 {
+		at, stepErr := driven.Step(t.Context())
+		require.NoError(t, stepErr)
+		reached = append(reached, at.Step)
+	}
+	require.NoError(t, driven.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+
+	assert.Equal(t, []string{"test", "deploy"}, reached,
+		"the programmatic walk did not visit the steps the same commands visit when typed")
+
+	// The account is the same too, which is the half a position comparison
+	// cannot see: a front that moved the run correctly and announced it
+	// differently would still be two debuggers.
+	assert.Equal(t,
+		strings.ReplaceAll(typedOut.String(), flowdebug.Prompt, ""),
+		drivenOut.String(),
+		"the same commands through the two fronts printed different accounts of one run")
+
+	// And the recording agrees, so a programmatic session replays as a typed
+	// one — the record-and-replay half this vocabulary is shared for.
+	assert.Equal(t, typed.Script(), driven.Script(),
+		"a programmatically driven session recorded a script a person could not have typed")
+}
+
+// TestAControlledSessionOutlivesItsStream keeps the two fronts composable.
+//
+// A session may have both: a script that sets things up and an adapter that
+// takes over. A stream running out is the end of *the stream*, and the reader
+// treated it as the end of the debugging — resuming the run to the end,
+// unattended, while a controller was still holding it. That is the message on
+// that path doing exactly what it says, arriving because the two fronts were
+// composed and only one was consulted.
+//
+// The script's one command deliberately does not move the run, so the two
+// fronts are never driving at once: mixing a stream and a controller
+// *concurrently* is a caller mistake this does not pretend to arbitrate, and a
+// test that did it would be asserting a coin toss.
+func TestAControlledSessionOutlivesItsStream(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled: true,
+		In:         strings.NewReader("break deploy\n"),
+		Out:        &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	finished := walked(t, session, "build", "test", "deploy")
+
+	// The handover, observed rather than assumed: once the script's command is
+	// recorded, the stream is spent and the session is holding the run on the
+	// controller alone.
+	require.Eventually(t, func() bool { return len(session.Script()) == 1 },
+		10*time.Second, time.Millisecond,
+		"the script's command was never accepted")
+
+	at, err := session.Continue(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "deploy", at.Step,
+		"the run was let go when the script ran out, so the controller lost it")
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
+
+// TestControlIsRefusedOnASessionThatCannotBeControlled is a hang turned into an
+// answer.
+//
+// Without [Options.Controlled] a session with nothing to read resumes at every
+// stop, so nothing is ever waiting on the other end of a command. Accepting one
+// would park the caller until its context expired, which is a hang with a
+// timeout on it — and the caller would have no way to tell that from a run that
+// was simply slow.
+func TestControlIsRefusedOnASessionThatCannotBeControlled(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	err = session.Control(ctx, "step")
+	assert.ErrorIs(t, err, flowdebug.ErrNotControlled)
+	assert.NotErrorIs(t, err, context.DeadlineExceeded,
+		"the refusal arrived as a timeout, which a caller cannot tell from a slow run")
+
+	// And the property that refusal protects: such a session still resumes at
+	// every stop rather than holding a run nobody can move.
+	require.NoError(t, <-walked(t, session, "build", "test"))
+}
+
+// TestAWaitEndsWhenTheSessionDoes is the answer to a question this package
+// cannot ask.
+//
+// [v1.Debugger] is called before each step and [v1.RunObserver] after each one.
+// Neither has a callback for the run *finishing*, so a session whose run
+// completed cleanly is indistinguishable from one whose next step has not
+// arrived yet. Whoever owns the run does know, and closing the session is how
+// they say so — which has to end a caller's wait rather than leave it parked
+// on a run that will never stop again.
+func TestAWaitEndsWhenTheSessionDoes(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+
+	finished := walked(t, session, "build")
+
+	// One step, and the run is over — with nothing to announce that it is.
+	waited := make(chan error, 1)
+	go func() {
+		_, stepErr := session.Step(t.Context())
+		waited <- stepErr
+	}()
+
+	require.NoError(t, <-finished)
+	require.NoError(t, session.Close())
+
+	select {
+	case err := <-waited:
+		assert.ErrorIs(t, err, flowdebug.ErrRunOver,
+			"a caller waiting on a run that had ended got something other than the fact")
+	case <-time.After(10 * time.Second):
+		t.Fatal("closing the session left a caller waiting for a stop that cannot come")
+	}
+}
+
+// TestClosingReleasesARunHeldByNobody is the escape [Options.Controlled]
+// promises.
+//
+// A controlled session waits at every stop, which is the point — and a
+// controller that goes away therefore holds someone's run open indefinitely.
+// A reading session learns of [Session.Close] because its reader exits and
+// closes the channel the boundary is parked on; a controlled one has no reader
+// to hear it from, so without the session's own done channel in that select
+// the run is parked on a command that is never coming.
+func TestClosingReleasesARunHeldByNobody(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+
+	finished := walked(t, session, "build", "test")
+
+	// Held: nothing has been sent, and nothing will be.
+	require.Eventually(t, func() bool { _, paused := session.Paused(); return paused },
+		10*time.Second, time.Millisecond,
+		"the run never stopped, so this cannot be testing what happens when it is let go")
+
+	require.NoError(t, session.Close())
+
+	select {
+	case runErr := <-finished:
+		require.NoError(t, runErr,
+			"closing a session under a held run failed the run rather than letting it finish")
+	case <-time.After(10 * time.Second):
+		t.Fatal("closing the session left the run parked on a command that is never coming")
+	}
+}
+
+// TestAControlledCommandIsOneLineAndBounded is the bound this surface owes.
+//
+// [MaxCommandBytes] is enforced by whatever reads a typed line, so the text
+// path is bounded by the surface it arrives on — and a caller reaching
+// [Session.Control] arrives on no such surface. The line break is the other
+// half: the reader hands the loop one command with no terminator in it, so a
+// caller able to deliver two would be sending something no prompt could have
+// produced, with the second landing wherever the first left the run.
+func TestAControlledCommandIsOneLineAndBounded(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	err = session.Control(ctx, strings.Repeat("a", flowdebug.MaxCommandBytes+1))
+	require.Error(t, err, "a command past the bound was delivered")
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+
+	err = session.Control(ctx, "inspect 1\nquit")
+	require.Error(t, err, "two commands arrived as one line")
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+
+	// A step id is one word, because the line this composes has no way to
+	// quote one: `until "a b"` would silently become `until a`.
+	_, err = session.Until(ctx, "a b")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+
+	_, err = session.Until(ctx, "deploy\x1b[31m")
+	require.Error(t, err, "a step id carrying a terminal escape was composed into a command")
+}
+
+// TestUntilRunsToTheNamedStep is the third movement verb, and the one whose
+// argument comes from outside.
+func TestUntilRunsToTheNamedStep(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	finished := walked(t, session, "build", "test", "lint", "deploy")
+
+	at, err := session.Until(t.Context(), "deploy")
+	require.NoError(t, err)
+	assert.Equal(t, "deploy", at.Step,
+		"`until` stopped somewhere other than the step it was given")
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
+
+// TestTheValueSurfaceAnswersAtAControlledStop is the join between the two
+// halves.
+//
+// Moving a run is worth little without asking about where it stopped, and
+// asking is worth little without being able to move. A debug adapter needs
+// both against the same pause, from the same goroutine, with no terminal in
+// sight — and each landed without the other having been checked against it.
+func TestTheValueSurfaceAnswersAtAControlledStop(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"build": {NamedValues: map[string]*v1.Value{"artifact": v1.NewLiteral("web.tar.gz")}},
+		},
+	})
+
+	finished := make(chan error, 1)
+	go func() {
+		for _, id := range []string{"build", "deploy"} {
+			if err := session.BeforeStep(t.Context(), markStep(id), scope); err != nil {
+				finished <- err
+
+				return
+			}
+		}
+		finished <- nil
+	}()
+
+	at, err := session.Step(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "deploy", at.Step)
+
+	position, paused := session.Paused()
+	require.True(t, paused, "the run reported a stop and then reported not being paused")
+	assert.Equal(t, "deploy", position.Step)
+
+	text, value, err := session.Evaluate(t.Context(), "steps.build.artifact")
+	require.NoError(t, err)
+	assert.Equal(t, `"web.tar.gz"`, text)
+	assert.NotNil(t, value)
+
+	groups, err := session.Scope()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"build"}, namesOf(groups, "steps"))
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}

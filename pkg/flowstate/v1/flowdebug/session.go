@@ -177,6 +177,22 @@ type Options struct {
 	// whole workflow's worth of, so storing them costs nothing new. What is
 	// bounded is the *answer*, in [Session.Complete].
 	Steps []string
+
+	// Controlled says this session is driven by [Session.Control] as well as,
+	// or instead of, by lines of text.
+	//
+	// It has to be declared rather than inferred, because the two things a
+	// session does when it has nothing to read are opposites. A session with
+	// no In and no Console resumes at every stop — that is what makes an
+	// unconfigured session harmless rather than hung, and it is checked
+	// before anything is pending, so "wait, a command may arrive later" is
+	// not something the session can work out for itself.
+	//
+	// The cost is the other side of the same coin, and it is the caller's to
+	// accept: a controlled session with nobody controlling it holds the run
+	// at its first stop until [Session.Close]. That is the same bargain a
+	// terminal makes, and the same escape — see [Session.Control].
+	Controlled bool
 }
 
 // Console is a line editor a session prompts through.
@@ -371,6 +387,27 @@ type Session struct {
 	// which makes it a *prefix* of the run rather than the run. Completion
 	// reads it; see [Session.sawStep] for why it cannot be inferred later.
 	seenShort bool
+
+	// controlled is [Options.Controlled], and control carries the lines
+	// [Session.Control] delivers. See control.go.
+	controlled bool
+	control    chan controlRequest
+
+	// controlMu admits one [Session.Control] at a time. A run has one
+	// position, so two callers moving it at once is not a thing to arbitrate
+	// between — it is a caller mistake, and serializing turns it into an
+	// ordering rather than an interleaving of two commands into one prompt.
+	controlMu sync.Mutex
+
+	// pauseGen counts changes to at, and pauseChanged is closed and replaced
+	// on each one, so a caller can wait for the run to stop somewhere new
+	// rather than spin on [Session.Paused].
+	//
+	// A generation as well as a signal, because "paused" is not enough to
+	// wait on: a caller that asked the run to move is looking at a session
+	// that is still paused where it was, and must not read that as the answer.
+	pauseGen     uint64
+	pauseChanged chan struct{}
 }
 
 // A promptSubject is what one prompt is about: the scope to answer questions
@@ -427,6 +464,10 @@ func New(opts Options) (*Session, error) {
 		done:        make(chan struct{}),
 		steps:       slices.Clone(opts.Steps),
 		seen:        map[string]struct{}{},
+
+		controlled:   opts.Controlled,
+		control:      make(chan controlRequest),
+		pauseChanged: make(chan struct{}),
 	}
 	if s.out == nil {
 		s.out = io.Discard
@@ -815,58 +856,122 @@ func (s *Session) Close() error {
 // nobody asked for has taken it out of a stream the process may still own after
 // the session ends.
 func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err error) {
-	s.mu.Lock()
-	closed, scanner, console := s.closed, s.in, s.console
-	s.mu.Unlock()
+	for {
+		s.mu.Lock()
+		closed, scanner, console, controlled := s.closed, s.in, s.console, s.controlled
+		s.mu.Unlock()
 
-	if closed || (scanner == nil && console == nil) {
-		return "", false, nil
-	}
+		// Whether there is anything to read a *line* from, recomputed each
+		// time round because a stream can end while this is waiting.
+		reading := !closed && (scanner != nil || console != nil)
 
-	s.readOnce.Do(func() {
-		s.lines = make(chan string)
-		// Buffered by one, so that asking for a line never blocks: at most one
-		// request is outstanding, and a reader that has already exited leaves
-		// the request sitting in the buffer where nothing waits on it.
-		s.wants = make(chan struct{}, 1)
-		go s.read(scanner, console)
-	})
+		if !reading && !controlled {
+			return "", false, nil
+		}
 
-	select {
-	case s.wants <- struct{}{}:
-	case <-s.done:
-		return "", false, nil
-	}
+		// Nil unless a reader is running, and a receive on a nil channel
+		// blocks forever — which is the right answer twice over: a session
+		// that never had a stream has nothing to hear from, and one whose
+		// stream ended has a *closed* channel that would otherwise fire
+		// instantly, every time round, forever.
+		var lines <-chan string
 
-	// The prompt is the session's to draw only when it is reading a stream. A
-	// console draws its own, because a line editor has to know the prompt's
-	// width to put the cursor anywhere.
-	if console == nil {
-		s.printfTone(TonePrompt, Prompt)
-	}
+		if reading {
+			s.readOnce.Do(func() {
+				s.lines = make(chan string)
+				// Buffered by one, so that asking for a line never blocks: at most one
+				// request is outstanding, and a reader that has already exited leaves
+				// the request sitting in the buffer where nothing waits on it.
+				s.wants = make(chan struct{}, 1)
+				go s.read(scanner, console)
+			})
+			lines = s.lines
 
-	select {
-	case line, open := <-s.lines:
-		if !open {
+			select {
+			case s.wants <- struct{}{}:
+			case <-s.done:
+				return "", false, nil
+			}
+
+			// The prompt is the session's to draw only when it is reading a stream. A
+			// console draws its own, because a line editor has to know the prompt's
+			// width to put the cursor anywhere.
+			if console == nil {
+				s.printfTone(TonePrompt, Prompt)
+			}
+		}
+
+		select {
+		case text, open := <-lines:
+			if !open {
+				s.mu.Lock()
+				s.closed = true
+				s.mu.Unlock()
+
+				// A stream running out is the end of *the stream*. On a
+				// controlled session it is not the end of the debugging, and
+				// treating it as one resumed the run to the end, unattended,
+				// while a controller was still holding it — the exact failure
+				// the message on that path warns about, arriving because the
+				// two fronts were composed and only one was consulted.
+				//
+				// An interrupt is different and must not fall through here: a
+				// person who pressed ctrl-C asked for the run to stop, and
+				// waiting for a controller to say otherwise would answer
+				// "stop" with "carry on".
+				if controlled && !s.wasInterrupted() {
+					continue
+				}
+
+				return "", false, nil
+			}
+
+			return text, true, nil
+
+		case request := <-s.control:
+			// The other way a line arrives, and it is deliberately the same
+			// kind of thing: one command, delivered here, dispatched by the
+			// loop above exactly as a typed one is. A programmatic front that
+			// resumed the run by reaching into the session's fields would be a
+			// second implementation of every verb, free to disagree with the
+			// one people type — which is this repository's most-paid-for shape.
+			//
+			// The generation of the pause this command is being delivered into
+			// goes back to the sender, because only here is it knowable. A
+			// sender reading it before the send has not been delivered yet and
+			// would name the pause *before* the one it lands in; reading it
+			// after gets whatever the run has since done. So the receiver
+			// answers, on a channel of its own that is buffered and therefore
+			// never blocks this boundary on a sender that has gone away. See
+			// [Session.move].
+			s.mu.Lock()
+			generation := s.pauseGen
+			s.mu.Unlock()
+			request.at <- generation
+
+			return request.line, true, nil
+
+		case <-s.done:
+			// [Session.Close] while parked. A reading session already learns
+			// this when its reader exits and closes lines; a controlled one has
+			// no reader to hear it from, and would hold the run forever.
 			s.mu.Lock()
 			s.closed = true
 			s.mu.Unlock()
 
 			return "", false, nil
+
+		case <-ctx.Done():
+			// The run is being torn down around this prompt; closed so no later
+			// boundary or autopsy asks a console the person already interrupted,
+			// and the reader released so it does not outlive the run it was for.
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+			_ = s.Close()
+
+			return "", false, ctx.Err()
 		}
-
-		return line, true, nil
-
-	case <-ctx.Done():
-		// The run is being torn down around this prompt; closed so no later
-		// boundary or autopsy asks a console the person already interrupted,
-		// and the reader released so it does not outlive the run it was for.
-		s.mu.Lock()
-		s.closed = true
-		s.mu.Unlock()
-		_ = s.Close()
-
-		return "", false, ctx.Err()
 	}
 }
 
@@ -959,6 +1064,15 @@ func (s *Session) prompting(at promptSubject) {
 	}
 
 	s.at = at
+
+	// Every change published, the clearing on the way out included. A caller
+	// waiting for the run to stop somewhere new has to see it leave as well as
+	// arrive, or a session that resumed and finished without stopping again
+	// would look, forever, like one that had not moved. See
+	// [Session.waitForPause].
+	s.pauseGen++
+	close(s.pauseChanged)
+	s.pauseChanged = make(chan struct{})
 }
 
 // frozen is the scope as it was when a pause began, copied so that nothing the
