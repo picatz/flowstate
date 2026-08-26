@@ -148,7 +148,16 @@ false
 At the autopsy the bindings a failing `expect.check:` was judged under are in
 scope too — the file's `vars`, and a `run` root carrying `failed` and `error` —
 so a claim that failed can be taken apart with the same names it was written
-with. `scope` lists them.
+with. `scope` lists them, and `complete` answers here as well:
+
+```
+debug> complete inspect run.
+error    bound for this autopsy
+failed   bound for this autopsy
+```
+
+which matters more here than anywhere else, since these are the only bindings
+a check was ever judged under and the only place they can still be read.
 
 **The verdict is already in, and nothing here can change it.** The autopsy runs
 after the expectations are judged, so a debugged run cannot be argued into

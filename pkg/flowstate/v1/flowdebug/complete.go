@@ -167,13 +167,22 @@ func (s *Session) offerCommands(at promptSubject, prefix string) Completion {
 }
 
 // autopsyVerbs are the commands the autopsy answers. It is the same reading
-// [Session.Autopsy]'s own switch makes — `inspect`, `scope`, `help`, and
-// leaving — written as the set the completer offers.
+// [Session.Autopsy]'s own switch makes — `inspect`, `complete`, `scope`,
+// `help`, and leaving — written as the set the completer offers.
+//
+// Two lists for one vocabulary, which is why
+// TestEveryVerbIsDecidedAtTheAutopsy walks the switch rather than trusting
+// this: `complete` reached the main dispatch and not the autopsy's, so at the
+// one prompt where completion is worth most — the bindings a failed case was
+// judged under — it came back "unknown command" (Codex, #1117). The walk reads
+// both directions, since offering a verb the autopsy will refuse is the same
+// defect pointed the other way.
 var autopsyVerbs = map[string]bool{
-	"inspect": true,
-	"scope":   true,
-	"help":    true,
-	"quit":    true,
+	"inspect":  true,
+	"complete": true,
+	"scope":    true,
+	"help":     true,
+	"quit":     true,
 }
 
 // argumentSpace is the separator a verb that takes an argument is written with.

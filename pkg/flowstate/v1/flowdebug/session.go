@@ -1354,14 +1354,24 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 			s.record("inspect " + expression)
 			s.inspectWith(ctx, expression, scope, extra)
 
+		case "complete":
+			// Taken from the line rather than from `rest`, for the reason
+			// `cutWord` exists: `split` trims, and a trailing space is what
+			// says the current word is empty.
+			_, text := cutWord(strings.TrimLeft(line, " \t"))
+			s.record("complete " + text)
+			s.showCompletion(text)
+
 		case "scope":
 			s.record("scope")
 			s.showScopeWith(scope, extra)
 
 		case "help", "h", "?":
-			s.printf(`inspect <expr>   evaluate a CEL expression against the finished run
-scope            list what the run can still name
-quit, q          leave the autopsy (so do step/continue — the run is over)
+			s.printf(`inspect <expr>              evaluate a CEL expression against the finished run
+complete <partial-command>  list what could be written at the end of that text
+scope                       list what the run can still name
+help, h, ?                  this list
+quit, q                     leave the autopsy (so do step/continue — the run is over)
 `)
 
 		default:
