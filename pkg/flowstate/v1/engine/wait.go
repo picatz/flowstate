@@ -112,7 +112,7 @@ func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 		// propagate: a cancelled run has to stop waiting, and swallowing this
 		// would make a waiting step the one place cancellation does not reach.
 		timer := workflow.NewTimerWithOptions(e.ctx, d,
-			workflow.TimerOptions{Summary: sleepSummary(node.GetId())})
+			workflow.TimerOptions{Summary: sleepSummary(e.path, node.GetId())})
 		if err := timer.Get(e.ctx, nil); err != nil {
 			return nodeFailed(err)
 		}
@@ -258,7 +258,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
 		}
 		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, timeout,
-			workflow.TimerOptions{Summary: waitTimeoutSummary(node.GetId())}),
+			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())}),
 			func(workflow.Future) {})
 	}
 	selector.Select(e.ctx)

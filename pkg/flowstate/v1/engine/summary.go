@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"fmt"
+	"strings"
 
 	"go.temporal.io/sdk/workflow"
 )
@@ -69,11 +69,77 @@ import (
 //
 // # The shape
 //
-// The step first, because the step is what a reader is looking for, then what
-// the command is where the command's own name does not already say. Same
-// `·`-separated shape as the workflow-level summary, for the same reason it
-// is one function rather than a rendering at each site: two independent
-// spellings of "which step" drift.
+// The position first, because the step is what a reader is looking for, then
+// what the command is where the command's own name does not already say. Same
+// `·`-separated shape as the workflow-level summary, and the same
+// `> `-separated position [progress.currentDetailsMarkdown] renders into the
+// SDK's own Details view — this is one function rather than a rendering at each
+// site for that comment's reason: two independent spellings of "which step"
+// drift.
+//
+// The position and not only the id, because an id is unique within a
+// *visibility domain* rather than within a file: two sibling `loop:` blocks may
+// each legally declare a body step called `page` (see `refScope` in
+// `flowfile/validate.go`), and labelling both `page` would leave a reader
+// exactly where an unlabelled row does — unable to tell which of two things
+// produced it (Codex, #1118). [v1.RunProgress].path answers the same question
+// live, and cannot answer it about a history: it is a query against a running
+// workflow, and by the time anybody reads the row the run has moved on.
+//
+// One command shape is still labelled by id alone, and it is a limit rather
+// than a choice: a compensation is dispatched from the run-level undo stack,
+// whose entries are [v1.PendingUndo] and carry a `step_id` and no position. Two
+// sibling loops each registering an undo for a body step of the same name are
+// therefore indistinguishable in history. Fixing it is a schema field and
+// belongs with its own compatibility argument, not here.
+
+// maxSummaryLabel bounds a rendered label, in bytes.
+//
+// A position is as many step ids as the specification nests, each of which the
+// schema allows 128 bytes, so a deeply nested one has no bound of its own —
+// while Temporal's summary payload is limited to 400 bytes by default and a
+// label that fails to convert would fail the step it labels. Bounding here
+// rather than trusting the nesting is the rule this repository applies to
+// anything whose size somebody else decides.
+//
+// Elided from the *left*, keeping the innermost entries: the step that actually
+// ran is the answer, and its enclosing blocks are context a reader can find
+// elsewhere in the specification. The elision is always *stated*, with a
+// leading `… > `, even when nothing of the position survived — a bare `page`
+// reads as a top-level step, which is a different fact and a wrong one.
+const maxSummaryLabel = 256
+
+// label renders one command's summary: where the step is, then what the command
+// is where the command's own name does not say.
+func label(path []string, stepID, kind string) string {
+	var suffix string
+	if kind != "" {
+		suffix = " · " + kind
+	}
+
+	step := "`" + stepID + "`"
+	for i := len(path); i >= 0; i-- {
+		var b strings.Builder
+		if i < len(path) {
+			b.WriteString("… > ")
+		}
+		for _, enclosing := range path[len(path)-i:] {
+			b.WriteString("`")
+			b.WriteString(enclosing)
+			b.WriteString("` > ")
+		}
+		b.WriteString(step)
+		b.WriteString(suffix)
+
+		if rendered := b.String(); len(rendered) <= maxSummaryLabel || i == 0 {
+			return rendered
+		}
+	}
+
+	// Unreachable: the loop returns at i == 0. Present because a bound that
+	// falls through to nothing is worse than one that says what it kept.
+	return step + suffix
+}
 
 // stepSummary labels the activity one task step schedules.
 //
@@ -86,8 +152,8 @@ import (
 // [v1.RunProgress].path answers, and it is answered by a query against the
 // running workflow rather than from history, because history records what was
 // scheduled and a path is where the run is now.
-func stepSummary(stepID string) string {
-	return fmt.Sprintf("`%s`", stepID)
+func stepSummary(path []string, stepID string) string {
+	return label(path, stepID, "")
 }
 
 // undoStepSummary labels a compensation's activity.
@@ -97,7 +163,7 @@ func stepSummary(stepID string) string {
 // [executor.dispatch] with the same activity types, and a saga unwinding six
 // steps would otherwise read as six more steps running.
 func undoStepSummary(stepID string) string {
-	return fmt.Sprintf("`%s` · undo", stepID)
+	return label(nil, stepID, "undo")
 }
 
 // sleepSummary labels the durable timer a `sleep:` step parks on.
@@ -109,8 +175,8 @@ func undoStepSummary(stepID string) string {
 // that is the identical command (`Sleep` is `NewTimerWithOptions` with a fixed
 // summary, `internal/workflow.go`), with the label carrying the one fact the
 // SDK cannot know.
-func sleepSummary(stepID string) string {
-	return fmt.Sprintf("`%s` · sleep", stepID)
+func sleepSummary(path []string, stepID string) string {
+	return label(path, stepID, "sleep")
 }
 
 // waitTimeoutSummary labels the timer bounding a `wait_for_signal:` step.
@@ -118,8 +184,8 @@ func sleepSummary(stepID string) string {
 // Distinguished from [sleepSummary] because the two answer different
 // questions for a reader: a fired sleep timer is a run doing what it was told,
 // and a fired wait timer is a gate nobody answered.
-func waitTimeoutSummary(stepID string) string {
-	return fmt.Sprintf("`%s` · wait timeout", stepID)
+func waitTimeoutSummary(path []string, stepID string) string {
+	return label(path, stepID, "wait timeout")
 }
 
 // callVarsSummary labels the activity a `call:` step's callee `vars:` are
@@ -128,8 +194,8 @@ func waitTimeoutSummary(stepID string) string {
 // The calling step rather than the callee's name, because the step is what a
 // reader has in hand: a workflow called from three places produces three of
 // these, and which one is stuck is the question.
-func callVarsSummary(stepID string) string {
-	return fmt.Sprintf("`%s` · call vars", stepID)
+func callVarsSummary(path []string, stepID string) string {
+	return label(path, stepID, "call vars")
 }
 
 // runVarsSummary labels the activity a run's own top-level `vars:` are

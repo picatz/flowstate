@@ -137,7 +137,7 @@ func TestAStepWaitsForItsOwnCancellation(t *testing.T) {
 			BackoffCoefficient: 3,
 			MaxInterval:        durationpb.New(time.Minute),
 		},
-	}, stepSummary("declares_a_policy"))
+	}, stepSummary(nil, "declares_a_policy"))
 
 	assert.True(t, declared.WaitForCancellation,
 		"a step that declares a retry or a timeout stopped waiting for its own "+

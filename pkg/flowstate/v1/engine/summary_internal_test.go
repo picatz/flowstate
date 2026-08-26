@@ -212,3 +212,65 @@ func optionsCarryASummary(call *ast.CallExpr) bool {
 
 	return false
 }
+
+// TestALabelIsBoundedAndKeepsTheStep exercises the elision, because a bound
+// nothing reaches is a bound nothing tests — and this one is reached by a
+// specification an outside party wrote: a position is as many step ids as the
+// file nests, each of which the schema allows 128 bytes, against a Temporal
+// summary payload limited to 400.
+func TestALabelIsBoundedAndKeepsTheStep(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a short position is rendered whole", func(t *testing.T) {
+		t.Parallel()
+
+		if got, want := label([]string{"outer", "inner"}, "page", "sleep"), "`outer` > `inner` > `page` · sleep"; got != want {
+			t.Errorf("label = %q, want %q", got, want)
+		}
+		if got, want := label(nil, "page", ""), "`page`"; got != want {
+			t.Errorf("label = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a long position is elided from the outside in", func(t *testing.T) {
+		t.Parallel()
+
+		// Every id the longest the schema permits, so a handful of levels is
+		// already past the bound.
+		long := strings.Repeat("n", 128)
+		deep := []string{long + "1", long + "2", long + "3", long + "4"}
+
+		got := label(deep, "page", "sleep")
+
+		if len(got) > maxSummaryLabel {
+			t.Errorf("label is %d bytes, past the %d-byte bound: %q", len(got), maxSummaryLabel, got)
+		}
+		if !strings.HasPrefix(got, "… > ") {
+			t.Errorf("a label that dropped part of its position has to say so: %q", got)
+		}
+		if !strings.HasSuffix(got, "`page` · sleep") {
+			t.Errorf("the step that actually ran is the answer and must survive the elision: %q", got)
+		}
+		// Elided from the left, so what it kept is the innermost enclosing
+		// step rather than the outermost.
+		if !strings.Contains(got, long+"4") {
+			t.Errorf("the innermost enclosing step is what a reader needs and it was the one dropped: %q", got)
+		}
+		if strings.Contains(got, long+"1") {
+			t.Errorf("an outer entry survived while the bound was exceeded, so the elision picked the wrong end: %q", got)
+		}
+	})
+
+	t.Run("the step survives a position it cannot fit beside, and the loss is stated", func(t *testing.T) {
+		t.Parallel()
+
+		// Nothing of the position fits. The step still has to be named — and
+		// the elision still has to be *said*, because `page` alone reads as a
+		// top-level step, which is a different and wrong fact.
+		got := label([]string{strings.Repeat("n", 1024)}, "page", "undo")
+
+		if got != "… > `page` · undo" {
+			t.Errorf("label = %q, want the step named and the dropped position admitted", got)
+		}
+	})
+}

@@ -79,6 +79,18 @@ func TestEveryCommandInHistoryNamesItsStep(t *testing.T) {
 				Kind: &v1.Node_Task{Task: echo("forward")},
 				Undo: &v1.Compensation{Task: echo("undo-forward")},
 			},
+
+			// Two sibling loops whose body steps share an id, which the
+			// language permits — a body's outputs do not escape, so `page` is
+			// unique within each loop's visibility domain rather than within
+			// the file (`refScope`, flowfile/validate.go). Labelling by id
+			// alone leaves these two indistinguishable in history, which is
+			// exactly as useful as no label (Codex, #1118). One iteration each,
+			// because what is under test is telling the *loops* apart and a
+			// second iteration only repeats a label.
+			pages("first", echo("first-page")),
+			pages("second", echo("second-page")),
+
 			sleepStep("nap", time.Millisecond),
 			signalStep("gate", "go", 30*time.Second),
 			fails,
@@ -125,12 +137,28 @@ func TestEveryCommandInHistoryNamesItsStep(t *testing.T) {
 	sort.Strings(labelled)
 	assert.Equal(t, []string{
 		"`boom`",
+		"`first` > `page`",
 		"`forward`",
 		"`forward` · undo",
 		"`gate` · wait timeout",
 		"`nap` · sleep",
+		"`second` > `page`",
 		"run vars",
 	}, labelled)
+}
+
+// pages is a loop of one iteration whose body step is called `page`, twice over
+// with different loop ids — the sibling-visibility case in one helper so the two
+// differ in nothing but the enclosing step.
+func pages(id string, body *v1.Task) *v1.Node {
+	return &v1.Node{
+		Id: id,
+		Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items:    v1.NewLiteralList("only"),
+			Iterator: "item",
+			Body:     []*v1.Node{{Id: "page", Kind: &v1.Node_Task{Task: body}}},
+		}},
+	}
 }
 
 // timersStarted counts the timers a run has started so far, which is how this

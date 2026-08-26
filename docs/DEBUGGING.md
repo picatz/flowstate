@@ -262,6 +262,7 @@ tools an operator already has — Temporal Web, and `temporal workflow show`:
 | Summary | The command it labels |
 | --- | --- |
 | `` `build` `` | the activity that step's task runs in |
+| `` `pages` > `page` `` | the same, for a step inside a `loop:`, `parallel:` or `call:` |
 | `` `build` · undo `` | the compensation that undoes it |
 | `` `nap` · sleep `` | the durable timer a `sleep:` parks on |
 | `` `gate` · wait timeout `` | the timer bounding a `wait_for_signal:` |
@@ -269,12 +270,22 @@ tools an operator already has — Temporal Web, and `temporal workflow show`:
 | `` `fan_out` · call vars `` | a callee's `vars:`, named by the step that called it |
 | `plugin admission` | the check that the worker has the plugins the run pins |
 
+The position and not only the id, because an id is unique within a *visibility
+domain* rather than within a file: two sibling `loop:` blocks may each declare a
+body step called `page`, legally, since body outputs do not escape. A very deep
+position is elided from the outside in and says so with a leading `…`, keeping
+the step that actually ran.
+
 This matters because one interpreter runs every workflow, so the *activity* is
 always typed `Task` or `TaskInScope` — without the summary, a hundred-step run
 renders as a hundred identical rows and the only thing telling them apart is
 inside each activity's input payload, which is the last place a reader should
 be looking. Those payloads hold resolved task inputs; a label is a separate,
-deliberately tiny field carrying a step id and nothing else.
+deliberately tiny field carrying step ids and nothing else.
+
+One command is labelled by id alone: a compensation. It is dispatched from the
+run-level undo stack, whose entries record a step id and no position, so two
+sibling loops each undoing a body step of the same name still read alike.
 
 On a deployment running a payload codec these are encrypted with everything
 else and read back through its codec server, exactly as the workflow-level
