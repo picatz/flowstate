@@ -389,6 +389,12 @@ type promptSubject struct {
 	// autopsy reports which of the two prompts this is, which decides the
 	// verbs there are to offer.
 	autopsy bool
+
+	// step and kind are where the run is held, for a caller asking through
+	// [Session.Paused] rather than reading the line the prompt printed. Empty
+	// at an autopsy, where the run is over and there is no step to be at.
+	step string
+	kind string
 }
 
 // New returns a session configured by opts.
@@ -492,7 +498,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	// own goroutine answers against the scope the run is actually held in.
 	// Cleared on the way out: a session that kept the last scope alive would
 	// answer questions about a position the run has left.
-	s.prompting(promptSubject{scope: scope})
+	s.prompting(promptSubject{scope: scope, step: node.GetId(), kind: NodeKind(node)})
 	defer s.prompting(promptSubject{})
 
 	s.announce(node)
