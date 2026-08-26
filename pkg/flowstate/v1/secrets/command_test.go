@@ -42,6 +42,8 @@ func (r *fakeRunner) argv(t *testing.T) []string {
 // Running the test binary as its own helper keeps these tests hermetic: they
 // exercise the actual os/exec path without depending on any tool being installed
 // on the machine, which is what would make them fail in CI.
+//
+//vacuity:ignore unasserted this is a subprocess entry point rather than a test — the assertions belong to whichever test launched it, and are made there against what this prints and exits with
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("FLOWSTATE_HELPER_MODE") == "" {
 		t.Skip("not running as a helper process")
