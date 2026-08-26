@@ -898,3 +898,73 @@ tests:
 	require.NotNil(t, failing)
 	assert.Equal(t, flowtest.ToneDanger, failing.Tone, "what failed the run renders in the danger tone")
 }
+
+// TestAnOutputMismatchRedactsAndBoundsWhatItPrints.
+//
+// `expect.outputs` and `expect.check` are two halves of one `expect:` block,
+// and only one of them went through the redaction seam. `assertChecks` was
+// handed the sensitive set (run.go:882); `assertExpectation`, on the line
+// above it, was not — so a mismatched output rendered through a bare `%v`
+// straight onto stdout, in the clear and unbounded, on an ordinary `flow test`
+// run with no flag involved.
+//
+// Both halves of that are asserted here, because they fail independently: the
+// value must not appear, and the message must not be the size of the value.
+// An output may legitimately be [v1.MaxTaskOutputBytes] — near two megabytes —
+// and one mismatched comparison used to print all of it as a single terminal
+// line.
+func TestAnOutputMismatchRedactsAndBoundsWhatItPrints(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: secretive-output
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: use
+    log:
+      message: ${inputs.token}
+outputs:
+  echoed:
+    value: ${steps.use.said}
+    description: what the step said back
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the expected output is wrong, so the actual one is printed
+    workflow: ./workflow.yaml
+    inputs:
+      token: hunter2-super-secret
+    stubs:
+      - task: log
+        returns:
+          said: ${inputs.message}
+    expect:
+      outputs:
+        echoed: not-what-the-run-produced
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+
+	require.False(t, c.GetPassed(), "the case has to fail, or this test is about nothing")
+	require.NotEmpty(t, c.GetFailures())
+
+	message := c.GetFailures()[0].GetMessage()
+
+	assert.NotContains(t, message, "hunter2-super-secret",
+		"a sensitive input's value reached expect.outputs and must not print in the clear")
+	assert.Contains(t, message, "[redacted]",
+		"and the reader is told something was withheld rather than shown a gap")
+
+	// Bounded on the same 48-rune cap the sibling `expect.check` witnesses
+	// take, so one large output cannot be most of a terminal line.
+	assert.Less(t, len([]rune(message)), 200,
+		"a mismatch message is a diagnostic, not a copy of the value it is about")
+}
