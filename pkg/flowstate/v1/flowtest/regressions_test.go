@@ -12,7 +12,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // This file pins the six findings Codex raised on PR #190 against
@@ -128,14 +128,10 @@ func TestP2UnstubbedTaskFailsClosedWithoutDialing(t *testing.T) {
 		}
 	}()
 
-	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
-	require.NoError(t, err)
-
-	registry := v1.DefaultRegistry()
-	original, existed := registry.Lookup("http")
-	require.True(t, existed)
-	require.NoError(t, registry.Register(v1.HTTPTaskDef(policy)))
-	t.Cleanup(func() { _ = registry.Register(original) })
+	// The shared exemption rather than a fourth copy of it: saving and restoring
+	// the process-global registry entry per holder is wrong for two overlapping
+	// tests, and one implementation is what stops that being rediscovered.
+	conformance.AllowLoopback(t)
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", fmt.Sprintf(`
