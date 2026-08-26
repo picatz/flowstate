@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"fmt"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -77,6 +79,25 @@ const (
 	// truncated answer rather than a wrong one, and an empty truncated answer
 	// says so plainly — see [v1.GetTimelineResponse.Truncated].
 	maxTimelineScan = 200_000
+
+	// maxTimelineFailureBytes bounds one failure message.
+	//
+	// A failure's message is the one thing reported here whose length is chosen
+	// by the workload rather than by this repository: a task can fail with
+	// whatever string it likes, and a run started by an outside party is not
+	// ours to assume anything about. Bounded generously, because the outermost
+	// sentence is usually the whole diagnosis and a cap that cuts a real one is
+	// worse than no timeline.
+	maxTimelineFailureBytes = 1024
+
+	// maxTimelineBytes bounds the whole answer, which the message cap does not.
+	//
+	// Bounding one resource does not bound another the peer controls the ratio
+	// to: a message cap times the entry ceiling is still several megabytes, and
+	// the entry ceiling exists to bound *entries*. So the serialized size is
+	// counted as the answer is assembled and the read stops against it, saying
+	// that it stopped (Codex, #1119).
+	maxTimelineBytes = 4 << 20
 )
 
 // GetTimeline reports what a run did, event by event.
@@ -131,6 +152,7 @@ func (s *FlowstateServer) GetTimeline(
 
 	after := req.Msg.GetAfterEventId()
 	scanned := 0
+	assembled := 0
 	ended := false
 
 	for history.HasNext() {
@@ -174,6 +196,19 @@ func (s *FlowstateServer) GetTimeline(
 		if entry.GetEventId() <= after {
 			continue
 		}
+
+		// Counted as the answer is assembled rather than measured afterwards,
+		// because a response refused for being too large is a question nobody
+		// gets an answer to. Stopping short is a truncation, which this already
+		// has a way to report — and never on the first entry, or a single
+		// oversized row would make a run unreadable rather than clipped.
+		size := proto.Size(entry)
+		if !timelineFits(assembled, size, len(out.Entries)) {
+			out.Truncated = true
+
+			break
+		}
+		assembled += size
 
 		out.Entries = append(out.Entries, entry)
 	}
@@ -243,9 +278,16 @@ func (s *FlowstateServer) timelineEntry(
 		entry.Kind = v1.TimelineEntry_KIND_STEP_SCHEDULED
 		entry.Step = s.summaryText(event)
 		entry.ScheduledEventId = event.GetEventId()
+		// Attempt one, said rather than left at zero. This is the only row a
+		// normally executed activity gets for its first try — the start that
+		// would otherwise carry the number is not reported, because a started
+		// row beside every scheduled row is noise — so a zero here would make
+		// a machine reader see the first attempt as unspecified while the
+		// schema says attempt-capable entries begin at one (Codex, #1119).
+		entry.Attempt = 1
 		// Recorded for the events that report how this work ended, which carry
 		// a reference here and nothing else about it.
-		inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step}
+		inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step, attempt: 1}
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_COMPLETED
@@ -255,45 +297,60 @@ func (s *FlowstateServer) timelineEntry(
 		attrs := event.GetActivityTaskFailedEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_FAILED
 		ended(attrs.GetScheduledEventId())
-		entry.Failure = attrs.GetFailure().GetMessage()
+		entry.Failure = boundedFailure(attrs.GetFailure().GetMessage())
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
 		attrs := event.GetActivityTaskTimedOutEventAttributes()
 		entry.Kind = v1.TimelineEntry_KIND_STEP_TIMED_OUT
 		ended(attrs.GetScheduledEventId())
-		entry.Failure = attrs.GetFailure().GetMessage()
+		entry.Failure = boundedFailure(attrs.GetFailure().GetMessage())
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_CANCELED
 		ended(event.GetActivityTaskCanceledEventAttributes().GetScheduledEventId())
 
 	case enumspb.EVENT_TYPE_ACTIVITY_TASK_STARTED:
-		// The attempt lives here rather than on the scheduling: Temporal
-		// schedules an activity once and starts it once per attempt, so this is
-		// the only event that says which try is running — and the only place
-		// the *ending* can learn it from either, which is why it is kept.
-		//
-		// Reported as a scheduled entry rather than a kind of its own, because
-		// "handed to a worker, attempt 3" is the fact a reader wants and a
-		// separate started row beside every scheduled row is noise.
+		// Temporal schedules an activity once and starts it once per attempt,
+		// so this is the only event that says which try is running — and the
+		// only place an *ending* can learn it from either, which is why the
+		// number is kept whether or not this event is worth a row.
 		attrs := event.GetActivityTaskStartedEventAttributes()
-		entry.Kind = v1.TimelineEntry_KIND_STEP_SCHEDULED
-		entry.ScheduledEventId = attrs.GetScheduledEventId()
-		entry.Attempt = attrs.GetAttempt()
-		entry.Failure = attrs.GetLastFailure().GetMessage()
+		scheduled := attrs.GetScheduledEventId()
 
-		if work, ok := inFlight[attrs.GetScheduledEventId()]; ok {
+		work, known := inFlight[scheduled]
+		if known {
 			entry.Step = work.label
 			work.attempt = attrs.GetAttempt()
 		}
+		entry.ScheduledEventId = scheduled
 
-		// The first attempt is already reported by the scheduling itself, so
-		// only a retry earns a row. This is what makes a stuck run legible
-		// without making an ordinary one twice as long. The attempt is recorded
-		// above either way, since the ending needs it whether or not the start
-		// is worth a row of its own.
+		// The first attempt is already reported by the scheduling itself, which
+		// carries its number too. A row here as well would make an ordinary run
+		// twice as long to read for a fact it already states.
 		if attrs.GetAttempt() <= 1 {
 			return nil
+		}
+
+		// A retry means the try before it did not succeed, and Temporal records
+		// that failure *here* rather than as an event of its own: only a final,
+		// retries-exhausted failure gets an `ActivityTaskFailed`. Reported as
+		// the failure it is rather than as detail on a scheduling, because a
+		// consumer filtering on KIND_STEP_FAILED would otherwise miss every
+		// non-terminal failure — which is to say every failure a *retrying* run
+		// has, the case this whole feature exists for, and the case the schema
+		// already promised one row per attempt of (Codex, #1119).
+		//
+		// The row is about the attempt that ended, not the one starting now.
+		entry.Attempt = attrs.GetAttempt() - 1
+		entry.Failure = boundedFailure(attrs.GetLastFailure().GetMessage())
+
+		// A timeout and an error are different diagnoses and read identically
+		// in a message-only report, so the failure's own shape decides the
+		// kind, exactly as it does for a terminal one.
+		if attrs.GetLastFailure().GetTimeoutFailureInfo() != nil {
+			entry.Kind = v1.TimelineEntry_KIND_STEP_TIMED_OUT
+		} else {
+			entry.Kind = v1.TimelineEntry_KIND_STEP_FAILED
 		}
 
 	case enumspb.EVENT_TYPE_TIMER_STARTED:
@@ -340,13 +397,52 @@ func (s *FlowstateServer) timelineEntry(
 
 	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
 		entry.Kind = v1.TimelineEntry_KIND_RUN_ENDED
-		entry.Failure = event.GetWorkflowExecutionFailedEventAttributes().GetFailure().GetMessage()
+		entry.Failure = boundedFailure(event.GetWorkflowExecutionFailedEventAttributes().GetFailure().GetMessage())
 
 	default:
 		return nil
 	}
 
 	return entry
+}
+
+// timelineFits reports whether one more entry of this size may join an answer
+// that has already assembled this many bytes.
+//
+// A function rather than an expression inline, so the bound is something a test
+// can reach: a bound nothing reaches is a bound nothing tests, and 4 MiB of
+// entries is not a thing a run in a test produces on demand.
+//
+// The first entry always fits. A single oversized row would otherwise come back
+// as an empty truncated answer, which is this API's spelling for "nothing past
+// here is readable" — a much worse thing to say than "here is the row, and
+// there is more".
+func timelineFits(assembled, size, entries int) bool {
+	return entries == 0 || assembled+size <= maxTimelineBytes
+}
+
+// boundedFailure is a failure's message, cut to [maxTimelineFailureBytes].
+//
+// At a rune boundary rather than a byte offset, for the reason
+// `flowtest.truncateRuneSafe` gives: a byte cut through a multi-byte sequence
+// produces invalid UTF-8, which protojson refuses to encode as a string at all
+// — so one overlong message would fail the whole answer's marshalling rather
+// than shorten its own row, on the surface (`-o json`, and MCP) where that
+// matters most.
+//
+// The cut is stated in the text. A message silently shortened is a diagnosis a
+// reader may act on believing they have all of it.
+func boundedFailure(message string) string {
+	if len(message) <= maxTimelineFailureBytes {
+		return message
+	}
+
+	cut := maxTimelineFailureBytes
+	for cut > 0 && !utf8.RuneStart(message[cut]) {
+		cut--
+	}
+
+	return message[:cut] + "…(truncated)"
 }
 
 // summaryText reads the label the interpreter wrote onto a command.

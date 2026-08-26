@@ -35,8 +35,10 @@ type TimelineEntry_Kind int32
 
 const (
 	TimelineEntry_KIND_UNSPECIFIED TimelineEntry_Kind = 0
-	// KIND_STEP_SCHEDULED is a step's work being handed to a worker. Its
-	// attempt number is on the entry.
+	// KIND_STEP_SCHEDULED is a step's work being handed to a worker. One per
+	// activity, carrying attempt 1: a retry is reported as the *failure* that
+	// caused it rather than as a second scheduling, since that is the fact a
+	// reader is looking for and Temporal records the two together anyway.
 	TimelineEntry_KIND_STEP_SCHEDULED TimelineEntry_Kind = 1
 	// KIND_STEP_COMPLETED is a step's work finishing successfully.
 	TimelineEntry_KIND_STEP_COMPLETED TimelineEntry_Kind = 2
@@ -44,6 +46,12 @@ const (
 	// produces one of these per attempt, which is what makes a stuck run
 	// legible: the same step failing five times with the same sentence is a
 	// different fact from five steps failing once.
+	//
+	// Only a *final*, retries-exhausted failure gets an event of its own in a
+	// history; a failure Temporal will retry is carried on the next attempt's
+	// start. Both become one of these, because a consumer filtering on this
+	// kind wanting only the final one is not a consumer this can imagine — the
+	// retrying run is the case anybody reads a timeline for.
 	TimelineEntry_KIND_STEP_FAILED TimelineEntry_Kind = 3
 	// KIND_STEP_TIMED_OUT is an attempt exceeding a timeout rather than
 	// returning an error, which is a different diagnosis and reads identically
@@ -1607,6 +1615,10 @@ type TimelineEntry struct {
 	Step string `protobuf:"bytes,4,opt,name=step,proto3" json:"step,omitempty"`
 	// Attempt is which try this was, starting at 1, on the entries where trying
 	// more than once is possible. Zero elsewhere.
+	//
+	// On a failure it is the attempt that *ended*, not the one starting after it,
+	// so the numbers read as an account: attempt 1 failed, attempt 2 failed,
+	// attempt 3 finished.
 	Attempt int32 `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	// ScheduledEventId joins an entry about a step's work to the
 	// KIND_STEP_SCHEDULED entry that began it, and is zero on entries that are
@@ -1624,7 +1636,8 @@ type TimelineEntry struct {
 	// when a run scheduled the same step id more than once. It is the same join
 	// Temporal itself models.
 	ScheduledEventId int64 `protobuf:"varint,7,opt,name=scheduled_event_id,json=scheduledEventId,proto3" json:"scheduled_event_id,omitempty"`
-	// Failure is the message of the failure, and only its message.
+	// Failure is the message of the failure, and only its message, cut to a
+	// bound the workload does not choose.
 	//
 	// The outermost sentence rather than the chain, exactly as
 	// [PendingActivity.last_failure] reports it and for that field's reason: the
@@ -1632,6 +1645,14 @@ type TimelineEntry struct {
 	// converter writes *every* level of an unwrapped error into what it
 	// persists, so a chain is the one shape most likely to carry something a
 	// scrubbed outer message deliberately dropped.
+	//
+	// Bounded because a task fails with whatever string it likes and a run
+	// started by an outside party is not ours to assume anything about — and
+	// bounded twice, since a per-message cap times an entry ceiling is still
+	// several megabytes: the answer as a whole stops against a serialized-size
+	// budget too, and says that it stopped. A cut message says so in its own
+	// text, because a diagnosis silently shortened is one a reader may act on
+	// believing they have all of it.
 	Failure       string `protobuf:"bytes,6,opt,name=failure,proto3" json:"failure,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

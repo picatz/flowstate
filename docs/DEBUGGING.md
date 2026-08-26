@@ -275,13 +275,31 @@ It starts nothing, signals nothing and changes nothing, which is what makes it
 the one verb about a live workload that an agent can be pointed at unattended —
 `flowstate_get_timeline` over MCP is the same answer.
 
-A step that retried appears once per attempt, with the attempt number and the
-sentence the previous one failed with, which is what makes a stuck run legible:
-the same step failing five times the same way is a different fact from five
-steps failing once. The row saying how a step *ended* carries that attempt
-number too, which Temporal does not record on it — a terminal event references
-the scheduling and the start and names no attempt, so the account carries it
+A step that retried appears once per attempt as a `failed` row, which is what
+makes a stuck run legible: the same step failing five times the same way is a
+different fact from five steps failing once.
+
+```
+TIME      WHAT     STEP        DETAIL
+10:14:02  step     `charge`    attempt 1
+10:14:04  failed   `charge`    attempt 1 after: connection refused
+10:14:09  failed   `charge`    attempt 2 after: connection refused
+10:14:24  done     `charge`    attempt 3
+```
+
+Getting that right needed two facts Temporal does not hand over directly. Only
+a *final*, retries-exhausted failure gets an event of its own; a failure that
+will be retried is carried on the next attempt's start, so reporting it as
+detail on a scheduling row would leave anything filtering on failures seeing
+none of them — which is to say none of the failures a retrying run has. And no
+terminal event names an attempt at all: `ActivityTaskFailed` references the
+scheduling and the start and stops there, so the account carries the number
 forward from the start it belongs to.
+
+A failure's message is bounded, and says so when it was cut. A task fails with
+whatever string it likes, and a run started by an outside party is not ours to
+assume anything about; the answer as a whole stops against a byte budget too,
+because a per-message cap times an entry ceiling is still several megabytes.
 
 `truncated` says the account is not the whole of a segment — never something to
 infer from a short answer. Continue it with `--after-event-id` set to the last
