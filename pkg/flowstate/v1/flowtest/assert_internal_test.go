@@ -34,12 +34,12 @@ func TestSkipClaimsOverParallelBranchesAreRefusedOnFailedRuns(t *testing.T) {
 	}}
 	runErr := errors.New("the block did not finish")
 
-	failures := assertExpectation(&Expectation{Failed: &expectFailed, Skipped: []string{"inside"}}, spec, outputs, runErr)
+	failures := assertExpectation(&Expectation{Failed: &expectFailed, Skipped: []string{"inside"}}, spec, outputs, runErr, sensitiveInputs{})
 	if len(failures) != 1 || !strings.Contains(failures[0].GetMessage(), "cannot be told apart") {
 		t.Fatalf("skipped: naming a parallel branch step on a failed run was not refused: %+v", failures)
 	}
 
-	failures = assertExpectation(&Expectation{Failed: &expectFailed, Ran: []string{"before"}, Others: OthersSkipped}, spec, outputs, runErr)
+	failures = assertExpectation(&Expectation{Failed: &expectFailed, Ran: []string{"before"}, Others: OthersSkipped}, spec, outputs, runErr, sensitiveInputs{})
 	if len(failures) != 1 || !strings.Contains(failures[0].GetMessage(), "cannot verify it was skipped") {
 		t.Fatalf("others: skipped closing over a parallel branch step on a failed run was not refused: %+v", failures)
 	}

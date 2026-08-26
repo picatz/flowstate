@@ -876,7 +876,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
@@ -1362,7 +1362,7 @@ func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
 // failure mode a test framework may not have — a green test that should be
 // red is worse than a framework that cannot run at all, because the second
 // one is at least visibly broken.
-func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error) []*v1.Diagnostic {
+func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 
 	failed := runErr != nil
@@ -1510,7 +1510,7 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	}
 
 	if want.Outputs != nil {
-		failures = append(failures, compareOutputs(want.Outputs, outputs.GetRunOutputs().GetValues())...)
+		failures = append(failures, compareOutputs(want.Outputs, outputs.GetRunOutputs().GetValues(), sensitive)...)
 	}
 
 	return failures
@@ -1599,7 +1599,20 @@ func topLevelStepUniverse(nodes []*v1.Node, universe map[string]bool) {
 // expected, both directions: a missing key and an extra one are both
 // reported, because a case naming three outputs and getting a fourth
 // unexpected one is a case whose workflow no longer matches its own promise.
-func compareOutputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnostic {
+//
+// Every value it names goes through [redactedScalarText], which is the same
+// two passes and the same 48-rune cap the `expect.check` witnesses take
+// ([checkWitnesses]). The two are sibling halves of one `expect:` block and
+// were not the same: checks rendered through the redaction seam, outputs
+// through a bare `%v`, and `assertChecks` was handed the sensitive set on the
+// line below the call that was not. That is this repository's most-paid-for
+// shape — one question answered twice, and only one of the answers looked at.
+//
+// Both sides are rendered through it, not just the run's. An expected value is
+// written in the file, so it is the author's own — but a case may name a value
+// that *equals* a declared-sensitive one, and a diff printing it in the clear
+// beside the redacted actual would disclose it by elimination.
+func compareOutputs(want map[string]any, got map[string]*v1.Value, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 
 	for name, wantVal := range want {
@@ -1614,9 +1627,10 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnos
 		}
 		if errKind := gotVal.GetError(); errKind != nil {
 			failures = append(failures, &v1.Diagnostic{
-				Field:   "expect.outputs",
-				Value:   name,
-				Message: fmt.Sprintf("output %q: expected %v, but evaluating it failed: %s", name, wantVal, errKind.GetMessage()),
+				Field: "expect.outputs",
+				Value: name,
+				Message: fmt.Sprintf("output %q: expected %s, but evaluating it failed: %s",
+					name, redactedScalarText(wantVal, sensitive), redactedBareText(errKind.GetMessage(), sensitive)),
 			})
 			continue
 		}
@@ -1625,15 +1639,16 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnos
 			failures = append(failures, &v1.Diagnostic{
 				Field:   "expect.outputs",
 				Value:   name,
-				Message: fmt.Sprintf("output %q: could not compare: %v", name, err),
+				Message: fmt.Sprintf("output %q: could not compare: %s", name, redactedBareText(err.Error(), sensitive)),
 			})
 			continue
 		}
 		if !looseEqual(wantVal, gotNative) {
 			failures = append(failures, &v1.Diagnostic{
-				Field:   "expect.outputs",
-				Value:   name,
-				Message: fmt.Sprintf("output %q: expected %v, got %v", name, wantVal, gotNative),
+				Field: "expect.outputs",
+				Value: name,
+				Message: fmt.Sprintf("output %q: expected %s, got %s",
+					name, redactedScalarText(wantVal, sensitive), redactedScalarText(gotNative, sensitive)),
 			})
 		}
 	}
