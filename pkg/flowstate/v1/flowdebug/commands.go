@@ -381,14 +381,13 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 	at := breakpoint{source: rest}
 	if conditional {
-		compiled, err := compileCondition(condition, scope)
+		compiled, names, err := compileCondition(condition, scope)
 		if err != nil {
 			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
 
 			return
 		}
-		at.condition = compiled
-		at.names = conditionNames(compiled)
+		at.condition, at.names = compiled, names
 	}
 
 	s.mu.Lock()
@@ -396,6 +395,11 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 	full := !replacing && len(s.breakpoints) >= MaxBreakpoints
 	if !full {
 		s.breakpoints[id] = at
+		// A replacement is a different question, so it gets its own chance to
+		// say it could not be asked. Carrying the old notice over would leave
+		// a second unbound condition skipped in silence, after the prompt said
+		// it was set (Codex, #1116).
+		delete(s.notedUnbound, id)
 	}
 	s.mu.Unlock()
 
@@ -455,18 +459,18 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 // A [v1.Value] holding a parsed expression, so that evaluating it is literally
 // [v1.EvalConditionInScope] — the engine's own function — rather than a second
 // implementation that could disagree with it.
-func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
+func compileCondition(expression string, scope *v1.Scope) (*v1.Value, []string, error) {
 	if expression == "" {
-		return nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
+		return nil, nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
 	}
 
 	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ast, issues := env.Parse(expression)
 	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("parse condition: %w", issues.Err())
+		return nil, nil, fmt.Errorf("parse condition: %w", issues.Err())
 	}
 
 	// Parsing is syntax only, so `1 + true` and `missing_function(n)` both
@@ -485,36 +489,57 @@ func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
 	// diagnostic about a condition that will be perfectly valid when it fires.
 	checked, err := checkedInScope(env, ast)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// And it has to be a boolean, refused here rather than at the first
 	// arrival — the same shape `compileMustIn` uses for the other place this
 	// repository compiles an author's boolean rule (`constraints.go:238-245`).
 	if checked.OutputType() != cel.BoolType && checked.OutputType() != cel.DynType {
-		return nil, fmt.Errorf("a condition must be a boolean, and this one is %s", checked.OutputType())
+		return nil, nil, fmt.Errorf("a condition must be a boolean, and this one is %s", checked.OutputType())
 	}
 
 	parsed, err := cel.AstToParsedExpr(ast)
 	if err != nil {
-		return nil, fmt.Errorf("parse condition: %w", err)
+		return nil, nil, fmt.Errorf("parse condition: %w", err)
 	}
 
-	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, nil
+	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, conditionNames(checked, parsed), nil
 }
 
 // conditionNames are the names a condition needs bound to be a question about
-// a scope at all — every identifier it reads except the ones that are only
-// namespace spellings for a function.
-func conditionNames(condition *v1.Value) []string {
-	names, selfBound := map[string]struct{}{}, map[string]struct{}{}
-	collectIdentifiers(condition.GetExpr().GetExpr(), names, selfBound)
+// a scope at all.
+//
+// Read out of the *checker's* own resolution rather than classified here. An
+// earlier version guessed from syntactic position — a call target was taken to
+// be a namespace — which is right for `math.abs(n)` and wrong for
+// `total.startsWith("3")`, where the receiver is an ordinary value that has to
+// resolve (Codex, #1116). The two are indistinguishable by shape and perfectly
+// distinguishable by what the checker did with them: a reference carrying
+// overloads is a function, one carrying only a name is a variable.
+//
+// Macro bindings are the one thing the reference map cannot tell apart, since
+// `cel.bind(doubled, …)` expands to a comprehension whose accumulator is a
+// genuine variable reference — bound by the expression rather than read from
+// the scope. Those come from the parse tree, where the binding is visible as
+// what it is.
+func conditionNames(checked *cel.Ast, parsed *expr.ParsedExpr) []string {
+	macroBound := map[string]struct{}{}
+	collectIdentifiers(parsed.GetExpr(), map[string]struct{}{}, macroBound)
 
-	out := make([]string, 0, len(names))
-	for name := range names {
-		if _, own := selfBound[name]; own {
+	required := map[string]struct{}{}
+	for _, reference := range checked.NativeRep().ReferenceMap() {
+		if len(reference.OverloadIDs) > 0 || reference.Name == "" {
 			continue
 		}
+		if _, own := macroBound[reference.Name]; own {
+			continue
+		}
+		required[reference.Name] = struct{}{}
+	}
+
+	out := make([]string, 0, len(required))
+	for name := range required {
 		out = append(out, name)
 	}
 	sort.Strings(out)
@@ -566,13 +591,11 @@ func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
 // `steps`, and declaring `steps` dynamically is what makes the whole chain
 // legal without claiming to know its shape.
 //
-// selfBound, when non-nil, collects separately the names an expression does
-// not read from the scope: the `math` of `math.abs(n)`, which is a namespace
-// spelling rather than a value, and the `doubled` of `cel.bind(doubled, …)`,
-// which the macro binds itself. Nothing resolves either in an activation, so
-// asking whether they are bound would answer no about every profile function
-// and every macro binding. See [Session.breakpointHolds], the caller that
-// needs them told apart.
+// selfBound, when non-nil, collects separately the names the expression binds
+// for itself — a comprehension's iteration and accumulator variables, which is
+// what `cel.bind` and `exists` expand to. Those are not read from the scope,
+// so requiring them to resolve there would decline every macro. See
+// [conditionNames].
 func collectIdentifiers(e *expr.Expr, into, selfBound map[string]struct{}) {
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
@@ -582,12 +605,7 @@ func collectIdentifiers(e *expr.Expr, into, selfBound map[string]struct{}) {
 		collectIdentifiers(kind.SelectExpr.GetOperand(), into, selfBound)
 
 	case *expr.Expr_CallExpr:
-		if target := kind.CallExpr.GetTarget(); target != nil {
-			if ident := target.GetIdentExpr(); ident != nil && selfBound != nil {
-				selfBound[ident.GetName()] = struct{}{}
-			}
-			collectIdentifiers(target, into, selfBound)
-		}
+		collectIdentifiers(kind.CallExpr.GetTarget(), into, selfBound)
 		for _, arg := range kind.CallExpr.GetArgs() {
 			collectIdentifiers(arg, into, selfBound)
 		}
@@ -633,6 +651,7 @@ func (s *Session) deleteBreakpoint(id string) {
 	s.mu.Lock()
 	_, existed := s.breakpoints[id]
 	delete(s.breakpoints, id)
+	delete(s.notedUnbound, id)
 	s.mu.Unlock()
 
 	s.record("delete " + id)

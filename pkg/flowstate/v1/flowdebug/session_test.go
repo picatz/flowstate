@@ -1241,3 +1241,74 @@ func TestAConditionIsAskedOnlyWhereItsNamesAreBound(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(out, "is not bound here"),
 		"once per breakpoint, not once per iteration — the case this exists for is a loop")
 }
+
+// TestAReceiverVariableIsStillARequiredName (Codex, #1116).
+//
+// `total.startsWith("3")` reads `total` from the scope; `math.abs(n)` does
+// not read `math` from anywhere. The two are the same shape — an identifier in
+// call-target position — and classifying by shape got the second right and the
+// first wrong, which put the unbound-name guard back to sleep for exactly the
+// conditions most likely to use it.
+//
+// The checker knows the difference, so it is asked instead: a reference
+// carrying overloads is a function, one carrying only a name is a variable.
+func TestAReceiverVariableIsStillARequiredName(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader(`break page if total.startsWith("3")` + "\ncontinue\ncontinue\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	seen := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, seen))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	siblings := &v1.Workflow{Name: "siblings", Steps: []*v1.Node{
+		{Id: "first", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList(1, 2), Iterator: "n",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+		{Id: "second", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList("3", "4"), Iterator: "total",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+	}}
+
+	_, err = v1.Run(ctx, siblings)
+	require.NoError(t, err)
+
+	out := console.String()
+
+	assert.Equal(t, 1, strings.Count(out, "break at page"),
+		"a receiver has to resolve like any other name, so the first loop is declined rather than stopped in")
+	assert.Contains(t, out, `"total" is not bound here`)
+}
+
+// TestReplacingABreakpointRestoresItsNotice (Codex, #1116).
+//
+// The unbound notice prints once per breakpoint, which is what keeps a loop
+// from printing it per iteration. A replacement is a different question and
+// has to get its own chance to say it could not be asked — otherwise the
+// second condition is skipped in silence after the prompt reported it set,
+// which is the silent-never-fires failure the notice exists to prevent.
+func TestReplacingABreakpointRestoresItsNotice(t *testing.T) {
+	t.Parallel()
+
+	// The first condition has to actually *fire* its notice before the
+	// replacement, or the stale state this is about never exists. The run is
+	// held before the first step, so: set the first condition, `step` into an
+	// iteration where it is declined and the notice prints, replace it there,
+	// then let the rest of the loop run.
+	out, ran := loopingRun(t, 4,
+		"break body if absent_one == 1\nstep\nbreak body if absent_two == 2\ncontinue\n")
+
+	assert.Len(t, ran, 4)
+	assert.Contains(t, out, `"absent_one" is not bound here`,
+		"the first condition reports before it is replaced, which is what makes the state stale")
+	assert.Contains(t, out, `"absent_two" is not bound here`,
+		"and the replacement gets its own notice rather than inheriting the first's")
+}
