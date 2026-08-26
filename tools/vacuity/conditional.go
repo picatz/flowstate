@@ -2,6 +2,8 @@ package main
 
 import (
 	"go/ast"
+	"go/token"
+	"strconv"
 	"strings"
 )
 
@@ -72,7 +74,7 @@ func assertsOutsideLoops(fn *analyzed, asserters map[string]bool) bool {
 		if !ok {
 			return true
 		}
-		if assertion(call) || handsOverTheHandle(call, fn.handles) {
+		if assertion(call, fn.handles) || handsOverTheHandle(call.Args, fn.handles) {
 			outside = true
 		}
 		if name, ok := call.Fun.(*ast.Ident); ok && asserters[name.Name] {
@@ -124,9 +126,13 @@ func skipsWhenEmpty(body ast.Node) bool {
 		if !ok {
 			return true
 		}
-		// What matters is that a length decides whether the test goes on, not
-		// how the comparison is spelled.
-		if mentionsLen(stmt.Cond) && skipsWithin(stmt.Body) {
+		// The branch has to be the *empty* one. Merely mentioning a length is
+		// not enough: `if len(cases) > max { t.Skip(…) }` skips an oversized
+		// corpus and is not taken by an empty one, so the loop still runs zero
+		// times and the test still passes having claimed nothing — while the
+		// report goes quiet about it, which is worse than never having looked
+		// (Codex, #1125).
+		if emptiness(stmt.Cond) && skipsWithin(stmt.Body) {
 			skips = true
 		}
 
@@ -155,22 +161,71 @@ func skipsWithin(block ast.Node) bool {
 	return found
 }
 
-// mentionsLen reports whether an expression calls len.
-func mentionsLen(expr ast.Expr) bool {
-	found := false
-	ast.Inspect(expr, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "len" {
-			found = true
-		}
+// emptiness reports whether a condition is true exactly when something is
+// empty.
+//
+// The three spellings people use — `len(x) == 0`, `len(x) < 1`, `len(x) <= 0` —
+// in either operand order. Anything else is refused rather than guessed at: a
+// condition this cannot read is one whose taken branch might be the non-empty
+// case, and settling a finding on that basis is how a check goes quiet about
+// the thing it was written for.
+func emptiness(expr ast.Expr) bool {
+	compare, ok := expr.(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
 
-		return true
-	})
+	length, bound, operator := compare.X, compare.Y, compare.Op
+	if !callsLen(length) {
+		// `0 == len(x)`, which is the same claim written the other way round.
+		length, bound = compare.Y, compare.X
+		switch operator {
+		case token.LSS:
+			operator = token.GTR
+		case token.LEQ:
+			operator = token.GEQ
+		case token.GTR:
+			operator = token.LSS
+		case token.GEQ:
+			operator = token.LEQ
+		}
+	}
+	if !callsLen(length) {
+		return false
+	}
 
-	return found
+	switch operator {
+	case token.EQL:
+		return isInt(bound, 0)
+	case token.LSS:
+		return isInt(bound, 1)
+	case token.LEQ:
+		return isInt(bound, 0)
+	}
+
+	return false
+}
+
+// callsLen reports whether an expression is a call to len.
+func callsLen(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	name, ok := call.Fun.(*ast.Ident)
+
+	return ok && name.Name == "len"
+}
+
+// isInt reports whether an expression is the given untyped integer literal.
+func isInt(expr ast.Expr, want int) bool {
+	literal, ok := expr.(*ast.BasicLit)
+	if !ok || literal.Kind != token.INT {
+		return false
+	}
+	value, err := strconv.Atoi(literal.Value)
+
+	return err == nil && value == want
 }
 
 // holdsAssertion reports whether a node contains a claim.
@@ -181,7 +236,7 @@ func holdsAssertion(node ast.Node, handles, asserters map[string]bool) bool {
 		if !ok {
 			return true
 		}
-		if assertion(call) || handsOverTheHandle(call, handles) {
+		if assertion(call, handles) || handsOverTheHandle(call.Args, handles) {
 			found = true
 		}
 		if name, ok := call.Fun.(*ast.Ident); ok && asserters[name.Name] {

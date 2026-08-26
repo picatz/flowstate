@@ -166,6 +166,17 @@ type analyzed struct {
 // analyzePackage reports the findings in one parsed package, and how many test
 // functions it looked at.
 func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
+	// The names this package holds a testing handle under, beyond a
+	// function's own parameter: a struct field of that type, which is how a
+	// test client that wraps `t` reaches it (`c.t.Fatalf(…)`). Collected
+	// package-wide because the wrapper and the test that uses it are ordinarily
+	// in the same package, and a syntax walk has no types with which to follow
+	// a field to its declaration.
+	fields := map[string]bool{}
+	for _, from := range files {
+		collectHandleFields(from, fields)
+	}
+
 	functions := map[string]*analyzed{}
 	for _, from := range files {
 		for _, decl := range from.file.Decls {
@@ -173,7 +184,7 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 			if !ok || fn.Body == nil || fn.Recv != nil {
 				continue
 			}
-			functions[fn.Name.Name] = analyzeFunc(fn, from)
+			functions[fn.Name.Name] = analyzeFunc(fn, from, fields)
 		}
 	}
 
@@ -249,9 +260,12 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 }
 
 // analyzeFunc reads one function for what it asserts and whom it calls.
-func analyzeFunc(fn *ast.FuncDecl, from source) *analyzed {
+func analyzeFunc(fn *ast.FuncDecl, from source, fields map[string]bool) *analyzed {
 	out := &analyzed{decl: fn, from: from, calls: map[string]bool{}, handles: map[string]bool{}}
 
+	for name := range fields {
+		out.handles[name] = true
+	}
 	namesHandles(fn.Type, from.testing, out.handles)
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		if lit, ok := node.(*ast.FuncLit); ok {
@@ -267,7 +281,7 @@ func analyzeFunc(fn *ast.FuncDecl, from source) *analyzed {
 			return true
 		}
 
-		if assertion(call) {
+		if assertion(call, out.handles) {
 			out.asserts = true
 		}
 		if name, ok := call.Fun.(*ast.Ident); ok {
@@ -280,18 +294,56 @@ func analyzeFunc(fn *ast.FuncDecl, from source) *analyzed {
 	// A second pass, because the handles are only complete once the first has
 	// finished: a closure declared after a call still names the same `t`.
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if handsOverTheHandle(call, out.handles) {
-			out.asserts = true
+		switch node := node.(type) {
+		case *ast.CallExpr:
+			if handsOverTheHandle(node.Args, out.handles) {
+				out.asserts = true
+			}
+
+		case *ast.CompositeLit:
+			// `&conn{t: t}` hands the handle over exactly as `f(t)` does — the
+			// value now holds the power to fail the test, and this analysis has
+			// no types with which to follow it into the methods that use it.
+			// It is the shape a test client takes (`cmd/flow/dap_test.go`'s
+			// `&dapConn{t: t, …}`), so leaving it out would call every test
+			// driven through one vacuous.
+			for _, element := range node.Elts {
+				value := element
+				if keyed, ok := element.(*ast.KeyValueExpr); ok {
+					value = keyed.Value
+				}
+				if handsOverTheHandle([]ast.Expr{value}, out.handles) {
+					out.asserts = true
+				}
+			}
 		}
 
 		return true
 	})
 
 	return out
+}
+
+// collectHandleFields adds every struct field of a testing-handle type to
+// names.
+func collectHandleFields(from source, names map[string]bool) {
+	ast.Inspect(from.file, func(node ast.Node) bool {
+		structure, ok := node.(*ast.StructType)
+		if !ok || structure.Fields == nil {
+			return true
+		}
+
+		for _, field := range structure.Fields.List {
+			if !isTestingHandle(field.Type, from.testing) {
+				continue
+			}
+			for _, name := range field.Names {
+				names[name.Name] = true
+			}
+		}
+
+		return true
+	})
 }
 
 // namesHandles adds every parameter of a testing-handle type to names.
@@ -387,7 +439,21 @@ func named(expr ast.Expr, testing string, names ...string) bool {
 }
 
 // assertion reports whether a call can fail a test on its own.
-func assertion(call *ast.CallExpr) bool {
+//
+// The receiver is checked, and the first version of this did not check it —
+// which is a hole in the *fatal* gate rather than a tidiness. `t.Errorf` is an
+// assertion; `err.Error()` and `fmt.Errorf(…)` are not, and a prefix match on
+// the method name alone cannot tell them apart. Since `err.Error()` appears in
+// almost every test in this tree, a test that made no claim at all would have
+// been read as asserting and walked straight past the check that exists to
+// catch it. The comment where that rule used to live said "nothing else in
+// this tree has a method with these names", which was not true when it was
+// written (Codex, #1125).
+//
+// So a handle it is: the identifier the function knows its `*testing.T` by, or
+// a field of that type reached through one selector — `c.t.Fatalf(…)`, the
+// shape a test client wrapping the handle uses.
+func assertion(call *ast.CallExpr, handles map[string]bool) bool {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -400,27 +466,44 @@ func assertion(call *ast.CallExpr) bool {
 		}
 	}
 
-	// `t.Fatalf`, `t.Errorf`, `t.Fail` — on whatever the handle is called, and
-	// on an embedded one, which is why the receiver is not checked. Nothing
-	// else in this tree has a method with these names, and reading one as an
-	// assertion errs toward silence anyway.
 	name := selector.Sel.Name
+	if !strings.HasPrefix(name, "Fatal") && !strings.HasPrefix(name, "Error") &&
+		!strings.HasPrefix(name, "Fail") {
+		return false
+	}
 
-	return strings.HasPrefix(name, "Fatal") || strings.HasPrefix(name, "Error") ||
-		strings.HasPrefix(name, "Fail")
+	return isHandle(selector.X, handles)
 }
 
-// handsOverTheHandle reports whether a call passes a testing handle as an
-// argument.
+// isHandle reports whether an expression is something this function can fail
+// the test through.
+func isHandle(expr ast.Expr, handles map[string]bool) bool {
+	switch expr := expr.(type) {
+	case *ast.Ident:
+		return handles[expr.Name]
+
+	case *ast.SelectorExpr:
+		// `c.t.Fatalf(…)`: the field a wrapper holds its handle in. Matched by
+		// the field's *name*, collected from every struct in the package that
+		// declares a field of a testing-handle type — so it is the package's
+		// own vocabulary rather than a guess at what people call it.
+		return handles[expr.Sel.Name]
+	}
+
+	return false
+}
+
+// handsOverTheHandle reports whether any of these expressions is a testing
+// handle being given away.
 //
 // That is a delegation of the power to fail, and this analysis has no types
 // with which to follow it across a package. So it counts as an assertion: a
 // test that gives its `t` to a conformance helper is asserting whatever that
 // helper asserts, and calling it vacuous would be a confident wrong answer
 // about the one shape this tree uses most.
-func handsOverTheHandle(call *ast.CallExpr, handles map[string]bool) bool {
-	for _, arg := range call.Args {
-		name, ok := arg.(*ast.Ident)
+func handsOverTheHandle(values []ast.Expr, handles map[string]bool) bool {
+	for _, value := range values {
+		name, ok := value.(*ast.Ident)
 		if ok && handles[name.Name] {
 			return true
 		}

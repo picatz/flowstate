@@ -26,7 +26,7 @@ func analyzedFixture(t *testing.T, source string) []Finding {
 	t.Helper()
 
 	findings, _ := analyzedFile(t, "fixture_test.go",
-		"package fixture\n\nimport (\n\t\"testing\"\n\n\t\"github.com/stretchr/testify/require\"\n)\n\nvar _ = require.NotEmpty\n\n"+source)
+		"package fixture\n\nimport (\n\t\"fmt\"\n\t\"testing\"\n\n\t\"github.com/stretchr/testify/require\"\n)\n\nvar _ = require.NotEmpty\nvar _ = fmt.Sprint\n\n"+source)
 
 	return findings
 }
@@ -287,6 +287,122 @@ func TestGuarded(t *testing.T) {
 	}
 }
 `), "the guard %q did not settle the finding, so the report asks for a fix it does not accept", guard)
+	}
+}
+
+// TestOnlyAFailureThroughTheHandleCountsIsAnAssertion closes the hole that
+// would have made the fatal check unenforceable.
+//
+// `t.Errorf` fails a test. `err.Error()` and `fmt.Errorf(…)` do not, and a
+// prefix match on the method name cannot tell them apart. Since `err.Error()`
+// appears in almost every test in this tree, reading it as an assertion meant
+// a test that claimed nothing at all walked past the one check that fails a
+// build (Codex, #1125).
+func TestOnlyAFailureThroughTheHandleCountsIsAnAssertion(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(analyzedFixture(t, `
+func TestLooksLikeItAsserts(t *testing.T) {
+	err := fmt.Errorf("something")
+	_ = err.Error()
+	_ = fmt.Errorf("wrapping: %w", err)
+}
+`)), "a test whose only `Error`-named calls are on an error was read as asserting")
+
+	// The same method name, through the handle, is the real thing.
+	assert.Empty(t, analyzedFixture(t, `
+func TestReallyAsserts(t *testing.T) {
+	if 1 != 1 {
+		t.Errorf("impossible")
+	}
+}
+`), "failing through the handle was not read as asserting")
+
+	// And through a field of that type, read directly. `h.t.Fatalf(…)` fails
+	// the test as surely as `t.Fatalf(…)` does, and the receiver is a selector
+	// rather than the identifier the function was handed — so the field names
+	// the package declares as handles are part of its vocabulary too.
+	assert.Empty(t, analyzedFixture(t, `
+type harness struct {
+	t *testing.T
+}
+
+func TestThroughAField(t *testing.T) {
+	h := harness{}
+	h.t = t
+	if 1 != 1 {
+		h.t.Fatalf("impossible")
+	}
+}
+`), "failing through a handle held in a field was not read as asserting")
+
+	// Giving the handle away by *storing* it is the same delegation as passing
+	// it to a call: the value now holds the power to fail, and this analysis
+	// cannot follow it into the methods that use it. It is the shape a test
+	// client takes — `cmd/flow/dap_test.go`'s `&dapConn{t: t, …}` — so leaving
+	// it out would call every test driven through one vacuous.
+	assert.Empty(t, analyzedFixture(t, `
+type conn struct {
+	t *testing.T
+}
+
+func (c *conn) mustWork() {
+	c.t.Fatalf("it did not")
+}
+
+func TestThroughAWrapper(t *testing.T) {
+	c := &conn{t: t}
+	c.mustWork()
+}
+`), "a wrapper handed the handle in a literal was not read as asserting")
+}
+
+// TestASkipMustBeTakenWhenTheCorpusIsEmpty is the guard's direction.
+//
+// `if len(cases) > max { t.Skip(…) }` mentions a length and skips, and is not
+// taken by an empty corpus — so the loop still runs zero times, the test still
+// claims nothing, and settling the finding on it makes the report go quiet
+// about exactly what it exists to say (Codex, #1125).
+func TestASkipMustBeTakenWhenTheCorpusIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	for _, settles := range []string{
+		"if len(cases) == 0 {",
+		"if 0 == len(cases) {",
+		"if len(cases) < 1 {",
+		"if len(cases) <= 0 {",
+	} {
+		assert.Empty(t, analyzedFixture(t, `
+func TestGuarded(t *testing.T) {
+	cases := conformance.Cases()
+	`+settles+`
+		t.Skip("nothing to check")
+	}
+
+	for _, one := range cases {
+		require.NotZero(t, one)
+	}
+}
+`), "%q is an emptiness test and did not settle the finding", settles)
+	}
+
+	for _, doesNot := range []string{
+		"if len(cases) > 100 {",
+		"if len(cases) != 0 {",
+		"if len(cases) >= 1 {",
+	} {
+		assert.Equal(t, []string{string(CheckConditional)}, checksFound(analyzedFixture(t, `
+func TestGuardedWrong(t *testing.T) {
+	cases := conformance.Cases()
+	`+doesNot+`
+		t.Skip("not this run")
+	}
+
+	for _, one := range cases {
+		require.NotZero(t, one)
+	}
+}
+`)), "%q is not taken when the corpus is empty and settled the finding anyway", doesNot)
 	}
 }
 
