@@ -965,9 +965,19 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			return request.line, true, nil
 
 		case <-s.done:
-			// [Session.Close] while parked. A reading session already learns
-			// this when its reader exits and closes lines; a controlled one has
-			// no reader to hear it from, and would hold the run forever.
+			// [Session.Close] while parked. A controlled session has no reader
+			// to hear it from and would otherwise hold the run forever.
+			//
+			// Live for a *reading* session too, deliberately, and it is a
+			// small trade rather than an oversight. A reader blocked inside
+			// `console.Prompt` or `scanner.Scan` does not exit on Close until
+			// its I/O returns, so before this a console session closed
+			// mid-prompt stayed parked; this releases it. What it costs is
+			// that when this arm wins a race with the reader's own exit, the
+			// reason the stream ended (`readErr`, published just before lines
+			// is closed) may not be set yet, so the boundary prints the plain
+			// "no more commands" rather than naming a scanner error. A worse
+			// sentence in a narrow race, against a hang that was certain.
 			s.mu.Lock()
 			s.closed = true
 			s.mu.Unlock()
