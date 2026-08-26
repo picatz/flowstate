@@ -1185,3 +1185,59 @@ func TestAConditionMayCallTheProfilesNamespacedFunctions(t *testing.T) {
 		})
 	}
 }
+
+// TestAConditionIsAskedOnlyWhereItsNamesAreBound (Codex, #1116).
+//
+// A step id names a *visibility domain*, not a step: two sibling loops may
+// each declare a body step called `page`, which `flowfile` has a whole test
+// file about getting right elsewhere. Breakpoints are keyed by id, so
+// `break page if total == 3` is a breakpoint at both — and in the first loop
+// `total` is bound nowhere, so asking the condition there errors, and the
+// stop-on-error rule then held the run in the loop the author was not
+// debugging. Three stops where one was meant.
+//
+// The condition is now asked only where its names are bound. Where they are
+// not it is not a question about that occurrence at all, which is a different
+// thing from a question whose answer is no.
+func TestAConditionIsAskedOnlyWhereItsNamesAreBound(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("break page if total == 3\ncontinue\ncontinue\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	seen := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, seen))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	// Two sibling loops, each with a body step called `page`. Only the second
+	// binds `total`, so only its iterations can answer the condition.
+	siblings := &v1.Workflow{Name: "siblings", Steps: []*v1.Node{
+		{Id: "first", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList(1, 2), Iterator: "n",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+		{Id: "second", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList(3, 4), Iterator: "total",
+			Body: []*v1.Node{markStep("page")},
+		}}},
+	}}
+
+	_, err = v1.Run(ctx, siblings)
+	require.NoError(t, err)
+
+	out := console.String()
+
+	assert.Equal(t, 1, strings.Count(out, "break at page"),
+		"once, in the loop that binds the name the condition reads — not in the sibling that does not")
+
+	// And it is not silent about the occurrences it declined to ask at, so a
+	// mistyped name still reports rather than looking like an answer of no.
+	assert.Contains(t, out, `"total" is not bound here`)
+	assert.Equal(t, 1, strings.Count(out, "is not bound here"),
+		"once per breakpoint, not once per iteration — the case this exists for is a loop")
+}

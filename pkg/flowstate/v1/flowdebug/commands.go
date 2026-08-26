@@ -388,6 +388,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 			return
 		}
 		at.condition = compiled
+		at.names = conditionNames(compiled)
 	}
 
 	s.mu.Lock()
@@ -502,6 +503,25 @@ func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
 	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, nil
 }
 
+// conditionNames are the names a condition needs bound to be a question about
+// a scope at all — every identifier it reads except the ones that are only
+// namespace spellings for a function.
+func conditionNames(condition *v1.Value) []string {
+	names, selfBound := map[string]struct{}{}, map[string]struct{}{}
+	collectIdentifiers(condition.GetExpr().GetExpr(), names, selfBound)
+
+	out := make([]string, 0, len(names))
+	for name := range names {
+		if _, own := selfBound[name]; own {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+
+	return out
+}
+
 // checkedInScope type-checks an expression against an environment extended
 // with every identifier it references, declared dynamically.
 //
@@ -516,7 +536,7 @@ func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
 	}
 
 	names := map[string]struct{}{}
-	collectIdentifiers(parsed.GetExpr(), names)
+	collectIdentifiers(parsed.GetExpr(), names, nil)
 
 	declarations := make([]cel.EnvOption, 0, len(names))
 	for name := range names {
@@ -545,29 +565,42 @@ func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
 // Only the *root* of a selection: `steps.build.ok` reads the identifier
 // `steps`, and declaring `steps` dynamically is what makes the whole chain
 // legal without claiming to know its shape.
-func collectIdentifiers(e *expr.Expr, into map[string]struct{}) {
+//
+// selfBound, when non-nil, collects separately the names an expression does
+// not read from the scope: the `math` of `math.abs(n)`, which is a namespace
+// spelling rather than a value, and the `doubled` of `cel.bind(doubled, …)`,
+// which the macro binds itself. Nothing resolves either in an activation, so
+// asking whether they are bound would answer no about every profile function
+// and every macro binding. See [Session.breakpointHolds], the caller that
+// needs them told apart.
+func collectIdentifiers(e *expr.Expr, into, selfBound map[string]struct{}) {
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
 		into[kind.IdentExpr.GetName()] = struct{}{}
 
 	case *expr.Expr_SelectExpr:
-		collectIdentifiers(kind.SelectExpr.GetOperand(), into)
+		collectIdentifiers(kind.SelectExpr.GetOperand(), into, selfBound)
 
 	case *expr.Expr_CallExpr:
-		collectIdentifiers(kind.CallExpr.GetTarget(), into)
+		if target := kind.CallExpr.GetTarget(); target != nil {
+			if ident := target.GetIdentExpr(); ident != nil && selfBound != nil {
+				selfBound[ident.GetName()] = struct{}{}
+			}
+			collectIdentifiers(target, into, selfBound)
+		}
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectIdentifiers(arg, into)
+			collectIdentifiers(arg, into, selfBound)
 		}
 
 	case *expr.Expr_ListExpr:
 		for _, element := range kind.ListExpr.GetElements() {
-			collectIdentifiers(element, into)
+			collectIdentifiers(element, into, selfBound)
 		}
 
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectIdentifiers(entry.GetMapKey(), into)
-			collectIdentifiers(entry.GetValue(), into)
+			collectIdentifiers(entry.GetMapKey(), into, selfBound)
+			collectIdentifiers(entry.GetValue(), into, selfBound)
 		}
 
 	case *expr.Expr_ComprehensionExpr:
@@ -578,11 +611,15 @@ func collectIdentifiers(e *expr.Expr, into map[string]struct{}) {
 		comprehension := kind.ComprehensionExpr
 		into[comprehension.GetIterVar()] = struct{}{}
 		into[comprehension.GetAccuVar()] = struct{}{}
-		collectIdentifiers(comprehension.GetIterRange(), into)
-		collectIdentifiers(comprehension.GetAccuInit(), into)
-		collectIdentifiers(comprehension.GetLoopCondition(), into)
-		collectIdentifiers(comprehension.GetLoopStep(), into)
-		collectIdentifiers(comprehension.GetResult(), into)
+		if selfBound != nil {
+			selfBound[comprehension.GetIterVar()] = struct{}{}
+			selfBound[comprehension.GetAccuVar()] = struct{}{}
+		}
+		collectIdentifiers(comprehension.GetIterRange(), into, selfBound)
+		collectIdentifiers(comprehension.GetAccuInit(), into, selfBound)
+		collectIdentifiers(comprehension.GetLoopCondition(), into, selfBound)
+		collectIdentifiers(comprehension.GetLoopStep(), into, selfBound)
+		collectIdentifiers(comprehension.GetResult(), into, selfBound)
 	}
 }
 

@@ -310,6 +310,11 @@ type Session struct {
 	mode        mode
 	until       string
 	breakpoints map[string]breakpoint
+
+	// notedUnbound remembers which breakpoints have already reported an
+	// unbound condition name, so the notice is one line rather than one per
+	// iteration. See [Session.noteUnbound].
+	notedUnbound map[string]struct{}
 	// script records accepted commands, in order, for replay, and scriptBytes
 	// is what they weigh — see [MaxScriptBytes], which the count bound beside
 	// it does not imply.
@@ -628,6 +633,10 @@ func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) bo
 type breakpoint struct {
 	source    string
 	condition *v1.Value
+
+	// names are what the condition needs bound to be a question about a scope
+	// at all. See [Session.breakpointHolds].
+	names []string
 }
 
 // breakpointHolds answers whether an arrival at a breakpoint should stop.
@@ -652,6 +661,32 @@ type breakpoint struct {
 func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint, scope *v1.Scope) bool {
 	if at.condition == nil {
 		return true
+	}
+
+	// A step id names a *visibility domain*, not a step: two sibling loops may
+	// each declare a body step called `page`, and this map is keyed by id, so
+	// one `break page if total == 3` is a breakpoint at both. Where the
+	// condition's names are not bound, it is not a question about that
+	// occurrence — asking anyway errors, and the rule below would then stop
+	// the run in the first loop for a condition written about the second
+	// (Codex, #1116).
+	//
+	// Answered by asking the activation rather than by reading the error text
+	// it would produce: what the condition needs is a property of the
+	// expression, known when it was accepted, and a message is a thing that
+	// changes between cel-go releases.
+	//
+	// Not silent, because the fail-closed argument below still applies to a
+	// mistyped name: a condition that never fires anywhere must not look like
+	// one whose answer was always no. The notice prints once per breakpoint,
+	// so a run of ten thousand iterations says it once.
+	activation := scope.Activation(ctx)
+	for _, name := range at.names {
+		if _, bound := activation.ResolveName(name); !bound {
+			s.noteUnbound(id, name)
+
+			return false
+		}
 	}
 
 	holds, err := v1.EvalConditionInScope(ctx, at.condition, scope)
@@ -903,6 +938,29 @@ func (s *Session) sawStep(id string) {
 		return
 	}
 	s.seen[id] = struct{}{}
+}
+
+// noteUnbound reports, once per breakpoint, that a condition could not be
+// asked at a step because a name it reads is not bound there.
+//
+// Once, because the alternative is a line per arrival — and the case this
+// exists for is a loop, where that is a line per iteration. Once is enough to
+// tell a mistyped name from a condition about a different `page`: the first
+// never fires anywhere and says so, the second fires where it belongs.
+func (s *Session) noteUnbound(id, name string) {
+	s.mu.Lock()
+	if s.notedUnbound == nil {
+		s.notedUnbound = map[string]struct{}{}
+	}
+	_, already := s.notedUnbound[id]
+	s.notedUnbound[id] = struct{}{}
+	s.mu.Unlock()
+
+	if already {
+		return
+	}
+
+	s.printfTone(ToneWarning, "breakpoint at %s: %q is not bound here, so the condition is not asked at this step\n", id, name)
 }
 
 // consoleEnded says why the command stream stopped, in words an author can
