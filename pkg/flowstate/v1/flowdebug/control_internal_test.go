@@ -45,7 +45,7 @@ func TestDeliverReportsThePauseThatTookTheCommand(t *testing.T) {
 		session.mu.Unlock()
 		require.Zero(t, asked, "nothing has paused, so there is no generation to have")
 
-		delivered := make(chan uint64, 1)
+		delivered := make(chan controlTaken, 1)
 		go func() {
 			took, deliverErr := session.deliver(t.Context(), "step")
 			assert.NoError(t, deliverErr)
@@ -55,7 +55,7 @@ func TestDeliverReportsThePauseThatTookTheCommand(t *testing.T) {
 		// Nothing can take the command yet, so nothing can answer it.
 		select {
 		case took := <-delivered:
-			t.Fatalf("a command was taken before the run existed, at generation %d", took)
+			t.Fatalf("a command was taken before the run existed, at generation %d", took.generation)
 		case <-time.After(100 * time.Millisecond):
 		}
 
@@ -68,7 +68,7 @@ func TestDeliverReportsThePauseThatTookTheCommand(t *testing.T) {
 			}, scope)
 		}()
 
-		took := <-delivered
+		took := (<-delivered).generation
 		assert.Greater(t, took, asked,
 			"the boundary reported the generation the caller had already read, so a wait "+
 				"measured from it is satisfied by the very pause that took the command")
@@ -103,7 +103,7 @@ func TestDeliverReportsThePauseThatTookTheCommand(t *testing.T) {
 
 		took, err := session.deliver(t.Context(), "step")
 		require.NoError(t, err)
-		assert.Equal(t, stopped, took,
+		assert.Equal(t, stopped, took.generation,
 			"the command was taken at the pause the run was sitting in, and the boundary "+
 				"named a different one")
 

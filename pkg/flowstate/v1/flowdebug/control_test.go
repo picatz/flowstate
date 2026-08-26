@@ -349,6 +349,97 @@ func TestClosingReleasesARunHeldByNobody(t *testing.T) {
 	}
 }
 
+// TestAMovementCommandAtAnAutopsyEndsTheWait is the stop that does not come.
+//
+// An autopsy takes `step`, `continue` and `until` as requests to *leave*: all
+// three land in the clause that records `quit` and returns, which the prompt's
+// own help says out loud. So a movement verb there has no next stop by
+// construction — and a wait for one blocked until [Session.Close] or the
+// context expired.
+//
+// The quiet version is worse than the hang. A session reused for a second case
+// would eventually see that case's first pause and hand it back as the result
+// of moving a run that had already finished (Codex, #1122).
+func TestAMovementCommandAtAnAutopsyEndsTheWait(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		session.Autopsy(t.Context(), v1.NewScope(v1.CurrentProfile, nil), nil,
+			[]string{"a failure"})
+	}()
+
+	require.Eventually(t, func() bool {
+		at, paused := session.Paused()
+
+		return paused && at.Autopsy
+	}, 10*time.Second, time.Millisecond, "the autopsy never took hold")
+
+	// Bounded well under the ten seconds a hang would take, so this fails as a
+	// wrong answer rather than as a timeout somebody has to interpret.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	at, err := session.Continue(ctx)
+	assert.ErrorIs(t, err, flowdebug.ErrRunOver,
+		"moving a finished run waited for a stop that cannot come")
+	assert.NotErrorIs(t, err, context.DeadlineExceeded,
+		"the answer arrived as a timeout, which a caller cannot tell from a slow run")
+	assert.Empty(t, at.Step)
+
+	// And the command still did what it says at that prompt: it left.
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the autopsy did not take the movement command as a request to leave")
+	}
+}
+
+// TestASecondCallerCanGiveUpWaitingForTheControlSlot is [Session.Control]'s own
+// promise, kept where it was broken.
+//
+// Commands are serialized, because a run has one position and two callers
+// moving it at once is a caller mistake rather than something to arbitrate.
+// The slot was a [sync.Mutex], which has no cancellable acquire — so a second
+// caller blocked on it *before* reaching any of the context-aware selects, and
+// if the first command was never consumed it never returned at all, whatever
+// its deadline said (Codex, #1122).
+func TestASecondCallerCanGiveUpWaitingForTheControlSlot(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	// No run, so nothing can ever take this command: the first caller holds
+	// the slot for as long as the session lives.
+	held, cancelHeld := context.WithCancel(t.Context())
+	defer cancelHeld()
+
+	holding := make(chan struct{})
+	go func() {
+		close(holding)
+		_ = session.Control(held, "step")
+	}()
+	<-holding
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+
+	err = session.Control(ctx, "continue")
+	require.Error(t, err, "a second command was accepted while the first still held the slot")
+	assert.ErrorIs(t, err, context.DeadlineExceeded,
+		"the second caller did not come back when its context expired, so its deadline "+
+			"bounded nothing")
+}
+
 // TestAControlledCommandIsOneLineAndBounded is the bound this surface owes.
 //
 // [MaxCommandBytes] is enforced by whatever reads a typed line, so the text

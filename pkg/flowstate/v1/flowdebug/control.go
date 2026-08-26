@@ -67,12 +67,22 @@ var ErrNotControlled = errors.New("flowdebug: this session was not created with 
 // controlRequest is one command on its way to a parked boundary, with the
 // channel the boundary answers on.
 //
-// The answer is the generation of the pause the command was delivered into,
-// which only the receiver can know: see the control arm of
-// [Session.readCommand].
+// The answer describes the pause the command was delivered into, which only
+// the receiver can know: see the control arm of [Session.readCommand].
 type controlRequest struct {
 	line string
-	at   chan<- uint64
+	at   chan<- controlTaken
+}
+
+// controlTaken is which pause took a command.
+type controlTaken struct {
+	// generation identifies that pause, so a caller can wait for a later one
+	// without having to guess where it was.
+	generation uint64
+
+	// autopsy reports that the pause was the account of a finished run, where
+	// every movement verb means "leave" and there is no next stop.
+	autopsy bool
 }
 
 // Control delivers one command line to the paused run, from any goroutine.
@@ -99,13 +109,13 @@ func (s *Session) Control(ctx context.Context, line string) error {
 }
 
 // deliver is [Session.Control], also reporting which pause took the command.
-func (s *Session) deliver(ctx context.Context, line string) (uint64, error) {
+func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error) {
 	s.mu.Lock()
 	controlled := s.controlled
 	s.mu.Unlock()
 
 	if !controlled {
-		return 0, ErrNotControlled
+		return controlTaken{}, ErrNotControlled
 	}
 
 	// The same bound a console owes on a typed line, applied where this line
@@ -113,7 +123,7 @@ func (s *Session) deliver(ctx context.Context, line string) (uint64, error) {
 	// caller reaching this method arrives on no reader at all — the identical
 	// asymmetry [Session.Evaluate] has for expressions.
 	if len(line) > MaxCommandBytes {
-		return 0, fmt.Errorf("flowdebug: a command may be %d bytes and this one is %d",
+		return controlTaken{}, fmt.Errorf("flowdebug: a command may be %d bytes and this one is %d",
 			MaxCommandBytes, len(line))
 	}
 
@@ -122,32 +132,43 @@ func (s *Session) deliver(ctx context.Context, line string) (uint64, error) {
 	// something no prompt could have produced — with the second one landing
 	// wherever the first left the run.
 	if strings.ContainsAny(line, "\r\n") {
-		return 0, errors.New("flowdebug: a command is one line, and this one holds a line break")
+		return controlTaken{}, errors.New("flowdebug: a command is one line, and this one holds a line break")
 	}
 
-	s.controlMu.Lock()
-	defer s.controlMu.Unlock()
+	// The serialization slot, taken cancellably. Waiting for it is part of the
+	// wait this method's context is promised to bound, and a [sync.Mutex] has
+	// no cancellable acquire — so a second caller would block *before* reaching
+	// either select below, and never return at all if the first command is
+	// never consumed (Codex, #1122).
+	select {
+	case s.controlSlot <- struct{}{}:
+		defer func() { <-s.controlSlot }()
+	case <-ctx.Done():
+		return controlTaken{}, ctx.Err()
+	case <-s.done:
+		return controlTaken{}, ErrRunOver
+	}
 
 	// Buffered, so the boundary's answer never depends on this goroutine still
 	// being here to hear it: a caller whose context expires between the send
 	// and the answer must not leave a parked run blocked on writing to nobody.
-	at := make(chan uint64, 1)
+	at := make(chan controlTaken, 1)
 
 	select {
 	case s.control <- controlRequest{line: line, at: at}:
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return controlTaken{}, ctx.Err()
 	case <-s.done:
-		return 0, ErrRunOver
+		return controlTaken{}, ErrRunOver
 	}
 
 	select {
-	case generation := <-at:
-		return generation, nil
+	case taken := <-at:
+		return taken, nil
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return controlTaken{}, ctx.Err()
 	case <-s.done:
-		return 0, ErrRunOver
+		return controlTaken{}, ErrRunOver
 	}
 }
 
@@ -232,7 +253,18 @@ func (s *Session) move(ctx context.Context, line string) (Position, error) {
 		return Position{}, err
 	}
 
-	return s.waitForPause(ctx, took)
+	// An autopsy takes a movement verb as a request to leave — `step`,
+	// `continue` and `until` all land in the clause that records `quit` and
+	// returns — so there is no next stop by construction. Waiting for one
+	// would block until [Session.Close] or the context, and on a session
+	// reused for a second case it would eventually answer with *that* case's
+	// first pause, reported as the result of moving a run that had already
+	// finished (Codex, #1122).
+	if took.autopsy {
+		return Position{}, ErrRunOver
+	}
+
+	return s.waitForPause(ctx, took.generation)
 }
 
 // waitForPause blocks until the session is paused on a generation later than

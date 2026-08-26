@@ -393,11 +393,18 @@ type Session struct {
 	controlled bool
 	control    chan controlRequest
 
-	// controlMu admits one [Session.Control] at a time. A run has one
+	// controlSlot admits one [Session.Control] at a time. A run has one
 	// position, so two callers moving it at once is not a thing to arbitrate
 	// between — it is a caller mistake, and serializing turns it into an
 	// ordering rather than an interleaving of two commands into one prompt.
-	controlMu sync.Mutex
+	//
+	// A channel rather than a [sync.Mutex] because waiting for the slot is
+	// part of the wait a caller's context is promised to bound. A mutex has no
+	// cancellable acquire, so a second caller would block on it *before*
+	// reaching either context-aware select — and if the first command is never
+	// consumed, that second caller never returns at all, whatever its deadline
+	// says (Codex, #1122).
+	controlSlot chan struct{}
 
 	// pauseGen counts changes to at, and pauseChanged is closed and replaced
 	// on each one, so a caller can wait for the run to stop somewhere new
@@ -467,6 +474,7 @@ func New(opts Options) (*Session, error) {
 
 		controlled:   opts.Controlled,
 		control:      make(chan controlRequest),
+		controlSlot:  make(chan struct{}, 1),
 		pauseChanged: make(chan struct{}),
 	}
 	if s.out == nil {
@@ -936,18 +944,23 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			// second implementation of every verb, free to disagree with the
 			// one people type — which is this repository's most-paid-for shape.
 			//
-			// The generation of the pause this command is being delivered into
-			// goes back to the sender, because only here is it knowable. A
-			// sender reading it before the send has not been delivered yet and
+			// Which pause this command is being delivered into goes back to
+			// the sender, because only here is it knowable. A sender reading
+			// the generation before the send has not been delivered yet and
 			// would name the pause *before* the one it lands in; reading it
 			// after gets whatever the run has since done. So the receiver
 			// answers, on a channel of its own that is buffered and therefore
 			// never blocks this boundary on a sender that has gone away. See
 			// [Session.move].
+			//
+			// Whether it is an autopsy travels with it for the same reason and
+			// decides the same question one step later: at an autopsy every
+			// movement verb means "leave", so there is no next stop to wait
+			// for and the sender has to be told rather than left waiting.
 			s.mu.Lock()
-			generation := s.pauseGen
+			taken := controlTaken{generation: s.pauseGen, autopsy: s.at.autopsy}
 			s.mu.Unlock()
-			request.at <- generation
+			request.at <- taken
 
 			return request.line, true, nil
 
