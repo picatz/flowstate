@@ -2,6 +2,7 @@ package flowdebug_test
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +248,66 @@ func TestAControlledSessionOutlivesItsStream(t *testing.T) {
 		"the run was let go when the script ran out, so the controller lost it")
 
 	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+}
+
+// stalling is a console that never answers, which is what a real terminal with
+// nobody at it does.
+type stalling struct{ release chan struct{} }
+
+func (c *stalling) Prompt() (string, error) {
+	<-c.release
+
+	return "", io.EOF
+}
+
+// TestAControllerIsNotBlockedByAConsoleNobodyIsTypingAt is the composition
+// deadlocking on its third stop.
+//
+// The reader is asked for a line at each boundary and the request is tracked in
+// a one-token channel, which was documented as "at most one request is
+// outstanding" — true while a line could only ever come from the reader. Once a
+// control command can satisfy a boundary instead, the reader keeps owing a line
+// nobody collects: the next boundary queues a second token, and the one after
+// that blocks forever on a full channel, in a select with no context arm and no
+// control arm to rescue it (Codex, #1122).
+//
+// Three stops is what it takes to show, so this walks four steps. The console
+// here never answers at all, which is not exotic — it is a terminal with nobody
+// at it, beside an adapter doing the driving.
+func TestAControllerIsNotBlockedByAConsoleNobodyIsTypingAt(t *testing.T) {
+	t.Parallel()
+
+	console := &stalling{release: make(chan struct{})}
+	// Released at the end so the reader goroutine does not outlive the test
+	// parked inside Prompt.
+	t.Cleanup(func() { close(console.release) })
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled: true,
+		Console:    console,
+		Out:        &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	finished := walked(t, session, "build", "test", "deploy", "ship")
+
+	// Bounded, so a boundary that can no longer hear a command fails as an
+	// error naming the stop rather than as a test timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+
+	for _, want := range []string{"test", "deploy", "ship"} {
+		at, stepErr := session.Step(ctx)
+		require.NoError(t, stepErr,
+			"the run stopped somewhere its controller could no longer reach it, on the "+
+				"way to %q", want)
+		assert.Equal(t, want, at.Step)
+	}
+
+	require.NoError(t, session.Control(ctx, "continue"))
 	require.NoError(t, <-finished)
 }
 

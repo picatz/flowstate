@@ -388,6 +388,19 @@ type Session struct {
 	// reads it; see [Session.sawStep] for why it cannot be inferred later.
 	seenShort bool
 
+	// wantOutstanding says the reader has been asked for a line and has not
+	// delivered one yet.
+	//
+	// The buffered `wants` channel was documented as meaning "at most one
+	// request is outstanding", and that was true while a line could only ever
+	// arrive from the reader. Once a control command can satisfy a boundary
+	// instead, the reader keeps owing a line that nobody collects — so the
+	// next boundary would queue a *second* token, and the one after that would
+	// block forever on a full channel, in a select with no context and no
+	// control arm. A session with a blocking console and a controller
+	// deadlocked on its third stop (Codex, #1122).
+	wantOutstanding bool
+
 	// controlled is [Options.Controlled], and control carries the lines
 	// [Session.Control] delivers. See control.go.
 	controlled bool
@@ -895,22 +908,48 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			})
 			lines = s.lines
 
-			select {
-			case s.wants <- struct{}{}:
-			case <-s.done:
-				return "", false, nil
+			// Asked for only when the reader does not already owe one. The
+			// channel holds one token, and a reader that has taken a token and
+			// not yet answered still owes this session a line — see
+			// [Session.wantOutstanding] for what queueing a second one does.
+			s.mu.Lock()
+			outstanding := s.wantOutstanding
+			if !outstanding {
+				s.wantOutstanding = true
 			}
+			s.mu.Unlock()
 
-			// The prompt is the session's to draw only when it is reading a stream. A
-			// console draws its own, because a line editor has to know the prompt's
-			// width to put the cursor anywhere.
-			if console == nil {
-				s.printfTone(TonePrompt, Prompt)
+			if !outstanding {
+				// Cannot block: nothing is outstanding, so the one-token
+				// channel is empty. The arm is kept for the torn-down case,
+				// where the reader has gone and the token would sit unread.
+				select {
+				case s.wants <- struct{}{}:
+				case <-s.done:
+					return "", false, nil
+				}
+
+				// The prompt is the session's to draw only when it is reading a stream. A
+				// console draws its own, because a line editor has to know the prompt's
+				// width to put the cursor anywhere.
+				//
+				// Drawn with the request rather than with the boundary, for the
+				// same reason: a second `debug> ` for a line already being
+				// waited on is a prompt describing nothing.
+				if console == nil {
+					s.printfTone(TonePrompt, Prompt)
+				}
 			}
 		}
 
 		select {
 		case text, open := <-lines:
+			// The reader has answered — with a line, or by going away — so it
+			// owes nothing until asked again.
+			s.mu.Lock()
+			s.wantOutstanding = false
+			s.mu.Unlock()
+
 			if !open {
 				s.mu.Lock()
 				s.closed = true
