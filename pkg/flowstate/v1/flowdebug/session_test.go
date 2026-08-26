@@ -917,3 +917,118 @@ func TestACommandOfExactlyTheBoundIsAccepted(t *testing.T) {
 	assert.Equal(t, []string{"inspect " + command[len("inspect "):], "continue"}, session.Script(),
 		"it should have been accepted, answered, and recorded like any other")
 }
+
+// A conditional breakpoint is what makes this debugger usable at the workload
+// shape it exists for. `break` on a step inside a `for_each` stops on every
+// iteration, and over MCP a script is bounded at a hundred commands — so
+// without a condition an agent cannot reach iteration 5,000 of a large loop at
+// all, and a human types `continue` until they give up.
+
+// loopingRun runs a `for_each` over n items under a session fed by script,
+// with one step in the body, and returns what the console saw.
+//
+// The binding is what the whole feature is about, so the fixture is a real
+// loop rather than a scope built in Go: `runForEach` binds the iterator with
+// WithLocal and hands *that* scope to the debugger, and a test constructing
+// the scope directly would prove the condition evaluates and say nothing about
+// whether the name it needs is there (CLAUDE.md).
+func loopingRun(t *testing.T, n int, script string) (out string, ran []string) {
+	t.Helper()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader(script),
+		Out: &console,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	seen := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, seen))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	items := make([]any, 0, n)
+	for i := range n {
+		items = append(items, i)
+	}
+
+	looping := &v1.Workflow{Name: "looping", Steps: []*v1.Node{{
+		Id: "each",
+		Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items:    v1.NewLiteralList(items...),
+			Iterator: "n",
+			Body:     []*v1.Node{markStep("body")},
+		}},
+	}}}
+
+	_, err = v1.Run(ctx, looping)
+	require.NoError(t, err)
+
+	return console.String(), seen.ids
+}
+
+// TestAConditionalBreakpointStopsAtTheIterationItNames is the traversal, not
+// the step: twenty iterations, one stop, at the one the condition names.
+func TestAConditionalBreakpointStopsAtTheIterationItNames(t *testing.T) {
+	t.Parallel()
+
+	// `continue` twice: once to leave the first-step stop, once to leave the
+	// conditional stop and let the loop finish.
+	out, ran := loopingRun(t, 20, "break body if n == 7\ncontinue\ncontinue\n")
+
+	assert.Len(t, ran, 20, "every iteration still runs; a condition decides stopping, not running")
+	assert.Equal(t, 1, strings.Count(out, "break at body"),
+		"stopped once, at the iteration the condition named — not on all twenty")
+	assert.Contains(t, out, "breakpoint at body if n == 7")
+}
+
+// TestAConditionThatIsNeverTrueNeverStops is the negative direction, and the
+// one a test asserting only "it stopped" would miss.
+func TestAConditionThatIsNeverTrueNeverStops(t *testing.T) {
+	t.Parallel()
+
+	out, ran := loopingRun(t, 5, "break body if n == 99\ncontinue\n")
+
+	assert.Len(t, ran, 5)
+	assert.NotContains(t, out, "break at body",
+		"a condition no iteration satisfies is a breakpoint that never fires")
+}
+
+// TestABreakpointConditionThatErrorsStopsAndSaysWhy.
+//
+// Fail closed, read for a debugger: the component that allows when it cannot
+// decide is the one that lets a run proceed unattended past the point somebody
+// asked to hold it. A breakpoint that looks armed and silently never fires is
+// the outcome with no symptom, so an errored condition stops.
+//
+// `n.missing` parses — it is a field selection — and fails at evaluation,
+// which is exactly the shape that cannot be caught when `break` accepts it.
+func TestABreakpointConditionThatErrorsStopsAndSaysWhy(t *testing.T) {
+	t.Parallel()
+
+	out, ran := loopingRun(t, 3, "break body if n.missing\ncontinue\ncontinue\ncontinue\ncontinue\n")
+
+	assert.Len(t, ran, 3)
+	assert.Contains(t, out, "break at body", "an unevaluatable condition holds the run rather than waving it past")
+	assert.Contains(t, out, "cannot be trusted to say no",
+		"and says why, or the stop looks like the condition having been true")
+}
+
+// TestABreakpointWithAMalformedConditionIsRefusedWhenItIsTyped.
+//
+// Compiled when `break` accepts it, not at each arrival — the shape this
+// repository uses for a rule (auth.SecretAccessPolicy.Compile, netpolicy's
+// rule compiler) rather than the shape `inspect` uses for a question. A
+// breakpoint accepted broken is worse than one refused: it reads as armed.
+func TestABreakpointWithAMalformedConditionIsRefusedWhenItIsTyped(t *testing.T) {
+	t.Parallel()
+
+	out, ran := loopingRun(t, 3, "break body if n ===\nbreakpoints\ncontinue\n")
+
+	assert.Len(t, ran, 3)
+	assert.Contains(t, out, "parse condition", "the refusal names what is wrong, at the moment it is typed")
+	assert.NotContains(t, out, "break at body",
+		"and nothing is set: a refused breakpoint must not half-exist")
+	assert.Contains(t, out, "no breakpoints",
+		"which `breakpoints` confirms rather than leaving to inference")
+}

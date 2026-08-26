@@ -27,12 +27,31 @@ nothing here is worth learning twice.
 | `continue`, `c` | run to the next breakpoint, or to the end |
 | `until <step-id>`, `u` | run to that step without stopping in between |
 | `break <step-id>`, `b` | stop there whenever it is reached |
+| `break <step-id> if <expr>` | stop there only when the expression holds |
 | `delete <step-id>`, `d` | remove that breakpoint |
 | `breakpoints` | list them |
 | `inspect <expr>`, `p` | evaluate a CEL expression against the paused run |
 | `scope` | list what the run can name right now |
 | `info` | describe the step it is stopped at |
 | `quit`, `q` | end the run here (which fails the case — see below) |
+
+A condition is the step's own `if:`, evaluated where the breakpoint is: the
+same function, the same scope, and the same refusal of anything that is not a
+boolean. So inside a `for_each` the loop's binding is in scope —
+`break charge if item.amount > 500` stops at the one iteration you care about
+instead of all ten thousand — and a condition cannot mean something different
+here than it would written on the step.
+
+It is compiled when you type it, not at each arrival. A malformed expression is
+refused there and then, with nothing set: a breakpoint accepted broken looks
+armed and never fires, which is the failure with no symptom. A condition that
+*evaluates* to an error stops the run and says why, for the same reason — a
+debugger that waved a run past a gate it could not evaluate would be deciding
+"no" on the strength of not knowing.
+
+Over MCP this is the difference between reachable and not. A script is bounded
+at a hundred commands, so `break charge if item.id == "x"` then `continue` is
+two commands where stepping to the five-thousandth iteration is impossible.
 
 ## The prompt
 

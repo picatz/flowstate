@@ -309,7 +309,7 @@ type Session struct {
 	mu          sync.Mutex
 	mode        mode
 	until       string
-	breakpoints map[string]struct{}
+	breakpoints map[string]breakpoint
 	// script records accepted commands, in order, for replay, and scriptBytes
 	// is what they weigh — see [MaxScriptBytes], which the count bound beside
 	// it does not imply.
@@ -397,7 +397,7 @@ func New(opts Options) (*Session, error) {
 		emit:        opts.Emit,
 		console:     opts.Console,
 		clock:       opts.Clock,
-		breakpoints: make(map[string]struct{}, len(opts.Breakpoints)),
+		breakpoints: make(map[string]breakpoint, len(opts.Breakpoints)),
 		done:        make(chan struct{}),
 		steps:       slices.Clone(opts.Steps),
 		seen:        map[string]struct{}{},
@@ -417,7 +417,7 @@ func New(opts Options) (*Session, error) {
 	}
 	for _, id := range opts.Breakpoints {
 		if id = strings.TrimSpace(id); id != "" {
-			s.breakpoints[id] = struct{}{}
+			s.breakpoints[id] = breakpoint{}
 		}
 	}
 
@@ -471,7 +471,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 
 	s.sawStep(node.GetId())
 
-	if !s.shouldStop(node.GetId()) {
+	if !s.shouldStop(ctx, node.GetId(), scope) {
 		return nil
 	}
 
@@ -597,22 +597,71 @@ func (s *Session) WaitStarted(id, signal string, timeout time.Duration, bounded 
 // a step nobody named; it could not, because no boundary is reached without a
 // resume in between, and a mutation removing it failed no test. Answering the
 // question and changing nothing is the honest shape.
-func (s *Session) shouldStop(id string) bool {
+func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	at, isBreakpoint := s.breakpoints[id]
+	mode, until := s.mode, s.until
+	s.mu.Unlock()
 
-	if _, isBreakpoint := s.breakpoints[id]; isBreakpoint {
+	if isBreakpoint && s.breakpointHolds(ctx, id, at, scope) {
 		return true
 	}
 
-	switch s.mode {
+	switch mode {
 	case modeStop:
 		return true
 	case modeUntil:
-		return s.until == id
+		return until == id
 	default:
 		return false
 	}
+}
+
+// A breakpoint is a step id and, optionally, the condition that decides
+// whether reaching it stops the run.
+//
+// The condition is a [v1.Value] holding a parsed expression rather than the
+// source text, because it is compiled once when `break` accepts it and
+// evaluated at every arrival — see [Session.addBreakpoint] for why those are
+// not the same moment. Source is kept beside it for `breakpoints` to print and
+// for the replay script to reproduce.
+type breakpoint struct {
+	source    string
+	condition *v1.Value
+}
+
+// breakpointHolds answers whether an arrival at a breakpoint should stop.
+//
+// Evaluated outside s.mu — the condition is the author's own CEL and calling
+// into the evaluator under the session lock would hold it for the length of an
+// expression somebody else wrote. [Session.BeforeStep] already serialises
+// boundaries through promptMu, so nothing here races a second arrival.
+//
+// The condition is the step's own `if:`, deliberately: same function, same
+// scope, same refusal of a non-boolean ([v1.EvalConditionInScope]). A second
+// bool-coercion rule beside the engine's would be two answers to one question,
+// and a breakpoint that disagreed with the `if:` written on the same step is a
+// debugger lying about the language it debugs.
+//
+// An error stops the run and says why. That is fail-closed read for a
+// debugger: the component that allows when it cannot decide is the one that
+// lets a run proceed unattended past the point somebody asked to hold it, and
+// a breakpoint that looks set and silently never fires is the outcome with no
+// symptom. Stopping also makes the reporting free — the session is parked, so
+// the reason prints once rather than once per arrival.
+func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint, scope *v1.Scope) bool {
+	if at.condition == nil {
+		return true
+	}
+
+	holds, err := v1.EvalConditionInScope(ctx, at.condition, scope)
+	if err != nil {
+		s.printfTone(ToneWarning, "breakpoint at %s: %v (stopping, because a condition that cannot be evaluated cannot be trusted to say no)\n", id, err)
+
+		return true
+	}
+
+	return holds
 }
 
 // resume sets what happens at the next boundary.

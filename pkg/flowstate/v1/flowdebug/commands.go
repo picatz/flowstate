@@ -3,6 +3,7 @@ package flowdebug
 import (
 	"context"
 	"fmt"
+	"github.com/google/cel-go/cel"
 	"slices"
 	"sort"
 	"strings"
@@ -65,8 +66,8 @@ var commands = []command{
 		help: "run until the next breakpoint, or to the end"},
 	{verb: "until", aliases: []string{"u"}, argument: "<step-id>", completes: completesStep,
 		help: "run until the step with that id"},
-	{verb: "break", aliases: []string{"b"}, argument: "<step-id>", completes: completesStep,
-		help: "stop at that step whenever it is reached"},
+	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [if <expr>]", completes: completesStep,
+		help: "stop at that step, always or when the expression holds"},
 	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint,
 		help: "remove that breakpoint"},
 	{verb: "breakpoints", completes: completesNothing,
@@ -146,7 +147,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		return true, nil
 
 	case "break":
-		s.addBreakpoint(strings.TrimSpace(rest))
+		s.addBreakpoint(ctx, strings.TrimSpace(rest), scope)
 
 		return false, nil
 
@@ -349,17 +350,45 @@ func (s *Session) showStep(node *v1.Node) {
 	}
 }
 
-func (s *Session) addBreakpoint(id string) {
+// addBreakpoint takes `<step-id>` or `<step-id> if <expr>`.
+//
+// The condition is compiled here rather than at each arrival, which is the
+// difference between this and `inspect`. `inspect` parses at evaluation time
+// ([v1.Evaluator.EvalString]) and that is right for a question asked once; a
+// breakpoint condition is a rule that fires at every arrival, and this
+// repository's own shape for a rule is that it compiles when it is *accepted*
+// rather than when it is reached — see `auth.SecretAccessPolicy.Compile` and
+// netpolicy's rule compiler. So a malformed expression is refused now, loudly,
+// with nothing set: a breakpoint accepted broken is worse than one refused,
+// because it looks armed and never fires.
+//
+// `if` over `when` because `if:` is already this language's word for a
+// condition gating whether something happens, and the parse is positional — a
+// step legally named `if` is still the id, since the first word always is.
+func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scope) {
+	id, condition := splitCondition(rest)
 	if id == "" {
-		s.printfTone(ToneWarning, "break needs a step id: break <step-id>\n")
+		s.printfTone(ToneWarning, "break needs a step id: break <step-id> [if <expr>]\n")
 
 		return
 	}
 
+	at := breakpoint{source: rest}
+	if condition != "" {
+		compiled, err := compileCondition(condition, scope)
+		if err != nil {
+			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
+
+			return
+		}
+		at.condition = compiled
+	}
+
 	s.mu.Lock()
-	full := len(s.breakpoints) >= MaxBreakpoints
+	_, replacing := s.breakpoints[id]
+	full := !replacing && len(s.breakpoints) >= MaxBreakpoints
 	if !full {
-		s.breakpoints[id] = struct{}{}
+		s.breakpoints[id] = at
 	}
 	s.mu.Unlock()
 
@@ -368,8 +397,56 @@ func (s *Session) addBreakpoint(id string) {
 
 		return
 	}
-	s.record("break " + id)
-	s.printf("breakpoint at %s\n", id)
+	s.record("break " + rest)
+	if at.condition == nil {
+		s.printf("breakpoint at %s\n", id)
+
+		return
+	}
+	s.printf("breakpoint at %s if %s\n", id, condition)
+}
+
+// splitCondition reads `<step-id>` or `<step-id> if <expr>`.
+//
+// One more [split] rather than a grammar: the vocabulary is one table parsed by
+// taking the first word and handing the rest on ([Session.dispatch]), and
+// `inspect` already treats its whole rest as an expression. Anything after the
+// `if` is the expression, spaces and all.
+func splitCondition(rest string) (id, condition string) {
+	id, tail := split(strings.TrimSpace(rest))
+	keyword, expression := split(tail)
+	if keyword != "if" {
+		return id, ""
+	}
+
+	return id, strings.TrimSpace(expression)
+}
+
+// compileCondition parses a breakpoint's condition against the run's own
+// profile, returning it in the shape a step's `if:` travels in.
+//
+// A [v1.Value] holding a parsed expression, so that evaluating it is literally
+// [v1.EvalConditionInScope] — the engine's own function — rather than a second
+// implementation that could disagree with it.
+func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
+	if expression == "" {
+		return nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
+	}
+
+	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())
+	if err != nil {
+		return nil, err
+	}
+	ast, issues := env.Parse(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("parse condition: %w", issues.Err())
+	}
+	parsed, err := cel.AstToParsedExpr(ast)
+	if err != nil {
+		return nil, fmt.Errorf("parse condition: %w", err)
+	}
+
+	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, nil
 }
 
 func (s *Session) deleteBreakpoint(id string) {
@@ -396,8 +473,13 @@ func (s *Session) deleteBreakpoint(id string) {
 func (s *Session) listBreakpoints() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.breakpoints))
-	for id := range s.breakpoints {
-		ids = append(ids, id)
+	for id, at := range s.breakpoints {
+		// Printed as it was typed, so a reader can copy one back onto a
+		// `break` line and get the breakpoint they are looking at.
+		ids = append(ids, at.source)
+		if at.source == "" {
+			ids[len(ids)-1] = id
+		}
 	}
 	s.mu.Unlock()
 
