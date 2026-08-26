@@ -77,6 +77,8 @@ var commands = []command{
 		help: "evaluate a CEL expression against this run's scope"},
 	{verb: "scope", completes: completesNothing,
 		help: "list what this run can name right now"},
+	{verb: "complete", argument: "<partial-command>", completes: completesNothing,
+		help: "list what could be written at the end of that text"},
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing,
 		help: "describe the step the run is stopped at"},
 	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
@@ -172,6 +174,17 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		}
 		s.record("inspect " + expression)
 		s.inspect(ctx, expression, scope)
+
+		return false, nil
+
+	case "complete":
+		// The text after the verb exactly as typed, taken from the line
+		// rather than from `rest`, because `split` trims and a trailing space
+		// is the thing that says the current word is empty — the same
+		// distinction `cutWord` exists for.
+		_, text := cutWord(strings.TrimLeft(line, " \t"))
+		s.record("complete " + text)
+		s.showCompletion(text)
 
 		return false, nil
 
@@ -280,6 +293,34 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// truncating first would leave the first MaxInspectRunes of a long secret
 	// in a string no substring match can recognise (Codex, #1109).
 	s.printf("%s\n", capRunes(s.redactText(s.refValText(out)), MaxInspectRunes))
+}
+
+// showCompletion answers `complete`, which is tab made into a command.
+//
+// A terminal has a key for this and nothing else does, so without a verb the
+// completion this package builds is reachable only by a person with a
+// keyboard — the same capability-on-one-surface gap that the redaction seam
+// and the step inventory each had to be given a second front for. A script is
+// this session's other front, so a question about the current scope belongs in
+// it beside `inspect`, which is the same shape: ask, get an answer, do not
+// move the run.
+func (s *Session) showCompletion(text string) {
+	answer := s.Complete(text, len(text))
+	if len(answer.Candidates) == 0 {
+		if answer.Truncated {
+			// Nothing matched *and* the list was cut, which is a different
+			// answer from nothing matching: somewhere past the bound there
+			// may be a name that does.
+			s.printf("nothing matched, and the list was cut — try a longer prefix\n")
+
+			return
+		}
+		s.printf("nothing to complete there\n")
+
+		return
+	}
+
+	s.printf("%s", RenderCompletion(answer))
 }
 
 // showScope lists what the paused run can name, which is the question an

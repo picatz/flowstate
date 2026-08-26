@@ -167,13 +167,22 @@ func (s *Session) offerCommands(at promptSubject, prefix string) Completion {
 }
 
 // autopsyVerbs are the commands the autopsy answers. It is the same reading
-// [Session.Autopsy]'s own switch makes — `inspect`, `scope`, `help`, and
-// leaving — written as the set the completer offers.
+// [Session.Autopsy]'s own switch makes — `inspect`, `complete`, `scope`,
+// `help`, and leaving — written as the set the completer offers.
+//
+// Two lists for one vocabulary, which is why
+// TestEveryVerbIsDecidedAtTheAutopsy walks the switch rather than trusting
+// this: `complete` reached the main dispatch and not the autopsy's, so at the
+// one prompt where completion is worth most — the bindings a failed case was
+// judged under — it came back "unknown command" (Codex, #1117). The walk reads
+// both directions, since offering a verb the autopsy will refuse is the same
+// defect pointed the other way.
 var autopsyVerbs = map[string]bool{
-	"inspect": true,
-	"scope":   true,
-	"help":    true,
-	"quit":    true,
+	"inspect":  true,
+	"complete": true,
+	"scope":    true,
+	"help":     true,
+	"quit":     true,
 }
 
 // argumentSpace is the separator a verb that takes an argument is written with.
@@ -707,4 +716,47 @@ func (s *Session) breakpointIDs() []string {
 	ids := sortedKeys(s.breakpoints)
 
 	return ids
+}
+
+// RenderCompletion is how a completion answer is written down, for whichever
+// front is doing the writing.
+//
+// One formatter, two sinks, and that is the whole reason it is exported. A
+// terminal writes this straight to the descriptor so the line editor repaints
+// underneath it; a session writes it through its own emit seam so it lands in
+// a transcript an agent reads. Those are different destinations and the same
+// list, and a second copy of the padding rules is how the two come to disagree
+// about what a candidate looks like.
+func RenderCompletion(answer Completion) string {
+	width := 0
+	for _, candidate := range answer.Candidates {
+		width = max(width, len(candidate.Text))
+	}
+
+	var out strings.Builder
+	for _, candidate := range answer.Candidates {
+		if candidate.Detail == "" {
+			out.WriteString(candidate.Text + "\n")
+
+			continue
+		}
+		out.WriteString(padRight(candidate.Text, width) + "   " + candidate.Detail + "\n")
+	}
+	if answer.Truncated {
+		// Said out loud, because a list somebody scans for a name that is not
+		// in it should tell them the list was cut rather than let them
+		// conclude the name does not exist.
+		out.WriteString("… and more, not listed\n")
+	}
+
+	return out.String()
+}
+
+// padRight pads to width, for the column a detail starts at.
+func padRight(s string, width int) string {
+	if len(s) >= width {
+		return s
+	}
+
+	return s + strings.Repeat(" ", width-len(s))
 }

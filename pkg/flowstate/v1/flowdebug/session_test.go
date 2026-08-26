@@ -1520,3 +1520,90 @@ func TestAConditionMayCompareRuntimeTypes(t *testing.T) {
 		"the type check still runs alongside the type constant")
 	assert.Contains(t, out, "no breakpoints", "and nothing is set")
 }
+
+// TestCompleteIsTheTabKeyMadeIntoACommand.
+//
+// The completion this package builds was reachable only through a terminal's
+// tab key: `SetCompleter` is called on a console, and a console exists only
+// where both streams are terminals. So a scripted session — which is the whole
+// shape of the MCP front — could not ask what may be written, though the
+// answer is a pure function of a scope the session already holds.
+//
+// That is the same capability-on-one-surface gap this package has now been
+// given a second front for twice, and the fix is the same: a question that
+// belongs in the command stream goes in the command stream, beside `inspect`.
+func TestCompleteIsTheTabKeyMadeIntoACommand(t *testing.T) {
+	t.Parallel()
+
+	out, _, err := runDebugged(t, "step\ncomplete inspect steps.\ncomplete break \ncontinue\n", flowdebug.Options{})
+	require.NoError(t, err)
+
+	// Scoped to the answer's own lines rather than the transcript, because the
+	// run goes on to print `deploy` in its account a moment later — asserting
+	// over the whole output would be asking about the wrong thing.
+	offered := completionLines(out, "a step that has run")
+
+	assert.Contains(t, offered, "build",
+		"the paused run's own outputs, which is what makes this worth asking")
+	assert.NotContains(t, offered, "deploy",
+		"and not the step that has not run yet, which is the difference from completing over a file")
+
+	assert.Contains(t, out, "a step this run may reach",
+		"`break ` completes over the step inventory, exactly as a tab press does")
+}
+
+// TestCompleteIsDiscoverable.
+//
+// A verb `dispatch` understands but the table does not list is a verb nobody
+// finds: `help` renders from the table, and so does the completion of verbs
+// themselves. Removing the entry leaves the command working and undiscoverable
+// — which is the same capability-you-cannot-reach failure this verb was added
+// to fix, one level up.
+func TestCompleteIsDiscoverable(t *testing.T) {
+	t.Parallel()
+
+	out, _, err := runDebugged(t, "help\ncontinue\n", flowdebug.Options{})
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "complete <partial-command>",
+		"`help` renders from the table, so a verb missing from it is one nobody is told about")
+
+	// And the verb completer offers it, which is how somebody at a prompt
+	// finds it without reading help at all.
+	console, _ := completingRun(t,
+		flowdebug.Options{},
+		[]string{"step", "continue"},
+		[][]string{nil, {"comp"}})
+
+	require.Len(t, console.answers, 1)
+	assert.Equal(t, []string{"complete "}, texts(console.answers[0]),
+		"offered with the space that separates it from its argument, like every other verb that takes one")
+}
+
+// completionLines are the offered names on the lines carrying detail, joined.
+func completionLines(out, detail string) string {
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, detail) {
+			continue
+		}
+		name, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "debug> "), " ")
+		names = append(names, name)
+	}
+
+	return strings.Join(names, " ")
+}
+
+// TestCompleteSaysSoWhenThereIsNothingToOffer.
+//
+// An empty answer and a cut list are different answers, and a script cannot
+// see a blank line the way a person sees an empty popup.
+func TestCompleteSaysSoWhenThereIsNothingToOffer(t *testing.T) {
+	t.Parallel()
+
+	out, _, err := runDebugged(t, "step\ncomplete inspect zzz_nothing_starts_with_this\ncontinue\n", flowdebug.Options{})
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "nothing to complete there",
+		"said out loud, because a script reading a transcript cannot see an empty popup")
+}

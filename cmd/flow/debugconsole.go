@@ -321,38 +321,13 @@ func (c *debugConsole) onKey(line string, pos int, key rune) (string, int, bool)
 
 // list prints the candidates above the line being edited.
 func (c *debugConsole) list(answer flowdebug.Completion) {
-	width := 0
-	for _, candidate := range answer.Candidates {
-		width = max(width, len(candidate.Text))
-	}
-
-	var out strings.Builder
-	out.WriteString("\n")
-	for _, candidate := range answer.Candidates {
-		if candidate.Detail == "" {
-			out.WriteString(candidate.Text + "\n")
-
-			continue
-		}
-		out.WriteString(padRight(candidate.Text, width) + "   " + candidate.Detail + "\n")
-	}
-	if answer.Truncated {
-		// Said out loud, because a list somebody scans for a name that is not
-		// in it should tell them the list was cut rather than let them
-		// conclude the name does not exist.
-		out.WriteString("… and more, not listed\n")
-	}
-
-	_, _ = c.terminal.Write([]byte(out.String()))
-}
-
-// padRight pads text to width, for the listing's second column.
-func padRight(text string, width int) string {
-	if len(text) >= width {
-		return text
-	}
-
-	return text + strings.Repeat(" ", width-len(text))
+	// Rendered by the session, written by the terminal. The formatting is one
+	// list whichever front is asking — a `complete` command's answer in an
+	// agent's transcript and a tab press at this prompt are the same names in
+	// the same columns — and the only thing that differs is where the bytes
+	// go: straight to the descriptor here, so the line editor repaints
+	// underneath them.
+	_, _ = c.terminal.Write([]byte("\n" + flowdebug.RenderCompletion(answer)))
 }
 
 // commonPrefix is the longest prefix every candidate shares.

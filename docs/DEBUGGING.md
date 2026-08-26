@@ -31,6 +31,7 @@ nothing here is worth learning twice.
 | `delete <step-id>`, `d` | remove that breakpoint |
 | `breakpoints` | list them |
 | `inspect <expr>`, `p` | evaluate a CEL expression against the paused run |
+| `complete <partial-command>` | list what could be written at the end of that text |
 | `scope` | list what the run can name right now |
 | `info` | describe the step it is stopped at |
 | `quit`, `q` | end the run here (which fails the case — see below) |
@@ -59,6 +60,16 @@ from looking like one whose answer was always no.
 Over MCP this is the difference between reachable and not. A script is bounded
 at a hundred commands, so `break charge if item.id == "x"` then `continue` is
 two commands where stepping to the five-thousandth iteration is impossible.
+
+`complete` is the tab key made into a command, and it exists because a terminal
+has a key for this and nothing else does. Without it the completion below is
+reachable only by a person with a keyboard, while a scripted session — the
+`flowstate_debug` tool's whole shape — could not ask at all. It answers like
+`inspect`: a question about where the run is standing, which does not move it.
+
+    (flow) complete inspect steps.
+    build   a step that has run
+    test    a step that has run
 
 ## The prompt
 
@@ -137,7 +148,16 @@ false
 At the autopsy the bindings a failing `expect.check:` was judged under are in
 scope too — the file's `vars`, and a `run` root carrying `failed` and `error` —
 so a claim that failed can be taken apart with the same names it was written
-with. `scope` lists them.
+with. `scope` lists them, and `complete` answers here as well:
+
+```
+debug> complete inspect run.
+error    bound for this autopsy
+failed   bound for this autopsy
+```
+
+which matters more here than anywhere else, since these are the only bindings
+a check was ever judged under and the only place they can still be read.
 
 **The verdict is already in, and nothing here can change it.** The autopsy runs
 after the expectations are judged, so a debugged run cannot be argued into

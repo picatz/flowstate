@@ -428,7 +428,10 @@ func debugInputSchema() map[string]any {
 					"holds, which is how a step inside a `for_each` is reached at one iteration " +
 					"rather than every one), " +
 					"`delete <step-id>`, `breakpoints`, `inspect <cel-expression>` (evaluate against " +
-					"the paused run's own scope), `scope` (list what it can name), `info` (describe " +
+					"the paused run's own scope), `complete <partial-command>` (list what could be " +
+					"written at the end of that text, over the paused run's own names — the same " +
+					"answer a terminal gives for a tab press), " +
+					"`scope` (list what it can name), `info` (describe " +
 					"the step it is stopped at), and `quit` (abandon the run, which fails the case). " +
 					"The run starts held before its first step. When the script runs out the run " +
 					"continues to the end on its own, so a script that only inspects is safe.",
