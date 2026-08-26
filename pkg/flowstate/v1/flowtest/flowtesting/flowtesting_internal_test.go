@@ -10,11 +10,16 @@ package flowtesting
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
@@ -467,5 +472,154 @@ func TestARowsNameSurvivesAsANestedSubtestPath(t *testing.T) {
 
 	if got := subtestName("the entry/the first row"); got != "the_entry/the_first_row" {
 		t.Errorf("subtestName rewrote a row path to %q; the `/` is what go test reads as a level", got)
+	}
+}
+
+// TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing is the argument a caller
+// can get wrong in the one way that is invisible.
+//
+// A walk pinned to a name the suite does not have runs no assertions at all,
+// and the suite still passes — the report says exactly what it says when
+// everything worked. So the name is checked before anything runs, and the
+// refusal names the cases the suite does have, because a caller who misspelled
+// one is looking for the spelling.
+func TestRefuseUnknownWalkKeepsAGreenFromMeaningNothing(t *testing.T) {
+	t.Parallel()
+
+	file := &flowtest.File{Tests: []flowtest.Test{{Name: "it ships"}, {Name: "it rolls back"}}}
+
+	// The name is right: nothing is said, and the walk is left to run.
+	quiet := &recorder{TB: t}
+	refuseUnknownWalk(quiet, file, config{walkCase: "it ships", walkDrive: func(*Walk) {}})
+	assert.Empty(t, quiet.errors, "a walk naming a real case was refused")
+
+	// No walk asked for at all: still nothing to say.
+	none := &recorder{TB: t}
+	refuseUnknownWalk(none, file, config{})
+	assert.Empty(t, none.errors)
+
+	// And the misspelling, which is the case this exists for.
+	wrong := &recorder{TB: t}
+	refuseUnknownWalk(wrong, file, config{walkCase: "it shipps", walkDrive: func(*Walk) {}})
+	require.Len(t, wrong.errors, 1,
+		"a walk naming no case was allowed to run, so its assertions would never happen "+
+			"and the suite would still report green")
+	assert.Contains(t, wrong.errors[0], `"it shipps"`)
+	assert.Contains(t, wrong.errors[0], `"it ships"`,
+		"the refusal did not say which cases the suite has, which is what a misspelling needs")
+	assert.Contains(t, wrong.errors[0], `"it rolls back"`)
+}
+
+// TestACaseThatNeverStopsFailsRatherThanHangs is the failure [WithWalk] must
+// not have, found by getting a fixture wrong rather than by thinking of it.
+//
+// A case can finish — or never start, on a workflow that does not load —
+// without reaching a single step boundary, and then nothing is left to take the
+// walk's first command. The walk parks, the case's verdict is never reported,
+// and the test hangs until the package timeout takes the whole run with it. A
+// hung test says far less than a failed one and costs far more.
+//
+// Driven through [runCase] against the recorder because the point is that the
+// subtest *fails* — a real one would take this test down with it — and because
+// what has to be observed is that the walk ended at all.
+func TestACaseThatNeverStopsFailsRatherThanHangs(t *testing.T) {
+	t.Parallel()
+
+	// A `value:` that is not a valid expression, so the workflow does not load
+	// and no step ever runs.
+	path := writeSuite(t, `
+edition: v2026.3
+name: broken
+steps:
+  - id: build
+    value: "3 passed"
+outputs: {}
+`, `
+tests:
+  - name: it ships
+    workflow: ./workflow.yaml
+    expect:
+      ran: [build]
+`)
+	file, err := flowtest.Load(path)
+	require.NoError(t, err)
+
+	stepped := make(chan bool, 1)
+	cfg := config{
+		dir:      filepath.Dir(path),
+		walkCase: "it ships",
+		walkDrive: func(w *Walk) {
+			_, ok := w.Step()
+			stepped <- ok
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runCase(&recorder{TB: t}, file, path, cfg, "it ships")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a case that never reached a step boundary left the walk parked, so the " +
+			"subtest hung instead of reporting the case's own failure")
+	}
+
+	select {
+	case ok := <-stepped:
+		assert.False(t, ok,
+			"the walk was told the run had stopped somewhere, on a case that never ran a step")
+	default:
+		t.Fatal("the walk never returned from its first command")
+	}
+}
+
+// TestEveryRefusalIsActuallyCalled closes the gap the two tests above leave.
+//
+// Both refusals are exercised by calling them, which proves what they say and
+// not that anything says it. A guard that is defined, tested and never called
+// is exactly the failure they exist to prevent — a suite reporting green about
+// work it never did — and it is invisible to a unit test of the guard itself:
+// deleting the call from [run] leaves both of those green.
+//
+// So the call is read out of the source, the way flowdebug reads the autopsy's
+// own switch rather than restating it. A refusal added later and not wired in
+// fails here, which is the only moment anyone would notice.
+func TestEveryRefusalIsActuallyCalled(t *testing.T) {
+	t.Parallel()
+
+	file, err := parser.ParseFile(token.NewFileSet(), "flowtesting.go", nil, 0)
+	require.NoError(t, err)
+
+	called := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "run" {
+			return true
+		}
+		ast.Inspect(fn.Body, func(inner ast.Node) bool {
+			call, ok := inner.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if name, ok := call.Fun.(*ast.Ident); ok {
+				called[name.Name] = true
+			}
+
+			return true
+		})
+
+		return false
+	})
+
+	require.NotEmpty(t, called, "walked run and found no calls at all, so this test cannot fail for the reason it exists")
+
+	for _, refusal := range []string{"refusal", "refuseUnknownWalk"} {
+		assert.True(t, called[refusal],
+			"run does not call %s, so the refusal it makes never reaches a suite and the "+
+				"tests that exercise it directly stay green while nothing checks anything",
+			refusal)
 	}
 }

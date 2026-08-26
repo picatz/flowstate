@@ -1,0 +1,283 @@
+package flowtesting
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
+)
+
+// Walking a case from a Go test.
+//
+// # Why this exists
+//
+// [flowtest.RunOptions.Debugger] has always accepted a session, and until now
+// the only things that set it were `flow test --debug` and `flow run local
+// --debug` — both of which drive it from a terminal. A Go test could not: the
+// session's control surface took a *line of text*, and the run parks inside
+// the debugger blocked reading one, so there was nobody to type.
+//
+// [flowdebug.Session.Control] changed that, and this is the rung between it and
+// an author. Without it, walking a case from Go means installing a session,
+// starting the run on a goroutine of your own, driving it from another, and
+// getting the shutdown right — which is a page of concurrency to write before
+// the first assertion, and the wrong page is a test that hangs rather than one
+// that fails.
+//
+// This package's rule is that a capability lands when the surface an author
+// actually uses can reach it. A stepping seam nobody can step from a `go test`
+// is scaffolding, however green the package is.
+//
+// # What a Walk is not
+//
+// It is not a second debugger. Every method here is one call into
+// [flowdebug.Session] plus the [testing.TB]-shaped verdict this package exists
+// to add — the same relationship this package has to [flowtest], and the same
+// reason it is a separate package. [Walk.Session] is the escape hatch to the
+// full vocabulary, so nothing here needs to grow a method per command.
+
+// WithWalk holds one case at every step boundary and calls drive with a [Walk]
+// while that case runs.
+//
+// The case is named rather than positional because a subtest is addressed by
+// name here, and a walk pinned to "the third case" would silently move when
+// somebody inserts one. A name no case answers to fails the test before
+// anything runs: a walk that quietly never happened is a test asserting nothing
+// while reporting green.
+//
+// drive runs on its own goroutine, because the case is running on this one and
+// a debugger holds it. When drive returns — normally, or because an assertion
+// stopped it — the session is closed, which releases the run to finish. That is
+// deliberate and is the reason this is an option rather than a pattern to copy:
+// a walk that ends without letting go leaves the case parked forever, and a
+// hung test says far less than a failed one.
+//
+// Only one case is walked. Interactive by nature, and `flow test --debug`
+// refuses more than one for the same reason: stepping through "the" run of
+// several is a question with no answer.
+func WithWalk(caseName string, drive func(*Walk)) Option {
+	return func(c *config) {
+		c.walkCase = caseName
+		c.walkDrive = drive
+	}
+}
+
+// Walk drives one paused case and asserts on what it finds.
+type Walk struct {
+	t       testing.TB
+	ctx     context.Context
+	session *flowdebug.Session
+}
+
+// Session is the whole vocabulary, for anything these methods do not cover:
+// breakpoints, the completer, the raw text of an answer, a verb added later.
+//
+// Exported rather than mirrored, so this type never becomes a second list of
+// commands to keep in step with the prompt's.
+func (w *Walk) Session() *flowdebug.Session { return w.session }
+
+// Step runs the next step and waits for the run to stop again. ok is false
+// once the run has finished, which is the ordinary end of a walk:
+//
+//	for at, ok := walk.Step(); ok; at, ok = walk.Step() {
+//		…
+//	}
+//
+// A run that has ended is not a failure and must not be reported as one — a
+// walk cannot know in advance how many stops a case has — so it is the boolean
+// rather than an error. Anything else that goes wrong fails the test, because
+// it is a defect here or a cancelled test rather than a fact about the run.
+func (w *Walk) Step() (flowdebug.Position, bool) {
+	w.t.Helper()
+
+	return w.moved(w.session.Step(w.ctx))
+}
+
+// Continue resumes the run and waits for the next breakpoint, with ok false
+// where there is none. See [Walk.Step] for why the end of a run is a boolean.
+func (w *Walk) Continue() (flowdebug.Position, bool) {
+	w.t.Helper()
+
+	return w.moved(w.session.Continue(w.ctx))
+}
+
+// Until runs to a named step and waits for the run to stop there.
+func (w *Walk) Until(step string) (flowdebug.Position, bool) {
+	w.t.Helper()
+
+	return w.moved(w.session.Until(w.ctx, step))
+}
+
+// moved turns one movement's answer into a verdict: the end of a run is a
+// boolean, and everything else is this package's or the caller's mistake.
+func (w *Walk) moved(at flowdebug.Position, err error) (flowdebug.Position, bool) {
+	w.t.Helper()
+
+	switch {
+	case err == nil:
+		return at, true
+
+	case isRunOver(err):
+		return flowdebug.Position{}, false
+
+	default:
+		w.t.Fatalf("flowtesting: moving the run failed: %v", err)
+
+		return flowdebug.Position{}, false
+	}
+}
+
+// Value evaluates one CEL expression against the scope the run is paused in and
+// hands back the plain Go value, which is what an assertion wants.
+//
+// Nil where the session is withholding the value's shape — see
+// [flowdebug.Session.Evaluate], which is also where to go for the rendered text
+// and the typed form.
+//
+// An expression that does not compile fails the test. That is the opposite of
+// the prompt's rule, and deliberately: at a prompt a person is *asking*, and
+// some questions will not parse; in a test the expression is part of what is
+// being asserted, and one that cannot be evaluated has not checked anything.
+func (w *Walk) Value(expression string) any {
+	w.t.Helper()
+
+	_, value, err := w.session.Evaluate(w.ctx, expression)
+	if err != nil {
+		w.t.Fatalf("flowtesting: evaluating %q against the paused run failed: %v", expression, err)
+
+		return nil
+	}
+	if value == nil {
+		return nil
+	}
+
+	return value.Value()
+}
+
+// Names lists what the paused run can reach, grouped as `scope` groups it.
+func (w *Walk) Names() []flowdebug.Names {
+	w.t.Helper()
+
+	groups, err := w.session.Scope()
+	if err != nil {
+		w.t.Fatalf("flowtesting: listing the paused run's scope failed: %v", err)
+
+		return nil
+	}
+
+	return groups
+}
+
+// isRunOver reports the one error a walk treats as an answer rather than a
+// failure.
+func isRunOver(err error) bool {
+	return err != nil && strings.Contains(err.Error(), flowdebug.ErrRunOver.Error())
+}
+
+// walked runs one case under a session drive can move, and returns the case's
+// result exactly as an unwalked run would.
+//
+// The ordering is the whole of it. drive starts first and immediately parks on
+// its first command, because there is no run yet to take it; the run then
+// starts and stops at its first boundary, where that command is waiting. When
+// drive returns the session is closed, which is what releases the run — a
+// session that is merely abandoned holds the case forever.
+func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) flowtest.RunResult {
+	t.Helper()
+
+	var (
+		mu    sync.Mutex
+		lines strings.Builder
+	)
+
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled: true,
+		// Collected rather than logged as it arrives: the session writes from
+		// the run's goroutine, and a [testing.TB] must not be written to from
+		// one this function has not joined. Logged below, once both are done,
+		// on the same channel the case's transcript uses.
+		Emit: func(text string, _ flowdebug.Tone) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			lines.WriteString(text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("flowtesting: building the debug session failed: %v", err)
+
+		return flowtest.RunResult{}
+	}
+
+	drove := make(chan struct{})
+	go func() {
+		defer close(drove)
+		// Whatever happens in drive — a return, a failed assertion unwinding
+		// it — the run is let go. Closing is what does that: a boundary with
+		// nothing left to hear from resumes and lets the case finish.
+		defer func() { _ = session.Close() }()
+
+		cfg.walkDrive(&Walk{t: t, ctx: t.Context(), session: session})
+	}()
+
+	result := run(session)
+
+	// Closed here as well as in the goroutine, and this one is the important
+	// half: a case can finish — or fail to start at all, on a workflow that
+	// does not load — without ever reaching a step boundary, and then nothing
+	// is left to take the walk's first command. Without this, such a case hangs
+	// the test instead of failing it, which is the exact outcome this option
+	// exists to prevent. Closing releases every waiting movement with
+	// [flowdebug.ErrRunOver], so the walk ends and the case's own verdict is
+	// what the subtest reports. Idempotent, so the two closes cannot fight.
+	_ = session.Close()
+
+	<-drove
+
+	mu.Lock()
+	printed := lines.String()
+	mu.Unlock()
+
+	if printed != "" {
+		t.Log("walk:\n" + printed)
+	}
+
+	return result
+}
+
+// walkedCase reports whether this case is the one a walk was asked for.
+func (c config) walkedCase(name string) bool {
+	return c.walkDrive != nil && c.walkCase == name
+}
+
+// refuseUnknownWalk fails before anything runs when the named case is not in
+// the file.
+//
+// A walk that silently never happened is the worst outcome available here: the
+// suite still passes, the subtest still reports green, and the assertions the
+// author wrote were never reached. Named separately from [refusal] because that
+// one is about a file being addressable at all, and this is about an argument
+// the caller got wrong.
+func refuseUnknownWalk(t testing.TB, file *flowtest.File, cfg config) {
+	t.Helper()
+
+	if cfg.walkDrive == nil {
+		return
+	}
+
+	names := make([]string, 0, len(file.Tests))
+	for _, test := range file.Tests {
+		if test.Name == cfg.walkCase {
+			return
+		}
+		names = append(names, fmt.Sprintf("%q", test.Name))
+	}
+
+	t.Fatalf("flowtesting: WithWalk names case %q, which this suite does not have; its cases are %s",
+		cfg.walkCase, strings.Join(names, ", "))
+}
