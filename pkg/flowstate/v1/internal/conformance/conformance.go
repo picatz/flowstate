@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -180,8 +181,43 @@ func NewHTTPServer(tb testing.TB) string {
 	return srv.URL
 }
 
+// loopbackExemption counts the tests currently holding the loopback exemption,
+// so the shipped default is restored when the last one finishes rather than
+// when the first one does.
+//
+// # The bug this replaces
+//
+// Each holder used to save whatever was registered when it arrived and restore
+// that on cleanup, which is correct for one test and wrong for two overlapping
+// ones. Two parallel tests, T1 then T2: T1 saves the deny-loopback default and
+// installs the exemption; T2 saves *T1's exemption* and installs its own; T1
+// finishes and restores the deny-loopback default — into a process where T2 is
+// still running. T2's next http step then fails with `denied by egress policy:
+// 127.0.0.1`, naming a policy nobody in that test configured, and the run it
+// was asserting about fails for a reason that has nothing to do with it.
+//
+// It reproduced roughly one full `-race` run of `./pkg/flowstate/v1/engine/` in
+// four, always as some *other* test's failure, which is the worst shape a flake
+// takes: the report names a file the defect is not in.
+//
+// # Why counting rather than a lock held for the test's duration
+//
+// A mutex held from acquire to cleanup would be correct and would serialize
+// every test in the package that talks to a loopback server, which is most of
+// them. Counting is correct for the same reason and costs nothing, because
+// every holder wants the *identical* definition — there is nothing to
+// serialize. A test wanting a *different* http definition nests inside this
+// one instead, taking it off and putting it back; see
+// [InstallEgressIdentityPolicy] for why that is sound and what it costs.
+var loopbackExemption struct {
+	mu       sync.Mutex
+	holders  int
+	original v1.TaskDef
+	existed  bool
+}
+
 // allowLoopback registers an http task permitting loopback for the duration of
-// the test, restoring the original afterwards.
+// the test, restoring the original once no test still needs it.
 //
 // The default egress policy denies loopback, which is correct — a workflow must
 // not be able to reach a worker's own internal endpoints — but it also means the
@@ -197,15 +233,49 @@ func allowLoopback(tb testing.TB) {
 	}
 
 	registry := v1.DefaultRegistry()
-	original, existed := registry.Lookup("http")
-	if err := registry.Register(v1.HTTPTaskDef(policy)); err != nil {
-		tb.Fatalf("registering loopback http task: %v", err)
-	}
-	tb.Cleanup(func() {
-		if existed {
-			_ = registry.Register(original)
+
+	loopbackExemption.mu.Lock()
+	if loopbackExemption.holders == 0 {
+		loopbackExemption.original, loopbackExemption.existed = registry.Lookup("http")
+		if err := registry.Register(v1.HTTPTaskDef(policy)); err != nil {
+			loopbackExemption.mu.Unlock()
+			tb.Fatalf("registering loopback http task: %v", err)
 		}
+	}
+	loopbackExemption.holders++
+	loopbackExemption.mu.Unlock()
+
+	tb.Cleanup(func() {
+		loopbackExemption.mu.Lock()
+		defer loopbackExemption.mu.Unlock()
+
+		loopbackExemption.holders--
+		if loopbackExemption.holders > 0 || !loopbackExemption.existed {
+			return
+		}
+		_ = registry.Register(loopbackExemption.original)
 	})
+}
+
+// AllowLoopback is [allowLoopback] for a driver's own test package, which needs
+// the exemption without needing a server this package started.
+//
+// Exported so that there is one of these rather than two. A second copy of a
+// save-and-restore around a process global is a second copy of the bug
+// [loopbackExemption] describes, and the engine package had one.
+func AllowLoopback(tb testing.TB) {
+	tb.Helper()
+
+	allowLoopback(tb)
+}
+
+// loopbackExemptionHeld reports whether any test currently holds the loopback
+// exemption, which is what the test pinning the counting asserts about.
+func loopbackExemptionHeld() bool {
+	loopbackExemption.mu.Lock()
+	defer loopbackExemption.mu.Unlock()
+
+	return loopbackExemption.holders > 0
 }
 
 // echoes returns an http step that posts body to the loopback server and records

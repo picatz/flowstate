@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // Nothing counted attempts. That is the whole of why a step with no `retry:` ran
@@ -302,25 +302,19 @@ func TestStepTimeoutsFollowTheDurableDriversPrecedence(t *testing.T) {
 // allowLoopback registers an http task permitting loopback for the duration of
 // the test, restoring the original afterwards.
 //
-// The same exemption `tests.allowLoopback` makes, stated here because that one is
-// unexported. The default denying loopback is what makes
+// allowLoopback is the shared exemption, under the name this package's tests
+// already call. The default denying loopback is what makes
 // `examples/conditional-and-retry` demonstrate anything, so it is not weakened —
 // the test that needs it says so.
+//
+// It used to be a copy, which is how it came to be a copy of the defect as well:
+// saving and restoring a process-global registry entry per holder is wrong for
+// two overlapping tests, and the correction lives in one place now. See
+// `conformance`'s loopbackExemption for the whole account.
 func allowLoopback(t *testing.T) {
 	t.Helper()
 
-	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
-	require.NoError(t, err)
-
-	registry := v1.DefaultRegistry()
-	original, existed := registry.Lookup("http")
-	require.NoError(t, registry.Register(v1.HTTPTaskDef(policy)))
-
-	t.Cleanup(func() {
-		if existed {
-			_ = registry.Register(original)
-		}
-	})
+	conformance.AllowLoopback(t)
 }
 
 // TestALocalRetryHonoursWhatTheServerAsked is the other value the durable driver

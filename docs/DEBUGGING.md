@@ -243,12 +243,60 @@ applies here rather than a second, weaker one.
   real value, and a claim comparing against one still holds; only the printing
   withholds.
 
+## Reading a durable run
+
+The debugger is a local-driver instrument, so the question for a run already
+executing on a worker somewhere else is what it can *tell* you rather than
+where you can stop it.
+
+`flow get <id>` is the verb: it reports the run's status and timing, where it
+has reached, the steps Temporal is retrying right now and why the last attempt
+failed, the gates it is parked on, and — for a run shaped as an entity, which
+never finishes and therefore never has outputs — a bounded snapshot of the
+state it is carrying.
+
+Underneath that, the run's own history names its steps. Every command the
+interpreter writes carries a one-line summary, so a run is legible in the two
+tools an operator already has — Temporal Web, and `temporal workflow show`:
+
+| Summary | The command it labels |
+| --- | --- |
+| `` `build` `` | the activity that step's task runs in |
+| `` `pages` > `page` `` | the same, for a step inside a `loop:`, `parallel:` or `call:` |
+| `` `build` · undo `` | the compensation that undoes it |
+| `` `nap` · sleep `` | the durable timer a `sleep:` parks on |
+| `` `gate` · wait timeout `` | the timer bounding a `wait_for_signal:` |
+| `run vars` | the run's own top-level `vars:`, evaluated once |
+| `` `fan_out` · call vars `` | a callee's `vars:`, named by the step that called it |
+| `plugin admission` | the check that the worker has the plugins the run pins |
+
+The position and not only the id, because an id is unique within a *visibility
+domain* rather than within a file: two sibling `loop:` blocks may each declare a
+body step called `page`, legally, since body outputs do not escape. A very deep
+position is elided from the outside in and says so with a leading `…`, keeping
+the step that actually ran.
+
+This matters because one interpreter runs every workflow, so the *activity* is
+always typed `Task` or `TaskInScope` — without the summary, a hundred-step run
+renders as a hundred identical rows and the only thing telling them apart is
+inside each activity's input payload, which is the last place a reader should
+be looking. Those payloads hold resolved task inputs; a label is a separate,
+deliberately tiny field carrying step ids and nothing else.
+
+One command is labelled by id alone: a compensation. It is dispatched from the
+run-level undo stack, whose entries record a step id and no position, so two
+sibling loops each undoing a body step of the same name still read alike.
+
+On a deployment running a payload codec these are encrypted with everything
+else and read back through its codec server, exactly as the workflow-level
+summary beside them is.
+
 ## What it does not do yet
 
-Durable runs. Pausing a run executing on a worker somewhere else is a different
-problem — it needs a wire protocol, a lease so an abandoned session cannot park
-a production run forever, and a policy for who may attach — and it is
-[#928](https://github.com/picatz/flowstate/issues/928)'s slice 2. Today the
+Pausing a durable run. Reading one is the section above; *stopping* one is a
+different problem — it needs a wire protocol, a lease so an abandoned session
+cannot park a production run forever, and a policy for who may attach — and it
+is [#928](https://github.com/picatz/flowstate/issues/928)'s slice 2. Today the
 debugger is a local-driver instrument, which is where authoring happens.
 
 DAP, so that an editor's own debug UI drives this, is the front after MCP.
