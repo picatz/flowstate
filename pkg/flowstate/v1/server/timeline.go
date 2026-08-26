@@ -10,7 +10,6 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
-	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -547,42 +546,43 @@ func (s *FlowstateServer) decodedFailureMessage(failure *failurepb.Failure) stri
 		return failure.GetMessage()
 	}
 
-	// Whether the payload can be read at all, asked before anything is taken
-	// from it.
-	//
-	// This is the awkward part of the seam and it is worth being explicit
-	// about. [converter.DecodeCommonFailureAttributes] returns nothing and
-	// swallows its own decode error, leaving the message exactly as it found
-	// it — the SDK's sentinel, "Encoded failure" — so a failed decode is
-	// silent, and reporting what it left behind hands a reader a placeholder
-	// that reads like a diagnosis. Now that almost every failure decodes, the
-	// few that do not are the ones a reader would trust (Codex, #1119).
+	// Decoded here rather than through [converter.DecodeCommonFailureAttributes],
+	// which is the awkward part of this seam and worth being explicit about.
+	// That helper returns nothing and swallows its own decode error, leaving
+	// the message exactly as it found it — the SDK's sentinel, "Encoded
+	// failure" — so a failed decode is silent, and reporting what it left
+	// behind hands a reader a placeholder that reads like a diagnosis. Now
+	// that almost every failure decodes, the few that do not are the ones a
+	// reader would trust (Codex, #1119).
 	//
 	// The decode fails for real reasons: a key rotated since the run, a codec
 	// the operator has since reconfigured, a payload written by a deployment
-	// this one is not.
+	// this one is not, an older record whose shape has moved on.
 	//
-	// So the payload is put through the same converter first, into a target
-	// that cares about nothing in it. That is exact where two tempting checks
-	// are not. Comparing the message before and after is a heuristic that
-	// mis-fires on a workload whose failure message is literally "Encoded
-	// failure". And asking whether the decode cleared `encoded_attributes`
-	// does not work at all against this SDK: nothing clears it, so every
-	// encoded failure would read as unreadable. This asks the question the
-	// codec actually answers — can these bytes be read here — and needs no
-	// knowledge of what the SDK writes inside them.
-	var readable map[string]any
-	if err := s.dataConverter.FromPayload(failure.GetEncodedAttributes(), &readable); err != nil {
+	// Three checks were tried and two do not work. Comparing the message
+	// before and after is a heuristic that mis-fires on a workload whose
+	// failure message is literally the sentinel. Asking whether the decode
+	// cleared `encoded_attributes` fails against this SDK, which never clears
+	// them, so every encoded failure would read as unreadable. And decoding
+	// into a target that accepts any JSON proves only that the bytes
+	// *decrypted*, not that they hold what the SDK writes — a record whose
+	// `message` is a number passes that and then decodes to nothing.
+	//
+	// So the shape is named and the decode that answers is the decode that is
+	// reported. The cost is a copy of two field names the SDK keeps
+	// unexported; what makes that safe is that
+	// TestAnEncodedFailureStillSaysWhatWentWrong round-trips through the SDK's
+	// own encoder, so a release that renamed either one fails there rather
+	// than quietly reporting every failure as empty.
+	var attributes struct {
+		Message    string `json:"message"`
+		StackTrace string `json:"stack_trace"`
+	}
+	if err := s.dataConverter.FromPayload(failure.GetEncodedAttributes(), &attributes); err != nil {
 		return unreadableFailure
 	}
 
-	decoded, ok := proto.Clone(failure).(*failurepb.Failure)
-	if !ok {
-		return unreadableFailure
-	}
-	converter.DecodeCommonFailureAttributes(s.dataConverter, decoded)
-
-	return decoded.GetMessage()
+	return attributes.Message
 }
 
 // unreadableFailure is what a failure says when this deployment cannot read it.

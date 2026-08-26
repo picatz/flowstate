@@ -337,13 +337,37 @@ func TestAFailureWhoseMessageIsTheSentinelIsStillReadable(t *testing.T) {
 		"a readable diagnosis was reported as unavailable because it happened to read "+
 			"like the placeholder")
 
-	// And the SDK still leaves the attributes in place after a successful
-	// decode, which is why "were they cleared" is not the test either.
-	decoded := &failurepb.Failure{Message: "connection refused"}
-	require.NoError(t, converter.EncodeCommonFailureAttributes(
-		converter.GetDefaultDataConverter(), decoded))
-	converter.DecodeCommonFailureAttributes(converter.GetDefaultDataConverter(), decoded)
-	require.NotNil(t, decoded.GetEncodedAttributes(),
-		"this SDK now clears encoded_attributes on a successful decode, so the check "+
-			"in decodedFailureMessage can be simplified to ask about that instead")
+}
+
+// TestAFailureRecordOfTheWrongShapeIsUnreadable is the third check that was
+// tried and the second that did not work.
+//
+// Encoded attributes that decrypt to perfectly valid JSON need not hold what
+// the SDK writes: an older or corrupted record whose `message` is a number
+// decodes fine into a target that accepts anything, and then yields no message
+// at all. A readability probe that only proves the bytes *decrypted* passes
+// that and reports the sentinel as a diagnosis (Codex, #1119).
+//
+// So the decode that answers is the decode that is reported, and it names the
+// shape.
+func TestAFailureRecordOfTheWrongShapeIsUnreadable(t *testing.T) {
+	t.Parallel()
+
+	server := mustNew(t, nil)
+
+	// Valid JSON, wrong shape: `message` is a number.
+	payload, err := converter.GetDefaultDataConverter().ToPayload(
+		map[string]any{"message": 42, "stack_trace": ""})
+	require.NoError(t, err)
+
+	wrongShape := &failurepb.Failure{
+		Message:           "Encoded failure",
+		EncodedAttributes: payload,
+	}
+
+	got := server.failureMessage(wrongShape)
+
+	assert.NotEqual(t, "Encoded failure", got,
+		"a record the SDK's own decode cannot read was reported as a diagnosis")
+	assert.Contains(t, got, "unavailable")
 }
