@@ -1361,3 +1361,23 @@ func TestAMacroBindingDoesNotHideAnOuterNameOfTheSameSpelling(t *testing.T) {
 	assert.Contains(t, out, `"n" is not bound here`,
 		"and the loop that cannot answer says so")
 }
+
+// TestATwoVariableMacroBindsBothOfItsVariables (Codex, #1116).
+//
+// `exists(i, v, …)` binds two names. Only the first was treated as bound, so
+// `v` looked like a name the step had to provide — and since no step provides
+// a macro's local, the condition was declined at every arrival and a true
+// condition never fired. The quiet direction of the same guard whose loud
+// direction was stopping in the wrong loop.
+func TestATwoVariableMacroBindsBothOfItsVariables(t *testing.T) {
+	t.Parallel()
+
+	out, ran := loopingRun(t, 6,
+		"break body if n == 3 && [1, 2].exists(i, v, v == 2)\ncontinue\ncontinue\n")
+
+	assert.Len(t, ran, 6)
+	assert.Equal(t, 1, strings.Count(out, "break at body"),
+		"the macro's second variable is the macro's, not a name the step must bind")
+	assert.NotContains(t, out, "is not bound here",
+		"so nothing is declined for a name the expression provides itself")
+}

@@ -591,14 +591,25 @@ func collectFreeIdents(e *expr.Expr, bound map[string]int, into map[int64]struct
 		collectFreeIdents(comprehension.GetIterRange(), bound, into)
 		collectFreeIdents(comprehension.GetAccuInit(), bound, into)
 
-		iterator, accumulator := comprehension.GetIterVar(), comprehension.GetAccuVar()
-		bound[iterator]++
-		bound[accumulator]++
+		// Every name the comprehension binds, which is a closed set of three:
+		// cel-go's own ComprehensionExpr exposes IterVar, IterVar2 and
+		// AccuVar and nothing else. Two-variable macros — `exists(i, v, …)`
+		// over a map or an indexed list — bind the second, and omitting it
+		// made a macro-local name look like a scope name the step had to
+		// have, so a true condition never fired (Codex, #1116).
+		//
+		// [comprehensionBindings] is where that set is written down, with a
+		// test that fails if the schema grows a fourth.
+		bindings := comprehensionBindings(comprehension)
+		for _, name := range bindings {
+			bound[name]++
+		}
 		collectFreeIdents(comprehension.GetLoopCondition(), bound, into)
 		collectFreeIdents(comprehension.GetLoopStep(), bound, into)
 		collectFreeIdents(comprehension.GetResult(), bound, into)
-		bound[iterator]--
-		bound[accumulator]--
+		for _, name := range bindings {
+			bound[name]--
+		}
 	}
 }
 
@@ -640,6 +651,26 @@ func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
 	return checked, nil
 }
 
+// comprehensionBindings are the names a comprehension binds for its body.
+//
+// One place, because two walks need the same answer and a list written twice
+// is how one of them comes to be missing a member — which is exactly how
+// IterVar2 went missing from one of them. An empty name is skipped rather than
+// bound: a one-variable macro leaves IterVar2 unset, and binding "" would
+// shadow nothing while making the count bookkeeping lie.
+func comprehensionBindings(comprehension *expr.Expr_Comprehension) []string {
+	all := []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()}
+
+	bindings := make([]string, 0, len(all))
+	for _, name := range all {
+		if name != "" {
+			bindings = append(bindings, name)
+		}
+	}
+
+	return bindings
+}
+
 // collectIdentifiers gathers every bare name an expression reads, for the
 // environment the type check declares.
 //
@@ -679,8 +710,9 @@ func collectIdentifiers(e *expr.Expr, into map[string]struct{}) {
 
 	case *expr.Expr_ComprehensionExpr:
 		comprehension := kind.ComprehensionExpr
-		into[comprehension.GetIterVar()] = struct{}{}
-		into[comprehension.GetAccuVar()] = struct{}{}
+		for _, name := range comprehensionBindings(comprehension) {
+			into[name] = struct{}{}
+		}
 		collectIdentifiers(comprehension.GetIterRange(), into)
 		collectIdentifiers(comprehension.GetAccuInit(), into)
 		collectIdentifiers(comprehension.GetLoopCondition(), into)
