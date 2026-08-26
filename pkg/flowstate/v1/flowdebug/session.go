@@ -309,7 +309,12 @@ type Session struct {
 	mu          sync.Mutex
 	mode        mode
 	until       string
-	breakpoints map[string]struct{}
+	breakpoints map[string]breakpoint
+
+	// notedUnbound remembers which breakpoints have already reported a
+	// condition they could not evaluate, so the notice is one line rather than
+	// one per iteration. See [Session.noteDeclined].
+	notedUnbound map[string]struct{}
 	// script records accepted commands, in order, for replay, and scriptBytes
 	// is what they weigh — see [MaxScriptBytes], which the count bound beside
 	// it does not imply.
@@ -397,7 +402,7 @@ func New(opts Options) (*Session, error) {
 		emit:        opts.Emit,
 		console:     opts.Console,
 		clock:       opts.Clock,
-		breakpoints: make(map[string]struct{}, len(opts.Breakpoints)),
+		breakpoints: make(map[string]breakpoint, len(opts.Breakpoints)),
 		done:        make(chan struct{}),
 		steps:       slices.Clone(opts.Steps),
 		seen:        map[string]struct{}{},
@@ -417,7 +422,7 @@ func New(opts Options) (*Session, error) {
 	}
 	for _, id := range opts.Breakpoints {
 		if id = strings.TrimSpace(id); id != "" {
-			s.breakpoints[id] = struct{}{}
+			s.breakpoints[id] = breakpoint{}
 		}
 	}
 
@@ -471,7 +476,15 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 
 	s.sawStep(node.GetId())
 
-	if !s.shouldStop(node.GetId()) {
+	stop, err := s.shouldStop(ctx, node.GetId(), scope)
+	if err != nil {
+		// Cancellation, and the only thing that reaches here as an error. It
+		// unwinds the run exactly as a cancellation at the prompt does: a
+		// person who interrupted a run while its condition was being evaluated
+		// asked for the same thing as one who interrupted it at the prompt.
+		return err
+	}
+	if !stop {
 		return nil
 	}
 
@@ -597,22 +610,118 @@ func (s *Session) WaitStarted(id, signal string, timeout time.Duration, bounded 
 // a step nobody named; it could not, because no boundary is reached without a
 // resume in between, and a mutation removing it failed no test. Answering the
 // question and changing nothing is the honest shape.
-func (s *Session) shouldStop(id string) bool {
+func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	at, isBreakpoint := s.breakpoints[id]
+	mode, until := s.mode, s.until
+	s.mu.Unlock()
 
-	if _, isBreakpoint := s.breakpoints[id]; isBreakpoint {
-		return true
+	if isBreakpoint {
+		holds, err := s.breakpointHolds(ctx, id, at, scope)
+		if err != nil {
+			return false, err
+		}
+		if holds {
+			return true, nil
+		}
 	}
 
-	switch s.mode {
+	switch mode {
 	case modeStop:
-		return true
+		return true, nil
 	case modeUntil:
-		return s.until == id
+		return until == id, nil
 	default:
-		return false
+		return false, nil
 	}
+}
+
+// A breakpoint is a step id and, optionally, the condition that decides
+// whether reaching it stops the run.
+//
+// The condition is a [v1.Value] holding a parsed expression rather than the
+// source text, because it is compiled once when `break` accepts it and
+// evaluated at every arrival — see [Session.addBreakpoint] for why those are
+// not the same moment. Source is kept beside it for `breakpoints` to print and
+// for the replay script to reproduce.
+type breakpoint struct {
+	source    string
+	condition *v1.Value
+}
+
+// breakpointHolds answers whether an arrival at a breakpoint should stop.
+//
+// Evaluated outside s.mu — the condition is the author's own CEL and calling
+// into the evaluator under the session lock would hold it for the length of an
+// expression somebody else wrote. [Session.BeforeStep] already serialises
+// boundaries through promptMu, so nothing here races a second arrival.
+//
+// The condition is the step's own `if:`, deliberately: same function, same
+// scope, same refusal of a non-boolean ([v1.EvalConditionInScope]). A second
+// bool-coercion rule beside the engine's would be two answers to one question,
+// and a breakpoint that disagreed with the `if:` written on the same step is a
+// debugger lying about the language it debugs.
+//
+// An error stops the run and says why. That is fail-closed read for a
+// debugger: the component that allows when it cannot decide is the one that
+// lets a run proceed unattended past the point somebody asked to hold it, and
+// a breakpoint that looks set and silently never fires is the outcome with no
+// symptom. Stopping also makes the reporting free — the session is parked, so
+// the reason prints once rather than once per arrival.
+func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint, scope *v1.Scope) (bool, error) {
+	if at.condition == nil {
+		return true, nil
+	}
+
+	// # A condition that cannot be evaluated does not stop
+	//
+	// A step id names a *visibility domain* rather than a step: two sibling
+	// loops may each declare a body step called `page`, and this map is keyed
+	// by id, so one `break page if total == 3` is a breakpoint at both. In the
+	// loop that binds no `total` the condition cannot be asked at all — a
+	// different thing from a question whose answer is no — and holding the run
+	// there parks it in the loop the author was not debugging (Codex, #1116).
+	//
+	// An earlier version answered that by requiring every name the condition
+	// reads to be bound before evaluating. That was wrong in both directions
+	// at once, which is what settled this design. Too strict:
+	// `n == 3 || fallback == 4` is true whenever `n` is 3, because CEL
+	// short-circuits, and a preflight over both names declined it. Too weak:
+	// `steps.setup.ok` reads the root `steps`, which resolves everywhere, so
+	// the check passed and evaluation failed on the member anyway. No set of
+	// names satisfies both, because *which references a condition needs* is a
+	// question only the evaluator can answer: it depends on the values.
+	//
+	// So the evaluator answers it. An error means this occurrence could not
+	// answer, and the run is not held here.
+	//
+	// That reverses this change's first fail-closed reading, and the notice is
+	// what makes the reversal safe. The argument for stopping was that a
+	// breakpoint which looks armed and never fires is a failure with no
+	// symptom — true, and it is the *silence* that makes it so rather than the
+	// not-stopping. A declined arrival says why, once per breakpoint, so a
+	// mistyped name reports and never fires while a condition about a sibling
+	// domain reports and fires where it belongs. Stopping bought nothing the
+	// notice does not, and cost a hold in the wrong loop on every legal
+	// workflow that reuses an id.
+	holds, err := v1.EvalConditionInScope(ctx, at.condition, scope)
+	switch {
+	case ctx.Err() != nil:
+		// Not an unanswerable condition: the operator interrupted the run
+		// while this was being evaluated, and a costly condition is exactly
+		// when they would. Declining here would let `continue` walk into the
+		// step *after* the cancel, which is the one thing an interrupt must
+		// not do — and is the opposite of what cancellation at the prompt
+		// does, three lines of call stack away (Codex, #1116).
+		return false, ctx.Err()
+
+	case err != nil:
+		s.noteDeclined(id, err)
+
+		return false, nil
+	}
+
+	return holds, nil
 }
 
 // resume sets what happens at the next boundary.
@@ -854,6 +963,33 @@ func (s *Session) sawStep(id string) {
 		return
 	}
 	s.seen[id] = struct{}{}
+}
+
+// noteDeclined reports, once per breakpoint, that a condition could not be
+// evaluated at a step, so the run was not held there.
+//
+// Once, because the alternative is a line per arrival — and the case this
+// exists for is a loop, where that is a line per iteration. Once is enough to
+// tell a mistyped name from a condition about a different `page`: the first
+// never fires anywhere and says so, the second fires where it belongs.
+//
+// This notice is what makes not-stopping safe rather than silent — see
+// [Session.breakpointHolds], which reversed a fail-closed rule on the strength
+// of it.
+func (s *Session) noteDeclined(id string, err error) {
+	s.mu.Lock()
+	if s.notedUnbound == nil {
+		s.notedUnbound = map[string]struct{}{}
+	}
+	_, already := s.notedUnbound[id]
+	s.notedUnbound[id] = struct{}{}
+	s.mu.Unlock()
+
+	if already {
+		return
+	}
+
+	s.printfTone(ToneWarning, "breakpoint at %s: the condition could not be evaluated here, so the run was not held: %v\n", id, err)
 }
 
 // consoleEnded says why the command stream stopped, in words an author can

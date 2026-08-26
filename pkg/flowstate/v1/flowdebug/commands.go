@@ -7,7 +7,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -65,8 +67,8 @@ var commands = []command{
 		help: "run until the next breakpoint, or to the end"},
 	{verb: "until", aliases: []string{"u"}, argument: "<step-id>", completes: completesStep,
 		help: "run until the step with that id"},
-	{verb: "break", aliases: []string{"b"}, argument: "<step-id>", completes: completesStep,
-		help: "stop at that step whenever it is reached"},
+	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [if <expr>]", completes: completesStep,
+		help: "stop at that step, always or when the expression holds"},
 	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint,
 		help: "remove that breakpoint"},
 	{verb: "breakpoints", completes: completesNothing,
@@ -146,7 +148,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		return true, nil
 
 	case "break":
-		s.addBreakpoint(strings.TrimSpace(rest))
+		s.addBreakpoint(ctx, strings.TrimSpace(rest), scope)
 
 		return false, nil
 
@@ -212,6 +214,23 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 }
 
 // split separates the first word of a line from the rest.
+// cutWord is [split] without the trimming, for a line whose end is a cursor
+// position rather than a command.
+//
+// The two are deliberately not one function. `split` reads a line somebody has
+// finished typing, where trailing space is noise; this reads a line somebody is
+// *still* typing, where trailing space is the thing that says the current word
+// is empty. Trimming it told the completer the cursor sat three characters
+// left of where it was, and the console — which replaces exactly the reported
+// prefix — cut into the word before the space (Codex, #1116).
+func cutWord(line string) (word, rest string) {
+	if index := strings.IndexFunc(line, func(r rune) bool { return r == ' ' || r == '\t' }); index >= 0 {
+		return line[:index], line[index+1:]
+	}
+
+	return line, ""
+}
+
 func split(line string) (verb, rest string) {
 	line = strings.TrimSpace(line)
 	if index := strings.IndexFunc(line, func(r rune) bool { return r == ' ' || r == '\t' }); index >= 0 {
@@ -349,17 +368,55 @@ func (s *Session) showStep(node *v1.Node) {
 	}
 }
 
-func (s *Session) addBreakpoint(id string) {
+// addBreakpoint takes `<step-id>` or `<step-id> if <expr>`.
+//
+// The condition is compiled here rather than at each arrival, which is the
+// difference between this and `inspect`. `inspect` parses at evaluation time
+// ([v1.Evaluator.EvalString]) and that is right for a question asked once; a
+// breakpoint condition is a rule that fires at every arrival, and this
+// repository's own shape for a rule is that it compiles when it is *accepted*
+// rather than when it is reached — see `auth.SecretAccessPolicy.Compile` and
+// netpolicy's rule compiler. So a malformed expression is refused now, loudly,
+// with nothing set: a breakpoint accepted broken is worse than one refused,
+// because it looks armed and never fires.
+//
+// `if` over `when` because `if:` is already this language's word for a
+// condition gating whether something happens, and the parse is positional — a
+// step legally named `if` is still the id, since the first word always is.
+func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scope) {
+	id, condition, conditional, err := splitCondition(rest)
+	if err != nil {
+		s.printfTone(ToneWarning, "break: %v\n", err)
+
+		return
+	}
 	if id == "" {
-		s.printfTone(ToneWarning, "break needs a step id: break <step-id>\n")
+		s.printfTone(ToneWarning, "break needs a step id: break <step-id> [if <expr>]\n")
 
 		return
 	}
 
+	at := breakpoint{source: rest}
+	if conditional {
+		compiled, err := compileCondition(condition, scope)
+		if err != nil {
+			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
+
+			return
+		}
+		at.condition = compiled
+	}
+
 	s.mu.Lock()
-	full := len(s.breakpoints) >= MaxBreakpoints
+	_, replacing := s.breakpoints[id]
+	full := !replacing && len(s.breakpoints) >= MaxBreakpoints
 	if !full {
-		s.breakpoints[id] = struct{}{}
+		s.breakpoints[id] = at
+		// A replacement is a different question, so it gets its own chance to
+		// say it could not be asked. Carrying the old notice over would leave
+		// a second unbound condition skipped in silence, after the prompt said
+		// it was set (Codex, #1116).
+		delete(s.notedUnbound, id)
 	}
 	s.mu.Unlock()
 
@@ -368,8 +425,201 @@ func (s *Session) addBreakpoint(id string) {
 
 		return
 	}
-	s.record("break " + id)
-	s.printf("breakpoint at %s\n", id)
+	s.record("break " + rest)
+	if at.condition == nil {
+		s.printf("breakpoint at %s\n", id)
+
+		return
+	}
+	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+}
+
+// splitCondition reads `<step-id>` or `<step-id> if <expr>`.
+//
+// One more [split] rather than a grammar: the vocabulary is one table parsed by
+// taking the first word and handing the rest on ([Session.dispatch]), and
+// `inspect` already treats its whole rest as an expression. Anything after the
+// `if` is the expression, spaces and all.
+// splitCondition reads `<step-id>` or `<step-id> if <expr>`, and refuses
+// anything else.
+//
+// Refusing is the whole of it, and it took two review rounds to get there
+// because the failure is silent and its shape is generous: every way of
+// mistyping a condition used to fall back to an *unconditional* breakpoint.
+// `break body if` did, because an empty condition and an absent one were one
+// value; `break body iff n == 7` did, because a tail that was not `if` was
+// discarded rather than rejected. Both arm exactly the stop-on-every-iteration
+// behaviour somebody types a condition to escape, from a command that printed
+// success (Codex, #1116).
+//
+// So the rule is that a tail is either nothing or a condition. Anything else
+// is a typo, and a typo whose punishment is "your breakpoint means something
+// else now" is one this prompt should not administer quietly.
+func splitCondition(rest string) (id, condition string, conditional bool, err error) {
+	id, tail := cutWord(strings.TrimLeft(rest, " \t"))
+	tail = strings.TrimLeft(tail, " \t")
+	if tail == "" {
+		return id, "", false, nil
+	}
+
+	keyword, expression := cutWord(tail)
+	expression = strings.TrimLeft(expression, " \t")
+	if keyword != "if" {
+		return "", "", false, fmt.Errorf("expected `if` after the step id, got %q: break <step-id> [if <expr>]", keyword)
+	}
+
+	// Returned exactly as typed, trailing space included. The completer reads
+	// this to find where the expression begins, and a trimmed answer told it
+	// the cursor was three characters further left than it was: `break body if
+	// inp ` reported the prefix `inp`, so the console cut `np ` from in front
+	// of the cursor and wrote `iinputs.` (Codex, #1116). Whitespace before a
+	// cursor is not nothing — it is what says the current word is empty.
+	//
+	// Nothing downstream minds: CEL's parser takes the surrounding space, and
+	// the emptiness check below trims for its own question.
+	return id, expression, true, nil
+}
+
+// compileCondition parses a breakpoint's condition against the run's own
+// profile, returning it in the shape a step's `if:` travels in.
+//
+// A [v1.Value] holding a parsed expression, so that evaluating it is literally
+// [v1.EvalConditionInScope] — the engine's own function — rather than a second
+// implementation that could disagree with it.
+func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
+	if strings.TrimSpace(expression) == "" {
+		return nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
+	}
+
+	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())
+	if err != nil {
+		return nil, err
+	}
+	ast, issues := env.Parse(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("parse condition: %w", issues.Err())
+	}
+
+	// Parsing is syntax only, so `1 + true` and `missing_function(n)` both
+	// parse — and an accepted condition that cannot be compiled fails at every
+	// arrival, which with the stop-on-error rule above means stopping at every
+	// iteration. That is the exact behaviour a condition is typed to escape,
+	// reached by a typo the prompt reported as accepted (Codex, #1116).
+	//
+	// Checked against an environment declaring the names *the expression
+	// itself mentions*, which is `flowfile`'s spelling for this same problem
+	// (`celcheck.go:177`, `envDeclaring(referencedNames(...))`) and the only
+	// one that works here. A breakpoint is usually set before the run reaches
+	// the step it names, so the binding a condition reads — a loop's `as:` —
+	// does not exist in the scope this is typed in. Declaring what is in scope
+	// now would reject `n == 7` typed at the first step, which is a false
+	// diagnostic about a condition that will be perfectly valid when it fires.
+	checked, err := checkedInScope(env, ast)
+	if err != nil {
+		return nil, err
+	}
+
+	// And it has to be a boolean, refused here rather than at the first
+	// arrival — the same shape `compileMustIn` uses for the other place this
+	// repository compiles an author's boolean rule (`constraints.go:238-245`).
+	if checked.OutputType() != cel.BoolType && checked.OutputType() != cel.DynType {
+		return nil, fmt.Errorf("a condition must be a boolean, and this one is %s", checked.OutputType())
+	}
+
+	parsed, err := cel.AstToParsedExpr(ast)
+	if err != nil {
+		return nil, fmt.Errorf("parse condition: %w", err)
+	}
+
+	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, nil
+}
+
+// checkedInScope type-checks an expression against an environment extended
+// with every identifier it references, declared dynamically.
+//
+// Dynamic because nothing here knows the type: a step output's shape is the
+// task's, and a loop binding's is the collection's. What the check is for is
+// the errors that do not depend on those — an unknown function, an operator
+// applied to types that can never combine.
+func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
+	parsed, err := cel.AstToParsedExpr(ast)
+	if err != nil {
+		return nil, fmt.Errorf("parse condition: %w", err)
+	}
+
+	names := map[string]struct{}{}
+	collectIdentifiers(parsed.GetExpr(), names)
+
+	declarations := make([]cel.EnvOption, 0, len(names))
+	for name := range names {
+		declarations = append(declarations, cel.Variable(name, cel.DynType))
+	}
+
+	declaring, err := env.Extend(declarations...)
+	if err != nil {
+		// Extending failed, which is this build's problem rather than the
+		// author's, so the condition is accepted unchecked rather than
+		// refused: leaving the failure to evaluation is where it was before
+		// this check existed, and blaming an author for it is worse.
+		return ast, nil
+	}
+
+	checked, issues := declaring.Check(ast)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("condition: %w", issues.Err())
+	}
+
+	return checked, nil
+}
+
+// collectIdentifiers gathers every bare name an expression reads, for the
+// environment the type check declares.
+//
+// Only the *root* of a selection: `steps.build.ok` reads the identifier
+// `steps`, and declaring `steps` dynamically is what makes the whole chain
+// legal without claiming to know its shape. Macro bindings are included on
+// purpose here — declaring one is harmless, and not declaring it would make
+// `items.exists(i, i > 2)` fail a check over a name CEL itself provides.
+//
+// This is deliberately not the same question as [conditionNames]: declaring a
+// name costs nothing, while *requiring* one to be bound at a step decides
+// whether the run stops there.
+func collectIdentifiers(e *expr.Expr, into map[string]struct{}) {
+	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		into[kind.IdentExpr.GetName()] = struct{}{}
+
+	case *expr.Expr_SelectExpr:
+		collectIdentifiers(kind.SelectExpr.GetOperand(), into)
+
+	case *expr.Expr_CallExpr:
+		collectIdentifiers(kind.CallExpr.GetTarget(), into)
+		for _, arg := range kind.CallExpr.GetArgs() {
+			collectIdentifiers(arg, into)
+		}
+
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			collectIdentifiers(element, into)
+		}
+
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			collectIdentifiers(entry.GetMapKey(), into)
+			collectIdentifiers(entry.GetValue(), into)
+		}
+
+	case *expr.Expr_ComprehensionExpr:
+		comprehension := kind.ComprehensionExpr
+		into[comprehension.GetIterVar()] = struct{}{}
+		into[comprehension.GetIterVar2()] = struct{}{}
+		into[comprehension.GetAccuVar()] = struct{}{}
+		collectIdentifiers(comprehension.GetIterRange(), into)
+		collectIdentifiers(comprehension.GetAccuInit(), into)
+		collectIdentifiers(comprehension.GetLoopCondition(), into)
+		collectIdentifiers(comprehension.GetLoopStep(), into)
+		collectIdentifiers(comprehension.GetResult(), into)
+	}
 }
 
 func (s *Session) deleteBreakpoint(id string) {
@@ -382,6 +632,7 @@ func (s *Session) deleteBreakpoint(id string) {
 	s.mu.Lock()
 	_, existed := s.breakpoints[id]
 	delete(s.breakpoints, id)
+	delete(s.notedUnbound, id)
 	s.mu.Unlock()
 
 	s.record("delete " + id)
@@ -396,8 +647,13 @@ func (s *Session) deleteBreakpoint(id string) {
 func (s *Session) listBreakpoints() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.breakpoints))
-	for id := range s.breakpoints {
-		ids = append(ids, id)
+	for id, at := range s.breakpoints {
+		// Printed as it was typed, so a reader can copy one back onto a
+		// `break` line and get the breakpoint they are looking at.
+		ids = append(ids, at.source)
+		if at.source == "" {
+			ids[len(ids)-1] = id
+		}
 	}
 	s.mu.Unlock()
 

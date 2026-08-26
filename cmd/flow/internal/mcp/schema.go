@@ -424,6 +424,9 @@ func debugInputSchema() map[string]any {
 				"items": map[string]any{"type": "string"},
 				"description": "The debug script, one command per entry, in order: `step` (run this step " +
 					"and stop at the next), `continue`, `until <step-id>`, `break <step-id>`, " +
+					"`break <step-id> if <cel-expression>` (stop there only when the expression " +
+					"holds, which is how a step inside a `for_each` is reached at one iteration " +
+					"rather than every one), " +
 					"`delete <step-id>`, `breakpoints`, `inspect <cel-expression>` (evaluate against " +
 					"the paused run's own scope), `scope` (list what it can name), `info` (describe " +
 					"the step it is stopped at), and `quit` (abandon the run, which fails the case). " +

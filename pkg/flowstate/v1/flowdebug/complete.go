@@ -115,6 +115,19 @@ func (s *Session) Complete(line string, pos int) Completion {
 	case completesExpression:
 		return s.offerExpression(subject, rest)
 	case completesStep:
+		// Past an `if` the argument stops being a step id and becomes an
+		// expression, so the completion has to change with it. Left as step
+		// ids, `break body if de<tab>` offered — and inserted — an unrelated
+		// step called `deploy` into the middle of a condition (Codex, #1116),
+		// which is worse than offering nothing: a completion that writes a
+		// name the expression cannot mean.
+		//
+		// Read from the same helper the command parses with, so the prompt and
+		// the parser cannot disagree about where the expression begins.
+		if _, condition, conditional, err := splitCondition(rest); err == nil && conditional {
+			return s.offerExpression(subject, condition)
+		}
+
 		typed := lastWord(rest)
 		ids, more := s.reachableSteps(subject, typed)
 

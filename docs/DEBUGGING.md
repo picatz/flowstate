@@ -27,12 +27,38 @@ nothing here is worth learning twice.
 | `continue`, `c` | run to the next breakpoint, or to the end |
 | `until <step-id>`, `u` | run to that step without stopping in between |
 | `break <step-id>`, `b` | stop there whenever it is reached |
+| `break <step-id> if <expr>` | stop there only when the expression holds |
 | `delete <step-id>`, `d` | remove that breakpoint |
 | `breakpoints` | list them |
 | `inspect <expr>`, `p` | evaluate a CEL expression against the paused run |
 | `scope` | list what the run can name right now |
 | `info` | describe the step it is stopped at |
 | `quit`, `q` | end the run here (which fails the case — see below) |
+
+A condition is the step's own `if:`, evaluated where the breakpoint is: the
+same function, the same scope, and the same refusal of anything that is not a
+boolean. So inside a `for_each` the loop's binding is in scope —
+`break charge if item.amount > 500` stops at the one iteration you care about
+instead of all ten thousand — and a condition cannot mean something different
+here than it would written on the step.
+
+It is compiled when you type it, not at each arrival: a malformed expression is
+refused there and then, with nothing set, and so is one that cannot type-check
+or is not a boolean. A breakpoint accepted broken looks armed and never fires,
+which is a failure with no symptom.
+
+A condition that cannot be *evaluated* at some arrival does not hold the run
+there, and says so once. That case is ordinary rather than exceptional: a step
+id is unique within a visibility domain rather than within a file, so two
+sibling loops may each have a body step called `page`, and a condition written
+about one of them cannot be answered in the other. Not holding the run is what
+keeps `break page if total == 3` from parking you in the loop you were not
+debugging — and the notice is what keeps a condition that can never be answered
+from looking like one whose answer was always no.
+
+Over MCP this is the difference between reachable and not. A script is bounded
+at a hundred commands, so `break charge if item.id == "x"` then `continue` is
+two commands where stepping to the five-thousandth iteration is impossible.
 
 ## The prompt
 
