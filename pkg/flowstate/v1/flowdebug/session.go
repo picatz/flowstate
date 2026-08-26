@@ -919,6 +919,29 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			}
 			s.mu.Unlock()
 
+			// A reader that has already answered is heard before anything
+			// else. A closed lines channel is a permanent state, and left in
+			// the main select below it competes with the control arm at every
+			// boundary — so a stream that broke could go unreported for
+			// arbitrarily many stops, or forever if the run ends first. That
+			// matters because the report is how a controller learns its
+			// scripted setup was refused rather than finished.
+			select {
+			case text, open := <-lines:
+				s.readerAnswered()
+
+				if !open {
+					if s.streamEnded(controlled) {
+						continue
+					}
+
+					return "", false, nil
+				}
+
+				return text, true, nil
+			default:
+			}
+
 			if !outstanding {
 				// Cannot block: nothing is outstanding, so the one-token
 				// channel is empty. The arm is kept for the torn-down case,
@@ -944,29 +967,10 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 
 		select {
 		case text, open := <-lines:
-			// The reader has answered — with a line, or by going away — so it
-			// owes nothing until asked again.
-			s.mu.Lock()
-			s.wantOutstanding = false
-			s.mu.Unlock()
+			s.readerAnswered()
 
 			if !open {
-				s.mu.Lock()
-				s.closed = true
-				s.mu.Unlock()
-
-				// A stream running out is the end of *the stream*. On a
-				// controlled session it is not the end of the debugging, and
-				// treating it as one resumed the run to the end, unattended,
-				// while a controller was still holding it — the exact failure
-				// the message on that path warns about, arriving because the
-				// two fronts were composed and only one was consulted.
-				//
-				// An interrupt is different and must not fall through here: a
-				// person who pressed ctrl-C asked for the run to stop, and
-				// waiting for a controller to say otherwise would answer
-				// "stop" with "carry on".
-				if controlled && !s.wasInterrupted() {
+				if s.streamEnded(controlled) {
 					continue
 				}
 
@@ -996,8 +1000,13 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 				s.closed = true
 				s.mu.Unlock()
 
-				// Deliberately unacknowledged, which is what the sender reads
-				// as "not delivered": its own done arm answers ErrRunOver.
+				// Answered rather than dropped. A sender left to infer a
+				// refusal from the session closing has to race its own
+				// acknowledgement against that close, and can conclude
+				// "refused" about a command another boundary dispatched. One
+				// request, one answer.
+				request.at <- controlTaken{refused: true}
+
 				return "", false, nil
 			default:
 			}
@@ -1061,6 +1070,61 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			return "", false, ctx.Err()
 		}
 	}
+}
+
+// readerAnswered records that the reader has delivered what it was asked for,
+// so the next boundary may ask again.
+//
+// Called wherever a value is taken from the reader's channel, and there are two
+// such places — the check that runs before asking, and the wait that runs after.
+// Forgetting it at one of them is not a subtle failure: the reader is never
+// asked for another line, and the next boundary with no controller behind it
+// waits forever (which is how it was found, by `flow run local --debug`).
+func (s *Session) readerAnswered() {
+	s.mu.Lock()
+	s.wantOutstanding = false
+	s.mu.Unlock()
+}
+
+// streamEnded records that the command stream is over and reports whether the
+// session should keep holding the run and wait for programmatic commands.
+//
+// One place, because the two callers ask the same question at different moments
+// — one before requesting a line, one while waiting for it — and a second copy
+// of this reasoning is how the two would come to disagree about what the end of
+// a stream means.
+func (s *Session) streamEnded(controlled bool) (keepHolding bool) {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+
+	// A stream running out is the end of *the stream*. On a controlled session
+	// it is not the end of the debugging, and treating it as one resumed the
+	// run to the end, unattended, while a controller was still holding it.
+	//
+	// An interrupt is different and must not keep holding: a person who pressed
+	// ctrl-C asked for the run to stop, and waiting for a controller to say
+	// otherwise would answer "stop" with "carry on".
+	if !controlled || s.wasInterrupted() {
+		return false
+	}
+
+	// A stream that *broke* says so before the session goes on without it.
+	// [Session.consoleEnded] is where a refused command is told apart from a
+	// finished one — an overlong line stops a [bufio.Scanner] exactly as EOF
+	// does — and the boundary that normally asks it is the one this path
+	// skips. Without it a scripted setup command refused for its length
+	// vanished, and a controller carried on believing it had applied
+	// (Codex, #1122).
+	//
+	// Said once, because `closed` is now set and no later boundary reaches
+	// here.
+	if why := s.consoleEnded(); why != "" {
+		s.printfTone(ToneDanger,
+			"(%s — the run is still held, on programmatic control)\n", why)
+	}
+
+	return true
 }
 
 // read is the reader goroutine: one line per request, until the input ends.

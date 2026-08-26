@@ -83,6 +83,17 @@ type controlTaken struct {
 	// autopsy reports that the pause was the account of a finished run, where
 	// every movement verb means "leave" and there is no next stop.
 	autopsy bool
+
+	// refused says the boundary declined the command and did not dispatch it.
+	//
+	// A refusal is answered rather than left to silence, which is what makes
+	// this a request with exactly one response instead of a race. A sender that
+	// had to *guess* — waiting on the acknowledgement and the session's done
+	// channel together — could give up on a command the boundary was about to
+	// dispatch, and report it refused when the run had taken it (Codex, #1122,
+	// caught by TestACommandRacingCloseIsEitherDispatchedOrRefusedButNotBoth
+	// after two narrower fixes had left the window open).
+	refused bool
 }
 
 // Control delivers one command line to the paused run, from any goroutine.
@@ -186,25 +197,26 @@ func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error
 		return controlTaken{}, ErrRunOver
 	}
 
-	// An acknowledgement that is already here wins over a close that has also
-	// already happened. The boundary only acknowledges a command it dispatched
-	// (see the control arm of [Session.readCommand]), so preferring the answer
-	// is what keeps the pair honest: dispatched-and-reported, or neither. A
-	// plain select would pick at random between the two ready arms and could
-	// report [ErrRunOver] for a command that had taken effect.
+	// The send succeeded, so a boundary holds this request and will answer it —
+	// dispatched, or refused. Both paths answer, into a buffered channel that
+	// cannot block them, so there is exactly one response to wait for.
+	//
+	// Deliberately *not* racing the session's done channel here. That was the
+	// shape this had, and it is the bug: a close landing between the send and
+	// the answer let the sender report [ErrRunOver] for a command the boundary
+	// went on to dispatch. Waiting for the answer that is certainly coming is
+	// what makes "dispatched and reported, or neither" structural rather than
+	// probable. The context stays, because a caller giving up is a different
+	// thing from a session that will not answer.
 	select {
 	case taken := <-at:
-		return taken, nil
-	default:
-	}
+		if taken.refused {
+			return controlTaken{}, ErrRunOver
+		}
 
-	select {
-	case taken := <-at:
 		return taken, nil
 	case <-ctx.Done():
 		return controlTaken{}, ctx.Err()
-	case <-s.done:
-		return controlTaken{}, ErrRunOver
 	}
 }
 

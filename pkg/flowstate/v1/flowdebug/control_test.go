@@ -521,19 +521,26 @@ func TestASecondCallerCanGiveUpWaitingForTheControlSlot(t *testing.T) {
 // assertion inside one iteration is exact either way, so this fails on the
 // first inconsistent pair rather than on a distribution.
 //
-// What it does *not* do is pin the two guards that make the invariant hold.
-// Checked by reintroducing each, and neither fails this: they are complementary,
-// so each is masked by the other, and the window they close needs the boundary
-// and the sender to choose their non-shutdown arms at the same instant. This is
-// the end-to-end statement of the property; the guards themselves are argued in
-// their own comments rather than asserted here, because nothing outside this
-// package can tell them apart.
+// Its power is real but partial, and the number is measured rather than hoped
+// for. Against the version this replaced — a sender racing the acknowledgement
+// against the session closing — it fails about two runs in three at this count,
+// and none in three at two hundred. So a green here is evidence and not proof,
+// which is why the fix it drove is structural: the boundary answers every
+// request it takes, dispatched or refused, so there is one response to wait for
+// and nothing to guess. Two narrower guards that came before it are argued in
+// their own comments and are not separately observable from outside.
 func TestACommandRacingCloseIsEitherDispatchedOrRefusedButNotBoth(t *testing.T) {
 	t.Parallel()
 
 	dispatched, refused := 0, 0
 
-	for range 200 {
+	// Two thousand, not a handful: the interleavings that break this are narrow
+	// — the one that survived two earlier fixes needed a close to land inside
+	// the few instructions between a boundary taking a command and answering
+	// for it — and the whole run costs a couple of seconds. A count too small
+	// to reach them is a test that reports green about a window it never
+	// entered.
+	for range 2000 {
 		var out strings.Builder
 		session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &out})
 		require.NoError(t, err)

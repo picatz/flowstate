@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -181,4 +182,83 @@ func TestTheControlSlotIsHeldThroughTheWait(t *testing.T) {
 	// returns, which is what `moved` receiving says.
 	require.NoError(t, session.Control(t.Context(), "continue"))
 	require.NoError(t, <-finished)
+}
+
+// TestABrokenStreamIsReportedBeforeControlTakesOver is the refused command that
+// used to vanish.
+//
+// A [bufio.Scanner] stops at an overlong line exactly as it stops at EOF, and
+// [Session.consoleEnded] is the one place those are told apart. The boundary
+// that asks it is the one a controlled session skips when it keeps holding the
+// run instead of resuming — so a scripted setup command refused for its length
+// disappeared, and a controller carried on believing it had applied
+// (Codex, #1122). It is the defect #1109 fixed for the uncontrolled path,
+// arriving on the new one.
+//
+// Internal because the test has to wait for something only this package can
+// see. The reader runs on its own goroutine, so whether it has failed *yet* is
+// a race with the run — and a session cannot report an error that has not
+// happened. Driven from outside, the whole run finishes before the scanner is
+// even scheduled, and the test then asserts the absence of a message nothing
+// was ever in a position to print: green under the defect and under the fix
+// alike. Waiting on the session's own record of the failure is what makes it a
+// test of the reporting rather than of the scheduler.
+func TestABrokenStreamIsReportedBeforeControlTakesOver(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := New(Options{
+		Controlled: true,
+		// One line, clearly past what a command may be — the scanner is given
+		// one byte over the bound for the terminator — so it refuses the line
+		// and stops rather than passing it on.
+		In:  strings.NewReader(strings.Repeat("b", MaxCommandBytes+100) + "\n"),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	step := func(id string) *v1.Node {
+		return &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}
+	}
+
+	finished := make(chan error, 1)
+	go func() {
+		if stepErr := session.BeforeStep(t.Context(), step("build"), scope); stepErr != nil {
+			finished <- stepErr
+
+			return
+		}
+		finished <- session.BeforeStep(t.Context(), step("test"), scope)
+	}()
+
+	// The boundary has seen the stream end and, being controlled, is still
+	// holding the run. That is the moment the report is owed.
+	require.Eventually(t, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+
+		return session.closed
+	}, 10*time.Second, time.Millisecond,
+		"the boundary never observed the stream ending, so nothing here is being tested")
+
+	// Still held rather than let go, which is the whole point of Controlled.
+	at, err := session.Step(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "test", at.Step)
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+
+	// Read once the run is over: the session writes from the run's own
+	// goroutine, and a builder read alongside it is a data race rather than an
+	// assertion.
+	printed := out.String()
+	assert.Contains(t, printed, "longer than",
+		"a command the reader refused for its length was discarded without a word, so a "+
+			"controller cannot tell its scripted setup never ran:\n\n%s", printed)
+	assert.Contains(t, printed, "still held",
+		"the notice did not say the run was still being held, which is the part that "+
+			"tells a controller it has not lost the session:\n\n%s", printed)
 }
