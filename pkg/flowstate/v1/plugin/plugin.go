@@ -333,12 +333,36 @@ func (p *Plugin) ready() (*instance, error) {
 
 // callContext bounds one call to a plugin.
 //
-// The host's own timeout is applied on top of whatever deadline the caller
-// already carries, so the shorter of the two wins. That is the intended
-// relationship: a step with a five second timeout must not wait thirty for a
-// plugin, and a plugin must not be able to hold a request open past the host's
-// bound just because the caller passed a context with no deadline at all.
+// A caller that already carries a deadline keeps it, unchanged; only a caller
+// with no deadline of its own gets Config.CallTimeout. The host's bound exists
+// to stop the call nobody bounded, not to second-guess the one somebody did.
+//
+// The concern the older rule was defending is real and is still met: a plugin
+// must not be able to hold a request open indefinitely just because the caller
+// passed a context with no deadline at all, and a step with a five second
+// `timeout:` must not wait thirty seconds for a plugin. What that rule got
+// wrong was the other direction, which is the one both drivers actually take
+// (#1130). Every step arrives here with a deadline — the local driver's
+// per-attempt [context.WithTimeout] and the durable driver's activity
+// StartToClose, both from the step's own `timeout:` or from
+// [flowstatev1.DefaultStartToCloseTimeout] — so stacking a thirty second bound
+// beneath them silently capped every plugin task at thirty seconds, whatever
+// the author wrote. A ten minute `timeout:` on a task that legitimately takes
+// two minutes failed, wearing the plugin's own error classification rather than
+// anything naming the host's bound, and no shipped surface could raise it.
+//
+// So the layering is: the step's `timeout:` bounds the attempt, this bounds an
+// attempt that has no such bound, and whatever the plugin enforces internally
+// bounds its own work beneath both. The shorter of two deadlines still wins,
+// because a caller with a short deadline keeps it — there is simply no longer a
+// second deadline invented here to shorten it with.
 func (p *Plugin) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		// WithCancel, not the bare ctx: every caller in this package owns the
+		// returned cancel and the streaming one relies on cancelling to release
+		// the call, so both shapes have to be a context this call can end.
+		return context.WithCancel(ctx)
+	}
 	return context.WithTimeout(ctx, p.cfg.CallTimeout)
 }
 
