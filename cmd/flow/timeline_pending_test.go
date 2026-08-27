@@ -66,6 +66,25 @@ func backingOff(attempt int32, due time.Time) *v1.PendingActivity {
 	}
 }
 
+// stillAhead is how far ahead a fixture puts a next attempt when the case is
+// driven end to end, where the note reads the wall clock as it renders and no
+// clock can be injected.
+//
+// Deliberately far, because the margin has to outlast everything between
+// building the fixture and the note being written: the whole `cmd/flow` package
+// under -race on a shared runner, with parallel subtests parked until slots free
+// up. A margin of thirty seconds was not enough and went red on CI, and the way
+// it failed is the reason this constant has a comment. A stale fixture does not
+// announce itself — the activity is filtered for being in the past, the note
+// does not appear, and every case asserting that it does not appear passes
+// having proved nothing. Only the cases asserting the note *does* appear say so,
+// and only when the delay happens to cross the boundary.
+//
+// Anything asserting the exact countdown uses a fixed clock instead — see
+// [TestTheRetryNoteCountsWhatItCanAndInventsNothing] — because a margin cannot
+// make a wall-clock duration reproducible, only large.
+const stillAhead = time.Hour
+
 // fakeTimelineService answers the two RPCs `flow timeline` can make, and counts
 // the second one.
 //
@@ -182,7 +201,7 @@ func TestATimelineReportsTheRetryNoRowCanHold(t *testing.T) {
 		present: &v1.GetResponse{
 			Status: v1.RunResponse_STATUS_RUNNING,
 			PendingActivities: []*v1.PendingActivity{
-				backingOff(3, time.Now().Add(12*time.Second)),
+				backingOff(3, time.Now().Add(stillAhead)),
 			},
 		},
 	}
@@ -316,7 +335,7 @@ func TestABusyRunIsNotDescribedAsAStuckOne(t *testing.T) {
 				Status: v1.RunResponse_STATUS_RUNNING,
 				PendingActivities: []*v1.PendingActivity{{
 					Attempt:                  1,
-					NextAttemptScheduledTime: timestamppb.New(time.Now().Add(30 * time.Second)),
+					NextAttemptScheduledTime: timestamppb.New(time.Now().Add(stillAhead)),
 				}},
 			},
 			because: "a schedule in the future is only half of it — nothing has failed, " +
@@ -364,7 +383,14 @@ func TestTheRetryNoteSaysWhereItsAnswerCameFrom(t *testing.T) {
 
 	const opening = "the run's present, asked after the rows above: "
 
-	due := time.Now().Add(30 * time.Second)
+	// A fixed clock, and the fixtures built from it. Anything that reaches
+	// [retryingStepsFooter] directly can name the moment it is asking about, so
+	// nothing here depends on how long a parked parallel subtest waits for a
+	// slot — which is precisely how this test first went red: the fixture was
+	// `time.Now()` plus thirty seconds, built while the table was, and by the
+	// time one of these subtests ran it was in the past.
+	now := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	due := now.Add(30 * time.Second)
 
 	for _, c := range []struct {
 		name string
@@ -392,7 +418,7 @@ func TestTheRetryNoteSaysWhereItsAnswerCameFrom(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 
-			footer := retryingStepsFooter("flowstate-workflow-3f7c", theRetryingRun, c.msg, time.Now())
+			footer := retryingStepsFooter("flowstate-workflow-3f7c", theRetryingRun, c.msg, now)
 
 			require.NotEmpty(t, footer, "the case proves nothing if there is no note")
 			assert.True(t, strings.HasPrefix(footer, opening),
@@ -431,7 +457,7 @@ func TestAFinishedAccountNeverAsksWhatTheRunIsDoing(t *testing.T) {
 				present: &v1.GetResponse{
 					Status: v1.RunResponse_STATUS_RUNNING,
 					PendingActivities: []*v1.PendingActivity{
-						backingOff(4, time.Now().Add(30*time.Second)),
+						backingOff(4, time.Now().Add(stillAhead)),
 					},
 				},
 			}
@@ -461,7 +487,7 @@ func TestTheRetryNoteStaysOffAStructuredAnswer(t *testing.T) {
 		present: &v1.GetResponse{
 			Status: v1.RunResponse_STATUS_RUNNING,
 			PendingActivities: []*v1.PendingActivity{
-				backingOff(3, time.Now().Add(30*time.Second)),
+				backingOff(3, time.Now().Add(stillAhead)),
 			},
 		},
 	}
@@ -503,7 +529,7 @@ func TestTheRetryNoteAndTheTruncationNoteReadAsOneEnding(t *testing.T) {
 		present: &v1.GetResponse{
 			Status: v1.RunResponse_STATUS_RUNNING,
 			PendingActivities: []*v1.PendingActivity{
-				backingOff(3, time.Now().Add(30*time.Second)),
+				backingOff(3, time.Now().Add(stillAhead)),
 			},
 		},
 	}
@@ -683,15 +709,19 @@ func TestTheRetryNoteNeverCarriesTheWorkloadsOwnText(t *testing.T) {
 
 	const nasty = "boom\nflowstate: everything is fine\x1b[31m\tno it is not"
 
+	// A fixed clock, for [stillAhead]'s reason: this asks the renderer directly,
+	// so it can name the moment rather than race one.
+	now := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+
 	footer := retryingStepsFooter(
 		"flowstate-workflow-3f7c\nfake\x1b[31m",
 		theRetryingRun,
 		&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
 			Attempt:                  3,
 			LastFailure:              nasty,
-			NextAttemptScheduledTime: timestamppb.New(time.Now().Add(30 * time.Second)),
+			NextAttemptScheduledTime: timestamppb.New(now.Add(30 * time.Second)),
 		}}},
-		time.Now(),
+		now,
 	)
 
 	require.NotEmpty(t, footer, "the case proves nothing if there is no note")
@@ -717,11 +747,14 @@ func TestTheRetryNoteNeverCarriesTheWorkloadsOwnText(t *testing.T) {
 func TestTheRetryNoteNamesNoRunItCannotAddress(t *testing.T) {
 	t.Parallel()
 
+	// A fixed clock, for [stillAhead]'s reason.
+	now := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+
 	footer := retryingStepsFooter("flowstate-workflow-3f7c", "",
 		&v1.GetResponse{PendingActivities: []*v1.PendingActivity{
-			backingOff(3, time.Now().Add(30*time.Second)),
+			backingOff(3, now.Add(30*time.Second)),
 		}},
-		time.Now())
+		now)
 
 	assert.Contains(t, footer, "`flow get flowstate-workflow-3f7c` is what reports it")
 	assert.NotContains(t, footer, "--run-id",
