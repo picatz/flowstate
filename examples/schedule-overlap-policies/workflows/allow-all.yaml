@@ -14,7 +14,7 @@ name: schedule-overlap-allow-all
 inputs:
   window:
     type: string
-    default: "2026-08-27T00:00:00Z/PT5M"
+    default: 2026-08-27T00:00:00Z/PT5M
     description: the audit-log window this firing exports
 triggers:
   schedule:

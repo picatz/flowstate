@@ -1,16 +1,20 @@
-# `utilization` — the `value:` step — succeeds in both cases below: dividing
-# 120 by 100 is not an error, it is just a number nobody wants reported. The
-# refusal case's `expect:` says so precisely: `ran: [utilization]` and
-# `failed: true` together, which is what distinguishes "the computation
-# failed" from "the computation succeeded and its own output contract refused
-# to report the answer" — the distinction this file exists to make.
+# `utilization` and `announce` both succeed in every case below, including the
+# refusal: dividing 120 by 100 is not an error, and neither is logging the
+# result. The refusal case's `expect:` says so precisely — both steps stay in
+# `ran:` alongside `failed: true` — which is what distinguishes "the
+# computation failed" from "the computation succeeded, was narrated, and the
+# output contract refused to report the answer anyway" — the distinction this
+# file exists to make.
 edition: v2026.3
 defaults:
   workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: an ordinary reservation reports an ordinary percentage
     expect:
-      ran: [utilization]
+      ran: [utilization, announce]
       outputs:
         utilization_pct: 82.0
 
@@ -19,7 +23,7 @@ tests:
       capacity: 100
       reserved: 100
     expect:
-      ran: [utilization]
+      ran: [utilization, announce]
       outputs:
         utilization_pct: 100.0
 
@@ -28,9 +32,9 @@ tests:
       capacity: 100
       reserved: 120
     expect:
-      # The step that computed the bad number is still in `ran:` — nothing
-      # about evaluating `steps.utilization.value` failed. What failed is the
-      # output contract, checked once that value existed.
-      ran: [utilization]
+      # Both steps ran — nothing about computing or narrating the bad number
+      # failed. What failed is the output contract, checked once that value
+      # existed and after every step had already finished.
+      ran: [utilization, announce]
       failed: true
       error_contains: "must satisfy `this >= 0.0 && this <= 100.0`; got 120"
