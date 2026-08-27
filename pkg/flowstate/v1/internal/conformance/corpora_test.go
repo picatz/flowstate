@@ -274,9 +274,25 @@ func exportedDecls(t *testing.T, fset *token.FileSet) []*ast.FuncDecl {
 		}
 	}
 
-	if len(decls) == 0 {
-		t.Fatal("the walk found no exported functions in this package; the checker is broken, " +
-			"not the tree")
+	// A floor rather than a zero-check, because zero is not the only way a walk
+	// goes wrong and it is the least likely one. Both checkers iterate whatever
+	// this finds and judge each entry, so a walk that silently *narrows* leaves
+	// them green while asking about fewer things.
+	//
+	// What it does and does not buy, measured rather than assumed. Dropping
+	// every `Undo…` export from this walk — five of fifty-three — fails the
+	// corpus tables, because those name what they expect and notice a name
+	// going missing. It does *not* trip this floor, and no floor that survives
+	// somebody adding an export would: the two-driver rule stays insensitive to
+	// a partial narrowing, which is a limit of asking "does each thing I found
+	// have callers" rather than something this line fixes.
+	//
+	// So the floor is for gross breakage — a walk pointed at the wrong
+	// directory, or a filter that matches nothing — where it is the difference
+	// between a loud failure and a clean report about nothing.
+	if len(decls) < 30 {
+		t.Fatalf("the walk found %d exported function(s) in this package, which is too few to "+
+			"be it — the checkers reading this are broken, not the tree", len(decls))
 	}
 
 	return decls

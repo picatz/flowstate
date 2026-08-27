@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -131,29 +130,17 @@ func analyzeCallers(t *testing.T) map[string]driverCallers {
 	// Subjects and intra-package edges (consumer -> consumed), from this
 	// package's non-test files. Bodies only: a name in a signature is a
 	// type, and types are not subjects here.
+	// One walk, shared with `corpora_test.go`, which asks a different question
+	// of the same set. Two walks over one directory would be two answers to
+	// "what does this package export" — and a later change to either could
+	// leave the two-driver rule and the corpus rule inspecting different sets,
+	// which is the duplicated-source-of-truth failure both files exist to
+	// catch, arriving through the files that catch it (Codex, #1129).
+	decls := exportedDecls(t, fset)
+
 	exported := map[string]bool{}
-	var decls []*ast.FuncDecl
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, e.Name(), nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, d := range f.Decls {
-			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name.IsExported() {
-				exported[fd.Name.Name] = true
-				decls = append(decls, fd)
-			}
-		}
-	}
-	if len(exported) == 0 {
-		t.Fatal("the walk found no exported functions in this package; the checker is broken, not the tree")
+	for _, fd := range decls {
+		exported[fd.Name.Name] = true
 	}
 
 	// A bare identifier in a body matching an exported sibling is an edge.
@@ -181,7 +168,7 @@ func analyzeCallers(t *testing.T) map[string]driverCallers {
 	local := map[string]bool{}
 	durable := map[string]bool{}
 	referencingFiles := 0
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
 			return err
 		}
