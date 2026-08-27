@@ -913,6 +913,50 @@ func TestRunWorkflowInterpolation(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowDebuggerNeutrality is the durable half of
+// [conformance.DebuggerCases], and it runs the workflows with no debugger at
+// all — because there is no debugger to run them with.
+//
+// That is the corpus's point rather than a shortfall in this test. [v1.Debugger]
+// is a local-driver seam until #928's second slice, and `observe.go` states why
+// that is legitimate rather than a violation of the both-drivers rule: that rule
+// governs what a *workflow* can observe, and no workflow can observe its
+// observer. What the two drivers must still agree about is the **answer**, and
+// this is the half that says so — the local caller runs each of these plain and
+// then debugged and asserts both match, and this one proves the plain answer is
+// not merely a local convention.
+//
+// Written before slice 2 exists, deliberately. An asymmetry nobody wrote down is
+// indistinguishable from an oversight, and discovering during slice 2 that the
+// drivers had quietly disagreed about which boundaries exist is exactly the cost
+// this package was built to avoid.
+func TestRunWorkflowDebuggerNeutrality(t *testing.T) {
+	cases := conformance.DebuggerCases()
+	require.NotEmpty(t, cases, "the debugger corpus is empty, so every claim below is vacuous")
+
+	for _, test := range cases {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 func TestRunWorkflowValue(t *testing.T) {
 	for _, test := range conformance.ValueCases() {
 		t.Run(test.Name, func(t *testing.T) {
