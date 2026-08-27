@@ -347,7 +347,7 @@ edition: v2026.3
 				[]string{"id", "description"},
 				v1.TaskNames(),
 				[]string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call", "value", "switch"},
-				[]string{"if", "vars", "timeout", "retry", "continue_on_error", "undo", "with"},
+				[]string{"if", "vars", "timeout", "total_timeout", "retry", "continue_on_error", "undo", "with"},
 			),
 		},
 		{
