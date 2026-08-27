@@ -52,6 +52,16 @@ import (
 // collects when asked, so nothing here depends on an export interval and there
 // is no window in which a test can be flaky by being early. #401 names this as
 // the mechanism, and this is its first use outside the metricschema package.
+//
+// Also swaps [metricschema]'s own cardinality budget
+// ([metricschema.SwapDefaultLimiterForTest]) for the run of this one test.
+// Every test in a package that reaches [v1.Run] shares one process, and every
+// one of them names its own workflow — a label genuinely bounded in any real
+// deployment (see [metricschema.WorkflowName]'s classification) looks
+// unbounded across a test suite that mints hundreds of distinct ones, and
+// without this a test asserting an exact attribute value can fail because an
+// unrelated earlier test spent its share of the budget rather than because
+// anything this test did was wrong.
 func RecordMetrics(tb testing.TB) *sdkmetric.ManualReader {
 	tb.Helper()
 
@@ -60,8 +70,10 @@ func RecordMetrics(tb testing.TB) *sdkmetric.ManualReader {
 
 	previous := otel.GetMeterProvider()
 	otel.SetMeterProvider(provider)
+	restoreLimiter := metricschema.SwapDefaultLimiterForTest()
 
 	tb.Cleanup(func() {
+		restoreLimiter()
 		otel.SetMeterProvider(previous)
 		_ = provider.Shutdown(context.Background())
 	})

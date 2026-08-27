@@ -2,11 +2,14 @@ package flowstatev1
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 )
 
 // The run-level span, and the decision about which driver opens one.
@@ -225,6 +228,8 @@ func RecordRunOutcome(span trace.Span, err error) {
 // design decided against.
 func observeRun(ctx context.Context, w *Workflow, run func(context.Context) (*Workflow_StepOutputs, error)) (*Workflow_StepOutputs, error) {
 	ctx, span := StartRunSpan(ctx, w)
+	started := time.Now()
+	RecordRunStart(ctx, w.GetName(), metricschema.DriverLocal)
 
 	// Set on the normal path, immediately after run returns. False when the
 	// deferred function below runs means the run did not return.
@@ -238,6 +243,7 @@ func observeRun(ctx context.Context, w *Workflow, run func(context.Context) (*Wo
 		if span.IsRecording() {
 			span.SetStatus(codes.Error, "run panicked")
 		}
+		RecordRunExecution(ctx, w.GetName(), metricschema.DriverLocal, metricschema.ErrorTypePanic, time.Since(started))
 		span.End()
 	}()
 
@@ -245,6 +251,7 @@ func observeRun(ctx context.Context, w *Workflow, run func(context.Context) (*Wo
 	completed = true
 
 	RecordRunOutcome(span, err)
+	RecordRunExecution(ctx, w.GetName(), metricschema.DriverLocal, errorTypeFor(err), time.Since(started))
 	span.End()
 
 	return outputs, err
