@@ -722,8 +722,9 @@ func assertion(call *ast.CallExpr, handles, testify, shadowed map[string]bool) b
 	return isHandle(selector.X, handles)
 }
 
-// shadowedBy are the names a function binds: its receiver, its type parameters,
-// its value parameters, its named results, and everything its body declares.
+// shadowedBy are the names a function binds: its receiver, that receiver's type
+// parameters, its own type parameters, its value parameters, its named results,
+// and everything its body declares.
 //
 // The signature half was missing at first, and the hole it left is worth
 // recording because it is the same defect the body half was written to close,
@@ -735,9 +736,14 @@ func assertion(call *ast.CallExpr, handles, testify, shadowed map[string]bool) b
 //
 // That list was then still short by one, because a *type* parameter binds as
 // well: in `func convert[panic ~string](x string)`, the call `panic(x)` is a
-// conversion that returns normally (Codex, #1127). Which is the argument for
-// enumerating what the syntax has rather than the cases somebody thought of —
-// five field lists, all of them read here.
+// conversion that returns normally (Codex, #1127).
+//
+// And short again after that, in the half of the same finding this answered too
+// quickly: a *receiver's* type parameters — `func (b box[panic]) check()` — are
+// in scope for the body and are the one binding site that is not a field list,
+// so a walk built around field lists could not reach them however many it read.
+// Three rounds on one enumeration is the argument for asking what the syntax
+// has rather than adding the case last named.
 //
 // Deliberately generous about what counts as binding and deliberately blind to
 // where the binding is in scope: this is a syntax walk. What it is for is
@@ -768,6 +774,18 @@ func shadowedBy(fn *ast.FuncDecl) map[string]bool {
 	fields(fn.Type.TypeParams)
 	fields(fn.Type.Params)
 	fields(fn.Type.Results)
+
+	// A method's receiver carries its type's parameters — `func (b box[panic])
+	// check()` — and those are names in scope for the body just as the
+	// function's own are. They do not live in a [ast.FieldList] like the other
+	// four, which is exactly why a walk written around field lists missed them.
+	if fn.Recv != nil {
+		for _, field := range fn.Recv.List {
+			for _, param := range receiverTypeParams(field.Type) {
+				add(param)
+			}
+		}
+	}
 
 	if fn.Body == nil {
 		return names
@@ -809,6 +827,28 @@ func shadowedBy(fn *ast.FuncDecl) map[string]bool {
 	})
 
 	return names
+}
+
+// receiverTypeParams are the type parameters a method receiver declares.
+//
+// `func (b box[T]) m()` puts `T` in scope for the body, and the receiver's type
+// is where it is written: an [ast.IndexExpr] for one, an [ast.IndexListExpr]
+// for several, under a pointer or not. Every other name a signature binds
+// arrives in a field list; this one does not, which is why it outlived two
+// rounds of adding field lists to the walk.
+func receiverTypeParams(recv ast.Expr) []ast.Expr {
+	if star, ok := recv.(*ast.StarExpr); ok {
+		recv = star.X
+	}
+
+	switch recv := recv.(type) {
+	case *ast.IndexExpr:
+		return []ast.Expr{recv.Index}
+	case *ast.IndexListExpr:
+		return recv.Indices
+	}
+
+	return nil
 }
 
 // isHandle reports whether an expression is something this function can fail
