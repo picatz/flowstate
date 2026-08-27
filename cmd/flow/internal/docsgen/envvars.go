@@ -522,6 +522,28 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			family:  true,
 		},
 		{
+			name:  "OTEL_TRACES_SAMPLER",
+			value: "parentbased_always_on",
+			purpose: "Select the head sampler (`always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, " +
+				"`parentbased_always_off`, `parentbased_traceidratio`, and the jaeger_remote and xray variants the " +
+				"SDK also accepts), matched per the OTel spec. `flow` never calls `sdktrace.WithSampler`, so the " +
+				"tracer provider is built with none configured and the SDK reads this variable itself. Set it on " +
+				"the worker: sampling is a head decision made where the root span starts, and every child span " +
+				"follows the parent's decision through `parentbased_*` regardless of what this variable says on " +
+				"the process that created the child. This shapes what gets exported, not the span, metrics, or " +
+				"logs pipeline itself — a tail-based decision (keep every trace touching an error, regardless of " +
+				"its head sampling) belongs in a collector, not here.",
+			read: "go.opentelemetry.io/otel/sdk/trace (consulted only when WithSampler is absent)",
+		},
+		{
+			name:  "OTEL_TRACES_SAMPLER_ARG",
+			value: "unset",
+			purpose: "The argument the selected sampler takes: a ratio in `[0,1]` for `traceidratio` and " +
+				"`parentbased_traceidratio`, a remote-sampler endpoint for `jaeger_remote`, ignored by every " +
+				"other sampler. Meaningless without `OTEL_TRACES_SAMPLER` naming a sampler that reads it.",
+			read: "go.opentelemetry.io/otel/sdk/trace (consulted only when WithSampler is absent)",
+		},
+		{
 			name:  "FLOWSTATE_TASK_QUEUE_PREFIX",
 			value: "unset",
 			purpose: "Default for `--task-queue-prefix` on both `flow server` and `flow worker`: route each " +
