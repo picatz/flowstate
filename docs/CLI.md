@@ -800,7 +800,7 @@ A case can name who the run started as (`starter:`) and who each scripted signal
 stands in for (`sender:`). **A green case says nothing about whether that identity
 would be allowed to do any of this in production.** Nothing attested either one, and
 `flow test` takes no policy flags: `--task-policy` and `--egress-policy` are declared
-on `flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`,
+on `flow worker`, `flow run local`, `flow mcp`, `flow server dev` and `flow task run`,
 and deliberately not here.
 
 What a `starter:` reaches is the workflow's own `signals:` policy, through the same
@@ -814,7 +814,7 @@ access policy (a fixed allow-everything rule, evaluated under the constant
 
 Task-shape policy carries one qualification, because "`flow test` installs none" is
 true of the *command* and not of the *process*. The flag is declared on `flow worker`,
-`flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, and deliberately
+`flow run local`, `flow mcp`, `flow server dev` and `flow task run`, and deliberately
 not on `flow test` — but it installs a process-wide policy that a case never clears,
 and the same machinery runs elsewhere: the `flowstate_test` MCP tool runs cases in
 whatever process serves it, so under `flow mcp --task-policy` a case's dispatches are

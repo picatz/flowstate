@@ -1,0 +1,60 @@
+# `type: enum` — an input whose declaration is the closed set of strings it
+# will ever accept, rather than a `string` an author hopes stays inside one.
+#
+# `parameterized-deploy` shows `must:` bounding an int; this is the analogous
+# bound for a value that is a *choice* rather than a range. Spelling it
+# `type: string` with `must: this in ["staging", "production"]` says the same
+# thing and says it worse: the refusal for a bad value has to be built by
+# hand out of `must:`'s own generic "constraint not satisfied", where an
+# enum's refusal is generated from the declaration itself and names every
+# legal choice back to whoever sent the wrong one — see this file's own
+# `.test.yaml` for the exact sentence.
+#
+# Read `values:` alongside `type:` rather than instead of it, the same way
+# `min_len:`/`max_len:` sit beside `type: string`: the type says what a
+# submitted value's *kind* is checked against at submit, and `values:` is
+# the one further constraint `type: enum` alone cannot express by itself.
+#
+# `tier` is required, so — the rule `parameterized-deploy` follows — running
+# this as written needs an argument:
+#
+#   flow run local examples/enum-input/workflow.yaml --input tier=staging
+#   flow run local examples/enum-input/workflow.yaml \
+#       --input-file examples/enum-input/inputs.json
+edition: v2026.3
+name: enum-input
+inputs:
+  # No default: which tier a rollout targets is exactly the kind of thing
+  # that should not have a silent answer, so a caller has to name one — a
+  # required enum input, refused before the first step runs if they don't.
+  tier:
+    type: enum
+    values:
+      - canary
+      - staging
+      - production
+    required: true
+    description: which rollout tier this deploy targets
+    example: staging
+steps:
+  # `inputs.tier` reads exactly as any other string-typed input would —
+  # `type: enum` narrows what a caller may submit, not what a step may do
+  # with it once submitted.
+  - id: announce
+    log:
+      message: ${"deploying to " + inputs.tier}
+
+  # The one branch worth gating specially: production is the tier a mistaken
+  # deploy costs the most, and `switch:` reading the same closed set the
+  # declaration already checked is what keeps this arm from silently
+  # matching nothing if a value the declaration wouldn't have accepted ever
+  # reached it.
+  - id: safeguard
+    if: ${inputs.tier == "production"}
+    log:
+      level: warn
+      message: deploying to production
+outputs:
+  tier:
+    value: ${inputs.tier}
+    description: the tier this run deployed to

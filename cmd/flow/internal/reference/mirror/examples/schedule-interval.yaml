@@ -1,0 +1,63 @@
+# The other cadence, and the other half of a schedule's window.
+#
+# `scheduled-report` shows `cron:` — "at 07:00 on weekdays" — and a calendar
+# beside it. This is `every:`, the answer to a different question: "every
+# fifteen minutes", where naming the fifteen minutes as a cron field is where
+# the mistakes live (`every: 15m` beats `*/15 * * * *`, which drifts once
+# `*/13` looks equally plausible to whoever edits it next). And it is a
+# schedule bounded on both ends rather than left open, which `scheduled-report`
+# never needs: a report runs forever, a migration's health check should not.
+#
+# # The scenario
+#
+# A migration that reshards a table over several days runs a health check on
+# an interval for exactly the migration's own duration — no cadence at all
+# before it starts, and none after it ends, because a lingering schedule
+# nobody remembers to delete is a workload that outlives the reason it
+# existed. `start_at:`/`end_at:` say that once, rather than leaving "delete
+# this when the migration finishes" as a note in a runbook nobody re-reads.
+#
+# # Runnable as written
+#
+#     flow run local examples/schedule-interval/workflow.yaml
+#
+# runs the check once, now, exactly as `scheduled-report` does — `triggers:`
+# is a declaration, never an act, and both drivers ignore it. Creating the
+# schedule is a separate, later step:
+#
+#     flow schedule create examples/schedule-interval/workflow.yaml
+edition: v2026.3
+name: schedule-interval
+inputs:
+  table:
+    type: string
+    default: orders
+    description: the table this run checks the reshard of
+triggers:
+  schedule:
+    # Every fifteen minutes, on the fifteen-minute mark from the epoch —
+    # not fifteen minutes after whenever the previous check happened to
+    # finish, which is what makes two firings comparable at all.
+    every: 15m
+
+    # One check running long enough to still be going at the next mark queues
+    # exactly one more behind it, rather than the two extremes either side of
+    # that: dropping the overlapping firing (`skip`, `scheduled-report`'s own
+    # choice, right for a report nobody needs twice) or letting an unbounded
+    # backlog build behind a check that is falling behind (`buffer_all`).
+    overlap: buffer_one
+
+    # The window this cadence is allowed to fire in, inclusive at both ends.
+    # A schedule created against these bounds simply produces no firings
+    # once `end_at` has passed; nothing needs to remember to delete it, and
+    # nothing fires early either.
+    start_at: "2026-03-01T00:00:00Z"
+    end_at: "2026-03-08T00:00:00Z"
+steps:
+  - id: check
+    log:
+      message: ${"checking reshard progress for " + inputs.table}
+outputs:
+  table:
+    value: ${inputs.table}
+    description: the table this run checked

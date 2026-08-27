@@ -59,28 +59,19 @@ var exampleCorpusGlobs = []string{
 //   - a real gap somebody has written down and tracked, naming the issue.
 //
 // The second kind is what this list gained when the derivation started walking
-// the whole workflow message graph rather than three hand-picked messages: the
-// seven below are constructs the language has and the portfolio has never shown,
-// which is precisely the finding this test exists to produce. They are recorded
-// rather than papered over, and filling them is portfolio work with its own
-// issue — not something to jam into an unrelated example so that a list goes
-// quiet.
+// the whole workflow message graph rather than three hand-picked messages: each
+// remaining entry below is a construct the language has and the portfolio has
+// never shown, which is precisely the finding this test exists to produce. They
+// are recorded rather than papered over, and filling them is portfolio work with
+// its own issue — not something to jam into an unrelated example so that a list
+// goes quiet.
+//
+// #969 originally tracked fifteen of these. Nine now have an example —
+// `input.values`, `input.type.TYPE_ENUM`, `manual.denied`, `schedule.every`,
+// `schedule.start_at`, `schedule.end_at`, `signal_policy_rule.subject`,
+// `signal_policy_rule.namespace`, and `schedule.overlap.OVERLAP_BUFFER_ONE` — so
+// their entries are gone; the rest of #969 is the six still below.
 var constructsWithoutAnExample = map[string]string{
-	"input.values":                 "an enum-constrained input (`values:`); no example declares one — tracked in #969",
-	"manual.denied":                "the deny half of a `manual:` trigger's principal rules; `trigger-context` shows `allowed_principals` only — tracked in #969",
-	"schedule.every":               "the interval spelling of a schedule; `scheduled-report` uses `cron:` — tracked in #969",
-	"schedule.start_at":            "a schedule's activation window start — tracked in #969",
-	"schedule.end_at":              "a schedule's activation window end — tracked in #969",
-	"signal_policy_rule.subject":   "a signals rule matching an exact subject; the enterprise examples gate on `claims:` — tracked in #969",
-	"signal_policy_rule.namespace": "a signals rule matching a namespace — tracked in #969",
-
-	// Per-*value* enum coverage, added because a key per field stays satisfied by
-	// whichever value some example happened to use, so a new policy would land
-	// unnoticed. These are the values nothing selects today.
-	//
-	// `input.type.TYPE_ENUM` is the same gap as `input.values` above, seen from
-	// the other side: an enum-constrained input needs the type and the values
-	// together, and one example closes both.
 	// Surfaced once the derivation stopped skipping proto3 `optional` fields,
 	// which protobuf models as synthetic oneofs. `input.must` and
 	// `input.min_items` turned out to be demonstrated already; these two are not.
@@ -91,9 +82,11 @@ var constructsWithoutAnExample = map[string]string{
 	"input.max_len": "a string-length bound on an input; no example declares one, and one worth reading shows it refusing a value — tracked in #969",
 	"output.must":   "a constraint on a declared output; the corpus constrains inputs only — tracked in #969",
 
-	"input.type.TYPE_ENUM":                     "an enum-constrained input; the same gap as input.values — tracked in #969",
-	"schedule.overlap.OVERLAP_BUFFER_ONE":      "an overlap policy no example selects; scheduled-report shows one policy — tracked in #969",
-	"schedule.overlap.OVERLAP_BUFFER_ALL":      "the same — tracked in #969",
+	// Per-*value* enum coverage, added because a key per field stays satisfied by
+	// whichever value some example happened to use, so a new policy would land
+	// unnoticed. `OVERLAP_BUFFER_ONE` is gone from this list — `schedule-interval`
+	// selects it — and the four below are what is left of the five.
+	"schedule.overlap.OVERLAP_BUFFER_ALL":      "an overlap policy no example selects; scheduled-report shows skip and schedule-interval shows buffer_one — tracked in #969",
 	"schedule.overlap.OVERLAP_CANCEL_OTHER":    "the same — tracked in #969",
 	"schedule.overlap.OVERLAP_TERMINATE_OTHER": "the same — tracked in #969",
 	"schedule.overlap.OVERLAP_ALLOW_ALL":       "the same — tracked in #969",
