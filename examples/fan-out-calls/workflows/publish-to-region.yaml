@@ -37,7 +37,8 @@ steps:
         region: ${response.json.args.region}
         url: ${"https://" + response.json.args.region + ".cdn.example.com"}
       parse_json: true
-      query: '${{"region": inputs.region}}'
+      query:
+        region: ${inputs.region}
       url: https://httpbin.org/get
 outputs:
   # The values the caller reads back, per iteration. A failed publish never

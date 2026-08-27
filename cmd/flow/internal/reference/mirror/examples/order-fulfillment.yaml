@@ -70,12 +70,15 @@ steps:
       outputs:
         id: ${"res-" + response.json.args.order}
       parse_json: true
-      query: '${{"reserve": "inventory", "order": inputs.order_id}}'
+      query:
+        reserve: inventory
+        order: ${inputs.order_id}
       url: https://httpbin.org/get
     undo:
       http:
         method: GET
-        query: '${{"release": steps.reserve_inventory.id}}'
+        query:
+          release: ${steps.reserve_inventory.id}
         url: https://httpbin.org/get
 
   # `${steps.reserve_inventory.id}` here is an ordinary backward reference —
@@ -90,7 +93,9 @@ steps:
       outputs:
         id: ${"chg-" + response.json.args.reservation}
       parse_json: true
-      query: '${{"charge": "payment", "reservation": steps.reserve_inventory.id}}'
+      query:
+        charge: payment
+        reservation: ${steps.reserve_inventory.id}
       url: https://httpbin.org/get
     undo:
       # The compensation that matters most in this file. A shipment that
@@ -99,7 +104,8 @@ steps:
       # principle so much as this one refund.
       http:
         method: GET
-        query: '${{"refund": steps.charge_payment.id}}'
+        query:
+          refund: ${steps.charge_payment.id}
         url: https://httpbin.org/get
 
   # No `undo:` here — nothing after this step can fail on its behalf, because

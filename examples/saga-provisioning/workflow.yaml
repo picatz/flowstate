@@ -57,7 +57,9 @@ steps:
       outputs:
         id: ${"net-" + response.json.args.tenant}
       parse_json: true
-      query: '${{"create": "network", "tenant": inputs.tenant}}'
+      query:
+        create: network
+        tenant: ${inputs.tenant}
       url: https://httpbin.org/get
     undo:
       # `${steps.network.id}` — a step reading its own output. Anywhere else in a
@@ -71,7 +73,8 @@ steps:
       # a run suspending and resuming somewhere else entirely.
       http:
         method: GET
-        query: '${{"delete": steps.network.id}}'
+        query:
+          delete: ${steps.network.id}
         url: https://httpbin.org/get
   - id: volume
     description: allocate storage inside that network
@@ -80,12 +83,15 @@ steps:
       outputs:
         id: ${"vol-" + response.json.args.network}
       parse_json: true
-      query: '${{"create": "volume", "network": steps.network.id}}'
+      query:
+        create: volume
+        network: ${steps.network.id}
       url: https://httpbin.org/get
     undo:
       http:
         method: GET
-        query: '${{"delete": steps.volume.id}}'
+        query:
+          delete: ${steps.volume.id}
         url: https://httpbin.org/get
 
   # And the step that does not work. A 500 is retried — it is the kind of failure

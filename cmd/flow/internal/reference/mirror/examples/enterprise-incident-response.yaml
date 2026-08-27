@@ -109,7 +109,8 @@ steps:
   # name rather than three copies a fourth lookup would make four
   # (docs/STYLE.md R5, `flow lint`).
   - id: observability_query
-    value: '${{"service": inputs.service}}'
+    value:
+      service: ${inputs.service}
   - id: page_and_gather_evidence
     parallel:
       - steps:

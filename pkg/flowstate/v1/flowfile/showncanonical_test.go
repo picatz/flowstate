@@ -95,6 +95,73 @@ func TestShownWorkflowsAreCanonical(t *testing.T) {
 	}
 }
 
+// TestTheCanonicalClaimFailsOnANonCanonicalSnippet is the falsifier for the test
+// above, and it exists because that test now passes with nothing exempted.
+//
+// A green check over a corpus that happens to be canonical says nothing about
+// whether the check *can* fail: had [shownWorkflows] silently stopped finding
+// blocks, or had the comparison been made against the formatter's own output on
+// both sides, every subtest would still be green. So both shapes the claim can
+// fail in are driven here, over blocks written by hand rather than read out of a
+// document, and each is put through the same [assertStillAHoldout] the map's
+// entries were checked with — which is what keeps that machinery honest while
+// the map is empty.
+func TestTheCanonicalClaimFailsOnANonCanonicalSnippet(t *testing.T) {
+	t.Parallel()
+
+	// Non-canonical, not wrong: the keys under `log:` are in the order an author
+	// typed them rather than the order Marshal writes them, and there is a blank
+	// line the formatter does not keep. It compiles, and `flow fmt` rewrites it.
+	differs := shownWorkflow{id: "hand-written#differs", source: []byte(`edition: v2026.3
+name: differs
+
+steps:
+  - id: say
+    log:
+      message: hello
+      level: info
+`)}
+
+	// Refused, and by the defect this change was about: an all-constant mapping
+	// under a `${...}` fence is still folded into one expression, because the
+	// mapping spelling of it would compile to a *literal* rather than to this
+	// expression and so fails [unfoldedStructure]'s verification. The keys are
+	// therefore not in the document Marshal writes, and the comment anchored to
+	// one of them has nowhere to go.
+	refused := shownWorkflow{id: "hand-written#refused", source: []byte(`edition: v2026.3
+name: refused
+steps:
+  - id: notify
+    log:
+      message: hello
+      fields:
+        deployment: ${1}
+        # a comment
+        approved_by: ${2}
+`)}
+
+	for _, block := range []shownWorkflow{differs, refused} {
+		workflow, _, err := flowfile.Parse(block.source)
+		require.NoError(t, err, "%s does not compile, so it says nothing about the formatter", block.id)
+
+		formatted, err := flowfile.Format(block.source, workflow)
+
+		switch block.id {
+		case differs.id:
+			require.NoError(t, err)
+			assert.NotEqual(t, string(block.source), string(formatted),
+				"a snippet the formatter rewrites came back byte-identical, so the claim in "+
+					"TestShownWorkflowsAreCanonical cannot fail and the shown corpus is unheld")
+			assertStillAHoldout(t, block, "differs", formatted, err)
+		case refused.id:
+			require.Error(t, err,
+				"a snippet whose comment cannot be carried was formatted rather than refused, so the "+
+					"refusal half of the claim is unheld")
+			assertStillAHoldout(t, block, "refused", formatted, err)
+		}
+	}
+}
+
 // notYetCanonical are the shown workflows `flow fmt` does not write today, each
 // with the reason, so that a snippet outside this map is held to bytes from the
 // day it is added.
@@ -104,22 +171,22 @@ func TestShownWorkflowsAreCanonical(t *testing.T) {
 // in the shape the entry names. Fix one and this test fails until the entry is
 // deleted, which is the opposite of a skip.
 //
-// Both entries are one open decision on #850 — what `flow fmt` should do with a
-// structure whose entries hold expressions, which the compiler folds into a
-// single CEL literal — and neither should be rewritten before it is answered, or
-// the two files get reformatted twice.
-var notYetCanonical = map[string]string{
-	// The `outcome:` expression is written as a folded block scalar and comes
-	// back as one 118-character line. Safe — the value compiles identically —
-	// but whether the formatter should ever fold is #850's open question 3.
-	"README.md#approval-gate": "differs",
-
-	// Refused at the comment inside the `notify` step's `fields:` mapping.
-	// compiler.composite folds a mapping holding a `${...}` into one expression,
-	// so the key the comment is anchored to is not in the workflow Marshal
-	// writes and there is nowhere to put it. #850's open question 1.
-	"docs/DSL.md#deploy": "refused",
-}
+// It is empty, and that is the state R8 asks for: every complete workflow shown
+// in prose is byte-identical to what `flow fmt` writes for it. The two entries
+// it held were the same open decision on #850, and both closed with it. The
+// worked example in docs/DSL.md was refused because `compiler.composite` folds a
+// mapping holding a `${...}` into one expression, so the key its comment was
+// anchored to was not in the document Marshal wrote; [unfoldedStructure] writes
+// that mapping back and the comment has somewhere to land again. The README's
+// `approval-gate` differed over one folded block scalar, and the answer to that
+// was the README's rather than the formatter's — `flow fmt` does not fold, so
+// the snippet was rewritten to the line the formatter writes.
+//
+// The map stays because it is the machinery a *future* holdout needs, and
+// because it is what makes an exemption a decision in writing rather than a
+// silence. [TestTheCanonicalClaimFailsOnANonCanonicalSnippet] is what keeps the
+// claim itself falsifiable now that nothing is exempt from it.
+var notYetCanonical = map[string]string{}
 
 // assertStillAHoldout checks that a block in [notYetCanonical] fails in the way
 // its entry claims, rather than merely failing.

@@ -29,7 +29,8 @@ steps:
   # unambiguous read next to its `outputs:`.
   - id: provision_database
     http:
-      json: '${{"tenant": inputs.tenant}}'
+      json:
+        tenant: ${inputs.tenant}
       method: POST
       outputs:
         resource_id: ${response.json.resource_id}
@@ -42,7 +43,8 @@ steps:
       # URL built by concatenating a step's own output is not a literal
       # `PointAtStandIn` can rewrite.
       http:
-        json: '${{"resource_id": steps.provision_database.resource_id}}'
+        json:
+          resource_id: ${steps.provision_database.resource_id}
         method: DELETE
         url: https://provisioning.internal.example.com/databases
 outputs:

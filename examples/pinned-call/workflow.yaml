@@ -45,7 +45,7 @@ steps:
   # that passed.
   - id: grant
     call: ./workflows/grant-access.yaml
-    digest: sha256:c326acce3fde735ac81d7bb577467bc8d9f0dbc8e85be2a59e14fa2ec8b3cbc0
+    digest: sha256:b20b2b8dca1a6135b0633510c0d3accd31526a5141f111aefdf1606af38ef3c3
     with:
       role: reviewer
       user: ada

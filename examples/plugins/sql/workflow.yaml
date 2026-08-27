@@ -36,7 +36,8 @@ steps:
       # The only way a value from vars reaches the database: bound as a
       # parameter, never spliced into query text above - see
       # plugins/sql/doc.go, "Parameterized only, structurally."
-      params: ${[vars.min_balance_cents]}
+      params:
+        - ${vars.min_balance_cents}
       query: SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id
   - id: announce
     log:

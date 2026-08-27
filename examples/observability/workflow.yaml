@@ -30,7 +30,9 @@ vars:
 steps:
   - id: announce
     log:
-      fields: '${{"release": vars.release, "regions": string(size(vars.regions))}}'
+      fields:
+        release: ${vars.release}
+        regions: ${string(size(vars.regions))}
       message: ${"starting rollout of " + vars.release}
 
   # A durable timer. The worker is not holding a thread here, and the trace shows
@@ -48,7 +50,9 @@ steps:
       steps:
         - id: deploy
           log:
-            fields: '${{"region": region, "release": vars.release}}'
+            fields:
+              region: ${region}
+              release: ${vars.release}
             message: ${"rolled out " + vars.release + " to " + region}
   - id: report
     log:
