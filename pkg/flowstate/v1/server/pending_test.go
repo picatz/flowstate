@@ -26,9 +26,14 @@ func TestPendingActivitiesProjectWhatTemporalReports(t *testing.T) {
 	out, _ := mustNew(t, nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
 		PendingActivities: []*workflowpb.PendingActivityInfo{
 			{
-				Attempt:       5,
-				LastFailure:   &failurepb.Failure{Message: "task \"http\" failed: connection refused"},
-				ScheduledTime: next,
+				Attempt:     5,
+				LastFailure: &failurepb.Failure{Message: "task \"http\" failed: connection refused"},
+				// Both, because the point is which one is read. Temporal sets
+				// `ScheduledTime` on every pending activity and it is a
+				// different fact; a projection reading it would pass this case
+				// on the wrong value and fail the one below.
+				ScheduledTime:           timestamppb.New(time.Date(2026, 7, 31, 4, 0, 0, 0, time.UTC)),
+				NextAttemptScheduleTime: next,
 			},
 		},
 	})
@@ -39,6 +44,48 @@ func TestPendingActivitiesProjectWhatTemporalReports(t *testing.T) {
 	assert.Contains(t, out[0].GetLastFailure(), "connection refused",
 		"the failure message is the diagnosis, and it was dropped")
 	assert.Equal(t, next.AsTime(), out[0].GetNextAttemptScheduledTime().AsTime())
+}
+
+// TestARunningAttemptHasNoNextAttemptTime is the half that gives the field its
+// meaning, and it was missing.
+//
+// [v1.PendingActivity.NextAttemptScheduledTime] promises to be unset while an
+// attempt is running, which is what lets a reader tell a step waiting out its
+// backoff from one working. Temporal says the same thing about
+// `next_attempt_schedule_time`: "If activity is currently scheduled or started
+// it will be null."
+//
+// It was filled from `scheduled_time` instead — a field with no documentation
+// that Temporal sets for *any* pending activity, so presence meant nothing and
+// every reader had to compare against its own clock. `flow timeline`'s retry
+// note was written that way and paid for it: a backlogged retry whose due time
+// had passed read as silence (Codex, #1142).
+//
+// The assertion is on the running case rather than the waiting one because only
+// this direction can fail. A projection reading the wrong field still produces
+// *a* time for an activity that is waiting.
+func TestARunningAttemptHasNoNextAttemptTime(t *testing.T) {
+	t.Parallel()
+
+	out, _ := mustNew(t, nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
+		PendingActivities: []*workflowpb.PendingActivityInfo{
+			{
+				Attempt: 3,
+				// What a running attempt looks like: Temporal scheduled it, and
+				// there is no *next* attempt because this one has not finished.
+				ScheduledTime: timestamppb.New(time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC)),
+				LastFailure:   &failurepb.Failure{Message: "the attempt before this one failed"},
+			},
+		},
+	})
+
+	require.Len(t, out, 1)
+	assert.Nil(t, out[0].GetNextAttemptScheduledTime(),
+		"a running attempt was given a next-attempt time, so nothing downstream can tell it "+
+			"apart from one waiting out a backoff")
+	assert.Contains(t, out[0].GetLastFailure(), "failed",
+		"the previous attempt's failure travels with a running attempt, which is why the "+
+			"failure alone cannot decide whether a step is waiting")
 }
 
 func TestNothingPendingIsAbsentNotEmpty(t *testing.T) {

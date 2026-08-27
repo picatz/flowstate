@@ -467,7 +467,13 @@ func TestAPendingActivityLineSaysWhatItIsDoing(t *testing.T) {
 		{Attempt: 1, Phase: "reading the response"},
 	}}, now)
 
-	require.Equal(t, []string{"retrying, attempt 1, reading the response"}, lines)
+	// Running, not retrying. A pending activity on its first attempt with no next
+	// attempt due has simply not finished, and calling that a retry tells an
+	// operator a step is failing when nothing has failed — the first thing they
+	// would do about it is go looking for an error that is not there. This line
+	// said "retrying" for every pending activity until the server began reading
+	// the field its own schema describes (Codex, #1142).
+	require.Equal(t, []string{"running, attempt 1, reading the response"}, lines)
 
 	// A phase is an aside about the attempt running now; a failure and a countdown
 	// describe attempts that are over. So the phase goes last, and the order is
@@ -501,7 +507,10 @@ func TestAPendingActivityWithNoPhaseSaysNothingAboutIt(t *testing.T) {
 		{Attempt: 2, LastFailure: "boom"},
 	}}, time.Now())
 
-	require.Equal(t, []string{"retrying, attempt 2: boom"}, lines)
+	// A second attempt with no next one due is *running*, and it carries the
+	// first attempt's failure while it runs — which is why the failure alone
+	// cannot decide the word.
+	require.Equal(t, []string{"running, attempt 2: boom"}, lines)
 }
 
 // TestAPendingActivityLineCannotBeSplitByItsOwnFailure covers a hole this
@@ -518,7 +527,7 @@ func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
 
 	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
 		Attempt:     2,
-		LastFailure: "boom\nretrying, attempt 9: totally fine\x1b[31m",
+		LastFailure: "boom\nrunning, attempt 9: totally fine\x1b[31m",
 	}}}, time.Now())
 
 	require.Len(t, lines, 1, "one pending activity produced more than one line")
@@ -530,7 +539,7 @@ func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
 
 	// Escaping is not redaction: the diagnosis still has to be readable.
 	assert.Contains(t, lines[0], "boom")
-	assert.Contains(t, lines[0], "retrying, attempt 2")
+	assert.Contains(t, lines[0], "running, attempt 2")
 }
 
 // TestAPendingActivityListSaysWhenItIsPartial is the notice that existed on the
@@ -548,15 +557,25 @@ func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
 func TestAPendingActivityListSaysWhenItIsPartial(t *testing.T) {
 	t.Parallel()
 
+	now := time.Now()
+
+	// Genuinely retrying rather than merely pending, because that is what this
+	// notice counts: a next attempt is due, so the step is waiting rather than
+	// running. Without the due time it is a *running* attempt, and the sentence
+	// about "more retrying steps" would be counting something else.
+	retrying := &v1.PendingActivity{
+		Attempt:                  2,
+		LastFailure:              "boom",
+		NextAttemptScheduledTime: timestamppb.New(now.Add(4 * time.Second)),
+	}
+
 	partial := pendingActivityLines(&v1.GetResponse{
-		PendingActivities: []*v1.PendingActivity{
-			{Attempt: 2, LastFailure: "boom"},
-		},
+		PendingActivities:          []*v1.PendingActivity{retrying},
 		PendingActivitiesTruncated: true,
-	}, time.Now())
+	}, now)
 
 	require.Equal(t, []string{
-		"retrying, attempt 2: boom",
+		"retrying, attempt 2: boom (next attempt in 4s)",
 		"and more retrying steps than this run reports",
 	}, partial, "a bounded list of retrying steps was presented as the whole of it")
 
@@ -564,11 +583,9 @@ func TestAPendingActivityListSaysWhenItIsPartial(t *testing.T) {
 	// answer that *is* complete must not carry it, or every run reads as one
 	// with more going on than it says.
 	whole := pendingActivityLines(&v1.GetResponse{
-		PendingActivities: []*v1.PendingActivity{
-			{Attempt: 2, LastFailure: "boom"},
-		},
-	}, time.Now())
+		PendingActivities: []*v1.PendingActivity{retrying},
+	}, now)
 
-	require.Equal(t, []string{"retrying, attempt 2: boom"}, whole,
+	require.Equal(t, []string{"retrying, attempt 2: boom (next attempt in 4s)"}, whole,
 		"a complete list of retrying steps claimed there were more")
 }
