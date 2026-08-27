@@ -253,9 +253,10 @@ func TestTheDemandForAnAccountWorksInBothDirections(t *testing.T) {
 type Imported = other.Cases
 type Indirect = Imported
 
-func ImportedCases() other.Cases { panic("unused") }
-func AliasedCases() Indirect     { panic("unused") }
-func LocalCases() []int          { panic("unused") }
+func ImportedCases() other.Cases        { panic("unused") }
+func AliasedCases() Indirect            { panic("unused") }
+func LocalCases() []int                 { panic("unused") }
+func InstantiatedCases() other.Cases[C] { panic("unused") }
 `, 0)
 	require.NoError(t, err)
 
@@ -276,8 +277,14 @@ func LocalCases() []int          { panic("unused") }
 		}
 	}
 
-	assert.Equal(t, []string{"AliasedCases", "ImportedCases"}, unreadableResults(decls, unknown),
-		"both spellings of a result this walk cannot read must be demanded of the accounting")
+	// Three spellings, including an *instantiated* qualified type: unwrapping
+	// is what refuses that one rather than omitting it silently, which is the
+	// whole argument for unwrapping at every reader instead of adding a case
+	// to each.
+	assert.Equal(t,
+		[]string{"AliasedCases", "ImportedCases", "InstantiatedCases"},
+		unreadableResults(decls, unknown),
+		"every spelling of a result this walk cannot read must be demanded of the accounting")
 
 	// The account then feeds the corpus tables. Marked a slice, a qualified
 	// corpus is listed beside every other and its emptiness is checked; not
@@ -321,7 +328,7 @@ func unreadableResults(decls []*ast.FuncDecl, unknown map[string]bool) []string 
 			continue
 		}
 
-		switch result := fd.Type.Results.List[0].Type.(type) {
+		switch result := coreType(fd.Type.Results.List[0].Type).(type) {
 		case *ast.SelectorExpr:
 			// `pkg.Type`. A pointer to one is a pointer and so not a slice,
 			// and `[]pkg.Type` is an array node this walk reads perfectly well.
@@ -439,6 +446,9 @@ type Aliased = Direct
 type Array [4]int
 type NotASlice struct{}
 type Cyclic Cyclic
+type Generic[T any] []T
+type Instantiated = Generic[int]
+type Pair[K comparable, V any] map[K]V
 `, 0)
 	require.NoError(t, err)
 
@@ -451,6 +461,12 @@ type Cyclic Cyclic
 		"Array":     false,
 		"NotASlice": false,
 		"Cyclic":    false,
+		// A type parameter list sits beside the declaration rather than inside
+		// it, so the declaration is an ordinary `[]T` — but an *instantiation*
+		// of it wraps the name, which is the shape that broke the reader.
+		"Generic":      true,
+		"Instantiated": true,
+		"Pair":         false,
 	} {
 		if resolved[name] != want {
 			t.Errorf("%s: resolved as slice=%v, want %v", name, resolved[name], want)
@@ -476,6 +492,20 @@ type Cyclic Cyclic
 		{"func NewCases() [][]Case", true},
 		{"func NewCases() NotASlice", false},
 		{"func NewCases() error", false},
+		// Instantiations of a generic corpus. The walk already resolved the
+		// name; before `coreType` the reader saw an [ast.IndexExpr] and said
+		// no, which is the resolver-and-reader split a third time (Codex,
+		// #1129).
+		{"func NewCases() Generic[Case]", true},
+		{"func NewCases() Pair[string, Case]", false},
+		{"func NewCases() Parameterised[string, Case]", true},
+		// A parenthesis is not a type. Doubled, because a result list's own
+		// parentheses are not an [ast.ParenExpr] — `func F() (Cases)` parses
+		// to a bare identifier, so the single-paren spelling would have
+		// exercised the branch above it and passed with the unwrapping
+		// deleted. Checked with the parser rather than assumed, which is the
+		// only reason this line is right.
+		{"func NewCases() ((Cases))", true},
 	} {
 		parsed, err := parser.ParseFile(token.NewFileSet(), "use.go",
 			"package conformance\n\n"+results.source+" { panic(\"unused\") }\n", 0)
@@ -484,6 +514,7 @@ type Cyclic Cyclic
 		fn := parsed.Decls[0].(*ast.FuncDecl)
 		got := isSliceResult(fn.Type.Results.List[0].Type, map[string]bool{
 			"Cases": true, "Indirect": true, "Aliased": true,
+			"Generic": true, "Parameterised": true,
 		})
 		if got != results.slice {
 			t.Errorf("%s: read as returning a slice=%v, want %v", results.source, got, results.slice)
@@ -572,6 +603,8 @@ func sliceReturners(decls []*ast.FuncDecl, slices map[string]bool, accounts map[
 // isSliceResult reports whether a result type is a slice, directly or through
 // a name this package declares.
 func isSliceResult(result ast.Expr, slices map[string]bool) bool {
+	result = coreType(result)
+
 	if isSliceType(result) {
 		return true
 	}
@@ -580,6 +613,37 @@ func isSliceResult(result ast.Expr, slices map[string]bool) bool {
 	name, ok := result.(*ast.Ident)
 
 	return ok && slices[name.Name]
+}
+
+// coreType strips what an instantiation or a parenthesis wraps around the
+// expression that actually decides the question.
+//
+// `Cases[Case]` is an [ast.IndexExpr] and `Cases[K, V]` an [ast.IndexListExpr],
+// so a generic corpus written `type Cases[T any] []T` was resolved as a slice by
+// the walk and then not recognised at the one place that reads the answer
+// (Codex, #1129). That is the fixed-array finding again — two branches
+// disagreeing about one question — one type-parameter list along.
+//
+// Unwrapping is what closes the class rather than the instance, and the
+// difference is not stylistic. Three shapes are the whole decision: a literal
+// slice, a name this package declares, and a name it cannot read. Adding an
+// `IndexExpr` case to each reader would leave `pkg.Cases[Case]` matching
+// nothing — omitted silently, which is the failure the refusal exists to
+// prevent. Unwrapping first means every reader sees the core, so that spelling
+// is refused rather than dropped.
+func coreType(expr ast.Expr) ast.Expr {
+	for {
+		switch e := expr.(type) {
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.IndexExpr:
+			expr = e.X
+		case *ast.IndexListExpr:
+			expr = e.X
+		default:
+			return expr
+		}
+	}
 }
 
 // isSliceType reports whether a type expression is a slice rather than a
@@ -641,12 +705,19 @@ func resolveTypeNames(files []*ast.File) (slices, unknown map[string]bool) {
 				return true
 			}
 
-			if isSliceType(spec.Type) {
+			// Read once. Two lines reaching for `spec.Type` and unwrapping it
+			// differently is the divergence this file has already paid for
+			// twice, and it would land here first: `type Cases = other.Cases[T]`
+			// is a slice question at one line and an unreadability question at
+			// the next.
+			core := coreType(spec.Type)
+
+			if isSliceType(core) {
 				slices[spec.Name.Name] = true
 
 				return true
 			}
-			switch declared := spec.Type.(type) {
+			switch declared := core.(type) {
 			case *ast.Ident:
 				aliasOf[spec.Name.Name] = declared.Name
 			case *ast.SelectorExpr:
