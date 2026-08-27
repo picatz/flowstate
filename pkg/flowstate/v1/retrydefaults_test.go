@@ -290,6 +290,38 @@ func TestStepTimeoutsFollowTheDurableDriversPrecedence(t *testing.T) {
 			},
 			want: v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: base.ScheduleToClose},
 		},
+		{
+			name:   "a declared total_timeout replaces the overall bound alone",
+			policy: &v1.StepPolicy{TotalTimeout: durationpb.New(2 * time.Minute)},
+			want:   v1.StepTimeouts{StartToClose: base.StartToClose, ScheduleToClose: 2 * time.Minute},
+		},
+		{
+			// The one behavioral decision `total_timeout:` carries (#920).
+			// Without the key this is the widening case above: 5m over the
+			// default five attempts would push the overall bound to 25m. An
+			// author who wrote the bound down gets the bound they wrote —
+			// a budget the engine silently extends is not a budget.
+			name: "an explicit total_timeout wins outright over the widening",
+			policy: &v1.StepPolicy{
+				Timeout:      durationpb.New(5 * time.Minute),
+				TotalTimeout: durationpb.New(6 * time.Minute),
+			},
+			want: v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: 6 * time.Minute},
+		},
+		{
+			// And it wins downwards too, which is the direction that matters:
+			// a total smaller than one attempt's own bound is a step that gets
+			// less than one full attempt. The flowfile compiler refuses to
+			// *write* that (see policy() in flowfile/parse.go), but a
+			// specification built by hand can carry it, and the precedence
+			// must not quietly repair it into something else.
+			name: "a total shorter than one attempt is still honoured exactly",
+			policy: &v1.StepPolicy{
+				Timeout:      durationpb.New(5 * time.Minute),
+				TotalTimeout: durationpb.New(time.Minute),
+			},
+			want: v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: time.Minute},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
