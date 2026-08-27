@@ -177,13 +177,9 @@ jobs:
               echo
               echo "Produced by workflow run: ${RUN_URL} (the input is also attached there as the \`fuzz-crashers\` artifact)."
               echo
-              echo "Corpus entry \`${entry}\` (Go fuzz corpus text; base64 of the exact bytes):"
+              echo "The bytes themselves are deliberately not inlined here: this repository is public, and SECURITY.md asks for crash inputs to be reported privately — which applies no less to a report this workflow writes about itself. The artifact above, visible to collaborators only, is where they travel."
               echo
-              echo '```'
-              base64 "$entry"
-              echo '```'
-              echo
-              echo "Reproduce: decode the entry back to \`${entry}\` (\`base64 -d\`), then:"
+              echo "Reproduce: download the artifact, restore the entry to \`${entry}\`, then:"
               echo
               echo '```'
               echo "GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run '${target}/${name}' ./${pkgdir}/"
