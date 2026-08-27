@@ -521,7 +521,9 @@ func New(opts Options) (*Session, error) {
 
 // Script returns the commands this session accepted, in order. Feeding them
 // to a new session's In reproduces the same decisions against the same
-// workflow — the replay half of #928's record-and-replay.
+// workflow — the replay half of #928's record-and-replay, which `flow debug
+// replay` is the verb over (#1111, item 3). See script.go for what the file
+// carrying them between the two is, and for the bounds it is read under.
 func (s *Session) Script() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1702,6 +1704,15 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 			}
 
 			return
+		}
+
+		if IsComment(line) {
+			// A comment here means what it means at a breakpoint — nothing —
+			// and it has to, or a script carrying a sentence about itself
+			// would leave the autopsy: an empty line and every movement verb
+			// are `quit` in this loop, and an unknown command was a warning.
+			// See [IsComment].
+			continue
 		}
 
 		verb, rest := split(line)

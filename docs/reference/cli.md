@@ -206,6 +206,103 @@ flow dap
 flow run local --debug examples/hello-world/workflow.yaml
 ```
 
+## `flow debug`
+
+Work with a recorded debugging session
+
+```
+flow debug [command]
+```
+
+Work with the step debugger's recordings.
+
+The debugger itself is reached as `flow run local --debug` (a real run, at a terminal), as `flow test --debug` (one test case), and as `flow dap` (from an editor). Every one of those records the commands it accepted; this is where a recording is played back.
+
+## `flow debug replay`
+
+Replay a recorded debugging session against a workflow
+
+```
+flow debug replay <script-file> <workflow-file> [flags]
+```
+
+Replay a recorded debugging session: read a script of debugger commands and drive a real local run with them, stopping where the recorded session stopped and asking what it asked.
+
+A script is the commands themselves, one per line — exactly what a session reads from a terminal, and exactly what the `script` field of the `flowstate_debug` tool's answer holds. A line starting with `#` is a comment, at the prompt as well as here, because the file is the command stream rather than a format wrapped around it. A blank line is refused: at a prompt it means `step`, in a file it reads as spacing, and a recorded script never contains one.
+
+A script names no workflow, so the workflow is the second argument: a path recorded on one machine is not a path on another, and a header naming one that nothing checked would be worse than no header at all.
+
+The script is checked against the workflow before anything runs, so a `break` naming a step this workflow does not declare, or a misspelled command, is a diagnostic with a line and a column rather than a run that quietly did something else.
+
+This is a real run under this machine's own posture: the same policies, plugins, secrets and inputs `flow run local` uses, because a reproduction that runs under a different posture reproduces a different thing. The console's account goes to stderr and the answer stays the document on stdout, exactly as `flow run local --debug` leaves them.
+
+Examples:
+
+```sh
+# Replay the session recorded beside one of the examples:
+flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
+
+# What such a file holds — a comment, then the commands a session accepted:
+#   # why the last term never lands in the sum
+#   break term if acc.n == 3
+#   continue
+#   inspect acc
+#   continue
+
+# Replay with the arguments the recorded run was started with:
+flow debug replay session.script examples/computed-outputs/workflow.yaml --input release=2026.9.0
+
+# Record one to replay later, by keeping what the console read:
+flow run local examples/loop-accumulate/workflow.yaml --debug < session.script
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
+| `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
+| `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
+| `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
+| `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
+| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
+| `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
+| `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
+| `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
+| `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
+| `--secret-dir-namespaced` | `bool` | `false` | — | resolve file: secrets below a separate <secret-dir>/<namespace>/ directory |
+| `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
+| `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
+| `--secret-keychain` | `bool` | `false` | — | resolve keychain: secrets from the macOS keychain (default $FLOWSTATE_SECRET_KEYCHAIN, macOS only) |
+| `--secret-keychain-namespaced` | `bool` | `false` | — | give each tenant its own keychain service, <service>/<namespace> |
+| `--secret-keychain-service <string>` | `string` | — | `FLOWSTATE_SECRET_KEYCHAIN_SERVICE` | keychain service name entries are stored under (default $FLOWSTATE_SECRET_KEYCHAIN_SERVICE, then "flowstate") |
+| `--secret-op` | `bool` | `false` | — | resolve op: secrets through the 1Password CLI (default $FLOWSTATE_SECRET_OP) |
+| `--secret-op-namespaced` | `bool` | `false` | — | give each tenant its own 1Password vault, named after the namespace |
+| `--secret-op-vault <string>` | `string` | — | `FLOWSTATE_SECRET_OP_VAULT` | 1Password vault read when a run has no namespace (default $FLOWSTATE_SECRET_OP_VAULT, then "flowstate") |
+| `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
+| `--secret-vault-addr <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_ADDR` | address of the Vault or OpenBao instance vault: secrets are read from, such as https://vault.example.com:8200 (default $FLOWSTATE_SECRET_VAULT_ADDR) |
+| `--secret-vault-ca-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_CA_FILE` | PEM CA bundle to verify the vault's certificate against, instead of the system roots (default $FLOWSTATE_SECRET_VAULT_CA_FILE) |
+| `--secret-vault-kubernetes-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT` | where the Kubernetes auth method is mounted (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT, then "kubernetes") |
+| `--secret-vault-kubernetes-role <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE` | Vault role to authenticate as via the Kubernetes auth method, using this pod's projected service account token (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE; exactly one of this or a token must be configured) |
+| `--secret-vault-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_MOUNT` | where the KV v2 engine is mounted (default $FLOWSTATE_SECRET_VAULT_MOUNT, then "secret") |
+| `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
+| `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
+| `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
+| `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}' |
+| `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to deliver --signal as (repeatable) |
+| `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer to deliver --signal as, with --signal-as-subject (local runs only) |
+| `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver --signal as (local runs only) |
+| `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver --signal as, with --signal-as-issuer (local runs only) |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today (see #187) |
+
 ## `flow fix`
 
 Rewrite Flowfiles into the current edition

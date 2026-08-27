@@ -150,6 +150,21 @@ Every other example runs as written, with no arguments, which is the rule: an ex
 something to paste and watch work. Only an example whose subject *is* a required input
 needs a file saying what it requires.
 
+Where a directory holds a `debug.script` — `loop-accumulate/` does — that file is a
+recorded debugging session about this example, and it plays back against the workflow
+beside it:
+
+```console
+$ flow debug replay examples/loop-accumulate/debug.script \
+    examples/loop-accumulate/workflow.yaml
+```
+
+It is a *reproduction* rather than a check: the commands a session accepted, so replaying
+them holds the run in the same places and asks the same questions somebody asked while
+working out why the loop's last term never lands in its sum. `cmd/flow`'s own tests replay
+it, which is what keeps it from rotting into a file describing a workflow that has moved
+on.
+
 The examples marked as needing network reach `httpbin.org`. They will fail without internet
 access, and the `http` task's egress policy denies internal addresses by default — see
 [Governed network access](../README.md#what-it-can-do) if you point one at a
