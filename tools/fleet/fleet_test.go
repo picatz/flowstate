@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -457,6 +458,70 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 			"the protection sum wrapped, so maximal protection read as none at all")
 	})
 
+	// Read directly, because through `tightestMemoryFree` the three answers this
+	// has to tell apart all come out as the same number. Complete protection
+	// and an unreadable value both subtract nothing, so a test at that level
+	// passes whichever one the code produces — which is what happened: the
+	// first version of the `max` case here was green with `max` handling
+	// deleted, asserting the right figure for the wrong reason.
+	t.Run("a protection is a number, a saturation, or a refusal", func(t *testing.T) {
+		for name, test := range map[string]struct {
+			write       func(t *testing.T, dir string)
+			floor       uint64
+			established bool
+		}{
+			// cgroup v2 spells complete protection as the literal `max`, which
+			// an integer parse refuses — so the one level asking the kernel to
+			// reclaim nothing read as the one level protecting nothing, and its
+			// cache came straight back as headroom (Codex, #1134).
+			"max saturates":                {write: writesMin("max"), floor: math.MaxUint64, established: true},
+			"a number is a number":         {write: writesMin("12345"), floor: 12345, established: true},
+			"zero is a real answer":        {write: writesMin("0"), floor: 0, established: true},
+			"a negative floor refuses":     {write: writesMin("-1"), floor: 0, established: false},
+			"an unparseable value refuses": {write: writesMin("not a number"), floor: 0, established: false},
+			// Not NotExist: a file this process cannot read is not a file
+			// saying nothing is protected.
+			"an unreadable file refuses": {
+				write: func(t *testing.T, dir string) {
+					t.Helper()
+					require.NoError(t, os.MkdirAll(filepath.Join(dir, "memory.min"), 0o755))
+				},
+				floor: 0, established: false,
+			},
+			// A level with no memory controller cannot protect anything, and
+			// nothing below it can either — so it contributes zero and does not
+			// stop the walk.
+			"an absent file contributes zero": {write: func(*testing.T, string) {}, floor: 0, established: true},
+		} {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				test.write(t, dir)
+
+				floor, established := protectionAt(dir)
+
+				assert.Equal(t, test.established, established)
+				assert.Equal(t, test.floor, floor)
+			})
+		}
+	})
+
+	t.Run("a level the walk cannot read refuses the whole hierarchy", func(t *testing.T) {
+		// The reader's refusal has to be *consumed*. Testing that
+		// `protectionAt` returns "unestablished" says nothing about whether the
+		// walk acts on it, and dropping the check there left every table case
+		// above perfectly green — the resolver-and-reader split this repository
+		// keeps paying for, one more time.
+		dir := protectedLayout(t, protection{cache: 5 * gib})
+		nested := filepath.Join(dir, "opaque")
+		require.NoError(t, os.MkdirAll(filepath.Join(nested, "memory.min"), 0o755))
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"a descendant whose protection could not be read was counted as protecting nothing")
+	})
+
 	t.Run("a host with no memory controller is not walked at all", func(t *testing.T) {
 		// cgroup v1 has no `memory.min` anywhere, and a controller is enabled
 		// top-down — so a level without the file has nothing protected beneath
@@ -495,6 +560,14 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 	})
 }
 
+// writesMin writes a `memory.min` holding exactly this text.
+func writesMin(value string) func(t *testing.T, dir string) {
+	return func(t *testing.T, dir string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.min"), []byte(value+"\n"), 0o644))
+	}
+}
+
 // protection describes one level of a fixture hierarchy: how much file cache it
 // reports, and what it asks the kernel to protect.
 type protection struct {
@@ -506,6 +579,11 @@ type protection struct {
 	// controller looks like. Distinct from a min of zero, which is a level that
 	// *can* protect and has chosen not to.
 	noController bool
+
+	// raw writes `memory.min` verbatim, for the values that are not integers:
+	// `max`, which v2 spells complete protection as, and whatever a corrupt or
+	// future kernel might put there.
+	raw string
 }
 
 // protectedLayout writes a cgroup at 8 GiB limit and 6 GiB used, with levels
@@ -528,8 +606,12 @@ func protectedLayout(t *testing.T, levels ...protection) string {
 				[]byte("inactive_file "+strconv.FormatUint(level.cache, 10)+"\n"), 0o644))
 		}
 		if !level.noController {
+			value := strconv.FormatUint(level.min, 10)
+			if level.raw != "" {
+				value = level.raw
+			}
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.min"),
-				[]byte(strconv.FormatUint(level.min, 10)+"\n"), 0o644))
+				[]byte(value+"\n"), 0o644))
 		}
 	}
 

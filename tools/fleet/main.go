@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -773,7 +774,7 @@ func protectedBelow(dir string) (uint64, bool) {
 	// would refuse to establish reclaimability, count none of its cache, and
 	// recreate the zero-lane reading this whole change exists to fix — the fix
 	// defeated by its own safeguard (Codex, #1134).
-	if _, err := os.Stat(filepath.Join(dir, "memory.min")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, memoryMinFile)); err != nil {
 		return 0, true
 	}
 
@@ -786,7 +787,11 @@ func protectedBelow(dir string) (uint64, bool) {
 		level := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
 
-		if floor, err := readInt(filepath.Join(level, "memory.min")); err == nil && floor > 0 {
+		floor, established := protectionAt(level)
+		if !established {
+			return 0, false
+		}
+		if floor > 0 {
 			// Saturating, because this sum runs over numbers a hierarchy
 			// chooses and `memory.min` has no ceiling this tool gets to impose.
 			// Four descendants declaring 1<<62 wrap a plain uint64 addition to
@@ -816,6 +821,49 @@ func protectedBelow(dir string) (uint64, bool) {
 
 	return total, true
 }
+
+// protectionAt is what one level declares with `memory.min`, and whether that
+// could be read at all.
+//
+// Three outcomes rather than two, because "unreadable" and "unprotected" are
+// opposite answers and a parse failure was quietly giving the second. cgroup v2
+// spells complete protection as the literal `max`, which [readInt] refuses —
+// so the one level asking the kernel to reclaim nothing read as the one level
+// protecting nothing, and its cache was counted straight back as headroom
+// (Codex, #1134).
+//
+// That is the same fail-open shape as the wrap before it, and this closes the
+// class rather than the instance: `max` saturates, a number is a number, an
+// absent file is a level with no memory controller and so nothing to protect,
+// and *everything else* refuses. There is no longer a way for an unreadable
+// value to arrive as a zero.
+func protectionAt(dir string) (uint64, bool) {
+	raw, err := os.ReadFile(filepath.Join(dir, memoryMinFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		// No memory controller at this level, so nothing here is protected —
+		// and nothing below it can be either, since a controller is enabled
+		// top-down.
+		return 0, true
+	}
+	if err != nil {
+		return 0, false
+	}
+
+	value := strings.TrimSpace(string(raw))
+	if value == "max" {
+		return math.MaxUint64, true
+	}
+
+	floor, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || floor < 0 {
+		return 0, false
+	}
+
+	return uint64(floor), true
+}
+
+// memoryMinFile is where a cgroup declares what it will not have reclaimed.
+const memoryMinFile = "memory.min"
 
 // childDirectories are a level's immediate subdirectories, read a chunk at a
 // time and charged against the budget as they arrive.
