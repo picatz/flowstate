@@ -1,0 +1,95 @@
+# The decision guide for `overlap:` — what a scheduled workload should do when
+# its own previous firing has not finished by the time the next one is due.
+#
+# `scheduled-report` picks `skip`, the safe default, and says so in one line.
+# `schedule-interval` picks `buffer_one`. Neither file had reason to say why
+# the *other* four exist, because neither needed to choose among them — a
+# schedule carries exactly one `overlap:`, so no single file can run more than
+# one policy at a time. This directory is the other four, one real, minimal
+# schedule per policy, so that "which one" reads as a decision with a reason
+# rather than four near-identical files nobody would tell apart.
+#
+# Read this file for the guide and `overlap: cancel_other`; the other three —
+# `workflows/buffer-all.yaml`, `workflows/terminate-other.yaml`, and
+# `workflows/allow-all.yaml` — are each a few lines, and each opens by saying
+# only what makes its own choice the right one.
+#
+# # All six policies, and the question each one answers
+#
+# "Can this workload discard a firing?"
+#   - `skip` (`scheduled-report`): yes, and dropping it is exactly what a
+#     workload with no memory of what it last reported should do. A nightly
+#     report that runs long does not owe anyone yesterday's report twice.
+#
+# "Can it fall behind, one deep, but not further?"
+#   - `buffer_one` (`schedule-interval`): a health check that is still running
+#     when the next mark comes round should run once more, promptly, but a
+#     check running so far behind that a third has queued behind it is a
+#     check that is no longer telling anyone anything current.
+#
+# "Must every firing eventually run, however far behind that falls?"
+#   - `buffer_all` (`workflows/buffer-all.yaml`): a workload billed against —
+#     one export per interval, correctness measured in cents — cannot drop a
+#     firing the way `skip` does or let `buffer_one` silently absorb a second
+#     one into the queue's single slot. Every firing must run exactly once,
+#     eventually, however large the backlog grows.
+#
+# "Is a stale run actively wrong, and safe to let wind down?"
+#   - `cancel_other` (this file): a still-running firing here is reading data
+#     that a fresher firing is about to supersede — not destructive, just
+#     pointless to let finish. Cancellation asks it to stop and gives it the
+#     chance to, which matters when the run holds something worth releasing
+#     cleanly (see below).
+#
+# "Is a stale run actively wrong, and *not* safe to let wind down?"
+#   - `terminate_other` (`workflows/terminate-other.yaml`): the same stale-data
+#     problem as `cancel_other`, except here the run's own cleanup logic is
+#     itself part of what is stale — letting it execute would be one more
+#     wrong action taken on the way out, so it must not run at all.
+#
+# "Does overlap cost anything to begin with?"
+#   - `allow_all` (`workflows/allow-all.yaml`): sometimes the honest answer is
+#     that no policy is needed, because nothing about running two firings at
+#     once is actually a problem.
+#
+# # This file: `cancel_other`
+#
+# `refresh` polls a live inventory count from a point-of-sale system every two
+# minutes. If the last poll is still in flight, it is asking about a snapshot
+# that is already two minutes stale by the time it answers — worth stopping
+# for, but not worth stopping *abruptly* for: Temporal's cancellation lets a
+# workflow catch the request and run whatever cleanup it declared (an `undo:`,
+# a compensation) on the way out, which for a plain read like this one is
+# nothing, but is exactly the half `terminate_other` gives up next door.
+#
+# # Runnable as written
+#
+#     flow run local examples/schedule-overlap-policies/workflow.yaml
+#
+# runs the poll once, now — `triggers:` is a declaration, not an act, on every
+# file in this directory. Creating any of the four schedules is a separate,
+# later step, exactly as `scheduled-report` describes:
+#
+#     flow schedule create examples/schedule-overlap-policies/workflow.yaml
+edition: v2026.3
+name: schedule-overlap-policies
+inputs:
+  store:
+    type: string
+    default: downtown
+    description: which point-of-sale store this poll refreshes
+triggers:
+  schedule:
+    every: 2m
+    # A stale-in-flight poll should stop, and stopping it gracefully costs
+    # nothing here — there is nothing to compensate on the way out, which is
+    # exactly what makes the graceful half of this policy free to take.
+    overlap: cancel_other
+steps:
+  - id: refresh
+    log:
+      message: ${"refreshing inventory for " + inputs.store}
+outputs:
+  store:
+    value: ${inputs.store}
+    description: the store this run refreshed

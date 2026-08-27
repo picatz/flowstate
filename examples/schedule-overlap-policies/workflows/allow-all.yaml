@@ -1,0 +1,30 @@
+# `allow_all` — see `../workflow.yaml`'s decision guide for where this sits
+# among the other five policies.
+#
+# `export` writes one firing's own five-minute window of audit-log entries to
+# cold storage, keyed by that window, and touches nothing any other firing
+# reads or writes. Two firings running at once are not racing over anything —
+# there is no shared state to protect, no queue to bound, no stale answer
+# either could produce, because each is exclusively about its own slice of
+# time. Choosing any of the other five policies here would serialize work
+# that has no reason to be serialized, buying nothing back for the added
+# latency.
+edition: v2026.3
+name: schedule-overlap-allow-all
+inputs:
+  window:
+    type: string
+    default: "2026-08-27T00:00:00Z/PT5M"
+    description: the audit-log window this firing exports
+triggers:
+  schedule:
+    every: 5m
+    overlap: allow_all
+steps:
+  - id: export
+    log:
+      message: ${"exporting audit log window " + inputs.window}
+outputs:
+  window:
+    value: ${inputs.window}
+    description: the window this run exported

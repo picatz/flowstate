@@ -1,0 +1,67 @@
+# `outputs:` can bound what a workflow reports, the same way `inputs:` bounds
+# what a caller may send in — `computed-outputs` names the block; this file is
+# the half it does not cover.
+#
+# The corpus constrains inputs everywhere: `parameterized-deploy`'s `replicas`
+# refuses a caller's own bad number before the first step runs. No file bounds
+# an *output* — a value the workflow itself computed — until now, and the gap
+# is not cosmetic. An input's `must:` can only ever see one caller-supplied
+# value in isolation; it has no way to state a rule about what several inputs
+# produce *together*, because that fact does not exist until steps have run.
+# `OutputDeclaration.must` is checked exactly there: once, after the value it
+# describes has been computed, against the value itself.
+#
+# # The scenario
+#
+# `utilization` is a `value:` step (a computed value that is not a task,
+# `computed-outputs`' own `outputs:` don't need one but this file's does,
+# since nothing here calls out to the world) dividing reserved capacity by
+# total capacity. Both numbers arrive as ordinary, individually valid inputs —
+# `reserved: 82` and `capacity: 100` are each just a plain non-negative int,
+# and no bound on either one alone catches what matters, which is the
+# relationship between them. A caller who reports more seats reserved than a
+# flight has is not describing a fraction between zero and one, they are
+# describing a bug somewhere upstream — and the workflow that reports 120%
+# utilization as though it were a normal answer is the one that hid it.
+#
+# `outputs.utilization_pct.must` states the actual contract: whatever this run
+# computed, it had better be a percentage. If it is not, the run fails at the
+# output check — after `utilization` succeeded and computed a number, and
+# before that number is ever reported to whoever is about to page someone over
+# it.
+#
+# # Runnable as written
+#
+#     flow run local examples/utilization-guard/workflow.yaml
+#
+# reports 82%. Feed it a reservation count the capacity cannot support to see
+# the guard refuse the run rather than report the nonsensical answer:
+#
+#     flow run local examples/utilization-guard/workflow.yaml \
+#       --input reserved=120
+edition: v2026.3
+name: utilization-guard
+inputs:
+  capacity:
+    type: int
+    default: 100
+    description: total seats on this flight
+  reserved:
+    type: int
+    default: 82
+    description: seats currently reserved
+steps:
+  # A `value:` step: no task, no effect on the world, just an expression
+  # evaluated in written order and named the way any other step's outputs
+  # are — `steps.utilization.value` below.
+  - id: utilization
+    value: ${double(inputs.reserved) / double(inputs.capacity) * 100.0}
+outputs:
+  utilization_pct:
+    value: ${steps.utilization.value}
+    description: the percentage of capacity reserved
+    # A percentage is between 0 and 100 by definition. This is not a business
+    # rule somebody might relax later; it is what the word "percentage" means,
+    # which is exactly the kind of fact `must:` exists to state once rather
+    # than trust every future reader of this file to remember unasked.
+    must: this >= 0.0 && this <= 100.0

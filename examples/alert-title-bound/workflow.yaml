@@ -1,0 +1,52 @@
+# A string length an input refuses to exceed — and why refusing is worth doing
+# before the first step runs rather than after.
+#
+# `parameterized-deploy` and `enum-input` both mention `min_len:`/`max_len:` in
+# passing; neither one is ever refused by them, because every value either file
+# is exercised with already satisfies its own bound. A constraint earns a place
+# in the portfolio where it *refuses* something — this file's `.test.yaml` has a
+# case doing exactly that, next to one that passes.
+#
+# # The bound
+#
+# The on-call pager this file's `page` step stands in for has a one-line LCD
+# that shows exactly 40 characters and truncates anything past it — silently,
+# mid-word, with no indication that anything was cut. A title that does not fit
+# is not a smaller problem than a title that is wrong: whoever is holding the
+# pager reads a sentence that stops making sense partway through and has no way
+# to tell it was ever longer. So the bound is not a style preference on this
+# input, it is a fact about the device the value is headed for, and refusing a
+# title that will not fit is strictly better than delivering half of one.
+#
+# `max_len:` counts runes, not bytes — worth stating because the difference is
+# invisible until it matters. "café is closed" is 14 runes and 15 bytes: `é` is
+# two UTF-8 bytes but one character on the pager's own display, which is what a
+# rune count matches and a byte count would not. A bound expressed in bytes
+# would refuse some strings the display renders just fine, and let others
+# through it would actually clip — wrong in both directions at once.
+#
+# # Runnable as written
+#
+#     flow run local examples/alert-title-bound/workflow.yaml
+#
+# runs with the declared default. Supply a title of your own to see the bound
+# enforced live:
+#
+#     flow run local examples/alert-title-bound/workflow.yaml \
+#       --input page_title="this on-call title is deliberately far too long for any pager's one-line display to show it"
+edition: v2026.3
+name: alert-title-bound
+inputs:
+  page_title:
+    type: string
+    default: "primary db unreachable, failing over"
+    max_len: 40
+    description: the alert title shown on an on-call pager's single-line display
+steps:
+  - id: page
+    log:
+      message: '${"paging: " + inputs.page_title}'
+outputs:
+  page_title:
+    value: ${inputs.page_title}
+    description: the title actually paged, once the bound let it through
