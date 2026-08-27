@@ -1127,13 +1127,20 @@ steps:
 	}
 }
 
-// TestFixRefusesATaskBehindAnAliasWithoutMangling is the same refusal for a shape
-// whose contents are not written where they are used.
+// TestFixInlinesATaskBehindAnAlias is the two rewrites meeting, end to end
+// through the command.
 //
-// An alias cannot be rewritten without knowing what it will expand to, and the
-// anchor it names is not a mapping written under `task:` either. Neither is
-// guessed at, and the file comes back untouched.
-func TestFixRefusesATaskBehindAnAliasWithoutMangling(t *testing.T) {
+// A step whose `task:` block is written once and aliased a second time needs both
+// of them: the alias is replaced by the anchored block's own bytes and the anchor
+// marker goes (flowfile/fixalias.go), and only then is there a second `task:`
+// block for the retirement rewrite to flatten into its own key. Neither pass can
+// do the other's half — the retirement rewriter deliberately does not follow an
+// alias, because the lines it would edit belong to another step.
+//
+// Asserted as bytes, not as "the result validates". A file where one of the two
+// steps came out flattened and the other did not is a legal document that runs
+// something else, which is the failure shape this command has produced twice.
+func TestFixInlinesATaskBehindAnAlias(t *testing.T) {
 	const shared = `edition: v2026.3
 name: shared-task
 steps:
@@ -1145,33 +1152,26 @@ steps:
   - id: second
     task: *b
 `
-	// The lines the anchor and the alias standing in for it are written on.
-	const (
-		anchorLine = 5
-		aliasLine  = 10
-	)
+	const want = `edition: v2026.3
+name: shared-task
+steps:
+  - id: first
+    log:
+      message: hi
+  - id: second
+    log:
+      message: hi
+`
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", shared)
 
-	out, _, err := runFixCommand(t, path)
-	if err == nil {
-		t.Error("a refused file reported success")
+	if _, _, err := runFixCommand(t, path); err != nil {
+		t.Errorf("a file flow fix can rewrite reported failure: %v", err)
 	}
 
-	if got := string(readFixture(t, path)); got != shared {
-		t.Errorf("a step standing behind an alias was edited anyway:\n--- before\n%s\n--- after\n%s",
-			shared, got)
-	}
-
-	reports := reportsFor(t, out, path)
-	for _, line := range []int{anchorLine, aliasLine} {
-		if refusal := reportAt(t, reports, line, out); refusal.column == 0 {
-			t.Errorf("the refusal at line %d names no column: %q", line, refusal.message)
-		}
-	}
-	if refusal := reportAt(t, reports, aliasLine, out); !strings.Contains(strings.ToLower(refusal.message), "alias") {
-		t.Errorf("the refusal does not say what it could not act on: %q", refusal.message)
+	if got := string(readFixture(t, path)); got != want {
+		t.Errorf("the alias was not written out as the value it names:\n--- want\n%s\n--- got\n%s", want, got)
 	}
 }
 
