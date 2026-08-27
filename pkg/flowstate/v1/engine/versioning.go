@@ -176,6 +176,18 @@ type WorkflowRegistry interface {
 // options here, in one function both reach, is the same argument [Register]'s own
 // doc makes about its five lines: a registration is a thing to get exactly right
 // once.
+//
+// One *static* type, and never Temporal's dynamic workflow registration, which
+// answers the same "one handler, many workloads" need by selecting a fallback
+// handler on the workflow type name the caller started. Here the workload arrives
+// as a typed [v1.RunState] argument instead, which is what gives one type to pin
+// versioning to for the whole fleet, one name the replay corpus can register
+// against (replay_test.go registers through this very function), and one place
+// determinism is enforced rather than one per workload. That is why
+// recordingRegistry's RegisterDynamicWorkflow in versioning_test.go is empty:
+// nothing is registered there on purpose. The trade is that every run's
+// WorkflowType is "Run" — see docs/ARCHITECTURE.md, "One interpreter, not a
+// workflow type per workload", for what carries a workload's own name instead.
 func RegisterWorkflows(r WorkflowRegistry) {
 	r.RegisterWorkflowWithOptions(Run, workflow.RegisterOptions{
 		// Pinned, so an in-flight run is never handed to a different interpreter
