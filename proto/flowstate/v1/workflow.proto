@@ -435,6 +435,159 @@ message Workflow {
   // control plane before a durable run is accepted.
   repeated PluginRequirement plugin_requirements = 12 [(buf.validate.field).repeated = {max_items: 64}];
   repeated ResolvedPlugin resolved_plugins = 13 [(buf.validate.field).repeated = {max_items: 64}];
+
+  // Concurrency declares that at most one run of this workflow may be in flight
+  // per key. See [Concurrency] for the mechanism, the three answers it can give,
+  // and the two things it deliberately does not do.
+  //
+  // On the workflow rather than under [Triggers], because it must hold for every
+  // start path — `flow run`, an agent over MCP, a `SignalWithStart` — and writing
+  // it once per trigger is one fact written three times, which is the shape that
+  // drifts.
+  Concurrency concurrency = 14 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// Concurrency is "at most one run of this workflow per key", answered at submit.
+//
+// A workflow that touches a resource nothing else may touch at the same time — a
+// cluster it drains, a ledger it reconciles, a deploy of one service — writes:
+//
+//     concurrency:
+//       key: ${inputs.cluster}
+//       on_conflict: reject
+//
+// and a second submission naming the same cluster is refused while the first is
+// still running.
+//
+// # The permit is a workflow id
+//
+// There is no lease, no fencing token and no lock table, because Temporal already
+// has exactly one mutual-exclusion primitive and it is the workflow id: at most
+// one execution may be open under one id at a time. So [Concurrency.key] is
+// composed with the run's tenant and this workflow's name, digested, and used as
+// the id of the run itself — the identical construction webhook delivery dedupe
+// already uses (`webhookWorkflowID`, server/webhook.go), under its own
+// `flowstate-lock-` prefix so a key can never address, join or block a run
+// created by a delivery or by [RunRequest.entity_key].
+//
+// Two properties fall out of the holder *being* a run rather than holding a
+// permit on behalf of one. The permit's lifetime is the run's own execution
+// timeout, so an orphaned permit that wedges a resource forever is structurally
+// impossible rather than something a lease has to expire. And acquisition never
+// waits: all three arms of [Concurrency.on_conflict] answer immediately, at
+// submit, while the caller is still present to be told.
+//
+// # Submit-time by construction, which is why both drivers agree
+//
+// Nothing in a run ever reads this field. It is consumed once, by the server
+// deciding what id to start the run under, and the engine — either engine — never
+// sees it. So invariant 3 is satisfied by there being nothing for the two drivers
+// to disagree about: `flow run local` executes the same steps in the same order
+// whether or not this block is present, exactly as it does for [Triggers], and no
+// local rehearsal is quietly pretending to model contention it cannot model. That
+// is a property of *where* this is enforced, not a promise this comment makes: a
+// reader can check it by grepping for the field's accessor, which appears only
+// under `server/` and `flowfile/`.
+//
+// # What it does not do
+//
+// It does not queue. "Run the next one after this finishes" is
+// [ScheduleTrigger.Overlap]'s `buffer_one`/`buffer_all`, which lives in Temporal's
+// *schedule* machinery and is unreachable from a manual `Run`; the validator
+// refuses those three names here rather than accepting a word it would silently
+// not honour. And it does not lock a *span of steps* within a run, or anything
+// shared between two different workflows: both of those need a run able to reach
+// another run, which no node kind can do.
+message Concurrency {
+  // OnConflict is what happens when a run already holds this key.
+  //
+  // Exactly three arms, and the ceiling is not an editorial choice: a workflow id
+  // can express precisely these three answers. Each maps to one pair of Temporal
+  // start policies, and there is nothing between them.
+  enum OnConflict {
+    // Unspecified is ON_CONFLICT_REJECT.
+    //
+    // Left as a real arm rather than folded away, for [ScheduleTrigger.Overlap]'s
+    // reason: "the author said nothing" and "the author wrote reject" stay
+    // distinguishable in the specification even though they behave identically.
+    // Defaulting to the refusal is the fail-closed direction (invariant 6) — an
+    // author who writes `key:` and forgets `on_conflict:` gets exclusion, not a
+    // second concurrent run.
+    ON_CONFLICT_UNSPECIFIED = 0;
+
+    // Reject refuses the submission while another run holds the key, and tells
+    // the caller so — `AlreadyExists`, naming the run that holds it.
+    //
+    // `WORKFLOW_ID_CONFLICT_POLICY_FAIL` with
+    // `WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE`: a run that has *finished*
+    // releases the key, which is the difference from a webhook delivery's
+    // `REJECT_DUPLICATE`. A delivery id names one event forever; a concurrency
+    // key names a resource that is free again once the run holding it ends.
+    ON_CONFLICT_REJECT = 1;
+
+    // Join returns the run already holding the key instead of starting a second
+    // one, with [RunResponse.joined] true — the generalization of what a webhook
+    // redelivery already does (`AcceptedDelivery.Joined`).
+    //
+    // For a caller whose request is "make sure this is happening" rather than
+    // "start this now": two agents asked to reconcile the same ledger both end up
+    // watching one reconciliation.
+    //
+    // Implemented as `WORKFLOW_ID_CONFLICT_POLICY_FAIL` and the already-started
+    // error, not as `USE_EXISTING`, and the difference is the whole reason
+    // [RunResponse.joined] can be trusted. `USE_EXISTING` answers a conflict
+    // silently with the incumbent, and `WorkflowExecutionErrorWhenAlreadyStarted`
+    // does not apply to it because nothing was disallowed — so the server gets
+    // back a run id and no way to tell whether it started it. Every fact this
+    // server states about a run has to be one it established; `SignalWithStart`
+    // decides its own `created` the same way, from the same error, which carries
+    // the incumbent's run id at no extra round trip.
+    ON_CONFLICT_JOIN = 2;
+
+    // TerminateOther stops the run holding the key and starts this one.
+    //
+    // `WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING`. Terminate rather than
+    // cancel, deliberately and destructively: the incumbent gets no chance to run
+    // its `undo:` compensations, exactly as [ScheduleTrigger.Overlap]'s
+    // `terminate_other` says of a firing. The arm to reach for when the newest
+    // request is the true one — a redeploy superseding the deploy it interrupts —
+    // and never for anything whose half-finished state matters.
+    ON_CONFLICT_TERMINATE_OTHER = 3;
+  }
+
+  // Key is what is held: the resource one run at a time may touch.
+  //
+  // Written as a literal for a workflow that is globally exclusive of itself, or
+  // as an expression over the run's own arguments — `${inputs.cluster}` — for one
+  // exclusive per cluster.
+  //
+  // # Resolved once, at submit, from bound inputs and nothing else
+  //
+  // The expression is evaluated exactly once, in `FlowstateServer.Run`, after
+  // [BindRunInputs] and before the run exists — the same moment and the same
+  // discipline [SignalPolicyRule.subject_from] established. `inputs.*` is the
+  // whole of what it may read, and the validator refuses anything else, because
+  // at that moment nothing else exists: no step has produced an output, `vars:`
+  // have not been evaluated, and there is no run to have a `run.id`.
+  //
+  // What the resolved literal is used for is the *only* thing it is used for: it
+  // is digested into the run's workflow id and then discarded. It is never
+  // written to a memo, a search attribute or history, which is deliberate — a key
+  // is frequently the name of a customer or a cluster, and `webhookWorkflowID`'s
+  // reasoning about durable, broadly readable identifiers (invariant 8) applies
+  // unchanged. Nothing downstream can read the expression either, since nothing
+  // downstream reads this message at all.
+  Value key = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // OnConflict is which of the three answers this workflow wants. Unset is
+  // ON_CONFLICT_REJECT — see that arm for why the default is the refusal.
+  OnConflict on_conflict = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).enum = {defined_only: true}
+  ];
 }
 
 // PluginRequirement is what a Flowfile's plugins: block declares: a plugin

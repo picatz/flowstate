@@ -179,6 +179,7 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.WebhookTrigger{}, "webhook", nil},
 		{&v1.ManualTrigger{}, "manual", nil},
 		{&v1.ScheduleTrigger{}, "schedule", nil},
+		{&v1.Concurrency{}, "concurrency", nil},
 		{&v1.SignalPolicy{}, "signal_policy", nil},
 		{&v1.SignalPolicyRule{}, "signal_policy_rule", nil},
 		{&v1.Signal{}, "signal", nil},

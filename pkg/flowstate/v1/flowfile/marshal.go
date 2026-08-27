@@ -94,6 +94,16 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 
 	// Same position the parser reads it: alongside `triggers:`, a fact about the
 	// whole workflow's relationship with the outside world.
+	if concurrency := wf.GetConcurrency(); concurrency != nil {
+		written, err := concurrencyToYAML(concurrency)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "concurrency", Value: written})
+	}
+
+	// Same position the parser reads it: alongside `triggers:`, a fact about the
+	// whole workflow's relationship with the outside world.
 	if signals := wf.GetSignals(); len(signals) > 0 {
 		written, err := signalsToYAML(signals)
 		if err != nil {

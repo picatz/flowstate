@@ -1,0 +1,33 @@
+# `on_conflict: join` — see `../workflow.yaml` for the mechanism and for where
+# this sits among the three answers.
+#
+# `reconcile-ledger` brings one tenant's ledger back into agreement with the
+# payment processor. It is idempotent and it is not urgent: what a caller wants is
+# for a reconciliation of this ledger to be happening, not for *their* submission
+# specifically to be the one that does it. Two on-call engineers and a nightly
+# agent asking at the same time should all end up watching one reconciliation.
+#
+# So a second submission returns the run already holding the key, with `joined`
+# true on the response, rather than a refusal the caller then has to interpret.
+# The cost, stated because it is real: the run they get back was started with
+# somebody else's arguments, and `specification_as_submitted` is false on that
+# answer for exactly that reason. `join` is right when the work is the same
+# whoever asked for it, and wrong the moment the arguments change what happens.
+edition: v2026.3
+name: exclusive-ledger-reconcile
+inputs:
+  tenant:
+    type: string
+    required: true
+    description: whose ledger this run reconciles
+concurrency:
+  key: ${inputs.tenant}
+  on_conflict: join
+steps:
+  - id: reconcile
+    log:
+      message: ${"reconciling the ledger for " + inputs.tenant}
+outputs:
+  tenant:
+    value: ${inputs.tenant}
+    description: the tenant this run reconciled

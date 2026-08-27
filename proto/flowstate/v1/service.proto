@@ -231,6 +231,36 @@ message RunResponse {
   // caller is owed about their own request, and leaves the disclosure question
   // alone.
   optional bool specification_as_submitted = 6;
+
+  // Joined is true when this response describes a run that was already going
+  // rather than one this request started.
+  //
+  // Only [Concurrency.ON_CONFLICT_JOIN] produces it: the workflow declared a
+  // `concurrency:` key, another run of the same workflow already held that key in
+  // this tenant, and the author asked for the incumbent to be returned instead of
+  // a refusal. [RunResponse.workflow_id] and [RunResponse.run_id] then name *that*
+  // run — a run this caller did not start, may not have submitted the same inputs
+  // to, and whose specification is therefore not necessarily theirs.
+  //
+  // Which is why it is a field rather than something a caller infers from a run id
+  // it did not recognize. A caller that submits and gets back a run id has no way
+  // to tell "mine" from "somebody else's, joined" by looking, and the two differ in
+  // what the caller may conclude: [RunResponse.specification_as_submitted] is
+  // answered about the *incumbent's* specification, so a client redacting a joined
+  // run's outputs against its own copy is redacting against a file that did not
+  // run. Establishing the fact here is the same discipline
+  // `WorkflowExecutionErrorWhenAlreadyStarted` buys the webhook path
+  // (`AcceptedDelivery.Joined`): a join is a thing the server states, never a thing
+  // a reader deduces from silence.
+  //
+  // A plain `bool` rather than an `optional` one, unlike the field above it, and
+  // the asymmetry is deliberate. Silence there is a third answer — an older server
+  // that substitutes specifications and cannot say so — and reading it as false
+  // would be unsafe. Here false is the safe reading and the overwhelmingly common
+  // one: a server too old to have this field cannot have honoured a
+  // `concurrency:` block either, so it never joined anything, and "unset" and
+  // "did not join" are the same fact rather than two.
+  bool joined = 7;
 }
 
 // GetRequest is the request message for getting a workflow run.

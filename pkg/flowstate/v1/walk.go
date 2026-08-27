@@ -146,6 +146,11 @@ const (
 	SlotWaitBatchPrompt
 	// SlotWaitBatchOutput is one entry of a `wait_for_signals:`'s `outputs:`.
 	SlotWaitBatchOutput
+
+	// SlotConcurrencyKey is the workflow's `concurrency:` `key:` — the resource
+	// at most one run of this workflow may hold at a time. Evaluated at submit
+	// against the run's bound inputs and nothing else; see [Concurrency.key].
+	SlotConcurrencyKey
 )
 
 // ValueSlotSchemaPath maps each slot to the schema field it names.
@@ -184,6 +189,8 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotWaitBatchOutput:  "Workflow.steps[].wait.signal_batch.outputs{}",
 		SlotStepValue:        "Workflow.steps[].value",
 		SlotCallArgument:     "Workflow.steps[].call.arguments{}",
+
+		SlotConcurrencyKey: "Workflow.concurrency.key",
 	}
 }
 
@@ -315,6 +322,8 @@ func (s ValueSite) Field() string {
 		return "outputs." + s.Name
 	case SlotCallArgument:
 		return "with." + s.Name
+	case SlotConcurrencyKey:
+		return "concurrency.key"
 	default:
 		return ""
 	}
@@ -366,9 +375,9 @@ type Walk struct {
 //
 // Document order, which is the order the file is written in: declared inputs,
 // `vars:`, `steps:` (depth first, each step before its body), declared `outputs:`,
-// `signals:`, then `triggers:`. Map keys are visited in sorted order so two runs
-// over one document report in the same order — a walk that produces diagnostics
-// cannot have its output depend on Go's map iteration.
+// `concurrency:`, `signals:`, then `triggers:`. Map keys are visited in sorted
+// order so two runs over one document report in the same order — a walk that
+// produces diagnostics cannot have its output depend on Go's map iteration.
 func WalkWorkflow(wf *Workflow, w Walk) {
 	if wf == nil {
 		return
@@ -389,6 +398,14 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		name := declaration.GetName()
 		w.value(ValueSite{Slot: SlotDeclaredOutput, Name: name, Value: declaration.GetValue()})
+	}
+
+	// The one position evaluated before the run exists at all — at submit, by the
+	// server composing the id that is the permit. Visited alongside `signals:` and
+	// `triggers:` because it belongs to the same class: a fact about the whole
+	// workflow's relationship with the outside world rather than about any step.
+	if concurrency := wf.GetConcurrency(); concurrency != nil {
+		w.value(ValueSite{Slot: SlotConcurrencyKey, Value: concurrency.GetKey()})
 	}
 
 	for _, policy := range slices.Sorted(maps.Keys(wf.GetSignals())) {

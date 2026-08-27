@@ -623,6 +623,7 @@ func plural(n int) string {
 func readsSteps(slot v1.ValueSlot) bool {
 	switch slot {
 	case v1.SlotWorkflowVar,
+		v1.SlotConcurrencyKey,
 		v1.SlotSignalSubject,
 		v1.SlotWebhookIdempotencyKey,
 		v1.SlotWebhookArgument,
