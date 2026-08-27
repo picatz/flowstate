@@ -4,7 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -725,7 +725,8 @@ func evictableFile(dir string) uint64 {
 	return cache - min(cache, protected)
 }
 
-// maxProtectionScan bounds the descendant walk [protectedBelow] performs.
+// maxProtectionScan bounds the descendant walk [protectedBelow] performs, and
+// protectionReadChunk is how many directory entries it reads at a time.
 //
 // The shape of a cgroup tree is not this tool's to choose, and a budget tool
 // that walks an unbounded directory tree on every dispatch decision has swapped
@@ -733,7 +734,25 @@ func evictableFile(dir string) uint64 {
 // with room to spare, and exceeding it is a refusal rather than a truncation:
 // a partial sum of protections is an *understatement*, which is the direction
 // that hands out lanes that are not there.
-const maxProtectionScan = 4096
+//
+// The chunk exists because counting visits does not bound reading them.
+// [filepath.WalkDir] reads a whole directory and lexically sorts it before
+// invoking the callback once, so a level with a million children allocates and
+// sorts a million entries before any counter has been consulted — a bound on
+// the wrong resource, which is the mistake this repository has a section about
+// (Codex, #1134). Reading incrementally charges each entry as it arrives.
+//
+// One honest limit, stated rather than left for somebody to assume. The tests
+// pin the *count*: a hierarchy past maxProtectionScan is refused, and it is
+// refused because entries are charged as they are read. They do not observe the
+// allocation, so raising this chunk until it swallows a whole directory in one
+// call passes every test here while restoring exactly the behaviour the
+// paragraph above rejects. What that would cost is memory rather than
+// correctness, which is why it is a comment and not a check.
+const (
+	maxProtectionScan   = 4096
+	protectionReadChunk = 64
+)
 
 // protectedBelow is the memory `memory.min` protects from reclaim at this level
 // and every level under it, and whether the walk finished.
@@ -743,52 +762,92 @@ const maxProtectionScan = 4096
 // protected cache is at most the floor and usually less. Overstating the
 // protection understates the headroom, which is the direction a dispatch budget
 // should be wrong in.
-//
-// cgroup v1 has no `memory.min`, so every read fails and the sum is zero, which
-// is the right answer there — v1 offers no reclaim protection to account for.
 func protectedBelow(dir string) (uint64, bool) {
+	// No `memory.min` here means no memory controller here, and a controller is
+	// enabled top-down — so nothing below this level can protect anything and
+	// there is nothing to walk. cgroup v1 is the whole-host case: the file does
+	// not exist anywhere, and without this every limited level walked its entire
+	// descendant hierarchy to read a file that was never going to be there.
+	//
+	// It is not only a cost. A v1 host with a hierarchy wider than the bound
+	// would refuse to establish reclaimability, count none of its cache, and
+	// recreate the zero-lane reading this whole change exists to fix — the fix
+	// defeated by its own safeguard (Codex, #1134).
+	if _, err := os.Stat(filepath.Join(dir, "memory.min")); err != nil {
+		return 0, true
+	}
+
 	total, seen := uint64(0), 0
 
-	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+	// Explicit rather than recursive, so the pending set is the same bounded
+	// thing the counter counts.
+	pending := []string{dir}
+	for len(pending) > 0 {
+		level := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+
+		if floor, err := readInt(filepath.Join(level, "memory.min")); err == nil && floor > 0 {
+			// Saturating, because this sum runs over numbers a hierarchy
+			// chooses and `memory.min` has no ceiling this tool gets to impose.
+			// Four descendants declaring 1<<62 wrap a plain uint64 addition to
+			// exactly zero, and zero here reads as "nothing is protected" — so
+			// the one hierarchy asking for maximal protection would be the one
+			// this hands out lanes against (Codex, #1134).
+			//
+			// Saturation is the fail-closed direction: an overstated protection
+			// understates headroom, which costs a lane, while a wrapped one
+			// overstates headroom, which costs an OOM kill. Nothing found later
+			// can lower the sum, so the walk stops here.
+			if total > math.MaxUint64-uint64(floor) {
+				return math.MaxUint64, true
+			}
+			total += uint64(floor)
+		}
+
+		children, err := childDirectories(level, &seen)
 		if err != nil {
-			// A directory that vanished mid-walk, or one this process may not
-			// read. Neither is evidence that nothing there is protected.
-			return err
+			// A directory that vanished mid-walk, one this process may not
+			// read, or a tree past the bound. None is evidence that nothing
+			// below is protected.
+			return 0, false
 		}
-		if !entry.IsDir() {
-			return nil
+		pending = append(pending, children...)
+	}
+
+	return total, true
+}
+
+// childDirectories are a level's immediate subdirectories, read a chunk at a
+// time and charged against the budget as they arrive.
+//
+// The charging is the point: a counter consulted after a whole directory has
+// been read and sorted bounds the walk and not the work.
+func childDirectories(dir string, seen *int) ([]string, error) {
+	open, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer open.Close()
+
+	var children []string
+	for {
+		entries, err := open.ReadDir(protectionReadChunk)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			if *seen++; *seen > maxProtectionScan {
+				return nil, errProtectionScanTooLarge
+			}
+			children = append(children, filepath.Join(dir, entry.Name()))
 		}
-		if seen++; seen > maxProtectionScan {
-			return errProtectionScanTooLarge
+		if errors.Is(err, io.EOF) {
+			return children, nil
 		}
-
-		floor, err := readInt(filepath.Join(path, "memory.min"))
-		if err != nil || floor <= 0 {
-			// No such file on v1, and "0" — the default — everywhere else.
-			return nil
+		if err != nil {
+			return nil, err
 		}
-
-		// Saturating, because this sum runs over numbers a hierarchy chooses
-		// and `memory.min` has no ceiling this tool gets to impose. Four
-		// descendants declaring 1<<62 wrap a plain uint64 addition to exactly
-		// zero, and zero here reads as "nothing is protected" — so the one
-		// hierarchy asking for maximal protection would be the one this hands
-		// out lanes against (Codex, #1134).
-		//
-		// Saturation is the fail-closed direction: an overstated protection
-		// understates headroom, which costs a lane, while a wrapped one
-		// overstates headroom, which costs an OOM kill.
-		if total > math.MaxUint64-uint64(floor) {
-			total = math.MaxUint64
-
-			return fs.SkipAll
-		}
-		total += uint64(floor)
-
-		return nil
-	})
-
-	return total, err == nil
+	}
 }
 
 // errProtectionScanTooLarge stops [protectedBelow] at its bound.

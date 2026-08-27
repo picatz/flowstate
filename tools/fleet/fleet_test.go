@@ -457,6 +457,26 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 			"the protection sum wrapped, so maximal protection read as none at all")
 	})
 
+	t.Run("a host with no memory controller is not walked at all", func(t *testing.T) {
+		// cgroup v1 has no `memory.min` anywhere, and a controller is enabled
+		// top-down — so a level without the file has nothing protected beneath
+		// it and nothing to walk for. Without this the walk descended the whole
+		// hierarchy to read a file that was never going to be there, and a v1
+		// host wider than the bound would refuse to establish reclaimability,
+		// count none of its cache, and recreate the zero-lane reading this
+		// change exists to fix (Codex, #1134).
+		dir := protectedLayout(t, protection{cache: 5 * gib, noController: true})
+		for i := range maxProtectionScan + 1 {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"+strconv.Itoa(i)), 0o755))
+		}
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(7*gib), free,
+			"a hierarchy that cannot protect anything defeated the fix through its own safeguard")
+	})
+
 	t.Run("a tree too large to read establishes nothing", func(t *testing.T) {
 		// Fail closed. A partial sum of protections understates them, which
 		// overstates headroom — the one direction a dispatch budget must not
@@ -480,6 +500,12 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 type protection struct {
 	cache uint64
 	min   uint64
+
+	// noController omits `memory.min` entirely, which is what a cgroup v1 level
+	// looks like — and what a v2 level whose parent never enabled the memory
+	// controller looks like. Distinct from a min of zero, which is a level that
+	// *can* protect and has chosen not to.
+	noController bool
 }
 
 // protectedLayout writes a cgroup at 8 GiB limit and 6 GiB used, with levels
@@ -501,7 +527,7 @@ func protectedLayout(t *testing.T, levels ...protection) string {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.stat"),
 				[]byte("inactive_file "+strconv.FormatUint(level.cache, 10)+"\n"), 0o644))
 		}
-		if level.min > 0 {
+		if !level.noController {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.min"),
 				[]byte(strconv.FormatUint(level.min, 10)+"\n"), 0o644))
 		}
