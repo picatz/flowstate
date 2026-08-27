@@ -1,0 +1,37 @@
+# `on_conflict: terminate_other` — see `../workflow.yaml` for the mechanism and
+# for where this sits among the three answers.
+#
+# `deploy-service` rolls one service to one version. When a newer deploy of the
+# same service is submitted, the older one is not work worth finishing: it is
+# actively installing a version somebody has already superseded. Waiting for it
+# wastes the window, and joining it would report the wrong version as the one
+# being deployed.
+#
+# The cost is the sharp edge of this arm and is the whole reason it is not the
+# default: the incumbent is *terminated*, not cancelled, so it gets no chance to
+# run its `undo:` compensations or any cleanup at all. That is only safe when a
+# half-finished run leaves nothing that needs taking back — true of a deploy the
+# next deploy overwrites entirely, and false of the cluster drain next door, which
+# would leave cordoned nodes nobody uncordons.
+edition: v2026.3
+name: exclusive-service-deploy
+inputs:
+  service:
+    type: string
+    required: true
+    description: which service this run deploys
+  version:
+    type: string
+    required: true
+    description: the version to install
+concurrency:
+  key: ${inputs.service}
+  on_conflict: terminate_other
+steps:
+  - id: deploy
+    log:
+      message: ${"deploying " + inputs.service + " at " + inputs.version}
+outputs:
+  version:
+    value: ${inputs.version}
+    description: the version this run installed

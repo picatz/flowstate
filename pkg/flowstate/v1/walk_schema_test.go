@@ -321,6 +321,7 @@ func workflowUsingEveryValuePosition() *Workflow {
 			},
 		},
 		DeclaredOutputs: []*OutputDeclaration{{Name: "answer", Value: NewExpr("42")}},
+		Concurrency:     &Concurrency{Key: NewExpr("inputs.who")},
 		Signals: map[string]*SignalPolicy{
 			"approval": {Allow: []*SignalPolicyRule{{SubjectFrom: NewExpr("'a#b'")}}},
 		},
