@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -71,9 +70,10 @@ import (
 // not match are indistinguishable from outside. A prober must not be able to
 // enumerate which webhooks a deployment serves by reading status codes, and must
 // not learn that they found a real one by the shape of the answer. Timing is
-// levelled the same way: an unrouted request still performs one HMAC over the body
-// ([WebhookReceiver.decoy]) so that "no such webhook" costs what "wrong signature"
-// costs.
+// levelled the same way: an unrouted request spends exactly what
+// [v1.VerifyWebhookDelivery] spends on any route — [v1.SpendWebhookVerificationWork]
+// is that same work with no trigger to decide against — so that "no such webhook"
+// costs what a routed refusal costs, whatever that route would have declared.
 //
 // The operator's channel is the log, which names exactly what happened. That is
 // the asymmetry worth having: whoever runs the deployment can debug it, whoever is
@@ -176,12 +176,6 @@ type WebhookReceiver struct {
 	// test can pin a signature's timestamp, and so that a receiver and a
 	// rehearsal cannot disagree about what "recent" means.
 	now func() time.Time
-
-	// decoy is a key no sender has, used to spend the same work on an unrouted
-	// delivery that a routed one costs. Generated per process: a fixed one would
-	// be a constant an attacker could compute against, and a zero one would skip
-	// the work this exists to spend.
-	decoy secrets.Secret
 
 	log *slog.Logger
 }
@@ -326,11 +320,6 @@ func (s *FlowstateServer) NewWebhookReceiver(
 			"this one: %w", namespace, err)
 	}
 
-	decoy := make([]byte, sha256.Size)
-	if _, err := rand.Read(decoy); err != nil {
-		return nil, fmt.Errorf("generating the key an unrouted delivery is checked against: %w", err)
-	}
-
 	receiver := &WebhookReceiver{
 		server:    s,
 		namespace: namespace,
@@ -338,7 +327,6 @@ func (s *FlowstateServer) NewWebhookReceiver(
 		routes:   make(map[string]map[string]*webhookRoute, len(workflows)),
 		inFlight: make(chan struct{}, DefaultWebhookConcurrency),
 		now:      time.Now,
-		decoy:    secrets.NewSecret(secrets.NewRef("internal", "webhook-decoy"), hex.EncodeToString(decoy)),
 		log:      slog.New(slog.DiscardHandler),
 	}
 	for _, opt := range opts {
@@ -551,11 +539,13 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	route, found := r.route(req.URL.Path)
 	if !found {
-		// Spent, not skipped: an unrouted delivery costs one HMAC over the body
-		// under a key nobody has, so that the time an unknown webhook takes is
-		// the time a wrong signature takes. Then the same refusal, so neither is
-		// the answer that stands out.
-		_ = v1.SignWebhookBody(r.decoy, body)
+		// Spent, not skipped: an unrouted delivery costs what
+		// [v1.VerifyWebhookDelivery] spends against any route — every scheme
+		// this build knows, verified once each under a key nobody has — so that
+		// the time an unknown webhook takes is the time a routed one takes,
+		// regardless of how many schemes that route would have declared (#973).
+		// Then the same refusal, so neither is the answer that stands out.
+		v1.SpendWebhookVerificationWork(webhookHeaders(req.Header), body, r.now())
 		r.refuse(req, "no such webhook", "path", req.URL.Path)
 		writeWebhookRefusal(w)
 
