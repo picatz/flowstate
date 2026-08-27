@@ -173,17 +173,28 @@ func TestRunWorkflowPolicy(t *testing.T) {
 func TestRunWorkflowErrorKind(t *testing.T) {
 	baseURL := conformance.NewHTTPServer(t)
 
-	// The timeout case's fixture (#915). On [v1.DefaultRegistry] because a case
-	// carries a workflow and nothing else — there is no context here to hang a
-	// private registry off the way TestStepTimeoutReachesTheTaskLocal can — and
-	// because the durable caller has no choice but the global one anyway (see
-	// engine.TestRunWorkflowErrorKind's own note), so registering it the same
-	// way keeps one corpus reaching one task under both drivers.
-	require.NoError(t, v1.DefaultRegistry().Register(conformance.ErrorKindTimeoutTaskDef()))
+	// The timeout case's fixture (#915), in a registry derived from the build's
+	// rather than added to it.
+	//
+	// The other cases need the tasks this build ships — including the
+	// loopback-permitting `http` [conformance.NewHTTPServer] has just installed
+	// on the default registry — and the fixture must not join them there:
+	// TestEveryTaskDescribesItself walks [v1.DefaultRegistry] in parallel with
+	// this and holds every task in it to describing its inputs, which a fixture
+	// taking none cannot do. Registering and unregistering around this test
+	// would leave exactly that window open. Copying is what
+	// [v1.NewContextWithRegistry] is for, and the durable caller reaches the
+	// same task the only way it can (see engine.TestRunWorkflowErrorKind's own
+	// note: an activity cannot see a registry on the workflow's context).
+	registry := v1.NewRegistry()
+	for _, def := range v1.DefaultRegistry().All() {
+		require.NoError(t, registry.Register(def))
+	}
+	require.NoError(t, registry.Register(conformance.ErrorKindTimeoutTaskDef()))
 
 	for _, tc := range conformance.ErrorKindCases(baseURL) {
 		t.Run(tc.Name, func(t *testing.T) {
-			_, err := v1.Run(t.Context(), tc.Workflow)
+			_, err := v1.Run(v1.NewContextWithRegistry(t.Context(), registry), tc.Workflow)
 			require.Error(t, err, "the case must fail the run outright")
 			require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
 		})
