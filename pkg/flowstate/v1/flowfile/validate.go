@@ -57,6 +57,7 @@ var celReservedIdentifiers = []string{
 var stepProperties = map[string]bool{
 	"if":                true,
 	"timeout":           true,
+	"total_timeout":     true,
 	"retry":             true,
 	"continue_on_error": true,
 	"undo":              true,

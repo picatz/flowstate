@@ -494,19 +494,38 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 // drainInto appends whatever is already buffered on channel to deliveries,
 // without blocking, stopping at limit.
 //
-// The same bounded `ReceiveAsync` loop [drainSignals] runs at Continue-As-New,
-// which is what makes this feature a spelling rather than a mechanism: Temporal
-// offers no batch receipt — `ReceiveChannel` has `Receive`,
-// `ReceiveWithTimeout`, `ReceiveAsync`, `ReceiveAsyncWithMoreFlag` and `Len`,
-// and a drain is a loop over the third — so the primitive was already written
-// here and only unreachable from a Flowfile.
+// The same `ReceiveAsync` loop [drainSignals] runs at Continue-As-New, which is
+// what makes this feature a spelling rather than a mechanism: Temporal offers no
+// batch receipt — `ReceiveChannel` has `Receive`, `ReceiveWithTimeout`,
+// `ReceiveAsync`, `ReceiveAsyncWithMoreFlag` and `Len`, and a drain is a loop
+// over the third — so the primitive was already written here and only
+// unreachable from a Flowfile.
 //
-// Stopping at the limit leaves the remainder on the channel rather than
-// dropping it or re-buffering it. That is the behaviour a `loop:` around the
-// step wants, and it is why reaching the bound costs an iteration rather than
-// an approval. It is also why the bound is safe to be a count: the resource the
-// peer controls is how many arrive, and what is not taken is not read into
-// memory at all.
+// # Where the two loops differ, which is the whole of what makes a limit right
+// here and wrong there
+//
+// [drainSignals] takes everything, unconditionally, and must: it runs at a
+// suspend, and a delivery it declined to take is a delivery *lost*, unsaying an
+// acknowledgement the sender already received (#1013). It has nowhere to leave
+// one — the channel it is reading is about to be discarded with the run.
+//
+// This loop has somewhere to leave one. Stopping at the limit leaves the
+// remainder exactly where it was, on a channel that outlives this step, so the
+// next drain takes it and nothing is dropped or re-buffered. That is what a
+// `loop:` around the step already wants, and it is why reaching the bound costs
+// an iteration rather than a delivery — the same promise [drainSignals] keeps by
+// taking everything, kept here by taking some and leaving the rest.
+//
+// It is also why the bound is safe to be a count. The resource the peer controls
+// is how many arrive, and what is not taken is not read into memory at all — so
+// bounding the count bounds what one step materializes, which is the resource a
+// step's own outputs are weighed in. The carry's equivalent bound is bytes, at
+// [v1.CheckRunStateSize]; see [v1.MaxSignalBatch] for why one is enforced and
+// the other is a threshold.
+//
+// The two loops never run against one channel at once — one runs while a step
+// executes, the other while the run suspends — and `ReceiveAsync` removes what
+// it reads, so a delivery is taken by exactly one of them.
 func drainInto(ctx workflow.Context, channel workflow.ReceiveChannel, deliveries []*v1.SignalDelivery, limit int) []*v1.SignalDelivery {
 	for len(deliveries) < limit {
 		var delivery v1.SignalDelivery
@@ -600,23 +619,34 @@ func (e *executor) takePendingSignals(name string, limit int) []*v1.SignalDelive
 // Draining is possible only because the specification declares every signal name
 // statically: the run knows exactly which channels to check, without guessing at
 // what someone might have sent.
+//
+// # Everything drained is carried, unconditionally
+//
+// This used to stop once len(pending) reached [v1.MaxPendingSignals], silently
+// dropping whatever a sender had already been told was delivered — the RPC that
+// accepted the delivery had already returned success by the time this ran, so
+// the drop was invisible to the one party who could have reacted to it (#1013).
+// An acknowledged delivery is a promise, and this is the one place that promise
+// gets kept or broken: a `flow signal` that reported success is a fact about
+// the sender's world, and this function does not get to make it retroactively
+// false.
+//
+// So it does not stop. The bound that protects the run is
+// [v1.CheckRunStateSize], weighed by the caller against everything else the run
+// carries once this returns — a carry too large to fit fails the run loudly,
+// visibly, at the moment it happens, which is the fate an unconsumed flood
+// deserves. [v1.MaxPendingSignals] still names the count a well-behaved
+// workload should never approach, and crossing it here is worth an operator's
+// attention, so it is logged once — as a warning about a wait that may be
+// missing, not as a decision about what to keep.
 func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.PendingSignal) []*v1.PendingSignal {
 	pending := carried
+	warned := len(pending) > v1.MaxPendingSignals
 
 	for _, name := range v1.SignalNames(spec) {
 		channel := workflow.GetSignalChannel(ctx, name)
 
 		for {
-			if len(pending) >= v1.MaxPendingSignals {
-				// The first to arrive is the one that approved the gate, so the
-				// oldest are kept. A sender that delivers a million signals
-				// cannot grow the run's state without limit.
-				workflow.GetLogger(ctx).Warn(
-					"dropping signals beyond the carry limit; a wait consumes one, and the earliest are kept",
-					"signal", name, "limit", v1.MaxPendingSignals)
-				return pending
-			}
-
 			var delivery v1.SignalDelivery
 			if !channel.ReceiveAsync(&delivery) {
 				break
@@ -630,6 +660,15 @@ func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.Pending
 				Payload: delivery.GetPayload(),
 				Sender:  delivery.GetSender(),
 			})
+
+			if !warned && len(pending) > v1.MaxPendingSignals {
+				warned = true
+				workflow.GetLogger(ctx).Warn(
+					"carrying more early-arriving signals than a well-behaved workload should — "+
+						"a wait may be missing, or a sender is not stopping; nothing is dropped, but "+
+						"the run will fail if the carry grows too large to fit",
+					"count", len(pending), "typical_limit", v1.MaxPendingSignals)
+			}
 		}
 	}
 

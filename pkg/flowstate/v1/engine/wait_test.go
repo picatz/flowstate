@@ -1,6 +1,8 @@
 package engine_test
 
 import (
+	"fmt"
+
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
 	"time"
@@ -638,6 +640,118 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"],
 		"the resumed run never got past the gate it had already been approved through")
+}
+
+// TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound is #1013's
+// regression test.
+//
+// `FlowstateServer.Signal` returns success once Temporal has accepted a
+// delivery — the sender's promise that the run will see it is made at that
+// instant, not later. Before this fix, [drainSignals] stopped carrying once
+// [v1.MaxPendingSignals] were already pending and silently discarded the rest
+// at the Continue-As-New that followed, so a sender holding that success
+// response had no way to learn their delivery never reached the workflow. The
+// carry bound was right; making its overflow invisible was the bug.
+//
+// This sends more than [v1.MaxPendingSignals] deliveries for one name before
+// the run ever reaches a step that could consume any of them — forcing
+// exactly the shape #1013 named: a Continue-As-New at the carry bound, with
+// every delivery already acknowledged. It checks the negative direction twice:
+// first that every one of them is still present, in order, with its own
+// payload and attested sender, in the state the suspending run carries — the
+// exact list [drainSignals] used to truncate — and second that a resumed run
+// actually consumes every one of them, so "carried" is not merely "present in
+// a struct nothing reads."
+func TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound(t *testing.T) {
+	t.Parallel()
+
+	const (
+		signalName = "deploy-approved"
+		overflow   = 10
+	)
+	total := v1.MaxPendingSignals + overflow
+
+	items := make([]any, total)
+	for i := range items {
+		items[i] = fmt.Sprintf("item-%d", i)
+	}
+
+	spec := &v1.Workflow{
+		Name: "many-acknowledged-signals",
+		Steps: []*v1.Node{
+			logStep("one", "1"),
+			{
+				Id: "each",
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:    v1.NewLiteralList(items...),
+					Iterator: "item",
+					Body:     []*v1.Node{signalStep("approval", signalName, 0)},
+				}},
+			},
+		},
+	}
+
+	// One step of budget suspends the run after `one` and before the loop ever
+	// reads the channel, so every delivery below is acknowledged and buffered,
+	// none of them consumed, by the time Continue-As-New's own drain runs.
+	first := newWaitEnv(t)
+	first.RegisterDelayedCallback(func() {
+		for i := 0; i < total; i++ {
+			first.SignalWorkflow(signalName, testSignalDelivery(
+				fmt.Sprintf("approver-%d@example.com", i),
+				map[string]*v1.Value{"approved": v1.NewLiteral(true), "seq": v1.NewLiteral(int64(i))}))
+		}
+	}, 0)
+
+	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
+	require.True(t, first.IsWorkflowCompleted())
+
+	err := first.GetWorkflowError()
+	require.Error(t, err, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continueAsNew)
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried),
+		"could not read the state the suspended run carried")
+
+	// The direct regression check: every acknowledged delivery is in the carry,
+	// in the order it arrived, none silently kept as "the oldest" at the
+	// expense of the rest.
+	require.Len(t, carried.GetPendingSignals(), total,
+		"an acknowledged delivery beyond the old carry bound was silently dropped rather than carried")
+	for i, pending := range carried.GetPendingSignals() {
+		require.Equal(t, signalName, pending.GetName())
+		require.Equal(t, fmt.Sprintf("approver-%d@example.com", i), pending.GetSender().GetIdentity().GetSubject(),
+			"delivery %d's attested sender did not survive the carry, or the carry reordered deliveries", i)
+	}
+
+	// StepsBudget is carried forward unchanged by default, and this run needs
+	// only two more steps of budget than [v1.MaxPendingSignals] left one for —
+	// zero asks the interpreter for its own default (200), comfortably more
+	// than this loop's iterations plus the step before it.
+	carried.StepsBudget = 0
+
+	outputs, _ := resumeToCompletion(t, &carried)
+
+	loop := outputs.GetStepValues()["each"]
+	require.NotNil(t, loop, "the loop never produced results, so consuming the carry was not tested")
+
+	results := loop.GetNamedValues()["results"].GetLiteral().GetListValue().GetValues()
+	require.Len(t, results, total,
+		"the resumed run did not consume every delivery it was carrying — some were acknowledged and never observed")
+
+	for i, result := range results {
+		var reached bool
+		for _, entry := range result.GetMapValue().GetEntries() {
+			if entry.GetKey().GetStringValue() == "approval" {
+				reached = true
+			}
+		}
+		require.True(t, reached, "iteration %d never saw its carried approval", i)
+	}
 }
 
 // TestPendingSignalWithoutSenderResumesAsUnattested is the old-writer,

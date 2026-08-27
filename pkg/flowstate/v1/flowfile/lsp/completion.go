@@ -172,6 +172,10 @@ var dslKeys = map[string][]dslKey{
 			"Only a task step schedules the one activity this bounds. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
 			"`wait_until:`, `wait_for_signal:` and `value:` are refused: each either schedules zero or more of something else, or nothing " +
 			"at all, so put `timeout:` on the steps inside the body that need it instead."},
+		{name: "total_timeout", detail: "duration", docs: "Bounds the step across *every* attempt and every wait between them, written as `30s`, `5m`, or `1h`: the wall-clock budget for the whole retried step, where `timeout:` bounds one attempt inside it.\n\n" +
+			"Write it when the deadline is what matters — an SLA is ten minutes however many tries that is, not an attempt count computed backwards from a backoff curve. A step declaring none takes the engine's default overall budget, so a step is bounded across its attempts either way; this key is how an author says by how much.\n\n" +
+			"A declared value is honoured exactly. The engine widens its default overall budget to fit `timeout:` multiplied by the attempts allowed, and writing this key suppresses that widening — a budget the engine silently extends is not a budget. It may not be shorter than `timeout:`, since one that expires inside the first attempt allows none.\n\n" +
+			"Refused on the same step kinds `timeout:` is refused on, for the same reason: they schedule no single activity for either clock to bound."},
 		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults.\n\n" +
 			"Only a task step schedules the one activity this re-runs. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
 			"`wait_until:`, `wait_for_signal:` and `value:` are refused for the same reason `timeout:` is: put `retry:` on the steps inside " +
@@ -1194,18 +1198,19 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks 
 	return items
 }
 
-// stepKeyCandidates is dslCandidates("steps", ...), minus timeout and retry
-// once the step at the cursor has already committed to a kind that refuses
-// both.
+// stepKeyCandidates is dslCandidates("steps", ...), minus timeout,
+// total_timeout and retry once the step at the cursor has already committed to
+// a kind that refuses all three.
 //
-// checkPolicyPlacement (flowfile/parse_wait.go) refuses timeout:/retry: on
+// checkPolicyPlacement (flowfile/parse_wait.go) refuses
+// timeout:/total_timeout:/retry: on
 // every step kind but a task, because only a task's arm ever reads a
 // StepPolicy — so once current.kindKey names one of those kinds,
-// recommending either key is completeAt actively suggesting syntax its own
+// recommending any of them is completeAt actively suggesting syntax its own
 // diagnostic then refuses. current is nil (no kind chosen yet, or not inside
 // a step at all) and current.kindKey == "" (a task, or a kind not decided
 // yet) both still offer the full menu: both are exactly the cases where
-// timeout:/retry: are legal or might become so.
+// all three are legal or might become so.
 func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) []lsp.CompletionItem {
 	if current == nil || current.kindKey == "" {
 		return dslCandidates("steps", prefix, replace)
@@ -1214,7 +1219,7 @@ func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) [
 	all := dslCandidates("steps", prefix, replace)
 	items := make([]lsp.CompletionItem, 0, len(all))
 	for _, item := range all {
-		if item.Label == "timeout" || item.Label == "retry" {
+		if item.Label == "timeout" || item.Label == "total_timeout" || item.Label == "retry" {
 			continue
 		}
 		items = append(items, item)

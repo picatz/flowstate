@@ -1705,6 +1705,22 @@ message StepPolicy {
   // best-effort work expressible: a notification that could not be delivered
   // should not abandon the workload that succeeded.
   bool continue_on_error = 3;
+
+  // TotalTimeout bounds the step across every attempt and every wait between
+  // them: the wall-clock budget the whole retried step gets, where Timeout
+  // bounds one attempt inside it.
+  //
+  // It sits here rather than in RetryPolicy because the bound it names applies
+  // to a step that declares no retry at all — a single long attempt is already
+  // cut at the engine's default overall budget. Spelling it under Retry would
+  // claim the bound exists only when retrying does, which is false of the
+  // mechanism it maps to.
+  //
+  // An explicit value is honoured exactly. The engine widens its default
+  // overall budget when a declared Timeout multiplied by the attempts allowed
+  // would not fit inside it; a value written here suppresses that widening,
+  // because a budget the engine silently extends is not a budget.
+  google.protobuf.Duration total_timeout = 4 [(buf.validate.field).duration = {gt: {}}];
 }
 
 // RetryPolicy describes how a failed step attempt is retried.

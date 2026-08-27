@@ -269,6 +269,17 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			}
 			step = append(step, yaml.MapItem{Key: "timeout", Value: durationToYAML(timeout)})
 		}
+		// Written after `timeout:` and before `retry:`, which is where the parser
+		// lists it and where an author reads it: the two clocks together, then
+		// what happens between them.
+		if total := policy.GetTotalTimeout(); total != nil {
+			if subject, ok := unrepresentablePolicySubject(node); ok {
+				return nil, fmt.Errorf(
+					"step %q is %s and cannot carry `total_timeout:`: it schedules no single "+
+						"activity for the key to bound", node.GetId(), subject)
+			}
+			step = append(step, yaml.MapItem{Key: "total_timeout", Value: durationToYAML(total)})
+		}
 		if retry := policy.GetRetry(); retry != nil {
 			if subject, ok := unrepresentablePolicySubject(node); ok {
 				return nil, fmt.Errorf(

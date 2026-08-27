@@ -2501,8 +2501,23 @@ type StepPolicy struct {
 	// best-effort work expressible: a notification that could not be delivered
 	// should not abandon the workload that succeeded.
 	ContinueOnError bool `protobuf:"varint,3,opt,name=continue_on_error,json=continueOnError,proto3" json:"continue_on_error,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// TotalTimeout bounds the step across every attempt and every wait between
+	// them: the wall-clock budget the whole retried step gets, where Timeout
+	// bounds one attempt inside it.
+	//
+	// It sits here rather than in RetryPolicy because the bound it names applies
+	// to a step that declares no retry at all — a single long attempt is already
+	// cut at the engine's default overall budget. Spelling it under Retry would
+	// claim the bound exists only when retrying does, which is false of the
+	// mechanism it maps to.
+	//
+	// An explicit value is honoured exactly. The engine widens its default
+	// overall budget when a declared Timeout multiplied by the attempts allowed
+	// would not fit inside it; a value written here suppresses that widening,
+	// because a budget the engine silently extends is not a budget.
+	TotalTimeout  *durationpb.Duration `protobuf:"bytes,4,opt,name=total_timeout,json=totalTimeout,proto3" json:"total_timeout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StepPolicy) Reset() {
@@ -2554,6 +2569,13 @@ func (x *StepPolicy) GetContinueOnError() bool {
 		return x.ContinueOnError
 	}
 	return false
+}
+
+func (x *StepPolicy) GetTotalTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.TotalTimeout
+	}
+	return nil
 }
 
 // RetryPolicy describes how a failed step attempt is retried.
@@ -3104,12 +3126,13 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\rsource_digest\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\fsourceDigest\x1aQ\n" +
 	"\x0eArgumentsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xa8\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xf2\x01\n" +
 	"\n" +
 	"StepPolicy\x12=\n" +
 	"\atimeout\x18\x01 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\atimeout\x12/\n" +
 	"\x05retry\x18\x02 \x01(\v2\x19.flowstate.v1.RetryPolicyR\x05retry\x12*\n" +
-	"\x11continue_on_error\x18\x03 \x01(\bR\x0fcontinueOnError\"\x92\x02\n" +
+	"\x11continue_on_error\x18\x03 \x01(\bR\x0fcontinueOnError\x12H\n" +
+	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\"\x92\x02\n" +
 	"\vRetryPolicy\x12*\n" +
 	"\fmax_attempts\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\vmaxAttempts\x12N\n" +
 	"\x10initial_interval\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\x0finitialInterval\x12?\n" +
@@ -3219,27 +3242,28 @@ var file_flowstate_v1_workflow_proto_depIdxs = []int32{
 	29, // 45: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
 	33, // 46: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
 	16, // 47: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
-	33, // 48: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	33, // 49: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
-	21, // 50: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	6,  // 51: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
-	31, // 52: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
-	36, // 53: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
-	23, // 54: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	31, // 55: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
-	25, // 56: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	31, // 57: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
-	31, // 58: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	7,  // 59: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
-	31, // 60: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
-	7,  // 61: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
-	7,  // 62: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
-	31, // 63: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	64, // [64:64] is the sub-list for method output_type
-	64, // [64:64] is the sub-list for method input_type
-	64, // [64:64] is the sub-list for extension type_name
-	64, // [64:64] is the sub-list for extension extendee
-	0,  // [0:64] is the sub-list for field type_name
+	33, // 48: flowstate.v1.StepPolicy.total_timeout:type_name -> google.protobuf.Duration
+	33, // 49: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	33, // 50: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
+	21, // 51: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	6,  // 52: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
+	31, // 53: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 54: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
+	23, // 55: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	31, // 56: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
+	25, // 57: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	31, // 58: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
+	31, // 59: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	7,  // 60: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
+	31, // 61: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
+	7,  // 62: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
+	7,  // 63: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
+	31, // 64: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	65, // [65:65] is the sub-list for method output_type
+	65, // [65:65] is the sub-list for method input_type
+	65, // [65:65] is the sub-list for extension type_name
+	65, // [65:65] is the sub-list for extension extendee
+	0,  // [0:65] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_workflow_proto_init() }

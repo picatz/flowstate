@@ -255,6 +255,37 @@ func TestDurableStepTimeoutMessage(t *testing.T) {
 		require.Contains(t, got.message, "every attempt together exceeded "+v1.DefaultScheduleToCloseTimeout.String())
 	})
 
+	t.Run("a schedule-to-close timeout names total_timeout:, not timeout:", func(t *testing.T) {
+		// The origin is per timeout type. Both arms named `timeout:` before
+		// `total_timeout:` existed, which told an operator to move the
+		// per-attempt bound to change a number the per-attempt bound does not
+		// set (#920).
+		err := temporal.NewTimeoutError(enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, nil)
+		policy := &v1.StepPolicy{TotalTimeout: durationpb.New(90 * time.Second)}
+
+		got, ok := durableStepTimeoutMessage(err, policy).(*durableStepTimeoutError)
+		require.True(t, ok)
+
+		require.Contains(t, got.message, "every attempt together exceeded 1m30s")
+		require.Contains(t, got.message, "the step's declared total_timeout:")
+		require.NotContains(t, got.message, "set timeout: on the step",
+			"the overall bound is not what timeout: sets, so naming it sends an operator to the wrong key")
+	})
+
+	t.Run("a widened overall bound says it was widened rather than claiming the default", func(t *testing.T) {
+		err := temporal.NewTimeoutError(enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, nil)
+		policy := &v1.StepPolicy{Timeout: durationpb.New(5 * time.Minute)}
+
+		got, ok := durableStepTimeoutMessage(err, policy).(*durableStepTimeoutError)
+		require.True(t, ok)
+
+		require.Contains(t, got.message, "every attempt together exceeded 25m0s",
+			"5m over the default five attempts widens the overall bound past the default")
+		require.Contains(t, got.message, "widened to fit the step's declared timeout:")
+		require.NotContains(t, got.message, "the step default",
+			"the number that fired is derived from the step's own timeout:, not from the default")
+	})
+
 	t.Run("a task's own classified failure is left alone", func(t *testing.T) {
 		err := activityError("log", v1.NewTaskError("log", v1.ErrorKindInvalidInput, errors.New("bad input")), false)
 

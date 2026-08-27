@@ -2,8 +2,9 @@ package flowstatev1
 
 import "fmt"
 
-// CheckPolicyPlacement refuses a workflow that sets `timeout:` or `retry:` on
-// a step kind that schedules no single activity for either key to act on —
+// CheckPolicyPlacement refuses a workflow that sets `timeout:`, `total_timeout:`
+// or `retry:` on a step kind that schedules no single activity for any of them to
+// act on —
 // including one nested inside a `call:`'s inlined callee, any number of calls
 // deep up to [MaxCallDepth].
 //
@@ -82,6 +83,10 @@ func CheckPolicyPlacement(wf *Workflow) error {
 						case policy.GetTimeout() != nil:
 							err = fmt.Errorf(
 								"step %q is %s: it schedules no single activity for `timeout:` to bound",
+								node.GetId(), subject)
+						case policy.GetTotalTimeout() != nil:
+							err = fmt.Errorf(
+								"step %q is %s: it schedules no single activity for `total_timeout:` to bound",
 								node.GetId(), subject)
 						case policy.GetRetry() != nil:
 							err = fmt.Errorf(

@@ -37,6 +37,14 @@ var grammarStepKeys = []string{
 	"if",
 	"vars",
 	"timeout",
+
+	// The step's other clock: the wall-time budget across every attempt, where
+	// `timeout` bounds one of them. A step key rather than a member of `retry`,
+	// because the bound binds a step that declares no retry at all — see
+	// [StepTimeoutsFor] — so it costs a plugin the task name on the same terms
+	// `timeout` and `retry` already do.
+	"total_timeout",
+
 	"retry",
 	"continue_on_error",
 

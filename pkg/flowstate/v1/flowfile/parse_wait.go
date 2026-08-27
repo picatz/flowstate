@@ -435,7 +435,16 @@ func (c *compiler) checkPolicyPlacement(step *v1.Node, fields *fieldSet, path st
 		return
 	}
 
-	for _, name := range []string{"timeout", "retry"} {
+	// `total_timeout:` is refused wherever `timeout:` is, for the same reason: a
+	// step kind that schedules no single activity has neither one attempt to
+	// bound nor a set of them to bound together. Its advice is derived from
+	// `timeout:`'s rather than written out a second time — seven near-identical
+	// sentences is how one rule with two spellings drifts.
+	if a, ok := advice["timeout"]; ok {
+		advice["total_timeout"] = strings.ReplaceAll(a, "put `timeout:`", "put `total_timeout:`")
+	}
+
+	for _, name := range []string{"timeout", "total_timeout", "retry"} {
 		f, found := fields.get(name)
 		if !found {
 			continue

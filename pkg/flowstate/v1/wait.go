@@ -26,31 +26,50 @@ import (
 // sender could report that a wait they timed out had in fact succeeded.
 const TimedOutOutput = "timed_out"
 
-// MaxPendingSignals bounds how many early-arriving signals a run carries across
-// Continue-As-New.
+// MaxPendingSignals names how many early-arriving signals a well-behaved run
+// should ever be carrying across Continue-As-New at once.
 //
-// The names come from the specification, so their variety is bounded by the
-// workload — but nothing stops a sender delivering the same signal a million
-// times, and every one of them would otherwise be carried in the run's state.
-// Beyond this many the oldest are kept and the rest dropped, because the
-// earliest deliveries are the ones a workload was waiting for: a
-// `wait_for_signal:` consumes one and the first to arrive is the one that
-// approved it, and a `wait_for_signals:` drains oldest-first, so in both
-// spellings what is kept is what would have been read next.
-//
-// That second clause is here because the first one alone stopped being the
-// whole reason when [SignalBatch] landed. A batch consumes many, not one; what
-// survives from the original argument is the *order*, not the count.
+// It is not a hard cap: [engine]'s drainSignals carries every acknowledged
+// delivery unconditionally, however many accumulate, because a sender who was
+// told a signal was delivered must never find out later that it silently
+// wasn't (#1013). Beyond this many, the honest reading is not "too many to
+// keep" but "something is wrong" — a wait that should have consumed them is
+// missing, or a sender is retrying into a run that already answered — and
+// crossing it is logged for an operator to act on. The bound that actually
+// protects a run is [CheckRunStateSize], weighed at every Continue-As-New: a
+// carry too large to fit fails the run loudly rather than being silently
+// truncated, which is why [MaxSignalPayloadBytes] bounds what one delivery can
+// weigh — with the count itself unbounded, a payload's size is what stands
+// between an ordinary backlog and one that blows the carry.
 const MaxPendingSignals = 128
 
 // MaxSignalBatch is the ceiling on how many deliveries one `wait_for_signals:`
 // takes, and the value a [SignalBatch] with no `max_batch:` of its own uses.
 //
-// It is [MaxPendingSignals] rather than a number of its own, because the two
-// bound the same resource seen from two sides: what a run may carry across a
-// Continue-As-New, and what a run may take off a channel in one step. A batch
-// larger than the carry would be a step that can read more than a suspend can
-// preserve, which is a bound that disagrees with itself.
+// # It is a real cap, where [MaxPendingSignals] is a threshold
+//
+// The two are the same number and they are not the same kind of thing, which is
+// worth stating because the number being shared invites reading them as one
+// rule. A carry is *not* count-bounded — every acknowledged delivery is carried
+// however many accumulate, because dropping one would unsay a delivery a sender
+// was already told about — so [MaxPendingSignals] is the size at which a backlog
+// stops looking ordinary and starts looking like a fault, logged for an operator
+// rather than enforced. What protects that path is bytes, at
+// [CheckRunStateSize].
+//
+// A drain is the other shape. It reads deliveries into memory and records them
+// as one step's outputs in one moment, and how many arrive is the far side's
+// choice — so this one is enforced, on the count, because the count is the
+// resource the peer controls and the multiplication a burst performs. Bytes are
+// bounded underneath it by [MaxSignalPayloadBytes] per delivery, already at
+// admission, so a bounded count bounds the whole.
+//
+// Sharing the number is then a statement rather than a coincidence: the point at
+// which a carry is worth an operator's attention is the same point at which a
+// single step should stop reading, and a drain that took more than that would be
+// manufacturing in one step the very backlog the other constant exists to
+// report. What is left past it stays on the channel for the next drain, so the
+// cap costs an iteration and never a delivery.
 const MaxSignalBatch = MaxPendingSignals
 
 // DeliveriesOutput is where a batch's deliveries land:

@@ -175,14 +175,16 @@ const (
 	// payload where it is chosen puts the refusal on the party who can act on
 	// it, at the moment they act.
 	//
-	// The arithmetic this buys, stated rather than implied: [MaxPendingSignals]
-	// alone caps a hostile carry at 128 payloads of whatever Temporal's blob
-	// limit admits — hundreds of mebibytes attempted against a two-mebibyte
-	// budget. With this bound the worst-case product is 128 × 64 KiB = 8 MiB,
-	// still more than a run can carry, so [CheckRunStateSize] remains the
-	// backstop for a carry that is pathological in *count* — but a realistic
-	// carry of a handful of maximal payloads now fits, and no single sender's
-	// single send can be the surprise.
+	// The arithmetic this buys, stated rather than implied: an acknowledged
+	// signal is carried unconditionally, however many accumulate (see
+	// [MaxPendingSignals]), so nothing here caps the *count* — only
+	// [CheckRunStateSize] does, by failing the run once the carry no longer
+	// fits. What this bound caps is the other factor in that product: without
+	// it, a sender's payload could be whatever Temporal's own blob limit
+	// admits, and one oversized delivery — not a flood, a single send — could
+	// be most of a two-mebibyte budget by itself. At 64 KiB a carry has to
+	// genuinely grow in count before it is pathological, and a realistic
+	// backlog of ordinary payloads fits with room to spare.
 	//
 	// 64 KiB is generous for what a payload is: a signal's payload becomes the
 	// waiting step's outputs — an approval, an entity mutation, a callback's

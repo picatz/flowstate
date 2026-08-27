@@ -85,6 +85,7 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				Vars:      map[string]*v1.Value{"greeting": v1.NewValue("hi")},
 				Policy: &v1.StepPolicy{
 					Timeout:         durationpb.New(30_000_000_000),
+					TotalTimeout:    durationpb.New(300_000_000_000),
 					ContinueOnError: true,
 					Retry: &v1.RetryPolicy{
 						MaxAttempts:        3,
@@ -1330,6 +1331,7 @@ steps:
     vars:
       greeting: hi
     timeout: 30s
+    total_timeout: 5m
     continue_on_error: true
     retry:
       attempts: 3

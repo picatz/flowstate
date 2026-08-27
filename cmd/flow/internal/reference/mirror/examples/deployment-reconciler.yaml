@@ -15,13 +15,11 @@
 # attested *write* to the state this run holds — accepted or refused at the
 # `signals:` gate, queued, and consumed exactly once in arrival order — so
 # "never delivered" is a refusal the sender saw, not a loss the run absorbs,
-# and two changes sent in order apply in order. One bound qualifies that: a run
-# carries at most 128 undrained deliveries (`MaxPendingSignals`), and beyond it
-# the newest are dropped *after* the server acknowledged them (#1013) — so the
-# write guarantee holds for senders that stay under the carry bound, which an
-# authorized spec-changer at any human or controller cadence does, and does not
-# hold against an authorized sender flooding faster than the run consumes. The
-# run is the spec store here,
+# and two changes sent in order apply in order, however many accumulate
+# undrained: an acknowledged delivery is carried unconditionally (#1013), never
+# silently dropped, and the run instead fails loudly if a genuinely unbounded
+# flood ever grows the carry past what it can fit in state. The run is the
+# spec store here,
 # the same durable-entity shape `entity-order` shows; the control plane owns
 # only the *observed* side (`replicas`, `retired`), which is why retirement is
 # read from it every pass and a spec change is not. A deployment whose desired

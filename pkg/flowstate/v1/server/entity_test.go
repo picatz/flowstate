@@ -444,8 +444,8 @@ func TestEntityStateTruncationReachesTheClientThroughGet(t *testing.T) {
 // neither. `drainSignals` carries everything already pending forward
 // unconditionally and only *adds* from the channels the specification declares,
 // so nothing ever removes an entry no `wait_for_signal:` will consume: it holds
-// one of [v1.MaxPendingSignals] slots and its share of the state budget for the
-// entity's whole life.
+// its share of the state budget [v1.CheckRunStateSize] weighs for the entity's
+// whole life.
 //
 // The far more common cause is a misspelling, and the run created by one would
 // look exactly like a working entity — running, addressable, accumulating
