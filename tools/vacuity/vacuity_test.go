@@ -930,6 +930,92 @@ func TestShadowsPanic(t *testing.T) {
 	panic("this returns")
 }
 `)), "a local func named panic was read as the builtin that fails a test")
+
+	// A *parameter* binds the name too, and this one is the expensive shape:
+	// the helper reads as asserting, and the propagation then marks every test
+	// that calls it as asserting — so one un-shadowed parameter hides an
+	// arbitrary number of vacuous tests, not just its own function.
+	findings, _ = analyzedFile(t, "shadowed_param_test.go", `package fixture
+
+import (
+	"testing"
+
+	req "github.com/stretchr/testify/require"
+)
+
+type loader struct{}
+
+func (l loader) Load() int { return 1 }
+
+var _ = req.NotZero
+
+func helper(req loader) {
+	_ = req.Load()
+}
+
+func TestThroughAShadowedParameter(t *testing.T) {
+	helper(loader{})
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a helper whose parameter shadows the testify alias was read as asserting, so "+
+			"every test calling it was too")
+
+	// A *receiver* binds it too, which is the third place a signature does and
+	// the one that took a second fixture to pin: the first called nothing
+	// through the shadowed name, so it could not tell the two answers apart.
+	// Here the method's body calls `require.Load()` — a method on its own
+	// receiver, in a file where `require` is testify.
+	findings, _ = analyzedFile(t, "shadowed_recv_test.go", `package fixture
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+type loader struct{}
+
+func (l loader) Load() int { return 1 }
+
+var _ = require.NotZero
+
+func (require loader) check() {
+	_ = require.Load()
+}
+
+func TestThroughAShadowedReceiver(t *testing.T) {
+	loader{}.check()
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a receiver shadowing the testify import was not counted as binding the name, so "+
+			"a call on it read as an assertion")
+
+	// And a *type* parameter, which is the fifth place a signature binds and
+	// the one the first version of this fix was still short by: in a generic
+	// helper `panic(x)` is a conversion to the type parameter, and it returns.
+	//
+	// Called without explicit instantiation on purpose. Written `convert[string]("x")`
+	// the callee is an IndexExpr rather than an identifier, so the propagation
+	// never follows it — and the fixture then reports the test unasserted
+	// whether the fix is present or not, which is this tool's own subject
+	// wearing its own clothes. The mutation is what said so.
+	findings, _ = analyzedFile(t, "shadowed_typeparam_test.go", `package fixture
+
+import "testing"
+
+func convert[panic ~string](x string) {
+	_ = panic(x)
+}
+
+func TestThroughAShadowedTypeParameter(t *testing.T) {
+	convert("x")
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a type parameter named panic was not counted as binding the name, so a "+
+			"conversion read as the builtin that fails a test")
 }
 
 // TestAnAliasReachesTheWholePackage is Go's scoping, which is not the file's.

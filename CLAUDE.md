@@ -705,6 +705,17 @@ have to be tuned around.
 Prefer `go run ./tools/whatever` over `go build`, and if you must build, send
 it somewhere outside the tree with `-o`.
 
+The list of magic numbers is measured rather than remembered, which is the part
+worth keeping. The first version was ELF, Mach-O and PE — the three a person
+thinks of — and it left five of Go's own targets (wasm, AIX, and Plan 9's three
+architectures, whose magic is per-architecture) able to commit a binary straight
+past a check named for refusing exactly that. `make check` sets
+`ARTIFACT_SWEEP=1`, which cross-builds one program per entry in `go tool dist
+list` and fails if any of them produces something the list does not know. The PR
+lane does not set it: that sweep costs a couple of minutes on a cold cache to
+guard an event that happens when Go adds a port, while the tracked-file gate it
+calibrates runs in milliseconds on every push.
+
 ## Test the traversal, not just the step
 
 The same mistake has a second shape. Where the tenancy tests covered one direction
