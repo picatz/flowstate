@@ -2,7 +2,9 @@ package flowtest
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -51,189 +53,172 @@ var varName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // checkVars validates the block itself: bounded, CEL-addressable names, and
 // literal values all the way down.
-func checkVars(vars map[string]any) error {
+//
+// Every name is judged rather than the first bad one, and they are judged in
+// sorted order, because a map's iteration order is not something a report may
+// depend on — the rule [checkScriptedIdentity] already states for claims.
+func checkVars(p *problems, vars map[string]any) {
+	block := at("vars")
 	if len(vars) > MaxVarsPerFile {
-		return fmt.Errorf("this file declares %d vars, more than the limit of %d", len(vars), MaxVarsPerFile)
+		p.report(site{at: block}, "this file declares %d vars, more than the limit of %d", len(vars), MaxVarsPerFile)
 	}
-	for name, value := range vars {
+	for _, name := range slices.Sorted(maps.Keys(vars)) {
 		if !varName.MatchString(name) {
-			return fmt.Errorf("vars.%s: a var's name must be a CEL identifier (letters, digits, underscores, "+
-				"not starting with a digit), or `vars.%s` could never be read back", name, name)
+			p.reportKey(site{at: block.field(name)},
+				"vars.%s: a var's name must be a CEL identifier (letters, digits, underscores, "+
+					"not starting with a digit), or `vars.%s` could never be read back", name, name)
 		}
-		if err := checkNoExpressions("vars."+name, value, 0); err != nil {
-			return err
-		}
+		checkNoExpressions(p, site{at: block.field(name)}, "vars."+name, vars[name], 0)
 	}
-	return nil
 }
 
 // resolveVars substitutes every whole-value `${vars.x}` reference in the
 // file's fixture positions, in place, before tables expand and before
 // `defaults:` is validated — so an inherited value resolves once and the
 // fixture rule checks what the run will actually see.
-func (f *File) resolveVars() error {
+//
+// A reference that cannot resolve is reported and the walk carries on: the file
+// is refused either way, so nothing downstream reads the half-substituted
+// value, and an author gets every bad reference in one pass rather than one per
+// run.
+//
+// Each position is named twice over, and deliberately: `where` is the prose a
+// reader is given and `spot` is where the value was written. They are built one
+// line apart at every call so a diagnostic cannot come to name one place and
+// point at another. The two spellings differ where the prose already had its
+// own (`secrets["vault:prod/db"]` quotes a key that holds a colon), which is
+// the ambiguity [loc] exists to keep out of the addressing.
+func (f *File) resolveVars(p *problems) {
 	// With no vars, a `${vars.x}` reference is a mistake worth naming rather
 	// than a string worth passing through; the walk below answers that with
 	// "names no var" either way, so it runs regardless.
 	for i := range f.Tests {
-		if err := resolveVarsInTest(fmt.Sprintf("tests[%d]", i), &f.Tests[i], f.Vars); err != nil {
-			return err
-		}
+		resolveVarsInTest(p, fmt.Sprintf("tests[%d]", i), at("tests").item(i), &f.Tests[i], f.Vars)
 	}
 	if d := f.Defaults; d != nil {
-		if err := resolveVarsInString("defaults.workflow", &d.Workflow, f.Vars); err != nil {
-			return err
-		}
-		if err := resolveVarsInMap("defaults.inputs", d.Inputs, f.Vars); err != nil {
-			return err
-		}
-		if err := resolveVarsInIdentity("defaults.sender", d.Sender, f.Vars); err != nil {
-			return err
-		}
+		base := at("defaults")
+		resolveVarsInString(p, "defaults.workflow", base.field("workflow"), &d.Workflow, f.Vars)
+		resolveVarsInMap(p, "defaults.inputs", base.field("inputs"), d.Inputs, f.Vars)
+		resolveVarsInIdentity(p, "defaults.sender", base.field("sender"), d.Sender, f.Vars)
 		// defaults.stubs and defaults.check: deliberately untouched, the
 		// stub/claim halves of the asymmetry above.
 	}
-	return nil
 }
 
 // resolveVarsInTest covers one case's fixture positions — and its rows',
 // because this runs before [expandTableEntries] and a row is a case.
-func resolveVarsInTest(where string, test *Test, vars map[string]any) error {
-	if err := resolveVarsInString(where+".workflow", &test.Workflow, vars); err != nil {
-		return err
-	}
-	if err := resolveVarsInMap(where+".inputs", test.Inputs, vars); err != nil {
-		return err
-	}
-	for name := range test.Secrets {
+func resolveVarsInTest(p *problems, where string, spot loc, test *Test, vars map[string]any) {
+	resolveVarsInString(p, where+".workflow", spot.field("workflow"), &test.Workflow, vars)
+	resolveVarsInMap(p, where+".inputs", spot.field("inputs"), test.Inputs, vars)
+	for _, name := range slices.Sorted(maps.Keys(test.Secrets)) {
 		value := test.Secrets[name]
-		if err := resolveVarsInString(fmt.Sprintf("%s.secrets[%q]", where, name), &value, vars); err != nil {
-			return err
-		}
+		resolveVarsInString(p, fmt.Sprintf("%s.secrets[%q]", where, name),
+			spot.field("secrets").field(name), &value, vars)
 		test.Secrets[name] = value
 	}
 	if trigger := test.Trigger; trigger != nil {
-		for field, target := range map[string]*string{
-			".trigger.webhook": &trigger.Webhook, ".trigger.payload": &trigger.Payload,
-			".trigger.kind": &trigger.Kind, ".trigger.name": &trigger.Name,
-			".trigger.principal": &trigger.Principal, ".trigger.delivery_id": &trigger.DeliveryID,
+		for _, field := range []struct {
+			name   string
+			target *string
+		}{
+			{"webhook", &trigger.Webhook}, {"payload", &trigger.Payload},
+			{"kind", &trigger.Kind}, {"name", &trigger.Name},
+			{"principal", &trigger.Principal}, {"delivery_id", &trigger.DeliveryID},
 		} {
-			if err := resolveVarsInString(where+field, target, vars); err != nil {
-				return err
-			}
+			resolveVarsInString(p, where+".trigger."+field.name,
+				spot.field("trigger").field(field.name), field.target, vars)
 		}
 	}
 	for i := range test.Signals {
 		signal := &test.Signals[i]
 		prefix := fmt.Sprintf("%s.signals[%d]", where, i)
-		if err := resolveVarsInString(prefix+".name", &signal.Name, vars); err != nil {
-			return err
-		}
-		if err := resolveVarsInMap(prefix+".payload", signal.Payload, vars); err != nil {
-			return err
-		}
-		if err := resolveVarsInIdentity(prefix+".sender", signal.Sender, vars); err != nil {
-			return err
-		}
+		scripted := spot.field("signals").item(i)
+		resolveVarsInString(p, prefix+".name", scripted.field("name"), &signal.Name, vars)
+		resolveVarsInMap(p, prefix+".payload", scripted.field("payload"), signal.Payload, vars)
+		resolveVarsInIdentity(p, prefix+".sender", scripted.field("sender"), signal.Sender, vars)
 	}
-	if err := resolveVarsInIdentity(where+".starter", test.Starter, vars); err != nil {
-		return err
-	}
-	if err := resolveVarsInMap(where+".expect.outputs", test.Expect.Outputs, vars); err != nil {
-		return err
-	}
-	if err := resolveVarsInMap(where+".expect.inputs", test.Expect.Inputs, vars); err != nil {
-		return err
-	}
+	resolveVarsInIdentity(p, where+".starter", spot.field("starter"), test.Starter, vars)
+	resolveVarsInMap(p, where+".expect.outputs", spot.field("expect").field("outputs"), test.Expect.Outputs, vars)
+	resolveVarsInMap(p, where+".expect.inputs", spot.field("expect").field("inputs"), test.Expect.Inputs, vars)
 	// expect.check: a claim position; `vars.` binds at evaluation instead.
 	// stubs: the run's language; see the package comment above.
 	for i := range test.Cases {
-		if err := resolveVarsInTest(fmt.Sprintf("%s.cases[%d]", where, i), &test.Cases[i], vars); err != nil {
-			return err
-		}
+		resolveVarsInTest(p, fmt.Sprintf("%s.cases[%d]", where, i), spot.field("cases").item(i),
+			&test.Cases[i], vars)
 	}
-	return nil
 }
 
-func resolveVarsInIdentity(where string, identity *ScriptedIdentity, vars map[string]any) error {
+func resolveVarsInIdentity(p *problems, where string, spot loc, identity *ScriptedIdentity, vars map[string]any) {
 	if identity == nil {
-		return nil
+		return
 	}
-	for field, target := range map[string]*string{
-		".subject": &identity.Subject, ".issuer": &identity.Issuer, ".namespace": &identity.Namespace,
+	for _, field := range []struct {
+		name   string
+		target *string
+	}{
+		{"subject", &identity.Subject}, {"issuer", &identity.Issuer}, {"namespace", &identity.Namespace},
 	} {
-		if err := resolveVarsInString(where+field, target, vars); err != nil {
-			return err
-		}
+		resolveVarsInString(p, where+"."+field.name, spot.field(field.name), field.target, vars)
 	}
-	for name := range identity.Claims {
+	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
 		value := identity.Claims[name]
-		if err := resolveVarsInString(fmt.Sprintf("%s.claims[%q]", where, name), &value, vars); err != nil {
-			return err
-		}
+		resolveVarsInString(p, fmt.Sprintf("%s.claims[%q]", where, name),
+			spot.field("claims").field(name), &value, vars)
 		identity.Claims[name] = value
 	}
-	return nil
 }
 
 // resolveVarsInMap substitutes through one decoded YAML tree, in place at the
 // top level and by rebuild below it. Depth is bounded for the reason every
 // walk here is ([maxDefaultsDepth]): the tree is an outside party's.
-func resolveVarsInMap(where string, m map[string]any, vars map[string]any) error {
-	for key, value := range m {
-		resolved, err := resolveVarsInValue(fmt.Sprintf("%s.%s", where, key), value, vars, 0)
-		if err != nil {
-			return err
-		}
-		m[key] = resolved
+func resolveVarsInMap(p *problems, where string, spot loc, m map[string]any, vars map[string]any) {
+	for _, key := range slices.Sorted(maps.Keys(m)) {
+		m[key] = resolveVarsInValue(p, fmt.Sprintf("%s.%s", where, key), spot.field(key), m[key], vars, 0)
 	}
-	return nil
 }
 
-func resolveVarsInValue(where string, value any, vars map[string]any, depth int) (any, error) {
+// resolveVarsInValue returns the value with every reference in it resolved, or
+// the value untouched where one could not be: a refused reference leaves what
+// the author wrote in place, since the document is refused and nothing will
+// read it.
+func resolveVarsInValue(p *problems, where string, spot loc, value any, vars map[string]any, depth int) any {
 	if depth > maxDefaultsDepth {
-		return nil, fmt.Errorf("%s: nests more than %d levels deep", where, maxDefaultsDepth)
+		p.report(site{at: spot}, "%s: nests more than %d levels deep", where, maxDefaultsDepth)
+
+		return value
 	}
 	switch v := value.(type) {
 	case string:
-		return substituteVar(where, v, vars)
+		return substituteVar(p, where, spot, v, vars)
 	case map[string]any:
-		for key, inner := range v {
-			resolved, err := resolveVarsInValue(fmt.Sprintf("%s.%s", where, key), inner, vars, depth+1)
-			if err != nil {
-				return nil, err
-			}
-			v[key] = resolved
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			v[key] = resolveVarsInValue(p, fmt.Sprintf("%s.%s", where, key), spot.field(key), v[key], vars, depth+1)
 		}
-		return v, nil
+
+		return v
 	case []any:
 		for i, inner := range v {
-			resolved, err := resolveVarsInValue(fmt.Sprintf("%s[%d]", where, i), inner, vars, depth+1)
-			if err != nil {
-				return nil, err
-			}
-			v[i] = resolved
+			v[i] = resolveVarsInValue(p, fmt.Sprintf("%s[%d]", where, i), spot.item(i), inner, vars, depth+1)
 		}
-		return v, nil
+
+		return v
 	default:
-		return value, nil
+		return value
 	}
 }
 
-func resolveVarsInString(where string, target *string, vars map[string]any) error {
-	resolved, err := substituteVar(where, *target, vars)
-	if err != nil {
-		return err
-	}
+func resolveVarsInString(p *problems, where string, spot loc, target *string, vars map[string]any) {
+	resolved := substituteVar(p, where, spot, *target, vars)
 	// A var holding a non-string cannot land in a position typed string: a
 	// path, a subject, a signal name. Naming the type beats a later
 	// far-from-here failure about a path that is a number.
-	text, ok := resolved.(string)
-	if !ok {
-		return fmt.Errorf("%s references a var holding %T, and this position takes a string", where, resolved)
+	text, isText := resolved.(string)
+	if !isText {
+		p.report(site{at: spot}, "%s references a var holding %T, and this position takes a string", where, resolved)
+
+		return
 	}
 	*target = text
-	return nil
 }
 
 // substituteVar resolves one string: a whole-value `${vars.x}` becomes the
@@ -242,18 +227,25 @@ func resolveVarsInString(where string, target *string, vars map[string]any) erro
 // substitution would be a template language this file deliberately is not;
 // every other string passes through untouched, including the `${...}`
 // expressions stub positions legitimately carry.
-func substituteVar(where, s string, vars map[string]any) (any, error) {
+//
+// A refused reference resolves to the text as written, so that the caller's
+// own type check does not then report a second problem about the same string.
+func substituteVar(p *problems, where string, spot loc, s string, vars map[string]any) any {
 	if match := varReference.FindStringSubmatch(s); match != nil {
 		value, declared := vars[match[1]]
 		if !declared {
-			return nil, fmt.Errorf("%s references vars.%s, and this file's `vars:` names no %q",
+			p.report(site{at: spot}, "%s references vars.%s, and this file's `vars:` names no %q",
 				where, match[1], match[1])
+
+			return s
 		}
-		return value, nil
+
+		return value
 	}
 	if strings.Contains(s, "${vars.") {
-		return nil, fmt.Errorf("%s mixes text with a vars reference (%q); a reference stands alone as the "+
+		p.report(site{at: spot}, "%s mixes text with a vars reference (%q); a reference stands alone as the "+
 			"whole value — build the combined text in the workflow, or state it literally", where, s)
 	}
-	return s, nil
+
+	return s
 }
