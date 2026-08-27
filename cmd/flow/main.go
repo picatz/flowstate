@@ -1067,7 +1067,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c, err := temporalclient.Dial(cmd.Context(), cfg)
+	// The namespace comes back from the dial rather than from a second
+	// cfg.Options() further down, and that is a correctness requirement rather
+	// than a tidiness one. Options reads the environment and a TOML file every
+	// time it is called, so a second call — separated from this one by plugin
+	// subprocesses starting, secret providers loading and a webhook receiver
+	// compiling Flowfiles — can answer differently, and everything below would
+	// then name a namespace this client is not connected to. See
+	// [temporalclient.DialWithNamespace].
+	c, temporalNamespace, err := temporalclient.DialWithNamespace(cmd.Context(), cfg)
 	if err != nil {
 		return err
 	}
@@ -1109,6 +1117,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
 	}
 
+	// Whether this deployment routes tenants onto Temporal namespaces of their
+	// own, decided once and read by both branches below.
+	//
+	// One boolean rather than two conditions that happen to be complements,
+	// because something below depends on their being exhaustive: every server
+	// this function builds must be able to name the Temporal namespace it reads
+	// from, and it gets that from exactly one of the two — WithTemporalNamespace
+	// when there is no pool, the pool itself when there is. Written as two
+	// independent conditions, that completeness is an accident a later edit can
+	// take away without touching either site, and the deployment that fell
+	// between them would build a server that cannot answer. See
+	// [server.FlowstateServer] and TestEveryDeploymentShapeCanNameItsTemporalNamespace.
+	pooled := policy != nil && policy.Tenancy != nil
+
 	// Search attributes are registered — idempotently, once, before the server
 	// starts serving — only in the single-namespace configuration. A trust
 	// policy that maps tenants onto several Temporal namespaces would need
@@ -1123,13 +1145,32 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// CreateSchedule, so a `temporal server start-dev` with no operator setup,
 	// or a production cluster where this identity lacks the operator role,
 	// starts and serves precisely as it always has.
-	if policy == nil || policy.Tenancy == nil {
-		opts, optsErr := cfg.Options()
-		if optsErr != nil {
-			logger.Warn("could not resolve the Temporal namespace to register search attributes on; "+
-				"`flow list --filter` still works, scanning executions rather than querying an index",
-				"error", optsErr)
-		} else if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, opts.Namespace); err != nil {
+	if !pooled {
+		// Both of these name a namespace, and both take the one the dial above
+		// resolved. They are not two questions that happen to share an answer:
+		// each is *about* the client `c`. AddSearchAttributes carries the
+		// namespace as a request field, so registering against a namespace `c`
+		// is not connected to would index attributes somewhere other than where
+		// this deployment's runs live; and the server records the namespace so
+		// that it can later name where its own client reads from. A second
+		// cfg.Options() here — which is what this did — can answer differently
+		// from the dial, and either use would then be wrong in a way that
+		// succeeds. See [temporalclient.DialWithNamespace].
+		//
+		// Recorded before the registration rather than after it, because
+		// whether Temporal accepted a search attribute says nothing about which
+		// namespace this process is pointed at.
+		//
+		// This is also the branch that has to record it at all: the pooled half
+		// below records its own, per tenant, and these two branches are the
+		// whole of the partition. The recording is here rather than outside the
+		// `if` on purpose — on a pooled deployment `s.temporalClient` is never
+		// the client any tenant is routed through, so a namespace recorded
+		// beside it would be an answer that is right for nobody, sitting where
+		// a later edit could reach for it.
+		serverOpts = append(serverOpts, server.WithTemporalNamespace(temporalNamespace))
+
+		if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, temporalNamespace); err != nil {
 			logger.Warn("could not register Flowstate's search attributes; "+
 				"`flow list --filter` still works, scanning executions rather than querying an index",
 				"error", err)
@@ -1143,7 +1184,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// mistyped or unregistered namespace fails the start rather than the first
 	// tenant to submit. The server refuses a tenant the mapping cannot place —
 	// see FlowstateServer.clientFor — so this only has to hand it the pool.
-	if policy != nil && policy.Tenancy != nil {
+	//
+	// It is also where a pooled deployment's Temporal namespace comes from: the
+	// pool answers per tenant, which is why the branch above is the one that
+	// records a single namespace and this one does not.
+	if pooled {
 		pool, err := temporalclient.NewPool(cmd.Context(), cfg, policy.Tenancy, logger)
 		if err != nil {
 			return fmt.Errorf("dialing the Temporal namespaces the trust policy maps tenants onto: %w", err)

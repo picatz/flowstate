@@ -173,17 +173,76 @@ func (c Config) Options() (client.Options, error) {
 // longer needed. It is long-lived by design: it maintains connections and caches,
 // so creating one per request would be wasteful and would defeat those caches.
 func Dial(ctx context.Context, c Config) (client.Client, error) {
+	cl, _, err := dial(ctx, c)
+	return cl, err
+}
+
+// DialWithNamespace is [Dial], also reporting the namespace the returned client is
+// dialed for.
+//
+// Use it wherever something other than the client itself needs that namespace
+// named — Temporal's raw APIs take it as a request field, and
+// `AddSearchAttributes` does too — because the alternative is resolving the same
+// [Config] a second time, and a second resolution is not a copy of the first.
+// [Config.Options] reads the process environment and a TOML file on disk every
+// time it is called, so two calls straddling any amount of work can answer
+// differently. What that produces is the failure this whole seam exists to
+// prevent: a namespace recorded or requested that is not the one the client
+// beside it is connected to, used to address a request that then succeeds
+// against the wrong tenant's namespace, with nothing anywhere saying so
+// (Codex, #1139).
+//
+// So the rule is one resolution per client, carried rather than recomputed —
+// the same rule [NewPool] follows for its own fallback namespace, stated here
+// for callers outside this package.
+//
+// Only the namespace is reported, not the whole of [client.Options]. Nothing has
+// needed more, and the options carry credentials — see [Describe] for the care
+// this package takes not to let them reach a formatter.
+func DialWithNamespace(ctx context.Context, c Config) (client.Client, string, error) {
+	cl, opts, err := dial(ctx, c)
+	if err != nil {
+		return nil, "", err
+	}
+	return cl, opts.Namespace, nil
+}
+
+// dial connects to Temporal using c and reports the options it resolved.
+//
+// It is the one place a client and the options it was dialed with are available
+// together, and the three exported entry points are each a projection of it:
+// [Dial] drops the options, [DialWithNamespace] keeps one field of them, and
+// [NewPool] keeps that same field on the pool.
+//
+// The field they keep is the namespace, and the namespace they keep is
+// emphatically not c.Namespace. That field is an *override*: [Config.Options]
+// takes the namespace from a TOML profile or TEMPORAL_NAMESPACE, lets c.Namespace
+// displace it only when non-empty, and falls back to [DefaultNamespace] when
+// nothing named one. So c.Namespace is empty on every deployment that configured
+// a namespace the ordinary way, and anything recording it would record "" for
+// exactly those deployments.
+//
+// The resolved value is read back from the options the returned client was
+// dialed with rather than recomputed, because a second resolution is not a copy
+// of the first: Options reads the environment and a file on every call, so two
+// calls straddling any amount of work can answer differently, and the caller
+// would then hold a namespace its client is not dialed for.
+// TestASecondResolutionCanDisagreeWithTheDial makes that happen rather than
+// arguing about it. Nothing but the namespace leaves this function's callers:
+// client options carry credentials, and this package's rule is that they are
+// never held anywhere a formatter can reach them (see [Describe]).
+func dial(ctx context.Context, c Config) (client.Client, client.Options, error) {
 	opts, err := c.Options()
 	if err != nil {
-		return nil, err
+		return nil, client.Options{}, err
 	}
 
 	cl, err := client.DialContext(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to Temporal at %s (namespace %q): %w",
+		return nil, client.Options{}, fmt.Errorf("connecting to Temporal at %s (namespace %q): %w",
 			opts.HostPort, opts.Namespace, err)
 	}
-	return cl, nil
+	return cl, opts, nil
 }
 
 // Describe returns a short, human-readable summary of where a configuration

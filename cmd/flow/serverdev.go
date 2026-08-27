@@ -574,6 +574,13 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		server.WithDataConverter(cfg.Codec.DataConverter()),
 		server.WithPluginCatalog(pluginCatalog),
 
+		// The namespace this whole stack is pointed at, told to the server as
+		// well as to the registration below. The constant is the source in this
+		// command for the reason its own doc gives — [devRefusals] has already
+		// established that no Temporal environment configuration is in play — so
+		// unlike `flow server` there is no resolution step to read it out of.
+		server.WithTemporalNamespace(devTemporalNamespace),
+
 		// The one thing this command has that neither `flow server` nor
 		// `flow worker` can have: the control plane below and the worker a few
 		// lines down share the single client this function opened, which is the
