@@ -544,10 +544,10 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// in the new run's own `RunState.PendingSignals`, which is not a channel
 	// and is not drained: [drainSignals] carries everything already pending
 	// forward unconditionally and only *adds* from the channels the
-	// specification declares. So an undeclared name would occupy one of
-	// [v1.MaxPendingSignals] slots and its share of the state budget for the
-	// entire life of the entity, across every segment, waiting for a step that
-	// does not exist.
+	// specification declares. So an undeclared name would occupy its share of
+	// the state budget [v1.CheckRunStateSize] weighs for the entire life of
+	// the entity, across every segment, waiting for a step that does not
+	// exist.
 	//
 	// It is also, far more often, a misspelling — the same thing
 	// [v1.CheckSignalPolicies] says about a policy for a name nothing waits
