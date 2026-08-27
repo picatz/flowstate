@@ -622,6 +622,19 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// And the same reasoning for the internal listener's address — loopback or
+	// empty, nothing else, per cmd/flow/internallistener.go. Read here with
+	// the rest of the flags, but nothing is bound until the worker is actually
+	// polling, so a start-up failure cannot leave a socket open behind an
+	// error return. Checking it before any I/O also means an operator who
+	// asked for pprof somewhere it is refused hears so immediately, rather
+	// than after a plugin fleet has launched and a secret provider has
+	// handshaked.
+	internalFlags := internalListenerFlagsOf(cmd)
+	if err := checkInternalListenAddress(internalFlags.address); err != nil {
+		return err
+	}
+
 	secretProviders, secretsConfigured, closeSecretProviders, err := secretRegistry(cmd)
 	if err != nil {
 		return err
@@ -728,6 +741,29 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unable to start worker: %w", err)
 	}
 
+	// The internal listener binds only now, once the worker is polling — the
+	// same ordering `flow server` uses for the same reason, and the ordering
+	// that makes a 200 from /healthz worth something more than "a socket is
+	// open": everything ahead of this line has already succeeded, so the first
+	// answer implies the secret providers opened, the plugins launched, the
+	// Temporal client dialed and the worker started. It does not imply any of
+	// those is *still* true, which is why the runbook in docs/DEPLOYMENT.md
+	// calls this liveness and not readiness.
+	//
+	// internalServer is nil when the operator never opted in (the default), and
+	// serveInternalListener treats that as "nothing to serve, nothing to stop".
+	internalServer, internalListener, err := startInternalListener(infraLogger(), internalFlags.address)
+	if err != nil {
+		// The worker is already polling, so it is stopped rather than left
+		// running behind an error return that says the command failed.
+		w.Stop()
+		return err
+	}
+	if internalServer != nil {
+		infraLogger().Info("starting internal listener", "address", internalListener.Addr().String())
+	}
+	stopInternalListener := serveInternalListener(infraLogger(), internalServer, internalListener)
+
 	// Listen for shutdown signals to gracefully stop the worker. Stop() itself
 	// does the draining: it stops polling for new work immediately, then blocks
 	// until every in-flight activity and workflow task finishes or
@@ -736,6 +772,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	infraLogger().Info("shutting down worker, draining in-flight work",
 		"worker_stop_timeout", stopTimeout)
 	w.Stop()
+
+	// After the drain, deliberately: Stop() blocks for as long as
+	// --worker-stop-timeout allows, and a liveness probe that stops being
+	// answered partway through a legitimate drain is how an orchestrator
+	// decides to kill the process it was already politely asking to leave.
+	// The socket closes once there is nothing left to drain, which is also
+	// the moment the honest answer to a liveness probe changes.
+	stopInternalListener()
 
 	// After the worker has stopped, so the last activity's spans and the last
 	// interval's metrics are in the batch this pushes — those are the ones
@@ -2611,14 +2655,26 @@ flow server --verbose`,
 			"refusePlaintextListener requires --tls-cert-file/--tls-key-file or "+
 			"--tls-terminated-upstream")
 
-	// The public listener's TLS configuration, its ACME automatic-certificate
-	// alternative, and the internal listener's own address — see
-	// cmd/flow/tls.go, cmd/flow/acme.go and cmd/flow/internallistener.go.
-	// Server only: a worker makes no listener of its own to protect.
+	// The public listener's TLS configuration and its ACME
+	// automatic-certificate alternative — see cmd/flow/tls.go and
+	// cmd/flow/acme.go. Server only: a worker binds no public listener, so it
+	// has no certificate, no client-certificate policy and no SNI host to
+	// configure.
 	addTLSFlags(serverCmd)
 	addACMEFlags(serverCmd)
 	addMTLSFlags(serverCmd)
-	addInternalListenerFlags(serverCmd)
+
+	// The internal listener, on both long-running processes (#916). The
+	// worker is where the capacity runbook in docs/DEPLOYMENT.md tells an
+	// operator to watch "this process's own CPU/memory" when deciding between
+	// raising slots and adding a replica, and until this it was the one
+	// process with no way to answer that. Same flag, same handler, same
+	// refusals: off by default, loopback or nothing — see
+	// cmd/flow/internallistener.go for why a default here would be worse than
+	// on the public listener.
+	for _, c := range []*cobra.Command{serverCmd, workerCmd} {
+		addInternalListenerFlags(c)
+	}
 
 	// RFC 9728 protected resource metadata for the MCP surface — see
 	// cmd/flow/protectedresource.go. Server only, for the same reason as the

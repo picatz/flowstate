@@ -635,13 +635,63 @@ the initial Temporal connection worked; it does not mean the connection is
 the pool's per-tenant Temporal clients (`temporalclient.Pool`) reconnecting
 after that.
 
-`flow worker` exposes no HTTP surface at all — no listener, no `/healthz`, no
-`--internal-listen` flag — so a worker's liveness has to come from the
-process itself: run it under a supervisor that treats process exit as the
-signal (`systemd`'s `Restart=on-failure` in the [systemd
+`flow worker` takes the same `--internal-listen` flag
+(`FLOWSTATE_INTERNAL_ADDRESS`), with the same default — **unset, so nothing is
+bound** — and the same refusal off loopback. Set it and the worker serves
+`/healthz` and `/debug/pprof/*` on that address and nothing else; leave it
+alone and the worker binds no socket at all, which is what every recipe in
+this document does today.
+
+What a `200` from a worker's `/healthz` means, precisely: the listener binds
+only *after* `w.Start()` returns, which is after the egress and task policies
+loaded, the secret providers opened, the plugin fleet launched and passed its
+strict start-up check, the Temporal client dialed, and the worker began
+polling its queue. So the first `200` implies all of that happened. It does
+**not** re-check any of it afterwards — the same caveat the server's route
+carries.
+
+There is deliberately no `/readyz`. A worker's readiness question is "are this
+worker's pollers actually attached to the task queue right now", and the Go
+SDK does not expose that: `worker.Worker` reports no poller state, and the
+only health call available (`client.Client.CheckHealth`) answers a question
+about the *frontend*, not about this worker's pollers — a worker whose pollers
+died would keep answering `200` to that, which is worse than not offering the
+route. What does answer the real question is already wired: the SDK's own
+metrics, exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (see
+[Metrics](#metrics)), carry poller counts and task-queue backlog per worker.
+Use those for readiness and this endpoint for liveness.
+
+A worker's liveness therefore still comes from the process itself where no
+listener is configured: run it under a supervisor that treats process exit as
+the signal (`systemd`'s `Restart=on-failure` in the [systemd
 recipe](#single-vm-ec2-or-similar-systemd--the-best-supported-production-shape)
-above, or a Kubernetes `Deployment`'s own restart-on-crash) rather than an
-HTTP probe, because there is no port to point one at.
+above, or a Kubernetes `Deployment`'s own restart-on-crash). With the listener
+configured, add an `exec` probe — and it has to be `exec`, never `httpGet`,
+for the reason the next paragraph gives about loopback and the kubelet:
+
+```yaml
+        # flow worker, with --internal-listen 127.0.0.1:9090 set on the
+        # container's command line (or FLOWSTATE_INTERNAL_ADDRESS in its env).
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          periodSeconds: 10
+          failureThreshold: 3
+```
+
+Two things to weigh before turning it on, both of which are why it is off by
+default. The port serves `/debug/pprof/*` alongside `/healthz` — one flag
+turns on both, there is no way to take the health route without the profiler —
+and a heap profile of a worker contains whatever that worker's address space
+contains, which on a worker means secret values resolved for an in-flight
+step. That is precisely the material the [secrets
+model](ARCHITECTURE.md#secrets) keeps out of Temporal's history, so anything
+that can reach this socket can read past that boundary. It has no authentication and no TLS
+of its own; loopback and a shared network namespace are the entire access
+control, which is why a non-loopback address is refused rather than warned
+about (`checkInternalListenAddress`, `cmd/flow/internallistener.go`). Weigh
+that against a liveness probe, and against the capacity runbook below, which
+is what wants the profiler.
 
 A Kubernetes `httpGet` probe is dialed by the kubelet from the node's own
 network namespace, against the pod's IP — not from inside the pod's network
@@ -1096,6 +1146,30 @@ reference](https://docs.temporal.io/references/sdk-metrics) for exact names),
 plus this process's own CPU/memory if raising slots is the lever being
 pulled, since that is what tells you when the free remedy has run out of
 room.
+
+**How to read this process's own CPU/memory.** No Go runtime metrics are
+registered on either binary today, so `OTEL_EXPORTER_OTLP_ENDPOINT` alone will
+not show you heap size or GC pressure — that gap is real and tracked
+separately. What the worker does have is `--internal-listen`
+(`FLOWSTATE_INTERNAL_ADDRESS`), off by default, loopback or refused, described
+under [Health checks and probes](#health-checks-and-probes) above along with
+what turning it on exposes. Start the worker with it, then, from inside that
+process's own network namespace — the host for the `systemd` recipe, `kubectl
+exec` into the pod for Kubernetes:
+
+```console
+$ go tool pprof -top http://127.0.0.1:9090/debug/pprof/heap       # memory: is this worker's heap the constraint?
+$ go tool pprof -top http://127.0.0.1:9090/debug/pprof/profile    # CPU, 30s sample: is it CPU-bound?
+$ curl -s http://127.0.0.1:9090/debug/pprof/goroutine?debug=1 | head -n 1
+```
+
+That last line is the cheapest read of the three: a goroutine count climbing
+with the slot count and a stack profile piling up in one activity is "raise
+the slots, this process has room"; a flat count with the CPU profile pinned is
+"the process itself is the constraint", which is the rung where the answer
+turns into a replica. Turn the flag back off — or leave it bound to loopback
+and reachable only by `kubectl exec` — once the question is answered, since a
+heap profile of a worker carries whatever secrets that worker resolved.
 
 ## Worker versioning, every time
 
