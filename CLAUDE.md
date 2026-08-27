@@ -463,6 +463,16 @@ needs the identical pin, for the identical reason:
 
     GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 
+`gofmt` is the third member of this family, and its version of the failure is a
+false *finding* rather than a false error: the standalone `gofmt` binary on `PATH`
+is whatever toolchain owns `PATH`, not the one `go.mod` selects, and formatting
+output differs between toolchains (1.26's and 1.27's disagree on the indentation
+of a multi-value return's composite literals — `auth/vocabulary_test.go` is the
+tree's standing example, "unformatted" under a 1.26 gofmt and clean under CI's
+1.27). Before reporting a file on `main` as unformatted, or "fixing" one, run the
+module's own toolchain's binary: `$(GOTOOLCHAIN=go1.27.0 go env GOROOT)/bin/gofmt`.
+A PR that reformatted that file under the wrong gofmt is what CI caught on #1140.
+
 The staticcheck *release* is pinned to the toolchain as well as beside it, and that
 direction is the one that bites. staticcheck type-checks with its own copy of
 `go/types`, which reads the export data the toolchain's compiler wrote, and export
