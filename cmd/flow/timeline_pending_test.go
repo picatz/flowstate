@@ -621,10 +621,13 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 				backingOff(3, now.Add(-time.Minute)),
 			}},
-			want: opening + "one step is retrying — attempt 3 is overdue by 1m0s" + tail,
+			want: opening + "one step is retrying — attempt 3 is overdue by 1m0s " +
+				"against this machine's clock" + tail,
 			because: "a next-attempt time in the past is still a next-attempt time — " +
 				"presence is what the field promises, and folding an overdue retry back " +
-				"into silence is the exact regression #1148 fixed one surface over",
+				"into silence is the exact regression #1148 fixed one surface over; the " +
+				"clock is named because `now` is this process's and the schedule is the " +
+				"server's, so skew alone can produce this line (Codex, #1155)",
 		},
 		{
 			name: "several waiting steps name the furthest along",

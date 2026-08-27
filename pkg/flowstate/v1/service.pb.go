@@ -1818,10 +1818,21 @@ type GetTimelineRequest struct {
 	// the largest answer this will return (Codex, #1119).
 	//
 	// An event id rather than an opaque cursor, and that is the decision worth
-	// stating. Temporal's own page token would be the obvious cursor and cannot
-	// be used: the raw history API takes a Temporal namespace, and this server
-	// does not hold one — a client is dialed for a namespace and never asked
-	// which. An event id needs nothing but the history itself.
+	// stating. Temporal's own page token would be the obvious cursor and still
+	// cannot be used — though not for the reason first given here, and the
+	// correction matters because the old one sends a reader to plumb something
+	// already plumbed. The Temporal namespace a raw history request needs is
+	// available to the server now. The *token* is reachable only by dropping
+	// below the SDK: its iterator begins at the first page and exposes no
+	// cursor, so through the supported surface there is nothing to hand a
+	// caller at one end and nothing to seed at the other. Temporal's raw
+	// GetWorkflowExecutionHistory does carry the token both ways — at the cost
+	// of re-implementing what the SDK supplies from behind internal/ (RawHistory
+	// decoding, the per-attempt timeout, retries), a copy that fails silently
+	// when the SDK moves. #1135 priced that trade and the decision was to keep
+	// the event id and this walk, document the transitive round-trip bound where
+	// the budget would have gone, and ask the SDK upstream for token access on
+	// the iterator. An event id needs nothing but the history itself.
 	//
 	// The cost, stated rather than glossed: each request walks the run's history
 	// from the start, so resuming re-reads what it skips. That is bounded work —
