@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -822,4 +823,234 @@ func parsedFiles(t *testing.T, fset *token.FileSet) []*ast.File {
 	}
 
 	return files
+}
+
+// TestEveryTableRowCallsTheCorpusItNames closes the one way [corpusSizes] can
+// lie while every other check in this file stays green.
+//
+// The table's key is a name and its value is a call, and nothing tied the two
+// together. A row copied and half-edited — `"FooCases": len(BarCases())` —
+// satisfies every guard here: the coverage walk sees `FooCases` listed, the
+// staleness walk sees `FooCases` exported, and the emptiness check sees a
+// positive number, which is Bar's. Foo could then be emptied and both driver
+// suites would go vacuous with this file reporting full coverage (Codex, #1129).
+//
+// It is the file's own subject one level up. A hand-written table is made
+// trustworthy by a walk that fails when the table and the tree disagree, and
+// until now the walk only compared *names* — so the table could name everything
+// correctly and still count the wrong things.
+func TestEveryTableRowCallsTheCorpusItNames(t *testing.T) {
+	fset := token.NewFileSet()
+
+	// This file, read as source. Every other walk here reads the package's
+	// non-test files, which is where the corpora live; the table lives here.
+	file, err := parser.ParseFile(fset, corpusTableFile, nil, 0)
+	require.NoError(t, err)
+
+	table := funcNamed(file, "corpusSizes")
+	require.NotNil(t, table, "corpusSizes is gone or renamed, so this check is walking nothing")
+
+	rows, unreadable := tableRows(table)
+
+	for _, what := range unreadable {
+		t.Errorf("corpusSizes has a row this check cannot read (%s); every row must be "+
+			"`\"XCases\": len(XCases(...))` so the name and the call can be compared — a row "+
+			"whose shape is unreadable is a row that could be counting anything", what)
+	}
+
+	// A floor, for the same reason [exportedDecls] carries one: a reader that
+	// silently matched nothing would report a clean table with total confidence.
+	require.GreaterOrEqual(t, len(rows), 40,
+		"the table reader found too few rows to be this table, so it is broken rather than the table")
+
+	for _, row := range misnamedRows(rows) {
+		t.Errorf("corpusSizes lists %q and counts %s — so %s's size is never checked and it "+
+			"may be emptied silently; make the key and the call the same name",
+			row.key, row.calls, row.key)
+	}
+}
+
+// misnamedRows are the rows whose key and call disagree.
+//
+// Extracted rather than compared in place, for the reason every other decision
+// in this file was extracted: the real table agrees with itself, so a
+// comparison written inline is one no test can reach, and a mutation deleting
+// it survives. That was true of the first version of this and the mutation
+// said so.
+func misnamedRows(rows []corpusRow) []corpusRow {
+	var wrong []corpusRow
+	for _, row := range rows {
+		if row.key != row.calls {
+			wrong = append(wrong, row)
+		}
+	}
+
+	return wrong
+}
+
+// TestAMisnamedTableRowIsCaught exercises the reader, because the tree cannot.
+//
+// Every row in the real table agrees with itself today, so a check that only
+// ran against the table would pass whether the comparison worked or not —
+// which is the vacuity this whole file is about, and which caught three of its
+// own fixtures already.
+func TestAMisnamedTableRowIsCaught(t *testing.T) {
+	fixture, err := parser.ParseFile(token.NewFileSet(), "fixture.go", `package conformance
+
+func corpusSizes() map[string]int {
+	return map[string]int{
+		"AgreeCases":    len(AgreeCases()),
+		"ParamCases":    len(ParamCases(standIn)),
+		"MisnamedCases": len(SomethingElseCases()),
+		"NotACallAtAll": 7,
+		"BuiltinCases":  len(make([]int, 3)),
+		"ComposedCases": len(ComposedCases(Extra())),
+		"CountedCases":  size(CountedCases()),
+	}
+}
+`, 0)
+	require.NoError(t, err)
+
+	rows, unreadable := tableRows(funcNamed(fixture, "corpusSizes"))
+
+	var mismatched []string
+	for _, row := range misnamedRows(rows) {
+		mismatched = append(mismatched, row.key)
+	}
+
+	assert.Equal(t, []string{"MisnamedCases"}, mismatched,
+		"a row naming one corpus and counting another was read as agreeing with itself")
+
+	// Four unreadable shapes, and they are listed separately because each is
+	// refused by a different rule. A single row that tripped two of them —
+	// `len(append(X(), y()...))`, which is both a builtin and composed — made
+	// the two rules mask each other under mutation: deleting either left the
+	// other still refusing the row, and both mutations survived. So each rule
+	// gets a row only it can refuse.
+	//
+	// Refused rather than skipped, in every case. A row that is not a `len` of
+	// a call cannot be compared at all, and passing over it would make this
+	// check quietly optional — which is the failure `unresolvedResults` one
+	// table up exists to prevent, wearing different clothes.
+	assert.ElementsMatch(t,
+		[]string{"NotACallAtAll", "BuiltinCases", "ComposedCases", "CountedCases"}, unreadable,
+		"a row whose shape this cannot read was passed over rather than refused")
+
+	assert.Len(t, rows, 3, "an unreadable row must not also be counted as read")
+}
+
+// corpusTableFile is where [corpusSizes] is written, read as source by the
+// check above. Named rather than discovered, because a check that hunted for
+// the table would find nothing after a rename and report success.
+const corpusTableFile = "corpora_test.go"
+
+// corpusRow is one row of the size table: the name it claims and the corpus it
+// actually counts.
+type corpusRow struct {
+	key   string
+	calls string
+}
+
+// tableRows reads the rows of the `map[string]int` literal a function returns,
+// and names the ones it cannot read.
+//
+// Takes a declaration rather than reading the file, so the fixture above can
+// hand it shapes this package does not contain — the same reason
+// [unreadableResults] and [sliceReturners] take their inputs.
+func tableRows(fn *ast.FuncDecl) (rows []corpusRow, unreadable []string) {
+	if fn == nil {
+		return nil, nil
+	}
+
+	ast.Inspect(fn, func(node ast.Node) bool {
+		entry, ok := node.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		key, ok := entry.Key.(*ast.BasicLit)
+		if !ok || key.Kind != token.STRING {
+			return true
+		}
+		name, err := strconv.Unquote(key.Value)
+		if err != nil {
+			return true
+		}
+
+		called, ok := lenOfCall(entry.Value)
+		if !ok {
+			unreadable = append(unreadable, name)
+
+			return true
+		}
+		rows = append(rows, corpusRow{key: name, calls: called})
+
+		return true
+	})
+
+	return rows, unreadable
+}
+
+// lenOfCall reads `len(X(...))` and reports X.
+//
+// Deliberately exact. `len(append(X(), y()...))` names two functions and there
+// is no honest answer to which one the row counts, so it is refused and its
+// author writes the row plainly — a reader that guessed would be inventing the
+// agreement this check exists to verify.
+func lenOfCall(expr ast.Expr) (string, bool) {
+	outer, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return "", false
+	}
+	if name, ok := outer.Fun.(*ast.Ident); !ok || name.Name != "len" || len(outer.Args) != 1 {
+		return "", false
+	}
+	inner, ok := outer.Args[0].(*ast.CallExpr)
+	if !ok {
+		return "", false
+	}
+	// Exported, which is what a corpus is and what a builtin is not. Without
+	// this, `len(append(X(), y()...))` reads as a row calling `append` — a
+	// perfectly good identifier — and is recorded rather than refused. The
+	// fixture caught that in the first version of this reader, which is the
+	// second time on this file that writing the negative case found the bug.
+	corpus, ok := inner.Fun.(*ast.Ident)
+	if !ok || !corpus.IsExported() {
+		return "", false
+	}
+	// And nothing composed. A row whose call takes another call as an argument
+	// names two corpora and there is no honest answer to which one it counts,
+	// so it is refused and its author writes the row plainly. Every real row
+	// passes a bare `standIn` or nothing at all.
+	for _, arg := range inner.Args {
+		if composed := containsCall(arg); composed {
+			return "", false
+		}
+	}
+
+	return corpus.Name, true
+}
+
+// containsCall reports whether an expression calls anything.
+func containsCall(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if _, ok := node.(*ast.CallExpr); ok {
+			found = true
+		}
+
+		return !found
+	})
+
+	return found
+}
+
+// funcNamed is the top-level function declaration of that name, or nil.
+func funcNamed(file *ast.File, name string) *ast.FuncDecl {
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
+			return fn
+		}
+	}
+
+	return nil
 }
