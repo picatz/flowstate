@@ -45,11 +45,28 @@ const (
 )
 
 // speaksFlowfile reports whether the workflow grammar's features may answer
-// for this document. A test document gets flowtest's diagnostics and, in
-// slice 1 of #1110, nothing else: a completion, hover, symbol tree or format
-// computed from the workflow grammar would be confidently wrong in someone's
-// editor, which is worse than the honest empty answer.
+// for this document. A test document never gets a workflow answer: a
+// completion, hover, symbol tree or format computed from the workflow
+// grammar would be confidently wrong in someone's editor, which is worse
+// than the honest empty answer.
+//
+// This does not mean a test document gets nothing. #1110 item 8 gave the
+// test language its own answers — completion, an outline of its cases, and
+// hover on a stub's task name — each behind its own dispatch on doc.kind
+// rather than behind this gate; see completeAt, testDocumentSymbols and
+// hoverAt. speaksFlowfile stays the question "may the *workflow* grammar
+// answer here", not "may anything answer here".
 func (doc *document) speaksFlowfile() bool { return doc.kind == docWorkflow }
+
+// isTestDocument reports whether doc is one of flowtest's own file kinds —
+// a `*.test.yaml` suite or a directory's `testdefaults.yaml` — as opposed to
+// a Flowfile. The two test kinds share a document shape at every level below
+// the top (both nest a `defaults:` block of the same [flowtest.Defaults]
+// shape), which is why features that answer for one often take doc.kind as
+// a parameter rather than being written twice.
+func (doc *document) isTestDocument() bool {
+	return doc.kind == docTestFile || doc.kind == docTestDefaults
+}
 
 // kindOfURI reads the kind off the document's basename, which is also how the
 // editor configurations decide what to attach: `**/*.test.yaml` and

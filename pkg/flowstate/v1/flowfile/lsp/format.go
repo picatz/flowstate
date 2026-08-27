@@ -26,6 +26,14 @@ import (
 // real answer rather than being unable to tell "nothing to change" from
 // "couldn't tell".
 func formatEdits(doc *document) []lsp.TextEdit {
+	if doc.isTestDocument() {
+		// Deliberately refused, not merely unreached (#1110 item 8): there is
+		// no flowtest analogue of [flowfile.Marshal] to render doc's parsed
+		// form back out, so — unlike the workflow arm below, which has one
+		// and only declines when the document does not compile — there is no
+		// canonical form to diff doc's text against at all, compiling or not.
+		return nil
+	}
 	if !doc.speaksFlowfile() {
 		return nil // see [document.speaksFlowfile]
 	}
