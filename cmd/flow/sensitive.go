@@ -87,6 +87,36 @@ import (
 // on [decideCarriedValues], the single decision it now shares with the
 // transcript.
 //
+// # The failure sentence, which is none of the three
+//
+// A fourth surface, and the one a `for_each` puts a sensitive value on without
+// anything naming it (#974). Everything above redacts a value the workload
+// *produced*, keyed or unkeyed. A run's failure text is a sentence Flowstate
+// composed *around* a value the workload was given: `for_each: ${inputs.customers}`
+// over a `sensitive:` list binds each element into the body, and an http step
+// that fails there says which URL it dialed. That text is neither an output nor
+// a transcript entry nor carried state, so none of the three decisions above
+// touched it — the same invocation printed a withheld transcript on stdout and
+// the bound item, in the clear, in the prose two lines up.
+//
+// It is redacted rather than withheld, which is the opposite of what the three
+// above do, and the difference is what a reader loses. Withholding a transcript
+// costs values the specification's own author can look up in their file;
+// withholding the reason a run failed leaves nothing else on the response that
+// answers it, which is the argument [redactGetResponse] makes for letting the
+// message through at all and this does not overturn. So the sentence stays and
+// the material leaves it: [v1.SensitiveValues] is the mechanism, and it needs
+// the run's *arguments*, not only its specification.
+//
+// That is what scopes this to the two verbs that hold both. `flow run local`
+// bound the inputs in this process; `flow run` submitted them from it. `flow
+// get <id>` and `flow watch <id>` are later invocations holding neither the
+// file nor the arguments, and they are unchanged: a set that cannot be built is
+// [v1.WithheldSensitiveValues], and withholding every failed run's reason on
+// every `flow get` is precisely the cost [redactGetResponse] refuses to pay.
+// `flow test` already did all of this, in flowtest, against the same set —
+// which is why the set moved to [v1] rather than being written a second time.
+//
 // What deliberately keeps travelling in the clear, and why, is written down in
 // [redactGetResponse]'s own comment rather than left to the absence of a line.
 const redactedMarkerFormat = "[redacted: %s]"
@@ -721,4 +751,140 @@ func revealSensitiveRequested(cmd *cobra.Command) bool {
 func noteRevealedSensitiveValues(surface *ui.UI) {
 	fmt.Fprintf(surface.Err, "%s revealing values declared sensitive, in the clear (--reveal-sensitive)\n",
 		surface.ErrTheme.Pill(ui.ToneWarning, "reveal"))
+}
+
+// failureWithheldMarker is what a failure sentence becomes when the redaction
+// set could not be enumerated at all — a sensitive input this process could
+// not read, or one too wide for [v1.SensitiveValues]'s own bound. Nothing in
+// the text is then provably safe, so none of it is printed, which is the same
+// fail-closed answer flowtest's transcript gives for the same reason.
+//
+// A different sentence from the transcript's two markers, because a reader
+// losing the *reason a run failed* is losing something else entirely and needs
+// to be told which thing went missing.
+const failureWithheldMarker = "failure text withheld: a sensitive input could not be enumerated, so no part of this message is provably safe"
+
+// redactedFailure is a run's failure text with the run's own sensitive values
+// removed, carrying forward the one thing the renderer asks an error for
+// besides its words.
+//
+// # No Unwrap, deliberately
+//
+// It would be one line, and it would undo the whole thing. CLAUDE.md's
+// "unwrapping into persisted failures" names this exactly: a scrubbed error
+// that wraps the original hands the unredacted text back to anything that
+// walks the chain — `%+v`, a failure converter, a future caller reaching for
+// the cause — and secrets.ScrubError makes the identical choice one layer
+// down. So the chain stops here, and what the chain was still needed for is
+// read out at construction instead: [nextCommandsFor] is resolved once against
+// the original error, so a loopback denial keeps its NEXT block.
+//
+// [isUsageError]'s prefix match still works, because it reads the text, and a
+// run failure is not a usage error in the first place.
+type redactedFailure struct {
+	// text is already redacted, so holding it in a field is safe: it is what
+	// this value exists to print.
+	text string
+
+	// next is [nextCommandsFor] of the error this replaced, resolved before
+	// the chain was dropped. Commands are this repository's own prose, never
+	// a value the workload chose.
+	next []commandBlock
+}
+
+func (e *redactedFailure) Error() string { return e.text }
+
+func (e *redactedFailure) nextCommands() []commandBlock { return e.next }
+
+// redactFailureError returns err with the run's own sensitive values removed
+// from its text — the sentence a person reads on stderr and the one `main`
+// exits on.
+//
+// An error the set does not change is returned as itself, chain intact. That
+// is the overwhelmingly common case (a workflow declaring nothing sensitive,
+// or a failure that never quoted a value), and returning the original there
+// means this cannot cost any other behaviour that depends on the chain in the
+// runs where it has nothing to do.
+func redactFailureError(err error, sensitive v1.SensitiveValues) error {
+	if err == nil || sensitive.Empty() {
+		return err
+	}
+
+	text := sensitive.RedactText(err.Error(), failureWithheldMarker)
+	if text == err.Error() {
+		return err
+	}
+
+	return &redactedFailure{text: text, next: nextCommandsFor(err)}
+}
+
+// redactFailureText applies the same redaction to the two failure strings a
+// [v1.GetResponse] carries: the reason a failed run reports, and the last
+// failure of a pending activity on a run still going.
+//
+// Both are named in [redactGetResponse]'s comment as text that deliberately
+// passes through, and that stays true of every call site holding no arguments
+// to redact against — the fail-closed reading there is that a set cannot be
+// built, and an empty [v1.SensitiveValues] changes nothing. This is only for
+// the caller that *can* build one.
+//
+// The response is mutated in place rather than cloned: every caller of this
+// hands it a message [redactGetResponse] has already cloned for them.
+func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *v1.GetResponse {
+	if response == nil || sensitive.Empty() {
+		return response
+	}
+
+	if failed, ok := response.GetKind().(*v1.GetResponse_Error); ok && failed.Error != nil {
+		// The kind stays: it is a classification this binary chose from a
+		// fixed vocabulary, not a value the workload put there, and it is the
+		// only structured thing left to act on once the message is redacted.
+		failed.Error.Message = sensitive.RedactText(failed.Error.GetMessage(), failureWithheldMarker)
+	}
+
+	for _, pending := range response.GetPendingActivities() {
+		if pending.GetLastFailure() == "" {
+			continue
+		}
+		pending.LastFailure = sensitive.RedactText(pending.GetLastFailure(), failureWithheldMarker)
+	}
+
+	return response
+}
+
+// runSensitiveValues is the redaction set for a run this process is starting:
+// every value the workflow's `sensitive:` inputs carry, bound the way the
+// engine will bind them so that a declared default is in the set exactly like
+// a submitted argument.
+//
+// reveal is `--reveal-sensitive`, which empties the set here rather than being
+// checked at each use, so the one deliberate escape hatch stays one decision.
+//
+// # The specification this reads, and why it is the submitted one
+//
+// [executedSpecification] exists because holding a file is not holding the one
+// that *ran*, and [redactGetResponse] redacts declared output names against
+// the attested copy for that reason. This asks a different question, and the
+// answer is the author's own file: "which of the arguments I am sending did I
+// mark sensitive". Those values are in this process's hands because this
+// process bound them, and a deployment that substituted its own specification
+// cannot make an author's `sensitive: true` untrue about the value they typed.
+// Reading the attested copy instead would mean a substitution silently
+// unredacted the caller's own argument, which is the fail-open direction.
+//
+// A bind that fails yields the fail-closed set: this runs before the engine's
+// own bind, so a refusal here means the arguments could not be enumerated, and
+// [v1.SensitiveValues]'s answer for that is to withhold rather than to allow.
+func runSensitiveValues(workflow *v1.Workflow, submitted map[string]*v1.Value, reveal bool) v1.SensitiveValues {
+	names := v1.SensitiveInputNames(workflow)
+	if reveal || len(names) == 0 {
+		return v1.SensitiveValues{}
+	}
+
+	bound, err := v1.BindRunInputs(workflow, submitted)
+	if err != nil {
+		return v1.WithheldSensitiveValues()
+	}
+
+	return v1.SensitiveInputValues(bound, names)
 }

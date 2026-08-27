@@ -166,6 +166,20 @@ type clientPoller struct {
 	// poller. The one thing that defeats both the precise and the fail-closed
 	// path above.
 	reveal bool
+
+	// sensitive is the run's own arguments, for the one surface redaction by
+	// name cannot reach: the failure sentence a task composed around a value
+	// it was given (#974). Set by `flow run`, which submitted those arguments
+	// from this process and is therefore the durable driver's counterpart to
+	// `flow run local`; left zero by `flow watch <id>`, which holds neither
+	// the file nor the arguments and changes nothing, exactly as
+	// [redactGetResponse] leaves that text alone for it. See
+	// [runSensitiveValues] and sensitive.go's "The failure sentence".
+	//
+	// Held by value across the whole follow loop, which is why
+	// [v1.SensitiveValues] closes over its material rather than holding it in
+	// a field: `%+v` on a clientPoller must not print a run's arguments.
+	sensitive v1.SensitiveValues
 }
 
 func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
@@ -190,7 +204,7 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 		return nil, classifyPollError(p.workflowID, p.server, err)
 	}
 
-	return redactGetResponse(response.Msg, p.spec, p.reveal), nil
+	return redactFailureText(redactGetResponse(response.Msg, p.spec, p.reveal), p.sensitive), nil
 }
 
 // classifyPollError explains a refused poll and records whether it is worth another

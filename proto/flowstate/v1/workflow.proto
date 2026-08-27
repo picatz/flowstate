@@ -650,31 +650,80 @@ message InputDeclaration {
   // legitimately ride in history, but that should not be casually pasted into a
   // terminal, a log, or an agent's answer.
   //
-  // This is display etiquette and nothing more. It is not containment: the value
-  // is an ordinary part of the run's history exactly like any other input, and
-  // anyone with access to that history reads it in the clear, the same way they
-  // read any other input. A secret reference is different: it keeps the value
-  // *out* of history entirely, resolving it only inside the activity that needs
-  // it. That is containment, and this is not it. Marking sensitive a value that
-  // must never reach an operator's screen at all is a mistake; that value is a
-  // secret reference, not this.
+  // This is a rule about display, and it is enforced — see the list below for
+  // exactly where. It is not containment: the value is an ordinary part of the
+  // run's history exactly like any other input, and anyone with access to that
+  // history reads it in the clear, the same way they read any other input. A
+  // secret reference is different: it keeps the value *out* of history
+  // entirely, resolving it only inside the activity that needs it. That is
+  // containment, and this is not it. Marking sensitive a value that must never
+  // reach an operator's screen at all is a mistake; that value is a secret
+  // reference, not this.
   //
   // # What this does on an *input*, precisely
   //
-  // Declared *outputs* are redacted everywhere Flowstate renders them; an input
-  // is rendered on exactly one surface (a schedule's bound arguments, through
-  // `flow schedule describe` and `flow schedule list`), and there a
-  // sensitive-declared value is redacted the same way, server-side, before it
-  // crosses the wire. The redaction lives on the server rather than the client
-  // because the server is the only party that holds both the schedule and the
-  // spec that declared the sensitivity; a `ScheduleDescription` on the wire
-  // carries the already-redacted value, not the raw one for a client to hide.
+  // This sentence used to say an input was rendered on exactly one surface —
+  // a schedule's bound arguments — and that stopped being true twice, first
+  // when a sensitive *input* was made a reason to withhold a run's whole step
+  // transcript and carried state (#975), and again when a `for_each` bound one
+  // into a failing step and the failure sentence printed it (#974). Both are
+  // written down here now, because this comment travels in the descriptor set
+  // to an editor's hover, and a normative sentence about what a flag does must
+  // not be something the renderers have quietly outgrown.
   //
-  // What is not yet built is a reveal path: `flow get` has `--reveal-sensitive`,
-  // and the schedule RPCs have no field to carry that request. An operator who
-  // needs the value must read it from wherever it was configured, not from a
-  // describe. That is a display-surface gap, not a containment one: this flag
-  // was never containment (see above).
+  // A sensitive-declared value is withheld or redacted on four surfaces:
+  //
+  //  1. A schedule's bound arguments, through `flow schedule describe` and
+  //     `flow schedule list`, redacted server-side before they cross the wire
+  //     — the server is the only party holding both the schedule and the spec
+  //     that declared the sensitivity, so a `ScheduleDescription` carries the
+  //     already-redacted value rather than the raw one for a client to hide.
+  //  2. A run's step transcript and the carried state of a running run,
+  //     withheld *whole* — every step, every name — the moment a
+  //     specification declares anything sensitive, input or output. Blunt on
+  //     purpose: a `vars:` block is very often just `${inputs.<name>}` and a
+  //     loop's `state:` carries whatever the body computed from one, so a rule
+  //     that traced names would look precise and miss most of it.
+  //  3. The values a `flow test` case prints — its transcript, its stub
+  //     diagnostics, its witnesses, and an attached debugger's own output.
+  //  4. The sentence a failed run reports, wherever the renderer holds the
+  //     run's arguments as well as its file: `flow run local`, and `flow run`
+  //     following the run it just submitted. The value is removed from the
+  //     text rather than the text being withheld, because nothing else on a
+  //     response answers "why did this fail".
+  //
+  // The mechanism for 3 and 4 is a value set, not a name: the declared value
+  // and every value nested inside it, so a `for_each`'s bound item is covered
+  // by the declaration on the list it was drawn from, and a `vars:` copy by
+  // the declaration on what it copied. Nothing re-declares sensitivity at a
+  // binding.
+  //
+  // # What is not enforced, and cannot be by this flag
+  //
+  // None of this is containment, and the list above does not make it so. The
+  // value is still an ordinary part of the run's history; anyone with access
+  // to that history reads it in the clear. Specifically:
+  //
+  //   - `flow get <id>` and `flow watch <id>` are later invocations holding
+  //     neither the file nor the arguments. They redact what they can name and
+  //     leave a failure sentence alone: withholding it would silence the only
+  //     field that says why a run failed, on every failed run anybody looks up
+  //     by id.
+  //   - A `log:` step prints what its author told it to print. An expression
+  //     that writes the value into a message is a disclosure the file asked
+  //     for, and a task Flowstate does not own can put a value anywhere it
+  //     likes.
+  //   - The value set matches by content. A value CEL has transformed — hashed,
+  //     re-encoded, arithmetic applied — is a different value, and no rule
+  //     working from a declaration can follow it there.
+  //
+  // Marking sensitive a value that must never reach an operator's screen at
+  // all is therefore still a mistake; that value is a secret reference.
+  //
+  // `--reveal-sensitive` is the one deliberate escape hatch, on every surface
+  // above except the schedule RPCs, which have no field to carry the request:
+  // an operator who needs a schedule's bound argument reads it from wherever
+  // it was configured, not from a describe.
   bool sensitive = 7;
 
   // Field 8 was Pattern: an RE2 regular expression a `type: string` value had to

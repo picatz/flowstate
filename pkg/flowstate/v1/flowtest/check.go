@@ -186,8 +186,8 @@ func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, ru
 // it — the same split the transcript already lives by.
 func autopsyExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, runErr error, sensitive sensitiveInputs) map[string]ref.Val {
 	if runErr != nil {
-		text := redactSensitiveSubstrings(runErr.Error(), sensitive.substrings)
-		if sensitive.withholdAll {
+		text := sensitive.RedactSubstrings(runErr.Error())
+		if sensitive.WithholdAll() {
 			text = "[withheld]"
 		}
 		runErr = errors.New(text)
@@ -213,36 +213,36 @@ func redactedVars(vars map[string]any, sensitive sensitiveInputs) map[string]any
 
 	out := make(map[string]any, len(vars))
 	for name, value := range vars {
-		if sensitive.withholdAll {
+		if sensitive.WithholdAll() {
 			// The word [redactedScalarText] uses for the same posture.
 			out[name] = "[withheld]"
 			continue
 		}
-		out[name] = redactSubstringsTree(redactSensitiveTree(value, sensitive.values), sensitive.substrings)
+		out[name] = redactSubstringsTree(sensitive.RedactTree(value), sensitive)
 	}
 
 	return out
 }
 
-// redactSubstringsTree applies [redactSensitiveSubstrings] to every string a
+// redactSubstringsTree applies [v1.SensitiveValues.RedactSubstrings] to every string a
 // value holds — leaves and map keys alike, since a key is as capable of
 // embedding a secret as a value is. Depth and breadth are the file's own,
 // already bounded before a var exists ([checkExpansionBounds],
 // [MaxTestFileBytes]): vars are load-time literals, never workload output.
-func redactSubstringsTree(v any, substrings []string) any {
+func redactSubstringsTree(v any, sensitive sensitiveInputs) any {
 	switch t := v.(type) {
 	case string:
-		return redactSensitiveSubstrings(t, substrings)
+		return sensitive.RedactSubstrings(t)
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for key, entry := range t {
-			out[redactSensitiveSubstrings(key, substrings)] = redactSubstringsTree(entry, substrings)
+			out[sensitive.RedactSubstrings(key)] = redactSubstringsTree(entry, sensitive)
 		}
 		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, entry := range t {
-			out[i] = redactSubstringsTree(entry, substrings)
+			out[i] = redactSubstringsTree(entry, sensitive)
 		}
 		return out
 	default:
@@ -331,7 +331,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 // step a failed run never reached has no value to witness. Bounded by
 // [MaxCheckWitnesses]; only ever paid on a failing check.
 func checkWitnesses(ctx context.Context, ev *v1.Evaluator, libs []string, activation cel.Activation, claim string, sensitive sensitiveInputs) []string {
-	if sensitive.withholdAll {
+	if sensitive.WithholdAll() {
 		return []string{"(values withheld: the redaction set could not be built)"}
 	}
 
