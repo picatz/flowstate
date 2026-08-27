@@ -849,7 +849,10 @@ func TestEveryTableRowCallsTheCorpusItNames(t *testing.T) {
 	require.NoError(t, err)
 
 	table := funcNamed(file, "corpusSizes")
-	require.NotNil(t, table, "corpusSizes is gone or renamed, so this check is walking nothing")
+	require.NotNil(t, table,
+		"corpusSizes is gone, renamed, or does something other than return its table in one "+
+			"statement — this compares identifier spellings rather than resolving them, so a "+
+			"binding before the return would let a key agree with a call that is not it")
 
 	rows, unreadable := tableRows(table)
 
@@ -952,6 +955,59 @@ func corpusSizes() map[string]int {
 	// branch stays because the reader takes whatever composite literal a
 	// function returns, and "the table is a map today" is precisely the kind of
 	// premise this file exists to stop relying on.
+	// A body that does anything before returning its table. This compares
+	// identifier spellings rather than resolving them — it parses, it does not
+	// type-check — so an alias bound here would make a key agree with a call
+	// that is not it, and the agreement would be perfect (Codex, #1141).
+	//
+	// Refused whole rather than resolved, which is the deliberate stopping
+	// point: resolving bindings is the road to a type checker, and what this
+	// check exists to catch is a row copied and half-edited, not an author
+	// working to defeat it. That threat model is what makes "refuse every shape
+	// I cannot read" a complete answer rather than an arms race.
+	t.Run("a table with anything before it is refused whole", func(t *testing.T) {
+		aliased, err := parser.ParseFile(token.NewFileSet(), "aliased.go", `package conformance
+
+func corpusSizes() map[string]int {
+	ValueCases := WaitCases
+
+	return map[string]int{
+		"ValueCases": len(ValueCases()),
+	}
+}
+`, 0)
+		require.NoError(t, err)
+
+		rows, unreadable := tableRows(funcNamed(aliased, "corpusSizes"))
+
+		assert.Empty(t, rows,
+			"a row was read out of a table the walk cannot trust, and it agreed with itself")
+		assert.Empty(t, unreadable)
+		assert.Nil(t, returnedLiteral(funcNamed(aliased, "corpusSizes")),
+			"the table must be refused whole, so the check fails loudly rather than reporting nothing")
+
+		// And the contract is "the body is exactly one return", not "the body
+		// begins with one". Without a case where the return comes *first* and
+		// something follows it, relaxing the count is invisible: the fixture
+		// above refuses on its first statement not being a return, and would go
+		// on refusing however the count were weakened. Two rules, one fixture,
+		// masking each other — the third time on this pull request.
+		trailing, err := parser.ParseFile(token.NewFileSet(), "trailing.go", `package conformance
+
+func corpusSizes() map[string]int {
+	return map[string]int{
+		"ValueCases": len(ValueCases()),
+	}
+	ValueCases := WaitCases
+	_ = ValueCases
+}
+`, 0)
+		require.NoError(t, err)
+
+		assert.Nil(t, returnedLiteral(funcNamed(trailing, "corpusSizes")),
+			"a body whose return is merely first was accepted, so the count is not what is checked")
+	})
+
 	t.Run("an element that is not a row is refused", func(t *testing.T) {
 		bare, err := parser.ParseFile(token.NewFileSet(), "bare.go", `package conformance
 
@@ -1026,28 +1082,33 @@ func tableRows(fn *ast.FuncDecl) (rows []corpusRow, unreadable []string) {
 	return rows, unreadable
 }
 
-// returnedLiteral is the composite literal a function returns, or nil.
+// returnedLiteral is the composite literal a function returns, when returning it
+// is the only thing the function does.
 //
 // The table's own elements, rather than every key-value pair anywhere inside
 // the function. An [ast.Inspect] over the whole declaration would descend into
 // a value's own composite literals and read their entries as rows — nothing in
 // the table is written that way today, which is the condition under which this
 // file's mistakes have always been made.
+//
+// "The only thing the function does" is the second refusal, and it is the one
+// that makes the comparison mean anything. This parses rather than type-checks,
+// so it compares identifier *spellings*: a binding introduced before the return
+// — `ValueCases := WaitCases` — makes `"ValueCases": len(ValueCases())` agree
+// with itself while counting something else entirely (Codex, #1141). Rather than
+// resolve bindings, which is the road to a type checker, a body that is anything
+// but one return statement is refused and the check says so.
 func returnedLiteral(fn *ast.FuncDecl) *ast.CompositeLit {
-	if fn == nil || fn.Body == nil {
+	if fn == nil || fn.Body == nil || len(fn.Body.List) != 1 {
 		return nil
 	}
-	for _, statement := range fn.Body.List {
-		ret, ok := statement.(*ast.ReturnStmt)
-		if !ok || len(ret.Results) != 1 {
-			continue
-		}
-		if literal, ok := ret.Results[0].(*ast.CompositeLit); ok {
-			return literal
-		}
+	ret, ok := fn.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return nil
 	}
+	literal, _ := ret.Results[0].(*ast.CompositeLit)
 
-	return nil
+	return literal
 }
 
 // literalKey is the string a key spells, when it spells one literally.
