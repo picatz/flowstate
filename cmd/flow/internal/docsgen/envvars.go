@@ -168,7 +168,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_INTERNAL_ADDRESS",
 			value:   "unset",
-			purpose: "Default for `--internal-listen` on `flow server`: a socket separate from the public listener, carrying health and pprof. Unset (the default) means no internal listener at all; set it to a loopback address such as `127.0.0.1:9090` to turn it on. Refused unless it is loopback; this listener has no TLS configuration of its own.",
+			purpose: "Default for `--internal-listen` on `flow server` and `flow worker`: a private socket of that process's own, carrying health and pprof. Unset (the default) means no internal listener at all; set it to a loopback address such as `127.0.0.1:9090` to turn it on. Refused unless it is loopback: it serves pprof, whose profiles carry the process's memory (resolved secret values among them), and it has no authentication or TLS configuration of its own.",
 			read:    "cmd/flow/internallistener.go",
 		},
 		{
