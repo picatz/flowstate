@@ -2315,41 +2315,39 @@ exactly as written below.
 edition: v2026.3
 name: deploy
 description: Ship a build, gate production behind a human, then page in order.
-
 vars:
+  api: https://deploys.internal.example.com
+  oncall:
+    - ada
+    - grace
+    - katherine
   service: billing
   version: 2026.07.30-r1
-  api: https://deploys.internal.example.com
-  oncall: [ada, grace, katherine]
-
 steps:
   - id: submit
     description: Ask the deployment API to roll the service.
+    retry:
+      attempts: 3
     http:
-      method: POST
-      url: ${vars.api + '/deployments'}
+      expect: ${response.status_code == 202}
       json:
         service: ${vars.service}
         version: ${vars.version}
-      parse_json: true
-      expect: ${response.status_code == 202}
+      method: POST
       outputs:
         deployment: ${response.json.id}
-    retry:
-      attempts: 3
-
+      parse_json: true
+      url: ${vars.api + "/deployments"}
   - id: approval
     description: A human approves the roll, or the day ends without one.
     wait_for_signal:
       name: approve
       timeout: 24h
-
   - id: halt
     if: ${steps.approval.timed_out || !steps.approval.payload.approved}
     log:
       level: warn
-      message: ${'deployment %s not approved; stopping'.format([steps.submit.deployment])}
-
+      message: ${"deployment %s not approved; stopping".format([steps.submit.deployment])}
   - id: page
     if: ${!steps.approval.timed_out && steps.approval.payload.approved}
     for_each:
@@ -2359,13 +2357,13 @@ steps:
       steps:
         - id: notify
           log:
-            # Quoted, because the `: ` inside the format string is YAML mapping syntax.
-            message: "${'paging %s: %s %s is rolling'.format([person, vars.service, vars.version])}"
             fields:
               deployment: ${steps.submit.deployment}
               # sender, not payload: who approved this is attested by the
               # server, never a field the approver typed in — see #194.
               approved_by: ${steps.approval.sender.identity.subject}
+            # Quoted, because the `: ` inside the format string is YAML mapping syntax.
+            message: '${"paging %s: %s %s is rolling".format([person, vars.service, vars.version])}'
 ```
 
 Worth noticing what is absent: no `cel:`, no `expr:` nested inside anything, no

@@ -12,5 +12,6 @@ steps:
     vars:
       slideshow: ${json_parse(steps.web.body)["slideshow"]}
     log:
-      fields: '${{"author": slideshow["author"]}}'
+      fields:
+        author: ${slideshow["author"]}
       message: ${slideshow["title"]}

@@ -178,8 +178,11 @@ steps:
   - id: debit
     if: ${steps.cleared_to_move.value}
     http:
-      headers: '${{"Idempotency-Key": inputs.idempotency_key}}'
-      json: '${{"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents}}'
+      headers:
+        Idempotency-Key: ${inputs.idempotency_key}
+      json:
+        account_id: ${inputs.from_account_id}
+        amount_cents: ${inputs.amount_cents}
       method: POST
       outputs:
         reference: ${response.json.reference}
@@ -192,15 +195,21 @@ steps:
       # debited account back - rather than a third "reverse" endpoint, the
       # same account-in-the-body shape as the ordinary steps above.
       http:
-        headers: '${{"Idempotency-Key": inputs.idempotency_key + "-undo-debit"}}'
-        json: '${{"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents}}'
+        headers:
+          Idempotency-Key: ${inputs.idempotency_key + "-undo-debit"}
+        json:
+          account_id: ${inputs.from_account_id}
+          amount_cents: ${inputs.amount_cents}
         method: POST
         url: https://ledger.internal.example.com/credit
   - id: credit
     if: ${steps.cleared_to_move.value}
     http:
-      headers: '${{"Idempotency-Key": inputs.idempotency_key}}'
-      json: '${{"account_id": inputs.to_account_id, "amount_cents": inputs.amount_cents}}'
+      headers:
+        Idempotency-Key: ${inputs.idempotency_key}
+      json:
+        account_id: ${inputs.to_account_id}
+        amount_cents: ${inputs.amount_cents}
       method: POST
       outputs:
         reference: ${response.json.reference}
@@ -208,8 +217,11 @@ steps:
       url: https://ledger.internal.example.com/credit
     undo:
       http:
-        headers: '${{"Idempotency-Key": inputs.idempotency_key + "-undo-credit"}}'
-        json: '${{"account_id": inputs.to_account_id, "amount_cents": inputs.amount_cents}}'
+        headers:
+          Idempotency-Key: ${inputs.idempotency_key + "-undo-credit"}
+        json:
+          account_id: ${inputs.to_account_id}
+          amount_cents: ${inputs.amount_cents}
         method: POST
         url: https://ledger.internal.example.com/debit
 
@@ -222,7 +234,10 @@ steps:
   - id: notify_settlement
     if: ${steps.cleared_to_move.value}
     http:
-      json: '${{"idempotency_key": inputs.idempotency_key, "debit_reference": steps.debit.reference, "credit_reference": steps.credit.reference}}'
+      json:
+        idempotency_key: ${inputs.idempotency_key}
+        debit_reference: ${steps.debit.reference}
+        credit_reference: ${steps.credit.reference}
       method: POST
       url: https://settlements.internal.example.com/notify
   - id: rejected

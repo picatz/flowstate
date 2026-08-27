@@ -43,7 +43,9 @@ steps:
       outputs:
         id: ${"stage-" + response.json.args.to}
       parse_json: true
-      query: '${{"shift": inputs.service, "to": string(inputs.percent)}}'
+      query:
+        shift: ${inputs.service}
+        to: ${string(inputs.percent)}
       url: https://httpbin.org/get
     undo:
       # `${steps.shift.id}` — a step reading its own output, which parses only
@@ -54,7 +56,8 @@ steps:
       # all: there is nothing left to evaluate later.
       http:
         method: GET
-        query: '${{"revert": steps.shift.id}}'
+        query:
+          revert: ${steps.shift.id}
         url: https://httpbin.org/get
   - id: record
     description: write the stage into the rollout log
@@ -63,12 +66,15 @@ steps:
       outputs:
         id: ${"entry-" + response.json.args.stage}
       parse_json: true
-      query: '${{"record": inputs.service, "stage": steps.shift.id}}'
+      query:
+        record: ${inputs.service}
+        stage: ${steps.shift.id}
       url: https://httpbin.org/get
     undo:
       http:
         method: GET
-        query: '${{"erase": steps.record.id}}'
+        query:
+          erase: ${steps.record.id}
         url: https://httpbin.org/get
 
   # The canary check, and the step this example fails on when asked to. No
@@ -84,7 +90,8 @@ steps:
     http:
       expect: ${(inputs.unhealthy_at == 0 || inputs.percent < inputs.unhealthy_at) && response.status_code == 200}
       method: GET
-      query: '${{"canary": string(inputs.percent)}}'
+      query:
+        canary: ${string(inputs.percent)}
       url: https://httpbin.org/status/200
 outputs:
   stage:

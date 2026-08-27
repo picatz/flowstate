@@ -315,7 +315,8 @@ steps:
               replicas: "${(type(response.json) == type({}) && has(response.json.replicas)) ? response.json.replicas : -1}"
               retired: '${(type(response.json) == type({}) && has(response.json.retired)) ? response.json.retired : "absent"}'
             parse_json: true
-            query: '${{"name": inputs.target}}'
+            query:
+              name: ${inputs.target}
             url: https://control-plane.internal.example.com/workloads/status
 
         # Whether this pass got an answer it can actually use - including whether
@@ -417,7 +418,9 @@ steps:
             backoff: 2.0
             max_interval: 10s
           http:
-            json: '${{"name": inputs.target, "replicas": steps.next_desired.value}}'
+            json:
+              name: ${inputs.target}
+              replicas: ${steps.next_desired.value}
             method: POST
             outputs:
               status: ${response.status_code}

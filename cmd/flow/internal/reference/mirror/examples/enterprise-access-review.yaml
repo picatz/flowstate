@@ -111,7 +111,9 @@ steps:
               resource: ${grant.resource}
               role: ${grant.role}
             parse_json: true
-            query: '${{"grantee": grant.grantee, "resource": grant.resource}}'
+            query:
+              grantee: ${grant.grantee}
+              resource: ${grant.resource}
             url: https://iam.internal.example.com/access-grants/last-used
 
   # The gate. A compliance review that auto-closes itself is not a review -
