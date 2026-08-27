@@ -113,6 +113,7 @@ package metricschema
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -219,6 +220,13 @@ const (
 	// spells the same idea one subject over. Values are
 	// [OutcomeSuccess]/[OutcomeError] and nothing else.
 	TaskOutcome = "flowstate.task.outcome"
+
+	// RunOutcome is "success" or "error", spelled the way [TaskOutcome] and
+	// [PluginOutcome] spell the same idea for their own subjects. A run that
+	// continues as new is neither: see the doc on
+	// [InstrumentRunExecutions] for why a Continue-As-New segment boundary
+	// records nothing here at all.
+	RunOutcome = "flowstate.run.outcome"
 
 	// Driver is which execution driver recorded the measurement: "local" or
 	// "durable" ([DriverLocal], [DriverDurable]).
@@ -329,6 +337,7 @@ var Table = []Attribute{
 	{Key: TriggerName, Class: ClassConfiguration, Chooser: "the deployment, by the triggers its Flowfiles declare"},
 	{Key: DeliveryJoined, Class: ClassConstruction, Chooser: "this repository: whether a delivery joined a run its event had already started"},
 	{Key: TaskOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
+	{Key: RunOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
 	{Key: Driver, Class: ClassConstruction, Chooser: "this repository: local, durable"},
 	{Key: PolicySurface, Class: ClassConstruction, Chooser: "this repository's deny-by-default surfaces"},
 	{Key: ErrorType, Class: ClassConstruction, Chooser: "this repository's error classification (v1.ErrorKind)", Convention: "OpenTelemetry semconv v1.41.0"},
@@ -400,6 +409,43 @@ const (
 	// today answers by reading logs.
 	InstrumentPolicyDenials = "flowstate.policy.denials"
 
+	// InstrumentRunStarts counts a run beginning: submitted, admitted, and its
+	// first segment underway. #917's first half — until now no instrument
+	// answered "runs per tenant per hour" or "is anything even starting",
+	// and both had to be derived from spans or `flow list`.
+	//
+	// Counted once per run, never once per Continue-As-New segment: a long
+	// workload that continues five times started once, and a counter that
+	// incremented on every segment would report five starts for one
+	// submission. See the recording sites — [RecordRunStart] locally,
+	// `engine.recordRunStart` durably — for how each tells a fresh run from a
+	// resumed one.
+	InstrumentRunStarts = "flowstate.run.starts"
+
+	// InstrumentRunDuration is how long one run took, in seconds, from the
+	// moment it started to its terminal outcome — success or failure, never a
+	// Continue-As-New handover, which is not a run ending.
+	//
+	// Durably this measures the *segment* that ends the run, not the sum of
+	// every segment a long workload was continued through: Temporal gives a
+	// continued execution a fresh WorkflowExecutionStartTime, and RunState
+	// carries no earlier one to subtract from it. For the common case — no
+	// Continue-As-New — this is the whole run's duration, which is why the
+	// simpler answer was taken rather than plumbing a start timestamp through
+	// every segment for a case #917 did not ask about. A future change that
+	// wants the whole chain's duration has to carry that timestamp in
+	// RunState the way Identity and Trigger already are.
+	InstrumentRunDuration = "flowstate.run.duration"
+
+	// InstrumentRunExecutions counts run completions, by outcome — the
+	// "step failure rate" and "runs per tenant" answer #917 asked for,
+	// mirroring [InstrumentTaskExecutions] one level up. A Continue-As-New
+	// segment boundary is not a completion and records neither this nor
+	// [InstrumentRunDuration]: the run has not reached a terminal outcome, it
+	// has been handed to its next segment, and counting that as a completion
+	// would make one submission look like several runs.
+	InstrumentRunExecutions = "flowstate.run.executions"
+
 	// The plugin surface, which predates this table and now reads its names
 	// from it. Recorded in plugin/telemetry.go.
 	InstrumentPluginOperationDuration = "flowstate.plugin.operation.duration"
@@ -455,6 +501,22 @@ var Instruments = []Instrument{
 		Name:        InstrumentPolicyDenials,
 		Description: "dispatches refused by a deny-by-default policy surface",
 		Keys:        []string{PolicySurface, TaskName, Driver},
+	},
+	{
+		Name:        InstrumentRunStarts,
+		Description: "runs started, one per submission regardless of how many Continue-As-New segments it takes",
+		Keys:        []string{WorkflowName, Driver},
+	},
+	{
+		Name:        InstrumentRunDuration,
+		Unit:        "s",
+		Description: "duration of one run, from start to its terminal outcome",
+		Keys:        []string{WorkflowName, Driver, RunOutcome, ErrorType},
+	},
+	{
+		Name:        InstrumentRunExecutions,
+		Description: "run completions, by outcome",
+		Keys:        []string{WorkflowName, Driver, RunOutcome, ErrorType},
 	},
 	{
 		Name:        InstrumentPluginOperationDuration,
@@ -586,14 +648,45 @@ func NewLimiter(maxValuesPerKey int) *Limiter {
 	return &Limiter{maxValues: maxValuesPerKey, seen: map[string]map[string]struct{}{}}
 }
 
-// defaultLimiter is what the package-level [Attributes] and [WithAttributes]
-// use, so every recording site in the process shares one cardinality budget.
-var defaultLimiter = NewLimiter(MaxValuesPerKey)
+// defaultLimiterPtr holds what the package-level [Attributes] and
+// [WithAttributes] use, so every recording site in the process shares one
+// cardinality budget — an [atomic.Pointer] rather than a bare var because
+// [SwapDefaultLimiterForTest] replaces it from a test goroutine while other
+// tests in the same package may be recording through it concurrently, and a
+// bare pointer swapped under those conditions is a data race `-race` would
+// catch on exactly the tests this exists to isolate.
+var defaultLimiterPtr = func() *atomic.Pointer[Limiter] {
+	var p atomic.Pointer[Limiter]
+	p.Store(NewLimiter(MaxValuesPerKey))
+	return &p
+}()
+
+// SwapDefaultLimiterForTest installs a fresh [Limiter] as the one every
+// package-level [Attributes]/[WithAttributes] call goes through, and returns
+// a function that restores the one it replaced.
+//
+// The shared budget [defaultLimiterPtr] gives every recording site is correct
+// for a deployment's whole lifetime, where the set of workflows and tasks a
+// build registers is fixed and small. It is wrong for this repository's own
+// test binaries: hundreds of independent test cases share one process, many
+// of them driving a workflow named uniquely for that one case, so a label
+// with genuinely bounded cardinality in any real deployment — see
+// [WorkflowName]'s classification — looks unbounded by the time a later test
+// reads it, and collapses to [OverflowValue] for a reason that has nothing to
+// do with what that test is checking. [conformance.RecordMetrics] calls this
+// for every test that installs its own meter provider, the identical
+// isolation that swap already gives the OTel global.
+func SwapDefaultLimiterForTest() func() {
+	previous := defaultLimiterPtr.Load()
+	defaultLimiterPtr.Store(NewLimiter(MaxValuesPerKey))
+
+	return func() { defaultLimiterPtr.Store(previous) }
+}
 
 // Attributes filters attrs to the schema and bounds their values, per the
 // rules in the package documentation.
 func Attributes(attrs ...attribute.KeyValue) []attribute.KeyValue {
-	return defaultLimiter.Attributes(attrs...)
+	return defaultLimiterPtr.Load().Attributes(attrs...)
 }
 
 // WithAttributes is [Attributes] as a measurement option, which is how a
@@ -601,7 +694,7 @@ func Attributes(attrs ...attribute.KeyValue) []attribute.KeyValue {
 // through this function rather than through metric.WithAttributes, so no path
 // reaches an instrument without passing the schema.
 func WithAttributes(attrs ...attribute.KeyValue) metric.MeasurementOption {
-	return defaultLimiter.WithAttributes(attrs...)
+	return defaultLimiterPtr.Load().WithAttributes(attrs...)
 }
 
 // Attributes filters attrs to the schema and bounds their values.
