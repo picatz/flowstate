@@ -125,8 +125,19 @@ const (
 	// internal key — its interceptor is disabled by default
 	// (`grpc_dialer.go:151-153`), so a raw call made without it is not retried
 	// at all. Re-implementing those is a copy of SDK internals that fails
-	// silently when the SDK moves. #1135 is where that trade is the open
-	// question.
+	// silently when the SDK moves.
+	//
+	// #1135 priced that trade and decided against it (2026-08-30): the
+	// transitive bound above IS the round-trip bound, documented here where
+	// the independent budget would have gone. What it concedes, sized rather
+	// than felt: a peer answering one event per page costs one request per
+	// event, so the worst case is maxTimelineScan round trips — and the peer
+	// who could choose that shape is the Temporal substrate, which the threat
+	// model already trusts with every payload it stores (THREAT_MODEL.md's
+	// substrate-access paragraph). A conforming server's round trips are
+	// events over page size. The standing ask is upstream: token access on
+	// the SDK's history iterator, which would make a real budget one field
+	// and one loop bound. Revisit there, not here.
 	//
 	// A deployment that raised Temporal's own cap far enough gets a truncated
 	// answer rather than a wrong one, and an empty truncated answer says so
