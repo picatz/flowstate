@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -288,6 +290,78 @@ func httpPreparedInputs(ctx context.Context, input map[string]*Value, scope *Sco
 	return taskInputs, outputsExpr, expectSpec, headersSpec, nil
 }
 
+// refuseCleartextCredential refuses a request that would carry a bearer
+// secret or a JIT federation credential to a non-loopback http:// destination.
+//
+// Mirrors secrets/vault/vault.go's parseAddress guard against sending Vault's
+// own client token in cleartext (see vault.go:751-766, "would send the client
+// token in cleartext"): same idiom, and the identical loopback exception —
+// applied here where the http task is about to do the analogous thing with a
+// workflow-resolved credential rather than with Vault's own token.
+//
+// It runs on taskInputs and the request's already-built URL, before either
+// [ResolveSecret] or [AuthorizeCredential] is ever called, so a refused
+// request never reaches a secret backend and never triggers a live IdP
+// exchange. That ordering is the point: had this run after resolution, the
+// secret would already have left the reference behind, been read from
+// wherever it lives, and be sitting in memory for a request this function is
+// about to say should never have been made.
+//
+// Deliberately not a `flow validate` diagnostic. Whether a deployment
+// terminates TLS in front of the worker — a sidecar, a service mesh — is a
+// property of the deployment, not of the workflow file, and a validator runs
+// in an author's editor with no way to know it. See CLAUDE.md, "report what
+// is a property of the file, and stay silent about what a deployment
+// decides."
+//
+// Out of scope, deliberately: the plugin credential path (plugin/task.go)
+// resolves its own secret inputs and egresses on its own policy. This
+// function has no visibility into a plugin's request and does not cover it —
+// see #963.
+func refuseCleartextCredential(taskInputs *Task_HTTP_Inputs, reqURL *url.URL) error {
+	if taskInputs.GetBearer() == nil && taskInputs.GetCredential() == "" {
+		// Neither carries a resolved credential, so there is nothing this
+		// request could leak by going out in the clear.
+		return nil
+	}
+	if reqURL.Scheme != "http" {
+		// https, or any other scheme the schema's own validation already
+		// restricts to http/https — either way, not cleartext.
+		return nil
+	}
+	if isLoopbackHost(reqURL.Hostname()) {
+		// The one case plaintext http leaks nothing to the network: the
+		// request never leaves the machine, the same reasoning vault.go
+		// applies to a Vault Agent sidecar.
+		return nil
+	}
+
+	return NewTaskError("http", ErrorKindPolicyDenied, fmt.Errorf(
+		"%s would send a credential in cleartext; use https, or http only for "+
+			"a loopback address such as a sidecar terminating TLS",
+		reqURL.Redacted()))
+}
+
+// isLoopbackHost reports whether host names the local machine — literally
+// "localhost", or an address that parses and is its own loopback range.
+//
+// Matches secrets/vault/vault.go's isLoopback exactly: no DNS resolution, so a
+// hostname that merely *resolves* to a loopback address today (and might
+// resolve anywhere tomorrow) is not exempt. Only what the file itself spells
+// out as loopback is trusted as loopback.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+
+	return ip.IsLoopback()
+}
+
 func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 	return func(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 		taskInputs, outputsExpr, expectSpec, headersSpec, err := httpPreparedInputs(ctx, input, scope)
@@ -340,6 +414,15 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), requestURL, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		}
+
+		// Refused here, before anything below reads a secret. The destination is
+		// fully known — httpReq.URL — and so is whether this request carries a
+		// credential — taskInputs says so directly — so the refusal costs no
+		// secret backend call and no live IdP exchange for a request that will
+		// never be sent. See [refuseCleartextCredential].
+		if err := refuseCleartextCredential(taskInputs, httpReq.URL); err != nil {
+			return nil, err
 		}
 
 		// Apply request headers if provided.

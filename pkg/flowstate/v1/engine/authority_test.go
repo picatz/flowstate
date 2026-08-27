@@ -86,3 +86,24 @@ func TestAuthorityContainment(t *testing.T) {
 		})
 	}
 }
+
+// TestCleartextCredential runs #963 half one's shared cases against the
+// durable driver. The local driver runs the same cases in eval_test.go.
+func TestCleartextCredential(t *testing.T) {
+	tlsServer := conformance.NewTLSCredentialServer(t)
+	tlsServer.InstallTrustingHTTPTask(t)
+
+	for _, test := range conformance.CleartextCredentialCases(tlsServer.URL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runAuthorityCase(t, test)
+			if test.Authority.ProviderCalls != nil {
+				require.Zero(t, test.Authority.ProviderCalls.Load(),
+					"the fixture secret provider was consulted for a request the cleartext refusal should have stopped first")
+			}
+			if test.Authority.Federation != nil && test.Authority.Federation.ExchangeCalls != nil {
+				require.Zero(t, test.Authority.Federation.ExchangeCalls.Load(),
+					"the fixture broker exchanged a credential for a request the cleartext refusal should have stopped first")
+			}
+		})
+	}
+}
