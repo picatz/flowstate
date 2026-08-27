@@ -243,13 +243,19 @@ func TestATimelineReportsTheRetryNoRowCanHold(t *testing.T) {
 // find something already three lines up. That is a wrong claim rather than a
 // stale one, which is why it is worth its own test (Codex, #1142).
 //
-// The second case is the same state arriving differently. The schema says the
-// next-attempt field is unset while an attempt runs, but the server fills it
-// from Temporal's `scheduled_time` rather than its `next_attempt_schedule_time`,
-// and only the latter is documented to be null for a scheduled or started
-// activity — so a running attempt can reach the CLI carrying the moment it was
-// itself scheduled, which is behind us. A time already past is therefore read as
-// silence rather than as an overdue attempt.
+// One case now, and the absence of a second is the point. This had a companion
+// asserting that a next-attempt time already behind us also meant "running",
+// because the server filled that field from Temporal's `scheduled_time` — set
+// for every pending activity — rather than its `next_attempt_schedule_time`,
+// which is documented to be null while one is scheduled or started. So a running
+// attempt arrived carrying the moment it was itself scheduled, and this had to
+// guess from the clock.
+//
+// The server reads the documented field now (#1148), so a running attempt
+// carries nothing and presence alone answers it. The guess is gone, and with it
+// the state it mistook: a due time in the past is a retry whose worker has not
+// picked it up, which [TestTheRetryNoteCountsWhatItCanAndInventsNothing] asserts
+// is *named* rather than swallowed.
 func TestARetryThatIsAlreadyRunningIsNotAMissingRow(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -265,16 +271,6 @@ func TestARetryThatIsAlreadyRunningIsNotAMissingRow(t *testing.T) {
 			because: "the failure this note claims has no row was written into the " +
 				"account when this attempt started, so the note points at a row the " +
 				"reader can already see",
-		},
-		{
-			name: "the schedule it carries is already behind us",
-			pending: &v1.PendingActivity{
-				Attempt:                  3,
-				LastFailure:              "connection refused",
-				NextAttemptScheduledTime: timestamppb.New(time.Now().Add(-time.Minute)),
-			},
-			because: "a moment already past is the attempt's own scheduling rather than " +
-				"a wait still to come, and claiming a missing row on it is a guess",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -309,6 +305,18 @@ func TestARetryThatIsAlreadyRunningIsNotAMissingRow(t *testing.T) {
 // pending activity. That step's scheduling is already in the account, with
 // nothing missing from it — announcing a retry there would put a warning on
 // every running workload, and a warning that is always on is one nobody reads.
+//
+// A first attempt carrying a next-attempt time used to be a case here, and it is
+// gone because the state is not one Temporal produces: `next_attempt_schedule_time`
+// is set when an attempt has failed and the next is due, so an activity holding
+// one is on at least its second. It was representable only while the server
+// filled that field from `scheduled_time`, which every pending activity has
+// (#1148).
+//
+// Deleted rather than guarded. Keeping an attempt-count check beside the
+// presence check would be two branches asking one question, which is how they
+// come to disagree — and the cost of trusting the field is a misstated attempt
+// number, against the cost of a second source of truth for what "waiting" means.
 func TestABusyRunIsNotDescribedAsAStuckOne(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -328,18 +336,6 @@ func TestABusyRunIsNotDescribedAsAStuckOne(t *testing.T) {
 			},
 			because: "a step running its first attempt has failed at nothing, and its " +
 				"scheduling is already a row in the account above",
-		},
-		{
-			name: "a first attempt still waiting for a worker",
-			present: &v1.GetResponse{
-				Status: v1.RunResponse_STATUS_RUNNING,
-				PendingActivities: []*v1.PendingActivity{{
-					Attempt:                  1,
-					NextAttemptScheduledTime: timestamppb.New(time.Now().Add(stillAhead)),
-				}},
-			},
-			because: "a schedule in the future is only half of it — nothing has failed, " +
-				"so no row is missing and the wait is ordinary queueing",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -631,13 +627,14 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 				"would claim a missing row the reader can see",
 		},
 		{
-			name: "a schedule already behind us says nothing",
+			name: "a schedule already behind us is overdue, not silent",
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 				backingOff(3, now.Add(-time.Minute)),
 			}},
-			want: "",
-			because: "a moment already past is the running attempt's own scheduling " +
-				"rather than a wait still to come",
+			want: opening + "one step is retrying — attempt 3 is due and has not started" + tail,
+			because: "a backoff that has expired with no worker on it is a backlog or an " +
+				"outage, which is the state a reader most wants named — and it read as " +
+				"silence while the field could not distinguish waiting from running (#1148)",
 		},
 		{
 			name: "several waiting steps name the furthest along",
@@ -653,7 +650,12 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 		{
 			name: "a first attempt in flight is not counted as a retry",
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
-				{Attempt: 1, NextAttemptScheduledTime: timestamppb.New(now.Add(time.Minute))},
+				// No next attempt, which is what a running attempt looks like:
+				// Temporal leaves the field null while one is scheduled or
+				// started. The fixture carried a time here until the server
+				// began reading the documented field, because every pending
+				// activity used to have one (#1148).
+				{Attempt: 1},
 				backingOff(4, now.Add(45*time.Second)),
 			}},
 			want:    opening + "one step is retrying — attempt 4 is due in 45s" + tail,
