@@ -641,12 +641,26 @@ repository has twice paid for, or an allowlist, which rots. What the number is
 for is that a *new* one arrives in a diff somebody is reading, where the answer
 — assert the corpus is non-empty, outside the loop — is one line.
 
-The largest single cluster is the conformance corpus, and that one is better
-answered at its source than at forty call sites: a test in
-`pkg/flowstate/v1/internal/conformance` asserting that every exported case
-function returns cases, beside `callers_test.go`, which already walks that
-package for the two-callers rule and already cites `ZeroValueCases` for why.
-Named here as the next thing rather than swept.
+The largest single cluster is the conformance corpus, and that one is answered
+at its source rather than at forty call sites — `corpora_test.go`, beside
+`callers_test.go`, which already walks that package for the two-callers rule
+and already cites `ZeroValueCases` for why. The two ask one question at two
+depths: that file asks whether both drivers *call* each corpus, this one asks
+whether calling it is worth anything.
+
+Those forty sites still appear in the report, because the tool cannot see a
+guarantee made in another package — which is the honest limit of a syntactic
+check and worth knowing before reading the number as forty open problems.
+
+The mechanism is `tools/fuzztargets`' shape once more: a hand-written table
+calling every corpus, a walk over the package's exported slice-returning
+functions, and a test that fails when the two disagree. A corpus not in the
+table is a finding; one in the table that no longer exists is a finding; and a
+function that is genuinely not a corpus goes in `notACorpus` **with a reason**,
+the same rule `oneSidedByDesign` next door already carries. Go cannot enumerate
+a package's functions at run time, so the list is written out — and the walk is
+what makes a written-out list trustworthy rather than a thing somebody
+remembered to update.
 
 Three properties worth knowing.
 
