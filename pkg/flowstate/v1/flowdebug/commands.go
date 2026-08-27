@@ -2,6 +2,7 @@ package flowdebug
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -87,6 +88,41 @@ var commands = []command{
 		help: "list these"},
 }
 
+// The one-line usages three verbs print when their argument is missing.
+//
+// Constants rather than literals at the printf, because [CheckScript] reports
+// the same three problems about a *file* before a session runs it, and the
+// advice a script author reads must be the advice the prompt gives: one
+// meaning, one place. See CLAUDE.md on a value with one meaning written down
+// twice.
+const (
+	usageUntil     = "until needs a step id: until <step-id>"
+	usageBreak     = "break needs a step id: break <step-id> [if <expr>]"
+	usageInspect   = "inspect needs an expression: inspect steps.build.artifact"
+	usageCondition = "`if` needs an expression: break <step-id> if <expr>"
+)
+
+// IsComment reports whether a line is a comment rather than a command.
+//
+// `#` is the comment marker, and it is answered *here* — in the one dispatch
+// every front goes through — rather than stripped by whoever reads a script
+// file. That placement is the whole point: a recorded script is the command
+// stream written down (see script.go), so `flow debug replay script wf` and
+// `flow run local --debug wf < script` are the same session only for as long as
+// nothing transforms the file on its way in. A comment understood at the prompt
+// is a comment understood everywhere.
+//
+// It was previously an unknown command, answered with a warning, which is the
+// worst of both: a reproduction pasted into an issue could not carry a sentence
+// saying what it reproduces without the session complaining about it once per
+// line.
+//
+// Not recorded either, for the same reason a mistyped command is not: the
+// script is what the session *did*.
+func IsComment(line string) bool {
+	return strings.HasPrefix(strings.TrimLeft(line, " \t"), "#")
+}
+
 // resolve returns the canonical verb for what was typed, and whether it is one
 // this session knows.
 func resolve(typed string) (command, bool) {
@@ -104,6 +140,12 @@ func resolve(typed string) (command, bool) {
 // command is answered and asked again, never fatal, because ending someone's
 // run over a typo is the worst possible reading of an ambiguous line.
 func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scope *v1.Scope) (resumed bool, err error) {
+	if IsComment(line) {
+		// Nothing to do and nothing to say: see [IsComment]. Checked before
+		// the empty-line arm below, because a comment is not a step.
+		return false, nil
+	}
+
 	typed, rest := split(line)
 	if typed == "" {
 		// A bare newline repeats the most useful thing: one step. It is what
@@ -140,7 +182,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	case "until":
 		target := strings.TrimSpace(rest)
 		if target == "" {
-			s.printfTone(ToneWarning, "until needs a step id: until <step-id>\n")
+			s.printfTone(ToneWarning, "%s\n", usageUntil)
 
 			return false, nil
 		}
@@ -168,7 +210,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	case "inspect":
 		expression := strings.TrimSpace(rest)
 		if expression == "" {
-			s.printfTone(ToneWarning, "inspect needs an expression: inspect steps.build.artifact\n")
+			s.printfTone(ToneWarning, "%s\n", usageInspect)
 
 			return false, nil
 		}
@@ -544,7 +586,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	if id == "" {
-		s.printfTone(ToneWarning, "break needs a step id: break <step-id> [if <expr>]\n")
+		s.printfTone(ToneWarning, "%s\n", usageBreak)
 
 		return
 	}
@@ -657,7 +699,7 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 // implementation that could disagree with it.
 func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
 	if strings.TrimSpace(expression) == "" {
-		return nil, fmt.Errorf("`if` needs an expression: break <step-id> if <expr>")
+		return nil, errors.New(usageCondition)
 	}
 
 	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())

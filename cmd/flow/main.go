@@ -2333,34 +2333,12 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 			"continue, until, break, inspect, scope, quit; the console shares stderr "+
 			"with the run's account, so stdout stays the answer under every --output")
 
-	// Supplying signals up front is what makes an approval gate something an author
-	// can exercise on their laptop rather than first meeting in production. A local
-	// run is a process, so there is nobody to signal it after it starts; the local
-	// waiter buffers what is given here, so a gate reached later still finds its
-	// answer waiting — the same behavior the durable driver has because Temporal
-	// buffers signals for a run.
-	runLocalCmd.Flags().StringArray("signal", nil,
-		`answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}'`)
-
-	// Who those answers are from. A gate whose `signals:` policy names an
-	// approver is unreachable without this: a delivery attesting nobody matches
-	// no `allow:` rule, so the only rehearsal available was the refusal. These
-	// name the approver every --signal of this run stands in for, and the same
-	// check production runs then admits or refuses it here - including
-	// `distinct_from_starter:`, compared against --as-subject/--as-issuer.
-	//
-	// Spelled to rhyme with --as-subject and its siblings, which name the
-	// starter, because they answer the same shape of question about the other
-	// party. Deliberately no --signal-as-deployment: no `signals:` rule can
-	// match on a deployment, so a flag for it would rehearse nothing.
-	runLocalCmd.Flags().String("signal-as-subject", "",
-		"authenticated subject to deliver --signal as, with --signal-as-issuer (local runs only)")
-	runLocalCmd.Flags().String("signal-as-issuer", "",
-		"authenticated issuer to deliver --signal as, with --signal-as-subject (local runs only)")
-	runLocalCmd.Flags().String("signal-as-namespace", "",
-		"tenant namespace to deliver --signal as (local runs only)")
-	runLocalCmd.Flags().StringArray("signal-as-claim", nil,
-		"authenticated string claim NAME=VALUE to deliver --signal as (repeatable)")
+	// Supplying signals up front, and naming who they are from. Declared
+	// through a helper because `flow debug replay` is the same local run with
+	// its commands read off disk rather than off a terminal, and needs the
+	// identical set — see [addLocalSignalFlags], which carries the whole
+	// argument for these five.
+	addLocalSignalFlags(runLocalCmd)
 
 	// Worker command, which starts a Temporal worker to process workflows and activities.
 	workerCmd := &cobra.Command{
@@ -3203,6 +3181,9 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	dapCmd := newDAPCommand()
 	dapCmd.GroupID = "development"
 	rootCmd.AddCommand(dapCmd)
+	debugCmd := newDebugCommand()
+	debugCmd.GroupID = "development"
+	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(keysCmd)
 	rootCmd.AddCommand(jwtCmd)
 	rootCmd.AddCommand(versionCmd)
