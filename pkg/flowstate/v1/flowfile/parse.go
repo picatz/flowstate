@@ -96,7 +96,10 @@ var (
 	// `async` is here rather than in nodeKindKeys for the reason `undo` is: it
 	// is not a kind of work, it is a property of a step doing some other kind —
 	// the one marker that lets execution depart from written order (#418).
-	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo", "async", "with", "digest"}
+	// `total_timeout` sits beside `timeout` rather than inside `retry:` because
+	// the bound it names binds a step that declares no `retry:` at all — see
+	// [v1.StepTimeoutsFor].
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "total_timeout", "retry", "continue_on_error", "undo", "async", "with", "digest"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -2022,6 +2025,30 @@ func (c *compiler) policy(fields *fieldSet, path string, r ref) *v1.StepPolicy {
 		if ok {
 			policy.Timeout = timeout
 			declared = true
+		}
+	}
+
+	if f, found := fields.get("total_timeout"); found {
+		total, ok := c.duration(f.value, fieldPath(path, "total_timeout"),
+			ref{step: r.step, path: fieldPath(path, "total_timeout"), label: "total_timeout"})
+		if ok {
+			policy.TotalTimeout = total
+			declared = true
+
+			// A total smaller than one attempt cannot allow one attempt: the
+			// step's whole budget expires inside the first try, so the
+			// `timeout:` beside it can never be the thing that fires and the
+			// step is bounded by a number the author almost certainly did not
+			// mean to be the only one. It is a property of the file — two
+			// literals in one step, comparable without knowing anything about
+			// the deployment — which is the test [validate.go]'s own standard
+			// sets for whether a diagnostic belongs here at all.
+			if timeout := policy.GetTimeout().AsDuration(); timeout > 0 && total.AsDuration() < timeout {
+				c.report(spanOfNode(f.key), ref{step: r.step, path: fieldPath(path, "total_timeout"), label: "total_timeout"},
+					"total_timeout: %s is shorter than timeout: %s, so the step's whole budget expires "+
+						"inside its first attempt; raise total_timeout: above timeout:, or lower timeout: to fit",
+					total.AsDuration(), timeout)
+			}
 		}
 	}
 

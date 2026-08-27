@@ -130,6 +130,13 @@ headings below, not this list.*
   - [Why a label is not an input](#why-a-label-is-not-an-input)
   - [What it is for: the filter](#what-it-is-for-the-filter)
   - [The memo, not a search attribute](#the-memo-not-a-search-attribute)
+- [The twelfth round: three clocks, and the one an SLA means](#the-twelfth-round-three-clocks-and-the-one-an-sla-means)
+  - [The bound existed; the sentence for it did not](#the-bound-existed-the-sentence-for-it-did-not)
+  - [The spelling](#the-spelling-3)
+  - [On the step, not under `retry:`](#on-the-step-not-under-retry)
+  - [Three timeouts, three different promises](#three-timeouts-three-different-promises)
+  - [An explicit value wins outright](#an-explicit-value-wins-outright)
+  - [What it deliberately does not add](#what-it-deliberately-does-not-add)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -5110,6 +5117,113 @@ anything, because a visibility query is an optimization hint and never a boundar
 `versioning_info` rather than a memo, because it is a fact about where the run is
 *executing* — one that legitimately changes at Continue-As-New — and a memo written at
 submit would freeze a value the run itself does not honour.
+
+## The twelfth round: three clocks, and the one an SLA means
+
+### The bound existed; the sentence for it did not
+
+A step has always been bounded twice. `timeout:` bounds one attempt, and
+`v1.DefaultScheduleToCloseTimeout` — ten minutes — bounds the step across every
+attempt and every wait between them, on both drivers, whether or not the step
+writes a `retry:` block at all. The durable driver passes the second to Temporal
+as the activity's `ScheduleToCloseTimeout`; the local driver wraps its retry loop
+in a context deadline carrying that same value as a named cause. One precedence
+function, `v1.StepTimeoutsFor`, decides both for both drivers.
+
+What no Flowfile could do was *say what the second one is*. An author who needed
+"give up after ten minutes, however many tries that takes" had to work backwards
+from the backoff curve to an attempt count — arithmetic that is wrong the moment
+any interval changes, and that says nothing about the thing they actually meant.
+That is this repository's own definition of scaffolding: a capability complete,
+tested, and unreachable from a file.
+
+### The spelling
+
+```yaml
+- id: provision
+  http:
+    method: POST
+    url: https://api.example.com/clusters
+  timeout: 30s         # one attempt
+  total_timeout: 10m   # the deadline: stop after ten minutes, whatever the attempts
+  retry:
+    attempts: 20
+    interval: 5s
+    backoff: 2
+```
+
+### On the step, not under `retry:`
+
+The obvious place is inside `retry:`, beside `attempts:` and `interval:`, and it
+is the wrong one. The bound this key names already applies to a step with no
+`retry:` block whatsoever: a single twenty-minute attempt is cut at ten minutes
+today. Writing it under `retry:` would spell "this bound exists only when
+retrying does", which is false of the mechanism it maps to, and would leave an
+author with no way to bound a step that never retries.
+
+So `retry:` remains the one spelling of *retry*, and this is the one spelling of
+the step's other clock — exactly as `v1.StepTimeouts` already pairs the two as
+one type in the package both drivers import.
+
+The name is `total_timeout:` and not `schedule_to_close:`. The Go type is named
+after Temporal's option deliberately and internally; the schema is public, and a
+public key naming a transport is a transport we can never change.
+
+### Three timeouts, three different promises
+
+The cost of putting it here is that an author now has three keys with `timeout`
+in the name, and they must read as three different promises rather than three
+spellings of one:
+
+| key | what it bounds | what happens when it fires |
+| --- | --- | --- |
+| `timeout:` on a step | one attempt at it | the attempt fails; `retry:` may try again |
+| `total_timeout:` on a step | the step, across every attempt and every wait between them | the step fails; there is no further attempt |
+| `timeout:` inside `wait_for_signal:` | how long the gate waits | not a failure at all: the step produces `timed_out: true` and the run carries on |
+
+The third is the one that is genuinely a different kind of thing, and it always
+was. The first two are the same kind of thing at two scales, which is why they
+sit next to each other on the step and why `flow fix` writes them in that order.
+
+### An explicit value wins outright
+
+One behavioral decision, and it is the only one this round makes.
+`StepTimeoutsFor` *widens* the overall bound when a declared `timeout:`
+multiplied by the attempts allowed would not fit inside it — otherwise a step
+declaring a five-minute `timeout:` would be cut short at ten minutes by a
+ceiling derived from defaults rather than by its own policy.
+
+A declared `total_timeout:` **suppresses that widening**. The widening exists to
+stop a default from overriding what an author wrote; once the author has written
+the overall bound themselves, there is nothing left for it to protect, and a
+deadline the engine silently extends is not a deadline. A step declaring neither
+key behaves exactly as it always has.
+
+The compiler refuses one arrangement with a position: a `total_timeout:` shorter
+than the `timeout:` beside it, because a budget that expires inside the first
+attempt allows no attempt at all. Both values are literals in one step, so this
+is a property of the file rather than of a deployment, which is the line
+`flowfile/validate.go` draws for what a diagnostic may say.
+
+### What it deliberately does not add
+
+**Two-phase fast/slow retry gets no spelling**, and the judgment is recorded here
+rather than left open. With a wall-clock bound plus `max_interval:`, "try fast,
+then back off and keep trying until the deadline" is already expressible: a short
+`interval:`, a `backoff:` capped by `max_interval:`, bounded by `total_timeout:`.
+That is the shape most deadlines actually want. A genuine two-phase policy is a
+second `RetryPolicy` inside one step, which is a grammar question rather than a
+field, and it should be asked as one if anyone ever needs it.
+
+**And the diagnostic for a budget that lapses mid-backoff is not finished.**
+Temporal raises a timeout when a deadline reaches an attempt that is *in flight*;
+a `ScheduleToClose` budget running out during a backoff instead returns the last
+attempt's failure with a `RetryState` field distinguishing it, and nothing else
+doing so. So that case still reads as the dependency's own error rather than as
+the budget. The arm is one condition — and `testsuite`'s environment leaves
+`RetryState` unspecified, so it could be written and could not be tested, which
+is not a bar this repository lowers for a claim about a substrate's error shape.
+It is a follow-up, named rather than quietly skipped.
 
 ## The standing rule
 

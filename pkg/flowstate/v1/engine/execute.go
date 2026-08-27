@@ -904,24 +904,40 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 // path, read here instead of there because a step's own policy — not a
 // compensation's narrowed budget — is what names the origin.
 func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
-	var timeoutErr *temporal.TimeoutError
-	if !errors.As(err, &timeoutErr) {
+	timeoutType, imposed := durableStepTimeoutType(err)
+	if !imposed {
 		return err
-	}
-
-	origin := "the step default; set timeout: on the step to change it"
-	if policy.GetTimeout().AsDuration() > 0 {
-		origin = "the step's declared timeout:"
 	}
 
 	timeouts := v1.StepTimeoutsFor(policy, v1.DefaultStepTimeouts())
 
-	var budgeted string
-	switch timeoutErr.TimeoutType() {
+	// The origin is per timeout type, not per step. Both arms named `timeout:`
+	// before `total_timeout:` existed, which was already the wrong key for the
+	// overall bound: an operator told "every attempt together exceeded 10m0s
+	// (the step default; set timeout: on the step to change it)" who then set
+	// `timeout:` would move the per-attempt bound and watch the same failure
+	// happen at the same ten minutes. Each arm names the key that actually moves
+	// the number in the sentence beside it.
+	var budgeted, origin string
+	switch timeoutType {
 	case enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
 		budgeted = fmt.Sprintf("one attempt exceeded %s", timeouts.StartToClose)
+		origin = "the step default; set timeout: on the step to change it"
+		if policy.GetTimeout().AsDuration() > 0 {
+			origin = "the step's declared timeout:"
+		}
 	case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE:
 		budgeted = fmt.Sprintf("every attempt together exceeded %s", timeouts.ScheduleToClose)
+		origin = "the step default; set total_timeout: on the step to change it"
+		if policy.GetTotalTimeout().AsDuration() > 0 {
+			origin = "the step's declared total_timeout:"
+		} else if timeouts.ScheduleToClose != v1.DefaultScheduleToCloseTimeout {
+			// No `total_timeout:`, but a declared `timeout:` widened the overall
+			// bound to fit the attempts it allows, so the number above is derived
+			// from that key rather than from the default — and naming the default
+			// here would describe a value that is not the one that fired.
+			origin = "widened to fit the step's declared timeout: and attempts; set total_timeout: to bound it directly"
+		}
 	default:
 		// A schedule-to-start or heartbeat timeout names no per-step budget this
 		// engine sets, so there is nothing this can say beyond Temporal's own
@@ -934,6 +950,40 @@ func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
 		err:     err,
 		message: fmt.Sprintf("timed out: %s (%s)", budgeted, origin),
 	}
+}
+
+// durableStepTimeoutType reports which per-step budget Temporal ended the
+// activity on, and whether one ended it at all.
+//
+// Split out from [durableStepTimeoutMessage] so the question "did a budget end
+// this?" is answered in one place, and so the answer is a timeout *type* rather
+// than an error — the origin sentence differs per type, because the two types
+// are set by two different keys.
+//
+// Only a [temporal.TimeoutError] counts, for the reason
+// [durableStepTimeoutMessage]'s doc gives at length, and it is read before
+// anything else in the chain.
+//
+// # A shape this deliberately does not claim to cover
+//
+// Temporal raises a TimeoutError when a deadline reaches an attempt that is *in
+// flight*. A ScheduleToClose budget running out during a *backoff* is a
+// different shape: the server has the last attempt's failure in hand, so it
+// stops retrying and returns that, with `RetryState` distinguishing "the budget
+// ran out" from "the attempts ran out" and nothing else doing so. That case
+// reads today as the dependency's own error with no mention of the budget, and
+// it is not fixed here: `testsuite`'s environment leaves RetryState Unspecified
+// on the error it hands back, so an arm reading it could be written and could
+// not be tested, and an untested claim about a substrate's error shape is
+// exactly the kind this repository has been wrong about before. Tracked as a
+// follow-up rather than landed on a guess.
+func durableStepTimeoutType(err error) (enumspb.TimeoutType, bool) {
+	var timeoutErr *temporal.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return timeoutErr.TimeoutType(), true
+	}
+
+	return enumspb.TIMEOUT_TYPE_UNSPECIFIED, false
 }
 
 // durableStepTimeoutError carries [durableStepTimeoutMessage]'s translated
