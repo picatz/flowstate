@@ -30,13 +30,24 @@ import (
 // is not a new spelling of anything; it is what the only two producers in the
 // tree already emit.
 //
-// The consequence worth stating is what it buys: `flow debug replay script wf`
-// and `flow run local --debug wf < script` cannot disagree, because there is no
-// transformation between the file and the stream for them to disagree about.
-// The moment replay pre-processed the file — stripping comments, dropping blank
-// lines, "normalising" anything — it would be a second answer to a question the
-// session already answers, which is the failure CLAUDE.md's two-drivers section
-// is about. Two things follow from that, and both are load-bearing:
+// The consequence worth stating is what it buys. `flow debug replay script wf`
+// and `flow run local --debug wf < script` cannot disagree about what a command
+// *does*, because there is no transformation between the file and the stream
+// for them to disagree about. The moment replay pre-processed the file —
+// stripping comments, dropping blank lines, "normalising" anything — it would
+// be a second answer to a question the session already answers, which is the
+// failure CLAUDE.md's two-drivers section is about.
+//
+// The two are not identical, and the difference is worth naming precisely
+// because it is the only one: [CheckScript] refuses some files that stdin would
+// have accepted and run — a misspelled verb, a `break` on a step nothing
+// declares, a blank line. That is a pre-flight over an artifact, in the same
+// category as `flow validate` refusing a file the engine would happily have
+// executed differently than its author meant; it changes what *starts*, never
+// what a line means once it does. Nothing here reinterprets a line the run then
+// executes.
+//
+// Two things follow from that, and both are load-bearing:
 //
 //   - A comment is understood by [Session.dispatch] itself rather than removed
 //     here. See [IsComment]: `#` had no meaning at the prompt, and giving it one
@@ -51,8 +62,10 @@ import (
 //     walk, in a file written by whoever had just documented the hazard.
 //     Refusing it costs a real recording nothing, because a recording cannot
 //     contain one: [Session.dispatch] answers an empty line by setting the verb
-//     to `step` and recording *that word*, so [Session.Script] never emits a
-//     blank. It is exactly the hand-written mistake, and nothing else.
+//     to `step` and recording *that word*, and the only other way into the
+//     recording — [Session.Control] — refuses a line holding a break before it
+//     is dispatched at all. So [Session.Script] never emits a blank, and this
+//     refuses exactly the hand-written mistake and nothing else.
 //
 // # No header
 //
@@ -143,6 +156,14 @@ func (p ScriptProblem) String() string {
 // deliberately, rather than a second pair invented for reading: a script larger
 // than [Session.Script] could ever have produced is not a recorded session, and
 // two numbers answering one question are two numbers that can disagree.
+//
+// They are not the same *measurement*, and the difference goes the safe way.
+// [MaxScriptBytes] bounds the recording's commands; here it bounds the file,
+// which also carries a newline per line and whatever comments somebody wrote.
+// So a recording sitting at the very top of its own byte budget, written out,
+// is a few tens of kilobytes over this — refused rather than admitted, which is
+// the direction to be wrong in, and a script that size stopped being a
+// reproduction anybody would read long before it got there.
 func ReadScript(r io.Reader) ([]string, error) {
 	// One byte over the bound, so that hitting the limit is distinguishable
 	// from a file that happens to end exactly there — the same reason [New]
