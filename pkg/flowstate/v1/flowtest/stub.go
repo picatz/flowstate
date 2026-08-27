@@ -1087,6 +1087,33 @@ func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitive sensi
 	return truncateRuneSafe(rendered, maxUnmatchedStubValueLen)
 }
 
+// formatUnmatchedStubEvalError renders a `where:` evaluation error for the
+// unmatched-stub diagnostic. CEL runtime errors can quote an operand's value
+// verbatim rather than just its type or position — `timestamp(inputs.token)`
+// on a non-RFC3339 string reports `invalid RFC 3339 timestamp "<the string>"`,
+// and an unresolved map/list index reports `no such key: <the key's value>`
+// — so this text is exactly as capable of leaking a sensitive input as the
+// invocation's own inputs are, and gets the same treatment (#977, filed from
+// #956, which built the redaction set this reuses).
+//
+// [whereSource] is exempt: it is the author's own text, never a runtime
+// value, so it needs no redaction and is printed as written.
+//
+// The tree comparison [formatUnmatchedStubValue] uses ([redactSensitiveTree]
+// and [isSensitiveValue]) is not available here — an error is a string by
+// the time it reaches this function, not a value with structure to walk —
+// so the only tool that applies is the textual backstop,
+// [redactSensitiveSubstrings]. When the redaction set could not be built at
+// all ([sensitiveInputs.withholdAll]), that backstop has nothing to check
+// the text against, so the fail-closed answer is to withhold the whole
+// message rather than print text nothing has cleared as safe.
+func formatUnmatchedStubEvalError(err error, sensitive sensitiveInputs) string {
+	if sensitive.withholdAll {
+		return "[redacted: where: evaluation error]"
+	}
+	return redactSensitiveSubstrings(err.Error(), sensitive.substrings)
+}
+
 // unmatchedStubError builds the diagnostic for a task invocation no declared
 // stub answered: what the invocation actually carried, redacted where
 // CLAUDE.md requires it, and every tried stub's `where:` beside whether it
@@ -1137,7 +1164,8 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 			case v.matched:
 				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> true", i+1, where)
 			case v.err != nil:
-				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> error: %s", i+1, where, v.err)
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> error: %s", i+1, where,
+					formatUnmatchedStubEvalError(v.err, sensitive))
 			default:
 				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> false", i+1, where)
 			}
