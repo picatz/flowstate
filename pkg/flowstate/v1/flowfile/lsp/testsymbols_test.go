@@ -230,4 +230,19 @@ func TestASymbolNameMatchesTheReportThroughQuotesAndComments(t *testing.T) {
 		"an escaped quote was read as the scalar's close, truncating the name")
 	assert.Equal(t, "it's fine", syms[1].Name,
 		"a doubled single quote was read as the close instead of the escape it is")
+
+	// And the class, not the instances: \u-style sequences decode too,
+	// because the value now goes through the same decoder the loader uses
+	// rather than a scan that learned escapes one review finding at a time
+	// (Codex, #1173, third round). One case suffices — the mechanism under
+	// test is "same decoder", not an escape inventory.
+	c.open("file:///unicode.test.yaml",
+		"tests:\n"+
+			"  - name: \"smoke\\u0020test\"\n")
+	syms = c.symbols("file:///unicode.test.yaml")
+
+	require.Len(t, syms, 1)
+	assert.Equal(t, "smoke test", syms[0].Name,
+		"a \\u escape the loader decodes was published verbatim, so the outline named a case "+
+			"flow test does not have")
 }

@@ -301,62 +301,25 @@ func scalarText(rest string) string {
 
 func unquote(s string) string {
 	s = strings.TrimSpace(s)
-	// A quoted scalar ends at its closing quote, and whatever follows — a
-	// trailing comment, stray text — is not the value. Checking the *last*
-	// byte for the close quote instead meant `name: "smoke" # primary` failed
-	// the quote test (the line ends in `y`) and fell through with its quotes
-	// still on, so the outline showed `"smoke"` while flow test's report says
-	// `smoke`, and a task hover looked up a quoted name the registry does not
-	// hold (Codex, #1173).
-	//
-	// The scan honors each style's own escape, because a bare first-quote
-	// search truncated `name: "say \"hi\""` to `say \` — and the first
-	// version here claimed that lost nothing, which was false: the last-byte
-	// check it replaced kept that name whole (Codex, #1173, second round). A
-	// double-quoted scalar escapes with a backslash and a single-quoted one by
-	// doubling the quote, and both unescape the quote itself so the name shown
-	// is the name the loader decodes and the report prints. Other
-	// double-quote escapes (`\n`, `\t`) are left as written — a case name
-	// carrying one is past what a line scan should interpret, and the loader
-	// remains the authority on it.
-	if len(s) >= 2 && s[0] == '"' {
-		var out strings.Builder
-		for i := 1; i < len(s); i++ {
-			switch {
-			case s[i] == '\\' && i+1 < len(s):
-				if next := s[i+1]; next == '"' || next == '\\' {
-					out.WriteByte(next)
-				} else {
-					out.WriteByte(s[i])
-					out.WriteByte(next)
-				}
-				i++
-			case s[i] == '"':
-				return out.String()
-			default:
-				out.WriteByte(s[i])
-			}
-		}
+	// Through [scalarText] — the real decoder, one screen up — rather than any
+	// substring surgery of this function's own. Three review rounds each found
+	// one more escape class this used to hand-decode (a trailing comment, an
+	// escaped quote, then \u-style sequences), and each fix was a step toward
+	// re-implementing the YAML scalar decoder beside the function that already
+	// calls it. Deriving from the one decoder is what ends the class: every
+	// escape the loader resolves, this resolves, because it is the same
+	// resolution (Codex, #1173, three rounds).
+	if v := scalarText(s); v != "" {
+		return v
 	}
-	if len(s) >= 2 && s[0] == '\'' {
-		var out strings.Builder
-		for i := 1; i < len(s); i++ {
-			if s[i] == '\'' {
-				if i+1 < len(s) && s[i+1] == '\'' {
-					out.WriteByte('\'')
-					i++
-					continue
-				}
-				return out.String()
-			}
-			out.WriteByte(s[i])
-		}
-	}
-	// Strip a trailing comment from a plain scalar.
+	// The parser refused the fragment — a mid-edit line, an unclosed quote —
+	// so degrade the way the old scan did: comment off a plain scalar, flanking
+	// quotes off the rest. Best-effort is honest here; the parseable case never
+	// reaches it.
 	if i := strings.Index(s, " #"); i >= 0 {
 		s = strings.TrimSpace(s[:i])
 	}
-	return s
+	return strings.Trim(s, `"'`)
 }
 
 // isRegisteredTask reports whether a key names a task the registry has.
