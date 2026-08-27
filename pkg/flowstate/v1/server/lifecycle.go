@@ -35,7 +35,8 @@ import (
 // errNoTenantRecorded reports that a run carries no tenant memo.
 var errNoTenantRecorded = errors.New("server: run has no recorded tenant")
 
-// authorizeRun reports whether the caller may act on a run.
+// authorizeRun reports whether the caller may act on a run, and audits the
+// decision it reached.
 //
 // It returns both what was learned about the run and **the client it was learned
 // through**, and every caller must act through that client rather than reaching
@@ -43,9 +44,45 @@ var errNoTenantRecorded = errors.New("server: run has no recorded tenant")
 // a verb that checked one namespace and then acted on another would be a check
 // that proved nothing, and returning the client makes doing it correctly the
 // path of least effort.
-func (s *FlowstateServer) authorizeRun(ctx context.Context, workflowID, runID string) (client.Client, *workflowservice.DescribeWorkflowExecutionResponse, error) {
+//
+// rpc is the WorkflowService method whose decision this is; the audit record is
+// keyed to an authorization action through it — see audit.go. A verb that has
+// to resolve a run more than once for one request calls
+// [FlowstateServer.authorizeRunDecision] directly and audits once itself.
+// [FlowstateServer.Signal] is the only one, and its comment says why.
+func (s *FlowstateServer) authorizeRun(ctx context.Context, rpc, workflowID, runID string) (client.Client, *workflowservice.DescribeWorkflowExecutionResponse, error) {
+	temporal, resp, code, err := s.authorizeRunDecision(ctx, workflowID, runID)
+	if err != nil {
+		if code == v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED {
+			// A malformed request, not a decision about a caller: no
+			// authorization question was reached, so there is nothing to record
+			// about one. Recording it anyway would put a denial in the trail
+			// for a request that nobody was refused.
+			return nil, nil, err
+		}
+
+		return nil, nil, s.auditDeny(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
+	}
+
+	if err := s.auditAllow(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, nil, err
+	}
+
+	return temporal, resp, nil
+}
+
+// authorizeRunDecision is the decision itself, carrying the reason it came out
+// the way it did.
+//
+// Separate from [FlowstateServer.authorizeRun] so that the deny code an audit
+// record carries is the one this function chose, rather than one recovered
+// afterwards by inspecting a connect error: the refusals below are deliberately
+// indistinguishable to the caller, which would make them indistinguishable to
+// that inspection too.
+func (s *FlowstateServer) authorizeRunDecision(ctx context.Context, workflowID, runID string) (client.Client, *workflowservice.DescribeWorkflowExecutionResponse, v1.AuditDenyCode, error) {
 	if workflowID == "" {
-		return nil, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("no workflow id"))
+		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED,
+			connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("no workflow id"))
 	}
 
 	caller := s.identityFor(ctx).GetNamespace()
@@ -58,21 +95,21 @@ func (s *FlowstateServer) authorizeRun(ctx context.Context, workflowID, runID st
 	// Temporal namespace — has tenants sharing a namespace again.
 	temporal, err := s.clientFor(caller)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err
 	}
 
 	resp, err := temporal.DescribeWorkflowExecution(ctx, workflowID, runID)
 	if err != nil {
 		// Whatever the cause — no such run, or a run in another tenant — the
 		// caller learns the same thing.
-		return nil, nil, notFound(workflowID)
+		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, notFound(workflowID)
 	}
 
 	if !s.ownedBy(caller, resp.GetWorkflowExecutionInfo().GetMemo()) {
-		return nil, nil, notFound(workflowID)
+		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, notFound(workflowID)
 	}
 
-	return temporal, resp, nil
+	return temporal, resp, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, nil
 }
 
 // ownedBy reports whether a run belongs to the given tenant.
@@ -407,7 +444,15 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// authorizeRun already read to establish tenancy — its memo is where the
 	// signal policy check below reads from too, so authorizing this signal costs
 	// no round trip beyond what tenancy already paid for.
-	temporal, resp, err := s.authorizeRun(ctx, workflowID, runID)
+	//
+	// Through the decision rather than through [FlowstateServer.authorizeRun],
+	// because this verb may ask twice: the chain walk below re-resolves the
+	// same request against the current execution, and that is one decision
+	// reached in two steps rather than two decisions. Auditing each lookup
+	// would write a denial for a request that the second lookup then allows.
+	// The single record is emitted once the resolution settles, before
+	// anything is delivered.
+	temporal, resp, code, err := s.authorizeRunDecision(ctx, workflowID, runID)
 	if runID != "" && (err != nil || resp.GetWorkflowExecutionInfo().GetFirstRunId() == runID) {
 		// run.run_id is Temporal's FirstRunID: it identifies the whole
 		// Continue-As-New chain, while SignalWorkflow interprets a non-empty run
@@ -415,14 +460,23 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 		// the current execution and accept it only when Temporal attests that it
 		// belongs to the requested chain. The comparison is what prevents a late
 		// callback from reaching a new workflow that reused the same workflow id.
-		if currentTemporal, currentResp, currentErr := s.authorizeRun(ctx, workflowID, ""); currentErr == nil &&
+		if currentTemporal, currentResp, _, currentErr := s.authorizeRunDecision(ctx, workflowID, ""); currentErr == nil &&
 			currentResp.GetWorkflowExecutionInfo().GetFirstRunId() == runID &&
 			currentResp.GetWorkflowExecutionInfo().GetExecution().GetRunId() != runID {
 			temporal, resp, err = currentTemporal, currentResp, nil
+			code = v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED
 			runID = "" // let Temporal route the signal to the current execution
 		}
 	}
 	if err != nil {
+		if code == v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED {
+			return nil, err
+		}
+
+		return nil, s.auditDeny(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
+	}
+
+	if err := s.auditAllow(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
 		return nil, err
 	}
 
@@ -493,6 +547,19 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		// exceeding Temporal's own limit, or a namespace predating
 		// [auth.ValidateNamespace]'s grammar (invariant 6: fail closed).
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// The decision, written down before anything is created or delivered.
+	//
+	// Here rather than at the already-running branch far below, because this
+	// RPC's authorization question is "may this caller start work under this
+	// entity key in their own namespace", and it is settled the moment the id
+	// composes: the entity may not exist yet, so there is no run to decide
+	// about. The tenancy check on the already-started path re-resolves that
+	// same decision against a run that turned out to exist — one decision, one
+	// record, the rule audit.go states.
+	if err := s.auditAllow(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, err
 	}
 
 	// An absent payload is an empty one rather than nil, exactly as
@@ -636,7 +703,11 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		}
 
 		var resp *workflowservice.DescribeWorkflowExecutionResponse
-		temporal, resp, err = s.authorizeRun(ctx, workflowID, already.RunId)
+		// The decision was audited above, when this request was admitted; this
+		// is the same decision meeting a run that turned out to already exist,
+		// so it goes through the un-audited form. See audit.go's one-record
+		// rule.
+		temporal, resp, _, err = s.authorizeRunDecision(ctx, workflowID, already.RunId)
 		if err != nil {
 			return nil, err
 		}
@@ -708,7 +779,7 @@ func (s *FlowstateServer) Cancel(ctx context.Context, req *connect.Request[v1.Ca
 
 	// Acted on through the client authorization used, so the run cancelled is the
 	// run that was checked.
-	temporal, _, err := s.authorizeRun(ctx, workflowID, runID)
+	temporal, _, err := s.authorizeRun(ctx, "Cancel", workflowID, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -734,7 +805,7 @@ func (s *FlowstateServer) Terminate(ctx context.Context, req *connect.Request[v1
 
 	// Acted on through the client authorization used, so the run terminated is the
 	// run that was checked.
-	temporal, _, err := s.authorizeRun(ctx, workflowID, runID)
+	temporal, _, err := s.authorizeRun(ctx, "Terminate", workflowID, runID)
 	if err != nil {
 		return nil, err
 	}

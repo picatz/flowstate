@@ -93,6 +93,14 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	// they were never in the listing.
 	temporal, err := s.clientFor(caller)
 	if err != nil {
+		return nil, s.auditDeny(ctx, "List", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, caller,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err)
+	}
+
+	// A listing addresses a tenant rather than a run: what is decided here is
+	// that this caller may read their own namespace, which is the decision
+	// every run the listing goes on to filter is already inside.
+	if err := s.auditAllow(ctx, "List", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, caller); err != nil {
 		return nil, err
 	}
 
