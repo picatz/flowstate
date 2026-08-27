@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"text/tabwriter"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
@@ -43,7 +45,13 @@ func newTimelineCommand() *cobra.Command {
 			"command prints for you. Both, because event ids restart in each segment: a " +
 			"cursor means nothing until the segment it counts within is named. Raising " +
 			"--max-entries is not the way past it either: the ceiling is a ceiling, and " +
-			"one segment can hold several times the largest answer this returns.",
+			"one segment can hold several times the largest answer this returns.\n\n" +
+			"One fact is missing from every account by construction, and this says so on " +
+			"stderr when it applies. A step waiting out a retry backoff has not failed " +
+			"anywhere history can see: Temporal records that failure on the next attempt's " +
+			"start, so the most recent one has no row until that attempt begins, and reading " +
+			"further with --after-event-id will not find it. `flow get` reports it, and the " +
+			"note names the command to run.",
 		Args: cobra.ExactArgs(1),
 		RunE: runTimeline,
 		Example: `# What did this run actually do?
@@ -100,12 +108,24 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	response, err := newWorkflowServiceClient(server).GetTimeline(cmd.Context(), connect.NewRequest(request))
+	// Built once and used for both calls this verb can make, the way [runList]
+	// already builds one for a sequence of them: resolving a credential source
+	// is cheap but it is not free, and a second client would mint a second
+	// token to answer one question.
+	client := newWorkflowServiceClient(server)
+
+	response, err := client.GetTimeline(cmd.Context(), connect.NewRequest(request))
 	if err != nil {
 		return refusedRun("reading the timeline of", workflowID, server, err)
 	}
 
 	if format != FormatText {
+		// The footer below is prose, and prose has no place in a document a
+		// program indexes into — `flow get -o json` withholds its own retrying
+		// lines for exactly this reason, and there the fact is a *field* of the
+		// answer rather than a sentence beside it. So the second call is not
+		// made either: a round trip whose only output is suppressed is a cost
+		// with no reader.
 		return writeJSON(surface, format, response.Msg)
 	}
 
@@ -113,7 +133,218 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 	// what an empty answer means.
 	renderTimeline(surface, afterEventID > 0, response.Msg)
 
+	// Last, after everything renderTimeline has to say about the account's
+	// extent. Truncation and continued-as-new are facts *about the account*;
+	// this one is about something no account can hold, so it reads as the
+	// ending rather than as a second afterthought — and its own sentence says
+	// outright that continuing the rows above will not produce it.
+	noteRetryingSteps(cmd.Context(), surface, client, workflowID, response.Msg)
+
 	return nil
+}
+
+// The account's honest gap, and why it is answered with a sentence rather than
+// with a row.
+//
+// An attempt that has failed and is waiting out its retry backoff has no
+// history event yet. Temporal writes that failure onto the *next* attempt's
+// start, so a step in backoff shows a scheduling that never ends and one
+// failure per attempt that already completed — every failure except the most
+// recent one, which is the one somebody reading a stuck run came for. The
+// schema states that boundary on [v1.TimelineEntry_KIND_STEP_FAILED] itself,
+// and names [v1.GetResponse.PendingActivities] as the field that answers it.
+//
+// A footer rather than a synthesized row, and this is the part worth writing
+// down. Every row is addressed by its event id and a caller resumes an account
+// with --after-event-id, so a row invented here would be one no cursor can
+// name: give it an id and it is indistinguishable from a recorded event, give
+// it none and it breaks the resumption the truncation note tells people to
+// use. It would also be a fabricated entry in a record whose whole worth is
+// that it is one — the rule `cmd/flow/internal/mcp`'s ReduceTranscript already
+// states where it drops steps from a transcript, that nothing is synthesized to
+// stand in for what was left out, because a reader cannot tell an invented row
+// from one the workload produced.
+
+// timelineRunReader is the one extra RPC this footer costs.
+//
+// Narrow on purpose. The client the CLI builds satisfies it, and a type naming
+// a single method is the plainest available statement of what asking for this
+// sentence buys and what it spends.
+type timelineRunReader interface {
+	Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
+}
+
+// noteRetryingSteps asks what the run is doing now, when the account just
+// printed leaves room for that to matter.
+//
+// Conditional, because this is a second round trip on a verb that had one. The
+// gate is the account's own ending: [v1.GetResponse.PendingActivities] is
+// populated only for a RUNNING run, and a segment whose account holds its
+// ending has stopped being one. That is the common case for this verb — its
+// whole reason to exist is the question left once a run has finished — so the
+// ordinary `flow timeline` costs exactly what it did before.
+//
+// The residual, stated rather than glossed: an account clipped before its own
+// ending, or resumed past it, pays for a call that answers "nothing pending".
+// That is the direction to be wrong in. Overrunning the true scope costs a
+// round trip; underrunning it hides the one fact this footer exists to report.
+func noteRetryingSteps(
+	ctx context.Context,
+	surface *ui.UI,
+	reader timelineRunReader,
+	workflowID string,
+	msg *v1.GetTimelineResponse,
+) {
+	if timelineHoldsTheSegmentsEnding(msg) {
+		return
+	}
+
+	request := &v1.GetRequest{WorkflowId: workflowID}
+
+	// The segment the rows above are about, not whichever is current. A
+	// timeline is per segment and a workload can continue as new between two
+	// calls, so an unnamed run would let this sentence describe a different
+	// segment from the account it is appended to — the same reasoning the
+	// truncation note gives for naming both of its flags.
+	if runID := msg.GetRunId(); runID != "" {
+		request.RunId = &runID
+	}
+
+	response, err := reader.Get(ctx, connect.NewRequest(request))
+	if err != nil {
+		// Said, not swallowed. Once this footer exists its absence reads as
+		// "nothing is mid-retry", and a check that never happened must not be
+		// reported as a check that came back empty.
+		//
+		// Not an error, though. The account above is what the command was asked
+		// for and it arrived, so a failed aside about the run's present does
+		// not turn a successful read into a failed one.
+		fmt.Fprintf(surface.Err,
+			"whether a step is retrying is not known here, because reading this run's "+
+				"present failed: %s\n", ui.EscapeControl(err.Error()))
+
+		return
+	}
+
+	// Two fields of that answer are read and the rest of it — a workload's
+	// outputs among them — is dropped here rather than rendered. Which of those
+	// are sensitive is declared by the specification that produced them, which
+	// `flow get` has a flag for and this verb neither holds nor asks about.
+	if footer := retryingStepsFooter(workflowID, msg.GetRunId(), response.Msg, time.Now()); footer != "" {
+		fmt.Fprintln(surface.Err, footer)
+	}
+}
+
+// timelineHoldsTheSegmentsEnding reports whether this account carries the row
+// that says the segment stopped.
+//
+// Both kinds, because a segment that continued as new has ended as surely as
+// one that completed: the workload goes on under the next run id, and this
+// account is about this one.
+func timelineHoldsTheSegmentsEnding(msg *v1.GetTimelineResponse) bool {
+	for _, entry := range msg.GetEntries() {
+		if entry.GetKind() == v1.TimelineEntry_KIND_RUN_ENDED ||
+			entry.GetKind() == v1.TimelineEntry_KIND_RUN_CONTINUED {
+			return true
+		}
+	}
+
+	return false
+}
+
+// retryingStepsFooter is the sentence, or the empty string when there is
+// nothing to say.
+//
+// Never a step name, and that is a refusal rather than an omission. A pending
+// activity is deliberately not named by step in the schema: Temporal
+// identifies one by a generated id and a registered function name, a loop
+// running iterations in parallel schedules one step id several times at once,
+// and pairing a pending activity with an un-ended scheduling above would be a
+// guess this surface would then print as a fact. The count is what can be said
+// truthfully, and `flow get` is where the rest of the answer lives.
+func retryingStepsFooter(workflowID, runID string, msg *v1.GetResponse, now time.Time) string {
+	// A pending activity is not by itself a retrying one. Temporal reports
+	// every activity that is scheduled or started and not yet finished, so a
+	// healthy run on its first attempt at one step is in this list too — and
+	// that step's scheduling *is* in the account above, with nothing missing
+	// from it. Only an attempt with a failed one behind it leaves a gap here,
+	// which is what the two conditions test: a count past the first, or a
+	// failure Temporal kept.
+	retrying := make([]*v1.PendingActivity, 0, len(msg.GetPendingActivities()))
+	for _, activity := range msg.GetPendingActivities() {
+		if activity.GetAttempt() > 1 || activity.GetLastFailure() != "" {
+			retrying = append(retrying, activity)
+		}
+	}
+
+	// A clipped list of pending activities is the other way this sentence can
+	// be owed. The server reports at most a fixed number and says when it cut
+	// the list short, and the ones it did not report may be retrying — so a
+	// clipped list with nothing retrying in it is "not known" rather than
+	// "nothing", which is the rule the bound itself is documented under: a
+	// reader must never mistake some of the retrying steps for all of them.
+	clipped := msg.GetPendingActivitiesTruncated()
+
+	if len(retrying) == 0 && !clipped {
+		return ""
+	}
+
+	var head string
+
+	switch {
+	case len(retrying) == 0:
+		head = "this run has more steps pending than it reports, so whether one of them " +
+			"is retrying cannot be told from here"
+
+	case len(retrying) == 1:
+		head = fmt.Sprintf("one step is retrying — attempt %d", retrying[0].GetAttempt())
+
+		// Only when Temporal named a moment and it has not passed. An attempt
+		// running right now has no next schedule, and a countdown that already
+		// elapsed says the next attempt is due rather than how long is left,
+		// which is a different sentence and one `flow get` is about to give
+		// them anyway.
+		if next := retrying[0].GetNextAttemptScheduledTime(); next != nil {
+			if wait := next.AsTime().Sub(now); wait > 0 {
+				head += fmt.Sprintf(", next attempt in %s", roundedDuration(wait))
+			}
+		}
+
+	default:
+		// The furthest, because that is what an attempt count is read for: a
+		// run retrying four steps where one is on attempt 9 is a different
+		// situation from four steps all on attempt 2.
+		furthest := int32(0)
+		for _, activity := range retrying {
+			furthest = max(furthest, activity.GetAttempt())
+		}
+
+		head = fmt.Sprintf("%d steps are retrying — the furthest on attempt %d",
+			len(retrying), furthest)
+	}
+
+	if clipped && len(retrying) > 0 {
+		// Pending rather than retrying, because that is all the flag says: the
+		// steps past the bound may be on their first attempt.
+		head += ", and more steps are pending than this reports"
+	}
+
+	// Escaped, both of them. The workflow id is whatever the caller typed and
+	// the run id is whatever the server answered, and this line is about to be
+	// read by a terminal — the same reason the rows above escape a step name
+	// and a failure sentence.
+	command := "flow get " + ui.EscapeControl(workflowID)
+	if runID != "" {
+		command += " --run-id " + ui.EscapeControl(runID)
+	}
+
+	// One invariant tail under all three heads, and it does two jobs. It says
+	// why the failure is missing rather than only that it is, and "no row of
+	// its own here until the next attempt starts" is what tells a reader who
+	// has just been offered --after-event-id that continuing the account will
+	// not produce it either.
+	return head + fmt.Sprintf("; a failed attempt has no row of its own here until the "+
+		"next one starts, so `%s` is what reports it", command)
 }
 
 // renderTimeline writes the account for a person.
