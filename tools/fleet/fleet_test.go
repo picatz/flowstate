@@ -468,17 +468,18 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 		for name, test := range map[string]struct {
 			write       func(t *testing.T, dir string)
 			floor       uint64
+			present     bool
 			established bool
 		}{
 			// cgroup v2 spells complete protection as the literal `max`, which
 			// an integer parse refuses — so the one level asking the kernel to
 			// reclaim nothing read as the one level protecting nothing, and its
 			// cache came straight back as headroom (Codex, #1134).
-			"max saturates":                {write: writesMin("max"), floor: math.MaxUint64, established: true},
-			"a number is a number":         {write: writesMin("12345"), floor: 12345, established: true},
-			"zero is a real answer":        {write: writesMin("0"), floor: 0, established: true},
-			"a negative floor refuses":     {write: writesMin("-1"), floor: 0, established: false},
-			"an unparseable value refuses": {write: writesMin("not a number"), floor: 0, established: false},
+			"max saturates":                {write: writesMin("max"), floor: math.MaxUint64, present: true, established: true},
+			"a number is a number":         {write: writesMin("12345"), floor: 12345, present: true, established: true},
+			"zero is a real answer":        {write: writesMin("0"), floor: 0, present: true, established: true},
+			"a negative floor refuses":     {write: writesMin("-1"), floor: 0, present: true, established: false},
+			"an unparseable value refuses": {write: writesMin("not a number"), floor: 0, present: true, established: false},
 			// Not NotExist: a file this process cannot read is not a file
 			// saying nothing is protected.
 			"an unreadable file refuses": {
@@ -486,20 +487,23 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 					t.Helper()
 					require.NoError(t, os.MkdirAll(filepath.Join(dir, "memory.min"), 0o755))
 				},
-				floor: 0, established: false,
+				floor: 0, present: false, established: false,
 			},
 			// A level with no memory controller cannot protect anything, and
 			// nothing below it can either — so it contributes zero and does not
 			// stop the walk.
-			"an absent file contributes zero": {write: func(*testing.T, string) {}, floor: 0, established: true},
+			"an absent file contributes zero": {write: func(*testing.T, string) {}, floor: 0, present: false, established: true},
 		} {
 			t.Run(name, func(t *testing.T) {
 				dir := t.TempDir()
 				test.write(t, dir)
 
-				floor, established := protectionAt(dir)
+				floor, present, established := protectionAt(dir)
 
 				assert.Equal(t, test.established, established)
+				assert.Equal(t, test.present, present,
+					"absence and a value are different answers, and only absence means there is "+
+						"no controller here to walk for")
 				assert.Equal(t, test.floor, floor)
 			})
 		}
@@ -520,6 +524,53 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 		require.True(t, found)
 		assert.Equal(t, uint64(2*gib), free,
 			"a descendant whose protection could not be read was counted as protecting nothing")
+	})
+
+	t.Run("an unreadable probe at the top refuses rather than establishing zero", func(t *testing.T) {
+		// The preflight that skips the walk when there is no controller used a
+		// bare `os.Stat`, which cannot tell absence from a permission denial or
+		// an I/O error — so every one of those established a zero and counted
+		// the whole cache back. That is the same fail-open this function had one
+		// read further in, reintroduced at its own front door by the fix for
+		// something else (Codex, #1134).
+		//
+		// A self-referential symlink, because it is the one error that is
+		// neither absence nor success and needs no privileges to arrange.
+		dir := protectedLayout(t, protection{cache: 5 * gib, noController: true})
+		require.NoError(t, os.Symlink("memory.min", filepath.Join(dir, "memory.min")))
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"a probe that failed for a reason other than absence was read as 'no controller here'")
+	})
+
+	t.Run("the scan budget is one budget, not one per ancestor", func(t *testing.T) {
+		// Every level of the chain called the walk with a fresh allowance, so a
+		// deep chain over a wide subtree multiplied the advertised bound by its
+		// own depth — and the constant says one number (Codex, #1134).
+		//
+		// Two levels, each just over half the budget. Separately each fits;
+		// together they do not, and the second is left unestablished, which is
+		// the fail-closed direction.
+		half := maxProtectionScan/2 + 100
+
+		var chain []string
+		for range 2 {
+			dir := protectedLayout(t, protection{cache: 5 * gib})
+			for i := range half {
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"+strconv.Itoa(i)), 0o755))
+			}
+			chain = append(chain, dir)
+		}
+
+		free, found := tightestMemoryFree(chain, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"each ancestor was given its own allowance, so the bound the constant advertises is "+
+				"multiplied by the depth of the hierarchy")
 	})
 
 	t.Run("a host with no memory controller is not walked at all", func(t *testing.T) {

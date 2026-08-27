@@ -667,6 +667,18 @@ func containerMemoryFree(hostFree uint64, hostKnown bool) (uint64, bool) {
 // whose own memory.max is `max` reports the host's MemAvailable and hands out
 // lanes against memory a parent will never let this container touch.
 func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, bool) {
+	// One budget for the whole calculation, not one per ancestor. Every level of
+	// the chain called this with a fresh allowance, so a deep chain over a wide
+	// subtree multiplied the advertised bound by its own depth — sixty-four
+	// levels over four thousand nodes is a quarter of a million reads for one
+	// dispatch decision, from a constant that says four thousand (Codex, #1134).
+	//
+	// Shared means an early ancestor can spend it and leave a later level
+	// unestablished. That is the fail-closed direction and the right one: a
+	// hierarchy too large to account for is one this cannot account for,
+	// wherever the reading ran out.
+	seen := 0
+
 	tightest, found := uint64(0), false
 	for _, dir := range dirs {
 		limit, err := readInt(filepath.Join(dir, maxFile))
@@ -683,7 +695,7 @@ func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, boo
 
 		// Page cache is not memory a lane has to wait for — except the part
 		// something has asked the kernel not to reclaim.
-		held := uint64(used) - min(uint64(used), evictableFile(dir))
+		held := uint64(used) - min(uint64(used), evictableFile(dir, &seen))
 
 		free := uint64(limit) - min(uint64(limit), held)
 		if !found || free < tightest {
@@ -709,13 +721,13 @@ func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, boo
 // never visits on its way up. So the protection is summed over the level and
 // everything beneath it, and the walk is bounded: a tree too large to read is
 // a tree whose reclaimability was not established, and that subtracts nothing.
-func evictableFile(dir string) uint64 {
+func evictableFile(dir string, seen *int) uint64 {
 	cache := reclaimableFile(dir)
 	if cache == 0 {
 		return 0
 	}
 
-	protected, established := protectedBelow(dir)
+	protected, established := protectedBelow(dir, seen)
 	if !established {
 		// Fail closed. The old, conservative reading — every byte of usage
 		// counted as held — is exactly what a level whose protection could not
@@ -763,7 +775,7 @@ const (
 // protected cache is at most the floor and usually less. Overstating the
 // protection understates the headroom, which is the direction a dispatch budget
 // should be wrong in.
-func protectedBelow(dir string) (uint64, bool) {
+func protectedBelow(dir string, seen *int) (uint64, bool) {
 	// No `memory.min` here means no memory controller here, and a controller is
 	// enabled top-down — so nothing below this level can protect anything and
 	// there is nothing to walk. cgroup v1 is the whole-host case: the file does
@@ -774,20 +786,31 @@ func protectedBelow(dir string) (uint64, bool) {
 	// would refuse to establish reclaimability, count none of its cache, and
 	// recreate the zero-lane reading this whole change exists to fix — the fix
 	// defeated by its own safeguard (Codex, #1134).
-	if _, err := os.Stat(filepath.Join(dir, memoryMinFile)); err != nil {
+	//
+	// Asked through [protectionAt] rather than with an `os.Stat` of its own,
+	// which is what this did. A bare stat cannot tell absence from a permission
+	// denial or an I/O error, so every one of those established a zero — the
+	// same fail-open this function had one read further in, reintroduced at its
+	// own front door by the fix for something else (Codex, #1134).
+	total, present, established := protectionAt(dir)
+	if !established {
+		return 0, false
+	}
+	if !present {
 		return 0, true
 	}
 
-	total, seen := uint64(0), 0
-
 	// Explicit rather than recursive, so the pending set is the same bounded
-	// thing the counter counts.
-	pending := []string{dir}
+	// thing the counter counts. This level's own floor is already counted.
+	pending, err := childDirectories(dir, seen)
+	if err != nil {
+		return 0, false
+	}
 	for len(pending) > 0 {
 		level := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
 
-		floor, established := protectionAt(level)
+		floor, _, established := protectionAt(level)
 		if !established {
 			return 0, false
 		}
@@ -809,7 +832,7 @@ func protectedBelow(dir string) (uint64, bool) {
 			total += uint64(floor)
 		}
 
-		children, err := childDirectories(level, &seen)
+		children, err := childDirectories(level, seen)
 		if err != nil {
 			// A directory that vanished mid-walk, one this process may not
 			// read, or a tree past the bound. None is evidence that nothing
@@ -837,29 +860,29 @@ func protectedBelow(dir string) (uint64, bool) {
 // absent file is a level with no memory controller and so nothing to protect,
 // and *everything else* refuses. There is no longer a way for an unreadable
 // value to arrive as a zero.
-func protectionAt(dir string) (uint64, bool) {
+func protectionAt(dir string) (floor uint64, present, established bool) {
 	raw, err := os.ReadFile(filepath.Join(dir, memoryMinFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		// No memory controller at this level, so nothing here is protected —
 		// and nothing below it can be either, since a controller is enabled
-		// top-down.
-		return 0, true
+		// top-down. Absence is an answer; every other error is not.
+		return 0, false, true
 	}
 	if err != nil {
-		return 0, false
+		return 0, false, false
 	}
 
 	value := strings.TrimSpace(string(raw))
 	if value == "max" {
-		return math.MaxUint64, true
+		return math.MaxUint64, true, true
 	}
 
-	floor, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || floor < 0 {
-		return 0, false
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, true, false
 	}
 
-	return uint64(floor), true
+	return uint64(parsed), true, true
 }
 
 // memoryMinFile is where a cgroup declares what it will not have reclaimed.
