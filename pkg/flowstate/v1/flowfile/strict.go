@@ -10,8 +10,10 @@ import (
 // The Flowfile grammar is a strict subset of YAML. Three constructs YAML allows
 // are refused: anchors (`&name`), aliases (`*name`), and the merge key (`<<:`).
 // The compiler refuses them at the document tree before anything is resolved or
-// expanded; `flow fix` refuses to rewrite a file that holds one, for the same
-// reason and with the same words.
+// expanded; `flow fix` carries a file across that refusal where it can do so
+// mechanically — a whole-value alias becomes the bytes of the value its anchor
+// names — and refuses in the same words where it cannot, which is a merge key and
+// anything else it cannot copy byte-safely. See fixalias.go.
 //
 // # Why refuse rather than support
 //
@@ -50,8 +52,11 @@ import (
 // maxNodes and maxAliasDepth are still driven by input an outside party chooses,
 // with no refusal in front of them. bounds_test.go exercises both there.
 //
-// `flow fix` mechanically inlining an alias on the way across an edition — so an
-// author is not left to spell it out by hand — is the other named follow-up.
+// `flow fix` mechanically inlining a whole-value alias — so an author is not left
+// to spell it out by hand — is the migration path across this refusal, and it
+// lives in fixalias.go. It is the one place in the front end that *does* follow an
+// alias, which is why it charges every expansion against maxNodes rather than
+// relying on this refusal running first.
 
 // strictFinding is one refused construct: its position, and the message naming
 // it and what to write instead.
@@ -132,18 +137,32 @@ func strictMergeMessage() string {
 // with no name is not something the parser produces, so the empty string is a
 // defensive fallback the message still reads acceptably with.
 func anchorName(n *ast.AnchorNode) string {
-	if n.Name != nil {
-		return n.Name.String()
-	}
-	return ""
+	return nameToken(n.Name)
 }
 
 // aliasName returns the name an alias refers to, for the diagnostic.
 func aliasName(n *ast.AliasNode) string {
-	if n.Value != nil {
-		return n.Value.String()
+	return nameToken(n.Value)
+}
+
+// nameToken returns the name a node spells, read from its own token rather than
+// from [ast.Node.String].
+//
+// String renders a node *with its comments*, and an alias is the one place that
+// matters: `b: *g # said twice` renders as `g # said twice`, so a diagnostic built
+// from it names an anchor called "g # said twice", and anything that goes looking
+// for `*` + that name on the line finds nothing. The token is the name and only
+// the name.
+func nameToken(n ast.Node) string {
+	if n == nil {
+		return ""
 	}
-	return ""
+	tok := n.GetToken()
+	if tok == nil {
+		return ""
+	}
+
+	return tok.Value
 }
 
 // strictYAMLRefusalsIn walks every document in a parsed file and returns a

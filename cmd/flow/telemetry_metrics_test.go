@@ -318,6 +318,60 @@ func TestZeroConfigExportsNoMetrics(t *testing.T) {
 		"an unconfigured binary exported metrics: %v", collector.instrumentNames())
 }
 
+// TestRuntimeMetricsRegisterWhenMetricsAreConfigured is the other half of
+// #916: memory and goroutine pressure used to be invisible on both
+// long-running binaries except through pprof, even with an OTLP endpoint
+// configured. [otelruntime.Start] is called from inside [initTelemetry] where
+// the meter provider is built, so this asserts the instrument reaches the
+// wire exactly the way [TestTheTemporalMetricsHandlerReachesTheCollector]
+// asserts the Temporal handler's do — an export received at a collector, not
+// merely a provider constructed without error.
+func TestRuntimeMetricsRegisterWhenMetricsAreConfigured(t *testing.T) {
+	collector := metricCollectorTo(t)
+	isolateTelemetry(t)
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+
+	shutdown(context.Background())
+
+	// v0.61.0 still defaults OTEL_GO_X_DEPRECATED_RUNTIME_METRICS to true, so
+	// these are the process.runtime.go.* names the package emits absent that
+	// override — see the comment beside otelruntime.Start in initTelemetry.
+	_, ok := collector.instrument("process.runtime.go.mem.heap_alloc")
+	require.True(t, ok, "process.runtime.go.mem.heap_alloc never reached the collector: %v", collector.instrumentNames())
+
+	_, ok = collector.instrument("process.runtime.go.goroutines")
+	require.True(t, ok, "process.runtime.go.goroutines never reached the collector: %v", collector.instrumentNames())
+}
+
+// TestRuntimeMetricsAbsentWhenMetricsAreOff is the negative direction: a
+// deployment that configured traces or logs but not metrics must not start
+// paying for runtime instrumentation it never asked for, because the gate is
+// config.metrics specifically and not telemetryConfigured() at large — see
+// the comment beside [otelruntime.Start] in initTelemetry. Traces-only is
+// used here rather than telemetryOff, so this cannot pass for the trivial
+// reason that nothing at all was configured.
+func TestRuntimeMetricsAbsentWhenMetricsAreOff(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(collector.Close)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", collector.URL)
+
+	handler, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { shutdown(context.Background()) })
+
+	require.Nil(t, handler, "no metrics signal was configured, so no Temporal metrics handler should exist either")
+	require.IsType(t, noopMetric.MeterProvider{}, otel.GetMeterProvider(),
+		"traces-only must leave the meter provider exactly as an unconfigured binary would, or runtime "+
+			"instrumentation registered against it would be recording into a no-op for nothing")
+}
+
 // TestTheConfiguredMeterProviderIsTheGlobalOne closes the gap between the two
 // tests above.
 //

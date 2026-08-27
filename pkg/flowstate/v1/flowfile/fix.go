@@ -295,16 +295,27 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 		return FixResult{Source: data, Refusals: []Diagnostic{refusal}}, nil
 	}
 
-	// A Flowfile holding an anchor, alias, or merge key is refused rather than
-	// rewritten, in the same words the compiler uses (see strict.go). The rewriter
-	// leaves it byte for byte alone: rooting a reference or stamping an edition
-	// onto a file the compiler then refuses for its anchors would be the "`flow
-	// fix . && git commit` succeeds on a file `flow validate` rejects" outcome this
-	// command exists to avoid. Mechanically inlining the construct — so the author
-	// is not left to spell it out by hand — is a named follow-up (#653); until
-	// then the positioned refusal tells them exactly what to write.
+	// A Flowfile holding an anchor, alias, or merge key is not one this build's
+	// grammar accepts (see strict.go), so nothing below this may run on it: rooting
+	// a reference or stamping an edition onto a file the compiler then refuses for
+	// its anchors would be the "`flow fix . && git commit` succeeds on a file `flow
+	// validate` rejects" outcome this command exists to avoid.
+	//
+	// What happens instead is the whole of the migration across that refusal: a
+	// whole-value alias is replaced by the bytes of the value its anchor names, and
+	// the anchor markers are dropped. That rewrite is this pass and nothing else —
+	// the file comes back holding no anchors and no aliases, and [Fix]'s fixed-point
+	// loop re-parses it, so the next round is an ordinary document that the walks
+	// below see for the first time in the spelling they understand.
+	//
+	// A merge key is not inlined, because reproducing `<<:` precedence is deciding
+	// which of two spellings of a key the author meant. It is refused in the
+	// compiler's own words, as is anything else this cannot copy byte-safely, and a
+	// refusal leaves the file byte for byte alone — see fixalias.go.
 	if strictRefusals := strictYAMLRefusalsIn(file); len(strictRefusals) > 0 {
-		return FixResult{Source: data, Refusals: strictRefusals}, nil
+		inlined, _ := inlineWholeValueAliases(data, file)
+
+		return inlined, nil
 	}
 
 	f := &fixer{

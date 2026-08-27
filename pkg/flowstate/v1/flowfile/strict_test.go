@@ -180,36 +180,47 @@ func TestStrictYAMLRefusesBillionLaughsWithoutExpanding(t *testing.T) {
 	assert.Contains(t, ds.Error(), "not part of the Flowfile grammar")
 }
 
-// TestFixRefusesStrictYAML is the fixer's half: a file with an anchor is refused
-// rather than rewritten, in the same words, so `flow fix` never emits a file the
-// compiler then rejects. Mechanical inlining is a follow-up (#653).
+// TestFixRefusesStrictYAML is the fixer's half, on the construct it still refuses.
+//
+// `flow fix` now carries an anchor and a whole-value alias across mechanically
+// (fixalias.go, fixalias_test.go). A merge key it does not: `<<: *policy` beside a
+// sibling key is a *precedence* rule, so writing the merged keys out means deciding
+// which spelling of a colliding key the author meant — judgment, which this command
+// does not exercise (#653). So the file is left byte for byte alone and the refusal
+// is the compiler's own sentence, which is what keeps `flow fix` from ever emitting
+// a file the compiler then rejects.
 func TestFixRefusesStrictYAML(t *testing.T) {
 	t.Parallel()
 
 	src := `edition: v2026.3
 name: t
+defaults: &shared
+  timeout: 30s
 steps:
-  - &shared
+  - <<: *shared
     id: a
     log:
       message: hi
 `
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
-	require.NotEmpty(t, result.Refusals, "an anchor must be refused, not silently passed through")
+	require.NotEmpty(t, result.Refusals, "a merge key must be refused, not silently passed through")
 	assert.False(t, result.Complete())
 	assert.Equal(t, src, string(result.Source), "a refused file is left byte for byte alone")
-	assert.Contains(t, result.Refusals[0].Message, "an anchor (`&shared`) is not part of the Flowfile grammar")
+	assert.Contains(t, result.Refusals[0].Message, "a merge key (`<<:`) is not part of the Flowfile grammar")
 }
 
-// TestFixRefusesEachStrictConstructWhereItIsWritten covers the other two
-// constructs through the fixer, and covers all three the way a diagnostic is
-// meant to be read: at a line and column an author can go to.
+// TestFixRefusesEachStrictConstructWhereItIsWritten covers the fixer's refusals
+// the way a diagnostic is meant to be read: at a line and column an author can go
+// to.
 //
-// The compiler's positions are asserted above; the fixer builds its own
-// [flowfile.Diagnostic] from the same collector (strict.go's
-// strictYAMLRefusalsIn), and "same collector" is a claim only a test comparing
-// the two can keep true.
+// The two cases are the two sources those sentences come from, which is worth
+// keeping distinct. A merge key is refused in the *compiler's* words, built by the
+// one collector both share (strict.go's strictYAMLRefusalsIn) — "same collector"
+// is a claim only a test comparing the two can keep true. An alias the rewrite
+// tried to inline and could not is refused in the rewrite's own words, naming what
+// stopped it rather than repeating that aliases are refused; here the anchor the
+// alias names is never declared, so there are no bytes to write in its place.
 func TestFixRefusesEachStrictConstructWhereItIsWritten(t *testing.T) {
 	t.Parallel()
 
@@ -229,7 +240,7 @@ steps:
       message: *base
 `,
 			line: 8, column: 16,
-			message: "an alias (`*base`) is not part of the Flowfile grammar",
+			message: "this alias names an anchor (`&base`) this document does not declare",
 		},
 		"a merge key": {
 			src: `edition: v2026.3
@@ -282,16 +293,23 @@ steps:
 //
 // The fixture is a file `flow fix` would otherwise certainly change: it declares
 // no edition, so the stamp applies (TestFixStampsAnEditionOntoAFileWithoutOne),
-// and it writes the retired `task:` block. Adding one anchor to it must turn the
-// whole rewrite off — not narrow it — because a file that came back stamped and
-// modernized *and* still holding an anchor is `flow fix . && git commit`
-// succeeding on a file `flow validate` rejects, which is the outcome the fixer's
-// refusal exists to prevent.
+// and it writes the retired `task:` block. Adding one construct the rewriter
+// refuses to it must turn the whole rewrite off — not narrow it — because a file
+// that came back stamped and modernized *and* still holding a merge key is `flow
+// fix . && git commit` succeeding on a file `flow validate` rejects, which is the
+// outcome the fixer's refusal exists to prevent.
+//
+// The construct is a merge key rather than an anchor because an anchor is now
+// carried across rather than refused (fixalias.go). What that changes is which
+// construct demonstrates the property, not the property: [flowfile.FixResult]'s
+// all-or-nothing rule is about any refusal, and this is the one that stays.
 //
 // It is also what keeps the fixer's own alias walks ([fixer.resolved],
 // [fixer.collectAnchors]) out of reach of hostile input: they run in the
-// expression pass, which is downstream of this refusal. Should that order ever
-// change, this fails rather than the bound quietly going live untested (#841).
+// expression pass, which is downstream of the strict check, and the inlining pass
+// that replaced the refusal there hands them a document with no alias left in it.
+// Should that order ever change, this fails rather than the bound quietly going
+// live untested (#841).
 func TestFixRefusesBeforeItRewritesAnything(t *testing.T) {
 	t.Parallel()
 
@@ -303,27 +321,28 @@ steps:
       inputs:
         message: hi
 `
-	// The premise: without the anchor this file is rewritten.
+	// The premise: without the merge key this file is rewritten.
 	result, err := flowfile.Fix([]byte(rewritable))
 	require.NoError(t, err)
 	require.True(t, result.Changed(), "premise: this file is one flow fix rewrites")
 	require.Contains(t, string(result.Source), "edition: "+flowfile.CurrentEdition)
 
-	withAnchor := `name: t
+	withMerge := `name: t
 defaults: &policy
   timeout: 30s
 steps:
-  - id: a
+  - <<: *policy
+    id: a
     task:
       name: log
       inputs:
         message: hi
 `
-	result, err = flowfile.Fix([]byte(withAnchor))
+	result, err = flowfile.Fix([]byte(withMerge))
 	require.NoError(t, err)
 	require.NotEmpty(t, result.Refusals)
 	assert.False(t, result.Changed(), "no part of the rewrite may run on a refused file")
-	assert.Equal(t, withAnchor, string(result.Source))
+	assert.Equal(t, withMerge, string(result.Source))
 	assert.NotContains(t, string(result.Source), "edition: ",
 		"the edition stamp in particular: stamping a file the compiler refuses is the worst version of this")
 }
@@ -344,12 +363,14 @@ steps:
 // docs/DSL.md was made to avoid. The narrower rule wins because the wider one
 // contradicts a rule already written down.
 //
-// The cost is real and is asserted here rather than described: for an edition
-// `flow fix` exists to migrate, an alias-bearing file gets no migration at all.
-// It comes back byte for byte, un-stamped, with a positioned refusal — the
-// author spells the alias out by hand first and gets the migration second.
-// Mechanically inlining a whole-value alias is what would buy that back, and is
-// the remaining item of #841.
+// The cost the refusal used to carry — for an edition `flow fix` exists to
+// migrate, an anchor-bearing file got no migration at all — has since been bought
+// back for the shapes that can be rewritten mechanically: `flow fix` writes a
+// whole-value alias out and drops the anchor marker, then goes on to stamp the
+// edition in the same run (fixalias.go, #653). What is unchanged is the compiler's
+// answer, which is what this test is about, and what remains refused is the merge
+// key — asserted below, because "the refusal is not gated on the edition" has to
+// stay checkable on a construct that is still refused.
 func TestStrictRefusalIsNotGatedOnEdition(t *testing.T) {
 	t.Parallel()
 
@@ -382,14 +403,43 @@ steps:
 			assert.Contains(t, d.Message, "an anchor (`&policy`) is not part of the Flowfile grammar",
 				"the anchor is what is reported — not the edition, which is not what is wrong")
 
-			// And `flow fix` refuses it, leaving the bytes alone. Compared as
-			// bytes rather than by re-validating the output: a rewrite that
-			// still validates can still have changed what the file means, which
-			// is how this repository's two `flow fix` corruptions got through.
-			result, err := flowfile.Fix([]byte(withAnchor))
+			// `flow fix` carries that same file across, whatever edition it
+			// declares: the marker goes and the edition is brought forward in the
+			// one run, so the migration is not gated on the edition either.
+			// Compared as bytes rather than by re-validating the output: a
+			// rewrite that still validates can still have changed what the file
+			// means, which is how this repository's two `flow fix` corruptions
+			// got through.
+			carried, err := flowfile.Fix([]byte(withAnchor))
+			require.NoError(t, err)
+			require.Empty(t, carried.Refusals)
+			assert.Equal(t, "edition: "+flowfile.CurrentEdition+`
+name: t
+defaults:
+  timeout: 30s
+steps:
+  - id: a
+    log:
+      message: hi
+`, string(carried.Source))
+
+			// And the construct that is still refused is refused whatever the
+			// edition says too, byte for byte and un-stamped — which is the half
+			// of this claim that needs a construct `flow fix` will not rewrite.
+			withMerge := "edition: " + edition + `
+name: t
+defaults: &policy
+  timeout: 30s
+steps:
+  - <<: *policy
+    id: a
+    log:
+      message: hi
+`
+			result, err := flowfile.Fix([]byte(withMerge))
 			require.NoError(t, err)
 			require.NotEmpty(t, result.Refusals)
-			assert.Equal(t, withAnchor, string(result.Source), "a refused file is left byte for byte alone")
+			assert.Equal(t, withMerge, string(result.Source), "a refused file is left byte for byte alone")
 			assert.Contains(t, string(result.Source), "edition: "+edition,
 				"including its declared edition: no file is stamped forward on the way to being refused")
 
