@@ -193,10 +193,106 @@
       ]
     },
     {
+      "type": "timeseries",
+      "id": 10,
+      "title": "Workflow task schedule-to-start latency, p95",
+      "description": "docs/DEPLOYMENT.md's slot-exhaustion runbook says to watch this beside worker task slots — a worker whose slots are full still shows healthy CPU, but a workflow task waiting longer to be picked up is queueing behind this worker rather than behind the engine. Was on the wire and undashboarded before #917; this is the other half of \"watch both\".",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(temporal_workflow_task_schedule_to_start_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Pollers, by type",
+      "description": "The other capacity signal #526's residue comment claimed was un-instrumented — it was emitted, just not viewed. A poller count sitting at zero for a type this worker should be polling is the same worker-saturation question the slots panel answers, from the queue's side rather than the process's.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum by (poller_type) (temporal_num_pollers)",
+          "legendFormat": "{{poller_type}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 103,
+      "title": "Run lifecycle (flowstate.run.*, from the driver that observed each run)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "id": 12,
+      "title": "Runs started",
+      "description": "flowstate.run.starts, recorded once per run regardless of how many Continue-As-New segments it takes — never once per segment. Locally at RunWithInputs; durably at engine.Run, through Temporal's replay-safe metrics handler so a replay cannot inflate the count. Compare against the \"Runs started\" stat above (the Run RPC count): a gap between the two is a run that started some other way — a webhook, a signal that created one — the RPC counter cannot see.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 25 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "graphMode": "area" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum(flowstate_run_starts_total)",
+          "legendFormat": "runs"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 13,
+      "title": "Run outcomes, by workflow",
+      "description": "flowstate.run.executions — the run's own success/failure rate #917 filed for (docs/DEPLOYMENT.md previously recorded no counter existed and asked for this gap to be filed). A Continue-As-New segment boundary is not a completion and is never counted here; only a run's true terminal outcome is.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 9, "x": 6, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum by (flowstate_workflow_name, flowstate_run_outcome) (rate(flowstate_run_executions_total[$__rate_interval]))",
+          "legendFormat": "{{flowstate_workflow_name}} ({{flowstate_run_outcome}})"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "Run duration, p95 (flowstate.run.duration)",
+      "description": "Start to terminal outcome, by workflow. Durably this is the segment that ends the run, not the sum of every Continue-As-New segment a long workload took — see metricschema.InstrumentRunDuration's doc for why that is the honest answer rather than a plumbed-through timestamp.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, flowstate_workflow_name) (rate(flowstate_run_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{flowstate_workflow_name}} p95"
+        }
+      ]
+    },
+    {
       "type": "row",
       "id": 102,
       "title": "Logs",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
       "collapsed": false
     },
     {
@@ -205,7 +301,7 @@
       "title": "Server, worker and steps (over OTLP)",
       "description": "Log records shipped over OTLP, not lines tailed out of a file — so no query-time parsing, and attributes arrive as attributes. A `log:` step's record carries the trace and span ids of the step it ran in, which is what makes the TraceID field link straight to Tempo. The services' own start-up and shutdown lines are emitted outside any span and carry no trace id; find those by service and time.",
       "datasource": { "type": "loki", "uid": "flowstate-loki" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 19 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 31 },
       "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
       "targets": [
         {

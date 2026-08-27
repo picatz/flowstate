@@ -87,6 +87,8 @@ var allowedSelfImports = map[string][]string{
 	},
 	"metricschema": {
 		"eval.go",
+		"runmetrics.go",
+		"runspan.go",
 		"taskmetrics.go",
 		"taskpolicy_context.go",
 	},

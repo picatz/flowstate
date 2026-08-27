@@ -150,7 +150,7 @@ func (s *FlowstateServer) GetTimeline(
 				"read the latest segment, which may not be the one you were reading"))
 	}
 
-	temporal, described, err := s.authorizeRun(ctx, req.Msg.GetWorkflowId(), req.Msg.GetRunId())
+	temporal, described, err := s.authorizeRun(ctx, "GetTimeline", req.Msg.GetWorkflowId(), req.Msg.GetRunId())
 	if err != nil {
 		return nil, err
 	}

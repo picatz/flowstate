@@ -1010,8 +1010,7 @@ at it and let the collector's own Prometheus exporter serve `/metrics` from
 there; `examples/observability/docker-compose.yaml` wires exactly that
 (Collector receiving OTLP, Prometheus scraping the Collector).
 
-Every metric below is real code, cited by call site — not a proposal. Two
-instrumentation sources exist, and one deliberate gap:
+Every metric below is real code, cited by call site — not a proposal.
 
 **RPC metrics**, from the `otelconnect` interceptor wired onto every command
 that speaks Connect RPC — `flow server` (`cmd/flow/main.go:923`), `flow server
@@ -1110,14 +1109,45 @@ climbing together tracks the same "is this worker's own memory the
 constraint" question a heap profile answers, over OTLP instead of a loopback
 `kubectl exec`.
 
-**No metric exists yet for a run's own lifecycle** — started, completed,
-failed, a step's retry count — searched for and not found anywhere under
-`pkg/flowstate/v1` or `cmd/flow` outside the two tables above. An operator
-wanting "runs per tenant per hour" or "step failure rate" today has to derive
-it from spans (`engine.startTaskSpan` and neighbors) or from `flow list`
-against Temporal visibility, not from a counter. That is a real gap, not a
-documentation one — file it separately rather than treat this catalog as
-covering it.
+**Run-lifecycle metrics** (#917), the gap the paragraph above used to record
+rather than fill: a run's own started/completed/failed and its duration,
+independent of a step's. Recorded at the one place each driver already
+witnesses the whole of a run — locally at `RunWithInputs`/`observeRun`
+(`pkg/flowstate/v1/runspan.go`), durably at `engine.Run`
+(`pkg/flowstate/v1/engine/workflow.go`) through Temporal's own replay-safe
+`workflow.GetMetricsHandler`, since a run's boundary is workflow code there
+and the plain OTel meter API is not safe to call from it (see
+`engine/runmetrics.go`'s doc for the mechanism and why the two drivers reach
+these instruments through genuinely different code).
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.run.starts` | counter | — | `flowstate.workflow.name`, `flowstate.driver` | One increment per run, once — never once per Continue-As-New segment |
+| `flowstate.run.duration` | histogram | s | `flowstate.workflow.name`, `flowstate.driver`, `flowstate.run.outcome`, `error.type` (on failure) | Duration from start to terminal outcome. Durably this is the segment that ends the run, not the sum of every Continue-As-New segment a long workload took — see `metricschema.InstrumentRunDuration`'s doc for why |
+| `flowstate.run.executions` | counter | — | same as `flowstate.run.duration` | Run completions, by outcome — the "step failure rate" and "runs per workflow" answer this table previously said did not exist |
+
+A Continue-As-New segment boundary records neither instrument: it is a
+handover to the next segment, not a completion, and counting it as one would
+make one submission look like several runs. `flowstate.workflow.name` and
+`flowstate.driver` are the only identity these carry — no run id, no
+execution id, no tenant — the same `ClassConfiguration`/`ClassConstruction`
+split every other `flowstate.*` label in this document follows; see
+`pkg/flowstate/v1/metricschema` for the allowlist and why a run id can never
+reach an instrument.
+
+What is still not here: a step's own retry count as a run-level rollup (the
+task-level duration/executions pair above already carries one measurement per
+attempt) and any label scoped to a tenant rather than a workflow — this
+system has no `ClassConfiguration`-bounded tenant label declared yet, so
+"runs per tenant per hour" still means filtering `flow list` or a trace by
+namespace rather than reading one off this table.
+
+`examples/observability/grafana/dashboards/flowstate.json`'s "Run lifecycle"
+row panels the table above; its "Runs and steps" row now also panels
+`temporal_workflow_task_schedule_to_start_latency` and `temporal_num_pollers`
+— on the wire since the Temporal SDK metrics handler was wired up, but
+previously undashboarded, which left the slot-exhaustion runbook below's
+"watch both" only half-answerable from the shipped dashboard.
 
 ## Worker capacity
 

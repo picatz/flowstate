@@ -334,12 +334,30 @@ const defaultMaxStepsPerRun = 200
 // passed to NewContinueAsNewErrorWithOptions, and a workflow's own dispatch
 // table always points at the registered name.
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
+	workflowName := st.GetWorkflow().GetName()
+
+	// #917's run-lifecycle metrics. Recorded here, around the whole of this
+	// segment, rather than inside runWorkflow: this is the one function every
+	// entry to a segment and every exit from one already passes through — the
+	// choke point [classifyRunError]'s own doc names for the identical reason
+	// — so it is the one place a start and a completion can be counted without
+	// adding a second seam runWorkflow's several return statements would each
+	// have to remember. workflow.Now is the deterministic clock every other
+	// duration in this package uses; see recordRunStart/recordRunCompletion
+	// for why a Continue-As-New segment records at most one of the two.
+	recordRunStart(ctx, workflowName)
+	started := workflow.Now(ctx)
+
 	outputs, err := runWorkflow(ctx, st)
 
 	// Both halves pass through unchanged, including the partial transcript a failed
 	// run carries: Temporal drops the result when the error is non-nil, so this is
 	// the honest shape rather than a value worth suppressing here.
-	return outputs, classifyRunError(err)
+	err = classifyRunError(err)
+
+	recordRunCompletion(ctx, workflowName, err, workflow.Now(ctx).Sub(started))
+
+	return outputs, err
 }
 
 // classifyRunError puts a terminal run failure's [v1.ErrorKind] where a client
