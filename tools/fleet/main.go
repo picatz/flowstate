@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -765,6 +766,22 @@ func protectedBelow(dir string) (uint64, bool) {
 		if err != nil || floor <= 0 {
 			// No such file on v1, and "0" — the default — everywhere else.
 			return nil
+		}
+
+		// Saturating, because this sum runs over numbers a hierarchy chooses
+		// and `memory.min` has no ceiling this tool gets to impose. Four
+		// descendants declaring 1<<62 wrap a plain uint64 addition to exactly
+		// zero, and zero here reads as "nothing is protected" — so the one
+		// hierarchy asking for maximal protection would be the one this hands
+		// out lanes against (Codex, #1134).
+		//
+		// Saturation is the fail-closed direction: an overstated protection
+		// understates headroom, which costs a lane, while a wrapped one
+		// overstates headroom, which costs an OOM kill.
+		if total > math.MaxUint64-uint64(floor) {
+			total = math.MaxUint64
+
+			return fs.SkipAll
 		}
 		total += uint64(floor)
 

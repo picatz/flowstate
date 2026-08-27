@@ -441,6 +441,22 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 		assert.Equal(t, uint64(7*gib), free)
 	})
 
+	t.Run("an oversized protection saturates rather than wrapping", func(t *testing.T) {
+		// `memory.min` has no ceiling this tool gets to impose, and the sum runs
+		// over numbers a hierarchy chooses. Four descendants at 1<<62 wrap a
+		// plain uint64 addition to exactly zero — and zero reads as "nothing is
+		// protected", so the one hierarchy asking for maximal protection would
+		// be the one lanes are dispatched against (Codex, #1134).
+		huge := protection{min: 1 << 62}
+		dir := protectedLayout(t, protection{cache: 5 * gib}, huge, huge, huge, huge)
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"the protection sum wrapped, so maximal protection read as none at all")
+	})
+
 	t.Run("a tree too large to read establishes nothing", func(t *testing.T) {
 		// Fail closed. A partial sum of protections understates them, which
 		// overstates headroom — the one direction a dispatch budget must not
