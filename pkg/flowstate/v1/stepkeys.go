@@ -71,6 +71,7 @@ var grammarStepKeys = []string{
 	"sleep",
 	"wait_until",
 	"wait_for_signal",
+	"wait_for_signals",
 	"call",
 
 	// Dispatch on one value: literal cases tried in written order, first match

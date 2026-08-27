@@ -103,7 +103,7 @@ var (
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
-	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call", "value", "switch"}
+	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
@@ -1539,6 +1539,10 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			}
 		case "wait_for_signal":
 			if wait := c.waitForSignal(kind.value, kindPath, r); wait != nil {
+				step.Kind = &v1.Node_Wait{Wait: wait}
+			}
+		case "wait_for_signals":
+			if wait := c.waitForSignals(kind.value, kindPath, r); wait != nil {
 				step.Kind = &v1.Node_Wait{Wait: wait}
 			}
 		case "switch":

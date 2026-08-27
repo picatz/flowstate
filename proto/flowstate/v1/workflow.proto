@@ -1181,6 +1181,26 @@ message Wait {
     // drivers, so every arm of this message has the replay-safe clock the
     // binding rule asks for. See [NowIdentifier].
     Value duration_expr = 5;
+
+    // SignalBatch waits for a signal and then takes every other delivery
+    // already buffered for that name, in one step: `wait_for_signals:`.
+    //
+    // The event-accumulator shape — a burst of orders, approvals, or webhook
+    // deliveries processed together — rather than a second way to spell an
+    // approval gate. It blocks exactly as `signal` does until the *first*
+    // delivery, then drains what is already buffered without blocking again, so
+    // "process whatever arrived" falls out of the wait that already exists
+    // rather than needing a new timer.
+    //
+    // A fifth arm rather than a mode inside `signal`, because the two bind
+    // disjoint name sets in their `outputs:` — see [SignalBatch] for the whole
+    // argument, and for the honest accounting of what batching does and does
+    // not remove from workflow history.
+    //
+    // `timeout` and `timeout_expr` below work on it unchanged, and mean what
+    // they mean on `signal`: how long to wait for the first delivery. A batch
+    // that lapses produces `count: 0` and `timed_out: true`.
+    SignalBatch signal_batch = 7;
   }
 
   // Timeout bounds how long the wait may last, for a wait that might otherwise

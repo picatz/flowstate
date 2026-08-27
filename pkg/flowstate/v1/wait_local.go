@@ -566,6 +566,24 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 		// expression is the moment the wait *ended*.
 		return ShapeSignalOutputs(ctx, kind.Signal, outputs, scope, clock.Now())
 
+	case *Wait_SignalBatch:
+		// The bound through the same [EvalWaitTimeout] both spellings and both
+		// drivers read, so no pair of the four can disagree about what a
+		// written-but-zero `timeout:` means.
+		timeout, bounded, err := EvalWaitTimeout(ctx, wait, scope, clock.Now())
+		if err != nil {
+			return nil, err
+		}
+
+		outputs, err := waitForSignalsLocally(ctx, clock, node, kind.SignalBatch, scope, timeout, bounded)
+		if err != nil {
+			return nil, err
+		}
+
+		// The same single shaping point as the arm above, through the same
+		// evaluator — see [ShapeSignalBatchOutputs].
+		return ShapeSignalBatchOutputs(ctx, kind.SignalBatch, outputs, scope, clock.Now())
+
 	default:
 		return nil, fmt.Errorf("unsupported wait kind %T", wait.GetKind())
 	}
@@ -693,7 +711,7 @@ func waitForSignalLocally(
 		// above, so a gate this run walks straight through is reported as
 		// parked by neither surface.
 		observeWaitStarted(ctx, node.GetId(), name, 0, false)
-		defer announceLocalWait(ctx, node, signal, nil, prompt, promptCut)()
+		defer announceLocalWait(ctx, node, name, nil, prompt, promptCut)()
 
 		rejoin := LeaveClockWhile(ctx)
 		defer rejoin()
@@ -766,7 +784,7 @@ func waitForSignalLocally(
 	// the announcement above it ([RunObserver.WaitStarted]): a buffered
 	// delivery was taken at the arming and reported nothing.
 	observeWaitStarted(ctx, node.GetId(), name, timeout, true)
-	defer announceLocalWait(ctx, node, signal, timestamppb.New(clock.Now().Add(timeout)), prompt, promptCut)()
+	defer announceLocalWait(ctx, node, name, timestamppb.New(clock.Now().Add(timeout)), prompt, promptCut)()
 
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -826,4 +844,207 @@ func waitForSignalLocally(
 	}
 
 	return nil, err
+}
+
+// waitForSignalsLocally blocks until the first delivery arrives or the wait
+// times out, then takes everything else already queued for that name.
+//
+// # The local half of the cost this feature chose
+//
+// A second signal-receiving path per driver, and this is that path here. It is
+// deliberately written as [waitForSignalLocally] with a drain where the single
+// take was, and it tracks the same four subtleties, each marked below where it
+// happens: carried-and-queued deliveries taken before anything blocks, the
+// prompt evaluated at the instant the wait is known to be parking, the
+// announcement at that same instant, and the deadline armed atomically with
+// respect to delivery so a wait can never be answered while still holding a
+// live one.
+//
+// # Where it deliberately differs from the single wait's arm
+//
+// One ordering, and it is a fix rather than a divergence. The single wait
+// answers an already-lapsed bound *before* it looks for a waiter or a queued
+// delivery; the durable driver answers it after both. That difference is
+// invisible there because a lapsed gate with a delivery in hand is not a shape
+// its cases reach. It would be visible here — a burst that arrived before a
+// zero timeout would be reported as an empty batch on one driver and a full one
+// on the other — so this arm takes what is in hand first, on both drivers, and
+// keeps the property that ordering existed for: a gate that never waits for
+// anything does not demand a waiter to tell it so.
+func waitForSignalsLocally(
+	ctx context.Context,
+	clock Clock,
+	node *Node,
+	batch *SignalBatch,
+	scope *Scope,
+	timeout time.Duration,
+	bounded bool,
+) (*Node_Outputs, error) {
+	name := batch.GetName()
+	limit := SignalBatchSize(batch)
+
+	waiter, hasWaiter := SignalWaiterFromContext(ctx)
+
+	var peeker signalPeeker
+	if hasWaiter {
+		peeker, _ = waiter.(signalPeeker)
+	}
+
+	// Subtlety one: everything already in hand, oldest first, before anything
+	// blocks or announces. The durable driver's arm takes its carried signals
+	// and its channel backlog at exactly this point, for exactly this reason —
+	// a batch that finds something waiting resolves without ever parking, so it
+	// asks nobody a question and is reported as parked by nobody.
+	deliveries := drainQueued(peeker, name, nil, limit)
+	if len(deliveries) > 0 {
+		return SignalBatchOutputs(deliveries, false), nil
+	}
+
+	// A bound that has already lapsed. Still ahead of the waiter requirement,
+	// which is the property [waitForSignalLocally]'s own ordering exists for:
+	// this gate waits for nothing, so refusing a run that has nothing left to
+	// receive would refuse it only locally.
+	if bounded && timeout <= 0 {
+		return SignalBatchOutputs(nil, true), nil
+	}
+
+	if !hasWaiter {
+		return nil, fmt.Errorf("%w: it waits for %q", ErrNoSignalWaiter, name)
+	}
+
+	if !bounded {
+		// Subtleties two and three, together: the question this gate asks and
+		// the announcement that it is asking it, both at the instant it is
+		// known to be parking and after the drain above. Both drivers draw the
+		// line here.
+		prompt, promptCut, err := EvalSignalBatchPrompt(ctx, batch, scope, clock.Now())
+		if err != nil {
+			return nil, err
+		}
+
+		observeWaitStarted(ctx, node.GetId(), name, 0, false)
+		defer announceLocalWait(ctx, node, name, nil, prompt, promptCut)()
+
+		// Withdrawn from the clock for the whole blocking receive, for
+		// [waitForSignalLocally]'s reason: an unbounded wait is parked on
+		// something the clock does not control, so holding a registration would
+		// stop a [VirtualClock] ever seeing every participant parked.
+		rejoin := LeaveClockWhile(ctx)
+
+		payload, sender, err := waiter.WaitForSignal(ctx, name)
+		rejoin()
+		if err != nil {
+			return nil, err
+		}
+
+		return SignalBatchOutputs(
+			drainQueued(peeker, name, []*SignalDelivery{{Payload: payload, Sender: sender}}, limit),
+			false), nil
+	}
+
+	// Subtlety four: the deadline armed atomically with respect to delivery, so
+	// that a batch answered between the drain above and the block below is
+	// never left holding one nothing can withdraw. The same [signalWait]
+	// bookkeeping the single wait uses, which is why this takes the delivery
+	// that arming found rather than arming and re-checking.
+	var (
+		deadline    <-chan time.Time
+		armDeadline = func() (<-chan time.Time, *SignalDelivery, bool) {
+			return clock.After(timeout), nil, false
+		}
+	)
+
+	if peeker != nil {
+		wait, leave := peeker.enterSignalWait(name)
+		defer leave()
+
+		armDeadline = func() (<-chan time.Time, *SignalDelivery, bool) {
+			return wait.armDeadline(clock, name, timeout)
+		}
+	}
+
+	deadline, delivered, wasDelivered := armDeadline()
+	if wasDelivered {
+		// Answered at the arming, so no deadline was registered and none is
+		// spent — and the rest of the burst behind it is taken here rather than
+		// left for a second iteration.
+		return SignalBatchOutputs(drainQueued(peeker, name, []*SignalDelivery{delivered}, limit), false), nil
+	}
+
+	prompt, promptCut, err := EvalSignalBatchPrompt(ctx, batch, scope, clock.Now())
+	if err != nil {
+		return nil, err
+	}
+
+	observeWaitStarted(ctx, node.GetId(), name, timeout, true)
+	defer announceLocalWait(ctx, node, name, timestamppb.New(clock.Now().Add(timeout)), prompt, promptCut)()
+
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	defer DiscardTimer(clock, deadline)
+
+	timedOut := make(chan struct{})
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+
+		select {
+		case <-deadline:
+			close(timedOut)
+			cancel()
+		case <-waitCtx.Done():
+		}
+	}()
+
+	defer func() {
+		cancel()
+		<-watching
+	}()
+
+	payload, sender, err := waiter.WaitForSignal(waitCtx, name)
+	if err == nil {
+		return SignalBatchOutputs(
+			drainQueued(peeker, name, []*SignalDelivery{{Payload: payload, Sender: sender}}, limit),
+			false), nil
+	}
+
+	select {
+	case <-timedOut:
+		// Nothing arrived within the bound, which is `count: 0` rather than a
+		// failure — the same normal-outcome rule [TimedOutOutput] states for
+		// every other wait.
+		return SignalBatchOutputs(nil, true), nil
+	default:
+	}
+
+	return nil, err
+}
+
+// drainQueued appends whatever is already queued for name to deliveries,
+// without blocking, stopping at limit.
+//
+// The local analogue of the engine's `drainInto`, over the same non-blocking
+// take [waitForSignalLocally] already uses for its early-arrival peek
+// ([signalPeeker.tryReceiveSignal]). A [SignalWaiter] that keeps no bookkeeping
+// is not a peeker and drains nothing here, which is correct rather than merely
+// tolerable: such a waiter has no queue to look into, so its batch is whatever
+// the blocking receive hands over, one at a time across iterations.
+//
+// What is left past the limit stays queued, exactly as the durable drain leaves
+// it on the channel, so the next drain takes it.
+func drainQueued(peeker signalPeeker, name string, deliveries []*SignalDelivery, limit int) []*SignalDelivery {
+	if peeker == nil {
+		return deliveries
+	}
+
+	for len(deliveries) < limit {
+		delivery, took := peeker.tryReceiveSignal(name)
+		if !took {
+			break
+		}
+		deliveries = append(deliveries, delivery)
+	}
+
+	return deliveries
 }

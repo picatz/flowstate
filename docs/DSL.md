@@ -85,6 +85,7 @@ headings below, not this list.*
   - [State: one carried value, named bare, updated explicitly](#state-one-carried-value-named-bare-updated-explicitly)
   - [Reading a loop's result: `results` and `state`, not the `as:` name](#reading-a-loops-result-results-and-state-not-the-as-name)
   - [`results` is bounded, and retained across Continue-As-New only when read](#results-is-bounded-and-retained-across-continue-as-new-only-when-read)
+  - [The burst case has its own spelling: `wait_for_signals:`](#the-burst-case-has-its-own-spelling-wait_for_signals)
   - [Bounded, because the author does not control the trip count](#bounded-because-the-author-does-not-control-the-trip-count)
   - [A `for_each` is bounded on its trip count too](#a-for_each-is-bounded-on-its-trip-count-too)
   - [Both drivers, and determinism](#both-drivers-and-determinism)
@@ -3560,6 +3561,80 @@ loop is bounded only by `max_iterations:`, same as it always was; this is the sa
 local-cannot-rehearse-a-CAN-seam boundary the section above already states for
 `update:`'s "never evaluated after `until:` holds" case, one instance of a general
 rule rather than a new one.
+
+### The burst case has its own spelling: `wait_for_signals:`
+
+The paragraph above names the entity accumulator's cost — one `results` entry per
+signal, forever — and the retention rules bound it. What they do not do is remove
+the reason it is there, which is that `wait_for_signal:` consumes exactly one
+buffered delivery per iteration. Fifty orders placed in the same second cost fifty
+iterations of the loop around it.
+
+`wait_for_signals:` is the spelling for that case. It waits exactly as
+`wait_for_signal:` does — same durable timer, same `timeout:`, same cancellation —
+until the *first* delivery, then takes everything else already buffered without
+waiting again:
+
+```yaml
+- id: settle
+  sleep: 30s
+
+- id: batch
+  wait_for_signals:
+    name: order-placed
+    max_batch: 50
+    timeout: 5m
+    outputs:
+      ids: ${deliveries.map(delivery, delivery.payload.id)}
+      processed: ${count}
+      timed_out: ${timed_out}
+```
+
+`examples/signal-batch-drain` writes it out with its own tests.
+
+**What batching actually removes, stated exactly, because the obvious reading is
+wrong.** A signal costs one `WorkflowExecutionSignaled` event in history whether it
+is drained in a batch or consumed one at a time, and nothing can change that: the
+event is written when the sender's RPC is accepted, long before any workflow code
+decides how to read it. What the per-iteration shape pays *on top* of that is what a
+batch removes — a workflow task per iteration (Scheduled/Started/Completed, plus
+whatever the body schedules), and one `Workflow.StepOutputs` entry per iteration
+weighed against `MaxLoopResultsBytes`. A burst drained in one step coalesces into a
+handful of workflow tasks, because signals arriving while a task is already pending
+are delivered into that same task, and records one results entry.
+
+So: fewer workflow tasks and one results entry instead of N, not fewer signal
+events. Anyone claiming the latter is measuring the wrong column.
+
+**It binds different names, which is why it is a fifth arm of `Wait` and not a
+`drain: true` flag on the fourth.** A drain's `outputs:` sees `deliveries` (a list
+of `{payload, sender}` maps, oldest first), `count`, and `timed_out`. It does not
+see `payload` or `sender`, because a batch has many of each and a name that silently
+meant "the first one" is the sort of value an author reads once and branches on
+forever. A flag inside `wait_for_signal:` would make every `outputs:` expression's
+validity depend on a sibling key's value — a *reported* refusal where the schema's
+own comment on `Signal.outputs` argues for a structural one, and that argument
+applies here unchanged.
+
+**Bounded by count, because count is what the far side chooses.** `max_batch:` is
+capped at `MaxPendingSignals`, which is also what an omitted key means. Bytes follow
+from the count: each delivery is already bounded by `MaxSignalPayloadBytes` at
+admission, so a bounded count bounds the whole. What is left past the bound is
+neither dropped nor re-buffered — it stays on the channel, and the next drain takes
+it, which is what a `loop:` around this step already wants. Reaching the bound
+therefore costs an iteration rather than an event.
+
+**Admission is unchanged, and deliberately so.** `SignalPolicyCheck` and
+`CheckSignalPayloadSize` run at the `Signal` RPC, before a delivery reaches any
+channel, so every delivery in a batch was individually admitted against the sender
+the server attested for it. A batch cannot route around per-sender policy, because
+the policy is not at receive time. There was nothing new to build here — only
+something to keep true.
+
+**A settle window is deliberately not part of this.** "Drain once nothing new has
+arrived for 30s" is a second durable timer per iteration and a distinct feature. A
+*fixed* batching window is expressible today, as an ordinary `sleep:` before the
+drain — which is what `settle` is above.
 
 ### Bounded, because the author does not control the trip count
 

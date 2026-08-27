@@ -201,6 +201,26 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				}},
 			},
 			{
+				// The batch spelling, so this fixture reaches `wait_for_signals`
+				// and `max_batch` — the two keys the shape table gained with it.
+				// Written out for the reason the gate above writes out its
+				// `prompt:` and `outputs:`: this test only knows the keys its
+				// fixture reaches, so a key nothing populates is invisible to
+				// both directions of the comparison.
+				Id: "orders",
+				Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind: &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{
+						Name:     "order-placed",
+						MaxBatch: 10,
+						Prompt:   v1.NewExpr(`"send order events"`),
+						Outputs: map[string]*v1.Value{
+							"ids": v1.NewExpr("deliveries.map(d, d.payload.id)"),
+						},
+					}},
+					Timeout: durationpb.New(30_000_000_000),
+				}},
+			},
+			{
 				// `call:` and `with:`, so this fixture reaches both keys. The
 				// callee is written to a real file below rather than only held in
 				// memory, because the round trip this test performs — Marshal,
@@ -316,6 +336,9 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 		// A gate's `outputs:` shaping is an open mapping too: the author names
 		// what the wait produces, exactly as they name a `vars:` binding.
 		for name := range node.GetWait().GetSignal().GetOutputs() {
+			authored[name] = true
+		}
+		for name := range node.GetWait().GetSignalBatch().GetOutputs() {
 			authored[name] = true
 		}
 	}
@@ -1359,6 +1382,14 @@ steps:
       timeout: 24h
       outputs:
         approved: ${has(payload.approved) && payload.approved}
+  - id: orders
+    wait_for_signals:
+      name: order-placed
+      max_batch: 10
+      prompt: send order events
+      timeout: 30s
+      outputs:
+        ids: ${deliveries.map(d, d.payload.id)}
   - id: provision
     call: ./callee.yaml
     with:

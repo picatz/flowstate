@@ -96,7 +96,23 @@ const PromptWithheldSecret = "[prompt withheld: it names a secret]"
 // goes through. The wait's own result is deliberately absent: `payload`,
 // `sender` and `timed_out` do not exist yet when the question is asked.
 func EvalSignalPrompt(ctx context.Context, signal *Signal, scope *Scope, now time.Time) (prompt string, truncated bool, err error) {
-	value := signal.GetPrompt()
+	return evalWaitPrompt(ctx, signal.GetPrompt(), scope, now, "wait_for_signal")
+}
+
+// EvalSignalBatchPrompt resolves a `wait_for_signals:`'s `prompt:`.
+//
+// The same function as [EvalSignalPrompt] under a different name, and that is
+// the whole intent: a prompt is a prompt whichever spelling carries it, so the
+// secret backstop, the type refusal, the bound and the evaluation position are
+// one implementation rather than two that must be kept in step. Only the label
+// in a diagnostic differs, because an author reading it needs to be told which
+// key they wrote.
+func EvalSignalBatchPrompt(ctx context.Context, batch *SignalBatch, scope *Scope, now time.Time) (prompt string, truncated bool, err error) {
+	return evalWaitPrompt(ctx, batch.GetPrompt(), scope, now, "wait_for_signals")
+}
+
+// evalWaitPrompt is the one evaluator behind both spellings' `prompt:`.
+func evalWaitPrompt(ctx context.Context, value *Value, scope *Scope, now time.Time, key string) (prompt string, truncated bool, err error) {
 	if value == nil {
 		return "", false, nil
 	}
@@ -113,7 +129,7 @@ func EvalSignalPrompt(ctx context.Context, signal *Signal, scope *Scope, now tim
 
 	evaluated, err := evalWaitExpr(ctx, value, scope, now, nil)
 	if err != nil {
-		return "", false, fmt.Errorf("evaluating wait_for_signal prompt: %w", err)
+		return "", false, fmt.Errorf("evaluating %s prompt: %w", key, err)
 	}
 
 	text, ok := evaluated.Value().(string)
@@ -123,8 +139,8 @@ func EvalSignalPrompt(ctx context.Context, signal *Signal, scope *Scope, now tim
 		// happens to produce would put an author's mistake in front of an
 		// approver instead of in front of the author.
 		return "", false, fmt.Errorf(
-			"wait_for_signal prompt produced %s, and a prompt is the sentence an approver reads, so it has to be a string",
-			evaluated.Type())
+			"%s prompt produced %s, and a prompt is the sentence an approver reads, so it has to be a string",
+			key, evaluated.Type())
 	}
 
 	bounded, cut := boundPrompt(text)
@@ -427,6 +443,15 @@ func (w *promptWalk) nodes(nodes []*Node, sensitive map[string]bool, bindings ma
 			// Without whatever the enclosing scope bound as `now`: a wait binds that
 			// name over anything above it. See [promptWalk.check].
 			w.check(signal.GetPrompt(), unbind(inner, NowIdentifier), node.GetId(), sensitive)
+		}
+		if batch := node.GetWait().GetSignalBatch(); batch != nil {
+			// The other spelling that carries a `prompt:`, checked here rather
+			// than left to its own pass. A prompt is rendered into an
+			// approver's client whichever key wrote it, so a rule that covered
+			// one arm would be a containment argument with a hole in it — and
+			// the hole would be in the newer arm, which is the one nobody
+			// remembers to re-read.
+			w.check(batch.GetPrompt(), unbind(inner, NowIdentifier), node.GetId(), sensitive)
 		}
 
 		if loop := node.GetForEach(); loop != nil {

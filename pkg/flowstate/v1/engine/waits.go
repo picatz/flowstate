@@ -128,7 +128,10 @@ func (r *waitRegistry) isTruncated() bool {
 // happens to sit at.
 func (e *executor) pendingWait(
 	node *v1.Node,
-	signal *v1.Signal,
+	// The signal *name* rather than the message, because both wait spellings
+	// announce through here and they carry different messages. A name is all a
+	// [v1.PendingWait] ever held of either.
+	signalName string,
 	deadline *timestamppb.Timestamp,
 	prompt string,
 	promptTruncated bool,
@@ -136,7 +139,7 @@ func (e *executor) pendingWait(
 	return &v1.PendingWait{
 		StepId:          node.GetId(),
 		Path:            e.progress.ancestors(),
-		SignalName:      signal.GetName(),
+		SignalName:      signalName,
 		Deadline:        deadline,
 		Prompt:          prompt,
 		PromptTruncated: promptTruncated,
@@ -146,6 +149,6 @@ func (e *executor) pendingWait(
 		// called workflow's own `signals:` here would tell an operator a gate
 		// was policed by something that does not police it. See
 		// server/lifecycle.go's authorizeSignal.
-		Policed: e.spec.GetSignals()[signal.GetName()] != nil,
+		Policed: e.spec.GetSignals()[signalName] != nil,
 	}
 }

@@ -2344,7 +2344,17 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		// is legal beside a signal's, and a bare field made Locate find the
 		// step-level span first, pointing the diagnostic at the valid outer
 		// timeout while the faulty expression sat one level down (#318 review).
-		ds = append(ds, validateInputRefs(id, "wait_for_signal.timeout", computed, waiting, index, wf)...)
+		field := "wait_for_signal.timeout"
+		if wait.GetSignalBatch() != nil {
+			// The key the author wrote, so [Locate] finds the span in their file
+			// rather than falling back to the whole step — the same reason this
+			// path is spelled out rather than bare.
+			field = "wait_for_signals.timeout"
+		}
+		ds = append(ds, validateInputRefs(id, field, computed, waiting, index, wf)...)
+	}
+	if prompt := wait.GetSignalBatch().GetPrompt(); prompt != nil {
+		ds = append(ds, validateInputRefs(id, "wait_for_signals.prompt", prompt, waiting, index, wf)...)
 	}
 	if prompt := wait.GetSignal().GetPrompt(); prompt != nil {
 		// Named with its full path for the reason `timeout:` is: a step may carry
@@ -2370,6 +2380,28 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		shaping := waiting.
 			withLocal(v1.PayloadOutput).
 			withLocal(v1.SenderOutput).
+			withLocal(v1.TimedOutOutput)
+
+		for _, name := range slices.Sorted(maps.Keys(shaped)) {
+			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
+		}
+	}
+
+	// A `wait_for_signals:`'s own `outputs:` sees its *own* result, which is a
+	// different set of names: `deliveries` and `count` rather than `payload` and
+	// `sender`, plus the `timed_out` both arms produce.
+	//
+	// Per arm rather than a union of the two, and this is the direction that
+	// matters: a union would make `${payload.x}` resolve inside a batch's
+	// shaping, where [v1.ShapeSignalBatchOutputs] binds no such name — so the
+	// file would validate and then fail at run time on the one driver the author
+	// was not looking at. Widening a scope is how a validator goes quiet about a
+	// real mistake; the rewriter in `fix.go` takes the union for the opposite
+	// reason, spelled out at [waitShapingNames].
+	if shaped := wait.GetSignalBatch().GetOutputs(); len(shaped) > 0 {
+		shaping := waiting.
+			withLocal(v1.DeliveriesOutput).
+			withLocal(v1.CountOutput).
 			withLocal(v1.TimedOutOutput)
 
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
@@ -2907,7 +2939,16 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// [PayloadOutput]'s rooting?), so this stays exactly as narrow as it was before
 	// this file started reading [v1.OutputNames] — silence here is inherited, not
 	// re-decided.
-	if shaped := node.GetWait().GetSignal().GetOutputs(); len(shaped) > 0 {
+	shapedWait := node.GetWait().GetSignal().GetOutputs()
+	if len(shapedWait) == 0 {
+		// The batch spelling shapes under exactly the same rule — replace, not
+		// extend — so a reference to a name its `outputs:` dropped has to be
+		// reported here too. Reading only the single-wait arm would leave the
+		// newer spelling silently accepting every unresolved reference, which is
+		// the diagnostic-rot shape `hasTimeout` above already records.
+		shapedWait = node.GetWait().GetSignalBatch().GetOutputs()
+	}
+	if shaped := shapedWait; len(shaped) > 0 {
 		if _, produced := shaped[ref.Output]; produced {
 			return Diagnostic{}, false
 		}
@@ -2918,7 +2959,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		if suggestion, ok := nearest.Name(ref.Output, names); ok {
 			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces; did you mean %q?",
 				ref.ID, ref.Output, suggestion)
-		} else if ref.Output == v1.PayloadOutput || ref.Output == v1.SenderOutput || ref.Output == v1.TimedOutOutput {
+		} else if waitOwnOutput(node, ref.Output) {
 			message += fmt.Sprintf("; `%s` is one of the wait's own outputs, which shaping dropped; re-expose it with `%s: ${%s}`",
 				ref.Output, ref.Output, ref.Output)
 		}
@@ -3282,4 +3323,31 @@ func (ds Diagnostics) Report(file string) *v1.DiagnosticReport {
 	}
 
 	return report
+}
+
+// waitOwnOutput reports whether name is one of the outputs the *waiting step
+// itself* produces before shaping replaced them, so the diagnostic above can
+// tell an author their reference was dropped rather than misspelled.
+//
+// Per arm rather than one union of both, and that is the point: `payload` and
+// `sender` are a single wait's names and `deliveries` and `count` are a batch's,
+// so a union would advise an author of a `wait_for_signals:` to "re-expose"
+// `payload`, which that spelling never produced. Advice for a name the step
+// could not have had is worse than no advice — it sends the reader looking for
+// a value that never existed.
+func waitOwnOutput(node *v1.Node, name string) bool {
+	if name == v1.TimedOutOutput {
+		// The one name both arms produce, which is why it is checked before
+		// either of them.
+		return node.GetWait() != nil
+	}
+
+	if node.GetWait().GetSignal() != nil {
+		return name == v1.PayloadOutput || name == v1.SenderOutput
+	}
+	if node.GetWait().GetSignalBatch() != nil {
+		return name == v1.DeliveriesOutput || name == v1.CountOutput
+	}
+
+	return false
 }

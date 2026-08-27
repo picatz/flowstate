@@ -657,6 +657,14 @@ const (
 	// suppressed by taking the whole subtree.
 	waitForSignalKey = "wait_for_signal"
 
+	// waitForSignalsKey is the batch spelling, which opens a mapping with the
+	// same two expression-bearing keys (`timeout:` and `outputs:`) plus its own
+	// `max_batch:`. Listed beside its sibling and read with it, because this
+	// block's own comment records what happens to a rewriter that learns some of
+	// a set and not the rest: it corrupts a working file in exactly the case it
+	// did not know about.
+	waitForSignalsKey = "wait_for_signals"
+
 	// waitOutputsKey is a `wait_for_signal:`'s output shaping, and the *only* place
 	// the three names below are bound.
 	//
@@ -683,6 +691,20 @@ var waitShapingNames = map[string]bool{
 	v1.PayloadOutput:  true,
 	v1.SenderOutput:   true,
 	v1.TimedOutOutput: true,
+
+	// The batch spelling's own two result names, in the same set rather than a
+	// second one. A file may legitimately contain a step called `deliveries` or
+	// `count` — neither is reserved outside this mapping — so a rewriter that
+	// rooted them here would turn a working drain into a reference to that step,
+	// and the result would still pass `flow validate`. Exactly the class above.
+	//
+	// One set for both arms is deliberately wider than either arm alone: over-
+	// subtracting here leaves a genuine `${steps.count}` written bare inside a
+	// `wait_for_signal:`'s `outputs:`, which is a reference the validator then
+	// resolves the same way it always did, because a bare name that names a step
+	// is what these mappings already permit. Under-subtracting is the corruption.
+	v1.DeliveriesOutput: true,
+	v1.CountOutput:      true,
 }
 
 // bindsNow is the set of keys under which `now` is bound, which the rewriter reads
@@ -693,9 +715,10 @@ var waitShapingNames = map[string]bool{
 // one that gets forgotten is this one — it is not a compile error, and the file it
 // corrupts still passes `flow validate`.
 var bindsNow = map[string]bool{
-	waitUntilKey:     true,
-	waitSleepKey:     true,
-	waitForSignalKey: true,
+	waitUntilKey:      true,
+	waitSleepKey:      true,
+	waitForSignalKey:  true,
+	waitForSignalsKey: true,
 }
 
 // triggersKey opens the block where `event` is bound, which the rewriter reads for

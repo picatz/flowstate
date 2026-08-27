@@ -136,6 +136,16 @@ const (
 	SlotStepValue
 	// SlotCallArgument is one entry of a `call:`'s `with:`.
 	SlotCallArgument
+	// SlotWaitBatchPrompt is a `wait_for_signals:`'s `prompt:`.
+	//
+	// Its own slot rather than sharing [SlotWaitPrompt], because
+	// `TestEveryValuePositionInTheSchemaIsWalked` holds one rule that is worth
+	// more than the tidiness of sharing: one schema position is one slot. A slot
+	// covering two positions would let a *third* be added later and land on an
+	// already-claimed name, which is the blindness that test exists to prevent.
+	SlotWaitBatchPrompt
+	// SlotWaitBatchOutput is one entry of a `wait_for_signals:`'s `outputs:`.
+	SlotWaitBatchOutput
 )
 
 // ValueSlotSchemaPath maps each slot to the schema field it names.
@@ -170,6 +180,8 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotWaitTimeout:      "Workflow.steps[].wait.timeout_expr",
 		SlotWaitPrompt:       "Workflow.steps[].wait.signal.prompt",
 		SlotWaitSignalOutput: "Workflow.steps[].wait.signal.outputs{}",
+		SlotWaitBatchPrompt:  "Workflow.steps[].wait.signal_batch.prompt",
+		SlotWaitBatchOutput:  "Workflow.steps[].wait.signal_batch.outputs{}",
 		SlotStepValue:        "Workflow.steps[].value",
 		SlotCallArgument:     "Workflow.steps[].call.arguments{}",
 	}
@@ -295,9 +307,11 @@ func (s ValueSite) Field() string {
 		return "sleep"
 	case SlotWaitTimeout:
 		return "timeout"
-	case SlotWaitPrompt:
+	case SlotWaitPrompt, SlotWaitBatchPrompt:
+		// One path for both, unlike the slots: this is the key an author wrote
+		// in their file, and both spellings write `prompt:`.
 		return "prompt"
-	case SlotWaitSignalOutput:
+	case SlotWaitSignalOutput, SlotWaitBatchOutput:
 		return "outputs." + s.Name
 	case SlotCallArgument:
 		return "with." + s.Name
@@ -510,10 +524,23 @@ func WalkNode(node *Node, w Walk) {
 		w.value(ValueSite{Slot: SlotWaitSleep, Step: id, Value: kind.Wait.GetDurationExpr()})
 		w.value(ValueSite{Slot: SlotWaitTimeout, Step: id, Value: kind.Wait.GetTimeoutExpr()})
 		w.value(ValueSite{Slot: SlotWaitPrompt, Step: id, Value: kind.Wait.GetSignal().GetPrompt()})
+		// The batch spelling's own two expression positions, under the same
+		// slots as the single wait's. A walker's whole job is to see every
+		// expression a specification holds — `CollectNodeRefs` reads this to
+		// decide what compaction may drop — so an arm missing here is not a
+		// cosmetic gap: it is a live reference nothing knows is live. The two
+		// arms are mutually exclusive by the oneof, so reading both is reading
+		// whichever one is set.
+		w.value(ValueSite{Slot: SlotWaitBatchPrompt, Step: id, Value: kind.Wait.GetSignalBatch().GetPrompt()})
 
 		shaped := kind.Wait.GetSignal().GetOutputs()
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
 			w.value(ValueSite{Slot: SlotWaitSignalOutput, Step: id, Name: name, Value: shaped[name]})
+		}
+
+		batchShaped := kind.Wait.GetSignalBatch().GetOutputs()
+		for _, name := range slices.Sorted(maps.Keys(batchShaped)) {
+			w.value(ValueSite{Slot: SlotWaitBatchOutput, Step: id, Name: name, Value: batchShaped[name]})
 		}
 
 	case *Node_Value:

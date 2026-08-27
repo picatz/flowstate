@@ -37,14 +37,15 @@ var dashLine = regexp.MustCompile(`^(\s*)-(\s|$)`)
 // a kind added there needs an entry here before completion stops offering
 // `timeout:`/`retry:` on it too.
 var nonTaskKindKeys = map[string]bool{
-	"for_each":        true,
-	"loop":            true,
-	"parallel":        true,
-	"sleep":           true,
-	"wait_until":      true,
-	"wait_for_signal": true,
-	"value":           true,
-	"switch":          true,
+	"for_each":         true,
+	"loop":             true,
+	"parallel":         true,
+	"sleep":            true,
+	"wait_until":       true,
+	"wait_for_signal":  true,
+	"wait_for_signals": true,
+	"value":            true,
+	"switch":           true,
 }
 
 // An outlineStep is one step of a Flowfile as the line scan sees it.

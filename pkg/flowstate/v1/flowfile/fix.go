@@ -1877,9 +1877,13 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
-			if named && name == waitForSignalKey {
-				// Everything below a `wait_for_signal:` is inside the wait, which is
-				// what the shaping subtraction one branch down needs to know.
+			if named && (name == waitForSignalKey || name == waitForSignalsKey) {
+				// Everything below a `wait_for_signal:` or a `wait_for_signals:` is
+				// inside the wait, which is what the shaping subtraction one branch
+				// down needs to know. Both, because both bind a result bare in their
+				// `outputs:` — a rewriter that knew one of the two would corrupt a
+				// working file in exactly the case it did not know about, which is
+				// the failure this whole comment block exists to record.
 				waiting = true
 			}
 			if named && waiting && name == waitOutputsKey {
@@ -1890,8 +1894,11 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// names and a step may legitimately be called any of them.
 				//
 				// Taken from where the engine evaluates the thing, per CLAUDE.md:
-				// [v1.ShapeSignalOutputs] binds exactly these three, at the moment
-				// the wait resolves, and nowhere else.
+				// [v1.ShapeSignalOutputs] and [v1.ShapeSignalBatchOutputs] bind
+				// exactly these names, at the moment the wait resolves, and nowhere
+				// else. [waitShapingNames] is the union of the two arms' result
+				// names; see its own comment for why the union rather than a pair
+				// of sets keyed off which arm opened this subtree.
 				steps = without(steps, waitShapingNames)
 			}
 			if named && name == triggersKey {
