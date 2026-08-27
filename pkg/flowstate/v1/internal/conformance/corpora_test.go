@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"sort"
 	"strconv"
@@ -906,6 +907,7 @@ func corpusSizes() map[string]int {
 		"BuiltinCases":  len(make([]int, 3)),
 		"ComposedCases": len(ComposedCases(Extra())),
 		"CountedCases":  size(CountedCases()),
+		constantKey:     len(ConstantKeyCases()),
 	}
 }
 `, 0)
@@ -921,7 +923,7 @@ func corpusSizes() map[string]int {
 	assert.Equal(t, []string{"MisnamedCases"}, mismatched,
 		"a row naming one corpus and counting another was read as agreeing with itself")
 
-	// Four unreadable shapes, and they are listed separately because each is
+	// Five unreadable shapes, and they are listed separately because each is
 	// refused by a different rule. A single row that tripped two of them —
 	// `len(append(X(), y()...))`, which is both a builtin and composed — made
 	// the two rules mask each other under mutation: deleting either left the
@@ -933,10 +935,37 @@ func corpusSizes() map[string]int {
 	// check quietly optional — which is the failure `unresolvedResults` one
 	// table up exists to prevent, wearing different clothes.
 	assert.ElementsMatch(t,
-		[]string{"NotACallAtAll", "BuiltinCases", "ComposedCases", "CountedCases"}, unreadable,
+		[]string{
+			"NotACallAtAll", "BuiltinCases", "ComposedCases", "CountedCases",
+			// A key that is not a string literal, named by what it says rather
+			// than by what it means — this cannot evaluate a constant, which is
+			// the whole reason the row is refused.
+			"constantKey",
+		}, unreadable,
 		"a row whose shape this cannot read was passed over rather than refused")
 
 	assert.Len(t, rows, 3, "an unreadable row must not also be counted as read")
+
+	// An element that is not a key-value pair at all. Unreachable through a map
+	// literal, which is what the table is — Go will not parse a bare element
+	// there — so it is exercised through the shape that can carry one. The
+	// branch stays because the reader takes whatever composite literal a
+	// function returns, and "the table is a map today" is precisely the kind of
+	// premise this file exists to stop relying on.
+	t.Run("an element that is not a row is refused", func(t *testing.T) {
+		bare, err := parser.ParseFile(token.NewFileSet(), "bare.go", `package conformance
+
+func corpusSizes() []int {
+	return []int{1, two}
+}
+`, 0)
+		require.NoError(t, err)
+
+		rows, unreadable := tableRows(funcNamed(bare, "corpusSizes"))
+
+		assert.Empty(t, rows)
+		assert.Equal(t, []string{"1", "two"}, unreadable)
+	})
 }
 
 // corpusTableFile is where [corpusSizes] is written, read as source by the
@@ -958,36 +987,81 @@ type corpusRow struct {
 // hand it shapes this package does not contain — the same reason
 // [unreadableResults] and [sliceReturners] take their inputs.
 func tableRows(fn *ast.FuncDecl) (rows []corpusRow, unreadable []string) {
-	if fn == nil {
+	literal := returnedLiteral(fn)
+	if literal == nil {
 		return nil, nil
 	}
 
-	ast.Inspect(fn, func(node ast.Node) bool {
-		entry, ok := node.(*ast.KeyValueExpr)
+	for _, element := range literal.Elts {
+		entry, ok := element.(*ast.KeyValueExpr)
 		if !ok {
-			return true
+			unreadable = append(unreadable, types.ExprString(element))
+
+			continue
 		}
-		key, ok := entry.Key.(*ast.BasicLit)
-		if !ok || key.Kind != token.STRING {
-			return true
-		}
-		name, err := strconv.Unquote(key.Value)
-		if err != nil {
-			return true
+
+		name, ok := literalKey(entry.Key)
+		if !ok {
+			// A key that is not a string literal is a key this cannot compare,
+			// and skipping it would make the check quietly optional for exactly
+			// the row somebody wrote cleverly. `fooCasesName: len(BarCases())`
+			// with a constant for the key is invisible here and perfectly
+			// visible to the runtime checks, which see the resulting `FooCases`
+			// and are satisfied — so FooCases could be emptied with this check
+			// reporting a clean table (Codex, #1141).
+			unreadable = append(unreadable, types.ExprString(entry.Key))
+
+			continue
 		}
 
 		called, ok := lenOfCall(entry.Value)
 		if !ok {
 			unreadable = append(unreadable, name)
 
-			return true
+			continue
 		}
 		rows = append(rows, corpusRow{key: name, calls: called})
-
-		return true
-	})
+	}
 
 	return rows, unreadable
+}
+
+// returnedLiteral is the composite literal a function returns, or nil.
+//
+// The table's own elements, rather than every key-value pair anywhere inside
+// the function. An [ast.Inspect] over the whole declaration would descend into
+// a value's own composite literals and read their entries as rows — nothing in
+// the table is written that way today, which is the condition under which this
+// file's mistakes have always been made.
+func returnedLiteral(fn *ast.FuncDecl) *ast.CompositeLit {
+	if fn == nil || fn.Body == nil {
+		return nil
+	}
+	for _, statement := range fn.Body.List {
+		ret, ok := statement.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			continue
+		}
+		if literal, ok := ret.Results[0].(*ast.CompositeLit); ok {
+			return literal
+		}
+	}
+
+	return nil
+}
+
+// literalKey is the string a key spells, when it spells one literally.
+func literalKey(expr ast.Expr) (string, bool) {
+	key, ok := expr.(*ast.BasicLit)
+	if !ok || key.Kind != token.STRING {
+		return "", false
+	}
+	name, err := strconv.Unquote(key.Value)
+	if err != nil {
+		return "", false
+	}
+
+	return name, true
 }
 
 // lenOfCall reads `len(X(...))` and reports X.
