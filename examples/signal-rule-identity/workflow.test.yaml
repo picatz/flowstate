@@ -1,0 +1,96 @@
+# `flow test` checks a scripted signal's `sender:` against `signals:` through
+# the same `v1.SignalPolicyCheck` a served signal is checked with (see
+# `approval-gate`'s own test for the seam this relies on) — so both rules
+# below are exercised the same way production enforces them: the named
+# subject is the only sender `rollback-confirmed` admits, and `hold-lifted`
+# admits any `on-call` claim, but only from the run's own namespace.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the release bot's exact subject confirms the rollback
+    signals:
+      - name: rollback-confirmed
+        sender:
+          subject: release-bot@example.com
+          issuer: https://issuer.example.com
+        payload: {}
+    expect:
+      # `hold` still runs — its own gate opened the moment `rollback` was
+      # confirmed — and lapses on its own timeout since nothing signals it here.
+      ran: [request, rollback, hold]
+      outputs:
+        confirmed_by: release-bot@example.com
+        hold_lifted_by: ""
+
+  - name: an on-call responder in the run's own namespace lifts the hold
+    signals:
+      - name: rollback-confirmed
+        sender:
+          subject: release-bot@example.com
+          issuer: https://issuer.example.com
+        payload: {}
+      - name: hold-lifted
+        sender:
+          subject: on-call-lead@example.com
+          issuer: https://issuer.example.com
+          namespace: payments
+          claims:
+            role: on-call
+        payload: {}
+    expect:
+      ran: [request, rollback, hold]
+      outputs:
+        confirmed_by: release-bot@example.com
+        hold_lifted_by: on-call-lead@example.com
+
+  - name: the right claim from the wrong tenant does not lift the hold
+    signals:
+      - name: rollback-confirmed
+        sender:
+          subject: release-bot@example.com
+          issuer: https://issuer.example.com
+        payload: {}
+      - name: hold-lifted
+        # Refused before `hold` ever sees it, exactly as a real delivery from
+        # the wrong tenant would be — the sender's own claim is exactly right,
+        # and its namespace is not this run's, which is what `namespace:` on
+        # the rule makes the deciding fact. A refused delivery is silent: the
+        # gate simply lapses at its own timeout, which is what `expect:`
+        # below asserts.
+        sender:
+          subject: on-call-lead@example.com
+          issuer: https://issuer.example.com
+          namespace: checkout
+          claims:
+            role: on-call
+        payload: {}
+    expect:
+      ran: [request, rollback, hold]
+      outputs:
+        confirmed_by: release-bot@example.com
+        # The hold gate still lapses on its own timeout, since no signal ever
+        # reached it — `flow test` uses a virtual clock, so a 5m wait "expires"
+        # instantly rather than making this case slow.
+        hold_lifted_by: ""
+
+  - name: a sender who is not release-bot cannot confirm the rollback
+    signals:
+      # Refused for not being the one subject the rule names — no claim
+      # could have satisfied it either, because the rule names none.
+      - name: rollback-confirmed
+        sender:
+          subject: someone-else@example.com
+          issuer: https://issuer.example.com
+        payload: {}
+    expect:
+      # The confirmation gate lapses at its own timeout, so `hold` — gated on
+      # the confirmation having actually happened — never starts at all.
+      ran: [request, rollback]
+      skipped: [hold]
+      outputs:
+        confirmed_by: ""
+        hold_lifted_by: ""

@@ -1,0 +1,19 @@
+# `every:`, `start_at:`/`end_at:` and `overlap:` all shape a schedule that
+# only exists once created (`flow schedule create`) — nothing here or in
+# `flow run local` reads any of it, the same rule `scheduled-report`'s own
+# test documents. What is worth asserting is the workflow underneath, which
+# runs identically whichever cadence eventually calls it.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a firing checks the named table
+    inputs:
+      table: line_items
+    expect:
+      ran: [check]
+      outputs:
+        table: line_items

@@ -1,0 +1,22 @@
+# `manual: denied` is enforced by a server against an authenticated caller,
+# before Temporal ever sees the run — the same placement `signals:` and
+# `SignalPolicy` have, and the same reason `flow run local` and `flow test`
+# are never gated by it (see the file's own header). So there is nothing to
+# assert about the refusal here: what this case proves is that the block
+# compiles, and that the workflow underneath it runs exactly like any other
+# one once its webhook actually starts it.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a resolved dispute is recorded
+    inputs:
+      dispute_id: dp_9001
+      outcome: lost
+    expect:
+      ran: [record]
+      outputs:
+        outcome: lost
