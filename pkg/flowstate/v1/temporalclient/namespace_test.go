@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
 )
@@ -362,6 +363,85 @@ func (m *shiftingMapper) TemporalNamespace(string) (string, bool, error) {
 func (m *shiftingMapper) TemporalNamespaces() []string { return m.namespaces }
 
 func (m *shiftingMapper) FlowstateNamespaces(string) []string { return []string{"team-a"} }
+
+// TestAnEmptyMappedNamespaceIsRefused closes the one way a mapper can obtain a
+// client that does not match the name it is handed out beside.
+//
+// `Config.Namespace` is an *override*, so leaving it empty is how a caller says
+// "use whatever is configured", and [Config.Options] then substitutes the
+// profile's namespace or the default. A mapper naming "" therefore does not get
+// a client dialed for "" — it gets one dialed for somewhere else, recorded under
+// the empty key. A tenant routed there would be handed that client beside the
+// name "", which is exactly the pairing [Pool.ForWithNamespace] promises cannot
+// happen (Codex, #1139).
+//
+// Refused in both places, and the second is not redundant. [NamespaceMapper] is
+// an interface and nothing here decides whether an implementation is stateful,
+// so a mapper that answered honestly at startup may answer "" on the request
+// path — the same reasoning that made the pairing one lookup rather than two.
+func TestAnEmptyMappedNamespaceIsRefused(t *testing.T) {
+	t.Parallel()
+
+	// Registered so the configured namespace is a real one, and so this skips
+	// under -short before touching the shared dev server.
+	configured := newTemporalNamespace(t)
+	dialable := newTemporalNamespace(t)
+
+	cfg := Config{
+		Address:    devServer.FrontendHostPort(),
+		ConfigFile: writeProfile(t, "default", configured),
+	}
+
+	t.Run("at startup, where an operator can fix it", func(t *testing.T) {
+		// The empty name comes *after* a real one, so a client has genuinely
+		// been dialed by the time the refusal fires. That ordering is what makes
+		// the `pool.Close()` on this path matter rather than decorate.
+		//
+		// The closure itself is not asserted, and I would rather say so than
+		// imply it: nothing in this package observes whether a client was shut,
+		// and a mutation removing the Close survives every test here. What is
+		// asserted is that no pool comes back — so a caller cannot use one — and
+		// the Close is there for consistency with the dial-failure path a few
+		// lines up, which has always closed what it had already opened.
+		mapper := &shiftingMapper{namespaces: []string{dialable, ""}}
+
+		pool, err := NewPool(t.Context(), cfg, mapper, nil)
+
+		require.Error(t, err, "a mapping naming no namespace was dialed anyway")
+		assert.Nil(t, pool, "a refused pool must not be returned holding open clients")
+		assert.Contains(t, err.Error(), "empty Temporal namespace",
+			"the refusal does not say what is wrong with the mapping")
+	})
+
+	t.Run("on the request path, where a mapper may have changed its mind", func(t *testing.T) {
+		// Honest at startup and empty afterwards: the list names a real
+		// namespace so the pool builds, and the per-tenant lookup then answers
+		// with nothing. A startup-only check passes this and hands out the
+		// mismatch.
+		mapper := &emptyingMapper{dialable: dialable}
+
+		pool, err := NewPool(t.Context(), cfg, mapper, nil)
+		require.NoError(t, err, "the premise: this mapping is dialable at startup")
+		t.Cleanup(pool.Close)
+
+		_, _, err = pool.ForWithNamespace("team-a")
+
+		require.Error(t, err, "a tenant was routed to a client dialed for another namespace")
+		assert.Contains(t, err.Error(), "empty Temporal namespace")
+	})
+}
+
+// emptyingMapper names a real namespace to dial and then resolves every tenant
+// to nothing, which is the shape a startup-only check cannot see.
+type emptyingMapper struct {
+	dialable string
+}
+
+func (m *emptyingMapper) TemporalNamespace(string) (string, bool, error) { return "", true, nil }
+
+func (m *emptyingMapper) TemporalNamespaces() []string { return []string{m.dialable} }
+
+func (m *emptyingMapper) FlowstateNamespaces(string) []string { return []string{"team-a"} }
 
 // TestTheClientAndNamespaceComeFromOneResolution is the test the pairing exists
 // for, and it is written against a mapper that changes its mind because a test

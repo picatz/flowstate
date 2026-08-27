@@ -142,6 +142,26 @@ func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper, logger *sl
 	// (see its doc), so this loop already checks each distinct namespace once
 	// however many tenants share it.
 	for _, namespace := range mapper.TemporalNamespaces() {
+		// An empty name is refused rather than dialed. `Config.Namespace` is an
+		// *override*, so leaving it empty is how a caller says "use whatever is
+		// configured" — and [Config.Options] then substitutes the profile's
+		// namespace or the default. A mapper naming "" would therefore get a
+		// client dialed for some *other* namespace and recorded under the empty
+		// key, so a tenant routed there would be handed that client beside the
+		// name "", which is precisely the pairing [Pool.ForWithNamespace]
+		// promises cannot happen (Codex, #1139).
+		//
+		// At startup, because it is a misconfiguration an operator fixes, and a
+		// process that refuses to start is a great deal easier to diagnose than
+		// one that routes a tenant somewhere nobody asked for.
+		if namespace == "" {
+			pool.Close()
+
+			return nil, fmt.Errorf("the tenancy mapping names an empty Temporal namespace; " +
+				"an empty name is not a namespace but a request for the configured default, so a " +
+				"client dialed for it would answer about somewhere else")
+		}
+
 		// Same configuration, different namespace: address and credentials come
 		// from the environment exactly as they do for the fallback, so a mapping
 		// cannot quietly point a tenant at a different cluster.
@@ -251,6 +271,17 @@ func (p *Pool) resolve(namespace string) (string, client.Client, error) {
 	if !ok {
 		// Nothing is mapped, so the configured namespace is the answer.
 		return p.fallbackNamespace, p.fallback, nil
+	}
+
+	// And again on the request path, because [NamespaceMapper] is an interface
+	// and nothing here decides whether an implementation is stateful. A mapper
+	// that answered honestly at startup may answer "" now, and a startup check
+	// alone would let that through — the same reason [Pool.ForWithNamespace]
+	// exists rather than two accessors that agree today.
+	if mapped == "" {
+		return "", nil, fmt.Errorf("the tenancy mapping resolved %q to an empty Temporal "+
+			"namespace, which names no namespace at all; the mapping changed after startup, "+
+			"so restart to pick it up", namespace)
 	}
 
 	cl, ok := p.byNamespace[mapped]
