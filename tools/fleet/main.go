@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -677,8 +679,9 @@ func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, boo
 			continue
 		}
 
-		// Page cache is not memory a lane has to wait for.
-		held := uint64(used) - min(uint64(used), reclaimableFile(dir))
+		// Page cache is not memory a lane has to wait for — except the part
+		// something has asked the kernel not to reclaim.
+		held := uint64(used) - min(uint64(used), evictableFile(dir))
 
 		free := uint64(limit) - min(uint64(limit), held)
 		if !found || free < tightest {
@@ -689,8 +692,93 @@ func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, boo
 	return tightest, found
 }
 
-// reclaimableFile is the part of a cgroup's recorded usage that is file-backed
-// page cache the kernel evicts before it kills anything.
+// evictableFile is the part of a cgroup's recorded usage that is file-backed
+// page cache the kernel will actually evict before it kills anything.
+//
+// Two questions, and the second one is easy to forget. How much file cache does
+// this level hold, and how much of it is something the kernel has been told to
+// keep — because a page protected by `memory.min` is *not* headroom, and
+// counting it as headroom is how this tool would dispatch a lane into an OOM
+// kill (Codex, #1134).
+//
+// The protection is not necessarily declared where the pages are counted. In
+// cgroup v2 an ancestor's `memory.stat` is recursive, so it counts a protected
+// descendant's cache — including a descendant in a sibling subtree this walk
+// never visits on its way up. So the protection is summed over the level and
+// everything beneath it, and the walk is bounded: a tree too large to read is
+// a tree whose reclaimability was not established, and that subtracts nothing.
+func evictableFile(dir string) uint64 {
+	cache := reclaimableFile(dir)
+	if cache == 0 {
+		return 0
+	}
+
+	protected, established := protectedBelow(dir)
+	if !established {
+		// Fail closed. The old, conservative reading — every byte of usage
+		// counted as held — is exactly what a level whose protection could not
+		// be established deserves.
+		return 0
+	}
+
+	return cache - min(cache, protected)
+}
+
+// maxProtectionScan bounds the descendant walk [protectedBelow] performs.
+//
+// The shape of a cgroup tree is not this tool's to choose, and a budget tool
+// that walks an unbounded directory tree on every dispatch decision has swapped
+// one resource problem for another. Generous enough that a real hierarchy fits
+// with room to spare, and exceeding it is a refusal rather than a truncation:
+// a partial sum of protections is an *understatement*, which is the direction
+// that hands out lanes that are not there.
+const maxProtectionScan = 4096
+
+// protectedBelow is the memory `memory.min` protects from reclaim at this level
+// and every level under it, and whether the walk finished.
+//
+// A ceiling rather than an exact figure, and deliberately so: `memory.min` is a
+// floor on a cgroup's *total* memory rather than on its file cache, so the
+// protected cache is at most the floor and usually less. Overstating the
+// protection understates the headroom, which is the direction a dispatch budget
+// should be wrong in.
+//
+// cgroup v1 has no `memory.min`, so every read fails and the sum is zero, which
+// is the right answer there — v1 offers no reclaim protection to account for.
+func protectedBelow(dir string) (uint64, bool) {
+	total, seen := uint64(0), 0
+
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			// A directory that vanished mid-walk, or one this process may not
+			// read. Neither is evidence that nothing there is protected.
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if seen++; seen > maxProtectionScan {
+			return errProtectionScanTooLarge
+		}
+
+		floor, err := readInt(filepath.Join(path, "memory.min"))
+		if err != nil || floor <= 0 {
+			// No such file on v1, and "0" — the default — everywhere else.
+			return nil
+		}
+		total += uint64(floor)
+
+		return nil
+	})
+
+	return total, err == nil
+}
+
+// errProtectionScanTooLarge stops [protectedBelow] at its bound.
+var errProtectionScanTooLarge = errors.New("fleet: cgroup tree too large to establish reclaimability")
+
+// reclaimableFile is the file-backed page cache a cgroup's usage includes,
+// before asking whether any of it is protected.
 //
 // This is [memoryFree]'s own distinction — MemAvailable rather than MemFree —
 // one level down, where it was missed. Both cgroup v1's memory.usage_in_bytes

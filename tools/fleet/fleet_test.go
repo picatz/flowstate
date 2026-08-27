@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -392,6 +393,105 @@ func TestPageCacheIsNotMemoryALaneWaitsFor(t *testing.T) {
 		require.True(t, found)
 		assert.Equal(t, uint64(8*gib), free, "the whole limit is free, and not one byte more")
 	})
+}
+
+// TestProtectedCacheIsNotHeadroom is the other half of the question
+// [TestPageCacheIsNotMemoryALaneWaitsFor] answers.
+//
+// File cache is evictable *unless* something asked the kernel not to evict it.
+// `memory.min` is that request, and a page under it is not headroom — counting
+// it as headroom is how a budget tool dispatches a lane straight into an OOM
+// kill, which is worse than the refusal it replaced (Codex, #1134).
+func TestProtectedCacheIsNotHeadroom(t *testing.T) {
+	// 8 GiB limit, 6 GiB used, 5 GiB of it cache — but 4 GiB of the level is
+	// protected, so only 1 GiB of that cache may be counted back.
+	dir := protectedLayout(t, protection{cache: 5 * gib, min: 4 * gib})
+
+	free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+	require.True(t, found)
+	assert.Equal(t, uint64(3*gib), free,
+		"protected cache was counted as headroom, so a lane would be dispatched against memory "+
+			"the kernel has been told to keep")
+
+	t.Run("protection in a descendant counts too", func(t *testing.T) {
+		// The reason the walk descends at all: cgroup v2's memory.stat is
+		// recursive, so this level's `inactive_file` already counts a
+		// descendant's cache — including a descendant in a subtree the chain
+		// walk climbing to the root never visits. Reading `memory.min` only at
+		// this level would miss it entirely.
+		dir := protectedLayout(t, protection{cache: 5 * gib},
+			protection{cache: 0, min: 4 * gib})
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(3*gib), free)
+	})
+
+	t.Run("unprotected cache is still headroom", func(t *testing.T) {
+		// The direction that would make this whole change pointless: a
+		// protection check that refused every subtraction would restore the
+		// bug it was written to fix.
+		dir := protectedLayout(t, protection{cache: 5 * gib})
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(7*gib), free)
+	})
+
+	t.Run("a tree too large to read establishes nothing", func(t *testing.T) {
+		// Fail closed. A partial sum of protections understates them, which
+		// overstates headroom — the one direction a dispatch budget must not
+		// be wrong in — so exceeding the bound subtracts nothing at all rather
+		// than subtracting what was counted so far.
+		dir := protectedLayout(t, protection{cache: 5 * gib})
+		for i := range maxProtectionScan + 1 {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"+strconv.Itoa(i)), 0o755))
+		}
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"the walk gave up and subtracted what it had counted, which overstates headroom")
+	})
+}
+
+// protection describes one level of a fixture hierarchy: how much file cache it
+// reports, and what it asks the kernel to protect.
+type protection struct {
+	cache uint64
+	min   uint64
+}
+
+// protectedLayout writes a cgroup at 8 GiB limit and 6 GiB used, with levels
+// nested under it, and returns the top.
+func protectedLayout(t *testing.T, levels ...protection) string {
+	t.Helper()
+
+	top := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(top, "memory.max"), []byte("8589934592\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(top, "memory.current"), []byte("6442450944\n"), 0o644))
+
+	dir := top
+	for i, level := range levels {
+		if i > 0 {
+			dir = filepath.Join(dir, "nested")
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+		}
+		if level.cache > 0 {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.stat"),
+				[]byte("inactive_file "+strconv.FormatUint(level.cache, 10)+"\n"), 0o644))
+		}
+		if level.min > 0 {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.min"),
+				[]byte(strconv.FormatUint(level.min, 10)+"\n"), 0o644))
+		}
+	}
+
+	return top
 }
 
 // TestTheCgroupChainStaysInsideItsMount pins the walk's two ends: it starts at
