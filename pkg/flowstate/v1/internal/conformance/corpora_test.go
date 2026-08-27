@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Every corpus in this package holds cases.
@@ -185,6 +187,82 @@ func TestTheCorpusTableCoversEveryCorpus(t *testing.T) {
 	}
 }
 
+// TestANamedSliceTypeIsStillASlice is the door the walk holds shut.
+//
+// A corpus written `type Cases []Case` with `func NewCases() Cases` has an
+// identifier for its result, not an `[]T` — so a walk matching only the literal
+// syntax drops it, and it sits in neither table with nothing to say so
+// (Codex, #1129). Nothing in the package is written that way today, which is
+// why this asks the resolver directly rather than adding a corpus to prove it.
+func TestANamedSliceTypeIsStillASlice(t *testing.T) {
+	fset := token.NewFileSet()
+	declared := sliceTypeNames(t, fset)
+
+	// The types this package actually declares as slices, so the resolver is
+	// asked about the tree rather than only about a fixture.
+	for _, name := range []string{"Case", "UndoCase", "Refusal"} {
+		if declared[name] {
+			t.Errorf("%s is not a slice type and the resolver says it is", name)
+		}
+	}
+
+	// And the shapes it has to recognise, resolved from source written here.
+	fixture, err := parser.ParseFile(token.NewFileSet(), "fixture.go", `package conformance
+
+type Direct []int
+type Indirect Direct
+type Aliased = Direct
+type Array [4]int
+type NotASlice struct{}
+type Cyclic Cyclic
+`, 0)
+	require.NoError(t, err)
+
+	resolved := resolveSliceNames([]*ast.File{fixture})
+
+	for name, want := range map[string]bool{
+		"Direct":    true,
+		"Indirect":  true,
+		"Aliased":   true,
+		"Array":     false,
+		"NotASlice": false,
+		"Cyclic":    false,
+	} {
+		if resolved[name] != want {
+			t.Errorf("%s: resolved as slice=%v, want %v", name, resolved[name], want)
+		}
+	}
+
+	// And the resolver put to the use it exists for. Testing it alone leaves
+	// the reader of its answer untested, and the reader is where the guard
+	// either sees a corpus or does not — a resolver that is right and a caller
+	// that ignores it is the same hole with an extra step.
+	for _, results := range []struct {
+		source string
+		slice  bool
+	}{
+		{"func NewCases() Cases", true},
+		{"func NewCases() []Case", true},
+		{"func NewCases() Indirect", true},
+		{"func NewCases() Aliased", true},
+		{"func NewCases() Array", false},
+		{"func NewCases() NotASlice", false},
+		{"func NewCases() error", false},
+	} {
+		parsed, err := parser.ParseFile(token.NewFileSet(), "use.go",
+			"package conformance\n\n"+results.source+" { panic(\"unused\") }\n", 0)
+		require.NoError(t, err)
+
+		fn := parsed.Decls[0].(*ast.FuncDecl)
+		got := isSliceResult(fn.Type.Results.List[0].Type, map[string]bool{
+			"Cases": true, "Indirect": true, "Aliased": true,
+		})
+		if got != results.slice {
+			t.Errorf("%s: read as returning a slice=%v, want %v", results.source, got, results.slice)
+		}
+	}
+}
+
 // TestTheCorpusTablesNameOnlyRealFunctions is the other direction, which is
 // what makes a deletion visible.
 //
@@ -217,15 +295,26 @@ func TestTheCorpusTablesNameOnlyRealFunctions(t *testing.T) {
 
 // exportedSliceFuncs are this package's exported functions that return a
 // slice, which is what a corpus looks like from the outside.
+//
+// "Returns a slice" means the *underlying* type, not the syntax: a corpus
+// written `type Cases []Case` and `func NewCases() Cases` has an [ast.Ident]
+// for its result, and a walk matching only literal `[]T` drops it — leaving it
+// out of both tables with nothing to say so, which is the guard failing
+// silently at the one job it has (Codex, #1129). Nothing in the package is
+// written that way today, so this is a door held shut rather than one closed.
 func exportedSliceFuncs(t *testing.T) []string {
 	t.Helper()
 
+	fset := token.NewFileSet()
+	decls := exportedDecls(t, fset)
+	slices := sliceTypeNames(t, fset)
+
 	var names []string
-	for _, fd := range exportedDecls(t, token.NewFileSet()) {
+	for _, fd := range decls {
 		if fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
 			continue
 		}
-		if _, ok := fd.Type.Results.List[0].Type.(*ast.ArrayType); !ok {
+		if !isSliceResult(fd.Type.Results.List[0].Type, slices) {
 			continue
 		}
 		names = append(names, fd.Name.Name)
@@ -242,6 +331,79 @@ func exportedSliceFuncs(t *testing.T) []string {
 	return names
 }
 
+// isSliceResult reports whether a result type is a slice, directly or through
+// a name this package declares.
+func isSliceResult(result ast.Expr, slices map[string]bool) bool {
+	if _, ok := result.(*ast.ArrayType); ok {
+		return true
+	}
+	// A name declared in this package as a slice, of either spelling — `type
+	// Cases []Case` and `type Cases = []Case` both reach here as an identifier.
+	name, ok := result.(*ast.Ident)
+
+	return ok && slices[name.Name]
+}
+
+// sliceTypeNames are the names this package declares whose underlying type is
+// a slice.
+//
+// Resolved transitively, because `type Cases []Case` followed by `type Many
+// Cases` is two hops to the same answer and one hop would stop at the first.
+// Iterated to a fixpoint rather than recursed, for the reason the vacuity
+// checker iterates its own: a cycle in type declarations does not compile, but
+// a walk that assumes so and recurses does not come back if it ever meets one.
+func sliceTypeNames(t *testing.T, fset *token.FileSet) map[string]bool {
+	t.Helper()
+
+	return resolveSliceNames(parsedFiles(t, fset))
+}
+
+// resolveSliceNames is [sliceTypeNames] over files already parsed, so a fixture
+// can be handed to it — which is the only way to exercise a shape this package
+// does not currently contain.
+func resolveSliceNames(files []*ast.File) map[string]bool {
+	// name -> the identifier it is declared as, for the indirect case.
+	aliasOf := map[string]string{}
+	slices := map[string]bool{}
+
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			spec, ok := node.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+
+			switch declared := spec.Type.(type) {
+			case *ast.ArrayType:
+				// A slice, not an array: `[N]T` has a length and is not a
+				// corpus by any reading.
+				if declared.Len == nil {
+					slices[spec.Name.Name] = true
+				}
+			case *ast.Ident:
+				aliasOf[spec.Name.Name] = declared.Name
+			}
+
+			return true
+		})
+	}
+
+	for range len(aliasOf) + 1 {
+		changed := false
+		for name, of := range aliasOf {
+			if !slices[name] && slices[of] {
+				slices[name] = true
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+
+	return slices
+}
+
 // exportedDecls are this package's exported top-level functions, parsed from
 // its non-test files.
 //
@@ -252,21 +414,8 @@ func exportedSliceFuncs(t *testing.T) []string {
 func exportedDecls(t *testing.T, fset *token.FileSet) []*ast.FuncDecl {
 	t.Helper()
 
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var decls []*ast.FuncDecl
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-
-		f, err := parser.ParseFile(fset, e.Name(), nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, f := range parsedFiles(t, fset) {
 		for _, d := range f.Decls {
 			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name.IsExported() {
 				decls = append(decls, fd)
@@ -296,4 +445,33 @@ func exportedDecls(t *testing.T, fset *token.FileSet) []*ast.FuncDecl {
 	}
 
 	return decls
+}
+
+// parsedFiles are this package's non-test files, parsed.
+//
+// The one place the directory is read, so every question asked of this package
+// — what it exports, what types it declares — is asked of the same set of
+// files.
+func parsedFiles(t *testing.T, fset *token.FileSet) []*ast.File {
+	t.Helper()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var files []*ast.File
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+
+		f, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+
+	return files
 }
