@@ -415,19 +415,23 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 		"protected cache was counted as headroom, so a lane would be dispatched against memory "+
 			"the kernel has been told to keep")
 
-	t.Run("protection in a descendant counts too", func(t *testing.T) {
-		// The reason the walk descends at all: cgroup v2's memory.stat is
-		// recursive, so this level's `inactive_file` already counts a
-		// descendant's cache — including a descendant in a subtree the chain
-		// walk climbing to the root never visits. Reading `memory.min` only at
-		// this level would miss it entirely.
+	t.Run("a descendant cannot protect more than its ancestors allow", func(t *testing.T) {
+		// The correction that removed a whole walk. A descendant's *effective*
+		// min is capped by its ancestors' — protection is handed down — so a
+		// child declaring 4 GiB under a parent declaring zero has no hard
+		// protection at all, and summing configured floors counted memory the
+		// kernel would happily reclaim (Codex, #1134).
+		//
+		// 7 GiB, not 3: the top level protects nothing, so nothing beneath it
+		// is protected either, and its cache is headroom.
 		dir := protectedLayout(t, protection{cache: 5 * gib},
 			protection{cache: 0, min: 4 * gib})
 
 		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
 
 		require.True(t, found)
-		assert.Equal(t, uint64(3*gib), free)
+		assert.Equal(t, uint64(7*gib), free,
+			"a descendant's configured floor was counted as protection its ancestors do not grant")
 	})
 
 	t.Run("unprotected cache is still headroom", func(t *testing.T) {
@@ -440,22 +444,6 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 
 		require.True(t, found)
 		assert.Equal(t, uint64(7*gib), free)
-	})
-
-	t.Run("an oversized protection saturates rather than wrapping", func(t *testing.T) {
-		// `memory.min` has no ceiling this tool gets to impose, and the sum runs
-		// over numbers a hierarchy chooses. Four descendants at 1<<62 wrap a
-		// plain uint64 addition to exactly zero — and zero reads as "nothing is
-		// protected", so the one hierarchy asking for maximal protection would
-		// be the one lanes are dispatched against (Codex, #1134).
-		huge := protection{min: 1 << 62}
-		dir := protectedLayout(t, protection{cache: 5 * gib}, huge, huge, huge, huge)
-
-		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
-
-		require.True(t, found)
-		assert.Equal(t, uint64(2*gib), free,
-			"the protection sum wrapped, so maximal protection read as none at all")
 	})
 
 	// Read directly, because through `tightestMemoryFree` the three answers this
@@ -509,23 +497,6 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 		}
 	})
 
-	t.Run("a level the walk cannot read refuses the whole hierarchy", func(t *testing.T) {
-		// The reader's refusal has to be *consumed*. Testing that
-		// `protectionAt` returns "unestablished" says nothing about whether the
-		// walk acts on it, and dropping the check there left every table case
-		// above perfectly green — the resolver-and-reader split this repository
-		// keeps paying for, one more time.
-		dir := protectedLayout(t, protection{cache: 5 * gib})
-		nested := filepath.Join(dir, "opaque")
-		require.NoError(t, os.MkdirAll(filepath.Join(nested, "memory.min"), 0o755))
-
-		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
-
-		require.True(t, found)
-		assert.Equal(t, uint64(2*gib), free,
-			"a descendant whose protection could not be read was counted as protecting nothing")
-	})
-
 	t.Run("an unreadable probe at the top refuses rather than establishing zero", func(t *testing.T) {
 		// The preflight that skips the walk when there is no controller used a
 		// bare `os.Stat`, which cannot tell absence from a permission denial or
@@ -546,69 +517,6 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 			"a probe that failed for a reason other than absence was read as 'no controller here'")
 	})
 
-	t.Run("the scan budget is one budget, not one per ancestor", func(t *testing.T) {
-		// Every level of the chain called the walk with a fresh allowance, so a
-		// deep chain over a wide subtree multiplied the advertised bound by its
-		// own depth — and the constant says one number (Codex, #1134).
-		//
-		// Two levels, each just over half the budget. Separately each fits;
-		// together they do not, and the second is left unestablished, which is
-		// the fail-closed direction.
-		half := maxProtectionScan/2 + 100
-
-		var chain []string
-		for range 2 {
-			dir := protectedLayout(t, protection{cache: 5 * gib})
-			for i := range half {
-				require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"+strconv.Itoa(i)), 0o755))
-			}
-			chain = append(chain, dir)
-		}
-
-		free, found := tightestMemoryFree(chain, "memory.max", "memory.current")
-
-		require.True(t, found)
-		assert.Equal(t, uint64(2*gib), free,
-			"each ancestor was given its own allowance, so the bound the constant advertises is "+
-				"multiplied by the depth of the hierarchy")
-	})
-
-	t.Run("a host with no memory controller is not walked at all", func(t *testing.T) {
-		// cgroup v1 has no `memory.min` anywhere, and a controller is enabled
-		// top-down — so a level without the file has nothing protected beneath
-		// it and nothing to walk for. Without this the walk descended the whole
-		// hierarchy to read a file that was never going to be there, and a v1
-		// host wider than the bound would refuse to establish reclaimability,
-		// count none of its cache, and recreate the zero-lane reading this
-		// change exists to fix (Codex, #1134).
-		dir := protectedLayout(t, protection{cache: 5 * gib, noController: true})
-		for i := range maxProtectionScan + 1 {
-			require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"+strconv.Itoa(i)), 0o755))
-		}
-
-		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
-
-		require.True(t, found)
-		assert.Equal(t, uint64(7*gib), free,
-			"a hierarchy that cannot protect anything defeated the fix through its own safeguard")
-	})
-
-	t.Run("a tree too large to read establishes nothing", func(t *testing.T) {
-		// Fail closed. A partial sum of protections understates them, which
-		// overstates headroom — the one direction a dispatch budget must not
-		// be wrong in — so exceeding the bound subtracts nothing at all rather
-		// than subtracting what was counted so far.
-		dir := protectedLayout(t, protection{cache: 5 * gib})
-		for i := range maxProtectionScan + 1 {
-			require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"+strconv.Itoa(i)), 0o755))
-		}
-
-		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
-
-		require.True(t, found)
-		assert.Equal(t, uint64(2*gib), free,
-			"the walk gave up and subtracted what it had counted, which overstates headroom")
-	})
 }
 
 // writesMin writes a `memory.min` holding exactly this text.
