@@ -352,6 +352,36 @@ func TestReplayingARecordedScriptReachesTheSameDecisions(t *testing.T) {
 	assert.Contains(t, replayOut, "break at deploy")
 }
 
+// TestACommentIsACommentAtTheAutopsyToo: the autopsy is a second prompt with a
+// vocabulary of its own, and a comment has to mean the same nothing there.
+//
+// The cost of getting it wrong is not symmetrical with the breakpoint prompt's,
+// which is why this is asserted rather than assumed: an empty line and every
+// movement verb *leave* the autopsy, and an unknown command is answered with a
+// warning — so a script carrying the sentence that says what it reproduces
+// would have narrated a complaint per line, at the one prompt where the
+// bindings a failed case was judged under still exist.
+func TestACommentIsACommentAtTheAutopsyToo(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("# why this case failed\ninspect 6 * 7\nquit\n"),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.Autopsy(t.Context(), v1.NewScope(v1.CurrentProfile, nil), nil, []string{"a failure"})
+
+	assert.Contains(t, out.String(), "42", "the question after the comment was never reached")
+	assert.NotContains(t, out.String(), "unknown command",
+		"the comment was answered as a mistyped command")
+	assert.Equal(t, []string{"inspect 6 * 7", "quit"}, session.Script(),
+		"the comment was recorded as something the session did")
+}
+
 // recordSession drives one run under a scripted session and hands the session
 // back, so a test can ask what it recorded.
 //
