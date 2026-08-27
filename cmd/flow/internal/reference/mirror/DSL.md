@@ -5121,8 +5121,8 @@ name. This round is that vocabulary.
 edition: v2026.3
 name: nightly-etl
 labels:
-  team: payments
   cost-center: cc-1234
+  team: payments
 steps:
   - id: gather
     log:
