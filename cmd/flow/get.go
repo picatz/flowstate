@@ -319,7 +319,19 @@ func pendingActivityLines(msg *v1.GetResponse, now time.Time) []string {
 
 	lines := make([]string, 0, len(pending))
 	for _, activity := range pending {
-		line := fmt.Sprintf("retrying, attempt %d", activity.GetAttempt())
+		// "Retrying" only when it is. A pending activity on its first attempt
+		// has simply not finished, and calling that a retry tells an operator a
+		// step is failing when nothing has failed at all — the first thing they
+		// would do about it is look for an error that is not there.
+		//
+		// [v1.PendingActivity.NextAttemptScheduledTime] is what separates them,
+		// and it says so by presence: Temporal leaves it unset while an attempt
+		// is running. That only became true once the server read the field its
+		// own schema describes rather than one set for every pending activity.
+		line := fmt.Sprintf("running, attempt %d", activity.GetAttempt())
+		if activity.GetNextAttemptScheduledTime() != nil {
+			line = fmt.Sprintf("retrying, attempt %d", activity.GetAttempt())
+		}
 		// The workload's own sentence, escaped for the same reason
 		// `flow timeline` escapes one: it is text this process did not write,
 		// and a newline in it fabricates a line that reads as another retrying

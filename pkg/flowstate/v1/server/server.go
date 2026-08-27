@@ -2086,10 +2086,27 @@ func (s *FlowstateServer) pendingActivities(
 			LastFailure: boundedFailure(s.decodedFailureMessage(info.GetLastFailure())),
 		}
 
-		// Only when Temporal set one: an attempt running right now has no next
-		// schedule, and inventing a zero time would read as 1970.
-		if scheduled := info.GetScheduledTime(); scheduled != nil {
-			pending.NextAttemptScheduledTime = scheduled
+		// Temporal's `next_attempt_schedule_time`, not its `scheduled_time`,
+		// and the difference is the whole meaning of this field.
+		//
+		// `scheduled_time` (field 9) carries no documentation and is set for
+		// *any* pending activity — including one whose attempt is running right
+		// now. `next_attempt_schedule_time` (field 18) is documented as "Next
+		// time when activity will be scheduled. If activity is currently
+		// scheduled or started it will be null", which is precisely what the
+		// comment on this field has always claimed and what
+		// [v1.PendingActivity.NextAttemptScheduledTime] promises a reader.
+		//
+		// Reading the wrong one made presence meaningless: every pending
+		// activity carried a time, so a client could not tell an attempt waiting
+		// out its backoff from one running, and had to compare against its own
+		// clock instead. `flow timeline`'s retry note was written that way and
+		// paid for it — a backlogged retry whose due time had passed read as
+		// silence (Codex, #1142). With this, presence is the answer again.
+		//
+		// Only when Temporal set one: inventing a zero time would read as 1970.
+		if next := info.GetNextAttemptScheduleTime(); next != nil {
+			pending.NextAttemptScheduledTime = next
 		}
 
 		// What the running attempt last said it was doing. Without this the phase a

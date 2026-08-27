@@ -125,13 +125,22 @@ func runningAt(stepID string, path ...string) pollAnswer {
 // retryingAt is a running run whose current activity keeps failing.
 //
 // The attempt count and the message are what Temporal reports and what the server
-// projects; a next-attempt time is added by [scheduledIn] where a test is about the
-// countdown rather than about the retry.
+// projects. The next-attempt time is what makes this a *retry* rather than a
+// running attempt — Temporal leaves it unset while an attempt is running, and the
+// renderer reads its presence to choose the word. A fixture without one used to
+// render as "retrying" anyway, because the server filled the field for every
+// pending activity; it no longer does (Codex, #1142).
+//
+// Due already, rather than in the future: a retry whose backoff has expired and
+// whose worker has not picked it up yet is still a retry, and it renders without a
+// countdown — so a test about the *word* is not also a test about the clock.
+// [scheduledIn] moves it where a test is about the countdown.
 func retryingAt(stepID string, attempt int32, failure string) pollAnswer {
 	answer := runningAt(stepID)
 	answer.response.PendingActivities = []*v1.PendingActivity{{
-		Attempt:     attempt,
-		LastFailure: failure,
+		Attempt:                  attempt,
+		LastFailure:              failure,
+		NextAttemptScheduledTime: timestamppb.New(observed),
 	}}
 
 	return answer
