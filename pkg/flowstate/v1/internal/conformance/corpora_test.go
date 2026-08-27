@@ -140,6 +140,7 @@ var notACorpus = map[string]string{
 var unresolvedResults = map[string]account{
 	"PluginIdentityTaskDef":   {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginTaskInputsTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
+	"StepTimeoutTaskDef":      {what: "a v1.TaskDef, which is a struct rather than a slice"},
 }
 
 // account is what an unreadable result actually is.
