@@ -221,15 +221,20 @@ func TestDebugReplaySaysWhenTheScriptRanOutWithTheRunStillHeld(t *testing.T) {
 // and a reproduction that stopped short looks exactly like one that finished.
 func TestDebugReplaySaysWhenTheRunEndedWithCommandsUnread(t *testing.T) {
 	path := writeRunLocalDebugFixture(t)
-	script := writeDebugScript(t, "step\nstep\ninspect 6 * 7\ncontinue\n")
+	script := writeDebugScript(t, "step\nstep\ninspect 'ans' + 'wered'\ncontinue\n")
 
 	res := runFlow(t, "debug", "replay", script, path)
 	require.NoError(t, res.Err)
 
 	assert.Contains(t, res.Stderr, "2 of "+script+"'s commands unread")
 	assert.Contains(t, res.Stderr, "from line 3", "the account does not name where the unread commands start")
-	assert.Contains(t, res.Stderr, `"inspect 6 * 7"`)
-	assert.NotContains(t, res.Stderr, "42", "the unread inspection was answered")
+	assert.Contains(t, res.Stderr, `"inspect 'ans' + 'wered'"`)
+	// The needle is the *answer*, which the quoted command does not contain —
+	// and which cannot arrive from anywhere else in the account. `6 * 7` was
+	// the obvious spelling and the wrong one: `42` collides with the digits
+	// `t.TempDir()` puts in the path this very message prints, which failed
+	// about one run in three.
+	assert.NotContains(t, res.Stderr, "answered", "the unread inspection was answered")
 }
 
 // TestDebugReplaySaysWhenTheRunOfferedNoBoundaryAtAll is the loudest case, and
@@ -250,7 +255,7 @@ func TestDebugReplaySaysWhenTheRunOfferedNoBoundaryAtAll(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.3\nname: all-skipped\nsteps:\n"+
 		"  - id: never\n    if: ${false}\n    log:\n      message: unreachable\n"), 0o600))
 
-	script := writeDebugScript(t, "step\ninspect 6 * 7\ncontinue\n")
+	script := writeDebugScript(t, "step\ninspect 'ans' + 'wered'\ncontinue\n")
 
 	res := runFlow(t, "debug", "replay", script, path)
 	require.NoError(t, res.Err, "a run that skipped every step still succeeded")
@@ -259,7 +264,9 @@ func TestDebugReplaySaysWhenTheRunOfferedNoBoundaryAtAll(t *testing.T) {
 		"the whole script went unused and nothing said so")
 	assert.Contains(t, res.Stderr, "skipped by its `if:`",
 		"the account does not name why no boundary was offered")
-	assert.NotContains(t, res.Stderr, "42", "an inspection was answered by a run that never paused")
+	// See the sibling test for why the needle is a word rather than `42`.
+	assert.NotContains(t, res.Stderr, "answered",
+		"an inspection was answered by a run that never paused")
 }
 
 // TestDebugReplaySaysNothingWhenTheRunFailedBeforeAnyBoundary is the other side
