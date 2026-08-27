@@ -319,7 +319,7 @@ func httpPreparedInputs(ctx context.Context, input map[string]*Value, scope *Sco
 // function has no visibility into a plugin's request and does not cover it —
 // see #963.
 func refuseCleartextCredential(taskInputs *Task_HTTP_Inputs, reqURL *url.URL) error {
-	if taskInputs.GetBearer() == nil && taskInputs.GetCredential() == "" {
+	if !taskCarriesCredential(taskInputs) {
 		// Neither carries a resolved credential, so there is nothing this
 		// request could leak by going out in the clear.
 		return nil
@@ -340,6 +340,19 @@ func refuseCleartextCredential(taskInputs *Task_HTTP_Inputs, reqURL *url.URL) er
 		"%s would send a credential in cleartext; use https, or http only for "+
 			"a loopback address such as a sidecar terminating TLS",
 		reqURL.Redacted()))
+}
+
+// taskCarriesCredential reports whether taskInputs will attach a
+// worker-resolved credential to the request — a bearer secret reference or a
+// JIT federation target.
+//
+// It is the single spelling of "this request carries a credential", shared by
+// the cleartext refusal above (#963 half one) and the `credentials` fact this
+// task marks on the egress-policy context below (#963 half two, see
+// [netpolicy.ContextWithCredentials]) — so the two halves cannot drift apart
+// on what counts as a credential.
+func taskCarriesCredential(taskInputs *Task_HTTP_Inputs) bool {
+	return taskInputs.GetBearer() != nil || taskInputs.GetCredential() != ""
 }
 
 // isLoopbackHost reports whether host names the local machine — literally
@@ -411,9 +424,33 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			})
 		}
 
+		// Mark whether this request carries a worker-resolved credential, so an
+		// egress rule naming `credentials` (#963) sees the same fact the
+		// cleartext refusal below already keys on — [taskCarriesCredential] is
+		// the one detector both read. The mark rides the context the same way
+		// identity does, and is known here because it comes from taskInputs
+		// directly, before any secret has been resolved.
+		credentialed := taskCarriesCredential(taskInputs)
+		ctx = netpolicy.ContextWithCredentials(ctx, credentialed)
+
 		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), requestURL, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		}
+
+		// Preflight the credentials-scoped egress rule before either secret path
+		// is read. policy.Client().Do below applies the same request-scoped
+		// rules when it actually dials, but that happens after ResolveSecret and
+		// AuthorizeCredential run — this call is what keeps a rule denying
+		// "credentials to this host" from ever reaching the secret backend or
+		// performing a live IdP exchange for a request that will not be sent
+		// (see the design comment on #963). Only worth the extra check when a
+		// credential is in play; an uncredentialed request gets the identical
+		// check for free when it is actually sent.
+		if credentialed {
+			if err := policy.CheckURL(httpReq.Context(), httpReq.Method, httpReq.URL); err != nil {
+				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
+			}
 		}
 
 		// Refused here, before anything below reads a secret. The destination is
