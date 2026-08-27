@@ -349,23 +349,34 @@ func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, *v1.SignalS
 // Draining is possible only because the specification declares every signal name
 // statically: the run knows exactly which channels to check, without guessing at
 // what someone might have sent.
+//
+// # Everything drained is carried, unconditionally
+//
+// This used to stop once len(pending) reached [v1.MaxPendingSignals], silently
+// dropping whatever a sender had already been told was delivered — the RPC that
+// accepted the delivery had already returned success by the time this ran, so
+// the drop was invisible to the one party who could have reacted to it (#1013).
+// An acknowledged delivery is a promise, and this is the one place that promise
+// gets kept or broken: a `flow signal` that reported success is a fact about
+// the sender's world, and this function does not get to make it retroactively
+// false.
+//
+// So it does not stop. The bound that protects the run is
+// [v1.CheckRunStateSize], weighed by the caller against everything else the run
+// carries once this returns — a carry too large to fit fails the run loudly,
+// visibly, at the moment it happens, which is the fate an unconsumed flood
+// deserves. [v1.MaxPendingSignals] still names the count a well-behaved
+// workload should never approach, and crossing it here is worth an operator's
+// attention, so it is logged once — as a warning about a wait that may be
+// missing, not as a decision about what to keep.
 func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.PendingSignal) []*v1.PendingSignal {
 	pending := carried
+	warned := len(pending) > v1.MaxPendingSignals
 
 	for _, name := range v1.SignalNames(spec) {
 		channel := workflow.GetSignalChannel(ctx, name)
 
 		for {
-			if len(pending) >= v1.MaxPendingSignals {
-				// The first to arrive is the one that approved the gate, so the
-				// oldest are kept. A sender that delivers a million signals
-				// cannot grow the run's state without limit.
-				workflow.GetLogger(ctx).Warn(
-					"dropping signals beyond the carry limit; a wait consumes one, and the earliest are kept",
-					"signal", name, "limit", v1.MaxPendingSignals)
-				return pending
-			}
-
 			var delivery v1.SignalDelivery
 			if !channel.ReceiveAsync(&delivery) {
 				break
@@ -379,6 +390,15 @@ func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.Pending
 				Payload: delivery.GetPayload(),
 				Sender:  delivery.GetSender(),
 			})
+
+			if !warned && len(pending) > v1.MaxPendingSignals {
+				warned = true
+				workflow.GetLogger(ctx).Warn(
+					"carrying more early-arriving signals than a well-behaved workload should — "+
+						"a wait may be missing, or a sender is not stopping; nothing is dropped, but "+
+						"the run will fail if the carry grows too large to fit",
+					"count", len(pending), "typical_limit", v1.MaxPendingSignals)
+			}
 		}
 	}
 

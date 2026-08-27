@@ -2804,20 +2804,22 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 			"later steps read as ${step_id.key}.\n\n" +
 			// The numbers are the constants, not a prose copy of them: a limit
 			// documented by hand is a limit that drifts the day it changes.
-			fmt.Sprintf("Two limits, both worth knowing before designing a payload. A payload over "+
-				"%d KiB is refused synchronously, with the size and the limit named; send a "+
-				"reference to something large rather than the thing itself, since the payload "+
-				"travels with the run from then on. And a signal that arrives before its gate is "+
-				"reached is held for it, at most %d across all names with the earliest kept: "+
-				"sending does not fail when the run is elsewhere, it waits.",
+			fmt.Sprintf("One limit worth knowing before designing a payload: a payload over %d KiB "+
+				"is refused synchronously, with the size and the limit named; send a reference to "+
+				"something large rather than the thing itself, since the payload travels with the "+
+				"run from then on. A signal that arrives before its gate is reached is held for "+
+				"it — across all names, however many accumulate — so sending does not fail when "+
+				"the run is elsewhere, it waits; carrying more than %d unconsumed at once is "+
+				"unusual enough that the run logs it, and a backlog that genuinely never stops "+
+				"growing eventually fails the run rather than silently losing any of it.",
 				v1.MaxSignalPayloadBytes/1024, v1.MaxPendingSignals) + mutationFlagHelp +
 			"\n\n`result` is \"delivered\" once the server has taken the signal, and `signalName` is " +
 			"which one: two signals to one run are two acts, so the name is part of the result " +
 			"rather than only of the request. \"delivered\" rather than \"applied\" because it is a " +
 			"claim about the server and not about the workflow: being held for a gate not reached " +
-			"yet counts as delivered, and a signal still held when the run continues as new is " +
-			"dropped once the pending limit above is full, so a workflow that never sees it is a " +
-			"possible ending of a delivery that succeeded.",
+			"yet counts as delivered, and a signal held across the run continuing as new stays " +
+			"held — it is carried forward, not dropped, so \"delivered\" means the workflow will " +
+			"see it, eventually, or the run will fail loudly rather than silently losing it.",
 		Args: cobra.ExactArgs(2),
 		RunE: runSignal,
 		Example: `# Approve a deploy waiting on a gate:

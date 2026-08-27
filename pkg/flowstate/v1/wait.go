@@ -26,14 +26,21 @@ import (
 // sender could report that a wait they timed out had in fact succeeded.
 const TimedOutOutput = "timed_out"
 
-// MaxPendingSignals bounds how many early-arriving signals a run carries across
-// Continue-As-New.
+// MaxPendingSignals names how many early-arriving signals a well-behaved run
+// should ever be carrying across Continue-As-New at once.
 //
-// The names come from the specification, so their variety is bounded by the
-// workload — but nothing stops a sender delivering the same signal a million
-// times, and every one of them would otherwise be carried in the run's state.
-// Beyond this many the oldest are kept and the rest dropped, because a wait
-// consumes one signal and the first to arrive is the one that approved it.
+// It is not a hard cap: [engine]'s drainSignals carries every acknowledged
+// delivery unconditionally, however many accumulate, because a sender who was
+// told a signal was delivered must never find out later that it silently
+// wasn't (#1013). Beyond this many, the honest reading is not "too many to
+// keep" but "something is wrong" — a wait that should have consumed them is
+// missing, or a sender is retrying into a run that already answered — and
+// crossing it is logged for an operator to act on. The bound that actually
+// protects a run is [CheckRunStateSize], weighed at every Continue-As-New: a
+// carry too large to fit fails the run loudly rather than being silently
+// truncated, which is why [MaxSignalPayloadBytes] bounds what one delivery can
+// weigh — with the count itself unbounded, a payload's size is what stands
+// between an ordinary backlog and one that blows the carry.
 const MaxPendingSignals = 128
 
 // PayloadOutput is where a signal sender's data lands: `${approval.payload.approved}`.
