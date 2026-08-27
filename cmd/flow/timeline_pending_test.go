@@ -36,22 +36,44 @@ import (
 // a synchronisation nothing here has.
 //
 // The rest are about it *not* appearing: on a run that is merely busy, on a run
-// that has finished, on a structured answer a program is parsing, and as an
-// unfounded silence when the check could not be made. A footer that fires on a
-// healthy run is worse than no footer, because it teaches a reader to ignore it.
+// whose retry has already started — where the failure is a row on the reader's
+// screen — on a run that has finished, on a structured answer a program is
+// parsing, and as an unfounded silence when the check could not be made. A note
+// that fires on a healthy run is worse than no note, because it teaches a reader
+// to ignore it; one that fires on a row already visible is worse still, because
+// it is wrong rather than merely noisy.
 
 // theRetryingRun is the segment every case here is about, spelled as a UUID
 // because that is what the run id on the wire has to be.
 const theRetryingRun = "0198f1e2-0000-7000-8000-000000000000"
 
+// backingOff is the one state this note exists for: an attempt past the first,
+// so one has failed, and the next one due at a moment still ahead, so that
+// failure has no row yet.
+//
+// A helper rather than a literal in each case, because a fixture that sets only
+// the attempt count describes something else entirely — a retry that is
+// *already running*, whose failure the server has by then written into the
+// account — and a test reaching for one would be arming its case with the very
+// state the note must stay quiet about. That mistake is silent: the note simply
+// does not appear, and an assertion that it does not appear passes for the wrong
+// reason.
+func backingOff(attempt int32, due time.Time) *v1.PendingActivity {
+	return &v1.PendingActivity{
+		Attempt:                  attempt,
+		LastFailure:              "connection refused",
+		NextAttemptScheduledTime: timestamppb.New(due),
+	}
+}
+
 // fakeTimelineService answers the two RPCs `flow timeline` can make, and counts
 // the second one.
 //
 // Its own fake rather than the one the signal and get tests share, and the
-// counter is why. Four of the claims here are that a call did not happen, and a
-// fake that records the last request it received cannot tell "never asked" from
-// "asked, and something else was wrong with the answer" — the shape of stand-in
-// that lets a gate regress while its test stays green.
+// counter is why. Several of the claims here are that a call did not happen, and
+// a fake that records the last request it received cannot tell "never asked"
+// from "asked, and something else was wrong with the answer" — the shape of
+// stand-in that lets a gate regress while its test stays green.
 type fakeTimelineService struct {
 	flowstatev1connect.UnimplementedWorkflowServiceHandler
 
@@ -159,11 +181,9 @@ func TestATimelineReportsTheRetryNoRowCanHold(t *testing.T) {
 		timeline: runningAccount(),
 		present: &v1.GetResponse{
 			Status: v1.RunResponse_STATUS_RUNNING,
-			PendingActivities: []*v1.PendingActivity{{
-				Attempt:                  3,
-				LastFailure:              "connection refused",
-				NextAttemptScheduledTime: timestamppb.New(time.Now().Add(12 * time.Second)),
-			}},
+			PendingActivities: []*v1.PendingActivity{
+				backingOff(3, time.Now().Add(12*time.Second)),
+			},
 		},
 	}
 	serveTimelineFake(t, fake)
@@ -177,15 +197,13 @@ func TestATimelineReportsTheRetryNoRowCanHold(t *testing.T) {
 	// The segment the rows are about, not whichever is current: a workload can
 	// continue as new between the two calls.
 	assert.Equal(t, theRetryingRun, fake.gotGet.Load().GetRunId(),
-		"the footer asked about whichever run is latest, which may not be the one "+
+		"the note asked about whichever run is latest, which may not be the one "+
 			"the account above describes")
 
 	notes := errOut.String()
 	assert.Contains(t, notes, "one step is retrying")
-	assert.Contains(t, notes, "attempt 3",
-		"the attempt count is the whole reason to read this line")
-	assert.Contains(t, notes, "next attempt in ",
-		"a reader was told a step is retrying and not when it will try again")
+	assert.Contains(t, notes, "attempt 3 is due in ",
+		"the attempt and when it is due are the whole reason to read this line")
 	assert.Contains(t, notes, "flow get flowstate-workflow-3f7c --run-id "+theRetryingRun,
 		"the note says a fact is missing without saying what would report it")
 	assert.Contains(t, notes, "no row of its own here until the next one starts",
@@ -196,8 +214,76 @@ func TestATimelineReportsTheRetryNoRowCanHold(t *testing.T) {
 		"prose about the run's present reached the stream `flow timeline | ...` consumes")
 }
 
-// TestABusyRunIsNotDescribedAsAStuckOne is the negative direction, and the one
-// that decides whether this footer is worth having at all.
+// TestARetryThatIsAlreadyRunningIsNotAMissingRow is the case an attempt count
+// alone gets backwards.
+//
+// The server writes the previous attempt's failure into the account the moment
+// the next attempt *starts*, so a step whose retry is already running has that
+// failure on the reader's screen. A note there does not merely repeat it: it
+// says the failure has no row, which is false, and points at another command to
+// find something already three lines up. That is a wrong claim rather than a
+// stale one, which is why it is worth its own test (Codex, #1142).
+//
+// The second case is the same state arriving differently. The schema says the
+// next-attempt field is unset while an attempt runs, but the server fills it
+// from Temporal's `scheduled_time` rather than its `next_attempt_schedule_time`,
+// and only the latter is documented to be null for a scheduled or started
+// activity — so a running attempt can reach the CLI carrying the moment it was
+// itself scheduled, which is behind us. A time already past is therefore read as
+// silence rather than as an overdue attempt.
+func TestARetryThatIsAlreadyRunningIsNotAMissingRow(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		pending *v1.PendingActivity
+		because string
+	}{
+		{
+			name: "the next attempt has started, so it has no schedule",
+			pending: &v1.PendingActivity{
+				Attempt:     3,
+				LastFailure: "connection refused",
+			},
+			because: "the failure this note claims has no row was written into the " +
+				"account when this attempt started, so the note points at a row the " +
+				"reader can already see",
+		},
+		{
+			name: "the schedule it carries is already behind us",
+			pending: &v1.PendingActivity{
+				Attempt:                  3,
+				LastFailure:              "connection refused",
+				NextAttemptScheduledTime: timestamppb.New(time.Now().Add(-time.Minute)),
+			},
+			because: "a moment already past is the attempt's own scheduling rather than " +
+				"a wait still to come, and claiming a missing row on it is a guess",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake := &fakeTimelineService{
+				timeline: runningAccount(),
+				present: &v1.GetResponse{
+					Status:            v1.RunResponse_STATUS_RUNNING,
+					PendingActivities: []*v1.PendingActivity{c.pending},
+				},
+			}
+			serveTimelineFake(t, fake)
+
+			cmd, _, errOut := timelineCommand(t)
+			require.NoError(t, runTimeline(cmd, []string{"flowstate-workflow-3f7c"}))
+
+			require.Equal(t, int64(1), fake.getCalls.Load(),
+				"the run's present was never read, so this case proves nothing")
+
+			notes := errOut.String()
+			assert.NotContains(t, notes, "is retrying", c.because)
+			assert.NotContains(t, notes, "asked after the rows above",
+				"the note was printed for a step whose failure is already a row")
+		})
+	}
+}
+
+// TestABusyRunIsNotDescribedAsAStuckOne is the other negative direction, and the
+// one that decides whether this note is worth having at all.
 //
 // Temporal reports every activity that is scheduled or started and not yet
 // finished, so a perfectly healthy run doing its first attempt at one step has a
@@ -223,6 +309,18 @@ func TestABusyRunIsNotDescribedAsAStuckOne(t *testing.T) {
 			},
 			because: "a step running its first attempt has failed at nothing, and its " +
 				"scheduling is already a row in the account above",
+		},
+		{
+			name: "a first attempt still waiting for a worker",
+			present: &v1.GetResponse{
+				Status: v1.RunResponse_STATUS_RUNNING,
+				PendingActivities: []*v1.PendingActivity{{
+					Attempt:                  1,
+					NextAttemptScheduledTime: timestamppb.New(time.Now().Add(30 * time.Second)),
+				}},
+			},
+			because: "a schedule in the future is only half of it — nothing has failed, " +
+				"so no row is missing and the wait is ordinary queueing",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -266,19 +364,21 @@ func TestTheRetryNoteSaysWhereItsAnswerCameFrom(t *testing.T) {
 
 	const opening = "the run's present, asked after the rows above: "
 
+	due := time.Now().Add(30 * time.Second)
+
 	for _, c := range []struct {
 		name string
 		msg  *v1.GetResponse
 	}{
 		{
-			name: "one retrying step",
-			msg:  &v1.GetResponse{PendingActivities: []*v1.PendingActivity{{Attempt: 3}}},
+			name: "one waiting step",
+			msg:  &v1.GetResponse{PendingActivities: []*v1.PendingActivity{backingOff(3, due)}},
 		},
 		{
-			name: "several retrying steps",
+			name: "several waiting steps",
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
-				{Attempt: 3},
-				{Attempt: 5},
+				backingOff(3, due),
+				backingOff(5, due),
 			}},
 		},
 		{
@@ -310,8 +410,8 @@ func TestTheRetryNoteSaysWhereItsAnswerCameFrom(t *testing.T) {
 // about. That is the common case for this verb, whose whole reason to exist is
 // the question left once a run has finished.
 //
-// The fake is armed with a retrying step on purpose: if the gate stopped
-// working, the footer would appear, and this test would say so rather than
+// The fake is armed with a step waiting out a backoff on purpose: if the gate
+// stopped working, the note would appear, and this test would say so rather than
 // merely counting.
 func TestAFinishedAccountNeverAsksWhatTheRunIsDoing(t *testing.T) {
 	for _, c := range []struct {
@@ -330,10 +430,9 @@ func TestAFinishedAccountNeverAsksWhatTheRunIsDoing(t *testing.T) {
 				timeline: account,
 				present: &v1.GetResponse{
 					Status: v1.RunResponse_STATUS_RUNNING,
-					PendingActivities: []*v1.PendingActivity{{
-						Attempt:     4,
-						LastFailure: "connection refused",
-					}},
+					PendingActivities: []*v1.PendingActivity{
+						backingOff(4, time.Now().Add(30*time.Second)),
+					},
 				},
 			}
 			serveTimelineFake(t, fake)
@@ -361,10 +460,9 @@ func TestTheRetryNoteStaysOffAStructuredAnswer(t *testing.T) {
 		timeline: runningAccount(),
 		present: &v1.GetResponse{
 			Status: v1.RunResponse_STATUS_RUNNING,
-			PendingActivities: []*v1.PendingActivity{{
-				Attempt:     3,
-				LastFailure: "connection refused",
-			}},
+			PendingActivities: []*v1.PendingActivity{
+				backingOff(3, time.Now().Add(30*time.Second)),
+			},
 		},
 	}
 	serveTimelineFake(t, fake)
@@ -392,7 +490,7 @@ func TestTheRetryNoteStaysOffAStructuredAnswer(t *testing.T) {
 // together, which is where they could contradict each other.
 //
 // Truncation offers a reader --after-event-id and says the account is partial.
-// A retrying step's latest failure is not further along that account — it is
+// A waiting step's latest failure is not further along that account — it is
 // nowhere in it — so the two notes have to compose into one ending rather than
 // leaving a reader paging forever for a row that will not arrive until the next
 // attempt starts.
@@ -404,10 +502,9 @@ func TestTheRetryNoteAndTheTruncationNoteReadAsOneEnding(t *testing.T) {
 		timeline: account,
 		present: &v1.GetResponse{
 			Status: v1.RunResponse_STATUS_RUNNING,
-			PendingActivities: []*v1.PendingActivity{{
-				Attempt:     3,
-				LastFailure: "connection refused",
-			}},
+			PendingActivities: []*v1.PendingActivity{
+				backingOff(3, time.Now().Add(30*time.Second)),
+			},
 		},
 	}
 	serveTimelineFake(t, fake)
@@ -433,8 +530,8 @@ func TestTheRetryNoteAndTheTruncationNoteReadAsOneEnding(t *testing.T) {
 			"that is not further along the account")
 }
 
-// TestAnUnreadablePresentIsSaidRatherThanTakenForSilence is what stops this
-// footer from teaching a lie.
+// TestAnUnreadablePresentIsSaidRatherThanTakenForSilence is what stops this note
+// from teaching a lie.
 //
 // Once the sentence exists, its absence reads as "nothing is mid-retry". A check
 // that never happened must therefore not be reported the same way as one that
@@ -468,7 +565,7 @@ func TestAnUnreadablePresentIsSaidRatherThanTakenForSilence(t *testing.T) {
 //
 // The heads differ and the tail does not, which is deliberate: the tail is what
 // says *why* a failure is missing, and it has to be true whether one step is
-// retrying or forty.
+// waiting or forty.
 func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 	t.Parallel()
 
@@ -489,38 +586,39 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 		because string
 	}{
 		{
-			name: "one retrying step names its attempt and its countdown",
-			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
-				Attempt:                  3,
-				LastFailure:              "connection refused",
-				NextAttemptScheduledTime: timestamppb.New(now.Add(12 * time.Second)),
-			}}},
-			want: opening + "one step is retrying — attempt 3, next attempt in 12s" + tail,
+			name: "one waiting step names its attempt and when it is due",
+			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
+				backingOff(3, now.Add(12*time.Second)),
+			}},
+			want: opening + "one step is retrying — attempt 3 is due in 12s" + tail,
+			because: "attempt 3 and the countdown are one attempt, not two, so naming a " +
+				"further `next attempt` after it would invent a try nobody is waiting for",
 		},
 		{
-			name: "an attempt running right now has no countdown to give",
+			name: "a retry that is already running says nothing",
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
 				Attempt:     3,
 				LastFailure: "connection refused",
 			}}},
-			want:    opening + "one step is retrying — attempt 3" + tail,
-			because: "an attempt that is running has no next schedule, and 1970 is not a countdown",
+			want: "",
+			because: "the failure is a row by the time the next attempt starts, so this " +
+				"would claim a missing row the reader can see",
 		},
 		{
-			name: "a countdown that has already elapsed is not printed as one",
-			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
-				Attempt:                  3,
-				NextAttemptScheduledTime: timestamppb.New(now.Add(-time.Minute)),
-			}}},
-			want:    opening + "one step is retrying — attempt 3" + tail,
-			because: "the next attempt being overdue is a different sentence from how long is left",
-		},
-		{
-			name: "several retrying steps name the furthest along",
+			name: "a schedule already behind us says nothing",
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
-				{Attempt: 2},
-				{Attempt: 7},
-				{Attempt: 3},
+				backingOff(3, now.Add(-time.Minute)),
+			}},
+			want: "",
+			because: "a moment already past is the running attempt's own scheduling " +
+				"rather than a wait still to come",
+		},
+		{
+			name: "several waiting steps name the furthest along",
+			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
+				backingOff(2, now.Add(time.Minute)),
+				backingOff(7, now.Add(time.Minute)),
+				backingOff(3, now.Add(time.Minute)),
 			}},
 			want: opening + "3 steps are retrying — the furthest on attempt 7" + tail,
 			because: "a run where one step is on attempt 9 is a different situation from " +
@@ -529,37 +627,37 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 		{
 			name: "a first attempt in flight is not counted as a retry",
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
-				{Attempt: 1},
-				{Attempt: 4},
+				{Attempt: 1, NextAttemptScheduledTime: timestamppb.New(now.Add(time.Minute))},
+				backingOff(4, now.Add(45*time.Second)),
 			}},
-			want:    opening + "one step is retrying — attempt 4" + tail,
+			want:    opening + "one step is retrying — attempt 4 is due in 45s" + tail,
 			because: "the busy step's scheduling is already a row, so nothing about it is missing",
 		},
 		{
 			name:    "a run with nothing pending says nothing",
 			msg:     &v1.GetResponse{},
 			want:    "",
-			because: "a footer on every finished run is a footer nobody reads",
+			because: "a note on every finished run is a note nobody reads",
 		},
 		{
-			name: "a clipped list with nothing retrying in it admits it cannot tell",
+			name: "a clipped list with nothing waiting in it admits it cannot tell",
 			msg: &v1.GetResponse{
 				PendingActivities:          []*v1.PendingActivity{{Attempt: 1}},
 				PendingActivitiesTruncated: true,
 			},
-			want: opening + "this run has more steps pending than it reports, so whether one of " +
-				"them is retrying cannot be told from here" + tail,
-			because: "the steps past the bound may be the retrying ones, and silence " +
+			want: opening + "this run has more steps pending than it reports, so whether " +
+				"one of them is retrying cannot be told from here" + tail,
+			because: "the steps past the bound may be the waiting ones, and silence " +
 				"would report some of them as all of them",
 		},
 		{
-			name: "a clipped list beside a retrying step says both",
+			name: "a clipped list beside a waiting step says both",
 			msg: &v1.GetResponse{
-				PendingActivities:          []*v1.PendingActivity{{Attempt: 3}},
+				PendingActivities:          []*v1.PendingActivity{backingOff(3, now.Add(20*time.Second))},
 				PendingActivitiesTruncated: true,
 			},
-			want: opening + "one step is retrying — attempt 3, and more steps are pending than " +
-				"this reports" + tail,
+			want: opening + "one step is retrying — attempt 3 is due in 20s, and more " +
+				"steps are pending than this reports" + tail,
 			because: "pending rather than retrying, because that is all the flag says",
 		},
 	} {
@@ -589,13 +687,14 @@ func TestTheRetryNoteNeverCarriesTheWorkloadsOwnText(t *testing.T) {
 		"flowstate-workflow-3f7c\nfake\x1b[31m",
 		theRetryingRun,
 		&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
-			Attempt:     3,
-			LastFailure: nasty,
+			Attempt:                  3,
+			LastFailure:              nasty,
+			NextAttemptScheduledTime: timestamppb.New(time.Now().Add(30 * time.Second)),
 		}}},
 		time.Now(),
 	)
 
-	require.NotEmpty(t, footer, "the case proves nothing if there is no footer")
+	require.NotEmpty(t, footer, "the case proves nothing if there is no note")
 
 	assert.NotContains(t, footer, nasty,
 		"the workload's own failure sentence was reproduced on this line, where "+
@@ -619,7 +718,9 @@ func TestTheRetryNoteNamesNoRunItCannotAddress(t *testing.T) {
 	t.Parallel()
 
 	footer := retryingStepsFooter("flowstate-workflow-3f7c", "",
-		&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{Attempt: 3}}},
+		&v1.GetResponse{PendingActivities: []*v1.PendingActivity{
+			backingOff(3, time.Now().Add(30*time.Second)),
+		}},
 		time.Now())
 
 	assert.Contains(t, footer, "`flow get flowstate-workflow-3f7c` is what reports it")
