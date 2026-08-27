@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -393,6 +394,53 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		meterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)), sdkmetric.WithResource(res))
 		built = append(built, meterProvider.Shutdown)
 		handler = opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{Meter: meterProvider.Meter("temporal-sdk")})
+
+		// The other half of #916: memory and goroutine pressure were invisible
+		// on both long-running binaries except through pprof. One call, here,
+		// where the meter provider is built — not a second copy in runServer
+		// and runWorker — because every caller of [startTelemetry] shares this
+		// function, and a value registered once against the provider it was
+		// built with cannot disagree with a second registration against a
+		// second provider the way two hand-written call sites eventually
+		// would (see "Both execution drivers must agree" in CLAUDE.md for why
+		// that shape of bug keeps recurring here).
+		//
+		// go.opentelemetry.io/contrib/instrumentation/runtime v0.61.0 still
+		// defaults OTEL_GO_X_DEPRECATED_RUNTIME_METRICS to true — the stable
+		// go.memory.*/go.goroutine.count convention this package now also
+		// implements is opt-out-of-the-opt-out away, not the default — so
+		// [otelruntime.Start] registers the process.runtime.go.* names: mem
+		// stats (heap_alloc, heap_idle, heap_inuse, heap_objects,
+		// heap_released, heap_sys, lookups, live_objects), gc.count,
+		// gc.pause_ns/gc.pause_total_ns, goroutines, cgo.calls and
+		// runtime.uptime. Read via runtime.ReadMemStats and runtime/metrics,
+		// the same sources pprof reads. [otelruntime.Start] only registers
+		// callbacks; it opens no goroutine and no connection of its own, so
+		// its cost is what the periodic reader already pays to collect
+		// everything else on this provider. Naming a flowstate-specific env
+		// var to force the newer convention would be a second spelling of a
+		// switch the upstream package already owns, so this takes the
+		// package's own default rather than overriding it.
+		//
+		// Started unconditionally whenever config.metrics is true, which is
+		// also true for `flow get`, `flow list` and every other short client
+		// command in cmd/flow/client.go, not only `flow server` and `flow
+		// worker`. That is deliberate rather than an oversight: a short
+		// command's periodic reader never fires on its own 60-second timer
+		// before the process exits, so the only export it ever produces is
+		// the single forced flush [flushTelemetry] does at shutdown — one
+		// extra sample of memory and goroutine counts alongside the Temporal
+		// SDK metrics that command was already exporting. That is noise at
+		// the scale of a few extra data points, not a second exporter, a
+		// second goroutine, or a second connection; splitting this by verb
+		// would buy the operator nothing they can act on and would give this
+		// file a second gate to keep in sync with the first (see "One
+		// spelling" above [initTelemetry]). Nobody pays anything at all unless
+		// they already asked for metrics — the same gate every other signal
+		// here uses.
+		if err := otelruntime.Start(otelruntime.WithMeterProvider(meterProvider)); err != nil {
+			return fail(fmt.Errorf("registering Go runtime metrics: %w", err))
+		}
 	}
 	var loggerProvider *sdklog.LoggerProvider
 	if config.logs {

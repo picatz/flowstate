@@ -1069,6 +1069,47 @@ codebase; see the [Temporal SDK metrics
 reference](https://docs.temporal.io/references/sdk-metrics) for the current
 list. Verified here only as "on and reachable," not enumerated.
 
+**Go runtime metrics** are registered on every long-running process the same
+way the Temporal SDK handler is: inside `initTelemetry`, gated on
+`OTEL_METRICS_EXPORTER`/`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` specifically —
+not on tracing or logging alone — via
+`go.opentelemetry.io/contrib/instrumentation/runtime`
+(`cmd/flow/telemetry.go`, beside where the meter provider is built). That
+package's v0.61.0 still defaults `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` to
+`true`, so what actually reaches a collector today is the
+`process.runtime.go.*` set rather than the newer `go.memory.*` convention;
+either name is what an operator should dashboard for the CPU/memory guidance
+below:
+
+| Metric | Type | Unit | Meaning |
+| --- | --- | --- | --- |
+| `process.runtime.go.mem.heap_alloc` | up-down counter | bytes | Heap bytes currently allocated |
+| `process.runtime.go.mem.heap_idle` | up-down counter | bytes | Heap bytes idle (unused, uncommitted) |
+| `process.runtime.go.mem.heap_inuse` | up-down counter | bytes | Heap bytes in in-use spans |
+| `process.runtime.go.mem.heap_objects` | up-down counter | — | Number of allocated heap objects |
+| `process.runtime.go.mem.heap_released` | up-down counter | bytes | Heap bytes released to the OS |
+| `process.runtime.go.mem.heap_sys` | up-down counter | bytes | Heap bytes obtained from the OS |
+| `process.runtime.go.mem.live_objects` | up-down counter | — | Number of live objects |
+| `process.runtime.go.mem.lookups` | counter | — | Pointer lookups performed by the runtime |
+| `process.runtime.go.gc.count` | counter | — | Completed GC cycles |
+| `process.runtime.go.gc.pause_ns` | histogram | ns | Per-pause GC stop-the-world duration |
+| `process.runtime.go.gc.pause_total_ns` | counter | ns | Cumulative GC stop-the-world duration |
+| `process.runtime.go.goroutines` | up-down counter | — | Live goroutine count |
+| `process.runtime.go.cgo.calls` | counter | — | Cumulative cgo calls made |
+| `runtime.uptime` | counter | ms | Time since the process started reporting |
+
+Registered whenever metrics are enabled — including a short client command
+like `flow get`, not only `flow server`/`flow worker` — but that costs a
+single extra export at the command's own shutdown flush rather than a second
+exporter or a second goroutine; see the doc comment beside
+`otelruntime.Start` in `cmd/flow/telemetry.go` for why splitting this by verb
+was rejected. On the two long-running processes it is the answer to the "How
+to read this process's own CPU/memory" guidance below without reaching for
+pprof: `process.runtime.go.mem.heap_alloc` and `process.runtime.go.goroutines`
+climbing together tracks the same "is this worker's own memory the
+constraint" question a heap profile answers, over OTLP instead of a loopback
+`kubectl exec`.
+
 **No metric exists yet for a run's own lifecycle** — started, completed,
 failed, a step's retry count — searched for and not found anywhere under
 `pkg/flowstate/v1` or `cmd/flow` outside the two tables above. An operator
@@ -1147,10 +1188,15 @@ plus this process's own CPU/memory if raising slots is the lever being
 pulled, since that is what tells you when the free remedy has run out of
 room.
 
-**How to read this process's own CPU/memory.** No Go runtime metrics are
-registered on either binary today, so `OTEL_EXPORTER_OTLP_ENDPOINT` alone will
-not show you heap size or GC pressure — that gap is real and tracked
-separately. What the worker does have is `--internal-listen`
+**How to read this process's own CPU/memory.** Go runtime metrics are
+registered on both binaries once metrics are enabled (`OTEL_METRICS_EXPORTER`
+or an OTLP metrics endpoint — see [Go runtime metrics](#metrics) above for the
+full table), so an operator who already points `OTEL_EXPORTER_OTLP_ENDPOINT`
+somewhere gets `process.runtime.go.mem.heap_alloc`,
+`process.runtime.go.gc.pause_ns` and `process.runtime.go.goroutines` on a
+dashboard for free — no flag, no pprof session, no shell into the pod. What
+the worker *also* has, for the deeper "which allocation" or "which stack"
+question a gauge cannot answer, is `--internal-listen`
 (`FLOWSTATE_INTERNAL_ADDRESS`), off by default, loopback or refused, described
 under [Health checks and probes](#health-checks-and-probes) above along with
 what turning it on exposes. Start the worker with it, then, from inside that
