@@ -124,6 +124,19 @@ const debugReplayLong = "Replay a recorded debugging session: read a script of d
 
 // debugReplayExample shows the shape of a script as well as the invocation,
 // because the file is the part nobody can guess.
+//
+// It said how to *record* one, and the line it gave did not record anything:
+// `flow run local --debug < session.script` is shell input redirection, so it
+// reads a file that must already exist and feeds it to the console. The session
+// is then discarded without [flowdebug.Session.Script] ever being called
+// (Codex, #1145). An example in help text is an instruction, and an instruction
+// that cannot work is worse than none — the reader trusts it and loses the time
+// twice, once trying it and once believing the file they end up with is a
+// recording.
+//
+// So it names the producer that exists. `flowstate_debug`'s answer carries the
+// commands its session accepted (`cmd/flow/mcpdebug.go` renders them), which is
+// today the only thing in this tree that emits one.
 const debugReplayExample = `# Replay the session recorded beside one of the examples:
 flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
 
@@ -137,8 +150,10 @@ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate
 # Replay with the arguments the recorded run was started with:
 flow debug replay session.script examples/computed-outputs/workflow.yaml --input release=2026.9.0
 
-# Record one to replay later, by keeping what the console read:
-flow run local examples/loop-accumulate/workflow.yaml --debug < session.script`
+# There is no recorder in the CLI yet. The one producer is the flowstate_debug
+# MCP tool, whose answer carries the commands its session accepted — save those
+# lines to a file and this replays them. A ` + "`flow run local --debug --record`" + ` is
+# the named follow-up.`
 
 // addLocalSignalFlags declares the flags that answer a workflow's approval
 // gates up front.

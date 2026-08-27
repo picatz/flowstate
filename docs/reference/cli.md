@@ -252,8 +252,10 @@ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate
 # Replay with the arguments the recorded run was started with:
 flow debug replay session.script examples/computed-outputs/workflow.yaml --input release=2026.9.0
 
-# Record one to replay later, by keeping what the console read:
-flow run local examples/loop-accumulate/workflow.yaml --debug < session.script
+# There is no recorder in the CLI yet. The one producer is the flowstate_debug
+# MCP tool, whose answer carries the commands its session accepted — save those
+# lines to a file and this replays them. A `flow run local --debug --record` is
+# the named follow-up.
 ```
 
 | Flag | Type | Default | Environment | Description |
