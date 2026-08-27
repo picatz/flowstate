@@ -357,9 +357,17 @@ in prose**, and the measurement is in Part III. `flow fmt` now writes what the c
 already spelled — short durations, plain-first quoting, indented sequences (#850) —
 and `TestEveryExampleIsAlreadyWhatTheFormatterWrites` holds every workflow under
 `examples/` to those bytes, alongside a second pass proving idempotence and a
-`proto.Equal` proving the reformat kept the workflow each file compiles to. The
-snippets in `README.md` and `docs/DSL.md` are not yet held to anything, which is the
-half of this clause that remains.
+`proto.Equal` proving the reformat kept the workflow each file compiles to.
+
+The snippets in prose are now held by the same two claims, in
+`TestShownWorkflowsAreCanonical`, over the same list of documents the compile and
+lint checks read. Two of the four complete workflows shown are canonical today; the
+other two are named in that test's `notYetCanonical`, each with its reason and each
+asserted to *still* fail in the shape its entry claims, so a fix cannot leave a stale
+exemption behind and a newly added snippet is held to bytes from the day it lands.
+Both remaining entries are one open decision on #850 — what the formatter should
+write for a structure whose entries hold expressions, which the compiler folds into a
+single CEL literal — and the table in Part III says what each one costs.
 
 ### R9. The charter enforces itself or shrinks
 
@@ -450,14 +458,20 @@ shipped both answers to #545, which means the status quo is not the conservative
 position but the inconsistent one. Condemned by R4, which binds the resolution without
 pre-empting #545's measurement of what YAML permits.
 
-**R8's byte-identical clause, held over the corpus and still open in prose.**
-Measured by running `flow fmt --stdout` over each shown Flowfile and comparing bytes:
+**R8's byte-identical clause, held over the corpus and over prose, with two named
+holdouts.** Every row below is asserted by a test rather than measured by hand — the
+first by `TestEveryExampleIsAlreadyWhatTheFormatterWrites`, the rest by
+`TestShownWorkflowsAreCanonical` — so a stale row fails the build instead of
+misleading a reader, which is what the hand-measured version of this table did for
+the four months between `c4ead7c` and #850's re-measurement:
 
 | Corpus | Canonical today |
 | --- | --- |
-| every workflow under `examples/` (87 files) | all byte-identical, and held there by a test |
-| the one complete workflow in `README.md` | not canonical |
-| the one complete workflow in `docs/DSL.md` | `flow fmt` **refuses** it, because a comment inside it cannot be carried back |
+| every workflow under `examples/` (103 workflows) | all byte-identical |
+| `docs/STYLE.md`'s `refund-dispatch` | byte-identical |
+| `docs/DSL.md`'s `nightly-etl` | byte-identical |
+| `README.md`'s `approval-gate` | not canonical: one folded block scalar comes back as a single 118-character line |
+| `docs/DSL.md`'s `deploy` | `flow fmt` **refuses** it, because a comment inside a `fields:` mapping cannot be carried back |
 
 The first row was `0 byte-identical` when this table was written, and the direction
 of that failure was the finding: `flow fmt` wrote sequences at zero indentation,
@@ -469,19 +483,35 @@ sloppy; it was that the formatter was not canon for anything.
 #850 closed it in that direction rather than this one. Each of those three defaults
 was decided against what the corpus already spelled — the shortest exact duration,
 plain-then-single-quoted scalars, indented sequences — and `examples/` was reformatted
-once against the result. What is left of the clause is the two rows above that are
-not `examples/`, and one of them names its own remaining work: the formatter still
-refuses a comment written inside a mapping the compiler folds into a single
-expression, so `docs/DSL.md`'s worked example cannot be held to bytes until either
-that comment moves or the fold keeps a place to hang it.
+once against the result. What is left of the clause is the two holdout rows above,
+and they are one open decision rather than two.
 
-One rewrite the corpus reformat did *not* make, and it is the reason a folded block
-scalar no longer appears in the list above: `flow fmt` still unfolds one into a
-single line, and roughly 120 folded scalars in `examples/` were unfolded by the
-reformat. Re-folding is a re-wrapping decision — a width, and a rule for where a
-break may fall that no string can be corrupted by — and it was left undecided rather
-than guessed at, since a formatter that folds wrongly changes what a file says. It is
-the next thing this clause needs after the prose snippets.
+**The fold.** `compiler.composite` collapses any mapping or sequence holding a
+`${...}` anywhere inside it into a single `Value_Expr` — a CEL map literal — because
+that is the only way a per-key expression can be evaluated. `Marshal` then writes
+that value back the one way it knows, as a fenced string on one line, so the keys the
+author wrote are not in the document the formatter produces. Two things follow. A
+comment anchored to one of those keys has nowhere to go, which is what refuses
+`docs/DSL.md`'s worked example. And the corpus reformat rewrote 55 authored mappings
+into one-line literals on the way to being canonical — 18 `query:`, 18 `json:`, 11
+`fields:`, 4 `headers:`, 4 others — of which
+`examples/plugins/sql/transfer.yaml:82` is now 778 characters and four more example
+lines are over 270. The corpus is byte-identical to the formatter, and in those
+places it teaches a spelling no author would type.
+
+The mapping rendering already exists — `structureToYAML` writes one, for the single
+case `composite` declines to fold — so making `Marshal` offer it as a candidate and
+verify it by re-compiling, the way `scalarStyles` and `scalarSurvives` already choose
+between renderings of a scalar, is the shape #850 recommends. Its cost is a second
+mechanical reformat of `examples/`.
+
+**Folding is the other, smaller question, and stays parked.** `flow fmt` unfolds a
+folded block scalar into a single line, which is what leaves `README.md`'s
+`approval-gate` non-canonical. Re-folding is a re-wrapping decision — a width, and a
+rule for where a break may fall that no string can be corrupted by — and it was left
+undecided rather than guessed at, since a formatter that folds wrongly changes what a
+file says. The unfold above removes most of its motivation: the lines that made
+folding look necessary are the flattened structures, not authored prose.
 
 **What tier 4 found in the shown corpus, and what it finds now.** `flow lint
 examples/` reported 21 findings across 12 of the 86 files it read, measured at the
