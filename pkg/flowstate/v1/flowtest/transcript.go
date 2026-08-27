@@ -536,8 +536,8 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs, switches map[
 		// the flag means. The case's own diagnostics still carry the failure;
 		// only this rendered account withholds.
 		text := "[failure withheld: a sensitive input could not be enumerated, so no text is provably safe]"
-		if !sensitive.withholdAll {
-			text = redactSensitiveSubstrings(e.failure, sensitive.substrings)
+		if !sensitive.WithholdAll() {
+			text = sensitive.RedactSubstrings(e.failure)
 		}
 		// A failed switch body's record deliberately preserves the arm that
 		// was taken ([v1.StepFailureRecord]), and the decision is most worth
@@ -574,7 +574,7 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs, switches map[
 	// the cap — keys included, because a stub's `returns:` keys and a
 	// payload's keys are authored text a sensitive value can be spelled into,
 	// and per-value redaction alone would print them (Codex, #1052).
-	if sensitive.withholdAll {
+	if sensitive.WithholdAll() {
 		return "-> [withheld]", ToneInfo
 	}
 
@@ -588,7 +588,7 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs, switches map[
 	for _, name := range names {
 		parts = append(parts, redactedKeyText(name, sensitive)+": "+redactedValueText(named[name], sensitive))
 	}
-	return "-> " + capRunes(redactSensitiveSubstrings(strings.Join(parts, ", "), sensitive.substrings), 120), ToneInfo
+	return "-> " + capRunes(sensitive.RedactSubstrings(strings.Join(parts, ", ")), 120), ToneInfo
 }
 
 // takenSwitchArm renders the decision a known switch step's record carries,
@@ -635,7 +635,7 @@ func redactedValueText(value *v1.Value, sensitive sensitiveInputs) string {
 // redacted — the joined fragment passing the substring backstop keys
 // included, for [stepOutcomeText]'s reason.
 func redactedGoValue(payload map[string]any, sensitive sensitiveInputs) string {
-	if sensitive.withholdAll {
+	if sensitive.WithholdAll() {
 		return "[withheld]"
 	}
 	if len(payload) == 0 {
@@ -650,7 +650,7 @@ func redactedGoValue(payload map[string]any, sensitive sensitiveInputs) string {
 	for _, name := range names {
 		parts = append(parts, redactedKeyText(name, sensitive)+": "+redactedScalarText(payload[name], sensitive))
 	}
-	return capRunes(redactSensitiveSubstrings("{"+strings.Join(parts, ", ")+"}", sensitive.substrings), 120)
+	return capRunes(sensitive.RedactSubstrings("{"+strings.Join(parts, ", ")+"}"), 120)
 }
 
 // redactedKeyText redacts a rendered map key that IS a sensitive value, by
@@ -661,7 +661,7 @@ func redactedGoValue(payload map[string]any, sensitive sensitiveInputs) string {
 // whole key exactly equal to sensitive material is not a substring question
 // at all.
 func redactedKeyText(name string, sensitive sensitiveInputs) string {
-	if sensitive.withholdAll || isSensitiveValue(name, sensitive.values) {
+	if sensitive.WithholdAll() || sensitive.IsSensitive(name) {
 		return sensitiveMarker
 	}
 	return name
@@ -673,17 +673,17 @@ func redactedKeyText(name string, sensitive sensitiveInputs) string {
 // last. withholdAll withholds, exactly as the stub diagnostics do when the
 // redaction set could not be built.
 func redactedScalarText(native any, sensitive sensitiveInputs) string {
-	if sensitive.withholdAll {
+	if sensitive.WithholdAll() {
 		return "[withheld]"
 	}
-	redacted := redactSensitiveTree(native, sensitive.values)
+	redacted := sensitive.RedactTree(native)
 	var text string
 	if s, ok := redacted.(string); ok {
 		text = fmt.Sprintf("%q", s)
 	} else {
 		text = fmt.Sprintf("%v", redacted)
 	}
-	return capRunes(redactSensitiveSubstrings(text, sensitive.substrings), 48)
+	return capRunes(sensitive.RedactSubstrings(text), 48)
 }
 
 // redactedBareText is [redactedScalarText] for a string rendered into the
@@ -691,14 +691,14 @@ func redactedScalarText(native any, sensitive sensitiveInputs) string {
 // same two passes, so no string reaches the account un-redacted by virtue of
 // its position in the sentence.
 func redactedBareText(s string, sensitive sensitiveInputs) string {
-	if sensitive.withholdAll {
+	if sensitive.WithholdAll() {
 		return "[withheld]"
 	}
-	text, ok := redactSensitiveTree(s, sensitive.values).(string)
+	text, ok := sensitive.RedactTree(s).(string)
 	if !ok {
 		return sensitiveMarker
 	}
-	return capRunes(redactSensitiveSubstrings(text, sensitive.substrings), 120)
+	return capRunes(sensitive.RedactSubstrings(text), 120)
 }
 
 // capRunes bounds one rendered fragment, marking the cut.

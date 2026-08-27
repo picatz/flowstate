@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -733,13 +735,8 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// the substring backstop catches "Bearer " + secret. An empty value is
 	// skipped — replacing the empty string would mark every position in
 	// every line while protecting nothing.
-	for _, value := range test.Secrets {
-		if value == "" {
-			continue
-		}
-		sensitive.values = append(sensitive.values, value)
-		sensitive.substrings = append(sensitive.substrings, value)
-	}
+	sensitive = sensitive.WithValues(slices.Collect(maps.Values(test.Secrets))...)
+
 	// A debugging session prints what the transcript prints, so it withholds
 	// what the transcript withholds (Codex, #1109). Capability-discovered the
 	// way the autopsy is: a debugger that does not implement it simply prints
@@ -752,18 +749,18 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// "a redactor is installed" as "this case withholds values" and says so
 	// at the autopsy — a rule that redacts nothing would put that notice on
 	// every failing case.
-	if redact := sensitive; redact.withholdAll || len(redact.substrings) > 0 || len(redact.values) > 0 {
+	if redact := sensitive; !redact.Empty() {
 		debugger := v1.DebuggerFromContext(ctx)
 
 		if redacting, ok := debugger.(interface {
 			SetRedactor(func(string) string)
 		}); ok {
 			redacting.SetRedactor(func(text string) string {
-				if redact.withholdAll {
+				if redact.WithholdAll() {
 					return "[withheld]\n"
 				}
 
-				return redactSensitiveSubstrings(text, redact.substrings)
+				return redact.RedactSubstrings(text)
 			})
 			defer redacting.SetRedactor(nil)
 		}
@@ -781,11 +778,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			SetValueRedactor(func(any) any)
 		}); ok {
 			redacting.SetValueRedactor(func(value any) any {
-				if redact.withholdAll {
+				if redact.WithholdAll() {
 					return "[withheld]"
 				}
 
-				return redactSensitiveTree(value, redact.values)
+				return redact.RedactTree(value)
 			})
 			defer redacting.SetValueRedactor(nil)
 		}
