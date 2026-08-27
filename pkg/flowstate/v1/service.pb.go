@@ -297,8 +297,37 @@ type RunResponse struct {
 	// caller is owed about their own request, and leaves the disclosure question
 	// alone.
 	SpecificationAsSubmitted *bool `protobuf:"varint,6,opt,name=specification_as_submitted,json=specificationAsSubmitted,proto3,oneof" json:"specification_as_submitted,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// Joined is true when this response describes a run that was already going
+	// rather than one this request started.
+	//
+	// Only [Concurrency.ON_CONFLICT_JOIN] produces it: the workflow declared a
+	// `concurrency:` key, another run of the same workflow already held that key in
+	// this tenant, and the author asked for the incumbent to be returned instead of
+	// a refusal. [RunResponse.workflow_id] and [RunResponse.run_id] then name *that*
+	// run — a run this caller did not start, may not have submitted the same inputs
+	// to, and whose specification is therefore not necessarily theirs.
+	//
+	// Which is why it is a field rather than something a caller infers from a run id
+	// it did not recognize. A caller that submits and gets back a run id has no way
+	// to tell "mine" from "somebody else's, joined" by looking, and the two differ in
+	// what the caller may conclude: [RunResponse.specification_as_submitted] is
+	// answered about the *incumbent's* specification, so a client redacting a joined
+	// run's outputs against its own copy is redacting against a file that did not
+	// run. Establishing the fact here is the same discipline
+	// `WorkflowExecutionErrorWhenAlreadyStarted` buys the webhook path
+	// (`AcceptedDelivery.Joined`): a join is a thing the server states, never a thing
+	// a reader deduces from silence.
+	//
+	// A plain `bool` rather than an `optional` one, unlike the field above it, and
+	// the asymmetry is deliberate. Silence there is a third answer — an older server
+	// that substitutes specifications and cannot say so — and reading it as false
+	// would be unsafe. Here false is the safe reading and the overwhelmingly common
+	// one: a server too old to have this field cannot have honoured a
+	// `concurrency:` block either, so it never joined anything, and "unset" and
+	// "did not join" are the same fact rather than two.
+	Joined        bool `protobuf:"varint,7,opt,name=joined,proto3" json:"joined,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunResponse) Reset() {
@@ -380,6 +409,13 @@ func (x *RunResponse) GetOutputs() *Workflow_StepOutputs {
 func (x *RunResponse) GetSpecificationAsSubmitted() bool {
 	if x != nil && x.SpecificationAsSubmitted != nil {
 		return *x.SpecificationAsSubmitted
+	}
+	return false
+}
+
+func (x *RunResponse) GetJoined() bool {
+	if x != nil {
+		return x.Joined
 	}
 	return false
 }
@@ -2465,7 +2501,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\r\n" +
-	"\v_entity_key\"\xf5\x04\n" +
+	"\v_entity_key\"\x8d\x05\n" +
 	"\vRunResponse\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\n" +
@@ -2475,7 +2511,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xc8\x01\x01\x82\x01\x04\x10\x01 \x00R\x06status\x127\n" +
 	"\x05error\x18\x04 \x01(\v2\x1f.flowstate.v1.RunResponse.ErrorH\x00R\x05error\x12>\n" +
 	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x12A\n" +
-	"\x1aspecification_as_submitted\x18\x06 \x01(\bH\x01R\x18specificationAsSubmitted\x88\x01\x01\x1a=\n" +
+	"\x1aspecification_as_submitted\x18\x06 \x01(\bH\x01R\x18specificationAsSubmitted\x88\x01\x01\x12\x16\n" +
+	"\x06joined\x18\a \x01(\bR\x06joined\x1a=\n" +
 	"\x05Error\x12 \n" +
 	"\amessage\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x9f\x01\n" +

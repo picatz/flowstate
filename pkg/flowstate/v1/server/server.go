@@ -21,6 +21,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/operatorservice/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -1249,6 +1250,37 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		workflowID = entityID
 	}
 
+	// The permit, composed the same way and from the same halves: the tenant this
+	// server attested, the workflow's own name, and the key the author declared —
+	// resolved here, now that inputs are bound and before anything durable
+	// exists. See [v1.Concurrency] for why the id *is* the mutual exclusion, and
+	// [v1.ConcurrencyWorkflowID] for why the tenant is inside the digest.
+	//
+	// Refused rather than ordered when a caller also names an entity key: both are
+	// addressing schemes for one run's id, so honouring either would silently
+	// discard the other — a run the caller believes is addressable as an entity
+	// but is not, or an exclusion the author declared and does not get. There is
+	// no correct precedence to pick, which is invariant 6's case for refusing.
+	onConflict := workflow.GetConcurrency().GetOnConflict()
+	if workflow.GetConcurrency() != nil {
+		if req.Msg.GetEntityKey() != "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(
+				"this workflow declares a `concurrency:` key and the request also names an entity_key; "+
+					"both address the run by its workflow id and only one of them can, so drop the "+
+					"entity_key or the workflow's concurrency block"))
+		}
+
+		key, err := v1.ResolveConcurrencyKey(ctx, workflow, inputs)
+		if err != nil {
+			// The caller's mistake, and reported as one: what a key resolves to is
+			// decided by the inputs they submitted, exactly as a signal rule's
+			// `subject_from` is (see [signalPolicyMemoEntry]'s own refusal).
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+
+		workflowID = v1.ConcurrencyWorkflowID(identity.GetNamespace(), workflow.GetName(), key)
+	}
+
 	// This is a manual start — the `Run` RPC is what `flow run`, an agent over
 	// MCP and any other caller reach — so the workflow's own `manual:` block
 	// decides whether it may happen, against the identity this server attested
@@ -1269,6 +1301,36 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, err
 	}
 	options.ID = workflowID
+
+	// The three answers a workflow id can give, each one pair of Temporal
+	// policies — see [v1.Concurrency.OnConflict], which names the pairs, and
+	// webhook.go, which sets the fourth pair for the fourth question ("this event
+	// starts one run", where a *finished* run must not be started again either).
+	//
+	// Reuse is left at Temporal's default here rather than set alongside conflict,
+	// and that is the whole difference between a permit and a dedupe key: a run
+	// that has ended has released the resource, so the next submission naming the
+	// same key is a new run rather than a duplicate of the old one.
+	if workflow.GetConcurrency() != nil {
+		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
+		} else {
+			// Both of the other two, `join` included — see
+			// [v1.Concurrency_ON_CONFLICT_JOIN] for why it is not
+			// `USE_EXISTING`. Unspecified lands here too, deliberately: the
+			// fail-closed arm is the refusal, so an author who wrote `key:` and
+			// no `on_conflict:` gets exclusion rather than a second concurrent
+			// run.
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+		}
+
+		// Asked for the error rather than the silent answer the SDK defaults to,
+		// for the reason the webhook path asks for it and `SignalWithStart` asks
+		// for it: the error carries the incumbent's run id, so both "this was
+		// refused" and "this joined" are facts this code establishes rather than
+		// infers from a run id it cannot otherwise recognize.
+		options.WorkflowExecutionErrorWhenAlreadyStarted = true
+	}
 
 	// Provenance, in the same memo the tenant and the starter are recorded in and
 	// for the same reason: it is read afterwards, by whoever asks how this run
@@ -1322,6 +1384,54 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 	})
 	if err != nil {
+		// A conflict on the permit, which is the one failure here that is not this
+		// server failing. Both arms that can produce it are answered from the
+		// error itself, which carries the incumbent's run id, so neither costs a
+		// second Temporal call.
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if workflow.GetConcurrency() != nil && errors.As(err, &already) {
+			if onConflict == v1.Concurrency_ON_CONFLICT_JOIN {
+				// The incumbent, returned as this request's answer, with the join
+				// stated rather than left for the caller to deduce — see
+				// [v1.RunResponse.joined], and `AcceptedDelivery.Joined`, which is
+				// the same answer to the same question one start path over.
+				//
+				// SpecificationAsSubmitted is deliberately false rather than
+				// asSubmitted: the run this names is not the one this request would
+				// have started, so its specification is whatever the *incumbent*
+				// submitted, and answering about the caller's own copy would tell
+				// them a fact about a run that never existed.
+				return connect.NewResponse(&v1.RunResponse{
+					WorkflowId:               workflowID,
+					RunId:                    already.RunId,
+					Status:                   v1.RunResponse_STATUS_RUNNING,
+					Joined:                   true,
+					SpecificationAsSubmitted: proto.Bool(false),
+				}), nil
+			}
+
+			// AlreadyExists rather than Internal: the caller asked for something
+			// this workflow's author said may not happen concurrently, and the
+			// answer is a refusal they can act on — wait, or join — not a server
+			// fault. Naming the run that holds the key is not disclosure: the id is
+			// composed under this caller's own tenant, so a run they cannot address
+			// cannot be the one they collided with.
+			//
+			// The arm named is the effective one rather than the literal field: an
+			// author who wrote no `on_conflict:` still got this refusal, and telling
+			// them their file says "unset" would send them looking for a word that
+			// is not there.
+			refusing := onConflict
+			if refusing == v1.Concurrency_ON_CONFLICT_UNSPECIFIED {
+				refusing = v1.Concurrency_ON_CONFLICT_REJECT
+			}
+
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
+				"another run of %q already holds this workflow's concurrency key (run %s); "+
+					"`on_conflict: %s` refuses a second one until it finishes",
+				workflow.GetName(), already.RunId, v1.ConcurrencyOnConflictName(refusing)))
+		}
+
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
 	}
 
@@ -1422,6 +1532,16 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// first time a signal is actually delivered and denied for a reason the
 	// author never saw at submit.
 	if err := v1.CheckSignalPolicies(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// The same argument, for the two trigger blocks a `concurrency:` key cannot
+	// share a run's workflow id with (see [v1.CheckConcurrency]). The compiler
+	// refuses both combinations with a line and a column; a specification built
+	// by hand arrives without it, and accepting one here would create a run whose
+	// declared exclusion silently does not hold — which is worse than the
+	// refusal, because nothing about the run afterwards says so.
+	if err := v1.CheckConcurrency(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
