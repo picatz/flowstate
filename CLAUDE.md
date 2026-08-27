@@ -746,8 +746,15 @@ coverage that is false.
 ## A check you did not watch run is a check that did not run
 
 Two ways a gate goes green without looking at what you think it looked at. Both
-bit in one night, both are invisible in the output, and the fix for each is one
-`git fetch`.
+bit in one night, and both are invisible in the output — the run says nothing
+about what it did not do.
+
+The fix in each case is to **bring `main` into the branch**, not merely to fetch
+it. A fetch moves the remote-tracking ref and changes nothing about the tree the
+tests compile, so a branch missing a guard goes on missing it; only a merge or a
+rebase puts the guard where the run can reach it. That distinction is the whole
+subject of this section wearing a smaller hat, and the first draft of this
+paragraph got it wrong.
 
 **A branch cut before a guard landed does not have the guard.** Conformance
 corpora work was written on a branch cut from `main` an hour before the guard
