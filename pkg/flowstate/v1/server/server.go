@@ -1808,11 +1808,18 @@ func failureError(
 	// name that it was a timeout and which kind, in place of Temporal's own
 	// "activity StartToClose timeout (type: StartToClose)" — one line, not a
 	// budget value this layer has nothing to compute it from.
+	//
+	// Classified as well as named, on the rule the application-error branch
+	// above already follows and the schema states: `kind` is "always set
+	// alongside Message" (service.proto), and leaving it empty made the one
+	// failure this branch exists for the one failure a programmatic consumer
+	// could read nothing structural from. [v1.ErrorKindTimeout] is what
+	// engine.recordedStepKind answers for the step-level shape of this (#915),
+	// and a run-level timeout is that same fact one scope out — so it is the
+	// same word rather than a second one meaning the same thing.
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
-		return &v1.RunResponse_Error{
-			Message: status.String() + ": timed out (" + timeoutKindText(timeoutErr.TimeoutType()) + ")",
-		}
+		return timeoutFailure(status, timeoutErr.TimeoutType())
 	}
 
 	// Its own text is then the best there is.
@@ -1821,6 +1828,26 @@ func failureError(
 	}
 
 	return &v1.RunResponse_Error{Message: status.String()}
+}
+
+// timeoutFailure is the whole of what [failureError] answers for a run that
+// ended on a clock rather than on a fault: what happened, in words, and the
+// classification beside it.
+//
+// A function rather than a literal at the call site because the classification
+// is the half that had been missing. `kind` is "always set alongside Message"
+// (service.proto), and this branch — the one shape of failure with nothing in
+// the chain to read a classification back out of — was the one leaving it
+// empty, so the only failure an agent could read nothing structural from was a
+// timeout. [v1.ErrorKindTimeout] is what engine.recordedStepKind answers for
+// the step-level shape of this (#915); a run-level timeout is that same fact
+// one scope out, so it is the same word rather than a second one meaning the
+// same thing, and the message is what says which scope.
+func timeoutFailure(status v1.RunResponse_Status, kind enums.TimeoutType) *v1.RunResponse_Error {
+	return &v1.RunResponse_Error{
+		Message: status.String() + ": timed out (" + timeoutKindText(kind) + ")",
+		Kind:    v1.ErrorKindTimeout.String(),
+	}
 }
 
 // timeoutKindText names a Temporal timeout type in words an author's Flowfile

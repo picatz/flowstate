@@ -1,7 +1,11 @@
 package conformance
 
 import (
+	"context"
 	"net/http"
+	"time"
+
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -109,6 +113,88 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 				},
 			},
 			ExpectedKind: v1.ErrorKindExpression,
+		},
+		{
+			// #915: the failure neither driver had a word for. A step cut off
+			// by its own `timeout:` reached every operator surface as
+			// `Internal` — "a defect in Flowstate itself" — because nothing
+			// built a [v1.TaskError] for a bound the *engine* imposed and
+			// [v1.ClassifyError] fell through to its default, exactly as the
+			// two expression cases above did before #899.
+			//
+			// The two drivers arrive at it down entirely different roads, which
+			// is why this belongs here rather than in either driver's package.
+			// Locally the deadline is `runStepAttempt`'s own
+			// [context.WithTimeout] and [ErrorKindTimeoutTaskDef] returns the
+			// bare `context.DeadlineExceeded` it sees. Durably the same budget
+			// is the activity's StartToClose, and whichever of the two ends the
+			// attempt first — Temporal's timer raising a *temporal.TimeoutError
+			// at the workflow, or the task's own return crossing the activity
+			// boundary as an ApplicationError — has to produce the same word,
+			// because which one wins is a race no author can see and neither
+			// answer is more true than the other.
+			Name: "a step cut off by its own timeout: is Timeout",
+			Workflow: &v1.Workflow{
+				Name: "error-kind-step-timeout",
+				Steps: []*v1.Node{{
+					Id:   "slow",
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: ErrorKindTimeoutTaskName}},
+					Policy: &v1.StepPolicy{
+						Timeout: durationpb.New(ErrorKindTimeoutBudget),
+
+						// One attempt, so the case costs one budget rather
+						// than five plus the backoff between them. Not a claim
+						// about retryability: [v1.ErrorKindTimeout] is
+						// retryable on both drivers, and a case that let the
+						// default five run would assert the same kind five
+						// times as slowly.
+						Retry: &v1.RetryPolicy{MaxAttempts: 1},
+					},
+				}},
+			},
+			ExpectedKind: v1.ErrorKindTimeout,
+		},
+	}
+}
+
+// ErrorKindTimeoutTaskName is the name [ErrorKindTimeoutTaskDef] registers
+// under, for the timeout case above. Both drivers' callers of
+// [ErrorKindCases] register it before running the corpus.
+const ErrorKindTimeoutTaskName = "test.error_kind_timeout"
+
+// ErrorKindTimeoutBudget is the `timeout:` the timeout case declares.
+//
+// Short enough that a driver spends it rather than being slowed by it, and
+// long enough to be reached by dispatch on a loaded machine rather than
+// racing the work of getting the task started. It is a whole step budget on
+// both drivers, so nothing else in the run waits on it.
+const ErrorKindTimeoutBudget = 250 * time.Millisecond
+
+// ErrorKindTimeoutTaskDef is a [v1.TaskDef] that runs until its context ends
+// and then reports that, unclassified.
+//
+// Unclassified is the point, and it is what makes this a test of the *engine's*
+// classification rather than of a task's. A task that observes its own deadline
+// and builds a [v1.TaskError] has said something [v1.ClassifyError] keeps ahead
+// of anything it would infer — the http task does exactly that — so a fixture
+// that classified itself would assert its own opinion travels, which was never
+// in doubt. Returning the bare `context.DeadlineExceeded` is what a task
+// written without any thought about classification returns, and that is the
+// case #915 is about.
+//
+// It honours the context rather than blocking outright, because a task that
+// ignored it would hang the local driver forever: only the durable driver can
+// end an attempt whose task never looks. That asymmetry is real and is
+// [v1.DefaultStartToCloseTimeout]'s own subject; it is not this case's, and a
+// corpus entry that could hang one driver is not a corpus entry.
+func ErrorKindTimeoutTaskDef() v1.TaskDef {
+	return v1.TaskDef{
+		Name:    ErrorKindTimeoutTaskName,
+		Summary: "test fixture that runs until its step's timeout: ends it",
+		Fn: func(ctx context.Context, _ map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
+			<-ctx.Done()
+
+			return nil, ctx.Err()
 		},
 	}
 }

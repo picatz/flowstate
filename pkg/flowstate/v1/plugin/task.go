@@ -706,7 +706,23 @@ func taskError(task, plugin string, err error, scrubber *secrets.Scrubber) error
 func kindForCode(err error) flowstatev1.ErrorKind {
 	// A cancelled or expired caller context is not the plugin's failure, and
 	// classifying it as one would blame the plugin in the step's error.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	//
+	// The two are told apart because since #1147 the deadline on a plugin call
+	// *is* the step's `timeout:` — so an expired one is the engine's own bound
+	// being reached, which is exactly [flowstatev1.ErrorKindTimeout] and is what
+	// the drivers answer when they end the attempt themselves rather than
+	// letting the call return (#915). Reporting Upstream for it made one fact
+	// have two names depending on which side of a race won: locally the plugin
+	// call returns first and this classifies it, durably Temporal's
+	// StartToClose fires and engine.recordedStepKind classifies it, and the two
+	// drivers must not disagree about a value that travels on
+	// RunResponse.Error.kind. A cancellation is not a timeout and keeps its own
+	// answer; both remain retryable, so this changes what an operator is told
+	// and nothing about what is attempted.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return flowstatev1.ErrorKindTimeout
+	}
+	if errors.Is(err, context.Canceled) {
 		return flowstatev1.ErrorKindUpstream
 	}
 

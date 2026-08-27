@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -57,6 +58,29 @@ const (
 	// worth retrying.
 	ErrorKindUpstream ErrorKind = "Upstream"
 
+	// ErrorKindTimeout indicates the substrate ended the attempt because a time
+	// budget expired — a step's `timeout:`, the default that stands in for one
+	// when a step declares none, or the schedule-to-close budget covering every
+	// attempt at a step together.
+	//
+	// Its own kind because neither neighbour is true of it. [ErrorKindUpstream]
+	// says a dependency failed, and here nothing answered at all;
+	// [ErrorKindInternal] says Flowstate is defective, and here a bound the
+	// deployment set was reached, which is the bound working. Reporting the
+	// latter was the whole of #915: an operator triaging a slow dependency was
+	// told to suspect the engine, and a task classifying its own timeout
+	// (`kindForCode` in the plugin host) said something else again for the same
+	// fact.
+	//
+	// Retryable, which is the answer both drivers already gave it and the
+	// reason this is a relabelling rather than a change of behaviour. Temporal
+	// retries an activity that exceeded its StartToClose under the step's retry
+	// policy whatever a kind says, and [ErrorKind.Retryable] is what the local
+	// driver's retry loop consults — so a timeout that stopped being retryable
+	// here would go on being retried in production and stop being retried in
+	// the rehearsal that exists to predict it.
+	ErrorKindTimeout ErrorKind = "Timeout"
+
 	// ErrorKindInternal indicates a defect in Flowstate itself. These are
 	// retried, on the assumption that a genuine defect is better surfaced by
 	// exhausting attempts than by being silently swallowed.
@@ -72,7 +96,7 @@ const (
 // surfacing a failure that might have resolved on its own.
 func (k ErrorKind) Retryable() bool {
 	switch k {
-	case ErrorKindUpstream, ErrorKindInternal:
+	case ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal:
 		return true
 	default:
 		return false
@@ -84,7 +108,7 @@ func (k ErrorKind) String() string { return string(k) }
 
 // RetryableErrorKinds returns the kinds that are worth retrying.
 func RetryableErrorKinds() []ErrorKind {
-	return []ErrorKind{ErrorKindUpstream, ErrorKindInternal}
+	return []ErrorKind{ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal}
 }
 
 // PermanentErrorKinds returns the kinds that cannot succeed on a retry.
@@ -201,7 +225,7 @@ func ParseErrorKind(s string) (ErrorKind, bool) {
 	switch ErrorKind(s) {
 	case ErrorKindInvalidInput, ErrorKindUnknownTask, ErrorKindExpression,
 		ErrorKindPolicyDenied, ErrorKindLimitExceeded, ErrorKindUpstreamUnknown,
-		ErrorKindUpstream, ErrorKindInternal:
+		ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal:
 		return ErrorKind(s), true
 	default:
 		return "", false
@@ -226,6 +250,18 @@ func NewTaskError(task string, kind ErrorKind, err error) *TaskError {
 // to keep. An [ExpressionError] reaching here unwrapped is an expression the
 // *engine* evaluated — a step's input, a `vars:`, an `if:`, a loop's `items:` —
 // which belongs to no task at all.
+//
+// [context.DeadlineExceeded] is checked last of the three, and that position is
+// the claim: it is how the *local* driver's step bound arrives (runStepAttempt's
+// per-attempt [context.WithTimeout], and runStepWithPolicy's schedule-to-close
+// budget above it), so a step cut off by its own `timeout:` is
+// [ErrorKindTimeout] rather than the Internal it fell through to (#915). Behind
+// a [TaskError] on purpose: a task that observed the deadline itself and
+// classified the result has said something this cannot improve on, and the same
+// precedence the [ExpressionError] paragraph above describes applies unchanged.
+// The durable driver's half of this is engine.recordedStepKind, which reads
+// Temporal's own *TimeoutError — the shape this package cannot import and must
+// not learn about.
 func ClassifyError(err error) ErrorKind {
 	if err == nil {
 		return ""
@@ -235,6 +271,9 @@ func ClassifyError(err error) ErrorKind {
 	}
 	if _, ok := errors.AsType[*ExpressionError](err); ok {
 		return ErrorKindExpression
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrorKindTimeout
 	}
 	return ErrorKindInternal
 }
