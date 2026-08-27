@@ -348,6 +348,52 @@ func TestAMemoryLimitIsAlsoInheritedFromEveryAncestor(t *testing.T) {
 	})
 }
 
+// TestPageCacheIsNotMemoryALaneWaitsFor is [memoryFree]'s own distinction —
+// MemAvailable rather than MemFree — asserted one level down, where it was
+// missed until a machine demonstrated it.
+//
+// Both cgroup v1's memory.usage_in_bytes and v2's memory.current count file
+// cache as used. So the reading is worst exactly after a build, which is what
+// fills the cache and also what makes the next lane cheapest: measured here, a
+// leaf limited to 13.3 GiB reported 9.7 GiB used while holding 6 MiB of RSS
+// and 9.3 GiB of cache, and the fleet answered "dispatch nothing — memory is
+// the bound" on an idle box, advising a wait for lanes that did not exist.
+func TestPageCacheIsNotMemoryALaneWaitsFor(t *testing.T) {
+	// 8 GiB limit, 6 GiB "used", of which 5 GiB is evictable file cache. A
+	// lane's real headroom is 7 GiB, not 2.
+	dirs := cgroupPairLayout(t, []string{"8589934592 6442450944 5368709120"})
+
+	free, found := tightestMemoryFree(dirs, "memory.max", "memory.current")
+
+	require.True(t, found)
+	assert.Equal(t, uint64(7*gib), free,
+		"page cache was counted as memory a lane has to wait for, which is what held the fleet "+
+			"at zero on a box with a hot build cache and nothing running")
+
+	t.Run("a cgroup with no stat file is read as holding all of it", func(t *testing.T) {
+		// The conservative direction, and the one a missing file must take: an
+		// unreadable breakdown is not evidence that the usage is reclaimable.
+		free, found := tightestMemoryFree(
+			cgroupPairLayout(t, []string{"8589934592 6442450944"}), "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free)
+	})
+
+	t.Run("more cache than usage cannot invent headroom", func(t *testing.T) {
+		// The two files are read separately and a cgroup is a moving target,
+		// so the subtraction can be handed a larger cache than usage. That must
+		// clamp rather than wrap: unsigned arithmetic would turn 1 GiB used
+		// into sixteen exabytes free, which wins every minimum it is folded
+		// into and hands out lanes against memory that is not there.
+		free, found := tightestMemoryFree(
+			cgroupPairLayout(t, []string{"8589934592 1073741824 4294967296"}), "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(8*gib), free, "the whole limit is free, and not one byte more")
+	})
+}
+
 // TestTheCgroupChainStaysInsideItsMount pins the walk's two ends: it starts at
 // the process's own cgroup and stops at the mount root, and a relative path
 // carrying `..` cannot take it somewhere that is not a cgroup at all.
@@ -394,9 +440,15 @@ func cgroupPairLayout(t *testing.T, levels []string) []string {
 	for _, pair := range levels {
 		dir = filepath.Join(dir, "level")
 		require.NoError(t, os.MkdirAll(dir, 0o755))
-		if fields := strings.Fields(pair); len(fields) == 2 {
+		// A third field is the level's reclaimable page cache, written as the
+		// `memory.stat` a real cgroup carries beside the pair.
+		if fields := strings.Fields(pair); len(fields) >= 2 {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.max"), []byte(fields[0]+"\n"), 0o644))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte(fields[1]+"\n"), 0o644))
+			if len(fields) == 3 {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.stat"),
+					[]byte("rss 4096\ninactive_file "+fields[2]+"\ntotal_inactive_file "+fields[2]+"\n"), 0o644))
+			}
 		}
 		dirs = append([]string{dir}, dirs...)
 	}

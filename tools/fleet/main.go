@@ -676,13 +676,66 @@ func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, boo
 		if err != nil || used < 0 {
 			continue
 		}
-		free := uint64(limit) - min(uint64(limit), uint64(used))
+
+		// Page cache is not memory a lane has to wait for.
+		held := uint64(used) - min(uint64(used), reclaimableFile(dir))
+
+		free := uint64(limit) - min(uint64(limit), held)
 		if !found || free < tightest {
 			tightest, found = free, true
 		}
 	}
 
 	return tightest, found
+}
+
+// reclaimableFile is the part of a cgroup's recorded usage that is file-backed
+// page cache the kernel evicts before it kills anything.
+//
+// This is [memoryFree]'s own distinction — MemAvailable rather than MemFree —
+// one level down, where it was missed. Both cgroup v1's memory.usage_in_bytes
+// and v2's memory.current count page cache as used, so a container whose Go
+// build cache is hot reports almost no headroom while holding almost no
+// anonymous memory at all. Measured on the machine that found this: a leaf
+// cgroup limited to 13.3 GiB reported 9.7 GiB used and held 6 MiB of RSS
+// against 9.3 GiB of cache, so the fleet was told memory was the bound and
+// dispatched nothing — on a box with a hot cache and nothing running.
+//
+// That is the worst direction for this tool to be wrong in. A build is what
+// fills the cache, so the reading is most wrong exactly after the work that
+// makes the next lane cheapest, and the advice it prints ("wait for the
+// running lanes to finish") names a cause that is not there.
+//
+// Only *inactive* file pages count. Active ones are reclaimable too, but
+// reclaiming them costs somebody's working set, and a budget for deciding
+// whether to add load should err toward the tighter number. Anything
+// unreadable counts as zero, which is the same direction.
+func reclaimableFile(dir string) uint64 {
+	raw, err := os.ReadFile(filepath.Join(dir, "memory.stat"))
+	if err != nil {
+		return 0
+	}
+
+	// v1 reports the hierarchy under `total_inactive_file` and this cgroup
+	// alone under `inactive_file`; v2 has only the latter and is already
+	// recursive. The totals are what pair with a hierarchical usage, so they
+	// are preferred where they exist.
+	byKey := map[string]uint64{}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		key, value, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		if n, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64); err == nil {
+			byKey[key] = n
+		}
+	}
+
+	if total, ok := byKey["total_inactive_file"]; ok {
+		return total
+	}
+
+	return byKey["inactive_file"]
 }
 
 // unlimitedMemory is the threshold above which a memory limit is a way of
