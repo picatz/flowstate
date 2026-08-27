@@ -66,31 +66,18 @@ var exampleCorpusGlobs = []string{
 // its own issue — not something to jam into an unrelated example so that a list
 // goes quiet.
 //
-// #969 originally tracked fifteen of these. Nine now have an example —
+// #969 tracked fifteen of these. All fifteen now have an example —
 // `input.values`, `input.type.TYPE_ENUM`, `manual.denied`, `schedule.every`,
 // `schedule.start_at`, `schedule.end_at`, `signal_policy_rule.subject`,
-// `signal_policy_rule.namespace`, and `schedule.overlap.OVERLAP_BUFFER_ONE` — so
-// their entries are gone; the rest of #969 is the six still below.
-var constructsWithoutAnExample = map[string]string{
-	// Surfaced once the derivation stopped skipping proto3 `optional` fields,
-	// which protobuf models as synthetic oneofs. `input.must` and
-	// `input.min_items` turned out to be demonstrated already; these two are not.
-	// Adding a `max_len:` to an existing input that already satisfies it would
-	// make this list go quiet without teaching a reader anything — a constraint
-	// is worth showing where it *refuses* something, which is a deliberate
-	// example rather than a drive-by line.
-	"input.max_len": "a string-length bound on an input; no example declares one, and one worth reading shows it refusing a value — tracked in #969",
-	"output.must":   "a constraint on a declared output; the corpus constrains inputs only — tracked in #969",
-
-	// Per-*value* enum coverage, added because a key per field stays satisfied by
-	// whichever value some example happened to use, so a new policy would land
-	// unnoticed. `OVERLAP_BUFFER_ONE` is gone from this list — `schedule-interval`
-	// selects it — and the four below are what is left of the five.
-	"schedule.overlap.OVERLAP_BUFFER_ALL":      "an overlap policy no example selects; scheduled-report shows skip and schedule-interval shows buffer_one — tracked in #969",
-	"schedule.overlap.OVERLAP_CANCEL_OTHER":    "the same — tracked in #969",
-	"schedule.overlap.OVERLAP_TERMINATE_OTHER": "the same — tracked in #969",
-	"schedule.overlap.OVERLAP_ALLOW_ALL":       "the same — tracked in #969",
-}
+// `signal_policy_rule.namespace`, `schedule.overlap.OVERLAP_BUFFER_ONE`,
+// `input.max_len` (`alert-title-bound`), `output.must` (`utilization-guard`),
+// and the four remaining overlap policies — `OVERLAP_BUFFER_ALL`,
+// `OVERLAP_CANCEL_OTHER`, `OVERLAP_TERMINATE_OTHER`, `OVERLAP_ALLOW_ALL`, one
+// real schedule per policy under `schedule-overlap-policies/` — so #969 is
+// closed and this map is empty. It stays declared, empty, for the same reason
+// [examplesWithoutTestFile] does: a future gap in this derivation is a decision
+// written down here, not a silently reappearing map.
+var constructsWithoutAnExample = map[string]string{}
 
 // The required set is derived from the schema three ways: the two `kind` oneofs
 // (a node kind, a wait kind), the task registry, and — the part #901's review

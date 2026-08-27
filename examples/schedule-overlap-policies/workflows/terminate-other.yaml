@@ -1,0 +1,33 @@
+# `terminate_other` — see `../workflow.yaml`'s decision guide for where this
+# sits among the other five policies, and for the contrast with
+# `cancel_other` this file exists to draw.
+#
+# `push` broadcasts the current feature-flag plan to every region every
+# minute. A previous firing still running when a fresher plan is due is
+# broadcasting a plan that is already superseded — the same stale-run problem
+# `cancel_other` solves next door — but here the run's own cleanup is not
+# safe to execute: a compensation that "undoes" a partially-applied stale
+# plan is itself one more write of stale data, made worse by racing against
+# the fresher firing that is about to overwrite everything correctly anyway.
+# The old run must stop *before* it takes any more action on its own way out,
+# which is what `cancel_other`'s graceful stop does not guarantee and
+# `terminate_other` does.
+edition: v2026.3
+name: schedule-overlap-terminate-other
+inputs:
+  plan:
+    type: string
+    default: default-plan
+    description: which feature-flag plan this firing broadcasts
+triggers:
+  schedule:
+    every: 1m
+    overlap: terminate_other
+steps:
+  - id: push
+    log:
+      message: ${"broadcasting flag plan " + inputs.plan}
+outputs:
+  plan:
+    value: ${inputs.plan}
+    description: the plan this run broadcast
