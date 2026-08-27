@@ -12,10 +12,12 @@
 #
 # What a stub here may *not* do is answer with a shape the real task could not
 # produce. The workflow's budget is one attempt because `codex.exec` fails closed
-# on a workspace that starts dirty and nothing can reset one between turns (see
-# the workflow header), so these cases script exactly one turn per run — a case
-# that stubbed a second attempt's patch would be asserting behavior the installed
-# plugin cannot deliver, which is the failure this file exists not to hide.
+# on a workspace that starts dirty, and this loop's own `base` can advance past
+# what working_context has checked out with nothing here to bring it forward to
+# match (see the workflow header) — so these cases script exactly one turn per
+# run, a case that stubbed a second attempt's patch would be asserting behavior
+# the installed plugin cannot deliver, which is the failure this file exists not
+# to hide.
 #
 # The scripted forge is still keyed on the loop's carried state — `prior.base`
 # and `prior.n`, which a stub's `where:` and `returns:` can both read, because

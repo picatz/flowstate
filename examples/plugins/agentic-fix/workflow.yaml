@@ -41,15 +41,21 @@
 # workspace — nothing here reverts them, and `git.commit_push` works on its own
 # in-memory clone rather than on that directory — so attempt two would start
 # dirty, receive an empty `patch`, and be refused by `git.commit_push`, which
-# requires files or a patch. There is no input on `codex.exec` that resets or
-# re-checks-out a working context, so a second attempt is not expressible today.
+# requires files or a patch. #967 added `reset_working_context` to `codex.exec`,
+# which discards a previous turn's own edits before the *next* turn's baseline
+# is read — but only back to the commit working_context already has checked
+# out, never to a different one. This loop's own `base` advances to each
+# successful push's sha (see `update.base` below), and nothing here brings
+# working_context forward to match it, so a second attempt is still not fully
+# expressible: see the README's "What is still missing" for what closing that
+# still needs.
 #
 # What is kept is the loop and its carried state — the failure text and the commit
 # to compute the next patch against — because that is the shape that generalizes
-# the day a workspace-reset capability exists, and because with a budget of one it
-# still does real work: it is what makes "the attempt did not fix it" an
-# *exhaustion* the file turns into a human handoff rather than a crash. The number
-# is the only thing that has to change when the gap closes.
+# the day working_context can be advanced to a named commit, and because with a
+# budget of one it still does real work: it is what makes "the attempt did not
+# fix it" an *exhaustion* the file turns into a human handoff rather than a
+# crash. The number is the only thing that has to change when the gap closes.
 #
 # This directory sits under `examples/plugins/` because it names tasks two
 # plugins provide, and a `flow` that has not loaded them is *supposed* to refuse
@@ -194,11 +200,13 @@ steps:
       until: ${has(steps.verify) && steps.verify.passed}
       # One try. A ceiling rather than a hope — `until:` is a promise this loop
       # cannot keep on its own, since nothing here can make a model eventually
-      # succeed — and one rather than five because a second attempt cannot work
-      # today: `codex.exec` fails closed on a workspace that starts dirty, and
-      # attempt one's own edits are still sitting in `working_context` with no
-      # input on that task to reset it. See the header for the full account.
-      # Raising this number is the entire change the day that gap closes.
+      # succeed — and one rather than five because a second attempt still is
+      # not fully expressible: `codex.exec`'s `reset_working_context` (#967)
+      # can clean a dirty workspace, but this loop's own `base` advances past
+      # what working_context has checked out, and nothing here can bring
+      # working_context forward to a different commit. See the header for the
+      # full account. Raising this number is the entire change the day that
+      # gap closes.
       max_iterations: 1
       steps:
         - id: propose

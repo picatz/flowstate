@@ -73,6 +73,14 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, err
 	}
 
+	// See codex.proto's own doc comment on reset_working_context: requested
+	// without a working_context to reset is an authoring mistake, refused
+	// here rather than silently ignored.
+	resetRequested := in.GetResetWorkingContext()
+	if resetRequested && workDir == "" {
+		return nil, sdk.InvalidInput("reset_working_context requires working_context: there is nothing to reset")
+	}
+
 	// A writable run must say where it may write. Without a working_context
 	// there is no --cd and no cmd.Dir, so the child would inherit this plugin
 	// process's own current directory - which the host sets to the private
@@ -144,11 +152,32 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	// computePatch's doc comment.
 	var gitBin string
 	var hardened *gitHardening
-	if mutating {
+	if mutating || resetRequested {
 		var cleanup func()
-		gitBin, hardened, cleanup, _ = prepareHardenedGit(runCtx, workDir)
+		var ok bool
+		gitBin, hardened, cleanup, ok = prepareHardenedGit(runCtx, workDir)
 		if cleanup != nil {
 			defer cleanup()
+		}
+		// resetRequested is the one caller of prepareHardenedGit that must
+		// not treat !ok as "best effort, carry on" - an author who asked for
+		// a reset and did not get one has to be told, not left to discover
+		// it from a baseline that observeWorkspace then reports dirty with
+		// no explanation. See resetWorkingContext's own doc comment.
+		if resetRequested && !ok {
+			return nil, sdk.Failed(
+				"reset_working_context was requested but cannot be honored: %s is not configured, "+
+					"or working_context does not resolve to a plain git checkout", gitBinaryEnv)
+		}
+	}
+
+	// Run before the baseline is read, deliberately: this is what lets a
+	// retried agentic turn's baseline come back clean instead of dirty from
+	// the previous turn's own edits. See resetWorkingContext's own doc
+	// comment and codex.proto's on ExecInputs.reset_working_context.
+	if resetRequested {
+		if err := resetWorkingContext(runCtx, gitBin, hardened, workDir); err != nil {
+			return nil, sdk.Failed("reset_working_context: %v", err)
 		}
 	}
 

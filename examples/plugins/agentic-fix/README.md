@@ -164,30 +164,33 @@ $ flow signal <workflow-id> human-review --data '{"taken_over": true}'
 
 ## What is still missing
 
-**A way to reset a working context between turns**, and it is what caps the
-budget at one rather than five.
+**A way to advance a working context to a specific commit between turns**, and
+it is what still caps the budget at one rather than five.
 
 `codex.exec` produces its `patch` by diffing `working_context` against a baseline
 it reads before the turn, and it fails closed — no patch at all — when that
 baseline is already dirty (`plugins/codex/diff.go`, `computePatch`:
-`!baseline.observed || baseline.dirty`). Attempt one leaves its own edits in the
-workspace. Nothing in this workflow can revert them: `git.commit_push` builds its
-commit in an in-memory clone and never touches that directory, and `ExecInputs`
-has no field that re-checks-out, cleans, or otherwise resets a working context.
-So attempt two would start dirty, get an empty `patch`, and be refused by
-`git.commit_push`, which requires files or a patch.
+`!baseline.observed || baseline.dirty`). #967 closed half of this: `ExecInputs`
+now has `reset_working_context`, which discards a previous turn's own edits
+before the next turn's baseline is read, so a loop can retry from a clean tree
+instead of getting one attempt only. What it does *not* do is check working_context
+out at a different commit — only clean the one it already has. This workflow's
+`update.base` advances to each successful push's own sha
+(`has(steps.apply) ? steps.apply.sha : prior.base`), and nothing here brings
+`working_context` forward to match: `git.commit_push` still builds its commit
+in an in-memory clone that never touches the directory `codex.exec` edits. So a
+second attempt whose base has moved would compute its patch against the wrong
+tree even with a clean reset.
 
-That is why this example ships one attempt and says so, rather than shipping five
-and stubbing a patch the installed plugin could never emit. What would close it
-is a way to hand a turn a clean tree at a named commit — an input on `codex.exec`,
-or a separate task that materializes a workspace — at which point the only change
+That is why this example still ships one attempt rather than raising
+`max_iterations:` on the strength of #967 alone. Closing this fully needs a way
+to hand a turn a clean tree at a *named* commit — a `base_ref`-shaped input on
+`codex.exec`, or a separate task that materializes a workspace at a sha, either
+of which is a larger change than a local git reset (it needs a fetch, and the
+network-policy questions that come with one) — at which point the only change
 here is the number in `max_iterations:`. Tracked against
 [#179](https://github.com/picatz/flowstate/issues/179)'s fourth showcase file,
 whose "five tries" sketch needs it.
-
-The related, smaller gap: even with a reset, each turn's tree would have to be the
-commit that attempt is computed against (`base`), not the branch tip, so the
-refresh has to take a sha.
 
 ## Why it sits here
 
