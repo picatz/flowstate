@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,6 +115,133 @@ var notACorpus = map[string]string{
 	"ExampleVariants": "a lookup by name into the variants corpus, so it answers empty for " +
 		"a name with no variants, which is legitimate; the corpus behind it is asserted " +
 		"non-empty by TestEveryExampleVariantSetHoldsVariants below",
+}
+
+// unresolvedResults names the exported functions whose result type this walk
+// cannot read, and says what each actually returns.
+//
+// A qualified type — `v1.TaskDef`, or `type Cases = other.Cases` — is an
+// [ast.SelectorExpr] naming something declared in another package, and a
+// syntactic walk cannot know whether it is a slice. Two answers were available
+// and both are worse than this one. Ignoring it omits the function silently,
+// which is precisely the failure this file exists to prevent, arriving through
+// the file that prevents it (Codex, #1129). Reaching for `go/types` makes a
+// test that *parses* into one that *builds*, for a question a person can answer
+// in a line.
+//
+// So the walk refuses instead: a result it cannot read has to be written down
+// here, with what it is. That turns "the checker quietly could not tell" into
+// "somebody looked", which is the same trade `notACorpus` makes one table up —
+// and it means every exported result in this package is now either resolved or
+// named, rather than resolved or missed.
+var unresolvedResults = map[string]string{
+	"PluginIdentityTaskDef":   "a v1.TaskDef, which is a struct rather than a slice",
+	"PluginTaskInputsTaskDef": "a v1.TaskDef, which is a struct rather than a slice",
+}
+
+// TestEveryQualifiedResultIsAccountedFor is that refusal.
+//
+// Nothing here decides whether such a function is a corpus — the entry says
+// what it returns and that is the whole of it. A qualified type that *is* a
+// slice would be listed as one and then also belong in `corpusSizes`, and the
+// coverage test above would say so.
+func TestEveryQualifiedResultIsAccountedFor(t *testing.T) {
+	found := unresolvableResultFuncs(t)
+
+	for _, name := range unaccountedFor(found, unresolvedResults) {
+		t.Errorf("%s returns a type this walk cannot read — it is qualified, so whether it is "+
+			"a slice is decided in another package. Add it to unresolvedResults saying what "+
+			"it returns, and to corpusSizes as well if it is a corpus", name)
+	}
+
+	for _, name := range staleAccounts(found, unresolvedResults) {
+		t.Errorf("unresolvedResults lists %s, whose result this walk can now read (or which no "+
+			"longer exists); delete the entry", name)
+	}
+
+	for name, what := range unresolvedResults {
+		if strings.TrimSpace(what) == "" {
+			t.Errorf("unresolvedResults[%q] does not say what it returns; that is the record", name)
+		}
+	}
+}
+
+// unaccountedFor are the names the walk found and the table does not list.
+//
+// Split out so the demand itself is testable. Every qualified result in this
+// package is listed today, so a test that only ran it against the tree would
+// pass whether the demand worked or not — which the mutation said, and is this
+// file's own subject a third time.
+func unaccountedFor(found []string, listed map[string]string) []string {
+	var missing []string
+	for _, name := range found {
+		if _, ok := listed[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+
+	return missing
+}
+
+// staleAccounts are the names the table lists and the walk did not find.
+func staleAccounts(found []string, listed map[string]string) []string {
+	real := map[string]bool{}
+	for _, name := range found {
+		real[name] = true
+	}
+
+	var stale []string
+	for name := range listed {
+		if !real[name] {
+			stale = append(stale, name)
+		}
+	}
+	sort.Strings(stale)
+
+	return stale
+}
+
+// TestTheDemandForAnAccountWorksInBothDirections exercises it, since the tree
+// itself cannot.
+func TestTheDemandForAnAccountWorksInBothDirections(t *testing.T) {
+	listed := map[string]string{"Known": "a struct"}
+
+	assert.Equal(t, []string{"Unlisted"},
+		unaccountedFor([]string{"Known", "Unlisted"}, listed),
+		"a qualified result nobody accounted for was not demanded")
+
+	assert.Empty(t, unaccountedFor([]string{"Known"}, listed),
+		"an accounted-for result was demanded anyway")
+
+	assert.Equal(t, []string{"Known"},
+		staleAccounts([]string{"Something"}, listed),
+		"an entry naming a function the walk no longer finds was not reported")
+
+	assert.Empty(t, staleAccounts([]string{"Known"}, listed),
+		"a live entry was reported stale")
+}
+
+// unresolvableResultFuncs are the exported functions returning a single
+// qualified type.
+func unresolvableResultFuncs(t *testing.T) []string {
+	t.Helper()
+
+	var names []string
+	for _, fd := range exportedDecls(t, token.NewFileSet()) {
+		if fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
+			continue
+		}
+		// `pkg.Type` only. A pointer to one is a pointer and so not a slice,
+		// and `[]pkg.Type` is an array node this walk reads perfectly well —
+		// the unreadable case is the bare qualified name.
+		if _, ok := fd.Type.Results.List[0].Type.(*ast.SelectorExpr); ok {
+			names = append(names, fd.Name.Name)
+		}
+	}
+
+	sort.Strings(names)
+
+	return names
 }
 
 // TestEveryCorpusHoldsCases is the claim.
