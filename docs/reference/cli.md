@@ -1783,6 +1783,10 @@ A run that continued as new has an account per segment. `nextRunId` and `previou
 
 `truncated` says the account is not the whole of that segment — resume with --run-id and --after-event-id set to the last row's event id, which the command prints for you. Both, because event ids restart in each segment: a cursor means nothing until the segment it counts within is named. Raising --max-entries is not the way past it either: the ceiling is a ceiling, and one segment can hold several times the largest answer this returns.
 
+One fact is missing from every account by construction, and this says so on stderr when it applies. A step waiting out a retry backoff has not failed anywhere history can see: Temporal records that failure on the next attempt's start, so the most recent one has no row until that attempt begins, and reading further with --after-event-id will not find it. `flow get` reports it, and the note names the command to run.
+
+That note is a second read, taken after the rows, and it says so: it is the run's present rather than the account's last line. A step can stop retrying between the two, in which case no note is printed for a gap the rows really had.
+
 Examples:
 
 ```sh
