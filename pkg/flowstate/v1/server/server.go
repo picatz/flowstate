@@ -167,7 +167,7 @@ func WithNamespacePool(pool *temporalclient.Pool) Option {
 // both to values with nothing to do with each other — see [WithNamespace] for the
 // documentation bug that made this distinction expensive once already.
 //
-// It is also not a fourth spelling of "which namespace". `cmd/flow` already
+// It is also not a new spelling of "which namespace". `cmd/flow` already
 // computes exactly this value, as `cfg.Options().Namespace`, and already passes it
 // into this package as an argument — to [EnsureSearchAttributesRegistered], from
 // `cmd/flow/main.go` and `cmd/flow/serverdev.go`. This gives that

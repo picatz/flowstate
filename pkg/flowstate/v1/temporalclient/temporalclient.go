@@ -190,11 +190,12 @@ func Dial(ctx context.Context, c Config) (client.Client, error) {
 //
 // The resolved value is read back from the options the returned client was
 // dialed with rather than recomputed, because a second resolution is a second
-// answer to a question this one already answered — and the two would eventually
-// disagree, which is invariant 1 arriving as a new feature. Nothing but the
-// namespace is kept: client options carry credentials, and this package's rule
-// is that they are never held anywhere they can be reached by a formatter (see
-// [Describe]).
+// answer to a question this one already answered, and two computations of one
+// value eventually disagree. Recomputing would also read the environment twice,
+// so a TEMPORAL_NAMESPACE that changed between the two calls would give a pool a
+// namespace its client is not dialed for. Nothing but the namespace is kept:
+// client options carry credentials, and this package's rule is that they are
+// never held anywhere a formatter can reach them (see [Describe]).
 func dial(ctx context.Context, c Config) (client.Client, client.Options, error) {
 	opts, err := c.Options()
 	if err != nil {
