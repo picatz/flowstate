@@ -1686,6 +1686,8 @@ A run that continued as new has an account per segment. `nextRunId` and `previou
 
 One fact is missing from every account by construction, and this says so on stderr when it applies. A step waiting out a retry backoff has not failed anywhere history can see: Temporal records that failure on the next attempt's start, so the most recent one has no row until that attempt begins, and reading further with --after-event-id will not find it. `flow get` reports it, and the note names the command to run.
 
+That note is a second read, taken after the rows, and it says so: it is the run's present rather than the account's last line. A step can stop retrying between the two, in which case no note is printed for a gap the rows really had.
+
 Examples:
 
 ```sh

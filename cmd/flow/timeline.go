@@ -51,7 +51,10 @@ func newTimelineCommand() *cobra.Command {
 			"anywhere history can see: Temporal records that failure on the next attempt's " +
 			"start, so the most recent one has no row until that attempt begins, and reading " +
 			"further with --after-event-id will not find it. `flow get` reports it, and the " +
-			"note names the command to run.",
+			"note names the command to run.\n\n" +
+			"That note is a second read, taken after the rows, and it says so: it is the run's " +
+			"present rather than the account's last line. A step can stop retrying between the " +
+			"two, in which case no note is printed for a gap the rows really had.",
 		Args: cobra.ExactArgs(1),
 		RunE: runTimeline,
 		Example: `# What did this run actually do?
@@ -188,6 +191,35 @@ type timelineRunReader interface {
 // ending, or resumed past it, pays for a call that answers "nothing pending".
 // That is the direction to be wrong in. Overrunning the true scope costs a
 // round trip; underrunning it hides the one fact this footer exists to report.
+//
+// Two reads, two moments, and the footer says which one it came from rather
+// than pretending otherwise. GetTimeline read a history and this reads the
+// run's present afterwards, so nothing here continues the rows above: a step
+// can finish its retry between the two calls, in which case no footer is
+// printed for a gap the account really had, and a step can begin retrying after
+// them, in which case the footer describes something no row above mentions
+// (Codex, #1142).
+//
+// The order is chosen rather than suffered, and it is the half of this that is
+// fixable here. Asking first and rendering afterwards would make the footer
+// *older* than the rows, so it could contradict a completion the reader can see
+// three lines up — a sentence about a step the account already shows finishing.
+// Asking second means the footer is never staler than the account, only
+// fresher, and [retryingStepsFooter] leads with where its answer came from so
+// that "fresher" reads as a second observation rather than as the account's
+// last line.
+//
+// Which residual is shipped, said plainly, because they are not equally bad. A
+// missing footer costs a reader a hint about a state that has since resolved,
+// and the next `flow timeline` shows the whole story. A present-tense sentence
+// that reads as part of the account would be a claim about the run that nothing
+// synchronised. The first is cheap and the second is not, so the wording buys
+// the first.
+//
+// The sound fix is one server-side snapshot — the retry fact carried in the
+// timeline response itself — which is a schema change with both drivers to
+// consider and belongs in its own change, in the same read path #1135 is
+// already deciding the shape of.
 func noteRetryingSteps(
 	ctx context.Context,
 	surface *ui.UI,
@@ -254,6 +286,14 @@ func timelineHoldsTheSegmentsEnding(msg *v1.GetTimelineResponse) bool {
 
 // retryingStepsFooter is the sentence, or the empty string when there is
 // nothing to say.
+//
+// It opens by naming where its answer came from, and that clause is load
+// bearing rather than throat clearing. This is a second read taken after the
+// rows above, so a sentence that opened with the claim would be asserting a
+// synchronisation between the two that does not exist — see [noteRetryingSteps]
+// for the race and for which half of it is shipped. Said this way, a retry that
+// began after the account was read is a later observation honestly labelled,
+// rather than the account's last line contradicting itself.
 //
 // Never a step name, and that is a refusal rather than an omission. A pending
 // activity is deliberately not named by step in the schema: Temporal
@@ -343,9 +383,19 @@ func retryingStepsFooter(workflowID, runID string, msg *v1.GetResponse, now time
 	// its own here until the next attempt starts" is what tells a reader who
 	// has just been offered --after-event-id that continuing the account will
 	// not produce it either.
-	return head + fmt.Sprintf("; a failed attempt has no row of its own here until the "+
-		"next one starts, so `%s` is what reports it", command)
+	return retryNoteProvenance + head +
+		fmt.Sprintf("; a failed attempt has no row of its own here until the "+
+			"next one starts, so `%s` is what reports it", command)
 }
+
+// retryNoteProvenance opens the footer with the moment its answer belongs to.
+//
+// "the run's present" is the vocabulary the rest of this CLI already uses for
+// what `flow get` answers, and it is what the note about a failed check next
+// door says too. "asked after the rows above" is the part that refuses a claim
+// nothing here can make: these are two reads at two moments, and a sentence
+// that read as the account's own conclusion would be asserting they were one.
+const retryNoteProvenance = "the run's present, asked after the rows above: "
 
 // renderTimeline writes the account for a person.
 func renderTimeline(surface *ui.UI, resumed bool, msg *v1.GetTimelineResponse) {
