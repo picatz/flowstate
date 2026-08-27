@@ -173,17 +173,40 @@ func (c Config) Options() (client.Options, error) {
 // longer needed. It is long-lived by design: it maintains connections and caches,
 // so creating one per request would be wasteful and would defeat those caches.
 func Dial(ctx context.Context, c Config) (client.Client, error) {
+	cl, _, err := dial(ctx, c)
+	return cl, err
+}
+
+// dial connects to Temporal using c and reports the options it resolved.
+//
+// [Dial] is this with the options dropped, which is all any caller outside this
+// package wants. [NewPool] wants one field of them — the namespace — and the
+// namespace it wants is emphatically not c.Namespace. That field is an
+// *override*: [Config.Options] takes the namespace from a TOML profile or
+// TEMPORAL_NAMESPACE, lets c.Namespace displace it only when non-empty, and
+// falls back to [DefaultNamespace] when nothing named one. So c.Namespace is
+// empty on every deployment that configured a namespace the ordinary way, and a
+// pool recording it would record "" for exactly those deployments.
+//
+// The resolved value is read back from the options the returned client was
+// dialed with rather than recomputed, because a second resolution is a second
+// answer to a question this one already answered — and the two would eventually
+// disagree, which is invariant 1 arriving as a new feature. Nothing but the
+// namespace is kept: client options carry credentials, and this package's rule
+// is that they are never held anywhere they can be reached by a formatter (see
+// [Describe]).
+func dial(ctx context.Context, c Config) (client.Client, client.Options, error) {
 	opts, err := c.Options()
 	if err != nil {
-		return nil, err
+		return nil, client.Options{}, err
 	}
 
 	cl, err := client.DialContext(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to Temporal at %s (namespace %q): %w",
+		return nil, client.Options{}, fmt.Errorf("connecting to Temporal at %s (namespace %q): %w",
 			opts.HostPort, opts.Namespace, err)
 	}
-	return cl, nil
+	return cl, opts, nil
 }
 
 // Describe returns a short, human-readable summary of where a configuration

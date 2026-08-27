@@ -1129,12 +1129,24 @@ func runServer(cmd *cobra.Command, args []string) error {
 			logger.Warn("could not resolve the Temporal namespace to register search attributes on; "+
 				"`flow list --filter` still works, scanning executions rather than querying an index",
 				"error", optsErr)
-		} else if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, opts.Namespace); err != nil {
-			logger.Warn("could not register Flowstate's search attributes; "+
-				"`flow list --filter` still works, scanning executions rather than querying an index",
-				"error", err)
 		} else {
-			serverOpts = append(serverOpts, server.WithSearchAttributesRegistered())
+			// The same resolved value, told to the server as well as used here.
+			// `c` was dialed for opts.Namespace and cannot be asked which
+			// namespace that was, so the server would otherwise have no way to
+			// name the namespace it is serving out of — see
+			// [server.WithTemporalNamespace]. Recorded before the registration
+			// below rather than after it, because whether Temporal accepted a
+			// search attribute says nothing about which namespace this process
+			// is pointed at.
+			serverOpts = append(serverOpts, server.WithTemporalNamespace(opts.Namespace))
+
+			if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, opts.Namespace); err != nil {
+				logger.Warn("could not register Flowstate's search attributes; "+
+					"`flow list --filter` still works, scanning executions rather than querying an index",
+					"error", err)
+			} else {
+				serverOpts = append(serverOpts, server.WithSearchAttributesRegistered())
+			}
 		}
 	}
 

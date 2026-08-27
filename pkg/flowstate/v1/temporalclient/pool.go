@@ -84,6 +84,20 @@ type Pool struct {
 	// the deployment maps nothing.
 	fallback client.Client
 
+	// fallbackNamespace is the Temporal namespace fallback is dialed for.
+	//
+	// A [client.Client] is dialed for a namespace and can never be asked which,
+	// so the answer has to be kept at the moment the client is made. It is the
+	// value [Config.Options] *resolved*, not Config.Namespace — see [dial] for
+	// why those are different values, and why recording the wrong one would be
+	// worse than recording nothing at all.
+	//
+	// [NewPool] is the only constructor and Options always resolves a non-empty
+	// namespace, so this is never empty on a Pool anything outside this package
+	// can hold. TestNewPoolRecordsTheResolvedNamespaceNotTheOverride is what
+	// keeps that true.
+	fallbackNamespace string
+
 	// byNamespace holds one client per mapped Temporal namespace.
 	byNamespace map[string]client.Client
 
@@ -105,15 +119,19 @@ func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper, logger *sl
 		logger = slog.Default()
 	}
 
-	fallback, err := Dial(ctx, cfg)
+	// dial rather than Dial: the namespace this client is dialed for is read back
+	// from the options this very call resolved, rather than resolved a second
+	// time from cfg. See [dial].
+	fallback, opts, err := dial(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	pool := &Pool{
-		mapper:      mapper,
-		fallback:    fallback,
-		byNamespace: make(map[string]client.Client),
+		mapper:            mapper,
+		fallback:          fallback,
+		fallbackNamespace: opts.Namespace,
+		byNamespace:       make(map[string]client.Client),
 	}
 
 	if mapper == nil {
@@ -204,23 +222,32 @@ func formatTenants(tenants []string) string {
 	return strings.Join(parts, ", ")
 }
 
-// For returns the client a run belonging to the given Flowstate namespace should use.
+// resolve reports which Temporal namespace a run belonging to the given Flowstate
+// namespace executes in, and the client dialed for it.
 //
 // It fails closed: a deployment that maps namespaces but has no entry for this one
 // and no default gets an error, rather than having a tenant's runs placed wherever
 // the process happened to be pointed.
-func (p *Pool) For(namespace string) (client.Client, error) {
+//
+// [Pool.For] and [Pool.TemporalNamespaceFor] are both this answer, narrowed, and
+// they are one lookup rather than two on purpose. A deployment where the two
+// disagreed would submit a tenant's runs through one namespace and address a raw
+// request about them at another, and both calls would succeed — each is a
+// perfectly legal request against the namespace it names, so nothing anywhere
+// would say so. Deriving both from one computation makes that unrepresentable
+// instead of merely tested for.
+func (p *Pool) resolve(namespace string) (string, client.Client, error) {
 	if p.mapper == nil {
-		return p.fallback, nil
+		return p.fallbackNamespace, p.fallback, nil
 	}
 
 	mapped, ok, err := p.mapper.TemporalNamespace(namespace)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if !ok {
 		// Nothing is mapped, so the configured namespace is the answer.
-		return p.fallback, nil
+		return p.fallbackNamespace, p.fallback, nil
 	}
 
 	cl, ok := p.byNamespace[mapped]
@@ -230,11 +257,46 @@ func (p *Pool) For(namespace string) (client.Client, error) {
 		// is the cost this type exists to avoid, and a mapping that grew since
 		// startup means the process is running against configuration it never
 		// validated.
-		return nil, fmt.Errorf("no Temporal client for namespace %q (mapped to %q); "+
+		return "", nil, fmt.Errorf("no Temporal client for namespace %q (mapped to %q); "+
 			"the tenancy mapping changed after startup, so restart to pick it up",
 			namespace, mapped)
 	}
-	return cl, nil
+	return mapped, cl, nil
+}
+
+// For returns the client a run belonging to the given Flowstate namespace should use.
+//
+// It fails closed: a deployment that maps namespaces but has no entry for this one
+// and no default gets an error, rather than having a tenant's runs placed wherever
+// the process happened to be pointed.
+func (p *Pool) For(namespace string) (client.Client, error) {
+	_, cl, err := p.resolve(namespace)
+	return cl, err
+}
+
+// TemporalNamespaceFor returns the Temporal namespace a run belonging to the given
+// Flowstate namespace executes in: the namespace of the very client [Pool.For]
+// returns for the same argument.
+//
+// It exists because a [client.Client] cannot be asked. Every request the SDK sends
+// carries the namespace its client was dialed for, so a caller going through the
+// SDK never has to know it — but Temporal's raw APIs take the namespace as a
+// request field, and a caller reaching for one has nowhere else to get it. Giving
+// `GetTimeline` a request budget independent of the events it scans needs exactly
+// that (see maxTimelineScan in server/timeline.go, which names this as the
+// follow-up it was blocked on). Nothing in this repository calls it yet, and that
+// is deliberate: plumbing a namespace to where it can be read is a change that
+// misroutes a tenant's reads when it is wrong, so it lands and is reviewed on its
+// own rather than inside the change that wants it.
+//
+// It fails closed identically to [Pool.For], and by construction rather than by
+// resemblance: both are [Pool.resolve]. An accessor that answered where For
+// refuses would hand a caller another tenant's namespace to address — the breach
+// the pool exists to prevent, arriving through the door left open for reading
+// rather than for writing.
+func (p *Pool) TemporalNamespaceFor(namespace string) (string, error) {
+	name, _, err := p.resolve(namespace)
+	return name, err
 }
 
 // Namespaces returns every Temporal namespace this pool holds a client for, for
