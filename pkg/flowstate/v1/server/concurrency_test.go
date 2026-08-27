@@ -180,6 +180,13 @@ func TestConcurrencyTerminateOtherStopsTheIncumbent(t *testing.T) {
 // block tenant B from the *identical* key on the *identical* workflow — and that
 // B cannot name, join or terminate A's run by choosing an input value, which is
 // the only lever B has over the composition.
+//
+// Mutation-proved: dropping the namespace from [v1.ConcurrencyWorkflowID]'s
+// digest fails the first and third subtests — B's run collides with A's id, and
+// B's `terminate_other` stops A's run. The middle one still passes under that
+// mutation, because the tenancy memo refuses the read independently; it is here
+// because two layers refusing is the claim, and a test that only exercised the
+// composition would not notice the second one going away.
 func TestConcurrencyKeysDoNotCrossTenants(t *testing.T) {
 	t.Parallel()
 

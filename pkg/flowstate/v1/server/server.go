@@ -1384,10 +1384,20 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 			// fault. Naming the run that holds the key is not disclosure: the id is
 			// composed under this caller's own tenant, so a run they cannot address
 			// cannot be the one they collided with.
+			//
+			// The arm named is the effective one rather than the literal field: an
+			// author who wrote no `on_conflict:` still got this refusal, and telling
+			// them their file says "unset" would send them looking for a word that
+			// is not there.
+			refusing := onConflict
+			if refusing == v1.Concurrency_ON_CONFLICT_UNSPECIFIED {
+				refusing = v1.Concurrency_ON_CONFLICT_REJECT
+			}
+
 			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
 				"another run of %q already holds this workflow's concurrency key (run %s); "+
 					"`on_conflict: %s` refuses a second one until it finishes",
-				workflow.GetName(), already.RunId, v1.ConcurrencyOnConflictName(v1.Concurrency_ON_CONFLICT_REJECT)))
+				workflow.GetName(), already.RunId, v1.ConcurrencyOnConflictName(refusing)))
 		}
 
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
