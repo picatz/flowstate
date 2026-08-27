@@ -146,9 +146,38 @@ type ExecInputs struct {
 	// widen one past what deployment configuration allows). Requesting true
 	// when the operator's policy has not allowed it is refused as
 	// sdk.InvalidInput naming this field, not silently downgraded to false.
-	AllowNetwork  bool `protobuf:"varint,8,opt,name=allow_network,json=allowNetwork,proto3" json:"allow_network,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AllowNetwork bool `protobuf:"varint,8,opt,name=allow_network,json=allowNetwork,proto3" json:"allow_network,omitempty"`
+	// ResetWorkingContext discards whatever a previous run left inside
+	// working_context - both tracked and untracked changes - before this
+	// run's own baseline is read, restoring it to the commit it is already
+	// checked out at (there is no ref or sha here to name a *different*
+	// commit, only "clean").
+	//
+	// This is what closes #967: codex.exec computes patch by diffing
+	// working_context against a baseline read *before* the turn, and fails
+	// closed - no patch at all - when that baseline is already dirty (see
+	// diff.go, computePatch). A workflow retrying an agentic turn in a loop
+	// leaves the previous attempt's own edits sitting in working_context,
+	// since neither this task nor plugins/git's git.commit_push ever touches
+	// that directory again once a patch has been read out of it - so without
+	// this, only a loop's first iteration can ever produce one. Set true on
+	// the second and later iterations, immediately before the next turn, and
+	// each attempt gets the same clean baseline the first one did.
+	//
+	// Requires working_context to be set (refused as sdk.InvalidInput
+	// otherwise - there is nothing to reset) and requires
+	// FLOWSTATE_CODEX_GIT_BIN to be configured with working_context resolving
+	// to a plain git checkout (refused as sdk.Failed otherwise, rather than
+	// silently doing nothing - an author who asked for a reset and did not
+	// get one must be told, not left to discover it from a baseline that is
+	// still dirty). This never fetches or checks out a different commit:
+	// advancing working_context to a commit other than the one it already
+	// has checked out is a separate, larger capability - see
+	// plugins/codex/README.md and examples/plugins/agentic-fix's "What is
+	// still missing" for what that would additionally require.
+	ResetWorkingContext bool `protobuf:"varint,9,opt,name=reset_working_context,json=resetWorkingContext,proto3" json:"reset_working_context,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ExecInputs) Reset() {
@@ -233,6 +262,13 @@ func (x *ExecInputs) GetMaxEvents() int32 {
 func (x *ExecInputs) GetAllowNetwork() bool {
 	if x != nil {
 		return x.AllowNetwork
+	}
+	return false
+}
+
+func (x *ExecInputs) GetResetWorkingContext() bool {
+	if x != nil {
+		return x.ResetWorkingContext
 	}
 	return false
 }
@@ -408,7 +444,7 @@ var File_codex_v1_codex_proto protoreflect.FileDescriptor
 
 const file_codex_v1_codex_proto_rawDesc = "" +
 	"\n" +
-	"\x14codex/v1/codex.proto\x12\bcodex.v1\x1a\x18flowstate/v1/value.proto\"\xb9\x02\n" +
+	"\x14codex/v1/codex.proto\x12\bcodex.v1\x1a\x18flowstate/v1/value.proto\"\xed\x02\n" +
 	"\n" +
 	"ExecInputs\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x14\n" +
@@ -419,7 +455,8 @@ const file_codex_v1_codex_proto_rawDesc = "" +
 	"\x10max_output_bytes\x18\x06 \x01(\x05R\x0emaxOutputBytes\x12\x1d\n" +
 	"\n" +
 	"max_events\x18\a \x01(\x05R\tmaxEvents\x12#\n" +
-	"\rallow_network\x18\b \x01(\bR\fallowNetwork\"\xe2\x02\n" +
+	"\rallow_network\x18\b \x01(\bR\fallowNetwork\x122\n" +
+	"\x15reset_working_context\x18\t \x01(\bR\x13resetWorkingContext\"\xe2\x02\n" +
 	"\vExecOutputs\x12#\n" +
 	"\rfinal_message\x18\x01 \x01(\tR\ffinalMessage\x12\x14\n" +
 	"\x05patch\x18\x02 \x01(\tR\x05patch\x128\n" +

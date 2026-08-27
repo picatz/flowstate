@@ -623,3 +623,140 @@ func TestClassifyConfigKey(t *testing.T) {
 		}
 	}
 }
+
+// TestResetWorkingContextFailsWithoutGitBinary proves resetWorkingContext
+// itself fails rather than silently doing nothing when it has nothing to
+// work with - see its own doc comment on why a requested reset that did not
+// happen must be reported, unlike computePatch's best-effort fallback.
+func TestResetWorkingContextFailsWithoutGitBinary(t *testing.T) {
+	if err := resetWorkingContext(context.Background(), "", nil, t.TempDir()); err == nil {
+		t.Fatal("resetWorkingContext with no git binary configured: got no error, want one")
+	}
+}
+
+func TestResetWorkingContextFailsWhenDirIsNotAGitRepo(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	dir := t.TempDir()
+	preparedBin, hardened := prepareForTest(t, dir)
+	if err := resetWorkingContext(context.Background(), preparedBin, hardened, dir); err == nil {
+		t.Fatal("resetWorkingContext against a plain directory: got no error, want one")
+	}
+}
+
+// TestResetWorkingContextDiscardsTrackedAndUntrackedChanges is the worked
+// example this input exists for: a checkout left dirty by a stand-in for a
+// previous agentic turn - a modified tracked file and a new untracked one -
+// restored to a clean baseline the same way computePatch's own baseline
+// check requires (workspaceBaseline.dirty == false) before it will ever
+// produce a patch.
+func TestResetWorkingContextDiscardsTrackedAndUntrackedChanges(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	dir := t.TempDir()
+	initRepoWithCommit(t, gitBin, dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile untracked.txt: %v", err)
+	}
+
+	preparedBin, hardened := prepareForTest(t, dir)
+	if err := resetWorkingContext(context.Background(), preparedBin, hardened, dir); err != nil {
+		t.Fatalf("resetWorkingContext: unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile a.txt after reset: %v", err)
+	}
+	if string(got) != "one\n" {
+		t.Errorf("a.txt after reset = %q, want the committed content %q", got, "one\n")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "untracked.txt")); !os.IsNotExist(err) {
+		t.Errorf("untracked.txt after reset: stat err = %v, want IsNotExist", err)
+	}
+
+	baseline := observeWorkspace(context.Background(), preparedBin, hardened, dir, true)
+	if !baseline.observed || baseline.dirty {
+		t.Errorf("baseline after reset = %+v, want observed and clean", baseline)
+	}
+}
+
+// TestResetWorkingContextRefusesWhenWorkingContextIsASubdirectory proves
+// resetWorkingContext inherits computePatch's own containment answer for
+// this shape rather than a weaker one of its own: hardenedGitConfig's
+// gitWorktreeIsPlain check requires workDir to be a checkout's own top
+// level (see githarden.go), so prepareHardenedGit already returns ok=false
+// for a working_context that is a subdirectory of a larger repository -
+// the same "no patch" cost computePatch's own doc comment states for a
+// linked worktree or a submodule checkout. codexExec's own resetRequested
+// gate (exec.go) turns that ok=false into a hard failure rather than
+// computePatch's silent best-effort skip - see
+// TestCodexExecResetWorkingContextFailsClosedWithoutGitConfigured - which
+// is what keeps this input from ever running a git command whose "."
+// pathspec resolves somewhere the plugin has not already validated as a
+// checkout's own root.
+func TestResetWorkingContextRefusesWhenWorkingContextIsASubdirectory(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	repo := t.TempDir()
+	sub := filepath.Join(repo, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatalf("Mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "a.txt"), []byte("one\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile sub/a.txt: %v", err)
+	}
+	initRepoWithCommit(t, gitBin, repo)
+
+	preparedBin, hardened := prepareForTest(t, sub)
+	if err := resetWorkingContext(context.Background(), preparedBin, hardened, sub); err == nil {
+		t.Fatal("resetWorkingContext against a subdirectory of a larger checkout: got no error, want one")
+	}
+}
+
+// TestResetWorkingContextLeavesASiblingDirectoryUntouched is a narrower,
+// still-worth-having containment check for the shape reset *does* run
+// against - a plain checkout at working_context's own root: a completely
+// separate directory under the same FLOWSTATE_CODEX_WORKDIR_ROOT, holding
+// its own unrelated files and no git repository of its own, must survive a
+// reset of its sibling untouched. Every git command resetWorkingContext
+// runs is scoped with "-C workDir", so this is what proves that scoping
+// actually holds rather than assuming it from reading the code.
+func TestResetWorkingContextLeavesASiblingDirectoryUntouched(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	if err := os.Mkdir(repoDir, 0o755); err != nil {
+		t.Fatalf("Mkdir repo: %v", err)
+	}
+	initRepoWithCommit(t, gitBin, repoDir)
+	if err := os.WriteFile(filepath.Join(repoDir, "a.txt"), []byte("one\ntwo\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile a.txt (dirty): %v", err)
+	}
+
+	sibling := filepath.Join(root, "sibling")
+	if err := os.Mkdir(sibling, 0o755); err != nil {
+		t.Fatalf("Mkdir sibling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "untouched.txt"), []byte("do not delete me\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile sibling/untouched.txt: %v", err)
+	}
+
+	preparedBin, hardened := prepareForTest(t, repoDir)
+	if err := resetWorkingContext(context.Background(), preparedBin, hardened, repoDir); err != nil {
+		t.Fatalf("resetWorkingContext: unexpected error: %v", err)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(sibling, "untouched.txt")); err != nil || string(got) != "do not delete me\n" {
+		t.Errorf("sibling/untouched.txt after a reset of repoDir = (%q, %v), want it left exactly as it was", got, err)
+	}
+}
