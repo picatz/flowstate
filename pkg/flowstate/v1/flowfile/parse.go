@@ -68,7 +68,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -818,6 +818,16 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// schedule is `flow schedule create`. See flowfile/triggers.go.
 	if f, found := fields.get("triggers"); found {
 		workflow.Triggers = c.triggers(f.key, f.value, "triggers", ref{path: "triggers", label: "triggers"})
+	}
+
+	// What at most one run of this workflow may hold at a time, read alongside
+	// `triggers:` for the same reason: it is a fact about the whole workflow's
+	// relationship with the outside world — the resource nothing else may touch
+	// while this runs — rather than about any one step. See flowfile/concurrency.go
+	// and [v1.Concurrency]. Nothing here holds anything: both drivers ignore this,
+	// and the server composes the run's id from it at submit.
+	if f, found := fields.get("concurrency"); found {
+		workflow.Concurrency = c.concurrency(f.value, "concurrency", ref{path: "concurrency", label: "concurrency"})
 	}
 
 	// Who may deliver a named signal, read alongside `triggers:` for the same

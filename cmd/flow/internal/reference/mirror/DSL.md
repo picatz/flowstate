@@ -138,6 +138,12 @@ headings below, not this list.*
   - [Three timeouts, three different promises](#three-timeouts-three-different-promises)
   - [An explicit value wins outright](#an-explicit-value-wins-outright)
   - [What it deliberately does not add](#what-it-deliberately-does-not-add)
+- [The thirteenth round: `concurrency:`, and the permit that is a run](#the-thirteenth-round-concurrency-and-the-permit-that-is-a-run)
+  - [The spelling](#the-spelling-4)
+  - [The permit is a workflow id](#the-permit-is-a-workflow-id)
+  - [Three answers, because an id can give three](#three-answers-because-an-id-can-give-three)
+  - [Submit-time, which is why both drivers agree](#submit-time-which-is-why-both-drivers-agree)
+  - [What it does not do](#what-it-does-not-do)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -5297,6 +5303,121 @@ the budget. The arm is one condition — and `testsuite`'s environment leaves
 `RetryState` unspecified, so it could be written and could not be tested, which
 is not a bar this repository lowers for a claim about a substrate's error shape.
 It is a follow-up, named rather than quietly skipped.
+
+## The thirteenth round: `concurrency:`, and the permit that is a run
+
+Two runs could not coordinate over a shared resource. Not "there was no `lock:`
+keyword" — nothing weaker worked either, because no node kind can reach another run
+(#913). Two drains of one cluster, two reconciliations of one ledger, two deploys of
+one service: the language had no way to say *not at the same time*.
+
+The grep came first, and it changed the answer. The repository already spells "one at
+a time" three times — a schedule's `overlap:`, webhook delivery dedupe, and entity
+addressing — and all three keys come from **outside the run**. So this was never a
+missing primitive. It was a missing *key source*: a Flowfile could not name one.
+
+### The spelling
+
+```yaml
+edition: v2026.3
+name: cluster-drain
+inputs:
+  cluster:
+    type: string
+    required: true
+concurrency:
+  key: ${inputs.cluster}
+  on_conflict: reject
+steps:
+  - id: drain
+    log:
+      message: ${"draining " + inputs.cluster}
+```
+
+A top-level block, on the workflow rather than under `triggers:`, because it must
+hold for every start path — `flow run`, an agent over MCP, a `SignalWithStart`. Once
+per trigger would be one fact written three times, which is the shape that drifts.
+
+`key:` is a literal for a workflow exclusive of itself, or an expression over the
+run's own arguments. `inputs.*` is the whole of what it may read, and the validator
+refuses everything else with the reason rather than an "unknown name": at the moment
+it resolves, no step has produced an output, `vars:` have not been evaluated, and
+there is no run to have a `run.id`.
+
+### The permit is a workflow id
+
+There is no lease, no fencing token and no lock table, because Temporal has exactly
+one mutual-exclusion primitive and it is the workflow id. The key is composed with
+the run's tenant and the workflow's name, digested, and used as the id of the run
+itself — the identical construction webhook delivery dedupe already uses, under a
+`flowstate-lock-` prefix of its own so a key can never address, join or block a run
+some other scheme created.
+
+The holder therefore *is* a run rather than something holding a permit on a run's
+behalf, and two of #913's requirements fall out of that rather than being built. The
+lease is bounded and expires: the permit's lifetime is the run's own execution
+timeout, so an orphan that wedges a resource forever is structurally impossible.
+Acquisition is bounded in wait time: it never waits at all — every answer comes back
+at submit, while the caller is still there to be told.
+
+The tenant is inside the digest and comes only from the identity the server attested,
+never from the request. The test that matters is the negative one, per the house rule:
+tenant A holding `shared-looking-key` does not block tenant B's run of the same
+workflow with the same key, and nothing B can submit — including `terminate_other` —
+reaches A's run.
+
+### Three answers, because an id can give three
+
+`reject` (the default, including for an author who writes `key:` and no
+`on_conflict:`) refuses the second submission with `AlreadyExists`, naming the run
+that holds the key. `join` returns the incumbent instead, with `joined` set on the
+response — the generalization of what a webhook redelivery already does. And
+`terminate_other` stops the incumbent and starts the new one, destructively: no
+`undo:` compensation runs, exactly as a schedule's `terminate_other` says of a
+firing.
+
+Three and not four. A workflow id can express precisely these, and `join` is
+implemented as a refusal caught rather than as Temporal's `USE_EXISTING`, because
+`USE_EXISTING` answers silently and leaves the server unable to say whether it
+started the run it is reporting. Every fact this server states is one it established;
+`SignalWithStart` decides its own `created` from the same error.
+
+### Submit-time, which is why both drivers agree
+
+Nothing inside a run reads this block. It is consumed once, by the server choosing
+what id to start the run under, and neither engine ever sees it — so invariant 3 is
+satisfied by there being nothing for the two drivers to disagree about. `flow run
+local` executes the same steps in the same order whether or not the block is present,
+exactly as it does for `triggers:`.
+
+That dissolves the honest problem #913 raised about the alternative shape: a `lock:`
+node kind would have semantics the local driver has no second run to contend with,
+so a local rehearsal of contention would be a rehearsal of nothing. Here there is
+nothing to rehearse, and the example's `*.test.yaml` says so in its opening lines
+rather than pretending otherwise.
+
+### What it does not do
+
+**It does not queue.** "Run the next one after this finishes" is a schedule's
+`buffer_one`/`buffer_all`, which lives in Temporal's schedule machinery and is
+unreachable from a manual `Run`. Those three names are *refused by name* rather than
+falling through to "not one of the three", and the diagnostic sends the author to
+`triggers.schedule.overlap:`, where they genuinely exist — a word accepted and not
+honoured would be worse than a refusal.
+
+**It cannot sit beside a webhook or a schedule trigger.** A delivery-started run's id
+*is* its delivery id, which is what makes a redelivery join the first run rather than
+start a second; a schedule's firings get ids Temporal composes with the firing time,
+which no caller can override. In the first case a concurrency key would silently
+weaken dedupe, in the second it would never hold. Both combinations are refused, at
+the compiler with a line and a column and at the server for a specification built by
+hand — fail closed rather than pick a winner. This is the one place the design's own
+acceptance criteria were amended by the implementation: composing `overlap:` and
+`concurrency:` on one workflow is not something the substrate can do.
+
+**It does not lock a span of steps inside a run**, or anything shared between two
+different workflows. Both need a run able to reach another run, which no node kind
+can do — the open half of #913, and the author-side case for #133's Update.
 
 ## The standing rule
 

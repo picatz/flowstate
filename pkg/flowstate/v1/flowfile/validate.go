@@ -366,6 +366,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	ds = append(ds, validateDeclaredInputs(wf)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
+	ds = append(ds, validateConcurrency(wf)...)
 	ds = append(ds, validateWorkflowVars(wf)...)
 
 	// What is wrong with an expression regardless of what the file means — a
