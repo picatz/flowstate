@@ -1067,7 +1067,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c, err := temporalclient.Dial(cmd.Context(), cfg)
+	// The namespace comes back from the dial rather than from a second
+	// cfg.Options() further down, and that is a correctness requirement rather
+	// than a tidiness one. Options reads the environment and a TOML file every
+	// time it is called, so a second call — separated from this one by plugin
+	// subprocesses starting, secret providers loading and a webhook receiver
+	// compiling Flowfiles — can answer differently, and everything below would
+	// then name a namespace this client is not connected to. See
+	// [temporalclient.DialWithNamespace].
+	c, temporalNamespace, err := temporalclient.DialWithNamespace(cmd.Context(), cfg)
 	if err != nil {
 		return err
 	}
@@ -1124,29 +1132,28 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// or a production cluster where this identity lacks the operator role,
 	// starts and serves precisely as it always has.
 	if policy == nil || policy.Tenancy == nil {
-		opts, optsErr := cfg.Options()
-		if optsErr != nil {
-			logger.Warn("could not resolve the Temporal namespace to register search attributes on; "+
-				"`flow list --filter` still works, scanning executions rather than querying an index",
-				"error", optsErr)
-		} else {
-			// The same resolved value, told to the server as well as used here.
-			// `c` was dialed for opts.Namespace and cannot be asked which
-			// namespace that was, so the server would otherwise have no way to
-			// name the namespace it is serving out of — see
-			// [server.WithTemporalNamespace]. Recorded before the registration
-			// below rather than after it, because whether Temporal accepted a
-			// search attribute says nothing about which namespace this process
-			// is pointed at.
-			serverOpts = append(serverOpts, server.WithTemporalNamespace(opts.Namespace))
+		// Both of these name a namespace, and both take the one the dial above
+		// resolved. They are not two questions that happen to share an answer:
+		// each is *about* the client `c`. AddSearchAttributes carries the
+		// namespace as a request field, so registering against a namespace `c`
+		// is not connected to would index attributes somewhere other than where
+		// this deployment's runs live; and the server records the namespace so
+		// that it can later name where its own client reads from. A second
+		// cfg.Options() here — which is what this did — can answer differently
+		// from the dial, and either use would then be wrong in a way that
+		// succeeds. See [temporalclient.DialWithNamespace].
+		//
+		// Recorded before the registration rather than after it, because
+		// whether Temporal accepted a search attribute says nothing about which
+		// namespace this process is pointed at.
+		serverOpts = append(serverOpts, server.WithTemporalNamespace(temporalNamespace))
 
-			if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, opts.Namespace); err != nil {
-				logger.Warn("could not register Flowstate's search attributes; "+
-					"`flow list --filter` still works, scanning executions rather than querying an index",
-					"error", err)
-			} else {
-				serverOpts = append(serverOpts, server.WithSearchAttributesRegistered())
-			}
+		if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, temporalNamespace); err != nil {
+			logger.Warn("could not register Flowstate's search attributes; "+
+				"`flow list --filter` still works, scanning executions rather than querying an index",
+				"error", err)
+		} else {
+			serverOpts = append(serverOpts, server.WithSearchAttributesRegistered())
 		}
 	}
 

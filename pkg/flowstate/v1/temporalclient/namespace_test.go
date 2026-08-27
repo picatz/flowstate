@@ -133,6 +133,55 @@ func TestNewPoolRecordsTheResolvedNamespaceNotTheOverride(t *testing.T) {
 		"nor may it re-derive an answer as though nothing had been configured")
 }
 
+// TestASecondResolutionCanDisagreeWithTheDial is the premise behind carrying the
+// namespace out of the dial instead of resolving the configuration again.
+//
+// [Config.Options] is not a pure function of its receiver: it reads the process
+// environment and a TOML file off disk on every call. So "resolve it again when
+// you need it" is not a way of asking the same question twice — it is a way of
+// asking a *different* question that usually happens to have the same answer. A
+// deployment where it does not gets a namespace recorded beside a client that is
+// not connected to it, and every raw request built from that pairing succeeds
+// against the wrong namespace.
+//
+// The window is not theoretical in `flow server`: between the dial and the point
+// the namespace is needed, plugin subprocesses start, secret providers load and a
+// webhook receiver compiles Flowfiles. This test makes the divergence happen
+// rather than arguing about whether it can, so that the tests and comments
+// forbidding a second resolution are guarding something real.
+func TestASecondResolutionCanDisagreeWithTheDial(t *testing.T) {
+	t.Parallel()
+
+	namespace := newTemporalNamespace(t)
+
+	path := writeProfile(t, "default", namespace)
+	cfg := Config{Address: devServer.FrontendHostPort(), ConfigFile: path}
+
+	cl, dialed, err := DialWithNamespace(t.Context(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(cl.Close)
+	require.Equal(t, namespace, dialed)
+
+	// The configuration changes under the running process, which is all it takes:
+	// nothing here touches cfg, and cfg is still the value every later call would
+	// resolve.
+	require.NoError(t, os.WriteFile(path,
+		[]byte("[profile.default]\nnamespace = \"somebody-elses-namespace\"\n"), 0o600))
+
+	second, err := cfg.Options()
+	require.NoError(t, err)
+	require.Equal(t, "somebody-elses-namespace", second.Namespace,
+		"the premise: resolving the same Config again answers with whatever the source says now")
+	require.NotEqual(t, dialed, second.Namespace,
+		"a second resolution disagreed with the dial, which is the divergence a caller "+
+			"that re-resolves would silently adopt")
+
+	// And the dial's own answer is unmoved, because it was taken once and kept.
+	// A caller carrying this value describes the client it has; a caller
+	// re-resolving describes a client nobody dialed.
+	require.Equal(t, namespace, dialed)
+}
+
 // TestPoolTemporalNamespaceForFailsClosed writes the direction a tenancy test has
 // to write: not that a tenant reaches its own namespace, but that it cannot reach
 // anyone else's, and that a deployment which cannot place a tenant refuses instead
