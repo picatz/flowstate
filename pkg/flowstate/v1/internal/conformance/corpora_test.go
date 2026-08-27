@@ -134,9 +134,31 @@ var notACorpus = map[string]string{
 // "somebody looked", which is the same trade `notACorpus` makes one table up —
 // and it means every exported result in this package is now either resolved or
 // named, rather than resolved or missed.
-var unresolvedResults = map[string]string{
-	"PluginIdentityTaskDef":   "a v1.TaskDef, which is a struct rather than a slice",
-	"PluginTaskInputsTaskDef": "a v1.TaskDef, which is a struct rather than a slice",
+var unresolvedResults = map[string]account{
+	"PluginIdentityTaskDef":   {what: "a v1.TaskDef, which is a struct rather than a slice"},
+	"PluginTaskInputsTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
+}
+
+// account is what an unreadable result actually is.
+//
+// Both fields, because saying only *what* it is left the accounting
+// disconnected from the tables it exists to feed: a qualified result that is a
+// corpus had nowhere to go. Listing it here satisfied the refusal and its
+// emptiness went unchecked; listing it in `corpusSizes` instead was rejected,
+// because the slice walk could not see it either. The diagnostic told somebody
+// to do a thing that then failed, which is worse than no diagnostic
+// (Codex, #1129).
+//
+// So the account says whether it is a slice, and the slice walk reads that —
+// one answer, given once, feeding both.
+type account struct {
+	// what it returns, in words, for whoever reads a failure.
+	what string
+
+	// slice reports that what it returns is a slice, so a corpus returning a
+	// qualified type belongs in `corpusSizes` and is checked there like any
+	// other.
+	slice bool
 }
 
 // TestEveryQualifiedResultIsAccountedFor is that refusal.
@@ -151,7 +173,8 @@ func TestEveryQualifiedResultIsAccountedFor(t *testing.T) {
 	for _, name := range unaccountedFor(found, unresolvedResults) {
 		t.Errorf("%s returns a type this walk cannot read — it is qualified, so whether it is "+
 			"a slice is decided in another package. Add it to unresolvedResults saying what "+
-			"it returns, and to corpusSizes as well if it is a corpus", name)
+			"it returns; set `slice: true` there if it is one, and then add it to corpusSizes "+
+			"too so its emptiness is checked", name)
 	}
 
 	for _, name := range staleAccounts(found, unresolvedResults) {
@@ -159,8 +182,8 @@ func TestEveryQualifiedResultIsAccountedFor(t *testing.T) {
 			"longer exists); delete the entry", name)
 	}
 
-	for name, what := range unresolvedResults {
-		if strings.TrimSpace(what) == "" {
+	for name, of := range unresolvedResults {
+		if strings.TrimSpace(of.what) == "" {
 			t.Errorf("unresolvedResults[%q] does not say what it returns; that is the record", name)
 		}
 	}
@@ -172,7 +195,7 @@ func TestEveryQualifiedResultIsAccountedFor(t *testing.T) {
 // package is listed today, so a test that only ran it against the tree would
 // pass whether the demand worked or not — which the mutation said, and is this
 // file's own subject a third time.
-func unaccountedFor(found []string, listed map[string]string) []string {
+func unaccountedFor(found []string, listed map[string]account) []string {
 	var missing []string
 	for _, name := range found {
 		if _, ok := listed[name]; !ok {
@@ -184,7 +207,7 @@ func unaccountedFor(found []string, listed map[string]string) []string {
 }
 
 // staleAccounts are the names the table lists and the walk did not find.
-func staleAccounts(found []string, listed map[string]string) []string {
+func staleAccounts(found []string, listed map[string]account) []string {
 	real := map[string]bool{}
 	for _, name := range found {
 		real[name] = true
@@ -204,7 +227,7 @@ func staleAccounts(found []string, listed map[string]string) []string {
 // TestTheDemandForAnAccountWorksInBothDirections exercises it, since the tree
 // itself cannot.
 func TestTheDemandForAnAccountWorksInBothDirections(t *testing.T) {
-	listed := map[string]string{"Known": "a struct"}
+	listed := map[string]account{"Known": {what: "a struct"}}
 
 	assert.Equal(t, []string{"Unlisted"},
 		unaccountedFor([]string{"Known", "Unlisted"}, listed),
@@ -219,6 +242,55 @@ func TestTheDemandForAnAccountWorksInBothDirections(t *testing.T) {
 
 	assert.Empty(t, staleAccounts([]string{"Known"}, listed),
 		"a live entry was reported stale")
+
+	// And the half that composes the accounting with the corpus tables, driven
+	// through the real functions. The first version of this built an `accounts`
+	// map here and asserted it held what the line above had put into it, which
+	// stayed green with both mechanisms it was written to pin deleted — this
+	// file's own subject, committed inside the fix for it.
+	fixture, err := parser.ParseFile(token.NewFileSet(), "fixture.go", `package conformance
+
+type Imported = other.Cases
+type Indirect = Imported
+
+func ImportedCases() other.Cases { panic("unused") }
+func AliasedCases() Indirect     { panic("unused") }
+func LocalCases() []int          { panic("unused") }
+`, 0)
+	require.NoError(t, err)
+
+	slices, unknown := resolveTypeNames([]*ast.File{fixture})
+
+	// Unreadability reaches `Indirect` only by propagating: its own declaration
+	// names `Imported`, an identifier this package does declare, so a walk
+	// without the propagation reads it as resolvable and never demands an
+	// account of the function returning it.
+	assert.True(t, unknown["Indirect"],
+		"a name aliased to a name aliased to a qualified type was read as resolvable, so the "+
+			"function returning it walks past the refusal built for exactly this")
+
+	var decls []*ast.FuncDecl
+	for _, d := range fixture.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok {
+			decls = append(decls, fd)
+		}
+	}
+
+	assert.Equal(t, []string{"AliasedCases", "ImportedCases"}, unreadableResults(decls, unknown),
+		"both spellings of a result this walk cannot read must be demanded of the accounting")
+
+	// The account then feeds the corpus tables. Marked a slice, a qualified
+	// corpus is listed beside every other and its emptiness is checked; not
+	// marked, it stays out — so this pins that the account is *read* rather
+	// than that everything accounted for is admitted.
+	accounts := map[string]account{
+		"ImportedCases": {what: "an other.Cases", slice: true},
+		"AliasedCases":  {what: "an other.Def reached through two aliases"},
+	}
+
+	assert.Equal(t, []string{"ImportedCases", "LocalCases"}, sliceReturners(decls, slices, accounts),
+		"an accounted slice must reach the corpus tables, and an account not claiming to be "+
+			"one must not")
 }
 
 // unresolvableResultFuncs are the exported functions returning a single
@@ -226,16 +298,40 @@ func TestTheDemandForAnAccountWorksInBothDirections(t *testing.T) {
 func unresolvableResultFuncs(t *testing.T) []string {
 	t.Helper()
 
+	fset := token.NewFileSet()
+	decls := exportedDecls(t, fset)
+	_, unknown := resolveTypeNames(parsedFiles(t, fset))
+
+	return unreadableResults(decls, unknown)
+}
+
+// unreadableResults are the declarations whose single result this walk cannot
+// decide about.
+//
+// Takes its declarations rather than reading the package, because the tree
+// contains no function returning an aliased qualified type and a walk over the
+// tree therefore exercises one of its two branches. That is also why the first
+// attempt at the test below was worthless: it built a map by hand and asserted
+// the map held what the line above had put in it, which is this file's own
+// subject committed inside the fix for it.
+func unreadableResults(decls []*ast.FuncDecl, unknown map[string]bool) []string {
 	var names []string
-	for _, fd := range exportedDecls(t, token.NewFileSet()) {
+	for _, fd := range decls {
 		if fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
 			continue
 		}
-		// `pkg.Type` only. A pointer to one is a pointer and so not a slice,
-		// and `[]pkg.Type` is an array node this walk reads perfectly well —
-		// the unreadable case is the bare qualified name.
-		if _, ok := fd.Type.Results.List[0].Type.(*ast.SelectorExpr); ok {
+
+		switch result := fd.Type.Results.List[0].Type.(type) {
+		case *ast.SelectorExpr:
+			// `pkg.Type`. A pointer to one is a pointer and so not a slice,
+			// and `[]pkg.Type` is an array node this walk reads perfectly well.
 			names = append(names, fd.Name.Name)
+		case *ast.Ident:
+			// A name this package declares by aliasing something qualified,
+			// which is the same unreadability one indirection away.
+			if unknown[result.Name] {
+				names = append(names, fd.Name.Name)
+			}
 		}
 	}
 
@@ -438,27 +534,37 @@ func exportedSliceFuncs(t *testing.T) []string {
 	t.Helper()
 
 	fset := token.NewFileSet()
-	decls := exportedDecls(t, fset)
-	slices := sliceTypeNames(t, fset)
-
-	var names []string
-	for _, fd := range decls {
-		if fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
-			continue
-		}
-		if !isSliceResult(fd.Type.Results.List[0].Type, slices) {
-			continue
-		}
-		names = append(names, fd.Name.Name)
-	}
-
-	sort.Strings(names)
+	names := sliceReturners(exportedDecls(t, fset), sliceTypeNames(t, fset), unresolvedResults)
 
 	if len(names) < 20 {
 		t.Fatalf("the walk found %d exported slice-returning function(s), which is too few to "+
 			"be this package — a checker that walks nothing and reports every corpus covered "+
 			"is the failure this file is about", len(names))
 	}
+
+	return names
+}
+
+// sliceReturners are the declarations returning a slice — by the walk's own
+// reading, or by the account somebody wrote where the walk could not read.
+//
+// One list either way, which is the whole point. An account marked a slice that
+// did not reach here left a corpus refused by `corpusSizes` and excused from
+// every emptiness check, with a diagnostic sending its author to the table that
+// then rejected it (Codex, #1129).
+func sliceReturners(decls []*ast.FuncDecl, slices map[string]bool, accounts map[string]account) []string {
+	var names []string
+	for _, fd := range decls {
+		if fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
+			continue
+		}
+		if !isSliceResult(fd.Type.Results.List[0].Type, slices) && !accounts[fd.Name.Name].slice {
+			continue
+		}
+		names = append(names, fd.Name.Name)
+	}
+
+	sort.Strings(names)
 
 	return names
 }
@@ -510,9 +616,23 @@ func sliceTypeNames(t *testing.T, fset *token.FileSet) map[string]bool {
 // can be handed to it — which is the only way to exercise a shape this package
 // does not currently contain.
 func resolveSliceNames(files []*ast.File) map[string]bool {
+	slices, _ := resolveTypeNames(files)
+
+	return slices
+}
+
+// resolveTypeNames are the names this package declares as slices, and the names
+// whose declaration it cannot read.
+//
+// The second half is `type Cases = other.Cases`: an alias to a qualified type,
+// which the selector-only refusal missed because a *function* returning `Cases`
+// has an identifier for its result, not a selector. One indirection was enough
+// to walk past the refusal built for exactly this (Codex, #1129).
+func resolveTypeNames(files []*ast.File) (slices, unknown map[string]bool) {
 	// name -> the identifier it is declared as, for the indirect case.
 	aliasOf := map[string]string{}
-	slices := map[string]bool{}
+	slices = map[string]bool{}
+	unknown = map[string]bool{}
 
 	for _, file := range files {
 		ast.Inspect(file, func(node ast.Node) bool {
@@ -526,8 +646,13 @@ func resolveSliceNames(files []*ast.File) map[string]bool {
 
 				return true
 			}
-			if declared, ok := spec.Type.(*ast.Ident); ok {
+			switch declared := spec.Type.(type) {
+			case *ast.Ident:
 				aliasOf[spec.Name.Name] = declared.Name
+			case *ast.SelectorExpr:
+				// Declared in another package, so whether it is a slice is
+				// decided there.
+				unknown[spec.Name.Name] = true
 			}
 
 			return true
@@ -541,13 +666,19 @@ func resolveSliceNames(files []*ast.File) map[string]bool {
 				slices[name] = true
 				changed = true
 			}
+			// Unreadability propagates the same way an answer does: a name
+			// aliased to one this package cannot read is one it cannot read.
+			if !unknown[name] && unknown[of] {
+				unknown[name] = true
+				changed = true
+			}
 		}
 		if !changed {
 			break
 		}
 	}
 
-	return slices
+	return slices, unknown
 }
 
 // exportedDecls are this package's exported top-level functions, parsed from
