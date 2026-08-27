@@ -419,7 +419,21 @@ func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
 	// sorted: the same workflow has to produce the same document every time for a
 	// formatter to be usable or a diff to be readable.
 	for _, name := range slices.Sorted(maps.Keys(task.GetInputs())) {
-		value, err := inputValueToYAML(task.GetInputs()[name])
+		write := inputValueToYAML
+		if name == v1.ShapingInput && v1.TaskShapesOutputs(task.GetName()) {
+			// The one input read by a rule of its own, so the one input that
+			// cannot be written by the general one: a mapping under a shaping
+			// task's `outputs:` is compiled entry by entry into a
+			// `Value_Structure` (see [compiler.shapedOutputs]), not through
+			// [compiler.composite]. Unfolding a folded expression here would
+			// therefore write a document that compiles to a *different* value —
+			// a shaped set of names where the workflow holds one expression that
+			// builds a map — which is a formatter changing what a file says.
+			// Read off the same two predicates the parser branches on, rather
+			// than off the key's spelling, so the two cannot drift.
+			write = fencedInputValueToYAML
+		}
+		value, err := write(task.GetInputs()[name])
 		if err != nil {
 			return nil, fmt.Errorf("input %q: %w", name, err)
 		}
@@ -702,9 +716,35 @@ func durationToYAML(d *durationpb.Duration) string {
 // An expression is written fenced. The fence is optional when reading a field the
 // schema types as an expression, but an input can be either, so writing it is what
 // makes the document mean what it meant.
+//
+// A mapping or a sequence holding a `${...}` anywhere inside it is *one*
+// expression by the time it gets here — see [compiler.composite] — so the
+// fenced form is the whole of what the value says. It is not the whole of what
+// an author wrote, and writing it back is what put a 778-character line in
+// `examples/`, so [unfoldedStructure] offers the mapping spelling back as a
+// candidate first (#850).
 func inputValueToYAML(value *v1.Value) (any, error) {
+	return writtenInputValue(value, true)
+}
+
+// fencedInputValueToYAML is [inputValueToYAML] for the one position whose read
+// rule is not [compiler.composite]: a shaping task's `outputs:`, where a mapping
+// means a shaped set of names rather than an expression that builds a map. See
+// [taskInputsToYAML], which is the only caller and carries the reasoning.
+func fencedInputValueToYAML(value *v1.Value) (any, error) {
+	return writtenInputValue(value, false)
+}
+
+// writtenInputValue is the whole of both, with unfold saying whether the
+// structure spelling may be offered for an expression that builds one.
+func writtenInputValue(value *v1.Value, unfold bool) (any, error) {
 	switch kind := value.GetKind().(type) {
 	case *v1.Value_Expr:
+		if unfold {
+			if unfolded, ok := unfoldedStructure(value); ok {
+				return unfolded, nil
+			}
+		}
 		text, err := exprToText(kind.Expr)
 		if err != nil {
 			return nil, err
