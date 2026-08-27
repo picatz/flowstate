@@ -361,18 +361,28 @@ func retryingStepsFooter(workflowID, runID string, msg *v1.GetResponse, now time
 		// further try nobody is waiting for — and the try whose failure is
 		// missing from the account is the one before it.
 		//
-		// A due time already past is a real state and gets its own sentence
-		// rather than a negative countdown: the backoff has expired and no
-		// worker has started the attempt, which is a queue backlog or an outage
-		// and is the case a reader most wants named. "In -4s" would be a
-		// countdown claiming to be a wait.
+		// A due time already past gets its own sentence rather than a negative
+		// countdown, because "in -4s" is a countdown claiming to be a wait.
+		//
+		// What that sentence may claim is bounded by whose clock decided it.
+		// `now` is this machine's, and Temporal's schedule is the server's — so
+		// a client running ahead by more than the remaining backoff sees a
+		// perfectly ordinary wait as elapsed. Presence proves the attempt has
+		// not started; it cannot prove the moment has arrived anywhere but here
+		// (Codex, #1155).
+		//
+		// So the line says whose clock it is and stops. A backlog or a worker
+		// outage is what an elapsed backoff usually means and would be the
+		// useful thing to say, but this cannot tell that from a clock an hour
+		// fast, and naming a cause it has not established is the kind of
+		// confident wrong sentence a person acts on.
 		attempt := retrying[0].GetAttempt()
 		if due := retrying[0].GetNextAttemptScheduledTime().AsTime().Sub(now); due > 0 {
 			head = fmt.Sprintf("one step is retrying — attempt %d is due in %s",
 				attempt, roundedDuration(due))
 		} else {
-			head = fmt.Sprintf("one step is retrying — attempt %d is due and has not started",
-				attempt)
+			head = fmt.Sprintf("one step is retrying — attempt %d was due %s ago by this "+
+				"machine's clock and has not started", attempt, roundedDuration(-due))
 		}
 
 	default:

@@ -631,10 +631,12 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 				backingOff(3, now.Add(-time.Minute)),
 			}},
-			want: opening + "one step is retrying — attempt 3 is due and has not started" + tail,
-			because: "a backoff that has expired with no worker on it is a backlog or an " +
-				"outage, which is the state a reader most wants named — and it read as " +
-				"silence while the field could not distinguish waiting from running (#1148)",
+			want: opening + "one step is retrying — attempt 3 was due 1m0s ago by this " +
+				"machine's clock and has not started" + tail,
+			because: "an elapsed backoff read as silence while the field could not " +
+				"distinguish waiting from running (#1148), and it is the state a reader " +
+				"most wants to hear about — attributed to this clock, because a client " +
+				"running fast cannot tell an ordinary wait from an elapsed one (#1155)",
 		},
 		{
 			name: "several waiting steps name the furthest along",
