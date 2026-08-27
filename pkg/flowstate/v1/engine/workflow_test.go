@@ -151,6 +151,13 @@ func TestRunWorkflowPolicy(t *testing.T) {
 // happens to be silent about the difference.
 func TestRunWorkflowErrorKind(t *testing.T) {
 	baseURL := conformance.NewHTTPServer(t)
+
+	// The timeout case's fixture (#915), on [v1.DefaultRegistry] for the reason
+	// TestStepTimeoutReachesTheTaskDurable gives beside its own registration:
+	// the activity executing a step runs in a context Temporal hands it and
+	// cannot see a registry installed on the workflow's.
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.ErrorKindTimeoutTaskDef()))
+
 	for _, tc := range conformance.ErrorKindCases(baseURL) {
 		t.Run(tc.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}

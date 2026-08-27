@@ -172,6 +172,15 @@ func TestRunWorkflowPolicy(t *testing.T) {
 // callers" for the classification #241's P2 puts on the wire.
 func TestRunWorkflowErrorKind(t *testing.T) {
 	baseURL := conformance.NewHTTPServer(t)
+
+	// The timeout case's fixture (#915). On [v1.DefaultRegistry] because a case
+	// carries a workflow and nothing else — there is no context here to hang a
+	// private registry off the way TestStepTimeoutReachesTheTaskLocal can — and
+	// because the durable caller has no choice but the global one anyway (see
+	// engine.TestRunWorkflowErrorKind's own note), so registering it the same
+	// way keeps one corpus reaching one task under both drivers.
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.ErrorKindTimeoutTaskDef()))
+
 	for _, tc := range conformance.ErrorKindCases(baseURL) {
 		t.Run(tc.Name, func(t *testing.T) {
 			_, err := v1.Run(t.Context(), tc.Workflow)

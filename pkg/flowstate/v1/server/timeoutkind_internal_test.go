@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	enums "go.temporal.io/api/enums/v1"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // TestTimeoutKindText covers #788's server.go half: [failureError]'s fallback
@@ -54,5 +56,36 @@ func TestTimeoutKindTextDescribesWorkflowNotActivityScope(t *testing.T) {
 		text := timeoutKindText(kind)
 		require.NotContains(t, text, "attempt",
 			"kind=%s reads as activity-attempt scope, not workflow/run scope: %q", kind, text)
+	}
+}
+
+// TestTimeoutFailureCarriesTheTimeoutKind is #915's server half: this branch is
+// reached for a run that ended on a clock with nothing in its error chain to
+// read a classification back out of, and it used to answer with a message and
+// an empty `kind`.
+//
+// The schema says the field is "always set alongside Message" for a reason —
+// an agent branching on it is meant to be able to tell "repair the file" from
+// "retry" from "escalate" without parsing prose — so the one failure shape
+// that left it blank was the one an agent could do nothing structural with.
+// Every timeout type answers the same kind, because which of Temporal's four
+// clocks ran out is a fact about the sentence and not about whether the run
+// failed on time or on a fault.
+func TestTimeoutFailureCarriesTheTimeoutKind(t *testing.T) {
+	for _, kind := range []enums.TimeoutType{
+		enums.TIMEOUT_TYPE_START_TO_CLOSE,
+		enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE,
+		enums.TIMEOUT_TYPE_SCHEDULE_TO_START,
+		enums.TIMEOUT_TYPE_HEARTBEAT,
+		enums.TIMEOUT_TYPE_UNSPECIFIED,
+	} {
+		got := timeoutFailure(v1.RunResponse_STATUS_TIMED_OUT, kind)
+
+		require.Equal(t, v1.ErrorKindTimeout.String(), got.GetKind(),
+			"a run that ended on a clock must reach a client classified, kind=%s", kind)
+		require.True(t, v1.ErrorKindTimeout.Retryable(),
+			"and as the same retryable kind both drivers give a step-level timeout")
+		require.Contains(t, got.GetMessage(), timeoutKindText(kind),
+			"the message must still say which clock, kind=%s", kind)
 	}
 }
