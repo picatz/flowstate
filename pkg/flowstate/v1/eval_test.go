@@ -943,6 +943,30 @@ func TestAuthorityContainment(t *testing.T) {
 	}
 }
 
+// TestCleartextCredential runs #963 half one's shared cases — the http task
+// refusing a bearer secret or a JIT federation credential sent to a
+// non-loopback http:// destination, and the same credential succeeding over
+// https — against the local driver. The durable driver runs the same cases
+// in engine/authority_test.go.
+func TestCleartextCredential(t *testing.T) {
+	tlsServer := conformance.NewTLSCredentialServer(t)
+	tlsServer.InstallTrustingHTTPTask(t)
+
+	for _, test := range conformance.CleartextCredentialCases(tlsServer.URL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runAuthorityCase(t, test)
+			if test.Authority.ProviderCalls != nil {
+				require.Zero(t, test.Authority.ProviderCalls.Load(),
+					"the fixture secret provider was consulted for a request the cleartext refusal should have stopped first")
+			}
+			if test.Authority.Federation != nil && test.Authority.Federation.ExchangeCalls != nil {
+				require.Zero(t, test.Authority.Federation.ExchangeCalls.Load(),
+					"the fixture broker exchanged a credential for a request the cleartext refusal should have stopped first")
+			}
+		})
+	}
+}
+
 // TestRunWorkflowUndo is the local half of the saga cases.
 //
 // The engine package runs the identical [conformance.UndoCases] against the durable

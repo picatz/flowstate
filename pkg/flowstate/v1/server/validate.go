@@ -50,6 +50,15 @@ func (s *FlowstateServer) Validate(
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Audited with no resource at all, which is the truthful answer for this
+	// verb: checking a file touches no run and reads no tenant's anything, as
+	// the comment above says and as AUTHORIZATION_ACTION_WORKLOAD_VALIDATE's own
+	// schema comment says. The record still says who asked and when, which is
+	// the question an audit trail answers about a verb that reaches nothing.
+	if err := s.auditAllow(ctx, "Validate", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_UNSPECIFIED, ""); err != nil {
+		return nil, err
+	}
+
 	reports := make([]*v1.DiagnosticReport, 0, len(req.Msg.GetFiles()))
 
 	for _, file := range req.Msg.GetFiles() {
@@ -91,6 +100,12 @@ func (s *FlowstateServer) Compile(
 ) (*connect.Response[v1.CompileResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// No resource, for [FlowstateServer.Validate]'s reason: compiling reaches
+	// no run and no tenant.
+	if err := s.auditAllow(ctx, "Compile", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_UNSPECIFIED, ""); err != nil {
+		return nil, err
 	}
 
 	file := req.Msg.GetFile()
@@ -147,6 +162,12 @@ func (s *FlowstateServer) GetCatalog(
 	// siblings.
 	if err := v1.Validate(req.Msg); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// No resource, for [FlowstateServer.Validate]'s reason: the catalog is what
+	// this deployment can execute, which belongs to no tenant.
+	if err := s.auditAllow(ctx, "GetCatalog", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_UNSPECIFIED, ""); err != nil {
+		return nil, err
 	}
 
 	// The process-wide catalog, deliberately. It reads the default registry, so

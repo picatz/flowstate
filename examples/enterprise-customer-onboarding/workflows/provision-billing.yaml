@@ -21,7 +21,9 @@ steps:
   # and the parent workflow's header for the composed shape this is part of.
   - id: provision_billing
     http:
-      json: '${{"tenant": inputs.tenant, "plan": inputs.plan}}'
+      json:
+        tenant: ${inputs.tenant}
+        plan: ${inputs.plan}
       method: POST
       outputs:
         resource_id: ${response.json.resource_id}
@@ -29,7 +31,8 @@ steps:
       url: https://provisioning.internal.example.com/billing-accounts
     undo:
       http:
-        json: '${{"resource_id": steps.provision_billing.resource_id}}'
+        json:
+          resource_id: ${steps.provision_billing.resource_id}
         method: DELETE
         url: https://provisioning.internal.example.com/billing-accounts
 outputs:

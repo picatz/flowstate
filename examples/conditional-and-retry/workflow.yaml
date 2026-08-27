@@ -60,6 +60,7 @@ steps:
   # like any other, so it can be carried into whatever comes next.
   - id: carry_on
     log:
-      fields: '${{"why": steps.notify.error}}'
+      fields:
+        why: ${steps.notify.error}
       level: warn
       message: notification failed, continuing anyway

@@ -164,7 +164,11 @@ steps:
   - id: activate
     if: ${steps.activation_confirmation.confirmed}
     http:
-      json: '${{"tenant": inputs.tenant, "database_id": steps.provision_database.resource_id, "billing_id": steps.provision_billing.resource_id, "access_id": steps.provision_access.resource_id}}'
+      json:
+        tenant: ${inputs.tenant}
+        database_id: ${steps.provision_database.resource_id}
+        billing_id: ${steps.provision_billing.resource_id}
+        access_id: ${steps.provision_access.resource_id}
       method: POST
       url: https://provisioning.internal.example.com/tenants/activate
   - id: activation_deferred

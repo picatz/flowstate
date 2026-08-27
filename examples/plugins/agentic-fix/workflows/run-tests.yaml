@@ -33,7 +33,8 @@ steps:
     # suite.
     continue_on_error: true
     http:
-      json: '${{"ref": inputs.ref}}'
+      json:
+        ref: ${inputs.ref}
       method: POST
       # Shaped with a type guard rather than an `expect:`, and fail-closed. An
       # `expect:` would replace the task's status judgement entirely and classify
