@@ -385,11 +385,22 @@ func retryingStepsFooter(workflowID, runID string, msg *v1.GetResponse, now time
 		// than folded into either "due in a negative number" or silence.
 		next := retrying[0].GetNextAttemptScheduledTime().AsTime()
 
+		// The overdue branch names whose clock said so, and the countdown does
+		// not, because skew does two different things to them. `now` is this
+		// process's clock and the schedule is the server's, so a reader whose
+		// clock runs fast sees an ordinary wait as already late — skew changes
+		// the *category* here, from "waiting" to "behind", which is a different
+		// thing to go and investigate. On the countdown it only shifts a number
+		// a reader is already watching tick, and the reading stays "retrying,
+		// not yet due". Attributing the clock is what lets somebody dismiss a
+		// small overdue as their own machine rather than the server's backlog
+		// (Codex, #1155).
 		var when string
 		if next.After(now) {
 			when = fmt.Sprintf("due in %s", roundedDuration(next.Sub(now)))
 		} else {
-			when = fmt.Sprintf("overdue by %s", roundedDuration(now.Sub(next)))
+			when = fmt.Sprintf("overdue by %s against this machine's clock",
+				roundedDuration(now.Sub(next)))
 		}
 
 		head = fmt.Sprintf("one step is retrying — attempt %d is %s",

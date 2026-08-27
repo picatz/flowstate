@@ -1782,10 +1782,14 @@ type GetTimelineRequest struct {
 	// the largest answer this will return (Codex, #1119).
 	//
 	// An event id rather than an opaque cursor, and that is the decision worth
-	// stating. Temporal's own page token would be the obvious cursor and cannot
-	// be used: the raw history API takes a Temporal namespace, and this server
-	// does not hold one — a client is dialed for a namespace and never asked
-	// which. An event id needs nothing but the history itself.
+	// stating. Temporal's own page token would be the obvious cursor and still
+	// cannot be used — though not for the reason first given here, and the
+	// correction matters because the old one sends a reader to plumb something
+	// already plumbed. The Temporal namespace a raw history request needs is
+	// available to the server now. The *token* is not: the SDK offers a history
+	// only through an iterator that begins at the first page and exposes no
+	// cursor, so there is nothing to hand a caller at one end and nothing to
+	// seed at the other. An event id needs nothing but the history itself.
 	//
 	// The cost, stated rather than glossed: each request walks the run's history
 	// from the start, so resuming re-reads what it skips. That is bounded work —

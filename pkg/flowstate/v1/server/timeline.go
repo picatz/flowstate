@@ -91,12 +91,42 @@ const (
 	// spend (Codex, #1119).
 	//
 	// A tighter, *independent* request budget is what `list.go` has and what
-	// this wants. It needs the raw history API, which takes a Temporal
-	// namespace this server does not hold — a client is dialed for a namespace
-	// and never asked which — so it is a named follow-up rather than something
-	// smuggled in here: plumbing a namespace through the client pool and every
-	// construction site is a change that misroutes a tenant's reads when it is
-	// wrong.
+	// this wants. It is still a follow-up, and no longer for the reason this
+	// comment used to give — that reason has been overtaken and saying so is
+	// the point of rewriting it, because a stale blocker sends the next reader
+	// to build something that already exists. The Temporal namespace a raw
+	// history request needs *is* available now:
+	// [FlowstateServer.clientAndTemporalNamespaceFor] landed for exactly this
+	// ask and is still waiting for its first caller.
+	//
+	// What blocks it is that a request budget is only safe where running out
+	// leaves a *cursor*. `list.go` can do that because the SDK's public client
+	// offers ListWorkflow as a raw request carrying NextPageToken, which
+	// `list.go` hands straight back to the caller — so exhaustion there is a
+	// short page and the work still gets done across calls. History is offered
+	// through no such method. The only public constructor of a
+	// [client.HistoryEventIterator] is GetWorkflowHistory
+	// (`sdk@v1.47.0/client/client.go:1243`), which takes no token; the concrete
+	// iterator and its `nexttoken` field are unexported
+	// (`internal/internal_workflow_client.go:194-206`), and its one
+	// construction site always begins at the first page (`:446`). An iterator
+	// therefore cannot be resumed, and because resumption re-walks, a budget
+	// spent here would make everything past requests × page-size *permanently*
+	// unreachable rather than delayed — precisely the dead end the paragraph
+	// above refuses, arriving through the fix for a different problem.
+	//
+	// Reaching the token means calling Temporal's raw
+	// GetWorkflowExecutionHistory through [client.Client.WorkflowService], and
+	// that gives up three things the SDK supplies from behind `internal/`,
+	// where nothing here can import them: RawHistory blobs are deserialized by
+	// `internal/common/serializer`, without which a deployment whose frontend
+	// answers raw reads as an *empty* history; the per-attempt RPC timeout; and
+	// the retry configuration, which the SDK passes as a context value under an
+	// internal key — its interceptor is disabled by default
+	// (`grpc_dialer.go:151-153`), so a raw call made without it is not retried
+	// at all. Re-implementing those is a copy of SDK internals that fails
+	// silently when the SDK moves. #1135 is where that trade is the open
+	// question.
 	//
 	// A deployment that raised Temporal's own cap far enough gets a truncated
 	// answer rather than a wrong one, and an empty truncated answer says so
