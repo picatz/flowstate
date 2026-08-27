@@ -837,10 +837,29 @@ func shadowedBy(fn *ast.FuncDecl) map[string]bool {
 // arrives in a field list; this one does not, which is why it outlived two
 // rounds of adding field lists to the walk.
 func receiverTypeParams(recv ast.Expr) []ast.Expr {
-	if star, ok := recv.(*ast.StarExpr); ok {
-		recv = star.X
+	// Unwrapped in a loop rather than once, because the two wrappers nest and
+	// either may come first: `*box[T]`, `(box[T])`, `(*box[T])` and
+	// `((*box[T]))` are all legal receivers and all mean the same thing.
+	//
+	// The parenthesised spellings are what `gofmt` removes, which is why they
+	// look unreachable — and in this repository they are not. The required CI
+	// gofmt job covers `./cmd ./pkg`, and this walk reads `tools/` and
+	// `plugins/` as well, so a parenthesised receiver there survives every
+	// gate that would otherwise normalise it away (Codex, #1128).
+	for {
+		switch outer := recv.(type) {
+		case *ast.ParenExpr:
+			recv = outer.X
+		case *ast.StarExpr:
+			recv = outer.X
+		default:
+			return indexed(recv)
+		}
 	}
+}
 
+// indexed are the type arguments of an index expression, of either arity.
+func indexed(recv ast.Expr) []ast.Expr {
 	switch recv := recv.(type) {
 	case *ast.IndexExpr:
 		return []ast.Expr{recv.Index}

@@ -1058,6 +1058,35 @@ func TestThroughAPointerReceiverTypeParameter(t *testing.T) {
 `)
 	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
 		"a pointer receiver's first type parameter was not counted as binding the name")
+
+	// Parenthesised, which `gofmt` removes — and which this walk still has to
+	// read, because the required CI gofmt job covers `./cmd ./pkg` while this
+	// reads `tools/` and `plugins/` too. The two wrappers nest and either may
+	// come first, so all four spellings mean the same receiver.
+	for _, receiver := range []string{
+		"(b (box[panic]))",
+		"(b (*box[panic]))",
+		"(b ((*box[panic])))",
+		"(b *box[panic])",
+	} {
+		findings, _ = analyzedFile(t, "shadowed_paren_test.go", `package fixture
+
+import "testing"
+
+type box[T ~string] struct{}
+
+func `+receiver+` check(x string) {
+	_ = panic(x)
+}
+
+func TestThroughAParenthesisedReceiver(t *testing.T) {
+	b := box[string]{}
+	b.check("x")
+}
+`)
+		assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+			"the receiver %s did not bind its type parameter", receiver)
+	}
 }
 
 // TestAnAliasReachesTheWholePackage is Go's scoping, which is not the file's.
