@@ -246,6 +246,10 @@ type Cyclic Cyclic
 		{"func NewCases() Indirect", true},
 		{"func NewCases() Aliased", true},
 		{"func NewCases() Array", false},
+		// The literal spelling of the same refusal, which is where the two
+		// branches used to disagree.
+		{"func NewCases() [4]int", false},
+		{"func NewCases() [][]Case", true},
 		{"func NewCases() NotASlice", false},
 		{"func NewCases() error", false},
 	} {
@@ -334,7 +338,7 @@ func exportedSliceFuncs(t *testing.T) []string {
 // isSliceResult reports whether a result type is a slice, directly or through
 // a name this package declares.
 func isSliceResult(result ast.Expr, slices map[string]bool) bool {
-	if _, ok := result.(*ast.ArrayType); ok {
+	if isSliceType(result) {
 		return true
 	}
 	// A name declared in this package as a slice, of either spelling — `type
@@ -342,6 +346,22 @@ func isSliceResult(result ast.Expr, slices map[string]bool) bool {
 	name, ok := result.(*ast.Ident)
 
 	return ok && slices[name.Name]
+}
+
+// isSliceType reports whether a type expression is a slice rather than a
+// fixed-size array.
+//
+// One function because two branches asking one question is how they come to
+// disagree, and these two did: this one accepted `[4]int` while
+// [resolveSliceNames] rejected it, two dozen lines apart, so a helper returning
+// a literal array would have been demanded of the corpus table while a named
+// one was excused (Codex, #1129). The test written to prove those two agreed
+// had the same hole — it exercised the named path and not the literal one.
+func isSliceType(expr ast.Expr) bool {
+	array, ok := expr.(*ast.ArrayType)
+
+	// A length makes it an array, which is not a corpus by any reading.
+	return ok && array.Len == nil
 }
 
 // sliceTypeNames are the names this package declares whose underlying type is
@@ -373,14 +393,12 @@ func resolveSliceNames(files []*ast.File) map[string]bool {
 				return true
 			}
 
-			switch declared := spec.Type.(type) {
-			case *ast.ArrayType:
-				// A slice, not an array: `[N]T` has a length and is not a
-				// corpus by any reading.
-				if declared.Len == nil {
-					slices[spec.Name.Name] = true
-				}
-			case *ast.Ident:
+			if isSliceType(spec.Type) {
+				slices[spec.Name.Name] = true
+
+				return true
+			}
+			if declared, ok := spec.Type.(*ast.Ident); ok {
 				aliasOf[spec.Name.Name] = declared.Name
 			}
 
