@@ -22,10 +22,17 @@ import (
 // nothing to say. Returning nil is important: a hover popup containing a guess is
 // worse than no popup.
 func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
+	pos = clampPosition(pos) // see [clampPosition]
+
+	if doc.isTestDocument() {
+		// The test language's own, narrow hover — see testhover.go. Not the
+		// workflow grammar's answers: a document with no `steps:` has no
+		// step, input key, or `${...}` reference for that machinery to find.
+		return hoverTestDocument(doc, pos)
+	}
 	if !doc.speaksFlowfile() {
 		return nil // see [document.speaksFlowfile]
 	}
-	pos = clampPosition(pos) // see [clampPosition]
 
 	if doc.parsed == nil {
 		return nil

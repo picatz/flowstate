@@ -298,6 +298,13 @@ func lookupDSLKey(level, name string) (dslKey, bool) {
 // document is usually mid-edit and therefore invalid at exactly the moment
 // completion is requested.
 func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
+	if doc.isTestDocument() {
+		// The test language's own completion, over its own document shape —
+		// see testcompletion.go. Not the workflow grammar's candidates,
+		// deliberately: a step's `for_each:` or a task's own inputs would be
+		// wrong answers with confidence in a document that has neither.
+		return completeTestDocument(doc, clampPosition(pos))
+	}
 	if !doc.speaksFlowfile() {
 		return &lsp.CompletionList{Items: []lsp.CompletionItem{}} // see [document.speaksFlowfile]
 	}

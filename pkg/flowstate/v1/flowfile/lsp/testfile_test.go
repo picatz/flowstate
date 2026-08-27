@@ -98,9 +98,17 @@ tests:
 		"the diagnostic did not anchor at the named test")
 }
 
-// TestTheWorkflowFeaturesStayQuietOnATestFile: hover, completion, symbols and
-// the rest answer from the workflow grammar, so on a test document they answer
-// nothing rather than something confidently wrong.
+// TestTheWorkflowFeaturesStayQuietOnATestFile: none of these six answer a
+// test document from the *workflow* grammar (#1110 item 8's whole point —
+// a step's `for_each:`, a task's inputs, a Marshal-shaped format edit would
+// all be wrong answers with confidence in a document that has no `steps:`
+// at all). It no longer means every feature answers nothing: completion,
+// hover and the outline now have real, narrower answers of their own for
+// the test language, asserted here by their *absence of a workflow leak*
+// rather than by blanket emptiness, and exercised on their own positive
+// terms in testcompletion_test.go, testhover_test.go and
+// testsymbols_test.go. Format and code actions still answer nothing at all
+// — see their own docTest branches (format.go, codeaction.go) for why.
 func TestTheWorkflowFeaturesStayQuietOnATestFile(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
@@ -108,12 +116,33 @@ func TestTheWorkflowFeaturesStayQuietOnATestFile(t *testing.T) {
 
 	c.open("file:///quiet.test.yaml", validSuite)
 
+	// (4,8) sits inside the *key* "task" of a stub entry, not its value —
+	// not a position hoverTestDocument answers (only a stub's task *value*
+	// has a registry entry to look up) — and the workflow grammar has
+	// nothing to say about it either.
 	assert.Nil(t, c.hover("file:///quiet.test.yaml", 4, 8),
-		"hover answered a test document from the workflow grammar")
-	assert.Empty(t, c.complete("file:///quiet.test.yaml", 4, 8).Items,
-		"completion offered workflow keys inside a test file")
-	assert.Empty(t, c.symbols("file:///quiet.test.yaml"),
-		"the symbol tree described a test file as a workflow")
+		"hover answered a position that is neither a stub's task value nor something the workflow grammar would know")
+
+	// Completion at the same position offers the test language's own
+	// stub-level keys (task, step, where, ...), never the workflow's. The
+	// leak this asserts against is a workflow-only candidate, not the
+	// presence of any candidate at all.
+	got := labels(c.complete("file:///quiet.test.yaml", 4, 8).Items)
+	for _, workflowOnly := range []string{"for_each", "loop", "parallel", "sleep", "wait_until", "steps"} {
+		assert.NotContains(t, got, workflowOnly,
+			"a workflow-only key %q leaked into a test file's completion", workflowOnly)
+	}
+
+	// The outline names the suite's one case — the test language's own
+	// answer, never a workflow's steps.
+	symbols := c.symbols("file:///quiet.test.yaml")
+	require.Len(t, symbols, 1)
+	assert.Equal(t, "the case", symbols[0].Name)
+
+	assert.Empty(t, c.format("file:///quiet.test.yaml"),
+		"formatting answered a test document — no flowtest analogue of flowfile.Marshal exists")
+	assert.Empty(t, c.codeAction("file:///quiet.test.yaml", wholeOf(validSuite), nil, nil),
+		"code actions answered a test document — nothing here computes one yet")
 }
 
 // TestTheDirectoryDefaultsFileIsNeverAWorkflow: `testdefaults.yaml` gets

@@ -40,4 +40,13 @@
 //   - schema.go     renders protobuf descriptors and protovalidate constraints.
 //   - diagnostics.go, hover.go, completion.go, symbols.go — one feature each.
 //   - server.go     JSON-RPC dispatch and the protocol lifecycle.
+//   - testfile.go   flowtest's own diagnostics: the loader `flow test` runs,
+//     against the live buffer, never the workflow grammar's checks.
+//   - testschema.go, testposition.go, testcompletion.go, testsymbols.go,
+//     testhover.go — the test language's own narrower answers for the other
+//     features (#1110 item 8): one dispatch decision on [document.kind], not
+//     a second copy of each feature's machinery. testschema.go derives its
+//     candidate tables from the flowtest structs themselves by reflection —
+//     the loader's own struct tags — the same way schema.go derives a task's
+//     shape from protobuf descriptors rather than a hand-kept list.
 package lsp

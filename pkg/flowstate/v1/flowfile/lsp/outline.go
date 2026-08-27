@@ -301,14 +301,25 @@ func scalarText(rest string) string {
 
 func unquote(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
-		return s[1 : len(s)-1]
+	// Through [scalarText] — the real decoder, one screen up — rather than any
+	// substring surgery of this function's own. Three review rounds each found
+	// one more escape class this used to hand-decode (a trailing comment, an
+	// escaped quote, then \u-style sequences), and each fix was a step toward
+	// re-implementing the YAML scalar decoder beside the function that already
+	// calls it. Deriving from the one decoder is what ends the class: every
+	// escape the loader resolves, this resolves, because it is the same
+	// resolution (Codex, #1173, three rounds).
+	if v := scalarText(s); v != "" {
+		return v
 	}
-	// Strip a trailing comment from a plain scalar.
+	// The parser refused the fragment — a mid-edit line, an unclosed quote —
+	// so degrade the way the old scan did: comment off a plain scalar, flanking
+	// quotes off the rest. Best-effort is honest here; the parseable case never
+	// reaches it.
 	if i := strings.Index(s, " #"); i >= 0 {
 		s = strings.TrimSpace(s[:i])
 	}
-	return s
+	return strings.Trim(s, `"'`)
 }
 
 // isRegisteredTask reports whether a key names a task the registry has.
