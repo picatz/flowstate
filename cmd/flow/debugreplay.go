@@ -250,7 +250,7 @@ func replayDebugScript(cmd *cobra.Command, args []string) error {
 
 	// Whatever the run did, what the *script* did is worth saying — including
 	// after a failure, where a script that ran out is one explanation for it.
-	reportScriptRemainder(cmd, scriptPath, stream)
+	reportScriptRemainder(cmd, scriptPath, stream, runErr)
 
 	return runErr
 }
@@ -322,18 +322,43 @@ func scriptProblemsError(path string, problems []flowdebug.ScriptProblem, total 
 // account. The run happened and its answer is real, and this command's exit
 // status means what `flow run local`'s means — whether the run succeeded — so a
 // short script must not turn a run that completed into a failure.
-func reportScriptRemainder(cmd *cobra.Command, path string, stream *scriptStream) {
+func reportScriptRemainder(cmd *cobra.Command, path string, stream *scriptStream, runErr error) {
 	delivered, unread, first, exhausted := stream.progress()
 
-	// Nothing was read at all: the run failed before it reached a boundary, or
-	// refused to start. Saying "every command is unread" there would be a
-	// diagnostic about the script for a failure that has nothing to do with
-	// it, and a false diagnostic is worse than a missing one.
-	if delivered == 0 {
+	// Nothing was read at all, and the run failed: it never reached a boundary,
+	// or refused to start. Saying "every command is unread" there would be a
+	// diagnostic about the script for a failure that has nothing to do with it,
+	// and a false diagnostic is worse than a missing one.
+	//
+	// The run's outcome is what tells that apart from the case below, and
+	// reading only `delivered` conflated them — which suppressed the loudest
+	// report this command has for the run that most needs it (Codex, #1145).
+	if delivered == 0 && runErr != nil {
 		return
 	}
 
 	surface := newSurface(cmd)
+
+	// A run that succeeded and offered no boundary at all. Every top-level step
+	// was skipped by its `if:`, which the engine reports through StepSkipped
+	// without asking the debugger — the boundary sits *below* the condition, so
+	// a skipped step is never offered. Nothing about that looks like a failure:
+	// the run completes, the answer is real, and not one line of the script was
+	// read.
+	//
+	// It gets its own sentence rather than the "fewer boundaries than commands"
+	// one below, because "fewer" is true and useless here. The number is zero,
+	// and the reason is a property of the workflow rather than of the script's
+	// length.
+	if delivered == 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s the run completed without stopping at a single step "+
+			"boundary, so none of %s ran. Every top-level step was skipped by its `if:`, and a "+
+			"skipped step is never offered to a debugger — check the inputs this was replayed "+
+			"with, or that this is the workflow it was recorded against.\n",
+			surface.ErrTheme.Pill(ui.ToneWarning, "script"), path)
+
+		return
+	}
 	pill := surface.ErrTheme.Pill(ui.ToneWarning, "script")
 
 	if exhausted {

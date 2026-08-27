@@ -232,6 +232,60 @@ func TestDebugReplaySaysWhenTheRunEndedWithCommandsUnread(t *testing.T) {
 	assert.NotContains(t, res.Stderr, "42", "the unread inspection was answered")
 }
 
+// TestDebugReplaySaysWhenTheRunOfferedNoBoundaryAtAll is the loudest case, and
+// it was the silent one.
+//
+// A workflow whose top-level steps are all skipped by their `if:` completes
+// successfully and offers the debugger nothing: the boundary sits *below* the
+// condition, so `eval.go` reports a skipped step through StepSkipped without
+// asking. Not one line of the script is read, the run succeeds, and the answer
+// is real — so there is no other symptom anywhere.
+//
+// The report was suppressed by a check that read only how many commands had
+// been delivered, which conflated this with a run that failed before reaching a
+// boundary (Codex, #1145). Those are opposite situations: one is a script with
+// nothing to say about a failure, the other a script that went silently unused.
+func TestDebugReplaySaysWhenTheRunOfferedNoBoundaryAtAll(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.3\nname: all-skipped\nsteps:\n"+
+		"  - id: never\n    if: ${false}\n    log:\n      message: unreachable\n"), 0o600))
+
+	script := writeDebugScript(t, "step\ninspect 6 * 7\ncontinue\n")
+
+	res := runFlow(t, "debug", "replay", script, path)
+	require.NoError(t, res.Err, "a run that skipped every step still succeeded")
+
+	assert.Contains(t, res.Stderr, "without stopping at a single step boundary",
+		"the whole script went unused and nothing said so")
+	assert.Contains(t, res.Stderr, "skipped by its `if:`",
+		"the account does not name why no boundary was offered")
+	assert.NotContains(t, res.Stderr, "42", "an inspection was answered by a run that never paused")
+}
+
+// TestDebugReplaySaysNothingWhenTheRunFailedBeforeAnyBoundary is the other side
+// of that condition, and the reason it cannot simply be deleted.
+//
+// A run that fails before reaching a boundary has delivered nothing either, and
+// "none of your script ran" there is a diagnostic about the script for a failure
+// that has nothing to do with it. The run's own error is the answer; a false
+// diagnostic beside it is worse than a missing one.
+func TestDebugReplaySaysNothingWhenTheRunFailedBeforeAnyBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.3\nname: fails-first\ninputs:\n"+
+		"  required_thing:\n    type: string\n    required: true\nsteps:\n"+
+		"  - id: never\n    log:\n      message: unreachable\n"), 0o600))
+
+	script := writeDebugScript(t, "step\ncontinue\n")
+
+	res := runFlow(t, "debug", "replay", script, path)
+	require.Error(t, res.Err, "a run missing a required input was expected to fail")
+
+	assert.NotContains(t, res.Stderr, "without stopping at a single step boundary",
+		"a failed run was reported as a script that went unused")
+	assert.NotContains(t, res.Stderr, "commands unread",
+		"a failed run was reported as a script that went unread")
+}
+
 // TestDebugReplaySaysNothingAboutTrailingComments: a comment is not a command,
 // so a script that ends in the sentence explaining itself has nothing left
 // undone. The count above is of commands, and a false diagnostic is worse than
