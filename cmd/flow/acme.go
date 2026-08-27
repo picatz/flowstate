@@ -485,21 +485,46 @@ func checkACMECacheDir(path string) error {
 // returns an error — and the window in between is a listener that answers
 // handshakes through autocert's ordinary lazy path, which is what it would
 // have done anyway.
+//
+// # Priming both certKey variants (#966)
+//
+// autocert keys its cached and in-flight certificates on
+// certKey{domain, isRSA: !supportsECDSA(hello)}
+// (golang.org/x/crypto/acme/autocert@v0.55.0, autocert.go:296-298) — one
+// domain has two possible cache slots, and GetCertificate picks the slot from
+// the hello it was actually called with, not from anything this function
+// decides. A hello with no CipherSuites at all falls out the bottom of
+// supportsECDSA false (autocert.go:327-371: a nil SignatureSchemes and a nil
+// SupportedCurves both pass through unchecked, but the final loop over
+// CipherSuites only returns true when it finds a suite naming ECDHE_ECDSA
+// explicitly, and an empty list never does) — so priming with a bare hello,
+// as this used to do, fills only the legacy-RSA slot. Any client whose
+// ClientHello does name an ECDHE_ECDSA cipher suite asks for the *other*
+// slot, the one priming left cold, and pays for issuance on its first
+// handshake exactly as if priming had not run at all.
+//
+// So this primes both: once with a hello that has no ECDSA-signalling cipher
+// suite (the legacy-RSA certKey) and once with a hello that names one (the
+// default-ECDSA certKey), for every configured host.
 func primeACMECertificates(ctx context.Context, manager *autocert.Manager, hosts []string) error {
 	var errs []error
+hostLoop:
 	for _, host := range hosts {
-		if err := primeOneACMECertificate(ctx, manager, host); err != nil {
-			errs = append(errs, err)
-		}
-		if ctx.Err() != nil {
-			break
+		for _, ecdsa := range []bool{false, true} {
+			if err := primeOneACMECertificate(ctx, manager, host, ecdsa); err != nil {
+				errs = append(errs, err)
+			}
+			if ctx.Err() != nil {
+				break hostLoop
+			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// primeOneACMECertificate obtains one host's certificate under ctx's deadline,
-// which it has to enforce itself.
+// primeOneACMECertificate obtains one host's certificate under ctx's
+// deadline, which it has to enforce itself, for the certKey variant ecdsa
+// selects.
 //
 // [autocert.Manager.GetCertificate] takes a [tls.ClientHelloInfo] and manages
 // its own background context, so a deadline on the caller's context cannot
@@ -515,29 +540,40 @@ func primeACMECertificates(ctx context.Context, manager *autocert.Manager, hosts
 // this function when the deadline wins, which is deliberate and bounded on the
 // far end by autocert's own HTTP client timeouts — and the only caller that
 // reaches this path is on its way to shutting the process down.
-func primeOneACMECertificate(ctx context.Context, manager *autocert.Manager, host string) error {
+func primeOneACMECertificate(ctx context.Context, manager *autocert.Manager, host string, ecdsa bool) error {
+	hello := &tls.ClientHelloInfo{
+		ServerName: host,
+		// autocert's TLS-ALPN-01 codepath only activates for a hello that
+		// asks for the "acme-tls/1" protocol; without it GetCertificate
+		// serves (or here, obtains) the ordinary certificate for the
+		// name, which is what priming wants.
+		SupportedProtos: []string{"h2", "http/1.1"},
+	}
+	label := "RSA"
+	if ecdsa {
+		label = "ECDSA"
+		// This is the one signal autocert's supportsECDSA actually keys on
+		// with everything else left nil (autocert.go:327-371): naming an
+		// ECDHE_ECDSA cipher suite is what selects the default-ECDSA certKey
+		// rather than the legacy-RSA one.
+		hello.CipherSuites = []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256}
+	}
+
 	done := make(chan error, 1)
 
 	go func() {
-		_, err := manager.GetCertificate(&tls.ClientHelloInfo{
-			ServerName: host,
-			// autocert's TLS-ALPN-01 codepath only activates for a hello that
-			// asks for the "acme-tls/1" protocol; without it GetCertificate
-			// serves (or here, obtains) the ordinary certificate for the
-			// name, which is what priming wants.
-			SupportedProtos: []string{"h2", "http/1.1"},
-		})
+		_, err := manager.GetCertificate(hello)
 		done <- err
 	}()
 
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("obtaining an initial certificate for %s: %w", host, err)
+			return fmt.Errorf("obtaining an initial %s certificate for %s: %w", label, host, err)
 		}
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("obtaining an initial certificate for %s: %w", host, ctx.Err())
+		return fmt.Errorf("obtaining an initial %s certificate for %s: %w", label, host, ctx.Err())
 	}
 }
 
