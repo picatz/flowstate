@@ -496,8 +496,11 @@ to be about one key. It edits the lines it must, copies the rest through byte fo
 so a file with nothing to change comes back identical, which is what makes running it
 over a directory safe — and refuses the shapes it would have to guess at: flow style,
 which has no line structure to rewrite, and — since the [strict YAML
-profile](#the-grammar-is-a-strict-subset-of-yaml) — any file carrying an anchor,
-alias, or merge key, which the grammar no longer accepts at all. A refusal exits
+profile](#the-grammar-is-a-strict-subset-of-yaml) — a merge key (`<<:`), whose
+precedence rule cannot be reproduced without deciding which spelling of a colliding
+key the author meant. A whole-value alias is *not* in that set: it is replaced by
+the anchored value's own source bytes and the anchor marker is dropped, which is
+mechanical and decides nothing. A refusal exits
 non-zero, as does `--check` finding work,
 so `flow fix . && git commit` cannot succeed over a file still written in a spelling
 nothing compiles.
@@ -547,24 +550,47 @@ omission. An edition boundary — a newer edition refusing what the edition a fi
 declares still resolves — would mean this build carried two grammars, which is
 precisely the cost the no-deprecation decision above was made to avoid: declaring
 an older edition has never made an older grammar compile. So a file is refused
-for an anchor whatever it says its edition is, and `flow fix` leaves it byte for
-byte alone rather than stamping it forward. The cost, paid knowingly: an author
-on an older edition spells the construct out by hand *before* `flow fix` will
-bring the file forward, rather than getting both in one pass.
+for an anchor whatever it says its edition is.
+
+What `flow fix` does with such a file is a separate question from what the compiler
+says about it, and the answer is: it carries it across where it can do so
+mechanically. A **whole-value alias** — `retry: *backoff`, `- *host`, an alias that
+is the entire value of a key or a whole list item — is replaced by the source bytes
+of the value its anchor names, and every anchor marker is dropped, in the same run
+that stamps the edition forward. Copying source lines rather than re-rendering the
+parsed value is what keeps the comments among them, and the author's own quoting
+of them, exactly as written.
+
+A **merge key** is not carried across. `<<: *base` beside a sibling key is a
+*precedence* rule, so writing the merged keys out means deciding which spelling of
+a colliding key wins — judgement, which `flow fix` does not exercise. The same goes
+for anything else the rewriter cannot copy byte-safely: an alias inside flow style,
+an alias naming an anchor the document never declares, an anchor declared twice, a
+cycle. Each of those refuses the *whole* file with a positioned diagnostic saying
+which construct and why, and the bytes are left exactly alone — half-inlined
+aliases would leave a document where a surviving alias names an anchor that is
+already gone.
+
+Inlining is also the one place in the front end that follows an alias at all, so it
+is where the total-node budget stops being redundant: every expansion is charged
+against the same `maxNodes` the compiler bounds a document by, and a chain is
+bounded by `maxAliasDepth` with the anchors being expanded held on a stack. A
+billion-laughs document is refused rather than expanded — a `flow fix` that wrote a
+file larger than the compiler will read would be breaking the file it was fixing.
+See `flowfile/fixalias.go`.
 
 What this profile deliberately does **not** reach is plain-scalar typing:
 `message: 0o777` still compiles to the integer 511, and a bare `2026.1` still
 arrives as a float. That is the YAML substrate no profile of *constructs* touches,
 and it stays the open question behind #546.
 
-Two follow-ups are named rather than done here. `flow fix` **refuses** a file
-holding one of the three constructs today, in the same words the compiler uses,
-rather than mechanically inlining it on the way across an edition — the inlining is
-byte-safe and requires no judgement, so it is worth doing, but it is a rewriter of
-its own. And the machinery the refusal makes redundant (the cycle pass, the
-merge branch of the node budget, the formatter's merge handling) is left in place:
-closing the door is this change; removing the corridor behind it is cleanup a
-reviewer should read on its own.
+One follow-up is named rather than done here: the machinery the refusal makes
+redundant *on the compile path* (the cycle pass, the formatter's merge handling) is
+left in place, because closing the door is this change and removing the corridor
+behind it is cleanup a reviewer should read on its own. The node budget and the
+alias-depth bound are not part of that cleanup at all — `flow fix`'s inlining and
+the pin collector both still follow aliases on input an outside party chooses, so
+those two bounds are load-bearing rather than redundant.
 
 ### The type system is not a later phase
 

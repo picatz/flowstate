@@ -1028,23 +1028,28 @@ steps:
 		wf.GetSteps()[0].GetTask().GetInputs()["message"].GetLiteral().GetStringValue())
 }
 
-// TestFixRefusesAnAnchorInEveryPositionTheGrammarAllows covers the walk's reach:
-// an anchor is refused wherever it can be written — on a step, on the whole
-// `steps:` sequence, on a loop body, on a parallel branch — rather than only in
-// the one position a bug once let it slip through. The grammar is a strict subset
-// of YAML (#653), so each of these is refused rather than rewritten, and the
-// refused file is left byte for byte alone. This is the positional companion to
-// TestFixRefusesStrictYAML.
+// TestFixDropsAnAnchorInEveryPositionTheGrammarAllows covers the walk's reach: an
+// anchor is found wherever it can be written — on a step, on the whole `steps:`
+// sequence, on a loop body, on a parallel branch — rather than only in the one
+// position a bug once let it slip through.
+//
+// The grammar is a strict subset of YAML and does not accept an anchor at all
+// (#653), so `flow fix` carries the file across by dropping the marker: an anchor
+// is a *name on* a value, not a declaration of one, so removing it leaves the
+// value exactly where it was written. None of these is referenced by an alias,
+// which is what makes the whole edit the marker itself and lets each case assert
+// the output byte for byte. The alias half is fixalias_test.go.
 //
 // It doubles as the invariant `flow fix` promises: what it leaves behind compiles
 // or is refused, never a silent pass-through the compiler then rejects. Each
-// fixture compiles neither before (the anchor is refused) nor after (fix left it
-// unchanged), and the refusal is what keeps those two facts from being a gap.
-func TestFixRefusesAnAnchorInEveryPositionTheGrammarAllows(t *testing.T) {
+// fixture fails to compile before and compiles after, and the compile at the end
+// of each case is what keeps those two facts from being a gap.
+func TestFixDropsAnAnchorInEveryPositionTheGrammarAllows(t *testing.T) {
 	t.Parallel()
 
-	srcs := map[string]string{
-		"an anchored step": `edition: v2026.3
+	tests := map[string]struct{ src, want string }{
+		"an anchored step": {
+			src: `edition: v2026.3
 name: t
 steps:
   - &first
@@ -1052,14 +1057,33 @@ steps:
     log:
       message: hi
 `,
-		"an anchored steps sequence": `edition: v2026.3
+			want: `edition: v2026.3
+name: t
+steps:
+  -
+    id: a
+    log:
+      message: hi
+`,
+		},
+		"an anchored steps sequence": {
+			src: `edition: v2026.3
 name: t
 steps: &all
   - id: a
     log:
       message: hi
 `,
-		"an anchored loop body": `edition: v2026.3
+			want: `edition: v2026.3
+name: t
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		"an anchored loop body": {
+			src: `edition: v2026.3
 name: t
 steps:
   - id: loop
@@ -1070,7 +1094,20 @@ steps:
           log:
             message: hi
 `,
-		"an anchored parallel branch": `edition: v2026.3
+			want: `edition: v2026.3
+name: t
+steps:
+  - id: loop
+    for_each:
+      items: ${[1]}
+      steps:
+        - id: inner
+          log:
+            message: hi
+`,
+		},
+		"an anchored parallel branch": {
+			src: `edition: v2026.3
 name: t
 steps:
   - id: fan
@@ -1081,19 +1118,35 @@ steps:
             log:
               message: a
 `,
+			want: `edition: v2026.3
+name: t
+steps:
+  - id: fan
+    parallel:
+      -
+        steps:
+          - id: one
+            log:
+              message: a
+`,
+		},
 	}
 
-	for name, src := range srcs {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			// The premise: the compiler refuses this file for its anchor.
-			_, _, err := flowfile.Parse([]byte(src))
+			_, _, err := flowfile.Parse([]byte(test.src))
 			require.Error(t, err, "premise: an anchor must not compile")
 
-			result, err := flowfile.Fix([]byte(src))
+			result, err := flowfile.Fix([]byte(test.src))
 			require.NoError(t, err)
-			require.NotEmpty(t, result.Refusals, "an anchor is refused, not silently passed through")
-			assert.Contains(t, result.Refusals[0].Message, "not part of the Flowfile grammar")
-			assert.Equal(t, src, string(result.Source), "a refused file is left byte for byte alone")
+			require.Empty(t, result.Refusals, "an unreferenced anchor is a marker to drop, not a shape to refuse")
+			assert.Equal(t, test.want, string(result.Source))
+
+			// And what it leaves behind is a file this build compiles, which is
+			// the whole of what dropping the marker was for.
+			_, _, err = flowfile.Parse(result.Source)
+			require.NoError(t, err)
 		})
 	}
 }
