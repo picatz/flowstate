@@ -574,6 +574,13 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pl
 	return connect.NewResponse(&pluginv1.ResolveResponse{Value: []byte(value)}), nil
 }
 
+// sleepyTaskDuration is how long the "sleepy" fake below works before it
+// answers. It has to be comfortably longer than the CallTimeout its tests
+// configure — a fixture that finished within the host's backstop would pass
+// whether the backstop had been skipped or not — and short enough that three
+// tests can afford to wait it out.
+const sleepyTaskDuration = time.Second
+
 // fakeTaskService answers task executions.
 type fakeTaskService struct {
 	pluginv1connect.UnimplementedTaskServiceHandler
@@ -599,6 +606,31 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 	case "slow":
 		<-ctx.Done()
 		return nil, connect.NewError(connect.CodeDeadlineExceeded, ctx.Err())
+
+	case "sleepy":
+		// Finishes on its own after a wait deliberately longer than the
+		// CallTimeout its tests configure, which is the shape #1130 was
+		// about: a task that legitimately takes longer than the host's
+		// backstop, under a caller that allowed it the time. "slow" above
+		// cannot answer that question, because it never finishes — a bound
+		// biting and a task completing look the same from a fixture that
+		// only ever ends when its context does.
+		//
+		// It still watches ctx, so a test that wants a bound to bite gets a
+		// prompt answer rather than a wait.
+		select {
+		case <-time.After(sleepyTaskDuration):
+		case <-ctx.Done():
+			return nil, connect.NewError(connect.CodeDeadlineExceeded, ctx.Err())
+		}
+
+		return connect.NewResponse(&pluginv1.ExecuteResponse{
+			Outputs: &flowstatev1.Node_Outputs{
+				NamedValues: map[string]*flowstatev1.Value{
+					"result": flowstatev1.NewLiteral("awake"),
+				},
+			},
+		}), nil
 
 	case "retryable":
 		err := connect.NewError(connect.CodeInternal, errors.New("transient trouble"))

@@ -27,10 +27,12 @@ import (
 // proto-first invariant exists to prevent.
 //
 // What these return is better than the raw client for the same reason a caller
-// would otherwise have to build it themselves: it is bounded by the host's
-// per-call timeout, it refuses a capability the plugin did not advertise, and it
-// resolves the current process on every call, so it keeps working across a
-// restart instead of holding a connection to a process that has gone.
+// would otherwise have to build it themselves: no call through one is ever
+// unbounded — a caller's own deadline governs, and a caller that brought none
+// gets the host's [Config.CallTimeout] (see [Plugin.callContext]) — it refuses
+// a capability the plugin did not advertise, and it resolves the current
+// process on every call, so it keeps working across a restart instead of
+// holding a connection to a process that has gone.
 
 // SecretService returns this plugin's secret resolution as the generated service.
 //
@@ -114,19 +116,20 @@ func (s taskService) Execute(
 // package ever serves it as a handler), so that is a gap in the pattern
 // rather than in what this type needs to do.
 //
-// This still applies [Plugin.callContext]'s own per-call timeout, but not with
-// Execute's `defer cancel()` — that scopes the cancel to when the *wrapping*
-// call returns, which for Execute is right (it does not return until the
-// whole call is done) and wrong here, because ExecuteStream returns as soon
-// as the stream exists, before its caller has read anything from it. A
-// deferred cancel at that point would tear the stream down before its first
-// Receive. The package's own promise is the other direction: every service
-// this file hands back — including this one — is bounded by the host's
-// per-call timeout, so a plugin that opens a stream and then never sends a
-// terminal ExecuteStreamResponse cannot hold the call open past
-// Config.CallTimeout; only a plugin that finishes within it, or a reader that
-// keeps calling Receive, gets to run longer than that under its own context's
-// deadline.
+// This still goes through [Plugin.callContext], but not with Execute's
+// `defer cancel()` — that scopes the cancel to when the *wrapping* call
+// returns, which for Execute is right (it does not return until the whole
+// call is done) and wrong here, because ExecuteStream returns as soon as the
+// stream exists, before its caller has read anything from it. A deferred
+// cancel at that point would tear the stream down before its first Receive.
+// The package's own promise is the other direction: every service this file
+// hands back — including this one — is bounded, so a plugin that opens a
+// stream and then never sends a terminal ExecuteStreamResponse cannot hold
+// the call open indefinitely. Which bound ends it is [Plugin.callContext]'s
+// answer rather than this method's: the caller's own deadline when it brought
+// one, and Config.CallTimeout when it did not — the shape that would
+// otherwise run forever, and the one
+// [TestTaskServiceExecuteStreamIsBoundedByCallTimeout] pins.
 //
 // The bounded context is kept alive for exactly that reason: it is not
 // canceled here, so it lives for the stream's whole read, and it is released

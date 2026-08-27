@@ -1,0 +1,100 @@
+# A signals rule matching an *identity* rather than a claim — and why that is
+# the exception rather than the default.
+#
+# `approval-gate` and `enterprise-fund-transfer` gate on `claims:` deliberately:
+# a claim survives a person changing teams, and naming a role rather than a
+# person is what keeps the file correct when the org chart changes underneath
+# it. `subject:` and `namespace:` exist for the cases that shape does not fit,
+# and this file is both of them, side by side, so neither reads as the
+# obvious default.
+#
+# # `subject:` — one caller with no role to name
+#
+# `release-bot` mints exactly one identity and nothing else ever will, so
+# there is no team to gate on: a claim naming "the release automation" is a
+# claim with one member, forever, which is a role in name only. Pinning the
+# exact subject is not a weaker version of a claims rule here, it is the
+# stronger check — an attacker holding any *other* identity, even one
+# carrying every claim `release-bot` carries, still fails this rule, where a
+# claims-only gate would have let them through.
+#
+# # `namespace:` + `claims:` — one tenant, any holder of a role
+#
+# `on-call` is the opposite shape: many people rotate through it, so `claims:
+# {role: on-call}` alone is the right idea. `namespace:` beside it is what
+# makes "this tenant's on-call, not some other tenant's" a fact the file
+# states rather than one a reader has to trust `authorizeRun`'s own tenant
+# check to be enforcing correctly elsewhere. Every signal is already confined
+# to its run's own tenant before this policy is ever consulted
+# ([SignalPolicyRule.namespace]'s own doc comment says so) — so this rule
+# does not *add* the boundary, it writes down the boundary that already
+# holds, the same way asserting a bound already true is worth doing in a test.
+#
+# Both gates default to a 20-second wait, so
+#
+#   flow run local examples/signal-rule-identity/workflow.yaml
+#
+# runs and then blocks on `rollback`. Rehearse an approver the way
+# `approval-gate` does, standing in for each rule in turn:
+#
+#   flow run local examples/signal-rule-identity/workflow.yaml \
+#     --signal rollback-confirmed='{}' \
+#     --signal-as-subject release-bot@example.com \
+#     --signal-as-issuer https://issuer.example.com
+#
+#   flow run local examples/signal-rule-identity/workflow.yaml \
+#     --signal rollback-confirmed='{}' \
+#     --signal-as-subject release-bot@example.com \
+#     --signal-as-issuer https://issuer.example.com \
+#     --signal hold-lifted='{}' \
+#     --signal-as-subject on-call-lead@example.com \
+#     --signal-as-issuer https://issuer.example.com \
+#     --signal-as-namespace payments \
+#     --signal-as-claim role=on-call
+#
+# `flow test` (`workflow.test.yaml`) is what actually asserts both rules,
+# including the two ways a sender fails one — an unattested rehearsal on the
+# command line is not authentication either, exactly as `approval-gate` says.
+edition: v2026.3
+name: signal-rule-identity
+inputs:
+  environment:
+    type: string
+    default: production
+    description: which environment this rollback targets
+signals:
+
+  # Any of this tenant's on-call, and only this tenant's. Literal rather than
+  # read from an input: unlike `subject_from`, a rule's `namespace:` has no
+  # expression form — the tenant a rule trusts is a fact this file's author
+  # commits to, never one a caller's own argument could shift.
+  hold-lifted:
+    allow:
+      - namespace: payments
+        claims:
+          role: on-call
+  # One automated caller, named exactly, with no claim at all — there is
+  # nothing to require beyond being that one identity.
+  rollback-confirmed:
+    allow:
+      - subject: "https://issuer.example.com#release-bot@example.com"
+steps:
+  - id: request
+    log:
+      message: ${"awaiting rollback confirmation for " + inputs.environment}
+  - id: rollback
+    wait_for_signal:
+      name: rollback-confirmed
+      timeout: 20s
+  - id: hold
+    if: ${!steps.rollback.timed_out}
+    wait_for_signal:
+      name: hold-lifted
+      timeout: 20s
+outputs:
+  confirmed_by:
+    value: '${steps.rollback.timed_out ? "" : steps.rollback.sender.identity.subject}'
+    description: the release automation's subject, once it confirmed
+  hold_lifted_by:
+    value: '${(steps.rollback.timed_out || steps.hold.timed_out) ? "" : steps.hold.sender.identity.subject}'
+    description: which on-call responder lifted the hold, once one did

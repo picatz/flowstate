@@ -1,0 +1,35 @@
+# `values:` is enforced once, at submit, the same moment `type:` is — so most
+# of what is worth demonstrating is the refusal, not the run.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: an ordinary tier runs, and the production safeguard stays quiet
+    inputs:
+      tier: canary
+    expect:
+      ran: [announce]
+      skipped: [safeguard]
+      outputs:
+        tier: canary
+
+  - name: production is a declared choice too, and the safeguard fires
+    inputs:
+      tier: production
+    expect:
+      ran: [announce, safeguard]
+      outputs:
+        tier: production
+
+  - name: a value outside the declared set is refused before announce runs
+    inputs:
+      tier: prod
+    expect:
+      failed: true
+      # Names every legal choice back to whoever sent the wrong one, generated
+      # from the declaration itself rather than a `must:` author would have had
+      # to spell the same set into by hand.
+      error_contains: "not one of the values"
