@@ -722,8 +722,8 @@ func assertion(call *ast.CallExpr, handles, testify, shadowed map[string]bool) b
 	return isHandle(selector.X, handles)
 }
 
-// shadowedBy are the names a function binds: its receiver, its parameters, its
-// named results, and everything its body declares.
+// shadowedBy are the names a function binds: its receiver, its type parameters,
+// its value parameters, its named results, and everything its body declares.
 //
 // The signature half was missing at first, and the hole it left is worth
 // recording because it is the same defect the body half was written to close,
@@ -732,6 +732,12 @@ func assertion(call *ast.CallExpr, handles, testify, shadowed map[string]bool) b
 // the helper read as asserting, and the propagation then marked every test
 // calling it as asserting too. One un-shadowed parameter hid an arbitrary
 // number of vacuous tests (Codex, #1126).
+//
+// That list was then still short by one, because a *type* parameter binds as
+// well: in `func convert[panic ~string](x string)`, the call `panic(x)` is a
+// conversion that returns normally (Codex, #1127). Which is the argument for
+// enumerating what the syntax has rather than the cases somebody thought of —
+// five field lists, all of them read here.
 //
 // Deliberately generous about what counts as binding and deliberately blind to
 // where the binding is in scope: this is a syntax walk. What it is for is
@@ -759,6 +765,7 @@ func shadowedBy(fn *ast.FuncDecl) map[string]bool {
 	}
 
 	fields(fn.Recv)
+	fields(fn.Type.TypeParams)
 	fields(fn.Type.Params)
 	fields(fn.Type.Results)
 

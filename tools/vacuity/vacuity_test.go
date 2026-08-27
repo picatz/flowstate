@@ -991,6 +991,31 @@ func TestThroughAShadowedReceiver(t *testing.T) {
 	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
 		"a receiver shadowing the testify import was not counted as binding the name, so "+
 			"a call on it read as an assertion")
+
+	// And a *type* parameter, which is the fifth place a signature binds and
+	// the one the first version of this fix was still short by: in a generic
+	// helper `panic(x)` is a conversion to the type parameter, and it returns.
+	//
+	// Called without explicit instantiation on purpose. Written `convert[string]("x")`
+	// the callee is an IndexExpr rather than an identifier, so the propagation
+	// never follows it — and the fixture then reports the test unasserted
+	// whether the fix is present or not, which is this tool's own subject
+	// wearing its own clothes. The mutation is what said so.
+	findings, _ = analyzedFile(t, "shadowed_typeparam_test.go", `package fixture
+
+import "testing"
+
+func convert[panic ~string](x string) {
+	_ = panic(x)
+}
+
+func TestThroughAShadowedTypeParameter(t *testing.T) {
+	convert("x")
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a type parameter named panic was not counted as binding the name, so a "+
+			"conversion read as the builtin that fails a test")
 }
 
 // TestAnAliasReachesTheWholePackage is Go's scoping, which is not the file's.
