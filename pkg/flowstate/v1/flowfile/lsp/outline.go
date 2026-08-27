@@ -307,12 +307,49 @@ func unquote(s string) string {
 	// the quote test (the line ends in `y`) and fell through with its quotes
 	// still on, so the outline showed `"smoke"` while flow test's report says
 	// `smoke`, and a task hover looked up a quoted name the registry does not
-	// hold (Codex, #1173). The close-quote scan is the same simplification the
-	// old suffix check made — YAML escape sequences inside the quotes are not
-	// interpreted — which loses nothing the previous spelling had.
-	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') {
-		if end := strings.IndexByte(s[1:], s[0]); end >= 0 {
-			return s[1 : 1+end]
+	// hold (Codex, #1173).
+	//
+	// The scan honors each style's own escape, because a bare first-quote
+	// search truncated `name: "say \"hi\""` to `say \` — and the first
+	// version here claimed that lost nothing, which was false: the last-byte
+	// check it replaced kept that name whole (Codex, #1173, second round). A
+	// double-quoted scalar escapes with a backslash and a single-quoted one by
+	// doubling the quote, and both unescape the quote itself so the name shown
+	// is the name the loader decodes and the report prints. Other
+	// double-quote escapes (`\n`, `\t`) are left as written — a case name
+	// carrying one is past what a line scan should interpret, and the loader
+	// remains the authority on it.
+	if len(s) >= 2 && s[0] == '"' {
+		var out strings.Builder
+		for i := 1; i < len(s); i++ {
+			switch {
+			case s[i] == '\\' && i+1 < len(s):
+				if next := s[i+1]; next == '"' || next == '\\' {
+					out.WriteByte(next)
+				} else {
+					out.WriteByte(s[i])
+					out.WriteByte(next)
+				}
+				i++
+			case s[i] == '"':
+				return out.String()
+			default:
+				out.WriteByte(s[i])
+			}
+		}
+	}
+	if len(s) >= 2 && s[0] == '\'' {
+		var out strings.Builder
+		for i := 1; i < len(s); i++ {
+			if s[i] == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					out.WriteByte('\'')
+					i++
+					continue
+				}
+				return out.String()
+			}
+			out.WriteByte(s[i])
 		}
 	}
 	// Strip a trailing comment from a plain scalar.

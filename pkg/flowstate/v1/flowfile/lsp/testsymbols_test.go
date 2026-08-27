@@ -214,4 +214,20 @@ func TestASymbolNameMatchesTheReportThroughQuotesAndComments(t *testing.T) {
 		"a trailing comment left the quotes on the outline's name")
 	assert.Equal(t, "quoted # not a comment", syms[1].Name,
 		"a # inside a quoted name was stripped as a comment")
+
+	// And each style's own escape, because a bare first-quote scan truncated
+	// an escaped quote to the text before it — `say \` for a name the report
+	// prints as `say "hi"` (Codex, #1173, second round). The doubled single
+	// quote is YAML's own escape for that style, decoded the same way.
+	c.open("file:///escaped.test.yaml",
+		"tests:\n"+
+			"  - name: \"say \\\"hi\\\"\" # greeting\n"+
+			"  - name: 'it''s fine'\n")
+	syms = c.symbols("file:///escaped.test.yaml")
+
+	require.Len(t, syms, 2)
+	assert.Equal(t, `say "hi"`, syms[0].Name,
+		"an escaped quote was read as the scalar's close, truncating the name")
+	assert.Equal(t, "it's fine", syms[1].Name,
+		"a doubled single quote was read as the close instead of the escape it is")
 }
