@@ -5,10 +5,25 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/client"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 )
+
+// serverNamespace narrows the paired accessor to the namespace, for a test whose
+// subject is which namespace a caller resolves to rather than the pairing.
+//
+// The pairing has its own test below. The client is dropped here rather than in
+// the package, because the server deliberately offers no way to get a namespace
+// without the client it belongs to — see
+// [server.FlowstateServer.clientAndTemporalNamespaceFor].
+func serverNamespace(t *testing.T, s *server.FlowstateServer, tenant string) (string, error) {
+	t.Helper()
+
+	_, namespace, err := s.ClientAndTemporalNamespaceForTest(tenant)
+	return namespace, err
+}
 
 // TestWithTemporalNamespaceIsNotWithNamespace pins the two apart at the surface a
 // deployment configures them through.
@@ -32,7 +47,7 @@ func TestWithTemporalNamespaceIsNotWithNamespace(t *testing.T) {
 			server.WithTemporalNamespace("flowstate-prod"),
 		)
 
-		got, err := flowstate.TemporalNamespaceForTest("team-a")
+		got, err := serverNamespace(t, flowstate, "team-a")
 		require.NoError(t, err)
 		require.Equal(t, "flowstate-prod", got)
 		require.NotEqual(t, "team-a", got,
@@ -48,7 +63,7 @@ func TestWithTemporalNamespaceIsNotWithNamespace(t *testing.T) {
 		// answered as though it had.
 		flowstate := mustNew(t, nil, server.WithNamespace("team-a"))
 
-		got, err := flowstate.TemporalNamespaceForTest("team-a")
+		got, err := serverNamespace(t, flowstate, "team-a")
 		require.Error(t, err)
 		require.Empty(t, got)
 	})
@@ -73,10 +88,10 @@ func TestWithTemporalNamespaceRefusesTheEmptyNamespace(t *testing.T) {
 		"the message should name the option an operator has to fix")
 }
 
-// TestTemporalNamespaceForWithoutAPool covers the single-namespace deployment,
+// TestNamingTheTemporalNamespaceWithoutAPool covers the single-namespace deployment,
 // which is every deployment that does not map tenants onto namespaces of their
 // own.
-func TestTemporalNamespaceForWithoutAPool(t *testing.T) {
+func TestNamingTheTemporalNamespaceWithoutAPool(t *testing.T) {
 	t.Parallel()
 
 	t.Run("the recorded namespace serves every caller", func(t *testing.T) {
@@ -87,7 +102,7 @@ func TestTemporalNamespaceForWithoutAPool(t *testing.T) {
 		flowstate := mustNew(t, nil, server.WithTemporalNamespace("flowstate-prod"))
 
 		for _, tenant := range []string{"", "team-a", "team-b"} {
-			got, err := flowstate.TemporalNamespaceForTest(tenant)
+			got, err := serverNamespace(t, flowstate, tenant)
 			require.NoError(t, err)
 			require.Equal(t, "flowstate-prod", got)
 		}
@@ -102,7 +117,7 @@ func TestTemporalNamespaceForWithoutAPool(t *testing.T) {
 		// a raw request field.
 		flowstate := mustNew(t, nil)
 
-		got, err := flowstate.TemporalNamespaceForTest("team-a")
+		got, err := serverNamespace(t, flowstate, "team-a")
 		require.Error(t, err)
 		require.Empty(t, got)
 		require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
@@ -143,7 +158,7 @@ func newNamespaceRecordingPooledServer(
 	), namespace
 }
 
-// TestTemporalNamespaceForWithAPoolRefusesAnUnroutableTenant is the test for the
+// TestNamingTheTemporalNamespaceWithAPoolRefusesAnUnroutableTenant is the test for the
 // failure that would not announce itself, one level up from
 // TestUnroutableTenantIsRefusedNotRedirected.
 //
@@ -153,7 +168,7 @@ func newNamespaceRecordingPooledServer(
 // a raw Temporal request at a namespace holding another tenant's histories, and
 // the request would succeed. Reads leak as thoroughly as writes do, and more
 // quietly.
-func TestTemporalNamespaceForWithAPoolRefusesAnUnroutableTenant(t *testing.T) {
+func TestNamingTheTemporalNamespaceWithAPoolRefusesAnUnroutableTenant(t *testing.T) {
 	// The deployment maps team-a and names no default, and this process is
 	// pointed at a namespace of its own.
 	const recorded = "flowstate-the-process-namespace"
@@ -161,7 +176,7 @@ func TestTemporalNamespaceForWithAPoolRefusesAnUnroutableTenant(t *testing.T) {
 	flowstate, routedNamespace := newNamespaceRecordingPooledServer(t, recorded, "team-a")
 
 	t.Run("a routed tenant is answered from the pool, not from the recording", func(t *testing.T) {
-		got, err := flowstate.TemporalNamespaceForTest("team-a")
+		got, err := serverNamespace(t, flowstate, "team-a")
 		require.NoError(t, err)
 		require.Equal(t, routedNamespace, got,
 			"a pooled deployment's per-tenant answer must win over the single recorded namespace")
@@ -169,7 +184,7 @@ func TestTemporalNamespaceForWithAPoolRefusesAnUnroutableTenant(t *testing.T) {
 	})
 
 	t.Run("an unroutable tenant is refused, never given the process's namespace", func(t *testing.T) {
-		got, err := flowstate.TemporalNamespaceForTest("team-b")
+		got, err := serverNamespace(t, flowstate, "team-b")
 		require.Error(t, err,
 			"a tenant this deployment cannot place was told a namespace; it would read what is in it")
 		require.Empty(t, got)
@@ -180,4 +195,173 @@ func TestTemporalNamespaceForWithAPoolRefusesAnUnroutableTenant(t *testing.T) {
 		require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
 			"a configuration gap an operator fixes")
 	})
+}
+
+// TestTheServerHandsBackAClientAndItsOwnNamespace is the server-side half of the
+// pairing property, so the fix does not stop at the temporalclient boundary.
+//
+// A raw Temporal request needs both halves and needs them to be halves of one
+// answer: the client's connection decides which cluster is spoken to, the
+// namespace in the request field decides whose history is read. A server that
+// reassembled the pair out of two accessors would reintroduce the mismatch the
+// pool was just fixed to prevent, and the mismatch is a legal request that
+// succeeds against the wrong tenant.
+func TestTheServerHandsBackAClientAndItsOwnNamespace(t *testing.T) {
+	const recorded = "flowstate-the-process-namespace"
+
+	flowstate, routedNamespace := newNamespaceRecordingPooledServer(t, recorded, "team-a")
+
+	t.Run("pooled, the client and namespace are the pool's answer for this tenant", func(t *testing.T) {
+		temporal, namespace, err := flowstate.ClientAndTemporalNamespaceForTest("team-a")
+		require.NoError(t, err)
+		require.NotNil(t, temporal, "a namespace with no client beside it cannot address anything")
+		require.Equal(t, routedNamespace, namespace)
+
+		// The client this server would route a run through, taken the ordinary
+		// way, has to be the one that came back beside the namespace. Two
+		// accessors answering separately is exactly the defect.
+		routed, err := flowstate.ClientForTest("team-a")
+		require.NoError(t, err)
+		require.Equal(t, routed, temporal,
+			"the paired accessor named a namespace beside a client that routing would not have used")
+	})
+
+	t.Run("pool-less, both halves come from this server's own configuration", func(t *testing.T) {
+		t.Parallel()
+
+		// nil is a legal client here and the assertion is about the pairing, not
+		// about the client being usable: what must not happen is a namespace
+		// coming back beside a client from some other resolution.
+		single := mustNew(t, nil, server.WithTemporalNamespace("flowstate-prod"))
+
+		temporal, namespace, err := single.ClientAndTemporalNamespaceForTest("team-a")
+		require.NoError(t, err)
+		require.Equal(t, "flowstate-prod", namespace)
+
+		routed, err := single.ClientForTest("team-a")
+		require.NoError(t, err)
+		require.Equal(t, routed, temporal)
+	})
+
+	t.Run("a refusal carries neither half", func(t *testing.T) {
+		temporal, namespace, err := flowstate.ClientAndTemporalNamespaceForTest("team-b")
+		require.Error(t, err)
+		require.Empty(t, namespace)
+		require.Nil(t, temporal,
+			"a refused tenant handed a client is a tenant that can still reach a cluster")
+	})
+}
+
+// TestEveryDeploymentShapeCanNameItsTemporalNamespace asserts the partition is
+// total rather than asserting each half separately.
+//
+// `flow server` records a namespace in one of two ways — [server.WithTemporalNamespace]
+// on a deployment with no tenancy mapping, [server.WithNamespacePool] on one with
+// it — and those are complementary branches of one condition in `runServer`. The
+// half nothing else checks is that they *cover* the cases: a deployment that fell
+// between them would build a server that cannot name where it reads from, and
+// since nothing consumes the accessor yet, the first thing to notice would be the
+// follow-up that does.
+//
+// Both shapes are listed here, and the list is asserted non-empty outside the
+// loop, so a shape moved out of it is a failure rather than a smaller sweep.
+func TestEveryDeploymentShapeCanNameItsTemporalNamespace(t *testing.T) {
+	const recorded = "flowstate-the-process-namespace"
+
+	pooled, _ := newNamespaceRecordingPooledServer(t, recorded, "team-a")
+
+	shapes := map[string]*server.FlowstateServer{
+		"no tenancy mapping: WithTemporalNamespace": mustNew(t, nil,
+			server.WithTemporalNamespace("flowstate-prod")),
+		"a tenancy mapping: WithNamespacePool": pooled,
+	}
+
+	require.NotEmpty(t, shapes, "every claim below is inside the loop over this table")
+
+	for name, flowstate := range shapes {
+		t.Run(name, func(t *testing.T) {
+			namespace, err := serverNamespace(t, flowstate, "team-a")
+			require.NoError(t, err,
+				"a deployment `flow server` can build could not name the Temporal namespace it "+
+					"reads from; the two ways of recording one do not cover this shape")
+			require.NotEmpty(t, namespace)
+		})
+	}
+}
+
+// shiftingMapper cycles through Temporal namespaces, one per lookup, so that two
+// consecutive lookups never agree.
+//
+// It is the server-side copy of the temporalclient package's mapper of the same
+// shape, and it has to exist here rather than be shared because the tenancy
+// mapper is an interface each package's tests describe for themselves. What it is
+// for: a stable mapper cannot see the defect this file's pairing test forbids,
+// because two lookups of a frozen map agree and the reassembled pair comes out
+// right by luck. Measured, not assumed — with the stable `mapper` above, a server
+// that called For and ForWithNamespace separately passed.
+type shiftingMapper struct {
+	namespaces []string
+	calls      int
+}
+
+func (m *shiftingMapper) TemporalNamespace(string) (string, bool, error) {
+	mapped := m.namespaces[m.calls%len(m.namespaces)]
+	m.calls++
+	return mapped, true, nil
+}
+
+func (m *shiftingMapper) TemporalNamespaces() []string { return m.namespaces }
+
+func (m *shiftingMapper) FlowstateNamespaces(string) []string { return []string{"team-a"} }
+
+// TestTheServerNeverReassemblesThePairFromTwoLookups is the server-side half of
+// the property, written against a mapper that answers differently every call
+// because that is the only way to see the defect.
+//
+// The fix in [temporalclient.Pool.ForWithNamespace] is worth nothing if the server
+// takes the client from one call and the namespace from another: the mismatch
+// simply moves up a package. And a mismatch is not a failure anybody sees — a raw
+// Temporal request carries its namespace as a request field, so a client connected
+// for one namespace addressed at another is a legal request that succeeds against
+// the wrong tenant's history.
+func TestTheServerNeverReassemblesThePairFromTwoLookups(t *testing.T) {
+	// Two real namespaces, because NewPool dials and verifies each one the mapper
+	// can select.
+	temporal, first := newTemporalNamespace(t)
+	_, second := newTemporalNamespace(t)
+
+	pool, err := temporalclient.NewPool(t.Context(), temporalclient.Config{
+		Address:   devServer.FrontendHostPort(),
+		Namespace: first,
+	}, &shiftingMapper{namespaces: []string{first, second}}, nil)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	// The true pairing, learned from the accessor whose atomicity the
+	// temporalclient package's own tests pin. Each call is one resolution, so
+	// each observation is a genuine pair; collecting several under a cycling
+	// mapper yields the client for both namespaces.
+	pairs := map[string]client.Client{}
+	for range 4 {
+		cl, namespace, err := pool.ForWithNamespace("team-a")
+		require.NoError(t, err)
+		pairs[namespace] = cl
+	}
+	require.Len(t, pairs, 2,
+		"the mapper was supposed to cycle; against a mapper that does not, this test cannot "+
+			"tell a paired answer from a reassembled one and proves nothing")
+
+	flowstate := mustNew(t, temporal, server.WithNamespacePool(pool))
+
+	// Several times, because the mapper is moving under each one and a pairing
+	// that held once could be the cycle lining up rather than the property.
+	for range 4 {
+		cl, namespace, err := flowstate.ClientAndTemporalNamespaceForTest("team-a")
+		require.NoError(t, err)
+		require.NotNil(t, cl)
+		require.Equal(t, pairs[namespace], cl,
+			"the server handed back a client dialed for one namespace beside the name of "+
+				"another; a raw request built from this pair reads the wrong tenant's history "+
+				"and succeeds")
+	}
 }

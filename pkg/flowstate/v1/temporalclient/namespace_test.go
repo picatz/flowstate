@@ -31,6 +31,21 @@ func writeProfile(t *testing.T, profile, namespace string) string {
 	return path
 }
 
+// poolNamespace is [Pool.ForWithNamespace] narrowed to the namespace, for a test
+// whose subject is which namespace a tenant resolves to rather than the pairing.
+//
+// It takes both halves from one call because that is the only way to get a
+// namespace out of a Pool — there is deliberately no accessor for the namespace
+// alone, see ForWithNamespace's doc — and it drops the client here rather than in
+// the package, so a test reading like a claim about namespaces still cannot spell
+// the defect the pairing exists to prevent.
+func poolNamespace(t *testing.T, p *Pool, tenant string) (string, error) {
+	t.Helper()
+
+	_, namespace, err := p.ForWithNamespace(tenant)
+	return namespace, err
+}
+
 // TestConfigOptionsResolvesANamespaceTheOverrideFieldDoesNotCarry pins the
 // distinction every other test in this file rests on: Config.Namespace is an
 // override, and it is empty on a deployment that configured a namespace.
@@ -123,7 +138,7 @@ func TestNewPoolRecordsTheResolvedNamespaceNotTheOverride(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	got, err := pool.TemporalNamespaceFor("any-tenant")
+	got, err := poolNamespace(t, pool, "any-tenant")
 	require.NoError(t, err)
 	require.Equal(t, namespace, got,
 		"the pool must record the namespace its client was dialed for, not the override that was never set")
@@ -182,7 +197,7 @@ func TestASecondResolutionCanDisagreeWithTheDial(t *testing.T) {
 	require.Equal(t, namespace, dialed)
 }
 
-// TestPoolTemporalNamespaceForFailsClosed writes the direction a tenancy test has
+// TestPoolNamespaceLookupFailsClosed writes the direction a tenancy test has
 // to write: not that a tenant reaches its own namespace, but that it cannot reach
 // anyone else's, and that a deployment which cannot place a tenant refuses instead
 // of choosing.
@@ -191,7 +206,7 @@ func TestASecondResolutionCanDisagreeWithTheDial(t *testing.T) {
 // tenant's Temporal namespace would use it to address a perfectly legal raw
 // request, which would succeed, and nothing anywhere would say whose history had
 // been read.
-func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
+func TestPoolNamespaceLookupFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	var configured, teamA, shared client.Client = stubClient{name: "configured"},
@@ -210,7 +225,7 @@ func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
 	t.Run("an unmapped tenant is refused rather than given the configured namespace", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := separated.TemporalNamespaceFor("team-b")
+		got, err := poolNamespace(t, separated, "team-b")
 		require.Error(t, err, "a deployment that maps namespaces must refuse a tenant it has no entry for")
 		require.ErrorIs(t, err, errNoMapping)
 		require.Empty(t, got, "a refusal must carry no namespace, least of all a usable one")
@@ -219,7 +234,7 @@ func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
 	t.Run("an unmapped tenant is never told another tenant's namespace", func(t *testing.T) {
 		t.Parallel()
 
-		got, _ := separated.TemporalNamespaceFor("team-b")
+		got, _ := poolNamespace(t, separated, "team-b")
 		require.NotEqual(t, "flowstate-team-a", got,
 			"team-b must not learn team-a's namespace; a raw request naming it would read team-a's histories")
 		require.NotEqual(t, separated.fallbackNamespace, got,
@@ -229,7 +244,7 @@ func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
 	t.Run("a mapped tenant gets its own namespace and no other", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := separated.TemporalNamespaceFor("team-a")
+		got, err := poolNamespace(t, separated, "team-a")
 		require.NoError(t, err)
 		require.Equal(t, "flowstate-team-a", got)
 	})
@@ -250,9 +265,9 @@ func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
 			},
 		}
 
-		a, err := pool.TemporalNamespaceFor("team-a")
+		a, err := poolNamespace(t, pool, "team-a")
 		require.NoError(t, err)
-		b, err := pool.TemporalNamespaceFor("team-b")
+		b, err := poolNamespace(t, pool, "team-b")
 		require.NoError(t, err)
 
 		require.NotEqual(t, a, b, "two separated tenants sharing an answer is the separation not existing")
@@ -273,7 +288,7 @@ func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
 			byNamespace:       map[string]client.Client{},
 		}
 
-		got, err := pool.TemporalNamespaceFor("any-tenant")
+		got, err := poolNamespace(t, pool, "any-tenant")
 		require.NoError(t, err)
 		require.Equal(t, "flowstate-configured", got)
 		require.NotEmpty(t, got)
@@ -288,7 +303,7 @@ func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
 			byNamespace:       map[string]client.Client{},
 		}
 
-		got, err := pool.TemporalNamespaceFor("any-tenant")
+		got, err := poolNamespace(t, pool, "any-tenant")
 		require.NoError(t, err)
 		require.Equal(t, "flowstate-configured", got)
 	})
@@ -307,21 +322,140 @@ func TestPoolTemporalNamespaceForFailsClosed(t *testing.T) {
 			byNamespace:       map[string]client.Client{},
 		}
 
-		got, err := pool.TemporalNamespaceFor("team-a")
+		got, err := poolNamespace(t, pool, "team-a")
 		require.Error(t, err)
 		require.Empty(t, got)
 		require.Contains(t, err.Error(), "restart", "the message should tell an operator what to do")
 	})
 }
 
-// TestPoolForAndTemporalNamespaceForNeverDisagree is the property that makes the
+// shiftingMapper answers with a different Temporal namespace every time it is
+// asked, which is what a stateful [NamespaceMapper] looks like from this package.
+//
+// Nothing in the tree maps this way today. That is the point: NamespaceMapper is
+// an interface, so "does an implementation answer the same way twice" is not a
+// property this package may assume, and a guarantee that holds only against a
+// mapper that happens to be a frozen map is a habit rather than a guarantee. A
+// mapper that reloads a policy on a signal, or reads a tenant's routing from a
+// store, is an ordinary thing for somebody to write against this interface.
+type shiftingMapper struct {
+	// namespaces are cycled, one per call, forever.
+	//
+	// Cycling rather than shifting once and settling, and that is the difference
+	// between a test that catches the defect and one that catches it sometimes:
+	// a mapper that settles gives two *consecutive* lookups the same answer
+	// after the first couple of calls, so a caller resolving twice would start
+	// agreeing with itself again and the mismatch would stop being observable.
+	namespaces []string
+
+	// calls counts what has been handed out. Not atomic: these tests call
+	// sequentially, and a data race here would be a defect in the test.
+	calls int
+}
+
+func (m *shiftingMapper) TemporalNamespace(string) (string, bool, error) {
+	mapped := m.namespaces[m.calls%len(m.namespaces)]
+	m.calls++
+	return mapped, true, nil
+}
+
+func (m *shiftingMapper) TemporalNamespaces() []string { return m.namespaces }
+
+func (m *shiftingMapper) FlowstateNamespaces(string) []string { return []string{"team-a"} }
+
+// TestTheClientAndNamespaceComeFromOneResolution is the test the pairing exists
+// for, and it is written against a mapper that changes its mind because a test
+// against a stable one passes whether the pairing holds or not.
+//
+// The defect it forbids: a caller assembling a pair out of two lookups. With a
+// mapper that answers differently the second time, that caller ends up holding a
+// client dialed for namespace A beside the string "namespace B" — and because a
+// raw Temporal request carries its namespace as a request field, using that pair
+// is a legal, successful request that reads the wrong tenant's history. Nothing
+// fails, nothing logs, and the boundary is gone.
+//
+// [Pool.ForWithNamespace] can only be wrong here if it resolves twice, so this
+// fails the moment somebody reintroduces the two-wrapper shape that made
+// [Pool.resolve]'s atomicity stop at its own return statement (Codex, #1139).
+func TestTheClientAndNamespaceComeFromOneResolution(t *testing.T) {
+	t.Parallel()
+
+	var first, second client.Client = stubClient{name: "first"}, stubClient{name: "second"}
+
+	newPool := func() *Pool {
+		return &Pool{
+			mapper:            &shiftingMapper{namespaces: []string{"flowstate-first", "flowstate-second"}},
+			fallback:          stubClient{name: "configured"},
+			fallbackNamespace: "flowstate-configured",
+			byNamespace: map[string]client.Client{
+				"flowstate-first":  first,
+				"flowstate-second": second,
+			},
+		}
+	}
+
+	t.Run("the mapper really does change its answer", func(t *testing.T) {
+		t.Parallel()
+
+		// Asserted rather than assumed. A shiftingMapper that had stopped
+		// shifting would make every claim below pass against the defect, which
+		// is the vacuous shape this whole file is written to avoid.
+		mapper := &shiftingMapper{namespaces: []string{"flowstate-first", "flowstate-second"}}
+
+		one, _, err := mapper.TemporalNamespace("team-a")
+		require.NoError(t, err)
+		two, _, err := mapper.TemporalNamespace("team-a")
+		require.NoError(t, err)
+
+		require.NotEqual(t, one, two, "the premise: this mapper answers differently on its second call")
+	})
+
+	t.Run("one call hands back a client and the namespace it is dialed for", func(t *testing.T) {
+		t.Parallel()
+
+		pool := newPool()
+
+		cl, namespace, err := pool.ForWithNamespace("team-a")
+		require.NoError(t, err)
+
+		require.Equal(t, pool.byNamespace[namespace], cl,
+			"the client and the namespace came from different resolutions: this pair addresses "+
+				"one tenant's cluster connection at another tenant's namespace, and Temporal "+
+				"would answer it")
+	})
+
+	t.Run("every later call is self-consistent too, however the mapper moves", func(t *testing.T) {
+		t.Parallel()
+
+		// The traversal rather than the step. A pairing that held on the first
+		// call and broke on the fourth is still a broken pairing, and the
+		// mapper is shifting under every one of these.
+		pool := newPool()
+
+		seen := map[string]bool{}
+		const calls = 6
+		for range calls {
+			cl, namespace, err := pool.ForWithNamespace("team-a")
+			require.NoError(t, err)
+			require.Equal(t, pool.byNamespace[namespace], cl,
+				"a later call assembled a mismatched pair")
+			seen[namespace] = true
+		}
+
+		require.Len(t, seen, 2,
+			"the mapper was supposed to move between two namespaces across these calls; if it "+
+				"only ever named one, this test proved nothing about pairing under change")
+	})
+}
+
+// TestPoolForAndForWithNamespaceNeverDisagree is the property that makes the
 // accessor safe to add at all.
 //
 // Two answers to "which namespace" that could disagree would submit a tenant's
 // runs through one and address a raw request about them at the other, and both
 // would succeed. So for every input, either both refuse or both answer — and when
 // they answer, the namespace named is the one holding the client returned.
-func TestPoolForAndTemporalNamespaceForNeverDisagree(t *testing.T) {
+func TestPoolForAndForWithNamespaceNeverDisagree(t *testing.T) {
 	t.Parallel()
 
 	var configured, teamA, shared client.Client = stubClient{name: "configured"},
@@ -379,20 +513,23 @@ func TestPoolForAndTemporalNamespaceForNeverDisagree(t *testing.T) {
 	for name, pool := range pools {
 		for _, tenant := range tenants {
 			t.Run(name+"/"+tenant, func(t *testing.T) {
-				cl, clientErr := pool.For(tenant)
-				namespace, namespaceErr := pool.TemporalNamespaceFor(tenant)
+				only, clientErr := pool.For(tenant)
+				cl, namespace, pairErr := pool.ForWithNamespace(tenant)
 
 				if clientErr != nil {
-					require.Error(t, namespaceErr,
-						"For refused this tenant and the accessor answered; an accessor that "+
+					require.Error(t, pairErr,
+						"For refused this tenant and ForWithNamespace answered; an accessor that "+
 							"answers where routing refuses hands out another tenant's namespace")
 					require.Empty(t, namespace)
+					require.Nil(t, cl)
 					return
 				}
 
-				require.NoError(t, namespaceErr,
-					"For placed this tenant and the accessor could not name where")
+				require.NoError(t, pairErr,
+					"For placed this tenant and ForWithNamespace could not name where")
 				require.NotEmpty(t, namespace)
+				require.Equal(t, only, cl,
+					"the two entry points routed one tenant to two different clients")
 
 				// The namespace named must hold the client handed back. For the
 				// fallback there is no map entry, so the check is that the

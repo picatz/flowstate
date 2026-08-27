@@ -1117,6 +1117,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
 	}
 
+	// Whether this deployment routes tenants onto Temporal namespaces of their
+	// own, decided once and read by both branches below.
+	//
+	// One boolean rather than two conditions that happen to be complements,
+	// because something below depends on their being exhaustive: every server
+	// this function builds must be able to name the Temporal namespace it reads
+	// from, and it gets that from exactly one of the two — WithTemporalNamespace
+	// when there is no pool, the pool itself when there is. Written as two
+	// independent conditions, that completeness is an accident a later edit can
+	// take away without touching either site, and the deployment that fell
+	// between them would build a server that cannot answer. See
+	// [server.FlowstateServer] and TestEveryDeploymentShapeCanNameItsTemporalNamespace.
+	pooled := policy != nil && policy.Tenancy != nil
+
 	// Search attributes are registered — idempotently, once, before the server
 	// starts serving — only in the single-namespace configuration. A trust
 	// policy that maps tenants onto several Temporal namespaces would need
@@ -1131,7 +1145,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// CreateSchedule, so a `temporal server start-dev` with no operator setup,
 	// or a production cluster where this identity lacks the operator role,
 	// starts and serves precisely as it always has.
-	if policy == nil || policy.Tenancy == nil {
+	if !pooled {
 		// Both of these name a namespace, and both take the one the dial above
 		// resolved. They are not two questions that happen to share an answer:
 		// each is *about* the client `c`. AddSearchAttributes carries the
@@ -1146,6 +1160,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// Recorded before the registration rather than after it, because
 		// whether Temporal accepted a search attribute says nothing about which
 		// namespace this process is pointed at.
+		//
+		// This is also the branch that has to record it at all: the pooled half
+		// below records its own, per tenant, and these two branches are the
+		// whole of the partition. The recording is here rather than outside the
+		// `if` on purpose — on a pooled deployment `s.temporalClient` is never
+		// the client any tenant is routed through, so a namespace recorded
+		// beside it would be an answer that is right for nobody, sitting where
+		// a later edit could reach for it.
 		serverOpts = append(serverOpts, server.WithTemporalNamespace(temporalNamespace))
 
 		if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, temporalNamespace); err != nil {
@@ -1162,7 +1184,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// mistyped or unregistered namespace fails the start rather than the first
 	// tenant to submit. The server refuses a tenant the mapping cannot place —
 	// see FlowstateServer.clientFor — so this only has to hand it the pool.
-	if policy != nil && policy.Tenancy != nil {
+	//
+	// It is also where a pooled deployment's Temporal namespace comes from: the
+	// pool answers per tenant, which is why the branch above is the one that
+	// records a single namespace and this one does not.
+	if pooled {
 		pool, err := temporalclient.NewPool(cmd.Context(), cfg, policy.Tenancy, logger)
 		if err != nil {
 			return fmt.Errorf("dialing the Temporal namespaces the trust policy maps tenants onto: %w", err)

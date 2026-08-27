@@ -229,13 +229,16 @@ func formatTenants(tenants []string) string {
 // and no default gets an error, rather than having a tenant's runs placed wherever
 // the process happened to be pointed.
 //
-// [Pool.For] and [Pool.TemporalNamespaceFor] are both this answer, narrowed, and
-// they are one lookup rather than two on purpose. A deployment where the two
-// disagreed would submit a tenant's runs through one namespace and address a raw
-// request about them at another, and both calls would succeed — each is a
-// perfectly legal request against the namespace it names, so nothing anywhere
-// would say so. Deriving both from one computation makes that unrepresentable
-// instead of merely tested for.
+// Both halves come from one lookup, and a caller that needs both must take them
+// from one call — which is why [Pool.ForWithNamespace] hands back the pair rather
+// than there being an accessor for the namespace alone. A client and a namespace
+// drawn from two lookups are a pair only if nothing changed in between, and
+// [NamespaceMapper] is an interface: whether an implementation answers the same
+// way twice is not this package's to assume. A mismatched pair is not a visible
+// failure either, because a raw Temporal request carries its namespace as a
+// request field — so client A addressed at namespace B is a perfectly legal
+// request that succeeds against the wrong tenant's history, with nothing anywhere
+// saying so (Codex, #1139).
 func (p *Pool) resolve(namespace string) (string, client.Client, error) {
 	if p.mapper == nil {
 		return p.fallbackNamespace, p.fallback, nil
@@ -274,9 +277,8 @@ func (p *Pool) For(namespace string) (client.Client, error) {
 	return cl, err
 }
 
-// TemporalNamespaceFor returns the Temporal namespace a run belonging to the given
-// Flowstate namespace executes in: the namespace of the very client [Pool.For]
-// returns for the same argument.
+// ForWithNamespace is [Pool.For], also reporting the Temporal namespace the
+// returned client is dialed for.
 //
 // It exists because a [client.Client] cannot be asked. Every request the SDK sends
 // carries the namespace its client was dialed for, so a caller going through the
@@ -289,14 +291,35 @@ func (p *Pool) For(namespace string) (client.Client, error) {
 // misroutes a tenant's reads when it is wrong, so it lands and is reviewed on its
 // own rather than inside the change that wants it.
 //
+// # Why there is no accessor for the namespace alone
+//
+// Because the pair is the answer, and half of it is not a smaller answer but a
+// different one. A caller holding a client from one call and a namespace from
+// another holds a pair only on the assumption that nothing changed in between,
+// and [NamespaceMapper] is an interface this package hands to whoever implements
+// it — a mapper that reloads a policy, or reads a tenant's routing from a store,
+// owes nobody the same answer twice. The pairing therefore has to survive a
+// mapper that answers differently on the second call, which it can only do by
+// there being no second call. That is the difference between a guarantee and a
+// habit, and it was a review finding on this very method, which previously
+// returned the namespace alone and claimed a structural guarantee two wrappers
+// could not provide (Codex, #1139).
+//
+// [Pool.For] stays, for the many callers that need only a client — one lookup,
+// nothing to pair. What is gone is the way to get a namespace without the client
+// it belongs to.
+//
 // It fails closed identically to [Pool.For], and by construction rather than by
 // resemblance: both are [Pool.resolve]. An accessor that answered where For
 // refuses would hand a caller another tenant's namespace to address — the breach
 // the pool exists to prevent, arriving through the door left open for reading
 // rather than for writing.
-func (p *Pool) TemporalNamespaceFor(namespace string) (string, error) {
-	name, _, err := p.resolve(namespace)
-	return name, err
+func (p *Pool) ForWithNamespace(namespace string) (client.Client, string, error) {
+	name, cl, err := p.resolve(namespace)
+	if err != nil {
+		return nil, "", err
+	}
+	return cl, name, nil
 }
 
 // Namespaces returns every Temporal namespace this pool holds a client for, for

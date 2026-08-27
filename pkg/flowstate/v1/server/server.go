@@ -176,7 +176,7 @@ func WithNamespacePool(pool *temporalclient.Pool) Option {
 //
 // A deployment routing tenants onto separate Temporal namespaces has no single
 // answer to record and does not need one: [WithNamespacePool] supplies the
-// per-tenant answer, which [FlowstateServer.temporalNamespaceFor] prefers.
+// per-tenant answer, which [FlowstateServer.clientAndTemporalNamespaceFor] prefers.
 //
 // The empty namespace is refused. There is no deployment it is right for —
 // [temporalclient.Config.Options] resolves a non-empty namespace for every
@@ -423,7 +423,7 @@ type FlowstateServer struct {
 
 	// temporalNamespace is the Temporal namespace temporalClient is dialed for,
 	// on a deployment with no pool. Empty means nobody said, which
-	// [FlowstateServer.temporalNamespaceFor] refuses rather than guesses.
+	// [FlowstateServer.clientAndTemporalNamespaceFor] refuses rather than guesses.
 	//
 	// Emphatically not [FlowstateServer.namespace], which is the *Flowstate
 	// tenant*. See [WithTemporalNamespace].
@@ -1057,9 +1057,8 @@ func (s *FlowstateServer) clientFor(namespace string) (client.Client, error) {
 	return temporal, nil
 }
 
-// temporalNamespaceFor returns the Temporal namespace serving a caller in the given
-// Flowstate namespace — the namespace of the very client [FlowstateServer.clientFor]
-// returns for the same argument.
+// clientAndTemporalNamespaceFor is [FlowstateServer.clientFor], also reporting the
+// Temporal namespace that client is dialed for.
 //
 // # Nothing calls this yet, and that is on purpose
 //
@@ -1074,6 +1073,18 @@ func (s *FlowstateServer) clientFor(namespace string) (client.Client, error) {
 // namespace, where they would succeed and nothing would say so, and a change with
 // that failure mode is reviewed by itself. Do not delete it as dead code; see
 // maxTimelineScan in `timeline.go` for the ask it unblocks.
+//
+// # The pair comes from one lookup, here as well as in the pool
+//
+// A raw request needs both halves, and it needs them to be halves of one answer:
+// the client's connection decides which cluster is spoken to, the namespace in
+// the request field decides whose history is read, and a mismatch is a legal
+// request that succeeds against the wrong tenant. So this returns both from a
+// single [temporalclient.Pool.ForWithNamespace], and there is deliberately no
+// namespace-only accessor beside [FlowstateServer.clientFor] for a caller to
+// reassemble a pair out of. Fixing that in the pool and leaving the server free
+// to call two accessors would have moved the defect rather than removed it
+// (Codex, #1139).
 //
 // # It fails closed, in both configurations
 //
@@ -1091,29 +1102,31 @@ func (s *FlowstateServer) clientFor(namespace string) (client.Client, error) {
 // `server.New(nil)`, which answers only Validate, Compile and GetCatalog — is
 // refused here for the same reason and correctly: it has no namespace because it
 // has nothing to name one for.
-func (s *FlowstateServer) temporalNamespaceFor(namespace string) (string, error) {
+func (s *FlowstateServer) clientAndTemporalNamespaceFor(namespace string) (client.Client, string, error) {
 	if s.pool == nil {
 		if s.temporalNamespace == "" {
-			return "", connect.NewError(connect.CodeFailedPrecondition, errors.New(
+			return nil, "", connect.NewError(connect.CodeFailedPrecondition, errors.New(
 				"this server was not told which Temporal namespace its client is dialed for; "+
 					"pass server.WithTemporalNamespace, or server.WithNamespacePool on a "+
 					"deployment that routes tenants to namespaces of their own"))
 		}
-		return s.temporalNamespace, nil
+		// Both read from this server's own immutable configuration, in one
+		// place, so the pair cannot be assembled out of two moments here either.
+		return s.temporalClient, s.temporalNamespace, nil
 	}
 
-	temporal, err := s.pool.TemporalNamespaceFor(namespace)
+	temporal, temporalNamespace, err := s.pool.ForWithNamespace(namespace)
 	if err != nil {
 		// FailedPrecondition and a message naming only the caller's own
 		// namespace, for the reasons [FlowstateServer.clientFor] gives: the
 		// deployment cannot route this tenant, an operator has to fix it, and
 		// naming the others would describe this deployment's tenancy to someone
 		// outside it.
-		return "", connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+		return nil, "", connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
 			"this deployment has no Temporal namespace configured for %q: %w", namespace, err))
 	}
 
-	return temporal, nil
+	return temporal, temporalNamespace, nil
 }
 
 // Ensure FlowstateServer implements the WorkflowServiceHandler interface.
