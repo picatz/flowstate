@@ -264,6 +264,97 @@ message Signal {
   Value prompt = 3;
 }
 
+// SignalBatch names something a workload waits to be told *repeatedly*, and
+// takes every delivery already buffered in one step.
+//
+// # The shape it replaces, and what batching actually saves
+//
+// The event-accumulator shape today is `loop:` around `wait_for_signal:`: one
+// signal per iteration, appended to the loop's `results`. A burst of fifty
+// orders costs fifty iterations of that loop.
+//
+// It is worth being exact about the saving, because the obvious reading is
+// wrong. A signal costs one `WorkflowExecutionSignaled` event in history
+// whether it is drained in a batch or consumed one at a time — batching does
+// *not* remove those, and nothing can: the event is written when the sender's
+// RPC is accepted, long before any workflow code decides how to read it. What
+// the per-iteration shape pays *on top* of that is what a batch removes:
+//
+//   - a workflow task per iteration (Scheduled/Started/Completed, three events),
+//     plus the body's own activity events, where a burst drained in one step
+//     coalesces into a handful of workflow tasks — a burst arriving while a task
+//     is already pending is delivered into that same task;
+//   - one `Workflow.StepOutputs` entry per iteration, weighed against
+//     [MaxLoopResultsBytes] by `AccumulateLoopResult`, where a batch records one.
+//
+// So the honest headline is "fewer workflow tasks and one results entry instead
+// of N", not "fewer signal events".
+//
+// # A separate message from [Signal], rather than a `drain:` flag on it
+//
+// By exactly the argument [Signal.outputs] makes for sitting on [Signal] rather
+// than on [Wait]: a drain binds `deliveries` and `count`, and does *not* bind
+// `payload` or `sender`. A flag inside [Signal] would make every `outputs:`
+// expression's validity depend on the value of a sibling key — the reported
+// refusal that comment rejects in favour of a structural one.
+//
+// # Admission is unaffected, and deliberately so
+//
+// `SignalPolicyCheck` and `CheckSignalPayloadSize` run at the `Signal` RPC,
+// before a delivery ever reaches a channel. Every delivery in a batch was
+// individually admitted by the same policy, against the sender the server
+// attested for it. A batch therefore cannot route around per-sender policy,
+// because the policy is not at receive time — there is nothing new to enforce
+// here, only something to keep true.
+message SignalBatch {
+  // Name is what a sender addresses, under exactly [Signal.name]'s rules — the
+  // same channel, read a different way.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // MaxBatch bounds how many deliveries one drain takes. Zero means
+  // [MaxPendingSignals], which is also the ceiling.
+  //
+  // Bounded here rather than trusted, because a signal burst is peer-controlled
+  // input and the batch is the multiplication: the count is what the far side
+  // chooses, and bytes follow from it — each delivery is already bounded by
+  // [MaxSignalPayloadBytes] at admission, so a bounded count bounds the whole.
+  // A bounded `int32` in the manner of [ForEach.max_parallel], for the same
+  // reason: bound the resource the peer controls.
+  //
+  // Deliveries past the bound are *not* dropped and *not* re-buffered — they
+  // are simply left on the channel, so the next drain takes them. That is what
+  // a `loop:` around this already wants, and it means a bound being reached
+  // costs an iteration rather than an approval.
+  int32 max_batch = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 128
+  }];
+
+  // Outputs shapes what the waiting step produces, exactly as [Signal.outputs]
+  // does — same evaluator, same single moment, same replace-not-extend rule.
+  //
+  // What differs is the names it binds, and that difference is why this is a
+  // separate message: `deliveries` (a list of `{payload, sender}` maps, oldest
+  // first), `count`, and `timed_out`, plus `now`. There is no `payload` and no
+  // `sender`, because a batch has many of each.
+  map<string, Value> outputs = 3;
+
+  // Prompt is what this gate is asking for, under [Signal.prompt]'s whole
+  // contract: evaluated once at the moment the wait parks, seeing the enclosing
+  // scope and `now` and not the wait's result, bounded by [MaxWaitPromptBytes],
+  // and refused any reach to a `sensitive:` input or a `${secret(...)}` by
+  // [CheckWaitPromptsAreAskable].
+  Value prompt = 4;
+}
+
 // SignalSender is who the server attests sent a signal, never what the
 // sender's own payload claims.
 //

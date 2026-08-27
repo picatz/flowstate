@@ -405,7 +405,7 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 		if _, ok := known[name]; !ok {
 			ds = append(ds, Diagnostic{
 				Field: field,
-				Message: "declares a policy for a signal no `wait_for_signal:` in this workflow waits for; " +
+				Message: "declares a policy for a signal no `wait_for_signal:` or `wait_for_signals:` in this workflow waits for; " +
 					"this is almost always a misspelling of the name a wait actually uses",
 			})
 			continue

@@ -32,9 +32,45 @@ const TimedOutOutput = "timed_out"
 // The names come from the specification, so their variety is bounded by the
 // workload — but nothing stops a sender delivering the same signal a million
 // times, and every one of them would otherwise be carried in the run's state.
-// Beyond this many the oldest are kept and the rest dropped, because a wait
-// consumes one signal and the first to arrive is the one that approved it.
+// Beyond this many the oldest are kept and the rest dropped, because the
+// earliest deliveries are the ones a workload was waiting for: a
+// `wait_for_signal:` consumes one and the first to arrive is the one that
+// approved it, and a `wait_for_signals:` drains oldest-first, so in both
+// spellings what is kept is what would have been read next.
+//
+// That second clause is here because the first one alone stopped being the
+// whole reason when [SignalBatch] landed. A batch consumes many, not one; what
+// survives from the original argument is the *order*, not the count.
 const MaxPendingSignals = 128
+
+// MaxSignalBatch is the ceiling on how many deliveries one `wait_for_signals:`
+// takes, and the value a [SignalBatch] with no `max_batch:` of its own uses.
+//
+// It is [MaxPendingSignals] rather than a number of its own, because the two
+// bound the same resource seen from two sides: what a run may carry across a
+// Continue-As-New, and what a run may take off a channel in one step. A batch
+// larger than the carry would be a step that can read more than a suspend can
+// preserve, which is a bound that disagrees with itself.
+const MaxSignalBatch = MaxPendingSignals
+
+// DeliveriesOutput is where a batch's deliveries land:
+// `${orders.deliveries[0].payload.id}`.
+//
+// A list of `{payload, sender}` maps, oldest first — each entry shaped exactly
+// as a single wait's own two rooted outputs are, for the reason [PayloadOutput]
+// gives: a sender may only ever name things inside `payload`, by grammar, and
+// `sender` is what the engine attested rather than anything the payload
+// contains.
+const DeliveriesOutput = "deliveries"
+
+// CountOutput is how many deliveries a batch took: `${orders.count}`.
+//
+// Present as its own name rather than left to `size(deliveries)`, because it is
+// the value nearly every reader of a batch actually wants — the `if:` that
+// decides whether there was anything to process, and the loop condition that
+// decides whether to drain again. It is reserved for [DeliveriesOutput]'s
+// reason: nothing a sender puts in a payload can reach it.
+const CountOutput = "count"
 
 // PayloadOutput is where a signal sender's data lands: `${approval.payload.approved}`.
 //
@@ -98,6 +134,27 @@ func TimerOutputs(timedOut bool) *Node_Outputs {
 func SignalOutputs(payload *Node_Outputs, sender *SignalSender, timedOut bool) *Node_Outputs {
 	out := TimerOutputs(timedOut)
 
+	out.NamedValues[PayloadOutput] = signalPayloadValue(payload)
+
+	// Never built from payload — sender is the engine's own attestation, passed
+	// in by the caller rather than read out of what the sender sent, which is
+	// what keeps a payload key named "sender" from ever being confused with it.
+	out.NamedValues[SenderOutput] = signalSenderValue(sender)
+
+	return out
+}
+
+// signalPayloadValue renders what a sender sent as the map an expression reads
+// under [PayloadOutput].
+//
+// Extracted from [SignalOutputs] rather than duplicated into
+// [SignalBatchOutputs], because "what a payload looks like to an expression" is
+// one fact: a single wait's `payload` and one entry of a batch's `deliveries`
+// must render identically, or an author porting a gate from one spelling to the
+// other would find their expressions reading a differently-shaped value. Two
+// renderings of one shape is precisely the drift CLAUDE.md's "one value, written
+// down twice" section is about.
+func signalPayloadValue(payload *Node_Outputs) *Value {
 	named := payload.GetNamedValues()
 	entries := make([]*expr.MapValue_Entry, 0, len(named))
 
@@ -118,20 +175,80 @@ func SignalOutputs(payload *Node_Outputs, sender *SignalSender, timedOut bool) *
 		})
 	}
 
-	out.NamedValues[PayloadOutput] = &Value{
+	return &Value{
 		Kind: &Value_Literal{
 			Literal: &expr.Value{
 				Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: entries}},
 			},
 		},
 	}
+}
 
-	// Never built from payload — sender is the engine's own attestation, passed
-	// in by the caller rather than read out of what the sender sent, which is
-	// what keeps a payload key named "sender" from ever being confused with it.
-	out.NamedValues[SenderOutput] = signalSenderValue(sender)
+// SignalBatchOutputs builds the outputs of a `wait_for_signals:`.
+//
+// Three names: [DeliveriesOutput], a list of `{payload, sender}` maps in the
+// order they arrived; [CountOutput], how many there are; and [TimedOutOutput],
+// which is true only for a batch that took nothing because its bound lapsed.
+//
+// There is no [PayloadOutput] and no [SenderOutput], and their absence is the
+// decision rather than an omission — a batch has many of each, and a name that
+// silently meant "the first one" is exactly the kind of value an author reads
+// once and then branches on forever. The refusal is structural: nothing here
+// writes those names, so `${orders.payload}` is an ordinary "step has no
+// output" diagnostic rather than a value that happens to be wrong.
+//
+// A batch that took at least one delivery reports `timed_out: false` even when
+// the drain was reached by a bound that later lapsed — the two facts cannot both
+// be true, because what a bound bounds here is the wait for the *first*
+// delivery, and one arrived. A batch that lapsed reports `count: 0` with an
+// empty `deliveries` list, so `size(orders.deliveries)` is answerable either
+// way, which is [SignalOutputs]'s always-present-payload rule at list scale.
+func SignalBatchOutputs(deliveries []*SignalDelivery, timedOut bool) *Node_Outputs {
+	out := TimerOutputs(timedOut)
+
+	entries := make([]*expr.Value, 0, len(deliveries))
+	for _, delivery := range deliveries {
+		entries = append(entries, &expr.Value{
+			Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: []*expr.MapValue_Entry{
+				{
+					Key:   NewLiteral(PayloadOutput).GetLiteral(),
+					Value: signalPayloadValue(delivery.GetPayload()).GetLiteral(),
+				},
+				{
+					Key:   NewLiteral(SenderOutput).GetLiteral(),
+					Value: signalSenderValue(delivery.GetSender()).GetLiteral(),
+				},
+			}}},
+		})
+	}
+
+	out.NamedValues[DeliveriesOutput] = &Value{
+		Kind: &Value_Literal{
+			Literal: &expr.Value{
+				Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: entries}},
+			},
+		},
+	}
+	out.NamedValues[CountOutput] = NewLiteral(int64(len(deliveries)))
 
 	return out
+}
+
+// SignalBatchSize reports how many deliveries one drain of batch may take.
+//
+// The single reader of `max_batch`, for the reason [EvalWaitDuration] is the
+// single reader of the two spellings of a sleep: both drivers ask this, so
+// neither can answer differently about a bound. Zero means [MaxSignalBatch], and
+// anything above it is clamped rather than honoured — the schema refuses a
+// larger value at validation, so a clamp here is the fail-closed backstop for a
+// specification built in process that never met the schema's rules.
+func SignalBatchSize(batch *SignalBatch) int {
+	n := int(batch.GetMaxBatch())
+	if n <= 0 || n > MaxSignalBatch {
+		return MaxSignalBatch
+	}
+
+	return n
 }
 
 // signalSenderValue renders a [SignalSender] as the map an expression reads
@@ -295,7 +412,28 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bo
 // field the payload does not carry has to say so, at the step that would have
 // hidden it.
 func ShapeSignalOutputs(ctx context.Context, signal *Signal, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, error) {
-	shaping := signal.GetOutputs()
+	return shapeWaitOutputs(ctx, signal.GetOutputs(), raw, scope, now)
+}
+
+// ShapeSignalBatchOutputs applies a `wait_for_signals:`'s own `outputs:` to the
+// batch the drain produced.
+//
+// The same evaluator at the same single moment as [ShapeSignalOutputs], through
+// the same [shapeWaitOutputs] — which is the point, and not an economy. Shaping
+// is the position an author is most likely to move an expression *between* the
+// two spellings, so the two must not be able to disagree about when it runs,
+// what a failure does, or whether an absent block leaves the raw outputs alone.
+// One function means neither can.
+//
+// What differs is only what the expressions see, and that comes from raw:
+// [DeliveriesOutput], [CountOutput] and [TimedOutOutput] bound bare, over the
+// enclosing scope, plus [NowIdentifier].
+func ShapeSignalBatchOutputs(ctx context.Context, batch *SignalBatch, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, error) {
+	return shapeWaitOutputs(ctx, batch.GetOutputs(), raw, scope, now)
+}
+
+// shapeWaitOutputs is the one evaluator behind both spellings' `outputs:`.
+func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, error) {
 	if len(shaping) == 0 {
 		return raw, nil
 	}
@@ -542,7 +680,17 @@ func SignalNames(spec *Workflow) []string {
 		for _, node := range nodes {
 			switch kind := node.GetKind().(type) {
 			case *Node_Wait:
+				// Both spellings declare a channel, and a batch's name has to
+				// be here for the same two reasons a single wait's does: this
+				// list is what `drainSignals` reads before a Continue-As-New,
+				// so a name missing from it loses every buffered delivery on
+				// that channel; and it is what a `signals:` policy is checked
+				// against, so a missing name would report a policy for a
+				// signal nobody waits for.
 				name := kind.Wait.GetSignal().GetName()
+				if name == "" {
+					name = kind.Wait.GetSignalBatch().GetName()
+				}
 				if name == "" {
 					continue
 				}
@@ -655,8 +803,30 @@ func ValidateWait(wait *Wait) error {
 		}
 		return nil
 
+	case *Wait_SignalBatch:
+		if kind.SignalBatch.GetName() == "" {
+			return fmt.Errorf("wait_for_signals has no signal name")
+		}
+		// The schema refuses a larger bound, and this is the backstop for the
+		// caller the schema cannot reach: a `*Workflow` assembled in Go and
+		// executed directly. Reported rather than clamped, because a spec that
+		// asks to take 10,000 deliveries in a step is asking for something this
+		// engine will not do, and silently doing a hundredth of it is the shape
+		// of bug nobody finds — [SignalBatchSize] clamps as well, and both are
+		// wanted: one so no drain can exceed the bound whatever reached it, and
+		// this one so an author hears about it.
+		if n := kind.SignalBatch.GetMaxBatch(); n > MaxSignalBatch {
+			return fmt.Errorf(
+				"wait_for_signals max_batch is %d, and a drain takes at most %d deliveries in one step; lower it, and put the step in a `loop:` if there is more to process",
+				n, MaxSignalBatch)
+		}
+		if n := kind.SignalBatch.GetMaxBatch(); n < 0 {
+			return fmt.Errorf("wait_for_signals max_batch is negative (%d)", n)
+		}
+		return nil
+
 	default:
-		return fmt.Errorf("wait must be one of sleep, wait_until, or wait_for_signal")
+		return fmt.Errorf("wait must be one of sleep, wait_until, wait_for_signal, or wait_for_signals")
 	}
 }
 
@@ -685,6 +855,8 @@ func WaitDescription(wait *Wait) string {
 		return "waiting until a time"
 	case *Wait_Signal:
 		return "waiting for signal " + strconv.Quote(kind.Signal.GetName())
+	case *Wait_SignalBatch:
+		return "waiting for a batch of signal " + strconv.Quote(kind.SignalBatch.GetName())
 	default:
 		return "waiting"
 	}

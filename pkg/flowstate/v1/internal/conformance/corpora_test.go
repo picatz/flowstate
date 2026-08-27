@@ -80,6 +80,7 @@ func corpusSizes() map[string]int {
 		"PluginTaskInputCases":            len(PluginTaskInputCases()),
 		"PolicyCases":                     len(PolicyCases()),
 		"RehearsalSignalCases":            len(RehearsalSignalCases()),
+		"SignalBatchCases":                len(SignalBatchCases()),
 		"ResponseScopeCases":              len(ResponseScopeCases(standIn)),
 		"SwitchCases":                     len(SwitchCases()),
 		"TaskOutputElementBoundCases":     len(TaskOutputElementBoundCases(standIn)),

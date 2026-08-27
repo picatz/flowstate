@@ -346,7 +346,7 @@ edition: v2026.3
 			exact: slices.Concat(
 				[]string{"id", "description"},
 				v1.TaskNames(),
-				[]string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call", "value", "switch"},
+				[]string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch"},
 				[]string{"if", "vars", "timeout", "retry", "continue_on_error", "undo", "with"},
 			),
 		},

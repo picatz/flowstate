@@ -937,6 +937,9 @@ func NodeKind(node *v1.Node) string {
 		if signal := kind.Wait.GetSignal(); signal != nil {
 			return fmt.Sprintf("wait_for_signal %q", signal.GetName())
 		}
+		if batch := kind.Wait.GetSignalBatch(); batch != nil {
+			return fmt.Sprintf("wait_for_signals %q", batch.GetName())
+		}
 
 		return "wait"
 	case *v1.Node_ForEach:

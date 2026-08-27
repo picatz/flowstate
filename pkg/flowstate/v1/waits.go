@@ -257,7 +257,10 @@ func enterConcurrentWait(ctx context.Context) context.Context {
 func announceLocalWait(
 	ctx context.Context,
 	node *Node,
-	signal *Signal,
+	// The signal *name* rather than the message, because both wait spellings
+	// announce through here and they carry different messages. A name is all a
+	// [PendingWait] ever held of either.
+	signalName string,
 	deadline *timestamppb.Timestamp,
 	prompt string,
 	promptTruncated bool,
@@ -270,9 +273,9 @@ func announceLocalWait(
 	return reporting.waits.enter(&PendingWait{
 		StepId:          node.GetId(),
 		Path:            reporting.ancestry,
-		SignalName:      signal.GetName(),
+		SignalName:      signalName,
 		Deadline:        deadline,
-		Policed:         reporting.policies[signal.GetName()] != nil,
+		Policed:         reporting.policies[signalName] != nil,
 		Prompt:          prompt,
 		PromptTruncated: promptTruncated,
 	})

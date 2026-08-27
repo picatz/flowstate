@@ -1240,8 +1240,63 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 
 		return "wait_for_signal", mapping, nil
 
+	case *v1.Wait_SignalBatch:
+		// Key by key for the reason above: `flow fix` rewrites through this
+		// function, so a key nothing writes back is a key the command silently
+		// removes — and this arm has one more of them than its sibling.
+		mapping := yaml.MapSlice{{Key: "name", Value: textToYAML(kind.SignalBatch.GetName())}}
+
+		// Directly after the name, because a reader asking what this step drains
+		// asks how much of it next. Zero is the absent value and the ceiling
+		// both, so it is written back only when the author wrote something: a
+		// `max_batch: 0` round-tripping into an explicit key would be this
+		// function inventing a line.
+		if n := kind.SignalBatch.GetMaxBatch(); n > 0 {
+			mapping = append(mapping, yaml.MapItem{Key: "max_batch", Value: int(n)})
+		}
+
+		if prompt := kind.SignalBatch.GetPrompt(); prompt != nil {
+			value, err := inputValueToYAML(prompt)
+			if err != nil {
+				return "", nil, fmt.Errorf("wait_for_signals prompt: %w", err)
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "prompt", Value: value})
+		}
+
+		switch {
+		case wait.GetTimeoutExpr() != nil:
+			value, err := fencedExprToYAML(wait.GetTimeoutExpr())
+			if err != nil {
+				return "", nil, fmt.Errorf("wait_for_signals timeout: %w", err)
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "timeout", Value: value})
+
+		case wait.GetTimeout() != nil:
+			mapping = append(mapping,
+				yaml.MapItem{Key: "timeout", Value: durationToYAML(wait.GetTimeout())})
+		}
+
+		if shaped := kind.SignalBatch.GetOutputs(); len(shaped) > 0 {
+			out := make(yaml.MapSlice, 0, len(shaped))
+			for _, name := range slices.Sorted(maps.Keys(shaped)) {
+				value, err := inputValueToYAML(shaped[name])
+				if err != nil {
+					return "", nil, fmt.Errorf("wait_for_signals outputs %q: %w", name, err)
+				}
+				out = append(out, yaml.MapItem{Key: name, Value: value})
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "outputs", Value: out})
+		}
+
+		// The scalar form when there is nothing else to say, as above.
+		if len(mapping) == 1 {
+			return "wait_for_signals", kind.SignalBatch.GetName(), nil
+		}
+
+		return "wait_for_signals", mapping, nil
+
 	default:
-		return "", nil, fmt.Errorf("wait has no sleep, wait_until, or wait_for_signal")
+		return "", nil, fmt.Errorf("wait has no sleep, wait_until, wait_for_signal, or wait_for_signals")
 	}
 }
 

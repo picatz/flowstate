@@ -1621,6 +1621,7 @@ type Wait struct {
 	//	*Wait_Until
 	//	*Wait_Signal
 	//	*Wait_DurationExpr
+	//	*Wait_SignalBatch
 	Kind isWait_Kind `protobuf_oneof:"kind"`
 	// Timeout bounds how long the wait may last, for a wait that might otherwise
 	// never end.
@@ -1726,6 +1727,15 @@ func (x *Wait) GetDurationExpr() *Value {
 	return nil
 }
 
+func (x *Wait) GetSignalBatch() *SignalBatch {
+	if x != nil {
+		if x, ok := x.Kind.(*Wait_SignalBatch); ok {
+			return x.SignalBatch
+		}
+	}
+	return nil
+}
+
 func (x *Wait) GetTimeout() *durationpb.Duration {
 	if x != nil {
 		return x.Timeout
@@ -1806,6 +1816,28 @@ type Wait_DurationExpr struct {
 	DurationExpr *Value `protobuf:"bytes,5,opt,name=duration_expr,json=durationExpr,proto3,oneof"`
 }
 
+type Wait_SignalBatch struct {
+	// SignalBatch waits for a signal and then takes every other delivery
+	// already buffered for that name, in one step: `wait_for_signals:`.
+	//
+	// The event-accumulator shape — a burst of orders, approvals, or webhook
+	// deliveries processed together — rather than a second way to spell an
+	// approval gate. It blocks exactly as `signal` does until the *first*
+	// delivery, then drains what is already buffered without blocking again, so
+	// "process whatever arrived" falls out of the wait that already exists
+	// rather than needing a new timer.
+	//
+	// A fifth arm rather than a mode inside `signal`, because the two bind
+	// disjoint name sets in their `outputs:` — see [SignalBatch] for the whole
+	// argument, and for the honest accounting of what batching does and does
+	// not remove from workflow history.
+	//
+	// `timeout` and `timeout_expr` below work on it unchanged, and mean what
+	// they mean on `signal`: how long to wait for the first delivery. A batch
+	// that lapses produces `count: 0` and `timed_out: true`.
+	SignalBatch *SignalBatch `protobuf:"bytes,7,opt,name=signal_batch,json=signalBatch,proto3,oneof"`
+}
+
 func (*Wait_Duration) isWait_Kind() {}
 
 func (*Wait_Until) isWait_Kind() {}
@@ -1813,6 +1845,8 @@ func (*Wait_Until) isWait_Kind() {}
 func (*Wait_Signal) isWait_Kind() {}
 
 func (*Wait_DurationExpr) isWait_Kind() {}
+
+func (*Wait_SignalBatch) isWait_Kind() {}
 
 // ForEach runs a body of steps once per item of a list.
 //
@@ -3018,12 +3052,13 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\f_description\"B\n" +
 	"\fCompensation\x122\n" +
 	"\x04task\x18\x01 \x01(\v2\x12.flowstate.v1.TaskB\n" +
-	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04task\"\xd4\x02\n" +
+	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04task\"\x94\x03\n" +
 	"\x04Wait\x127\n" +
 	"\bduration\x18\x01 \x01(\v2\x19.google.protobuf.DurationH\x00R\bduration\x12+\n" +
 	"\x05until\x18\x02 \x01(\v2\x13.flowstate.v1.ValueH\x00R\x05until\x12.\n" +
 	"\x06signal\x18\x03 \x01(\v2\x14.flowstate.v1.SignalH\x00R\x06signal\x12:\n" +
-	"\rduration_expr\x18\x05 \x01(\v2\x13.flowstate.v1.ValueH\x00R\fdurationExpr\x123\n" +
+	"\rduration_expr\x18\x05 \x01(\v2\x13.flowstate.v1.ValueH\x00R\fdurationExpr\x12>\n" +
+	"\fsignal_batch\x18\a \x01(\v2\x19.flowstate.v1.SignalBatchH\x00R\vsignalBatch\x123\n" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x126\n" +
 	"\ftimeout_expr\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\vtimeoutExprB\r\n" +
 	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xe6\x01\n" +
@@ -3132,7 +3167,8 @@ var file_flowstate_v1_workflow_proto_goTypes = []any{
 	(*Task)(nil),                 // 32: flowstate.v1.Task
 	(*durationpb.Duration)(nil),  // 33: google.protobuf.Duration
 	(*Signal)(nil),               // 34: flowstate.v1.Signal
-	(*SignalPolicy)(nil),         // 35: flowstate.v1.SignalPolicy
+	(*SignalBatch)(nil),          // 35: flowstate.v1.SignalBatch
+	(*SignalPolicy)(nil),         // 36: flowstate.v1.SignalPolicy
 }
 var file_flowstate_v1_workflow_proto_depIdxs = []int32{
 	7,  // 0: flowstate.v1.Workflow.steps:type_name -> flowstate.v1.Node
@@ -3166,43 +3202,44 @@ var file_flowstate_v1_workflow_proto_depIdxs = []int32{
 	31, // 28: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
 	34, // 29: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
 	31, // 30: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
-	33, // 31: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
-	31, // 32: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
-	31, // 33: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
-	7,  // 34: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
-	26, // 35: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
-	7,  // 36: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
-	31, // 37: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
-	31, // 38: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
-	31, // 39: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
-	31, // 40: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
-	27, // 41: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
-	28, // 42: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
-	1,  // 43: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
-	29, // 44: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
-	33, // 45: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
-	16, // 46: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
-	33, // 47: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	33, // 48: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
-	21, // 49: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	6,  // 50: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
-	31, // 51: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 52: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
-	23, // 53: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	31, // 54: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
-	25, // 55: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	31, // 56: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
-	31, // 57: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	7,  // 58: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
-	31, // 59: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
-	7,  // 60: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
-	7,  // 61: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
-	31, // 62: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	63, // [63:63] is the sub-list for method output_type
-	63, // [63:63] is the sub-list for method input_type
-	63, // [63:63] is the sub-list for extension type_name
-	63, // [63:63] is the sub-list for extension extendee
-	0,  // [0:63] is the sub-list for field type_name
+	35, // 31: flowstate.v1.Wait.signal_batch:type_name -> flowstate.v1.SignalBatch
+	33, // 32: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
+	31, // 33: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
+	31, // 34: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
+	7,  // 35: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
+	26, // 36: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
+	7,  // 37: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
+	31, // 38: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
+	31, // 39: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
+	31, // 40: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
+	31, // 41: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
+	27, // 42: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
+	28, // 43: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
+	1,  // 44: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
+	29, // 45: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
+	33, // 46: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
+	16, // 47: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
+	33, // 48: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	33, // 49: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
+	21, // 50: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	6,  // 51: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
+	31, // 52: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 53: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
+	23, // 54: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	31, // 55: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
+	25, // 56: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	31, // 57: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
+	31, // 58: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	7,  // 59: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
+	31, // 60: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
+	7,  // 61: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
+	7,  // 62: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
+	31, // 63: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	64, // [64:64] is the sub-list for method output_type
+	64, // [64:64] is the sub-list for method input_type
+	64, // [64:64] is the sub-list for extension type_name
+	64, // [64:64] is the sub-list for extension extendee
+	0,  // [0:64] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_workflow_proto_init() }
@@ -3232,6 +3269,7 @@ func file_flowstate_v1_workflow_proto_init() {
 		(*Wait_Until)(nil),
 		(*Wait_Signal)(nil),
 		(*Wait_DurationExpr)(nil),
+		(*Wait_SignalBatch)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
