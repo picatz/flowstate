@@ -229,13 +229,75 @@ var dirDefaultsTopLevelKeys = []dslKey{
 	{name: "defaults", detail: "map", docs: "The inputs, stubs, and signal sender every suite in this directory starts from, folded beneath the suite's own `defaults:`."},
 }
 
-// lookupTestDocKey returns the documentation for a test-document-shape key at
-// one level of nesting — [lookupDSLKey] for [testDocKeys].
-func lookupTestDocKey(level testDocLevel, name string) (dslKey, bool) {
-	for _, k := range testDocKeys[level] {
-		if k.name == name {
-			return k, true
+// testLevelChildren says which keys at one level open another level of the
+// test grammar, and — by omission — which hold the author's own data.
+//
+// The omissions are the point, and they are what a suffix match got wrong: a
+// case's `inputs:` holds whatever the workflow declares, so a fixture map in
+// there named `expect` is the author's data, not the DSL's stanza — and a
+// suffix check on the enclosing key offered `outputs`, `failed` and the rest
+// inside it with full confidence (Codex, #1173). A walk from the root stops at
+// the first data-holding key, and nothing below one is ever completed.
+//
+// TestTheTransitionMapNamesOnlyRealKeys holds every entry here to
+// [testDocKeys]'s derived key sets, and pins the deliberate omissions by name
+// so completing this map later has to argue with the reason.
+var testLevelChildren = map[testDocLevel]map[string]testDocLevel{
+	testLevelFile: {
+		"tests":    testLevelCase,
+		"defaults": testLevelDefaults,
+		"coverage": testLevelCoverage,
+	},
+	testLevelCase: {
+		"cases":   testLevelCase,
+		"trigger": testLevelTrigger,
+		"stubs":   testLevelStub,
+		"signals": testLevelSignal,
+		"starter": testLevelIdentity,
+		"expect":  testLevelExpect,
+	},
+	testLevelDefaults: {
+		"stubs":  testLevelStub,
+		"sender": testLevelIdentity,
+		"check":  testLevelCheck,
+	},
+	testLevelStub: {
+		"fails": testLevelFails,
+	},
+	testLevelSignal: {
+		"sender": testLevelIdentity,
+	},
+	testLevelExpect: {
+		"check": testLevelCheck,
+	},
+}
+
+// dirDefaultsChildren is the same map for testdefaults.yaml's narrower top
+// level: `defaults:` opens the shared [flowtest.Defaults] shape, and `vars:`
+// holds the author's data.
+var dirDefaultsChildren = map[string]testDocLevel{
+	"defaults": testLevelDefaults,
+}
+
+// testDocLevelAt walks the enclosing key chain from the document's root and
+// returns the test-grammar level it lands on, or false the moment the chain
+// passes through a key the grammar does not open — an unknown key, or one
+// that holds the author's own data. Below either, nothing is the DSL's to
+// complete.
+func testDocLevelAt(kind documentKind, path []string) (testDocLevel, bool) {
+	level := testLevelFile
+	for i, segment := range path {
+		var next testDocLevel
+		var ok bool
+		if i == 0 && kind == docTestDefaults {
+			next, ok = dirDefaultsChildren[segment]
+		} else {
+			next, ok = testLevelChildren[level][segment]
 		}
+		if !ok {
+			return "", false
+		}
+		level = next
 	}
-	return dslKey{}, false
+	return level, true
 }

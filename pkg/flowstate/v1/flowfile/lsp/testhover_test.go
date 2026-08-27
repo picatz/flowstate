@@ -106,3 +106,28 @@ func TestHoverOnAStubTaskNameInsideTestDefaults(t *testing.T) {
 	require.NotNil(t, h)
 	assert.Contains(t, hoverText(h), "task `log`")
 }
+
+// TestHoverIgnoresAFixtureShapedLikeAStub is the hover half of the
+// suffix-match finding (Codex, #1173): a fixture map named `stubs` inside a
+// case's `inputs:` is the author's data, and its `task:` key is not a
+// stub's — a hover there answered with the registry's doc for whatever task
+// name the fixture happened to hold, presenting the DSL's reading of data
+// that is not the DSL's.
+func TestHoverIgnoresAFixtureShapedLikeAStub(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	text := "tests:\n" +
+		"  - name: the case\n" +
+		"    inputs:\n" +
+		"      stubs:\n" +
+		"        - task: log\n"
+	c.open("file:///fixture.test.yaml", text)
+
+	// Column 17 sits inside the value "log" — the position the real stub
+	// hover answers at, on a line whose enclosing chain is the author's data.
+	h := c.hover("file:///fixture.test.yaml", 4, 17)
+	assert.Nil(t, h,
+		"a task hover answered inside a fixture map, reading the author's data as a stub")
+}

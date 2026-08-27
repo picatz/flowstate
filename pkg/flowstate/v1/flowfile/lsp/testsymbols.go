@@ -59,12 +59,18 @@ func testDocumentSymbols(doc *document) []lsp.SymbolInformation {
 		if !ok || key != "name" {
 			continue
 		}
+		// The exact shapes flow test's own report identity is built from, not
+		// a suffix: `tests` for an entry, `tests`/`cases` for a row. A suffix
+		// match minted a runnable case out of any nested mapping whose key
+		// spelled `cases` — a fixture like `inputs: {cases: {name: bogus}}`
+		// emitted `real/bogus` and, worse, set hasRows, which suppressed the
+		// real case's own symbol (Codex, #1173).
 		path := keyPath(doc.index, i)
 		switch {
-		case endsWith(path, "tests"):
+		case pathIs(path, "tests"):
 			flush()
 			pending = &pendingEntry{name: value, rng: rng}
-		case endsWith(path, "cases"):
+		case pathIs(path, "tests", "cases"):
 			hasRows = true
 			name := value
 			if pending != nil {
@@ -80,4 +86,17 @@ func testDocumentSymbols(doc *document) []lsp.SymbolInformation {
 	flush()
 
 	return out
+}
+
+// pathIs reports whether a key chain is exactly these segments, root first.
+func pathIs(path []string, segments ...string) bool {
+	if len(path) != len(segments) {
+		return false
+	}
+	for i, segment := range segments {
+		if path[i] != segment {
+			return false
+		}
+	}
+	return true
 }

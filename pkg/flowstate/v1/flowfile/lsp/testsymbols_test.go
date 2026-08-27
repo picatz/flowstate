@@ -123,3 +123,95 @@ func TestTestDocumentSymbolsEmptyOnTestDefaults(t *testing.T) {
 	got := c.symbols("file:///testdefaults.yaml")
 	assert.Empty(t, got)
 }
+
+// TestASymbolIsNotMintedFromTheAuthorsData is the negative direction the
+// suffix match failed (Codex, #1173), and both halves of its cost: a nested
+// mapping whose key spells `cases` minted a phantom runnable case, and —
+// worse — set hasRows, which suppressed the real case's own symbol. The
+// outline then showed a case flow test cannot run and hid one it can.
+func TestASymbolIsNotMintedFromTheAuthorsData(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	text := "tests:\n" +
+		"  - name: real\n" +
+		"    inputs:\n" +
+		"      cases:\n" +
+		"        name: bogus\n"
+	c.open("file:///suite.test.yaml", text)
+	syms := c.symbols("file:///suite.test.yaml")
+
+	names := make([]string, 0, len(syms))
+	for _, s := range syms {
+		names = append(names, s.Name)
+	}
+
+	assert.Equal(t, []string{"real"}, names,
+		"a fixture mapping named cases minted a phantom row, suppressed the real case, or both")
+
+	// And the entry-level collision: a fixture mapping named `tests` must not
+	// mint a phantom top-level case either. Separately, because the two
+	// suffix checks were two lines and each can regress alone.
+	c.open("file:///nested.test.yaml",
+		"tests:\n"+
+			"  - name: real\n"+
+			"    inputs:\n"+
+			"      tests:\n"+
+			"        name: phantom\n")
+	syms = c.symbols("file:///nested.test.yaml")
+
+	names = names[:0]
+	for _, s := range syms {
+		names = append(names, s.Name)
+	}
+	assert.Equal(t, []string{"real"}, names,
+		"a fixture mapping named tests minted a phantom entry symbol")
+}
+
+// TestASymbolRangeIsInUTF16CodeUnits: LSP's Position.Character counts UTF-16
+// code units, and a byte count past `café` ends the range beyond the text
+// (Codex, #1173). The é is two bytes and one code unit, so byte arithmetic
+// puts End one column too far — which is exactly the off-by-one an editor
+// rejects or, worse, silently misselects.
+func TestASymbolRangeIsInUTF16CodeUnits(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	c.open("file:///suite.test.yaml", "tests:\n  - name: café\n")
+	syms := c.symbols("file:///suite.test.yaml")
+
+	require.Len(t, syms, 1)
+	rng := syms[0].Location.Range
+	// "  - name: café" is 14 runes; é is one UTF-16 code unit. Start sits
+	// after "  - name: " (10 units), End at the line's end (14 units) — a
+	// byte count would say 15.
+	assert.Equal(t, 10, rng.Start.Character)
+	assert.Equal(t, 14, rng.End.Character,
+		"the range end is a byte count, which lands past the text for a non-ASCII name")
+}
+
+// TestASymbolNameMatchesTheReportThroughQuotesAndComments: the outline's
+// name has to be the report's name, and `name: "smoke" # primary` is a
+// perfectly ordinary spelling of it. The old unquote checked the line's
+// *last* byte for the closing quote, so a trailing comment left the quotes
+// on and the outline showed `"smoke"` while flow test says smoke
+// (Codex, #1173).
+func TestASymbolNameMatchesTheReportThroughQuotesAndComments(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	c.open("file:///suite.test.yaml",
+		"tests:\n"+
+			"  - name: \"smoke\" # primary\n"+
+			"  - name: 'quoted # not a comment'\n")
+	syms := c.symbols("file:///suite.test.yaml")
+
+	require.Len(t, syms, 2)
+	assert.Equal(t, "smoke", syms[0].Name,
+		"a trailing comment left the quotes on the outline's name")
+	assert.Equal(t, "quoted # not a comment", syms[1].Name,
+		"a # inside a quoted name was stripped as a comment")
+}

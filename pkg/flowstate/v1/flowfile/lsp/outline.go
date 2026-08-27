@@ -301,8 +301,19 @@ func scalarText(rest string) string {
 
 func unquote(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
-		return s[1 : len(s)-1]
+	// A quoted scalar ends at its closing quote, and whatever follows — a
+	// trailing comment, stray text — is not the value. Checking the *last*
+	// byte for the close quote instead meant `name: "smoke" # primary` failed
+	// the quote test (the line ends in `y`) and fell through with its quotes
+	// still on, so the outline showed `"smoke"` while flow test's report says
+	// `smoke`, and a task hover looked up a quoted name the registry does not
+	// hold (Codex, #1173). The close-quote scan is the same simplification the
+	// old suffix check made — YAML escape sequences inside the quotes are not
+	// interpreted — which loses nothing the previous spelling had.
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') {
+		if end := strings.IndexByte(s[1:], s[0]); end >= 0 {
+			return s[1 : 1+end]
+		}
 	}
 	// Strip a trailing comment from a plain scalar.
 	if i := strings.Index(s, " #"); i >= 0 {

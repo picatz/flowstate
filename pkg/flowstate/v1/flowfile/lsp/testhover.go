@@ -40,7 +40,11 @@ func hoverTestDocument(doc *document, pos lsp.Position) *lsp.Hover {
 	if !inValue || key != "task" {
 		return nil
 	}
-	if !endsWith(keyPath(doc.index, pos.Line), "stubs") {
+	// Through the grammar walk, not a suffix: a fixture map named `stubs`
+	// inside a case's `inputs:` is the author's data, and its `task:` key is
+	// not a stub's (Codex, #1173 — the completion finding, applied to the
+	// same check here before anyone reports it separately).
+	if level, ok := testDocLevelAt(doc.kind, keyPath(doc.index, pos.Line)); !ok || level != testLevelStub {
 		return nil
 	}
 

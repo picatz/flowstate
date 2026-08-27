@@ -40,49 +40,38 @@ func completeTestDocument(doc *document, pos lsp.Position) *lsp.CompletionList {
 	key, valuePos := keyAndPosition(line, col)
 	word, replace := wordBefore(pos, before)
 
-	if valuePos {
-		// The one value position this offers anything for: a stub's `task:`,
-		// naming a task the same way a workflow step does.
-		if key == "task" && endsWith(path, "stubs") {
-			return list(testStubTaskCandidates(word, replace, doc.tasks))
-		}
-		return empty
-	}
-
 	// testdefaults.yaml's top level is a narrower table than a suite's own —
 	// see [dirDefaultsTopLevelKeys] — everything nested below `defaults:` is
 	// the identical [flowtest.Defaults] shape either file nests it in, so
-	// every other case below applies unchanged to both document kinds.
-	if len(path) == 0 {
+	// everything below applies unchanged to both document kinds.
+	if len(path) == 0 && !valuePos {
 		if doc.kind == docTestDefaults {
 			return list(keyCandidates(dirDefaultsTopLevelKeys, word, replace))
 		}
 		return list(testDSLCandidates(testLevelFile, word, replace))
 	}
 
-	switch {
-	case endsWith(path, "expect"):
-		return list(testDSLCandidates(testLevelExpect, word, replace))
-	case endsWith(path, "check"):
-		return list(testDSLCandidates(testLevelCheck, word, replace))
-	case endsWith(path, "coverage"):
-		return list(testDSLCandidates(testLevelCoverage, word, replace))
-	case endsWith(path, "trigger"):
-		return list(testDSLCandidates(testLevelTrigger, word, replace))
-	case endsWith(path, "fails"):
-		return list(testDSLCandidates(testLevelFails, word, replace))
-	case endsWith(path, "signals"):
-		return list(testDSLCandidates(testLevelSignal, word, replace))
-	case endsWith(path, "starter"), endsWith(path, "sender"):
-		return list(testDSLCandidates(testLevelIdentity, word, replace))
-	case endsWith(path, "stubs"):
-		return list(testDSLCandidates(testLevelStub, word, replace))
-	case endsWith(path, "defaults"):
-		return list(testDSLCandidates(testLevelDefaults, word, replace))
-	case endsWith(path, "tests"), endsWith(path, "cases"):
-		return list(testDSLCandidates(testLevelCase, word, replace))
+	// The whole chain from the root decides the level, not the innermost key.
+	// A suffix match answered for any map whose key happened to spell a stanza
+	// name — a case's `inputs: {expect: ...}` is the author's fixture data, and
+	// it was offered `outputs`, `failed` and the rest with full confidence
+	// (Codex, #1173). The walk refuses at the first key the grammar does not
+	// open, so nothing inside the author's data is ever the DSL's to complete.
+	level, structural := testDocLevelAt(doc.kind, path)
+	if !structural {
+		return empty
 	}
-	return empty
+
+	if valuePos {
+		// The one value position this offers anything for: a stub's `task:`,
+		// naming a task the same way a workflow step does.
+		if key == "task" && level == testLevelStub {
+			return list(testStubTaskCandidates(word, replace, doc.tasks))
+		}
+		return empty
+	}
+
+	return list(testDSLCandidates(level, word, replace))
 }
 
 // testDSLCandidates offers testDocKeys' keys at one level of nesting — the

@@ -182,3 +182,85 @@ func TestCompletionIsEmptyOnATestDefaultsTopLevel(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"edition", "vars", "defaults"}, got)
 }
+
+// TestCompletionStopsAtTheAuthorsOwnData is the negative direction the
+// suffix match failed (Codex, #1173): a fixture map whose key happens to
+// spell a stanza name is the author's data, and offering the stanza's keys
+// inside it is a wrong answer with full confidence — worse than silence, per
+// this package's own doc.
+func TestCompletionStopsAtTheAuthorsOwnData(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	// `expect:` here is a key of the workflow's input fixture, two levels
+	// inside `inputs:` — not the case's expect stanza.
+	text := "tests:\n" +
+		"  - name: the case\n" +
+		"    inputs:\n" +
+		"      expect:\n" +
+		"        \n"
+	c.open("file:///suite.test.yaml", text)
+	got := labels(c.complete("file:///suite.test.yaml", 4, 8).Items)
+
+	assert.Empty(t, got,
+		"a fixture map named expect was completed as the DSL's expect: stanza")
+
+	// And the same collision for a value position: a fixture map named
+	// `stubs` does not make its `task:` key a stub's task.
+	text = "tests:\n" +
+		"  - name: the case\n" +
+		"    inputs:\n" +
+		"      stubs:\n" +
+		"        - task: lo\n"
+	c.open("file:///fixture.test.yaml", text)
+	got = labels(c.complete("file:///fixture.test.yaml", 4, 18).Items)
+
+	assert.Empty(t, got,
+		"a fixture map named stubs had its task: value completed from the registry")
+}
+
+// TestTheTransitionMapNamesOnlyRealKeys holds [testLevelChildren] to the
+// derived key tables in both the direction it states and the one it omits.
+// Every transition names a key its parent level really has — so the map
+// cannot open a level under a key the loader would refuse — and the keys
+// deliberately left out, the ones that hold the author's own data, are
+// pinned absent by name so completing the map later has to argue with the
+// reason rather than just add the line.
+func TestTheTransitionMapNamesOnlyRealKeys(t *testing.T) {
+	t.Parallel()
+
+	for parent, children := range testLevelChildren {
+		keys := map[string]bool{}
+		for _, k := range testDocKeys[parent] {
+			keys[k.name] = true
+		}
+		for child := range children {
+			assert.True(t, keys[child],
+				"testLevelChildren[%q] names %q, which testDocKeys says that level does not have",
+				parent, child)
+		}
+	}
+
+	for _, dataKey := range []struct {
+		level testDocLevel
+		key   string
+		why   string
+	}{
+		{testLevelFile, "vars", "a vars: value is the author's literal, not a grammar level"},
+		{testLevelCase, "inputs", "a case's inputs hold whatever the workflow declares"},
+		{testLevelCase, "secrets", "secret plaintexts, keyed by reference text"},
+		{testLevelStub, "returns", "a stub's returns are the task's own output shape"},
+		{testLevelStub, "response", "a raw response body is the peer's shape, not the DSL's"},
+		{testLevelSignal, "payload", "a signal carries whatever the workflow reads"},
+		{testLevelIdentity, "claims", "claims are the policy's vocabulary, not this grammar's"},
+		{testLevelExpect, "outputs", "expected outputs mirror the workflow's declarations"},
+		{testLevelExpect, "inputs", "expected inputs mirror a delivery's bindings"},
+	} {
+		_, opens := testLevelChildren[dataKey.level][dataKey.key]
+		assert.False(t, opens,
+			"testLevelChildren[%q][%q] opens a level, but %s — below it is the author's data "+
+				"and nothing there is the DSL's to complete",
+			dataKey.level, dataKey.key, dataKey.why)
+	}
+}

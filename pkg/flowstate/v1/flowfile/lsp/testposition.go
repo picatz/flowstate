@@ -12,13 +12,12 @@ import (
 // [unquote]), and the value's range: from just after the colon and any
 // spaces to the end of the line. False when line declares no key at all.
 //
-// Character offsets here are byte offsets rather than UTF-16 code units, the
-// same simplification [anchorAtNamedTest] already makes for this exact
-// family of position (a test document's own `name:` line): both read a case
-// name, which is not a position a non-ASCII character before the cursor
-// would meaningfully mislocate in practice, and neither has a [*lineIndex]
-// handy to convert with — callers work from raw lines, since the document is
-// usually mid-edit.
+// Character offsets are UTF-16 code units, converted with the package's own
+// [utf16Len] over the line's prefix — LSP's Position.Character counts code
+// units, and a byte count past a non-ASCII case name (`name: café`) ends the
+// range beyond the text, which an editor may misplace or refuse outright
+// (Codex, #1173). The first version argued bytes were close enough; the
+// converter needs only the line string, which is exactly what this has.
 //
 // Shared by [testDocumentSymbols] (filtering on key == "name") and
 // [hoverTestDocument] (filtering on key == "task"): both want the same two
@@ -42,8 +41,8 @@ func keyValueOnLine(line string, lineNo int) (key, value string, rng lsp.Range, 
 		start++
 	}
 	rng = lsp.Range{
-		Start: lsp.Position{Line: lineNo, Character: start},
-		End:   lsp.Position{Line: lineNo, Character: len(line)},
+		Start: lsp.Position{Line: lineNo, Character: utf16Len(line[:start])},
+		End:   lsp.Position{Line: lineNo, Character: utf16Len(line)},
 	}
 	return m[3], unquote(line[start:]), rng, true
 }
