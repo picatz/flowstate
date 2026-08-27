@@ -1016,6 +1016,77 @@ func TestThroughAShadowedTypeParameter(t *testing.T) {
 	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
 		"a type parameter named panic was not counted as binding the name, so a "+
 			"conversion read as the builtin that fails a test")
+
+	// And a *receiver's* type parameters, which is the sixth binding site and
+	// the one that outlived two rounds of adding field lists — because it is
+	// the one place a name is bound that is not a field list at all. It is
+	// written in the receiver's type: `box[panic]`.
+	findings, _ = analyzedFile(t, "shadowed_recv_typeparam_test.go", `package fixture
+
+import "testing"
+
+type box[T ~string] struct{}
+
+func (b box[panic]) check(x string) {
+	_ = panic(x)
+}
+
+func TestThroughAReceiverTypeParameter(t *testing.T) {
+	b := box[string]{}
+	b.check("x")
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a receiver's type parameter named panic was not counted as binding the name")
+
+	// Several of them, and through a pointer receiver, which are the other two
+	// spellings the syntax has for the same thing.
+	findings, _ = analyzedFile(t, "shadowed_recv_typeparams_test.go", `package fixture
+
+import "testing"
+
+type pair[A ~string, B any] struct{}
+
+func (p *pair[panic, U]) check(x string) {
+	_ = panic(x)
+}
+
+func TestThroughAPointerReceiverTypeParameter(t *testing.T) {
+	p := &pair[string, int]{}
+	p.check("x")
+}
+`)
+	assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+		"a pointer receiver's first type parameter was not counted as binding the name")
+
+	// Parenthesised, which `gofmt` removes — and which this walk still has to
+	// read, because the required CI gofmt job covers `./cmd ./pkg` while this
+	// reads `tools/` and `plugins/` too. The two wrappers nest and either may
+	// come first, so all four spellings mean the same receiver.
+	for _, receiver := range []string{
+		"(b (box[panic]))",
+		"(b (*box[panic]))",
+		"(b ((*box[panic])))",
+		"(b *box[panic])",
+	} {
+		findings, _ = analyzedFile(t, "shadowed_paren_test.go", `package fixture
+
+import "testing"
+
+type box[T ~string] struct{}
+
+func `+receiver+` check(x string) {
+	_ = panic(x)
+}
+
+func TestThroughAParenthesisedReceiver(t *testing.T) {
+	b := box[string]{}
+	b.check("x")
+}
+`)
+		assert.Equal(t, []string{string(CheckUnasserted)}, checksFound(findings),
+			"the receiver %s did not bind its type parameter", receiver)
+	}
 }
 
 // TestAnAliasReachesTheWholePackage is Go's scoping, which is not the file's.
