@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -264,6 +265,17 @@ func WithCredentialTargets(targets ...string) Option {
 	}
 }
 
+// WithAudit installs the recorder every authorization decision is written to.
+//
+// Without one, decisions are made and nothing is written down — which is the
+// library default rather than a deployment's answer, because the sink and the
+// question of whether a record is *required* both belong to the process doing
+// the serving. See the audit package for the shape, and server/audit.go for
+// where the records come from.
+func WithAudit(recorder *audit.Recorder) Option {
+	return func(s *FlowstateServer) error { s.audit = recorder; return nil }
+}
+
 // WithPluginCatalog supplies the server/worker capability snapshot used to pin
 // plugin requirements before a durable run is accepted.
 func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
@@ -482,6 +494,13 @@ type FlowstateServer struct {
 	// client: memos, a schedule's stored arguments, an activity's heartbeat
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
+
+	// audit records authorization decisions. Nil records nothing and is not an
+	// error: whether this deployment keeps an audit trail, and whether an
+	// action that cannot be recorded may happen at all, is a decision for the
+	// process that serves rather than for the library. See [WithAudit] and
+	// pkg/flowstate/v1/audit.
+	audit *audit.Recorder
 }
 
 // trustedWorkflow returns the deployment-owned specification registered for
@@ -1173,6 +1192,19 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// name flat enough for one tenant to reach another's trusted entry.
 	identity := s.identityFor(ctx)
 
+	// The decision, written down before any of the work it permits.
+	//
+	// Here, rather than at the [FlowstateServer.clientFor] call further down,
+	// because this RPC's authorization question is "may this caller start work
+	// in their own namespace" and nothing between here and there can change the
+	// answer: what follows is the specification being checked, which is a
+	// question about the file rather than about the caller. The resource is the
+	// run that does not exist yet, so the key is empty until the id is composed
+	// — a decision about starting work is not a decision about a run.
+	if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, identity.GetNamespace()); err != nil {
+		return nil, err
+	}
+
 	// The caller's copy, kept as it arrived, so the attestation below has
 	// something to compare the executed specification against.
 	//
@@ -1858,7 +1890,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	// returned its status to whoever asked, so any caller who knew or guessed an
 	// id could read another tenant's run — and a completed run returns its whole
 	// outputs, which is the workload's data rather than only its existence.
-	temporal, resp, err := s.authorizeRun(ctx, req.Msg.GetWorkflowId(), req.Msg.GetRunId())
+	temporal, resp, err := s.authorizeRun(ctx, "Get", req.Msg.GetWorkflowId(), req.Msg.GetRunId())
 	if err != nil {
 		return nil, err
 	}

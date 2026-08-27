@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 )
 
 // TestEveryRPCHasExactlyOneAuthorizationAction is what keeps the vocabulary
@@ -18,6 +19,13 @@ import (
 // That is the whole reason the bindings may be hand-written — the judgement
 // about which RPCs share an action is recorded once, and the thing it is a
 // judgement about is read from the source of truth.
+//
+// It also pins the *audited* surface (#1018), which is derived from the same
+// bindings: every RPC the schema declares reaches an action that
+// [audit.AuditedActions] includes, so an RPC cannot arrive unaudited without
+// this failing. The seam that does the emitting is held honest separately, by
+// TestEveryRPCReachesTheAuditSeam in the server package — this end owns the
+// vocabulary, that end owns the call sites.
 func TestEveryRPCHasExactlyOneAuthorizationAction(t *testing.T) {
 	t.Parallel()
 
@@ -45,12 +53,22 @@ func TestEveryRPCHasExactlyOneAuthorizationAction(t *testing.T) {
 		}
 	}
 
+	audited := map[v1.AuthorizationAction]bool{}
+	for _, action := range audit.AuditedActions() {
+		audited[action] = true
+	}
+
 	for rpc := range declared {
 		action, err := v1.AuthorizationActionForRPC(rpc)
 		require.NoError(t, err,
 			"the schema declares rpc %s and no authorization action names it", rpc)
 		require.Equal(t, bound[rpc], action)
 		require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
+
+		require.True(t, audited[action],
+			"the schema declares rpc %s, whose action %s is outside the audited surface; "+
+				"an authorization decision nobody records is one nobody can review",
+			rpc, action)
 	}
 }
 
