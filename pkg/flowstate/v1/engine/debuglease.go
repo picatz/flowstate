@@ -194,6 +194,17 @@ func (e *executor) applyDebugAsks(parked bool) {
 		// for the next boundary, or is drained into the run's carried state at
 		// a Continue-As-New like any other early-arriving signal, so this paces
 		// rather than discards.
+		//
+		// The count is a **named survivor**, and the reason is the same property
+		// that makes it safe: a message left on the channel wakes the very next
+		// park, so the remainder is applied a wake later and no virtual time
+		// passes in between. Pacing is therefore invisible to anything that
+		// reads the clock, which is everything a test of this can read — the
+		// bound is on how much work *one workflow task* does, and that is not a
+		// quantity the SDK's test environment exposes. What a fixture can see is
+		// that a second buffered ask takes effect at all rather than being
+		// dropped, which is [TestABoundaryDrainsMoreThanOneAskAtATime]'s claim
+		// and the failure this bound must not become.
 		for range v1.MaxDebugAsksPerBoundary {
 			var delivery v1.SignalDelivery
 			if !channel.ReceiveAsync(&delivery) {

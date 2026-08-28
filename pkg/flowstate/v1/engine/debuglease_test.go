@@ -535,14 +535,21 @@ func TestARefusedAskIsRefusedRatherThanQueued(t *testing.T) {
 		"the segment after the seam was held by an ask its predecessor had already refused")
 }
 
-// TestABoundaryDrainsMoreThanOneAskAtATime is CLAUDE.md's "assert a bound was
-// reached as well as not exceeded": [v1.MaxDebugAsksPerBoundary] paces a drain,
-// and a drain that stopped after one would pace it to nothing while every test
-// above stayed green.
+// TestABoundaryDrainsMoreThanOneAskAtATime: a second ask buffered for the same
+// boundary takes effect, rather than being consumed and dropped.
 //
 // Two asks from one holder, delivered together: the first starts the session and
-// the second renews it, so the run holds for the *second* one's duration. A drain
-// that read one ask per boundary would hold for the first's.
+// the second renews it, so the run holds for the *second* one's duration.
+//
+// What this is and is not. It is not a test of [v1.MaxDebugAsksPerBoundary]'s
+// number — lowering that to one leaves this green, because a message left on the
+// channel wakes the very next park and the remainder is applied a wake later
+// with no virtual time in between, which is exactly why pacing is safe. That
+// bound is on how much work one workflow task does, and a virtual clock cannot
+// see it (the count is a named survivor where it is written). What this *is* is
+// the failure that bound must never become: a drain that read one ask and threw
+// the rest away would hold for thirty seconds here, and a sender would have been
+// told their ask was accepted.
 func TestABoundaryDrainsMoreThanOneAskAtATime(t *testing.T) {
 	t.Parallel()
 
