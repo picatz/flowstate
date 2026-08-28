@@ -209,18 +209,22 @@ func (ds *Diagnostics) file() string {
 	return ""
 }
 
-// inFile stamps path on every problem, for the doors that have one.
+// inFile stamps path on every problem that does not already name a file, for
+// the doors that have one.
 //
 // Done here rather than at every report site because the path is a property of
 // the door, not of the check: [parseSourceWith] is reached with bytes from a
 // file, from an editor's buffer, and from an MCP request, and only two of those
-// know a path.
+// know a path. A problem that already names one was written in a document this
+// door did not open — the directory's [DirDefaultsName] — and keeps it.
 func (ds *Diagnostics) inFile(path string) *Diagnostics {
 	if ds == nil || path == "" {
 		return ds
 	}
 	for i := range ds.Problems {
-		ds.Problems[i].File = path
+		if ds.Problems[i].File == "" {
+			ds.Problems[i].File = path
+		}
 	}
 
 	return ds
@@ -272,11 +276,30 @@ type site struct {
 	// write the value — an inherited stub, a default folded in from a sibling
 	// file — which is exactly when no position may be claimed.
 	at loc
+
+	// file names the document that wrote the value, for a check that knows it
+	// directly rather than by the path.
+	//
+	// Two mechanisms answer one question, and the split is the point. A path
+	// answers it for a value the fold moves *unchanged*: `defaults.sender`
+	// means the same thing in both documents, so [problems.writtenElsewhere]
+	// can look it up. It cannot answer it where the fold **renumbers** — the
+	// directory's claims are prepended, so `defaults.check[0]` names the
+	// sibling's first claim and the suite's first claim on the same string,
+	// and a lookup keyed on that string attributed a suite-written claim to
+	// the sibling and threw away its real position (Codex, #1185). Where a
+	// path is that ambiguous, the check that knows the answer says it here
+	// instead of encoding it in an identity another site can forge.
+	file string
 }
 
 // in returns the site with its path replaced, for a check that descends into a
-// value while staying in the same case.
-func (r site) in(path loc) site { return site{test: r.test, at: path} }
+// value while staying in the same case and the same document.
+func (r site) in(path loc) site { return site{test: r.test, at: path, file: r.file} }
+
+// writtenIn returns the site with the document that wrote the value named, and
+// no path: a path into another document is not one this parse can resolve.
+func (r site) writtenIn(file string) site { return site{test: r.test, file: file} }
 
 // problems collects every refusal one document earns.
 //
@@ -297,6 +320,14 @@ type problems struct {
 
 	// bytes is the message text kept so far, bounded by [MaxLoadProblemBytes].
 	bytes int
+
+	// elsewhere are the paths whose values were written in another file —
+	// [dirDefaults.combineInto]'s answer — and elsewhereFile is that file. A
+	// problem at or under one of them is attributed there and left
+	// unpositioned, because the path addresses that document and looking it up
+	// in this one could only match by accident.
+	elsewhere     []loc
+	elsewhereFile string
 }
 
 // newProblems collects against a parsed document, or against none — the Go
@@ -304,6 +335,34 @@ type problems struct {
 // refusals with no position to give them.
 func newProblems(doc *document) *problems {
 	return &problems{doc: doc}
+}
+
+// wrote records that path's value came from file rather than from the document
+// being parsed.
+func (p *problems) wrote(file string, paths []loc) {
+	if file == "" || len(paths) == 0 {
+		return
+	}
+	p.elsewhereFile = file
+	p.elsewhere = append(p.elsewhere, paths...)
+}
+
+// writtenElsewhere reports whether path addresses a value another file wrote.
+//
+// At or under: a directory that contributed `defaults.sender` also contributed
+// every claim inside it, and the check that refuses one reports the field it is
+// on rather than the stanza.
+func (p *problems) writtenElsewhere(path loc) bool {
+	for _, contributed := range p.elsewhere {
+		if len(path) < len(contributed) {
+			continue
+		}
+		if slices.Equal(contributed, path[:len(contributed)]) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // report records one problem, positioned at the value r names.
@@ -331,12 +390,24 @@ func (p *problems) record(r site, atKey bool, message string) {
 	p.bytes += len(message)
 
 	d := Diagnostic{Test: r.test, Field: r.at.String(), Message: message}
-	locate := p.doc.positionOf
-	if atKey {
-		locate = p.doc.positionOfKey
-	}
-	if position, known := locate(r.at); known {
-		d.Line, d.Column = position.line, position.column
+	switch {
+	case r.file != "":
+		// The check named the document itself, which it does where a path
+		// could not tell the two apart — see [site.file].
+		d.File = r.file
+	case p.writtenElsewhere(r.at):
+		// Another document wrote this value, so it is named after that
+		// document and positioned in neither: the path addresses the file that
+		// holds the text, and this parse has no tree for it.
+		d.File = p.elsewhereFile
+	default:
+		locate := p.doc.positionOf
+		if atKey {
+			locate = p.doc.positionOfKey
+		}
+		if position, known := locate(r.at); known {
+			d.Line, d.Column = position.line, position.column
+		}
 	}
 	p.found = append(p.found, d)
 }

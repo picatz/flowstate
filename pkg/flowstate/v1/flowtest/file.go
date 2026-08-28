@@ -168,7 +168,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/parser"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -1152,7 +1151,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	}
 
 	var file File
-	if err := yaml.UnmarshalWithOptions(data, &file, yaml.Strict()); err != nil {
+	if err := decodeStrict(data, &file); err != nil {
 		return nil, yamlProblem(err)
 	}
 
@@ -1163,14 +1162,26 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		p.report(site{at: tests}, "declares no tests")
 	}
 	if len(file.Tests) > MaxTestsPerFile {
+		// Reported and returned, not reported and carried on with. Collecting
+		// every problem is about a file whose *size* is legal: a count bound
+		// exists to stop the work it bounds, and everything below here is that
+		// work — vars resolved per case, a source recorded per case, defaults
+		// merged into each, then every per-case check. A file of tens of
+		// thousands of entries fits well inside [MaxTestFileBytes], so a bound
+		// that only annotated it would have moved the spend rather than
+		// refused it (Codex, #1179). Same rule at every count bound below.
 		p.report(site{at: tests}, "declares %d tests, more than the limit of %d",
 			len(file.Tests), MaxTestsPerFile)
+
+		return nil, p.err()
 	}
 	if stanza := file.Coverage; stanza != nil {
 		allowed := at("coverage").field("allow_unreached")
 		if len(stanza.AllowUnreached) > MaxAllowUnreachedPerFile {
 			p.report(site{at: allowed}, "coverage.allow_unreached declares %d entries, more than the limit of %d",
 				len(stanza.AllowUnreached), MaxAllowUnreachedPerFile)
+
+			return nil, p.err()
 		}
 		// Sorted, so a file with two bad entries reports them in the same
 		// order every time: a map's iteration order is not a thing anyone can
@@ -1205,13 +1216,18 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		ownDefaultChecks = len(file.Defaults.Check)
 	}
 
-	dd.combineInto(&file)
+	// What the fold brought in from the sibling file, so a diagnostic about one
+	// of those values names the document that holds the text rather than the
+	// suite that inherited it.
+	p.wrote(dd.sourcePath(), dd.combineInto(&file))
 
 	// Vars validate and substitute first, before tables expand and before
 	// `defaults:` is checked: an inherited `${vars.x}` resolves to its
 	// literal exactly once, and the fixture rule below then checks what the
 	// run will actually see.
-	checkVars(p, file.Vars)
+	if !checkVars(p, file.Vars) {
+		return nil, p.err()
+	}
 	file.resolveVars(p)
 
 	// Rows are expanded before defaults are merged, which is what makes the
@@ -1235,6 +1251,8 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		p.report(site{at: tests},
 			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
 			len(file.Tests), MaxTestsPerFile)
+
+		return nil, p.err()
 	}
 
 	// Validated then merged before anything below bounds or checks a case, so
@@ -1242,7 +1260,13 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// runs, not the sparse one the author wrote (issue #416). A default is a
 	// fixture, so it may hold no expression; that is refused here, by position,
 	// rather than carried into a case.
-	checkDefaults(p, file.Defaults, ownDefaultChecks)
+	//
+	// The stub count is the bound that has to stop the pass rather than be
+	// noted: a default is copied into every case below, so an over-limit block
+	// multiplies by the case count before anything checks it.
+	if !checkDefaults(p, file.Defaults, ownDefaultChecks, dd.sourcePath()) {
+		return nil, p.err()
+	}
 	if file.Defaults != nil {
 		for i := range file.Tests {
 			file.Tests[i] = mergeDefaults(file.Defaults, file.Tests[i])
@@ -1263,17 +1287,30 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		if requireWorkflow && test.Workflow == "" {
 			p.report(r, "test %q names no workflow", test.Name)
 		}
+		// Each of these three stops this case rather than annotating it, for
+		// the reason the file-level counts return: the work each bounds — a
+		// reference parsed per secret, an identity checked per signal, five
+		// shape checks per stub — is what runs immediately below, and a case
+		// can hold tens of thousands of any of them inside a legal file. The
+		// loop itself is bounded, because a file over [MaxTestsPerFile] never
+		// reaches it.
 		if len(test.Stubs) > MaxStubsPerTest {
 			p.report(r.in(source.path.field("stubs")), "test %q declares %d stubs, more than the limit of %d",
 				test.Name, len(test.Stubs), MaxStubsPerTest)
+
+			continue
 		}
 		if len(test.Signals) > MaxSignalsPerTest {
 			p.report(r.in(source.path.field("signals")), "test %q declares %d signals, more than the limit of %d",
 				test.Name, len(test.Signals), MaxSignalsPerTest)
+
+			continue
 		}
 		if len(test.Secrets) > MaxSecretsPerTest {
 			p.report(r.in(source.path.field("secrets")), "test %q declares %d secrets, more than the limit of %d",
 				test.Name, len(test.Secrets), MaxSecretsPerTest)
+
+			continue
 		}
 		for _, reference := range slices.Sorted(maps.Keys(test.Secrets)) {
 			// Checked while the reference is still text, so a malformed
@@ -1288,9 +1325,21 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		checkScriptedIdentity(p, r.in(source.path.field("starter")),
 			fmt.Sprintf("test %q starter:", test.Name), test.Starter)
 		checkCheckClaims(p, r.in(source.path.field("expect").field("check")),
-			fmt.Sprintf("test %q expect", test.Name), test.Expect.Check, source.ownChecks)
+			// A case's inherited claims came from a block or an entry this
+			// path does not reach, so there is no document to name for them.
+			fmt.Sprintf("test %q expect", test.Name), test.Expect.Check, source.ownChecks, "")
 		for j := range test.Signals {
 			signal := &test.Signals[j]
+			// The identity [mergeDefaults] installed on a signal that wrote no
+			// `sender:` is the `defaults:` block's own, judged there a moment
+			// ago — where it is addressable and where the file that wrote it is
+			// known. Judging the same identity again here would report one
+			// mistake once per inheriting signal, against a path no document
+			// holds. Compared by pointer because that is exactly what the merge
+			// installed: a signal's own sender is its own value, and is judged.
+			if file.Defaults != nil && signal.Sender != nil && signal.Sender == file.Defaults.Sender {
+				continue
+			}
 			// Checked at load, alongside every other shape check in this
 			// loop, rather than when the scripted goroutine delivers: a
 			// delivery refused there disappears the way a production
@@ -1306,13 +1355,24 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		for j := range test.Stubs {
 			stub := &test.Stubs[j]
 			where := r.in(source.stubPath(j, stub, file.Defaults))
+			// The target decides what this stub *is*, so a stub that names none
+			// or names two is not judged further: every check below quotes
+			// [stubTarget], which for a targetless stub reads `task ""` — a
+			// second diagnostic about a stub the first one already said does
+			// not identify anything, spending the report's bound on a cascade
+			// (Codex, #1179). Same rule as the trigger stanza that names both a
+			// webhook and a kind.
 			switch {
 			case stub.Task == "" && stub.Step == "":
 				p.report(where, "test %q stub %d names neither a task nor a step; "+
 					"give one, either `task: <name>` or `step: <id>`", test.Name, j+1)
+
+				continue
 			case stub.Task != "" && stub.Step != "":
 				p.report(where, "test %q stub %d names both a task (%q) and a step (%q); "+
 					"a stub targets one or the other, never both", test.Name, j+1, stub.Task, stub.Step)
+
+				continue
 			}
 			if stub.Returns != nil && stub.Fails != nil {
 				p.report(where,
@@ -1603,15 +1663,21 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 // positioned at it as well, where this document is the one that wrote it. A
 // default folded in from a directory's `testdefaults.yaml` has no position in
 // this file, and reports none rather than borrowing the suite's.
-func checkDefaults(p *problems, d *Defaults, ownChecks int) {
+// Reports false when the stub count stopped it, which the loader takes as a
+// refusal of the whole document rather than one more diagnostic: an
+// over-limit block is copied into every case a moment later, so this is the
+// one bound here whose overrun multiplies.
+func checkDefaults(p *problems, d *Defaults, ownChecks int, inheritedFrom string) bool {
 	if d == nil {
-		return
+		return true
 	}
 
 	base := at("defaults")
 	if len(d.Stubs) > MaxDefaultStubs {
 		p.report(site{at: base.field("stubs")},
 			"defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+
+		return false
 	}
 	checkNoExpressions(p, site{at: base.field("workflow")}, "defaults.workflow", d.Workflow, 0)
 	for _, name := range slices.Sorted(maps.Keys(d.Inputs)) {
@@ -1627,8 +1693,21 @@ func checkDefaults(p *problems, d *Defaults, ownChecks int) {
 	}
 	if d.Sender != nil {
 		checkNoExpressions(p, site{at: base.field("sender")}, "defaults.sender", d.Sender, 0)
+		// Judged here, where it is written, rather than only on the signals
+		// that inherit it. [mergeDefaults] installs this one identity on every
+		// signal that omits its own, so checking it there alone reported one
+		// mistake once per inheriting signal — and reported it against a path
+		// no document holds, which cost the sibling file its name (Codex,
+		// #1185). This is the rule the block's own expression check has always
+		// followed: a default is refused where an author can see it, whether or
+		// not a case happens to reach it.
+		checkScriptedIdentity(p, site{at: base.field("sender")}, "defaults.sender:", d.Sender)
 	}
-	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, ownChecks)
+	// The inherited claims here are the directory file's own, prepended — named
+	// after that file rather than addressed by an index the two documents share.
+	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, ownChecks, inheritedFrom)
+
+	return true
 }
 
 // checkNoExpressions descends a default value and refuses every string that

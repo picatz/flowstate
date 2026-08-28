@@ -102,15 +102,24 @@ func (c *CheckClaim) UnmarshalYAML(unmarshal func(any) error) error {
 //
 // own is how many of the claims the document wrote at `at` itself. A merged
 // list is every level's claims accumulated — `defaults:` first, then a table
-// entry's, then the case's own last — so only the final `own` entries have a
-// position here at all; the rest were written somewhere this path does not
-// address, and are refused with the same words and no line. The prose keeps
-// counting from the front of the merged list, because that list is what the run
-// evaluates and what a reader is being told about.
+// entry's, then the case's own last — so only the final `own` entries are
+// addressed by this path at all. The prose keeps counting from the front of the
+// merged list, because that list is what the run evaluates and what a reader is
+// being told about.
+//
+// inheritedFrom names the document the *earlier* entries came from, when the
+// caller knows it: a `defaults:` block's inherited claims were prepended from
+// the directory's file. It is named here rather than addressed by a path,
+// because the prepend puts the two documents' claims in one index namespace —
+// `defaults.check[0]` is the sibling's first claim and the suite's first claim
+// at once, and a path keyed on that string sent a suite-written claim to the
+// wrong file and lost its real position (Codex, #1185). A case's inherited
+// claims came from a block or an entry this path does not reach, so the caller
+// passes nothing and they are refused with the same words and no line.
 //
 // Mutates the slice in place: a whole-value fence is stripped here, once, so
 // everything downstream evaluates bare CEL.
-func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, own int) {
+func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, own int, inheritedFrom string) {
 	if len(claims) == 0 {
 		return
 	}
@@ -126,12 +135,28 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 
 	inherited := len(claims) - own
 	for i := range claims {
-		// Nothing rather than the list's own node for an inherited claim: a
-		// position on the case's `check:` block would underline claims that
-		// are fine because one it inherited is not.
+		// A claim [mergeDefaults] prepended was judged at the `defaults:` block
+		// a moment ago, where it is addressable and where the file that wrote
+		// it is known. Judging the copy again would report one mistake once per
+		// case — five hundred diagnostics for one line, spending a bound meant
+		// for five hundred *different* mistakes — while saying less about it.
+		// Only the copies are marked, so nothing goes unjudged: the block's own
+		// pass sees the originals, and a claim inherited from a table entry
+		// carries no mark and is judged here.
+		if claims[i].fromDefaults {
+			continue
+		}
+		// Nothing rather than the list's own node for an inherited claim a
+		// caller cannot address: a position on the case's `check:` block would
+		// underline claims that are fine because one it inherited is not.
 		spot := r.in(nil)
-		if i >= inherited {
+		switch {
+		case i >= inherited:
+			// The document holding this list wrote this one, at the index it
+			// has once the inherited ones ahead of it are subtracted.
 			spot = r.in(r.at.item(i - inherited))
+		case inheritedFrom != "":
+			spot = r.writtenIn(inheritedFrom)
 		}
 		if inner, fenced := flowfile.SplitFence(claims[i].That); fenced {
 			claims[i].That = inner
