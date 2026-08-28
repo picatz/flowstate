@@ -378,10 +378,23 @@ type Session struct {
 	at promptSubject
 
 	// steps are the ids a caller said this run may reach ([Options.Steps]),
-	// and seen are the ids this session has watched go past. Both feed
-	// completion for `break` and `until`; see [Session.reachableSteps].
+	// and seen are the ids this session has watched go past, each against what
+	// it was last watched doing. Both feed completion for `break` and `until`
+	// (see [Session.reachableSteps]); the states feed [Session.Steps].
+	//
+	// One map rather than a second one beside it, because the two questions
+	// have one answer: an id this session has seen is exactly an id it has
+	// watched *do* something, and a separate state map would be a second thing
+	// to bound, a second thing to truncate, and a second place for the two to
+	// disagree about which ids the run reached.
 	steps []string
-	seen  map[string]struct{}
+	seen  map[string]StepState
+
+	// seenOrder is the same ids in arrival order, for a caller that named no
+	// steps: a map has none, and a step list in map order is a different list
+	// every time it is drawn. Held under the same bound as seen — an id seen
+	// refuses is one this never hears about.
+	seenOrder []string
 
 	// seenShort reports that seen refused an id it had not already got,
 	// which makes it a *prefix* of the run rather than the run. Completion
@@ -483,7 +496,7 @@ func New(opts Options) (*Session, error) {
 		breakpoints: make(map[string]breakpoint, len(opts.Breakpoints)),
 		done:        make(chan struct{}),
 		steps:       slices.Clone(opts.Steps),
-		seen:        map[string]struct{}{},
+		seen:        map[string]StepState{},
 
 		controlled:   opts.Controlled,
 		control:      make(chan controlRequest),
@@ -560,6 +573,11 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	defer s.promptMu.Unlock()
 
 	s.sawStep(node.GetId())
+
+	// Entered, said here because this is the only callback that means it — and
+	// said on every arrival, so a loop body the run has come back to reads as
+	// running rather than as whatever the last iteration left behind.
+	s.noteStep(node.GetId(), StepRunning)
 
 	stop, err := s.shouldStop(ctx, node.GetId(), scope)
 	if err != nil {
@@ -650,14 +668,17 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 
 	// The tone is the outcome's, matching the transcript's reading of the
 	// same three cases: a failure the run absorbs is a warning, one it does
-	// not is danger, and everything else is account.
-	tone := ToneInfo
+	// not is danger, and everything else is account. The state a step list
+	// carries is that same reading — one switch, so a pane and a printed line
+	// cannot come to disagree about whether a step failed.
+	tone, state := ToneInfo, StepDone
 	switch {
 	case err != nil && tolerated:
-		tone = ToneWarning
+		tone, state = ToneWarning, StepTolerated
 	case err != nil:
-		tone = ToneDanger
+		tone, state = ToneDanger, StepFailed
 	}
+	s.noteStep(id, state)
 	s.printfTone(tone, "  %s %s\n", id, text)
 }
 
@@ -669,6 +690,7 @@ func (s *Session) StepSkipped(id string) {
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
 	s.sawStep(id)
+	s.noteStep(id, StepSkipped)
 
 	s.printf("  %s skipped (`if:` was false)\n", id)
 }
@@ -1285,6 +1307,15 @@ func frozen(scope *v1.Scope) *v1.Scope {
 // Only an id the cache does not already hold sets it: refusing a repeat loses
 // nothing, and a run that loops over one step for an hour should not report
 // itself truncated.
+//
+// It admits an id and says nothing about what the id did: every one of its
+// three callers follows it with a [Session.noteStep] saying that. Splitting the
+// two is what lets one map answer both questions — a state is only ever written
+// for an id this has already admitted, so the bound here is the only bound
+// either needs — and it is what keeps a step the run enters *again* from
+// reading as whatever it did last time. A loop body is entered once per
+// iteration, and a row saying `ok` while the run is held at that very step
+// would be the list disagreeing with the prompt above it.
 func (s *Session) sawStep(id string) {
 	if id == "" {
 		return
@@ -1293,14 +1324,38 @@ func (s *Session) sawStep(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, held := s.seen[id]; held {
+		return
+	}
+
 	if len(s.seen) >= celcomplete.MaxCandidates {
-		if _, held := s.seen[id]; !held {
-			s.seenShort = true
-		}
+		s.seenShort = true
 
 		return
 	}
-	s.seen[id] = struct{}{}
+	s.seen[id] = StepPending
+	s.seenOrder = append(s.seenOrder, id)
+}
+
+// noteStep records what a step was last watched doing.
+//
+// Only for an id [Session.sawStep] already admitted, which every caller
+// guarantees by calling that first. Past the bound the state is dropped exactly
+// as the id was, and [Session.StepsTruncated] is what says so — a state written
+// for an id the list does not carry would be an answer nothing can be asked
+// about.
+func (s *Session) noteStep(id string, state StepState) {
+	if id == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, held := s.seen[id]; !held {
+		return
+	}
+	s.seen[id] = state
 }
 
 // noteDeclined reports, once per breakpoint, that a condition could not be

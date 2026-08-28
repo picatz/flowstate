@@ -484,7 +484,13 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 	for _, candidate := range groups {
 		if candidate.Group == group {
 			names = candidate.Names
-			root = rootOf(candidate.Group)
+
+			// The session's own answer for what these names hang from, rather
+			// than a switch here over its group names. This adapter kept one,
+			// and its comment said what was wrong with it — "the same fact read
+			// for a different renderer" is a parallel declaration, and a second
+			// pane renderer would have made it a third (#928 slice 1).
+			root = candidate.Root
 
 			break
 		}
@@ -518,31 +524,6 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 	}
 
 	return variablesBody{Variables: variables}
-}
-
-// rootOf is the expression prefix a group's names hang from, or "" where they
-// are bound bare.
-//
-// The mapping is the prompt's own: `scope` prints `inspect steps.` beside the
-// rooted groups and nothing beside the bare ones, and this is the same fact
-// read for a different renderer.
-func rootOf(group string) string {
-	switch group {
-	case "steps":
-		return "steps"
-	case "inputs":
-		return "inputs"
-	case "workflow vars":
-		return "vars"
-	case "run":
-		return "run"
-	case "trigger":
-		return "trigger"
-	default:
-		// `vars` (a loop's `as:`, a step's own `vars:`) and the autopsy's bare
-		// bindings, which resolve under no root at all.
-		return ""
-	}
 }
 
 // evaluate answers the debug console and hover.

@@ -306,9 +306,24 @@ type Names struct {
 	// worse lie than a long line.
 	Names []string
 
+	// Root is the expression prefix these names hang from — `steps`,
+	// `inputs`, `vars`, `run`, `trigger` — or "" where they are bound bare
+	// and resolve under no root at all (a loop's `as:`, a step's own `vars:`,
+	// the autopsy's bindings).
+	//
+	// Exported because it is what turns a name into a question: a renderer
+	// filling a pane asks [Session.Evaluate] for `Root + "." + name`, and
+	// without this it has to keep its own switch over the group names. Two
+	// did — `flowdap.rootOf` was one, and its own comment said it was "the
+	// same fact read for a different renderer" — which is the parallel
+	// declaration CLAUDE.md says always eventually drifts. It is derived from
+	// the same value listing is, so the prompt's spelling and a pane's cannot
+	// disagree.
+	Root string
+
 	// listing is the command that enumerates these names, for the renderer.
 	// Unexported because it is a fact about the text prompt rather than about
-	// the scope.
+	// the scope — Root is the part that is about the scope.
 	listing string
 }
 
@@ -323,4 +338,125 @@ func (s *Session) Scope() ([]Names, error) {
 	}
 
 	return s.scopeNames(subject.scope, subject.extra), nil
+}
+
+// StepState is what a session last watched one step do.
+//
+// The vocabulary is [v1.RunObserver]'s, read once: a step is entered, and then
+// it finishes, is absorbed, fails, or is skipped by its `if:`. It is
+// deliberately not [Tone] and deliberately not flowtest's transcript kinds —
+// a tone says how a line should *read* and this says what a step *did*, and
+// the two only look alike because a failure is worth colouring.
+type StepState int
+
+const (
+	// StepPending is a step the session has not watched do anything. The zero
+	// value, so a step named by a caller and never reached reads as not yet
+	// rather than as finished.
+	StepPending StepState = iota
+
+	// StepRunning is a step the run entered and whose outcome has not
+	// arrived. The step a session is paused at is one of these; so is a step
+	// still in flight on another branch.
+	StepRunning
+
+	// StepDone is a step that finished without an error.
+	StepDone
+
+	// StepTolerated is a step that failed and whose failure the run absorbed
+	// (`continue_on_error`). Distinct from [StepDone] because a run that
+	// carried on is not a step that worked, and that is usually the thing
+	// somebody opened a debugger to find.
+	StepTolerated
+
+	// StepFailed is a step that failed and whose failure the run did not
+	// absorb.
+	StepFailed
+
+	// StepSkipped is a step whose `if:` was false. It never reaches a
+	// boundary — there is no work to hold — so it can only ever arrive
+	// through [Session.StepSkipped].
+	StepSkipped
+)
+
+// String names a state in the words the prompt already uses for it.
+func (s StepState) String() string {
+	switch s {
+	case StepRunning:
+		return "running"
+	case StepDone:
+		return "ok"
+	case StepTolerated:
+		return "tolerated"
+	case StepFailed:
+		return "failed"
+	case StepSkipped:
+		return "skipped"
+	default:
+		return "pending"
+	}
+}
+
+// Step is one entry in the run's step list.
+type Step struct {
+	// ID is the step's id, which is the only name a run has for it.
+	ID string
+
+	// State is what this session last watched it do.
+	State StepState
+}
+
+// Steps lists the run's steps and what each has done, in the order an author
+// wrote them.
+//
+// Two sources, exactly as [Session.reachableSteps] has two and for the same
+// reason: a caller that holds the workflow said so ([Options.Steps]), and that
+// is the list worth drawing — it carries the steps the run has *not* reached,
+// which is most of a step list's value. A caller that does not gets the ids
+// this session has watched go past, in arrival order, which is at least the run
+// so far rather than nothing.
+//
+// Not gated on the session being paused, unlike [Session.Scope] and
+// [Session.Evaluate]. Those answer against a scope that only exists while a run
+// is held; this answers about the workflow and about what has happened, both of
+// which are as true between stops as at one. A pane that could only be drawn at
+// a pause would be a pane that vanished the moment somebody typed `continue`.
+//
+// Complete, and bounded by nothing — [MaxScopeNames]'s reasoning one type over.
+// The ids come from a list the caller already holds a whole workflow's worth
+// of, so returning all of them costs nothing new, and a renderer that wants
+// twenty rows is the one that knows it has twenty rows. What is bounded is the
+// *drawing*, in whichever renderer is doing it.
+func (s *Session) Steps() []Step {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	order := s.steps
+	if len(order) == 0 {
+		order = s.seenOrder
+	}
+
+	steps := make([]Step, 0, len(order))
+	for _, id := range order {
+		// A declared id the session has watched nothing do is StepPending, the
+		// zero value — which is the answer, not a gap.
+		steps = append(steps, Step{ID: id, State: s.seen[id]})
+	}
+
+	return steps
+}
+
+// StepsTruncated reports that this session stopped recording what it watched,
+// so a state in [Session.Steps] may understate what a step actually did.
+//
+// The same flag completion reads, rather than a second one: what truncates is
+// [Session.sawStep]'s one cache, so a second notice would be a second thing to
+// keep true. Named to rhyme with [Session.ScriptTruncated], which is this
+// package's existing spelling for "here is a list, and here is whether it is
+// the whole list".
+func (s *Session) StepsTruncated() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.seenShort
 }
