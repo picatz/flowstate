@@ -157,6 +157,33 @@ func TestWithheldMaterialRefusesAValueItCannotAffordToProtect(t *testing.T) {
 		"the name is still withheld, because the refusal is about the material and not the var")
 }
 
+// TestRedactedVarsWithholdsAWithheldVarWhole drives the autopsy's own view of
+// the block, which is otherwise reached only with a debugger attached — and
+// where the substring backstop alone gives a *different* answer from the
+// withholding, which is what makes the two distinguishable at all.
+func TestRedactedVarsWithholdsAWithheldVarWhole(t *testing.T) {
+	t.Parallel()
+
+	vars := fileVars{
+		values: map[string]any{
+			"token":  "s3cr3t",
+			"header": "Bearer s3cr3t",
+			"region": "eu-west-1",
+		},
+		withheld: withheldVars{names: []string{"header"}},
+	}
+	sensitive := sensitiveInputs{}.WithValues("s3cr3t")
+
+	shown := redactedVars(vars, sensitive)
+
+	assert.Equal(t, sensitiveMarker, shown["header"],
+		"a withheld var is replaced whole, not merely cleared of the secret inside it")
+	assert.Equal(t, sensitiveMarker, shown["token"],
+		"the plain set still answers for a value that *is* the secret")
+	assert.Equal(t, "eu-west-1", shown["region"],
+		"a var the file does not withhold is shown, or the autopsy stops being useful")
+}
+
 // TestWithheldCoversAPathAndNotItsNeighbour is the prefix test, written where
 // the answers differ: `vars.token` and `vars.tokenish` share a prefix, and a
 // naive [strings.HasPrefix] withholds a var the file never said to withhold —

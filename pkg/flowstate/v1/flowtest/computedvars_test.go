@@ -173,6 +173,38 @@ tests:
 	}
 }
 
+// TestAVarReadingARefusedVarIsNotAlsoRefused: one mistake earns one
+// diagnostic. `c` reads a var that is on a cycle, so it cannot be evaluated —
+// and saying so would report the cycle once per var that happens to read it,
+// which is the cascade [problems] already refuses for a value whose kind is
+// wrong.
+//
+// The two readers select a field on purpose. A var that failed still holds the
+// *text* of its fence, so a loader that evaluated `c` anyway would find a
+// string where a map was meant and report a second, invented mistake — which
+// is exactly what the skip exists to prevent, and the only shape in which it
+// is visible from outside.
+func TestAVarReadingARefusedVarIsNotAlsoRefused(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  a: "${vars.b}"
+  b: "${vars.a}"
+  c: "${vars.a.region}"
+  d: "${vars.c.deeper}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "vars.a is computed from itself")
+	assert.NotContains(t, err.Error(), "vars.c",
+		"a var reading one on a cycle is not a second mistake: %s", err)
+	assert.NotContains(t, err.Error(), "vars.d",
+		"nor is a var reading that one: %s", err)
+}
+
 // TestACrossFileVarCycleNamesEachHopsFile is #1072's repair 6: a directory's
 // `testdefaults.yaml` vars merge into the suite's before anything validates,
 // so a cycle can exist in neither document on its own. Naming only the suite
@@ -468,10 +500,13 @@ tests:
 	require.False(t, c.GetPassed(), "the claim is false on purpose")
 
 	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
-	assert.Contains(t, rendered, "steps.keep.value =",
-		"the witness for the step must render, or this test is asserting about nothing")
+	assert.Contains(t, rendered, `steps.keep.value = \"[redacted]\"`,
+		"a withheld var's material is withheld whole, not cleared of the secret inside it")
 	assert.NotContains(t, rendered, "s3cr3t-value")
-	assert.NotContains(t, rendered, "Bearer s3cr3t")
+	assert.NotContains(t, rendered, "Bearer [redacted]",
+		"`Bearer [redacted]` is what the substring backstop alone produces, and it says "+
+			"that a header derived from a secret is a header — which is the shape #1072 "+
+			"repair 4 withholds")
 }
 
 // TestAVarsRefusalQuotesTheExpressionNotTheValue: a load-time refusal is the
