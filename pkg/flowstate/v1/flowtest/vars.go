@@ -78,6 +78,24 @@ const MaxVarsPerFile = 200
 // anything approaching this bound is a program hiding in a fixture.
 const maxVarCost uint64 = v1.DefaultCostLimit / MaxVarsPerFile
 
+// maxVarCycles bounds how many cycles one block's sort reports.
+//
+// The count is the document's, and it multiplies against the length of what
+// each one renders: a block of [MaxVarsPerFile] vars each reading every other
+// has one back edge per edge — forty thousand — and every one would be
+// formatted into a path up to [MaxVarsPerFile] hops long before
+// [MaxLoadProblems] dropped all but twenty of them. So the *search* stops
+// rather than the report, which is the difference between a refusal that costs
+// what the document earned and one that costs what it asked for; the worst
+// legal document measured 761ms before this bound and 398ms after, the
+// remainder being the parse of half a megabyte of CEL. Nothing is lost by
+// stopping: the file is refused by the first cycle, and an author acts on a
+// path rather than on a census.
+//
+// Equal to [MaxLoadProblems], because that is how many could ever have been
+// shown.
+const maxVarCycles = MaxLoadProblems
+
 // maxWithheldVarStrings bounds how many strings one withheld var contributes
 // to a case's redaction set.
 //
@@ -651,7 +669,8 @@ func scrubbedVarError(err error, tainted []string, deps []string, values map[str
 // Depth-first rather than Kahn's, because the diagnostic is the point: Kahn's
 // answers "these vars are on cycles" and a depth-first walk answers with the
 // path — `vars.a → vars.b → vars.a` — which is the sentence an author can act
-// on. O(V+E) either way.
+// on. O(V+E) either way, and it stops early at [maxVarCycles], which is the one
+// count here a document can drive past what a report can hold.
 //
 // Recursion is bounded by V, which is bounded by [MaxVarsPerFile]: a name
 // marked in progress is never entered twice, which is the same marking that
@@ -668,6 +687,12 @@ func varOrder(declared map[string]*varDeclaration) (order []string, cycles [][]s
 
 	var visit func(name string)
 	visit = func(name string) {
+		if len(cycles) >= maxVarCycles {
+			// Enough to fill a report; see [maxVarCycles]. The ordering this
+			// abandons is not needed, because a document with a cycle in it is
+			// refused whatever the rest of its block would evaluate to.
+			return
+		}
 		d, computed := declared[name]
 		if !computed {
 			// A literal: it has no dependencies and needs no ordering, and a

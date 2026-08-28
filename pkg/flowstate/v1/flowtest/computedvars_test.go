@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -171,6 +172,57 @@ tests:
 			assert.Contains(t, err.Error(), tc.path)
 		})
 	}
+}
+
+// TestACycleSearchStopsAtWhatAReportCanHold: the count of cycles is the
+// document's, and it multiplies against the length of each rendered path, so
+// the search stops rather than the report.
+//
+// The bound is asserted in both directions — reached, and not exceeded — which
+// is the habit CLAUDE.md asks for: a search that gave up after one cycle would
+// also satisfy "fewer than a hundred", and it would be hiding the diagnostic an
+// author needs.
+func TestACycleSearchStopsAtWhatAReportCanHold(t *testing.T) {
+	t.Parallel()
+
+	const vars = 30
+
+	var block strings.Builder
+	block.WriteString("vars:\n")
+	for i := range vars {
+		fmt.Fprintf(&block, "  v%d: \"${", i)
+		for j := range vars {
+			if j > 0 {
+				block.WriteString(" + ")
+			}
+			fmt.Fprintf(&block, "vars.v%d", j)
+		}
+		block.WriteString("}\"\n")
+	}
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), block.String()+`
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused, "a refused suite reports diagnostics")
+	assert.NotEmpty(t, problems.Problems, "the cycle an author has to fix is still named")
+	assert.Contains(t, problems.Problems[0].Message, "is computed from itself")
+	assert.LessOrEqual(t, problems.Total, flowtest.MaxLoadProblems,
+		"every back edge in a %d-var block reading itself is %d cycles, and formatting them all "+
+			"costs far more than the twenty a report can show", vars, vars*vars)
+}
+
+// errorAsDiagnostics is the typed door [flowtest.Diagnostics] documents, so a
+// test asserting about the *count* of problems reads the count rather than
+// counting newlines in a rendering.
+func errorAsDiagnostics(t *testing.T, err error) (*flowtest.Diagnostics, bool) {
+	t.Helper()
+
+	return errors.AsType[*flowtest.Diagnostics](err)
 }
 
 // TestAVarReadingARefusedVarIsNotAlsoRefused: one mistake earns one
