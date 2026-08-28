@@ -121,9 +121,14 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 	// table's template and silently never its rows — the parsed-vs-built
 	// divergence #1015 is about, wearing #924's clothes. On a file Load
 	// already expanded this is a no-op: no surviving entry carries `cases:`.
-	expanded, err := expandTableEntries(file.Tests)
-	if err != nil {
-		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: err.Error()}}
+	// Collected against no document: a [File] built in Go was never parsed, so
+	// its refusals are the same refusals with no line to give them — which is
+	// what [newProblems] answers for a nil document, rather than this door
+	// needing a second shape of the same check.
+	p := newProblems(nil)
+	expanded, _ := expandTableEntries(p, file.Tests)
+	if refused := p.err(); refused != nil {
+		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: refused.Error()}}
 	}
 	shallow := *file
 	shallow.Tests = expanded

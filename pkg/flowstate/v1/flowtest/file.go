@@ -169,6 +169,7 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/parser"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -852,12 +853,19 @@ type ScriptedIdentity struct {
 // checkScriptedIdentity refuses an identity no policy could ever read the way
 // its author meant it, when the file loads rather than when a case runs.
 //
-// where names the position in the file a reader has to look at - `test "x"
-// starter:`, `test "x" signal 2 sender:` - because a `*.test.yaml` is
-// identified by case name throughout this loader (see [parseSource]) rather
-// than by line and column: every diagnostic here names the case, what is
-// wrong, and what to do instead, which is the shape CLAUDE.md's "diagnostics
-// are a feature" asks for and the shape the rest of this file already has.
+// where names the case and the stanza a reader has to look at - `test "x"
+// starter:`, `test "x" signal 2 sender:` - and r carries where that stanza was
+// written, so the diagnostic names the case *and* the line. Both halves matter
+// and neither replaces the other: the name is the identity a reader matches
+// back to a report, and the position is what an editor underlines. This
+// function used to argue that the name alone was enough, which was a doc
+// comment defending `line: 0, column: 0` against the schema's own promise that
+// a failure is "positioned to the test file" ([v1.TestCase]); #923 settled it
+// the other way.
+//
+// An identity a case inherited - a signal sender folded in from `defaults:` -
+// is refused with the same words and no position, because this document did not
+// write it. See [document.positionOf].
 //
 // Both rules are fail-closed readings of a policy that would otherwise refuse
 // silently, at a gate, a whole virtual day later:
@@ -869,21 +877,21 @@ type ScriptedIdentity struct {
 //   - A claim with an empty name or an empty value cannot be what an author
 //     meant, and is matched literally rather than ignored - the mistake
 //     `--signal-as-claim`'s own NAME=VALUE check refuses.
-func checkScriptedIdentity(where string, identity *ScriptedIdentity) error {
+func checkScriptedIdentity(p *problems, r site, where string, identity *ScriptedIdentity) {
 	if identity == nil {
-		return nil
+		return
 	}
 
 	if (identity.Subject == "") != (identity.Issuer == "") {
-		return fmt.Errorf(
+		p.report(r,
 			"%s names a subject or an issuer without the other; give both, because a rule matches %q "+
 				"and never a bare subject - a subject is only unique within its issuer",
 			where, v1.QualifiedSubject("<issuer>", "<subject>"))
 	}
 
-	// Sorted, so a file with two bad claims reports the same one every time:
-	// a diagnostic that changes between runs of the same input is one nobody
-	// can write a test against, this package's own included.
+	// Sorted, so a file with two bad claims reports them in the same order
+	// every time: a diagnostic that changes between runs of the same input is
+	// one nobody can write a test against, this package's own included.
 	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
 		value := identity.Claims[name]
 
@@ -892,14 +900,12 @@ func checkScriptedIdentity(where string, identity *ScriptedIdentity) error {
 			empty = "name"
 		}
 		if name == "" || value == "" {
-			return fmt.Errorf(
+			p.reportKey(r.in(r.at.field("claims").field(name)),
 				"%s declares a claim with an empty %s; a claim is matched literally, so write it as "+
 					"`name: value` with both present, or drop it",
 				where, empty)
 		}
 	}
-
-	return nil
 }
 
 // Expectation is what a case's run must have produced to pass.
@@ -1058,9 +1064,14 @@ func LoadSourceAt(data []byte, path string) (*File, error) {
 		return nil, err
 	}
 
-	file, err := parseSourceWith(data, dd, true)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	file, refused := parseSourceWith(data, dd, true)
+	if refused != nil {
+		// The path is stamped on every problem rather than prefixed onto the
+		// rendered text once, so a report of several problems names the file on
+		// each line — a line that travels on its own has to say which file it
+		// is about. One unpositioned problem renders exactly as it did when
+		// this was a `%s: %w` wrap.
+		return nil, refused.inFile(path)
 	}
 
 	return file, nil
@@ -1083,7 +1094,14 @@ func LoadSource(data []byte) (*File, error) {
 		return nil, fmt.Errorf("%d bytes exceeds the %d byte limit for a test file", len(data), MaxTestFileBytes)
 	}
 
-	return parseSource(data, false)
+	file, refused := parseSource(data, false)
+	if refused != nil {
+		// No path to attribute these to: bytes are all this door was given,
+		// and a file name it invented would be a fact about nothing.
+		return nil, refused
+	}
+
+	return file, nil
 }
 
 // parseSource is the byte-parsing seam both [Load] and [LoadSource] share:
@@ -1092,53 +1110,99 @@ func LoadSource(data []byte) (*File, error) {
 // did after reading the file off disk, factored out so a caller with bytes
 // and no path runs the identical checks rather than a second copy of them.
 // requireWorkflow is false only for [LoadSource]; see its doc for why.
-func parseSource(data []byte, requireWorkflow bool) (*File, error) {
+func parseSource(data []byte, requireWorkflow bool) (*File, *Diagnostics) {
 	return parseSourceWith(data, nil, requireWorkflow)
 }
 
 // parseSourceWith is [parseSource] with a directory's contribution folded in
 // before anything resolves or validates, so the combined suite is what every
 // rule below checks.
-func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, error) {
-	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
-	// do anything: Unmarshal resolves every alias into the destination value
-	// as it decodes, which means a billion-laughs document is already fully
-	// expanded in memory by the time any bound written against the decoded
-	// value could run. See [checkExpansionBounds].
-	if err := checkExpansionBounds(data); err != nil {
-		return nil, err
+//
+// Every refusal below is collected rather than returned, and positioned where
+// the document wrote the value it is about — see [problems] for why a loader
+// that stopped at the first one was making an author fix a suite one run at a
+// time, and [document.positionOf] for the one rule that keeps a position
+// honest. The document tree is parsed once here and read twice: by the
+// expansion bound, which must see it before anything resolves an alias, and by
+// every diagnostic that needs a line. It is held for the length of one load
+// rather than discarded after the bound, which is the one cost this adds to a
+// suite that loads cleanly: a tree and the value decoded from it, both bounded
+// by [MaxTestFileBytes], live at once instead of one after the other.
+func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, *Diagnostics) {
+	// Parsed to the AST and no further. Unmarshal resolves every alias into
+	// the destination value as it decodes, which means a billion-laughs
+	// document is already fully expanded in memory by the time any bound
+	// written against the decoded value could run.
+	//
+	// A parse failure is not reported here: the decode below meets the same
+	// malformed document and reports it in the shape a caller already expects,
+	// and reporting it twice, once from each of two parsers, would be the same
+	// fact said two different ways depending on which noticed first.
+	parsed, parseErr := parser.ParseBytes(data, 0)
+	if parseErr == nil {
+		if err := checkExpansionBoundsIn(parsed); err != nil {
+			// Unpositioned on purpose: this is a property of the document as a
+			// whole, and the walk that could name a node is the very walk
+			// refusing to run over it.
+			refused := newProblems(nil)
+			refused.report(site{}, "%s", err)
+
+			return nil, refused.err()
+		}
 	}
 
 	var file File
 	if err := yaml.UnmarshalWithOptions(data, &file, yaml.Strict()); err != nil {
-		return nil, err
+		return nil, yamlProblem(err)
 	}
 
+	p := newProblems(newDocument(parsed))
+	tests := at("tests")
+
 	if len(file.Tests) == 0 {
-		return nil, fmt.Errorf("declares no tests")
+		p.report(site{at: tests}, "declares no tests")
 	}
 	if len(file.Tests) > MaxTestsPerFile {
-		return nil, fmt.Errorf("declares %d tests, more than the limit of %d",
+		p.report(site{at: tests}, "declares %d tests, more than the limit of %d",
 			len(file.Tests), MaxTestsPerFile)
 	}
 	if stanza := file.Coverage; stanza != nil {
+		allowed := at("coverage").field("allow_unreached")
 		if len(stanza.AllowUnreached) > MaxAllowUnreachedPerFile {
-			return nil, fmt.Errorf("coverage.allow_unreached declares %d entries, more than the limit of %d",
+			p.report(site{at: allowed}, "coverage.allow_unreached declares %d entries, more than the limit of %d",
 				len(stanza.AllowUnreached), MaxAllowUnreachedPerFile)
 		}
-		for step, reason := range stanza.AllowUnreached {
+		// Sorted, so a file with two bad entries reports them in the same
+		// order every time: a map's iteration order is not a thing anyone can
+		// write a test against, this package's own included. Every entry is
+		// judged now rather than only the first, which is the whole of the
+		// change here.
+		for _, step := range slices.Sorted(maps.Keys(stanza.AllowUnreached)) {
 			if step == "" {
-				return nil, fmt.Errorf("coverage.allow_unreached has an entry with no step id")
+				p.reportKey(site{at: allowed.field(step)}, "coverage.allow_unreached has an entry with no step id")
+
+				continue
 			}
 			// A reason is required, because an entry with none is exactly the
 			// silent gap this record exists to refuse: "a decision with a
 			// reason, never a gap." Name the offending step so the fix is
 			// obvious.
-			if strings.TrimSpace(reason) == "" {
-				return nil, fmt.Errorf("coverage.allow_unreached[%q] has no reason; "+
+			if strings.TrimSpace(stanza.AllowUnreached[step]) == "" {
+				p.reportKey(site{at: allowed.field(step)}, "coverage.allow_unreached[%q] has no reason; "+
 					"record why no case reaches this step, or remove the entry and let it be a gap", step)
 			}
 		}
+	}
+
+	// Counted before the directory's contribution is folded in, because that
+	// fold *prepends* its claims: after it, index i of `defaults.check` is no
+	// longer entry i of this document's own list, and a position taken from
+	// the index would underline one claim to report another. Stubs need no
+	// such count — the directory's are appended, so the indices this document
+	// wrote keep their meaning and the rest simply address nothing here.
+	ownDefaultChecks := 0
+	if file.Defaults != nil {
+		ownDefaultChecks = len(file.Defaults.Check)
 	}
 
 	dd.combineInto(&file)
@@ -1147,12 +1211,8 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// `defaults:` is checked: an inherited `${vars.x}` resolves to its
 	// literal exactly once, and the fixture rule below then checks what the
 	// run will actually see.
-	if err := checkVars(file.Vars); err != nil {
-		return nil, err
-	}
-	if err := file.resolveVars(); err != nil {
-		return nil, err
-	}
+	checkVars(p, file.Vars)
+	file.resolveVars(p)
 
 	// Rows are expanded before defaults are merged, which is what makes the
 	// precedence chain read the way an author expects it to: a row beats its
@@ -1163,10 +1223,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// Done here rather than at run time so everything downstream — the
 	// per-test checks below, coverage, `--run`, the Go subtests — keeps
 	// reading one flat list of effective cases and needs no notion of a table.
-	expanded, err := expandTableEntries(file.Tests)
-	if err != nil {
-		return nil, err
-	}
+	expanded, sources := expandTableEntries(p, file.Tests)
 	file.Tests = expanded
 
 	// The bound is on the runs, not on the written entries: a row is a whole
@@ -1175,7 +1232,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// "once its rows are counted" because the limit is otherwise confusing to
 	// read in a file whose `tests:` list is three items long.
 	if len(file.Tests) > MaxTestsPerFile {
-		return nil, fmt.Errorf(
+		p.report(site{at: tests},
 			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
 			len(file.Tests), MaxTestsPerFile)
 	}
@@ -1185,92 +1242,95 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// runs, not the sparse one the author wrote (issue #416). A default is a
 	// fixture, so it may hold no expression; that is refused here, by position,
 	// rather than carried into a case.
-	if err := checkDefaults(file.Defaults); err != nil {
-		return nil, err
-	}
+	checkDefaults(p, file.Defaults, ownDefaultChecks)
 	if file.Defaults != nil {
 		for i := range file.Tests {
 			file.Tests[i] = mergeDefaults(file.Defaults, file.Tests[i])
 		}
 	}
 
-	for i, test := range file.Tests {
+	for i := range file.Tests {
+		// The entry in file.Tests, not a loop copy: the check-claim validation
+		// below strips a tolerated whole-value fence in place, and stripping a
+		// copy would leave the fence on the claim the run reads.
+		test := &file.Tests[i]
+		source := sources[i]
+		r := site{test: test.Name, at: source.path}
+
 		if test.Name == "" {
-			return nil, fmt.Errorf("test %d has no name", i+1)
+			p.report(r, "test %d has no name", i+1)
 		}
 		if requireWorkflow && test.Workflow == "" {
-			return nil, fmt.Errorf("test %q names no workflow", test.Name)
+			p.report(r, "test %q names no workflow", test.Name)
 		}
 		if len(test.Stubs) > MaxStubsPerTest {
-			return nil, fmt.Errorf("test %q declares %d stubs, more than the limit of %d",
+			p.report(r.in(source.path.field("stubs")), "test %q declares %d stubs, more than the limit of %d",
 				test.Name, len(test.Stubs), MaxStubsPerTest)
 		}
 		if len(test.Signals) > MaxSignalsPerTest {
-			return nil, fmt.Errorf("test %q declares %d signals, more than the limit of %d",
+			p.report(r.in(source.path.field("signals")), "test %q declares %d signals, more than the limit of %d",
 				test.Name, len(test.Signals), MaxSignalsPerTest)
 		}
 		if len(test.Secrets) > MaxSecretsPerTest {
-			return nil, fmt.Errorf("test %q declares %d secrets, more than the limit of %d",
+			p.report(r.in(source.path.field("secrets")), "test %q declares %d secrets, more than the limit of %d",
 				test.Name, len(test.Secrets), MaxSecretsPerTest)
 		}
-		for ref := range test.Secrets {
+		for _, reference := range slices.Sorted(maps.Keys(test.Secrets)) {
 			// Checked while the reference is still text, so a malformed
 			// `secrets:` key fails when the file loads rather than the first
 			// time a case happens to invoke a task naming it — the same
 			// timing [secrets.ParseRef]'s own doc gives for a Flowfile.
-			if _, err := secrets.ParseRef(ref); err != nil {
-				return nil, fmt.Errorf("test %q secrets: %w", test.Name, err)
+			if _, err := secrets.ParseRef(reference); err != nil {
+				p.reportKey(r.in(source.path.field("secrets").field(reference)),
+					"test %q secrets: %s", test.Name, err)
 			}
 		}
-		if err := checkScriptedIdentity(fmt.Sprintf("test %q starter:", test.Name), test.Starter); err != nil {
-			return nil, err
-		}
-		// The slice is the entry in file.Tests, not the loop copy: this
-		// validation also strips a tolerated whole-value fence in place, and
-		// stripping a copy would leave the fence on the claim the run reads.
-		if err := checkCheckClaims(fmt.Sprintf("test %q expect", test.Name), file.Tests[i].Expect.Check); err != nil {
-			return nil, err
-		}
-		for j, signal := range test.Signals {
+		checkScriptedIdentity(p, r.in(source.path.field("starter")),
+			fmt.Sprintf("test %q starter:", test.Name), test.Starter)
+		checkCheckClaims(p, r.in(source.path.field("expect").field("check")),
+			fmt.Sprintf("test %q expect", test.Name), test.Expect.Check, source.ownChecks)
+		for j := range test.Signals {
+			signal := &test.Signals[j]
 			// Checked at load, alongside every other shape check in this
 			// loop, rather than when the scripted goroutine delivers: a
 			// delivery refused there disappears the way a production
 			// PermissionDenied does (see [v1.LocalSignals.DeliverFrom]), so
 			// the case would report a gate that timed out and never the
 			// mistake in the file that caused it.
-			if err := checkScriptedIdentity(
+			checkScriptedIdentity(p,
+				r.in(source.path.field("signals").item(j).field("sender")),
 				fmt.Sprintf("test %q signal %d (%q) sender:", test.Name, j+1, signal.Name),
 				signal.Sender,
-			); err != nil {
-				return nil, err
-			}
+			)
 		}
-		for j, stub := range test.Stubs {
+		for j := range test.Stubs {
+			stub := &test.Stubs[j]
+			where := r.in(source.stubPath(j, stub, file.Defaults))
 			switch {
 			case stub.Task == "" && stub.Step == "":
-				return nil, fmt.Errorf("test %q stub %d names neither a task nor a step; "+
+				p.report(where, "test %q stub %d names neither a task nor a step; "+
 					"give one, either `task: <name>` or `step: <id>`", test.Name, j+1)
 			case stub.Task != "" && stub.Step != "":
-				return nil, fmt.Errorf("test %q stub %d names both a task (%q) and a step (%q); "+
+				p.report(where, "test %q stub %d names both a task (%q) and a step (%q); "+
 					"a stub targets one or the other, never both", test.Name, j+1, stub.Task, stub.Step)
 			}
 			if stub.Returns != nil && stub.Fails != nil {
-				return nil, fmt.Errorf(
+				p.report(where,
 					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
-					test.Name, j+1, stubTarget(&stub))
+					test.Name, j+1, stubTarget(stub))
 			}
 			if stub.Response != nil && stub.Returns != nil {
-				return nil, fmt.Errorf(
+				p.report(where,
 					"test %q stub %d for %s declares both response and returns; a stub answers with a raw "+
 						"response the task interprets, or with outputs already shaped, not both",
-					test.Name, j+1, stubTarget(&stub))
+					test.Name, j+1, stubTarget(stub))
 			}
 			if stub.Response != nil && stub.Fails != nil {
-				return nil, fmt.Errorf(
+				p.report(where,
 					"test %q stub %d for %s declares both response and fails; a failing response is a "+
 						"response — write the status the failure would carry, and let the step's own "+
 						"expect: decide",
-					test.Name, j+1, stubTarget(&stub))
+					test.Name, j+1, stubTarget(stub))
 			}
 			// `times: 0` is refused rather than read as "never answers": a
 			// stub that can answer nothing asserts nothing, and an author who
@@ -1278,21 +1338,76 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			// unbounded default they get by writing no `times:` at all.
 			// Negative is the same mistake with less ambiguity.
 			if stub.Times != nil && *stub.Times <= 0 {
-				return nil, fmt.Errorf(
+				p.report(where,
 					"test %q stub %d for %s declares times: %d, which is a stub that never answers; "+
 						"delete the stub, or drop `times:` for the unbounded default",
-					test.Name, j+1, stubTarget(&stub), *stub.Times)
+					test.Name, j+1, stubTarget(stub), *stub.Times)
 			}
 		}
-		if err := checkOthers(&test); err != nil {
-			return nil, err
-		}
-		if err := checkTrigger(&test, requireWorkflow); err != nil {
-			return nil, err
-		}
+		checkOthers(p, r, test)
+		checkTrigger(p, r, test, requireWorkflow)
+	}
+
+	if refused := p.err(); refused != nil {
+		return nil, refused
 	}
 
 	return &file, nil
+}
+
+// A caseSource is where one effective case was written, and how much of it the
+// case wrote for itself.
+//
+// The path is not `tests[i]` for every case: a table's rows expand into the
+// flat list every check below reads, so case i may have been written at
+// `tests[3].cases[2]`. Recomputing that from the index afterward is impossible,
+// which is why it travels from the expansion that knows it.
+//
+// The two counts exist because merging shifts indices. A case's own stubs come
+// first in the merged list and its own check claims come last, so a merged
+// index inside those runs addresses something the case wrote, and one outside
+// them addresses something it inherited — which has no position in this
+// document, and must not borrow the case's.
+type caseSource struct {
+	// path addresses the case in the source.
+	path loc
+
+	// ownStubs is how many of the merged `stubs:` the case wrote itself,
+	// counted before any `defaults:` were folded in.
+	ownStubs int
+
+	// ownChecks is how many of the merged `expect.check:` claims the case
+	// wrote itself, counted the same way.
+	ownChecks int
+}
+
+// stubPath addresses stub j of a merged case, or nothing when the stub was
+// inherited and this document did not write it.
+//
+// An inherited stub is looked for in the file's own `defaults:` — the common
+// case, and the one where a `returns:` and a `fails:` on one entry is a real
+// mistake an author has to be sent to. It is accepted only when the two stubs
+// are the same value: a case can inherit an identical stub from its table entry
+// while a file default of the same target sits unused beside it, and pointing
+// at the unused one would be the false position [document.positionOf] refuses.
+func (c caseSource) stubPath(j int, stub *Stub, defaults *Defaults) loc {
+	if j < c.ownStubs {
+		return c.path.field("stubs").item(j)
+	}
+	if defaults == nil {
+		return nil
+	}
+	for k := range defaults.Stubs {
+		// Compared with the provenance mark set aside, since it is what the
+		// merge stamped on the copy and never something a document wrote.
+		candidate := defaults.Stubs[k]
+		candidate.fromDefaults = stub.fromDefaults
+		if reflect.DeepEqual(candidate, *stub) {
+			return at("defaults").field("stubs").item(k)
+		}
+	}
+
+	return nil
 }
 
 // stubTarget names a stub by what it targets, for a diagnostic: `task "http"`
@@ -1329,13 +1444,14 @@ func stubTargetKey(s *Stub) string {
 // checkOthers refuses an `expect.others:` value that is not the one thing the
 // field is allowed to say, named by its position (CLAUDE.md, "diagnostics are a
 // feature"). Empty is fine: it means the `ran:` claim stays open.
-func checkOthers(test *Test) error {
+func checkOthers(p *problems, r site, test *Test) {
 	switch test.Expect.Others {
 	case "", OthersSkipped:
-		return nil
+		return
 	default:
-		return fmt.Errorf("test %q expect.others: %q is not a value it accepts; the only value is %q, "+
-			"which asserts every step not named in `ran:` was skipped",
+		p.report(r.in(r.at.field("expect").field("others")),
+			"test %q expect.others: %q is not a value it accepts; the only value is %q, "+
+				"which asserts every step not named in `ran:` was skipped",
 			test.Name, test.Expect.Others, OthersSkipped)
 	}
 }
@@ -1348,56 +1464,70 @@ func checkOthers(test *Test) error {
 // exists. requireWorkflow is false for [LoadSource], which has no directory to
 // resolve a payload path against — the same reason a case's `workflow:` is not
 // required there.
-func checkTrigger(test *Test, requireWorkflow bool) error {
+//
+// The one place this stops rather than collecting is the stanza that names both
+// a webhook and a kind: it is two stanzas written as one, and every rule below
+// reads it as whichever of the two it happens to look like. Judging its inside
+// would report problems with a shape the author never wrote (see [problems]).
+func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
+	stanza := r.in(r.at.field("trigger"))
+
 	trigger := test.Trigger
 	if trigger == nil {
 		if test.Expect.Refused != nil {
-			return fmt.Errorf("test %q expects a refusal but replays no delivery; a refusal is what a "+
-				"`trigger:` produces, so give the case one", test.Name)
+			p.report(r.in(r.at.field("expect").field("refused")),
+				"test %q expects a refusal but replays no delivery; a refusal is what a "+
+					"`trigger:` produces, so give the case one", test.Name)
 		}
 		if test.Expect.Inputs != nil {
-			return fmt.Errorf("test %q expects mapped inputs but replays no delivery; `expect.inputs:` "+
-				"asserts what a `trigger:` produced, and a case that states its own `inputs:` already "+
-				"knows them", test.Name)
+			p.report(r.in(r.at.field("expect").field("inputs")),
+				"test %q expects mapped inputs but replays no delivery; `expect.inputs:` "+
+					"asserts what a `trigger:` produced, and a case that states its own `inputs:` already "+
+					"knows them", test.Name)
 		}
-		return nil
+
+		return
 	}
 
 	if trigger.Webhook != "" && trigger.Kind != "" {
-		return fmt.Errorf("test %q trigger: names both a webhook (%q) and a kind (%q); a stanza either "+
+		p.report(stanza, "test %q trigger: names both a webhook (%q) and a kind (%q); a stanza either "+
 			"replays a delivery, which decides the context, or states the context outright, which "+
 			"needs no delivery — never both, because the two could disagree about the same run",
 			test.Name, trigger.Webhook, trigger.Kind)
+
+		return
 	}
 
 	if !trigger.Replays() {
-		return checkTriggerContext(test, trigger)
+		checkTriggerContext(p, r, test, trigger)
+
+		return
 	}
 
 	if trigger.Payload == "" {
-		return fmt.Errorf("test %q trigger %q: names no payload; write `payload: ./testdata/<file>.json`, "+
+		p.report(stanza, "test %q trigger %q: names no payload; write `payload: ./testdata/<file>.json`, "+
 			"a stored delivery with `headers` and `body`", test.Name, trigger.Webhook)
 	}
 	if !requireWorkflow {
-		return fmt.Errorf("test %q trigger %q: a delivery is read relative to the test file's own "+
+		p.report(stanza, "test %q trigger %q: a delivery is read relative to the test file's own "+
 			"directory, and these cases were given as bytes with no directory to resolve it against",
 			test.Name, trigger.Webhook)
 	}
 	switch trigger.Signature {
 	case "", SignatureValid, SignatureInvalid:
 	default:
-		return fmt.Errorf("test %q trigger %q: signature: %q is not a value it accepts; write %q or %q, "+
-			"which say whether this delivery verified — there is no third answer, because a delivery "+
-			"that could not be checked is refused exactly as one that failed a check",
+		p.report(stanza.in(stanza.at.field("signature")),
+			"test %q trigger %q: signature: %q is not a value it accepts; write %q or %q, "+
+				"which say whether this delivery verified — there is no third answer, because a delivery "+
+				"that could not be checked is refused exactly as one that failed a check",
 			test.Name, trigger.Webhook, trigger.Signature, SignatureValid, SignatureInvalid)
 	}
 	if len(test.Inputs) > 0 {
-		return fmt.Errorf("test %q trigger %q: the case also states `inputs:`; a trigger case's inputs "+
-			"come from the delivery, so stating them here would override the mapping the case exists "+
-			"to check", test.Name, trigger.Webhook)
+		p.report(r.in(r.at.field("inputs")),
+			"test %q trigger %q: the case also states `inputs:`; a trigger case's inputs "+
+				"come from the delivery, so stating them here would override the mapping the case exists "+
+				"to check", test.Name, trigger.Webhook)
 	}
-
-	return nil
 }
 
 // checkTriggerContext refuses a directly-stated trigger context that cannot mean
@@ -1413,17 +1543,24 @@ func checkTrigger(test *Test, requireWorkflow bool) error {
 //
 // The other three fields are free strings, because they are: a name, a subject
 // and a delivery id are whatever the trigger that produced them said.
-func checkTriggerContext(test *Test, trigger *TriggerDelivery) error {
+func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelivery) {
+	stanza := r.in(r.at.field("trigger"))
+
 	if trigger.Kind == "" {
-		return fmt.Errorf("test %q trigger: says neither how the run started nor what delivery started "+
+		// Nothing below can be judged: every remaining rule here is about what
+		// a stated context may sit beside, and this stanza states none.
+		p.report(stanza, "test %q trigger: says neither how the run started nor what delivery started "+
 			"it; write `kind: <%s>` to state the context a run reads as `${%s.kind}`, or `webhook: "+
 			"<name>` with a `payload:` to replay a stored delivery",
 			test.Name, strings.Join(v1.TriggerKinds(), "|"), v1.TriggerRoot)
+
+		return
 	}
 
 	if !v1.KnownTriggerKind(trigger.Kind) {
-		return fmt.Errorf("test %q trigger: kind: %q is not a kind Flowstate starts runs with; the kinds "+
-			"are %s. A case stating one that cannot occur asserts a branch is never taken, and passes",
+		p.report(stanza.in(stanza.at.field("kind")),
+			"test %q trigger: kind: %q is not a kind Flowstate starts runs with; the kinds "+
+				"are %s. A case stating one that cannot occur asserts a branch is never taken, and passes",
 			test.Name, trigger.Kind, strings.Join(v1.TriggerKinds(), ", "))
 	}
 
@@ -1433,24 +1570,24 @@ func checkTriggerContext(test *Test, trigger *TriggerDelivery) error {
 		// than ignored, because an assertion nothing evaluates is a test that
 		// reports success for a claim it never checked — the one outcome a harness
 		// must not have.
-		return fmt.Errorf("test %q trigger: states a context and expects mapped inputs; `expect.inputs:` "+
-			"asserts what replaying a delivery produced, and a case that states its own `inputs:` "+
-			"already knows them", test.Name)
+		p.report(r.in(r.at.field("expect").field("inputs")),
+			"test %q trigger: states a context and expects mapped inputs; `expect.inputs:` "+
+				"asserts what replaying a delivery produced, and a case that states its own `inputs:` "+
+				"already knows them", test.Name)
 	}
 
 	if trigger.Payload != "" || trigger.Signature != "" {
-		return fmt.Errorf("test %q trigger: states a context (`kind: %s`) and also a delivery; a payload "+
+		p.report(stanza, "test %q trigger: states a context (`kind: %s`) and also a delivery; a payload "+
 			"and a signature belong to a replay, which is written `webhook: <name>` and derives its own "+
 			"context", test.Name, trigger.Kind)
 	}
 
 	if test.Expect.Refused != nil {
-		return fmt.Errorf("test %q trigger: states a context and expects a refusal; a refusal is what "+
-			"replaying an unverifiable *delivery* produces, and a stated context starts the run it "+
-			"describes", test.Name)
+		p.report(r.in(r.at.field("expect").field("refused")),
+			"test %q trigger: states a context and expects a refusal; a refusal is what "+
+				"replaying an unverifiable *delivery* produces, and a stated context starts the run it "+
+				"describes", test.Name)
 	}
-
-	return nil
 }
 
 // checkDefaults refuses a `defaults:` block that holds an expression anywhere,
@@ -1460,70 +1597,72 @@ func checkTriggerContext(test *Test, trigger *TriggerDelivery) error {
 // block's stub list, since a default is copied into every case and so its size
 // multiplies.
 //
-// Positioned the way the rest of this loader positions a diagnostic: by naming
-// the field a reader has to look at (`defaults.inputs.version`,
-// `defaults.stubs[0].returns.reference`, `defaults.sender.claims`), a
-// *.test.yaml being identified throughout here by name rather than by line and
-// column (see [checkScriptedIdentity]).
-func checkDefaults(d *Defaults) error {
+// Named the way the rest of this loader names a diagnostic — the field a
+// reader has to look at (`defaults.inputs.version`,
+// `defaults.stubs[0].returns.reference`, `defaults.sender.claims`) — and
+// positioned at it as well, where this document is the one that wrote it. A
+// default folded in from a directory's `testdefaults.yaml` has no position in
+// this file, and reports none rather than borrowing the suite's.
+func checkDefaults(p *problems, d *Defaults, ownChecks int) {
 	if d == nil {
-		return nil
+		return
 	}
+
+	base := at("defaults")
 	if len(d.Stubs) > MaxDefaultStubs {
-		return fmt.Errorf("defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+		p.report(site{at: base.field("stubs")},
+			"defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
 	}
-	if err := checkNoExpressions("defaults.workflow", d.Workflow, 0); err != nil {
-		return err
-	}
-	for name, v := range d.Inputs {
-		if err := checkNoExpressions("defaults.inputs."+name, v, 0); err != nil {
-			return err
-		}
+	checkNoExpressions(p, site{at: base.field("workflow")}, "defaults.workflow", d.Workflow, 0)
+	for _, name := range slices.Sorted(maps.Keys(d.Inputs)) {
+		checkNoExpressions(p, site{at: base.field("inputs").field(name)},
+			"defaults.inputs."+name, d.Inputs[name], 0)
 	}
 	for i := range d.Stubs {
 		s := d.Stubs[i]
+		spot := base.field("stubs").item(i)
 		where := fmt.Sprintf("defaults.stubs[%d]", i)
-		if err := checkNoExpressions(where+".where", s.Where, 0); err != nil {
-			return err
-		}
-		if err := checkNoExpressions(where+".returns", s.Returns, 0); err != nil {
-			return err
-		}
+		checkNoExpressions(p, site{at: spot.field("where")}, where+".where", s.Where, 0)
+		checkNoExpressions(p, site{at: spot.field("returns")}, where+".returns", s.Returns, 0)
 	}
 	if d.Sender != nil {
-		if err := checkNoExpressions("defaults.sender", d.Sender, 0); err != nil {
-			return err
-		}
+		checkNoExpressions(p, site{at: base.field("sender")}, "defaults.sender", d.Sender, 0)
 	}
-	if err := checkCheckClaims("defaults", d.Check); err != nil {
-		return err
-	}
-	return nil
+	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, ownChecks)
 }
 
-// checkNoExpressions descends a default value and refuses the first string that
-// carries a `${` fence, naming its position. The bound on depth is the
+// checkNoExpressions descends a default value and refuses every string that
+// carries a `${` fence, naming and positioning each. The bound on depth is the
 // fail-closed answer to a pathological fixture rather than a constraint on an
 // ordinary one (CLAUDE.md, "bound anything that consumes untrusted input"): the
 // walk is recursive, so recursion gets its own bound.
-func checkNoExpressions(where string, v any, depth int) error {
+//
+// The prose path and the source path descend together, one line apart at every
+// step, so the name a reader is given and the line they are sent to cannot come
+// to disagree.
+func checkNoExpressions(p *problems, r site, where string, v any, depth int) {
 	if depth > maxDefaultsDepth {
-		return fmt.Errorf("%s: nests more than %d levels deep, deeper than a default is meant to go",
+		// Reported once and not descended into: every level below this one
+		// would report the same fact about the same value.
+		p.report(r, "%s: nests more than %d levels deep, deeper than a default is meant to go",
 			where, maxDefaultsDepth)
+
+		return
 	}
 	switch value := v.(type) {
 	case nil:
-		return nil
+		return
 	case string:
 		if strings.Contains(value, "${") {
-			return fmt.Errorf("%s holds the expression %q; a test file's `defaults:` is a fixture, "+
+			p.report(r, "%s holds the expression %q; a test file's `defaults:` is a fixture, "+
 				"so it may not hold an expression. Write the literal value, or move it into the case that needs it",
 				where, value)
 		}
-		return nil
+
+		return
 	case *ScriptedIdentity:
 		if value == nil {
-			return nil
+			return
 		}
 		for _, field := range []struct {
 			name  string
@@ -1533,23 +1672,20 @@ func checkNoExpressions(where string, v any, depth int) error {
 			{"issuer", value.Issuer},
 			{"namespace", value.Namespace},
 		} {
-			if err := checkNoExpressions(where+"."+field.name, field.value, depth+1); err != nil {
-				return err
-			}
+			checkNoExpressions(p, r.in(r.at.field(field.name)), where+"."+field.name, field.value, depth+1)
 		}
 		for _, name := range slices.Sorted(maps.Keys(value.Claims)) {
-			if err := checkNoExpressions(where+".claims."+name, value.Claims[name], depth+1); err != nil {
-				return err
-			}
+			checkNoExpressions(p, r.in(r.at.field("claims").field(name)),
+				where+".claims."+name, value.Claims[name], depth+1)
 		}
-		return nil
+
+		return
 	case []any:
 		for i, element := range value {
-			if err := checkNoExpressions(fmt.Sprintf("%s[%d]", where, i), element, depth+1); err != nil {
-				return err
-			}
+			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i), element, depth+1)
 		}
-		return nil
+
+		return
 	}
 
 	// A nested mapping a YAML decoder hands back is its own choice of type, so
@@ -1558,23 +1694,28 @@ func checkNoExpressions(where string, v any, depth int) error {
 	// nothing "diagnostics are a feature" forbids. Mirrors [compileReturnValue].
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		// Sorted for the reason every map walk here is sorted: the order a
+		// file's problems are found in must be a property of the file.
+		keys := make([]string, 0, rv.Len())
 		for _, key := range rv.MapKeys() {
-			if err := checkNoExpressions(where+"."+key.String(), rv.MapIndex(key).Interface(), depth+1); err != nil {
-				return err
-			}
+			keys = append(keys, key.String())
 		}
-		return nil
+		slices.Sort(keys)
+		for _, key := range keys {
+			checkNoExpressions(p, r.in(r.at.field(key)), where+"."+key,
+				rv.MapIndex(reflect.ValueOf(key).Convert(rv.Type().Key())).Interface(), depth+1)
+		}
+
+		return
 	}
 	if rv.Kind() == reflect.Slice {
-		for i := 0; i < rv.Len(); i++ {
-			if err := checkNoExpressions(fmt.Sprintf("%s[%d]", where, i), rv.Index(i).Interface(), depth+1); err != nil {
-				return err
-			}
+		for i := range rv.Len() {
+			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i),
+				rv.Index(i).Interface(), depth+1)
 		}
-		return nil
-	}
 
-	return nil
+		return
+	}
 }
 
 // mergeDefaults folds a file's `defaults:` into one case, producing the

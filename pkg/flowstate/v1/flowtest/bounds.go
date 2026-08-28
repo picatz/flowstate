@@ -51,6 +51,14 @@ func checkExpansionBounds(data []byte) error {
 		return nil
 	}
 
+	return checkExpansionBoundsIn(file)
+}
+
+// checkExpansionBoundsIn is [checkExpansionBounds] for a caller that has
+// already parsed the document — the suite loader, which keeps the tree to
+// answer where a diagnostic belongs (position.go) and would otherwise parse the
+// same bytes twice, once per reader, on every load.
+func checkExpansionBoundsIn(file *ast.File) error {
 	anchors := map[string]ast.Node{}
 	for _, doc := range file.Docs {
 		collectAnchors(doc.Body, anchors)

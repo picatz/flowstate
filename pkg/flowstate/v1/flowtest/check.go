@@ -93,37 +93,58 @@ func (c *CheckClaim) UnmarshalYAML(unmarshal func(any) error) error {
 
 // checkCheckClaims validates one list of claims at load: the fence rule, then
 // a parse — syntax is a property of the file, so a malformed claim is refused
-// while the author is still there to be told, with its position named
-// (`where` is `test "x" expect.check[2]` or `defaults.check[0]`). What parsing
-// cannot see — an unknown function from a profile library, a name the run
-// does not bind — stays a run-time failure of the case, because it depends on
-// the workflow the case targets.
+// while the author is still there to be told, named by the case and the entry
+// it is (`where` is `test "x" expect.check[2]` or `defaults.check[0]`) and
+// positioned at the line that entry was written on. What parsing cannot see —
+// an unknown function from a profile library, a name the run does not bind —
+// stays a run-time failure of the case, because it depends on the workflow the
+// case targets.
+//
+// own is how many of the claims the document wrote at `at` itself. A merged
+// list is every level's claims accumulated — `defaults:` first, then a table
+// entry's, then the case's own last — so only the final `own` entries have a
+// position here at all; the rest were written somewhere this path does not
+// address, and are refused with the same words and no line. The prose keeps
+// counting from the front of the merged list, because that list is what the run
+// evaluates and what a reader is being told about.
 //
 // Mutates the slice in place: a whole-value fence is stripped here, once, so
 // everything downstream evaluates bare CEL.
-func checkCheckClaims(where string, claims []CheckClaim) error {
+func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, own int) {
 	if len(claims) == 0 {
-		return nil
+		return
 	}
 
 	env, err := v1.DefaultEvaluator().Env()
 	if err != nil {
-		return fmt.Errorf("%s: building the expression environment: %w", where, err)
+		// Nothing can be parsed without an environment, so this is the whole
+		// report for this list rather than one entry's worth of it.
+		p.report(r, "%s: building the expression environment: %s", where, err)
+
+		return
 	}
 
+	inherited := len(claims) - own
 	for i := range claims {
+		// Nothing rather than the list's own node for an inherited claim: a
+		// position on the case's `check:` block would underline claims that
+		// are fine because one it inherited is not.
+		spot := r.in(nil)
+		if i >= inherited {
+			spot = r.in(r.at.item(i - inherited))
+		}
 		if inner, fenced := flowfile.SplitFence(claims[i].That); fenced {
 			claims[i].That = inner
 		}
 		if strings.TrimSpace(claims[i].That) == "" {
-			return fmt.Errorf("%s.check[%d] holds an empty claim; write the CEL predicate, or drop the entry", where, i)
+			p.report(spot, "%s.check[%d] holds an empty claim; write the CEL predicate, or drop the entry", where, i)
+
+			continue
 		}
 		if _, issues := env.Parse(claims[i].That); issues != nil && issues.Err() != nil {
-			return fmt.Errorf("%s.check[%d]: %w", where, i, issues.Err())
+			p.report(spot, "%s.check[%d]: %s", where, i, issues.Err())
 		}
 	}
-
-	return nil
 }
 
 // postRunScope is the scope a finished case is questioned against: the
