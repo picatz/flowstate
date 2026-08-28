@@ -209,6 +209,70 @@ func TestAFailedStepIsDistinguishedFromAToleratedOne(t *testing.T) {
 	assert.Contains(t, console.String(), "gated skipped (`if:` was false)")
 }
 
+// TestAStepTheRunEntersAgainReadsAsRunning is the loop case, and the reason
+// entering is a fact a callback states rather than one the id cache implies.
+//
+// A `for_each` body is entered once per iteration. Its outcome arrives after
+// each one, so by the second arrival the session has already recorded it as
+// done — and a row saying `ok` for the very step the prompt above it is holding
+// would be the list disagreeing with the session.
+func TestAStepTheRunEntersAgainReadsAsRunning(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &console,
+		Steps: []string{"body"}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{},
+	})
+
+	// Two iterations of one step, driven the way the engine drives a loop body:
+	// a boundary, then the outcome, then the same boundary again.
+	finished := make(chan error, 1)
+	go func() {
+		for range 2 {
+			if beforeErr := session.BeforeStep(t.Context(), markStep("body"), scope); beforeErr != nil {
+				finished <- beforeErr
+
+				return
+			}
+			session.StepFinished("body", nil, nil, false)
+		}
+		finished <- nil
+	}()
+
+	// First arrival: entered, nothing finished.
+	_, err = session.WaitForPause(t.Context())
+	require.NoError(t, err)
+
+	state, held := stateOf(session.Steps(), "body")
+	require.True(t, held)
+	assert.Equal(t, flowdebug.StepRunning, state)
+
+	// Second arrival, after the first iteration's outcome has been recorded.
+	_, err = session.Step(t.Context())
+	require.NoError(t, err)
+
+	state, held = stateOf(session.Steps(), "body")
+	require.True(t, held)
+	assert.Equal(t, flowdebug.StepRunning, state,
+		"a step the run is held at read as the outcome of its previous iteration")
+
+	// And the id is listed once, not once per iteration.
+	assert.Equal(t, []string{"body"}, idsOf(session.Steps()))
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
+
+	// The last iteration's outcome still lands once the run leaves.
+	state, held = stateOf(session.Steps(), "body")
+	require.True(t, held)
+	assert.Equal(t, flowdebug.StepDone, state)
+}
+
 // TestTheStepListFallsBackToArrivalOrder covers the caller that holds no
 // workflow.
 //

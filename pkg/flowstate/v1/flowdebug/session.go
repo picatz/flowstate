@@ -574,6 +574,11 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 
 	s.sawStep(node.GetId())
 
+	// Entered, said here because this is the only callback that means it — and
+	// said on every arrival, so a loop body the run has come back to reads as
+	// running rather than as whatever the last iteration left behind.
+	s.noteStep(node.GetId(), StepRunning)
+
 	stop, err := s.shouldStop(ctx, node.GetId(), scope)
 	if err != nil {
 		// Cancellation, and the only thing that reaches here as an error. It
@@ -1303,12 +1308,14 @@ func frozen(scope *v1.Scope) *v1.Scope {
 // nothing, and a run that loops over one step for an hour should not report
 // itself truncated.
 //
-// An id arrives here entered rather than finished, because the three callers
-// are the boundary and the two observer callbacks and only the boundary is
-// first: [Session.StepFinished] and [Session.StepSkipped] call this and then
-// say what happened, through [Session.noteStep]. That ordering is what lets
-// one map answer both questions — a state is only ever written for an id this
-// has already admitted, so the bound below is the only bound either needs.
+// It admits an id and says nothing about what the id did: every one of its
+// three callers follows it with a [Session.noteStep] saying that. Splitting the
+// two is what lets one map answer both questions — a state is only ever written
+// for an id this has already admitted, so the bound here is the only bound
+// either needs — and it is what keeps a step the run enters *again* from
+// reading as whatever it did last time. A loop body is entered once per
+// iteration, and a row saying `ok` while the run is held at that very step
+// would be the list disagreeing with the prompt above it.
 func (s *Session) sawStep(id string) {
 	if id == "" {
 		return
@@ -1326,7 +1333,7 @@ func (s *Session) sawStep(id string) {
 
 		return
 	}
-	s.seen[id] = StepRunning
+	s.seen[id] = StepPending
 	s.seenOrder = append(s.seenOrder, id)
 }
 
