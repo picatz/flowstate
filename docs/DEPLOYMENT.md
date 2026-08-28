@@ -1236,12 +1236,12 @@ set: `--max-concurrent-activities`, `--max-concurrent-workflow-tasks`,
 (`FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES`,
 `FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS`,
 `FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND`,
-`FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND`; `cmd/flow/main.go`). All
-four default to `0`, which the flag help text and `workerCapacityOptions`'s
-doc comment both spell out as "take the Temporal SDK's own default" — an
-unset flag changes no behavior on any existing deployment. `flow server
-dev`'s embedded worker does not read any of these; it exists for the laptop,
-where the SDK defaults are the right answer.
+`FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND`; `cmd/flow/main.go`), plus,
+as of #921, one more: `--sticky-cache-size`
+(`FLOWSTATE_WORKER_STICKY_CACHE_SIZE`). All five default to `0`, but that
+default does not mean the same thing on the fifth flag — see below. `flow
+server dev`'s embedded worker does not read any of these; it exists for the
+laptop, where the SDK defaults are the right answer.
 
 **Defaults, unset.** The Go SDK sizes an untuned worker at
 `MaxConcurrentActivityExecutionSize` = 1000, `MaxConcurrentWorkflowTaskExecutionSize`
@@ -1323,6 +1323,116 @@ the slots, this process has room"; a flat count with the CPU profile pinned is
 turns into a replica. Turn the flag back off — or leave it bound to loopback
 and reachable only by `kubectl exec` — once the question is answered, since a
 heap profile of a worker carries whatever secrets that worker resolved.
+
+**Sticky workflow cache (`--sticky-cache-size`).** Sticky execution is the
+affinity between a workflow execution's tasks and the worker that last handled
+them: as long as that worker keeps the execution's evaluated state cached, the
+next workflow task resumes from it instead of replaying the run's history from
+the start. `--sticky-cache-size` (`FLOWSTATE_WORKER_STICKY_CACHE_SIZE`) sets
+how many executions this process keeps cached; the SDK's own default is 10000
+(`worker.SetStickyWorkflowCacheSize`,
+`go.temporal.io/sdk@v1.47.0/internal/internal_task_handlers.go:41`), sized for
+a lighter per-entry cost than Flowstate's — the cache holds an evaluated
+interpreter state per entry, not a bare workflow struct.
+
+Read both signals before changing it, in either direction:
+
+- **Raise** when `temporal_sticky_cache_total_forced_eviction` is non-zero and
+  rising while `temporal_sticky_cache_size` sits at the configured limit
+  (panel in `examples/observability/grafana/dashboards/flowstate.json`,
+  `temporal_sticky_cache_hit`/`_miss` beside it for the hit-rate half of the
+  same picture). A forced eviction is a replay an operator is paying for that
+  more cache would have avoided.
+- **Lower** when `process.runtime.go.mem.heap_alloc` (see "How to read this
+  process's own CPU/memory" above) climbs with cache size, and a heap profile
+  taken through `--internal-listen` shows the sticky cache rather than
+  activity execution as the growth. A larger cache is memory traded for fewer
+  replays; on a memory-constrained worker that trade can go the other way.
+
+**The zero sentinel means something different here than on the other four
+flags — do not assume it generalizes.** `worker.SetStickyWorkflowCacheSize`
+assigns its argument unconditionally (there is no SDK-side "0 means default"
+substitution the way `augmentWorkerOptions` provides for the four flags
+above), so passing `0` straight through would configure a *zero-entry* cache —
+every workflow task forced to replay its full history, the opposite of what
+an operator typing `0` for "leave this alone" means. `runWorker` therefore
+calls the setter only when `--sticky-cache-size` was set to a value greater
+than zero; an unset (or explicitly `0`) flag leaves the SDK's own default in
+place by never calling the setter at all. See `workerCapacity`'s doc comment
+and `applyStickyCacheSize` in `cmd/flow/main.go` for where this is
+implemented, and `TestApplyStickyCacheSizeNotCalledWhenUnset` in
+`cmd/flow/worker_test.go` for the test that pins the negative direction.
+
+**This setter is process-global, not per-worker.** `worker.SetStickyWorkflowCacheSize`
+configures a cache "shared between workers running within same process"
+(the SDK's own doc comment) and must be called before any worker in the
+process starts. `flow worker` builds exactly one worker per process today, so
+there is only one caller of it and no ordering question. If `flow worker` (or
+any future verb) ever starts a second `worker.New` in the same process, this
+call has to move to wherever the *first* of them starts, and a second call
+later in the process's life would silently resize the cache the first worker
+is already relying on rather than configuring a cache of its own — read
+`cmd/flow/main.go`'s comment at the call site before adding a second worker to
+this process.
+
+**Poller counts (`MaxConcurrentActivityTaskPollers` /
+`MaxConcurrentWorkflowTaskPollers`) have no flag, on purpose.** #921's design
+pass considered exposing them and refused, for a reason worth restating so it
+is not re-proposed without new facts: setting either to a fixed count is not
+merely "one more knob", it silently opts this worker out of the SDK's own
+poller autoscaling. The SDK's doc for both fields is explicit — if neither the
+field nor `ActivityTaskPollerBehavior`/`WorkflowTaskPollerBehavior` is set,
+and the worker's namespace is enrolled in server-side poller autoscaling, the
+worker automatically autoscales its poller count instead of running with a
+fixed one. A flag whose effect is "stop autoscaling", shipped on a deployment
+whose operator may not know their namespace is enrolled at all, is a knob that
+makes an operator's situation worse by being used, not better. (The
+`PollerBehavior` alternative that would ask for a target rather than a fixed
+count is itself `NOTE: Experimental` in the SDK, so it is not a safer
+substitute today either.)
+
+The metric this refusal points an operator at instead is not
+`temporal_num_pollers` by itself — it only reports the count actually
+configured, fixed or autoscaled, which is not a saturation signal on its own.
+The shape that *is* a saturation signal is two series read together, both
+already on the `examples/observability` dashboard:
+`temporal_workflow_task_schedule_to_start_latency` climbing **while**
+`temporal_worker_task_slots_available` stays non-zero — slots sitting idle
+because nothing is fetching work to fill them. When that shape appears, the
+remedy is enrolling the namespace in poller autoscaling, or scaling out (each
+replica brings its own poller set) — not a flag this binary declines to offer.
+
+**The resource-based slot supplier / `WorkerTuner` stays deferred.** #921's
+design pass considered adopting `worker.Options.Tuner` — Temporal's newer,
+resource-aware alternative to fixed slot counts — in place of
+`--max-concurrent-activities`/`--max-concurrent-workflow-tasks`, and deferred
+it rather than shipping it, for three reasons on the record so the next
+proposal starts from them instead of re-discovering them:
+
+1. `Tuner` is `NOTE: Experimental` in the SDK, and it is **mutually exclusive**
+   with `MaxConcurrentActivityExecutionSize`/`MaxConcurrentWorkflowTaskExecutionSize`
+   — the two flags already shipped and documented above. Adopting it is a
+   breaking change to a published CLI surface, not an additive one.
+2. The resource-based tuner (`worker.NewResourceBasedTuner`) requires an
+   `InfoSupplier`, and the SDK's own implementation of one lives in
+   `contrib/sysinfo`, a separate Go module — adopting it pulls in a new
+   third-party dependency and a new `govulncheck` surface in exchange for an
+   experimental API replacing a stable one.
+3. A resource tuner targeting a fraction of memory is only as correct as what
+   it reads memory *from*. A host-level reading taken inside a memory-limited
+   container targets a fraction of the *node's* memory, not the container's
+   limit, and keeps issuing slots on that basis until the container's own
+   limit — not the host's — triggers an OOM kill. That is the fail-closed
+   posture this document asks for everywhere else, inverted, in exactly the
+   deployment shape this runbook is written for.
+
+Preconditions that would reopen this, stated so a future proposal can check
+them rather than re-litigate them from scratch: `Tuner` loses `Experimental`
+status in the SDK; a cgroup-correct `SysInfoProvider` is available (from
+`contrib` or written here); and any adoption replaces
+`--max-concurrent-activities`/`--max-concurrent-workflow-tasks` rather than
+sitting beside them — two live spellings of "how many slots" is a
+maintenance burden, not a feature.
 
 ### Per-host egress rate limits
 

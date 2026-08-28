@@ -451,21 +451,38 @@ func workerStopTimeout(cmd *cobra.Command) (time.Duration, error) {
 // workerCapacity holds the subset of worker.Options this worker exposes as
 // flags: what Temporal's slot-exhaustion runbook names first
 // (MaxConcurrentActivityExecutionSize, MaxConcurrentWorkflowTaskExecutionSize),
-// plus the two rate limits #785 folded into this issue's scope
-// (WorkerActivitiesPerSecond, TaskQueueActivitiesPerSecond). Poller counts and
-// the sticky workflow cache size are the next tier (#783's own scoping call)
-// and are not represented here.
+// the two rate limits #785 folded into this issue's scope
+// (WorkerActivitiesPerSecond, TaskQueueActivitiesPerSecond), and the sticky
+// workflow cache size #921 added. Poller counts and the resource-based slot
+// supplier/tuner were considered by #921's design pass and refused — see
+// docs/DEPLOYMENT.md's capacity section for why — and are not represented
+// here.
 type workerCapacity struct {
 	maxConcurrentActivities      int
 	maxConcurrentWorkflowTasks   int
 	activitiesPerSecond          float64
 	taskQueueActivitiesPerSecond float64
+
+	// stickyCacheSize is the value to pass to worker.SetStickyWorkflowCacheSize,
+	// and stickyCacheSizeSet reports whether the flag was set to a nonzero value
+	// at all. Unlike the four fields above, 0 cannot double as "call the setter
+	// with the SDK default": SetStickyWorkflowCacheSize assigns its argument
+	// unconditionally (go.temporal.io/sdk@v1.47.0 internal/internal_worker_cache.go),
+	// so passing 0 through would configure a *zero-entry* cache — every workflow
+	// task forced to replay its full history — rather than leaving the SDK's own
+	// 10000-entry default in place. The sentinel is therefore "do not call the
+	// setter", carried here as a bool rather than folded into the int, so the
+	// zero value of workerCapacity itself (as used by callers who never parse
+	// flags, e.g. tests) means "leave it alone" and not "configure a zero cache".
+	stickyCacheSize    int
+	stickyCacheSizeSet bool
 }
 
 // workerCapacityOptions reads --max-concurrent-activities,
-// --max-concurrent-workflow-tasks, --max-activities-per-second, and
-// --task-queue-activities-per-second, each defaulted from a FLOWSTATE_WORKER_*
-// environment variable exactly like --worker-stop-timeout above.
+// --max-concurrent-workflow-tasks, --max-activities-per-second,
+// --task-queue-activities-per-second, and --sticky-cache-size, each defaulted
+// from a FLOWSTATE_WORKER_* environment variable exactly like
+// --worker-stop-timeout above.
 //
 // Every one of these arrives as a string flag, not cobra's Int or Float64,
 // for the identical reason workerStopTimeout's doc comment gives: pflag
@@ -494,6 +511,13 @@ type workerCapacity struct {
 // with one workflow-task slot only ever polls the sticky queue) — a refusal
 // here is a command-line error message; the same value reaching worker.New
 // is a crashed process.
+//
+// --sticky-cache-size does not share the other four's zero-means-default
+// story, for the reason documented on [workerCapacity.stickyCacheSize]: a
+// literal 0 configures a zero-entry cache rather than passing through to the
+// SDK's own default, so this function reports whether the flag was set to a
+// positive value at all, and runWorker calls worker.SetStickyWorkflowCacheSize
+// only when it was.
 func workerCapacityOptions(cmd *cobra.Command) (workerCapacity, error) {
 	maxActivities, err := parseWorkerCapacityInt(cmd, "max-concurrent-activities")
 	if err != nil {
@@ -521,12 +545,42 @@ func workerCapacityOptions(cmd *cobra.Command) (workerCapacity, error) {
 		return workerCapacity{}, err
 	}
 
+	stickyCacheSize, err := parseWorkerCapacityInt(cmd, "sticky-cache-size")
+	if err != nil {
+		return workerCapacity{}, err
+	}
+
 	return workerCapacity{
 		maxConcurrentActivities:      maxActivities,
 		maxConcurrentWorkflowTasks:   maxWorkflowTasks,
 		activitiesPerSecond:          activitiesPerSecond,
 		taskQueueActivitiesPerSecond: taskQueueActivitiesPerSecond,
+		stickyCacheSize:              stickyCacheSize,
+		stickyCacheSizeSet:           stickyCacheSize > 0,
 	}, nil
+}
+
+// stickyWorkflowCacheSizeSetter is worker.SetStickyWorkflowCacheSize, held
+// behind a variable so a test can substitute a fake and assert both whether
+// it was called and with what value — without mutating the Temporal SDK's
+// actual process-global cache, and without the test needing to start a real
+// worker to observe the call. Never reassigned outside tests.
+var stickyWorkflowCacheSizeSetter = worker.SetStickyWorkflowCacheSize
+
+// applyStickyCacheSize calls stickyWorkflowCacheSizeSetter with
+// capacity.stickyCacheSize, but only when capacity.stickyCacheSizeSet is
+// true. This is the one place that call is made, and it is deliberately not
+// called with capacity.stickyCacheSize unconditionally: the Temporal SDK's
+// setter assigns its argument unconditionally, so calling it with the zero
+// value would configure a zero-entry cache — forcing full history replay on
+// every workflow task — rather than the "leave the SDK's own default alone"
+// an unset --sticky-cache-size flag means. See workerCapacity's doc comment
+// for the full reasoning and where in the SDK this was verified.
+func applyStickyCacheSize(capacity workerCapacity) {
+	if !capacity.stickyCacheSizeSet {
+		return
+	}
+	stickyWorkflowCacheSizeSetter(capacity.stickyCacheSize)
 }
 
 // parseWorkerCapacityInt parses one of the two execution-size flags: a
@@ -692,6 +746,29 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 
 	identity := workerIdentity(cmd, deployment, flags)
+
+	// worker.SetStickyWorkflowCacheSize is a package-level function, not a
+	// worker.Options field: the SDK's sticky cache is shared by every worker
+	// running in this process ("The cache is shared between workers running
+	// within same process", go.temporal.io/sdk@v1.47.0 worker/worker.go:302-307)
+	// and must be set before any worker in the process starts. `flow worker`
+	// builds exactly one worker per process, so there is only ever one caller
+	// here to race with itself — but if this command ever grows a second
+	// worker.New in the same process (the way `flow server dev`'s embedded
+	// worker is a second, unrelated one in a different verb), this call would
+	// need to move to wherever the *first* worker of the process starts, and a
+	// later call would silently resize a cache the earlier worker is already
+	// using rather than configuring a worker of its own.
+	//
+	// Called only when the flag was set to a positive value: SetStickyWorkflowCacheSize
+	// assigns its argument unconditionally, so calling it with 0 would configure a
+	// zero-entry cache (forcing full history replay on every workflow task) rather
+	// than leaving the SDK's own 10000-entry default in place. See workerCapacity's
+	// doc comment. Routed through the applyStickyCacheSize var, rather than calling
+	// worker.SetStickyWorkflowCacheSize here directly, so a test can assert both
+	// directions — called with the value, and never called at all — without
+	// actually mutating the SDK's process-global cache.
+	applyStickyCacheSize(capacity)
 
 	w := worker.New(c, taskQueue, worker.Options{
 		DeploymentOptions:                      deployment,
@@ -2608,6 +2685,27 @@ flow server --verbose`,
 			"Temporal SDK default (effectively unlimited). Per queue, not per worker: setting this "+
 			"differently on two workers sharing a queue is last-writer-wins on the server, and "+
 			"setting it disables eager activity execution for this worker (DisableEagerActivities)")
+
+	// Sticky workflow cache size (#921). A string flag for the identical
+	// docs-generator reason the four flags above are strings, but 0 does NOT
+	// mean "the Temporal SDK's own default" here the way it does for those
+	// four: worker.SetStickyWorkflowCacheSize assigns its argument
+	// unconditionally, so passing 0 through would configure a zero-entry
+	// cache — forcing every workflow task to replay its full history from
+	// scratch — rather than leaving the SDK's 10000-entry default in place.
+	// 0 (unset) is therefore implemented by not calling the setter at all;
+	// see workerCapacityOptions and runWorker. Raise this when
+	// temporal_sticky_cache_total_forced_eviction is nonzero and rising while
+	// temporal_sticky_cache_size sits at the configured limit; lower it when
+	// process.runtime.go.mem.heap_alloc climbs with cache size. See
+	// docs/DEPLOYMENT.md's capacity section.
+	workerCmd.Flags().String("sticky-cache-size",
+		cmp.Or(os.Getenv("FLOWSTATE_WORKER_STICKY_CACHE_SIZE"), "0"),
+		"maximum number of workflow executions kept in this process's sticky cache, letting a "+
+			"workflow task resume from cached state instead of replaying history; 0 leaves the "+
+			"Temporal SDK's own default (10000) in place — it does NOT configure a zero-entry "+
+			"cache, which would force full replay on every task. Shared by every worker in this "+
+			"process; see docs/DEPLOYMENT.md's capacity section for when to raise or lower it")
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)

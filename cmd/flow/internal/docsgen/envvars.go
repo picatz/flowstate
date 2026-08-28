@@ -467,6 +467,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_WORKER_STICKY_CACHE_SIZE",
+			value:   "0",
+			purpose: "Default for `--sticky-cache-size` on `flow worker`: maximum number of workflow executions kept in this process's sticky cache. Unlike the other four `FLOWSTATE_WORKER_*` capacity variables, `0` does NOT take the Temporal SDK's own default (10000) by being passed through — `worker.SetStickyWorkflowCacheSize` assigns its argument unconditionally, so `0` reaching it would configure a zero-entry cache and force full history replay on every workflow task. `0` (or unset) is implemented by not calling the setter at all — see docs/DEPLOYMENT.md's capacity section and workerCapacity's doc comment in cmd/flow/main.go (#921).",
+			read:    "cmd/flow/main.go",
+		},
+		{
 			name:    "FLOWSTATE_WORKER_STOP_TIMEOUT",
 			value:   "2m0s",
 			purpose: "Default for `--worker-stop-timeout` on `flow worker`: how long a shutdown (SIGINT or SIGTERM) waits for in-flight activities and workflow tasks to finish before the worker exits regardless. Parsed with v1.ParseDuration, the same grammar the DSL itself accepts (Go's duration syntax plus days); an unparsable value refuses to start rather than silently keep the default. Keep it under whatever grace period the deployment shape actually gives the process — see docs/DEPLOYMENT.md.",
