@@ -70,6 +70,37 @@ type debugConsole struct {
 	// So the terminal is ordinary whenever the run is working, and raw only
 	// while a person is actually typing an answer.
 	raw int
+
+	// sink is the terminal being painted, or nil where the console was built
+	// over a plain stream — which is every test that drives the editor over a
+	// pipe.
+	//
+	// The *output*, not the input in `raw` above, and the distinction is the
+	// whole reason this is a second field: `flow run local --debug` reads a
+	// terminal stdin and paints stderr, so the descriptor a line is read from
+	// and the one it is drawn on are genuinely two. Size is a property of the
+	// second. See [debugConsole.size].
+	sink *os.File
+}
+
+// size is the terminal's, asked now.
+//
+// Asked rather than remembered because a debugging session outlives the
+// measurement `ui.Detect` takes when the command starts: a person resizes a
+// window while a run is held, and a layout drawn against the old number is one
+// that wraps. ok is false where there is no terminal to measure, which is
+// every console built over a pipe.
+func (c *debugConsole) size() (width, height int, ok bool) {
+	if c.sink == nil {
+		return 0, 0, false
+	}
+
+	width, height, err := term.GetSize(int(c.sink.Fd()))
+	if err != nil {
+		return 0, 0, false
+	}
+
+	return width, height, true
 }
 
 // readingRaw puts the terminal into raw mode for one read and gives it back.
@@ -221,12 +252,20 @@ func attachDebugConsole(in io.Reader, out io.Writer, theme ui.Theme) (console *d
 		return nil, nil, false
 	}
 
-	return newDebugConsole(struct {
-			io.Reader
-			io.Writer
-		}{Reader: in, Writer: out}, prompt, int(file.Fd())), func() {
-			once.Do(func() { _ = term.Restore(int(file.Fd()), sane) })
-		}, true
+	console = newDebugConsole(struct {
+		io.Reader
+		io.Writer
+	}{Reader: in, Writer: out}, prompt, int(file.Fd()))
+
+	// The terminal being painted, for the layout the panes are drawn against.
+	// Set here rather than taken by [newDebugConsole], because it is the one
+	// thing on this type that is genuinely about a *terminal* — which is this
+	// function's half of the split that constructor's doc describes.
+	console.sink = sink
+
+	return console, func() {
+		once.Do(func() { _ = term.Restore(int(file.Fd()), sane) })
+	}, true
 }
 
 // Write implements [io.Writer], so the session's output goes through the

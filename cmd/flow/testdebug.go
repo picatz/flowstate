@@ -83,6 +83,12 @@ func debugSession(
 
 	console, out, restore := debugConsoleFor(cmd.InOrStdin(), surface.Out, surface.Theme)
 
+	// The panes, on the console and nowhere else. With no console this is the
+	// emitter below, unchanged — see debugpanes.go for why that is the seam
+	// rather than a check inside the session.
+	emit, panes := debugPanesFor(cmd.Context(), console, out, surface.Theme, surface.Caps,
+		debugEmitter(out, surface.Theme))
+
 	session, err := flowdebug.New(flowdebug.Options{
 		In:      cmd.InOrStdin(),
 		Console: consoleOrNil(console),
@@ -91,7 +97,7 @@ func debugSession(
 		// renders with, so a paused run and a failed run's account read as
 		// one product. A non-terminal stream resolves every style to a
 		// no-op, so machine-ish captures see the same bytes as before.
-		Emit: debugEmitter(out, surface.Theme),
+		Emit: emit,
 		// The step ids `break` and `until` complete over, read from the
 		// workflow this case runs — which is a second file read on an
 		// interactive path, and worth it for the same reason the test file is
@@ -112,6 +118,7 @@ func debugSession(
 	if console != nil {
 		console.SetCompleter(session.Complete)
 	}
+	panes.setSession(session)
 
 	fmt.Fprintf(out, "%s\n", surface.Theme.Accent.Render(
 		fmt.Sprintf("debugging %q — `help` lists the commands", matched[0])))

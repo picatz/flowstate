@@ -255,11 +255,18 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// well as gates, so each step's own account arrives at the prompt that
 	// paused it.
 	if debugging {
+		// The panes, on the console and nowhere else — see debugpanes.go. The
+		// stderr theme and capabilities, because that is the stream this
+		// command's console owns: `flow run local -o json --debug` has a piped
+		// stdout and the panes belong to the terminal beside it.
+		emit, panes := debugPanesFor(ctx, console, narrate, surface.ErrTheme, surface.ErrCaps,
+			debugEmitter(narrate, surface.ErrTheme))
+
 		session, err := flowdebug.New(flowdebug.Options{
 			In:      cmd.InOrStdin(),
 			Console: consoleOrNil(console),
 			Out:     narrate,
-			Emit:    debugEmitter(narrate, surface.ErrTheme),
+			Emit:    emit,
 			// This command holds the specification, so `break` and `until`
 			// complete over every step the run may reach rather than only the
 			// ones it has been to.
@@ -271,6 +278,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		if console != nil {
 			console.SetCompleter(session.Complete)
 		}
+		panes.setSession(session)
 		// This process is about to exit either way, so the reader parking
 		// costs nothing here — closed anyway because a session's owner closes
 		// it, and a habit that holds only where it is load-bearing is one that
