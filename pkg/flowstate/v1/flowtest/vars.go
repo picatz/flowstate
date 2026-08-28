@@ -90,6 +90,13 @@ import (
 //	                      | a fixed  | secret is secret, and a var reached backward
 //	                      | point    | is itself a source for its own readers
 //	                      |          | ([taintedVars])
+//	what graph it walks   | what the | a declaration refused for an unrelated
+//	                      | file     | mistake still SAYS what it reads, and a
+//	                      | SAYS     | refusal removes a value from existence, never
+//	                      |          | an edge from the graph. [File.declareVars]
+//	                      |          | records deps before any check can skip the
+//	                      |          | entry, and reads them out of the text when
+//	                      |          | there is no AST ([textualVarDeps])
 //	when a refusal fires  | eagerly, | a value judged after the block evaluates has
 //	                      | per var  | already been quotable by a later expression's
 //	                      |          | error ([File.evaluateVars]'s loop)
@@ -185,6 +192,33 @@ var varReference = regexp.MustCompile(`^\$\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*
 
 // varName is the same grammar, for declaration-side validation.
 var varName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// varTextualRead matches a `vars.<name>` read anywhere in an expression's text.
+var varTextualRead = regexp.MustCompile(`\bvars\.([A-Za-z_][A-Za-z0-9_]*)`)
+
+// textualVarDeps reads one expression's sibling reads out of its *text*, for
+// the one case where there is no AST to read them from: the expression did not
+// parse.
+//
+// A deliberate over-approximation, and the direction is the whole justification
+// (Codex, #1197, eighth). This package refuses textual analysis where a wrong
+// answer would change what a working file *means* — that is why the taint
+// follows references rather than value renderings, and why [flow fix] parses
+// rather than searches. Here neither risk applies: the file carrying this
+// expression is already refused, so nothing will run whatever this returns, and
+// an edge that is not real can only *widen* the taint. A missing edge costs a
+// secret; a spurious one costs a diagnostic on a document nobody can execute.
+//
+// It cannot see through string literals — `${'vars.token'}` yields a dep that
+// is only text — which is the same trade, taken the same way.
+func textualVarDeps(text string) []string {
+	found := map[string]bool{}
+	for _, match := range varTextualRead.FindAllStringSubmatch(text, -1) {
+		found[match[1]] = true
+	}
+
+	return slices.Sorted(maps.Keys(found))
+}
 
 // varEvaluator is the bounded evaluator every computed var goes through: the
 // engine's own machinery — the byte-aware cost estimator, the cancellation
@@ -518,10 +552,24 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		parsed, issues := base.Parse(text)
 		if issues != nil && issues.Err() != nil {
 			p.report(spot, "vars.%s: %s", name, issues.Err())
+			// No AST to read edges from, so they are read from the text —
+			// see [textualVarDeps] for why an over-approximation is the safe
+			// direction and a missing edge is not.
+			d.deps = textualVarDeps(text)
 
 			continue
 		}
 		deps, ok := checkVarExpression(p, spot, name, parsed.NativeRep().Expr(), base)
+		// Recorded whatever the checks below say, and *before* any of them can
+		// skip this entry (Codex, #1197, eighth). A refusal removes a value
+		// from existence; it must not remove edges from the graph. A var
+		// refused for an unrelated mistake — `${vars.token + steps.nope}` — is
+		// still a var that reads `vars.token`, and if a `secrets:` entry names
+		// it then `token` is secret material whether or not this declaration
+		// survived validation. Dropping the edge left the backward closure
+		// walking an incomplete graph, and an independent var's evaluator
+		// error printed the plaintext.
+		d.deps = deps
 		if !ok {
 			continue
 		}
@@ -534,7 +582,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		if !ok {
 			continue
 		}
-		d.ast, d.deps = parsed, deps
+		d.ast = parsed
 	}
 
 	return declared

@@ -124,6 +124,35 @@ func TestTaintedVarsReachesSourcesAndReaders(t *testing.T) {
 	assert.False(t, taint.holds("region"))
 }
 
+// TestTextualVarDepsOverApproximates is the fallback for an expression with no
+// AST, and its two properties stated where a fixture can drive them: it finds
+// the reads a parser would, and it also finds ones a parser would not — which
+// is the direction that is safe here, since the file carrying such an
+// expression is refused whatever this returns.
+func TestTextualVarDepsOverApproximates(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		text string
+		want []string
+	}{
+		"a plain read":        {text: "vars.token + ", want: []string{"token"}},
+		"several, sorted":     {text: "vars.b + vars.a + vars.b", want: []string{"a", "b"}},
+		"a selection into":    {text: "vars.order.region + ", want: []string{"order"}},
+		"nothing to find":     {text: "1 + ", want: nil},
+		"not a vars read":     {text: "myvars.token + ", want: nil},
+		"inside a comment":    {text: "'x' // vars.token", want: []string{"token"}},
+		"inside a string":     {text: "'vars.token' + ", want: []string{"token"}},
+		"a bare vars is none": {text: "vars + ", want: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tc.want, textualVarDeps(tc.text))
+		})
+	}
+}
+
 // TestTaintPathNamesTheChainAndTheSecretsEntry: a refusal claims a var is
 // derived from a secret, and an author can only check that claim if they are
 // shown the chain.

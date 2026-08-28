@@ -1147,6 +1147,145 @@ tests:
 	assert.NotContains(t, messages, "s3cr3t-value")
 }
 
+// TestARefusedDeclarationStillContributesItsEdges is Codex's eighth P1, and it
+// is a defect against the contract rather than a change to it: the table says
+// the closure runs over the dependency component, and this path was building
+// that component out of the declarations that *survived validation* instead of
+// out of what the file says.
+//
+// `seed` is refused for an unrelated mistake — it reads `steps`, which a var
+// may not — and dropping its edges meant `token` never entered the component
+// that `secrets:` seeds, so an independent var's evaluator error printed the
+// plaintext. A refusal removes a value from existence; it must not remove
+// edges from the graph. Fails on 9ce074d2.
+func TestARefusedDeclarationStillContributesItsEdges(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  seed: "${vars.token + steps.nope}"
+  probe: "${ {'known': 1}[vars.token] }"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:AUTH: "${vars.seed}"
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused)
+	messages := problemMessages(problems)
+
+	assert.Contains(t, messages, "vars.seed reads `steps`",
+		"the unrelated mistake is still reported; the fix is about edges, not about silencing it")
+	assert.Contains(t, messages, "[withheld: this expression reads vars.token, which this file withholds]",
+		"`token` is a source of what `secrets:` names, through a declaration that was refused")
+	assert.NotContains(t, messages, "s3cr3t-value")
+	assert.NotContains(t, messages, "no such key")
+}
+
+// TestADeclarationThatDidNotParseStillContributesItsEdges is the same defect
+// one step further back, and the one case where the edges cannot come from an
+// AST because there is none. They are read from the expression's text instead —
+// an over-approximation, which is the safe direction here for a reason stated
+// on [textualVarDeps]: the file is already refused, so a spurious edge costs a
+// diagnostic while a missing one costs a secret.
+func TestADeclarationThatDidNotParseStillContributesItsEdges(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  seed: "${vars.token + }"
+  probe: "${ {'known': 1}[vars.token] }"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:AUTH: "${vars.seed}"
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused)
+	messages := problemMessages(problems)
+
+	assert.Contains(t, messages, "vars.seed:", "the syntax error is still reported")
+	assert.Contains(t, messages, "[withheld: this expression reads vars.token, which this file withholds]")
+	assert.NotContains(t, messages, "s3cr3t-value")
+}
+
+// TestARefusalDoesNotOverTaint is that fix's control, and the reason it is a
+// control rather than a footnote: preserving edges must preserve *real* ones.
+// A refused declaration that reads an ordinary var does not make that var
+// secret material, so the ordinary var still prints.
+func TestARefusalDoesNotOverTaint(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  region: eu-west-1
+  seed: "${vars.token + steps.nope}"
+  elsewhere: "${vars.region + steps.nope}"
+  probe: "${ {'known': 1}[vars.region] }"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:AUTH: "${vars.seed}"
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused)
+	messages := problemMessages(problems)
+
+	assert.Contains(t, messages, "no such key: eu-west-1",
+		"a var reached only through a refused declaration that no `secrets:` entry names "+
+			"is not secret material, and its evaluator error keeps its detail")
+	assert.NotContains(t, messages, "s3cr3t-value")
+}
+
+// TestAVarRefusedForProtectabilityStillContributesItsEdges checks the same
+// property one level out, where it holds by construction rather than by care:
+// the taint is computed before anything evaluates, so a var this package
+// refuses for holding an unprotectable value cannot have removed edges from a
+// graph that was already built.
+//
+// Stated as a test rather than assumed, because "by construction" is a claim
+// about an ordering that a later edit could reverse silently.
+func TestAVarRefusedForProtectabilityStillContributesItsEdges(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  count: "${size(vars.token)}"
+  onward: "${vars.count}"
+  probe: "${ {'known': 1}[vars.token] }"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:AUTH: "${vars.count}"
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused)
+	messages := problemMessages(problems)
+
+	assert.Contains(t, messages, "vars.count is computed from a secret and holds an integer",
+		"the protectability refusal still fires")
+	assert.Contains(t, messages, "[withheld: this expression reads vars.token, which this file withholds]",
+		"and the var it was computed from is still in the component, so an unrelated "+
+			"expression reading it is withheld")
+	assert.NotContains(t, messages, "s3cr3t-value")
+}
+
 // TestAnUntaintedValuesEvaluationErrorIsStillQuoted is the positive control for
 // that fix, and the reason it is scoped to the tainted set: the eager refusal
 // must not swallow legitimate error detail. The identical misuse over vars on
