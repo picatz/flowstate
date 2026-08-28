@@ -220,6 +220,33 @@ steps:
 	require.NotEmpty(t, diagnostics, "a wait a pause ask would answer was accepted")
 	assert.Contains(t, diagnostics[0].Message, v1.ReservedSignalPrefix)
 
+	// And it points at the wait rather than at the file. A diagnostic that names
+	// `steps` sends an author to the whole block; this one underlines the key
+	// they wrote, which is the standard this package sets.
+	assert.Equal(t, "gate", diagnostics[0].Step,
+		"the diagnostic does not say which step waits on the reserved channel")
+	assert.Equal(t, "wait_for_signal.name", diagnostics[0].Field,
+		"the diagnostic does not say which key is at fault, so it cannot underline one")
+	assert.Positive(t, diagnostics[0].Line,
+		"the diagnostic has no position, so an editor has nowhere to put it")
+
+	// The batch spelling declares the same channel and gets the same refusal
+	// under its own key — a name reported for one spelling and not the other
+	// would be a gate that is refused or not depending on how it was written.
+	batch, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+name: collides-in-a-batch
+steps:
+  - id: gate
+    wait_for_signals:
+      name: ` + v1.DebugResumeSignal + `
+      max_batch: 2
+      timeout: 1h
+`))
+	require.NoError(t, err)
+	require.NotEmpty(t, batch, "a batch wait on a reserved channel was accepted")
+	assert.Equal(t, "wait_for_signals.name", batch[0].Field)
+	assert.Equal(t, "gate", batch[0].Step)
+
 	// The positive direction: an ordinary name on the same shape is fine, so
 	// the refusal is about the reservation rather than about waits.
 	diagnostics, err = flowfile.ValidateSource([]byte(`edition: v2026.3

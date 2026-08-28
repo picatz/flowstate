@@ -2324,6 +2324,14 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		return ds
 	}
 
+	// A gate on a channel the engine owns would be answered by an ask to pause
+	// the run for debugging (#928). Reported here rather than over the workflow,
+	// because this is where the step id and the key the author wrote are both
+	// known — see [reservedSignalWaitDiagnostic].
+	if d, found := reservedSignalWaitDiagnostic(id, wait); found {
+		ds = append(ds, d)
+	}
+
 	// The same reference checking a condition gets, since these are the same kind
 	// of expression resolving against the same names — plus `now`, which the
 	// engine binds when it evaluates a wait and binds nowhere else. Added for

@@ -406,30 +406,50 @@ func validateDebug(wf *v1.Workflow) Diagnostics {
 	return validatePolicyRules("debug", policy)
 }
 
-// validateReservedSignalNames reports a workflow that waits for, or declares a
-// policy for, a name the engine reserved.
+// reservedSignalWaitDiagnostic reports a wait on a name the engine reserved, or
+// nothing when the name is the author's.
+//
+// Asked per waiting step rather than over [v1.SignalNames], because that
+// function answers with names and a diagnostic has to point at a *place*: the
+// step id and the key the author actually wrote are what turn this from "some
+// step in this file" into an underlined token. The two spellings are named
+// apart for the reason `validateWait`'s `timeout:` already is — a bare field
+// makes `Locate` find the outer span first.
 //
 // Reported here as well as refused at submit ([v1.CheckReservedSignalNames]),
 // because a diagnostic in an author's editor with a line and a column is the
-// version of this refusal somebody can act on — the standard `flowfile/validate.go`
-// sets. The rule is a property of the file rather than of a deployment: which
-// names the engine owns is decided by this build, not by configuration.
+// version of this refusal somebody can act on — the standard
+// `flowfile/validate.go` sets. The rule is a property of the file rather than of
+// a deployment: which names the engine owns is decided by this build, not by
+// configuration.
+func reservedSignalWaitDiagnostic(id string, wait *v1.Wait) (Diagnostic, bool) {
+	name, field := wait.GetSignal().GetName(), "wait_for_signal.name"
+	if name == "" {
+		name, field = wait.GetSignalBatch().GetName(), "wait_for_signals.name"
+	}
+
+	if name == "" || !v1.IsReservedSignalName(name) {
+		return Diagnostic{}, false
+	}
+
+	return Diagnostic{
+		Step:  id,
+		Field: field,
+		Message: "names a signal beginning " + v1.ReservedSignalPrefix +
+			", which belongs to the engine; an ask to pause this run for debugging travels on one " +
+			"of those channels and would answer this wait instead. Rename the signal",
+	}, true
+}
+
+// validateReservedSignalNames reports a `signals:` policy declared for a name
+// the engine reserved.
+//
+// The waiting half is [reservedSignalWaitDiagnostic], reported from
+// `validateWait` where the step is known. This half stays whole-workflow because
+// the map key *is* the place: `signals.<name>` is a path the position index
+// already carries.
 func validateReservedSignalNames(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
-
-	for _, name := range v1.SignalNames(wf) {
-		if !v1.IsReservedSignalName(name) {
-			continue
-		}
-
-		ds = append(ds, Diagnostic{
-			Field: "steps",
-			Message: "waits for a signal named " + name + ", and names beginning " +
-				v1.ReservedSignalPrefix + " belong to the engine; an ask to pause this run for " +
-				"debugging travels on one of those channels and would answer this wait instead. " +
-				"Rename the signal",
-		})
-	}
 
 	for _, name := range sortedPolicyNames(wf.GetSignals()) {
 		if !v1.IsReservedSignalName(name) {
