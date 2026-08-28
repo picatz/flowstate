@@ -1385,6 +1385,136 @@ tests:
 	assert.NotContains(t, rendered, "Bearer s3cr3t")
 }
 
+// TestASetupFailureWithholdsATaintedFixture is Codex's eleventh P1, and the
+// surface vars.go's own table predicted in writing: "a sixth is a leak until it
+// meets this row". `TestCase.Error` is that sixth, and every setup failure took
+// it before the case's redaction posture existed.
+//
+// Two exits of different shapes, so the seam is proven to cover more than the
+// reported instance: the workflow loader, which quotes the path it was given,
+// and the secret runtime, which quotes the reference. Both fail on 4a24e6aa.
+func TestASetupFailureWithholdsATaintedFixture(t *testing.T) {
+	t.Parallel()
+
+	// A workflow that accepts a replayed delivery, so the second case below
+	// reaches the exit that reads the payload rather than stopping at "this
+	// workflow declares no webhook triggers".
+	const deliverable = `
+edition: v2026.3
+name: orders
+inputs:
+  id:
+    type: string
+triggers:
+  - webhook: orders
+    verify:
+      hmac_sha256: ${secret('env:HOOK_KEY')}
+    idempotency_key: ${event.headers["x-id"]}
+    with:
+      id: ${event.body.id}
+steps:
+  - id: keep
+    value: ${inputs.id}
+outputs: {}
+`
+
+	for _, tc := range []struct {
+		name     string
+		workflow string
+		suite    string
+		leaked   string
+	}{
+		{
+			// The reported one: `loading workflow %q` with a withheld path.
+			name: "the workflow loader",
+			suite: `
+vars:
+  token: s3cr3t-value
+  path: "${'./' + vars.token + '.yaml'}"
+tests:
+  - name: the workflow is missing
+    workflow: "${vars.path}"
+    secrets:
+      env:TOKEN: "${vars.token}"
+`,
+			leaked: "s3cr3t-value",
+		},
+		{
+			// A different exit entirely, several checks further down: a replayed
+			// delivery whose payload file is missing. `trigger.payload` is a
+			// fixture position a var reaches, and the error quotes the path.
+			name:     "the delivery replay",
+			workflow: deliverable,
+			suite: `
+vars:
+  token: s3cr3t-value
+  path: "${vars.token + '.json'}"
+tests:
+  - name: the delivery is missing
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: orders
+      payload: "${vars.path}"
+    secrets:
+      env:TOKEN: "${vars.token}"
+      env:HOOK_KEY: hook-key
+`,
+			leaked: "s3cr3t-value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			workflow := tc.workflow
+			if workflow == "" {
+				workflow = echoWorkflow
+			}
+			writeFile(t, filepath.Join(dir, "workflow.yaml"), workflow)
+			path := filepath.Join(dir, "workflow.test.yaml")
+			writeFile(t, path, tc.suite)
+
+			report := flowtest.RunFile(path)
+			require.Empty(t, report.GetRefused())
+			require.Len(t, report.GetCases(), 1)
+
+			c := report.GetCases()[0]
+			require.NotEmpty(t, c.GetError(),
+				"this case must fail in setup, or the test asserts about nothing")
+			assert.NotContains(t, c.GetError(), tc.leaked,
+				"a withheld var reached %s before the posture used to exist: %s", tc.name, c.GetError())
+			assert.Contains(t, c.GetError(), v1.SensitiveMarker,
+				"and it is withheld rather than merely absent")
+		})
+	}
+}
+
+// TestASetupFailureKeepsUntaintedDetail is that fix's control. A path with
+// nothing secret about it renders verbatim, with the loader's own message
+// intact — the posture must not cost an ordinary failure its diagnostic.
+func TestASetupFailureKeepsUntaintedDetail(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+vars:
+  path: ./nowhere-in-particular.yaml
+tests:
+  - name: the workflow is missing
+    workflow: "${vars.path}"
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	c := report.GetCases()[0]
+
+	require.NotEmpty(t, c.GetError())
+	assert.Contains(t, c.GetError(), "nowhere-in-particular.yaml",
+		"an untainted path keeps the detail that makes the failure actionable")
+	assert.NotContains(t, c.GetError(), v1.SensitiveMarker)
+}
+
 // TestARefusalDoesNotOverTaint is that fix's control, and the reason it is a
 // control rather than a footnote: preserving edges must preserve *real* ones.
 // A refused declaration that reads an ordinary var does not make that var

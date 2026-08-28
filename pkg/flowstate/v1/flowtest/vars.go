@@ -111,11 +111,22 @@ import (
 //	what a refused var's  | nothing  | the root refusal stands for the chain, the
 //	  dependents report   |          | rule #1185 set for a refused stub's shape
 //	how a rendering hides | one pair | WithholdAll withholds, else RedactSubstrings,
-//	  what it must        | only     | plus the withheld-var rule. FIVE surfaces:
+//	  what it must        | only     | plus the withheld-var rule. SIX surfaces:
 //	                      |          | witnesses, the autopsy, stub diagnostics, a
 //	                      |          | check's evaluator error ([checkErrorText]),
-//	                      |          | and a var's own ([scrubbedVarError]). A sixth
-//	                      |          | is a leak until it meets this row
+//	                      |          | a var's own ([scrubbedVarError]), and the
+//	                      |          | case's ([redactedErrorText], run.go's
+//	                      |          | caseError). A seventh is a leak until it
+//	                      |          | meets this row — the sixth was, exactly as
+//	                      |          | this row predicted when it named five
+//	when the posture       | before   | it is LOAD-time information: the taint
+//	  exists               | setup    | closure and the case's `secrets:` are both
+//	                      | can fail | known before anything runs, so a setup
+//	                      |          | failure quoting a withheld fixture
+//	                      |          | (`loading workflow %q`) has no excuse. It
+//	                      |          | widens to the run's own set once bound
+//	                      |          | inputs are known; every exit renders through
+//	                      |          | whatever is established when it is taken
 //	what a rendering does | withhold | an error can quote something computed INSIDE
 //	  with a derived fact |  whole   | the failing expression — `[0][size(vars.t)]`
 //	                      |          | says `index out of bounds: 11` — which no set

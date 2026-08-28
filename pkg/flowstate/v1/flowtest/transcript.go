@@ -701,6 +701,27 @@ func redactedBareText(s string, sensitive sensitiveInputs) string {
 	return capRunes(sensitive.RedactSubstrings(text), 120)
 }
 
+// redactedErrorText is [redactedBareText] without the rune cap, for a case's
+// own error ([v1.TestCase.Error]) — the sixth rendering surface in vars.go's
+// containment table.
+//
+// The same pair, and deliberately not the same function. A transcript line is
+// one fragment of a dense account, capped so no single line can dominate it; a
+// case's error is the whole of what a reader is told about why the case did not
+// run, and truncating it at 120 runes would hide the diagnostic to save space
+// in a document that has none of the transcript's density.
+func redactedErrorText(s string, sensitive sensitiveInputs) string {
+	if sensitive.WithholdAll() {
+		return "[withheld]"
+	}
+	text, ok := sensitive.RedactTree(s).(string)
+	if !ok {
+		return sensitiveMarker
+	}
+
+	return sensitive.RedactSubstrings(text)
+}
+
 // capRunes bounds one rendered fragment, marking the cut.
 func capRunes(s string, n int) string {
 	runes := []rune(s)

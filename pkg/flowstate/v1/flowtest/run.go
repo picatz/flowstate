@@ -553,9 +553,42 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		}
 	}()
 
+	// The redaction posture, established BEFORE anything can fail (#1072; Codex,
+	// #1197, eleventh). What a file withholds is load-time information — the
+	// taint closure is computed from the document and nothing setup does can add
+	// to it — so there is no reason for it to arrive late, and every reason not
+	// to: `workflow: "${vars.path}"` substitutes a withheld string into the very
+	// field the loader quotes back in `loading workflow %q`, and that exit is
+	// reached before the run's own sensitive values are known.
+	//
+	// It widens once the case's bound inputs and secrets are known (see below),
+	// and `caseError` always reads the current one, so an exit is protected by
+	// whatever is established by the time it is taken.
+	// Both halves that are knowable now: what the file withholds, and the case's
+	// own `secrets:` plaintext. The second belongs here for the same reason as
+	// the first — `test.Secrets` is on the case before anything runs — and it is
+	// needed here too, because a *literal* var named from `secrets:` is
+	// deliberately not in [withheldVars] (see [withheldMaterial]) and would
+	// otherwise reach a setup failure through the value it was substituted into.
+	posture := sensitiveInputs{}.WithValues(
+		append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...)...)
+
+	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
+	// surface in vars.go's containment table, and the one its own row predicted
+	// would be a leak until it met the row.
+	//
+	// Through [redactedErrorText], which *is* the pair every other rendering here
+	// uses: withhold entirely under a withholding posture, else the value
+	// comparison and then the substring backstop. Every exit below sets the
+	// error through this and none by assignment, so a seventh exit added later
+	// cannot quietly become a seventh surface.
+	caseError := func(format string, args ...any) {
+		result.Error = redactedErrorText(fmt.Sprintf(format, args...), posture)
+	}
+
 	compiled, err := compileStubs(test.Stubs)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -580,7 +613,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	workflow, err := load()
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 	// Reported to the caller for coverage: the workflow this case compiled is
@@ -594,7 +627,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// virtual day later.
 	stubs, err := bindStubs(compiled, workflow)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -603,13 +636,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// disagreeing with the workflow, and a whole virtual day of execution
 	// cannot make the claim checkable. See [checkExpectationNames].
 	if err := checkExpectationNames(&test.Expect, workflow); err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -672,7 +705,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if test.Trigger != nil && test.Trigger.Replays() {
 		mapped, deliveryID, failures, err := replayDelivery(test, deliveryPath, workflow)
 		if err != nil {
-			result.Error = err.Error()
+			caseError("%s", err)
 			return
 		}
 		if len(failures) > 0 || mapped == nil {
@@ -717,7 +750,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		bound = b
 		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
 		if err != nil {
-			result.Error = fmt.Sprintf("resolving workflow %q's signal policy: %v", test.Workflow, err)
+			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
 			return
 		}
 		policies = resolved
@@ -751,6 +784,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// rather than by inspecting a value ([withheldFrom]), and this is where it
 	// becomes the one redaction set every surface of this case already shares.
 	sensitive = sensitive.WithValues(vars.withheld.text...)
+
+	// The posture widens to the case's own set here, which is a superset of what
+	// it was: `sensitive` now carries the file's withheld material as well as the
+	// run's inputs and secrets. Every exit taken from this point on renders
+	// through the fuller one, and every exit before it through what was already
+	// known — which is the whole of the ordering fix, in one assignment.
+	posture = sensitive
 
 	// A debugging session prints what the transcript prints, so it withholds
 	// what the transcript withholds (Codex, #1109). Capability-discovered the
@@ -851,7 +891,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder)
 	defer stopScripts()
 	if scriptErr != nil {
-		result.Error = scriptErr.Error()
+		caseError("%s", scriptErr)
 		return
 	}
 
@@ -881,7 +921,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// failed expectation, because nothing about the expectations was actually
 	// judged.
 	if errors.Is(runErr, v1.ErrDebugSessionEnded) {
-		result.Error = fmt.Sprintf("the debug session ended this run before it finished, so this "+
+		caseError("the debug session ended this run before it finished, so this "+
 			"case has no verdict: %v", runErr)
 		result.Passed = false
 
