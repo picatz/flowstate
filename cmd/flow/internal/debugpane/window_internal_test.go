@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 // The window a step pane draws, tested where its answers can differ.
@@ -121,5 +123,82 @@ func TestPaneRowsSplitTheTerminalBetweenTwoPanes(t *testing.T) {
 	for height := 14; height <= 200; height++ {
 		assert.LessOrEqual(t, paneRows(height)*2+6, height,
 			"two panes and their chrome do not fit on a %d-row terminal", height)
+	}
+}
+
+// The qualifier a row is drawn against, tested where its answers differ.
+//
+// [qualifiers] takes its rows rather than reading them off a frame for the
+// reason [window] does: only the first case below is what real fixtures
+// produce, and the others have to be built. Each row states the whole answer,
+// because "some rows are qualified" is satisfied by qualifying all of them and
+// by qualifying none.
+func TestWhichRowsAreDrawnAgainstAQualifier(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		steps []flowdebug.Step
+		want  []string
+	}{
+		{
+			// The ordinary workflow: nothing shares an id, so nothing is
+			// qualified. A prefix on every row is noise, and the rows are
+			// meant to be typed back at the prompt where the name is the id.
+			name: "no id is shared",
+			steps: []flowdebug.Step{
+				{Workflow: "w", ID: "build"},
+				{Workflow: "w", ID: "test"},
+			},
+			want: []string{"", ""},
+		},
+		{
+			// A singleton row *inside a callee* carries a Via, and must still
+			// not be qualified: nothing else answers to its id, so a prefix
+			// tells the reader nothing and costs a column.
+			name: "a singleton inside a callee",
+			steps: []flowdebug.Step{
+				{Workflow: "outer", ID: "the_call"},
+				{Workflow: "inner", Declaration: 1, Via: "the_call", ID: "only_here"},
+			},
+			want: []string{"", ""},
+		},
+		{
+			// Two workflows, two names: the name is what a reader already has
+			// in the file, so it is what they are drawn against.
+			name: "shared id, different workflows",
+			steps: []flowdebug.Step{
+				{Workflow: "outer", ID: "build"},
+				{Workflow: "inner", Declaration: 1, Via: "the_call", ID: "build"},
+			},
+			want: []string{"outer", "inner"},
+		},
+		{
+			// One callee invoked twice. The name cannot separate them, so the
+			// `call:` step an author wrote does.
+			name: "shared id, one workflow name, two call sites",
+			steps: []flowdebug.Step{
+				{Workflow: "inner", Declaration: 1, Via: "first_call", ID: "build"},
+				{Workflow: "inner", Declaration: 2, Via: "second_call", ID: "build"},
+			},
+			want: []string{"first_call", "second_call"},
+		},
+		{
+			// Nothing distinguishes them at all — a hand-built inventory that
+			// said neither. Drawn unqualified rather than decorated with
+			// something that separates nothing.
+			name: "shared id and nothing to tell them apart",
+			steps: []flowdebug.Step{
+				{Workflow: "w", ID: "build"},
+				{Workflow: "w", ID: "build"},
+			},
+			want: []string{"", ""},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tc.want, qualifiers(tc.steps))
+		})
 	}
 }

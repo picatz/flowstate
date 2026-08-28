@@ -679,8 +679,13 @@ func (s *Session) reachableSteps(at promptSubject, prefix string) ([]string, boo
 	}
 
 	s.mu.Lock()
-	for _, id := range s.steps {
-		add(id)
+	for _, step := range s.steps {
+		// The bare id, because that is what `break` and `until` name: the
+		// engine's own vocabulary for a step is an id (`v1.Debugger` and
+		// `v1.RunObserver` are both handed one), so a breakpoint on `build`
+		// deliberately holds at every step called `build` the run reaches.
+		// [Step.Workflow] disambiguates a *list*, not a breakpoint.
+		add(step.ID)
 	}
 	for id := range s.seen {
 		add(id)

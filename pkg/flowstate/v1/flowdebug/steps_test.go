@@ -71,7 +71,7 @@ func runStates(t *testing.T, script string, opts flowdebug.Options) (stops [][]f
 	opts.Emit = func(text string, tone flowdebug.Tone) {
 		_, _ = console.WriteString(text)
 		if tone == flowdebug.ToneBreak {
-			stops = append(stops, session.Steps())
+			stops = append(stops, allSteps(session))
 		}
 	}
 
@@ -86,6 +86,23 @@ func runStates(t *testing.T, script string, opts flowdebug.Options) (stops [][]f
 	_, _ = v1.Run(ctx, statesWorkflow())
 
 	return stops, console.String()
+}
+
+// declared is an inventory of one workflow's steps, which is what a caller
+// holding the file hands over.
+func declared(workflow string, ids ...string) []flowdebug.Step {
+	steps := make([]flowdebug.Step, 0, len(ids))
+	for _, id := range ids {
+		steps = append(steps, flowdebug.Step{Workflow: workflow, ID: id})
+	}
+
+	return steps
+}
+
+// allSteps is the whole list through the windowed accessor, for the tests whose
+// claim is about the list rather than about the window.
+func allSteps(session *flowdebug.Session) []flowdebug.Step {
+	return session.Steps(0, -1).Steps
 }
 
 // stateOf is one step's state out of a list, and whether the list held it.
@@ -121,7 +138,7 @@ func TestTheStepListReportsWhatEachStepDid(t *testing.T) {
 	// `if:` and never offered one, which is the case that can only arrive
 	// through StepSkipped.
 	stops, _ := runStates(t, "step\nstep\nstep\n", flowdebug.Options{
-		Steps: []string{"build", "flaky", "gated", "fatal", "never"},
+		Steps: declared("states", "build", "flaky", "gated", "fatal", "never"),
 	})
 	require.Len(t, stops, 3, "the run should have offered three boundaries")
 
@@ -181,7 +198,7 @@ func TestAFailedStepIsDistinguishedFromAToleratedOne(t *testing.T) {
 	session, err := flowdebug.New(flowdebug.Options{
 		In:    strings.NewReader("continue\n"),
 		Out:   &console,
-		Steps: []string{"build", "flaky", "gated", "fatal", "never"},
+		Steps: declared("states", "build", "flaky", "gated", "fatal", "never"),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
@@ -193,7 +210,7 @@ func TestAFailedStepIsDistinguishedFromAToleratedOne(t *testing.T) {
 	_, runErr := v1.Run(ctx, statesWorkflow())
 	require.Error(t, runErr, "the fourth step fails the run")
 
-	steps := session.Steps()
+	steps := allSteps(session)
 
 	state, held := stateOf(steps, "fatal")
 	require.True(t, held)
@@ -221,7 +238,7 @@ func TestAStepTheRunEntersAgainReadsAsRunning(t *testing.T) {
 
 	var console strings.Builder
 	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &console,
-		Steps: []string{"body"}})
+		Steps: declared("looping", "body")})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 
@@ -248,7 +265,7 @@ func TestAStepTheRunEntersAgainReadsAsRunning(t *testing.T) {
 	_, err = session.WaitForPause(t.Context())
 	require.NoError(t, err)
 
-	state, held := stateOf(session.Steps(), "body")
+	state, held := stateOf(allSteps(session), "body")
 	require.True(t, held)
 	assert.Equal(t, flowdebug.StepRunning, state)
 
@@ -256,19 +273,19 @@ func TestAStepTheRunEntersAgainReadsAsRunning(t *testing.T) {
 	_, err = session.Step(t.Context())
 	require.NoError(t, err)
 
-	state, held = stateOf(session.Steps(), "body")
+	state, held = stateOf(allSteps(session), "body")
 	require.True(t, held)
 	assert.Equal(t, flowdebug.StepRunning, state,
 		"a step the run is held at read as the outcome of its previous iteration")
 
 	// And the id is listed once, not once per iteration.
-	assert.Equal(t, []string{"body"}, idsOf(session.Steps()))
+	assert.Equal(t, []string{"body"}, idsOf(allSteps(session)))
 
 	require.NoError(t, session.Control(t.Context(), "continue"))
 	require.NoError(t, <-finished)
 
 	// The last iteration's outcome still lands once the run leaves.
-	state, held = stateOf(session.Steps(), "body")
+	state, held = stateOf(allSteps(session), "body")
 	require.True(t, held)
 	assert.Equal(t, flowdebug.StepDone, state)
 }
@@ -320,12 +337,12 @@ func TestTheStepListSaysWhenItStoppedRecording(t *testing.T) {
 	session, err := flowdebug.New(flowdebug.Options{
 		In:    strings.NewReader("continue\n"),
 		Out:   &console,
-		Steps: ids,
+		Steps: declared("many", ids...),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 
-	assert.False(t, session.StepsTruncated(),
+	assert.False(t, session.Steps(0, -1).Truncated,
 		"a session that has watched nothing reported itself truncated")
 
 	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, &ranSteps{}))
@@ -335,7 +352,7 @@ func TestTheStepListSaysWhenItStoppedRecording(t *testing.T) {
 	_, runErr := v1.Run(ctx, &v1.Workflow{Name: "many", Steps: steps})
 	require.NoError(t, runErr)
 
-	list := session.Steps()
+	list := allSteps(session)
 
 	// Every declared id is still listed — the ids come from the caller and are
 	// not what the cache bounds — and every one of them but the last carries
@@ -351,7 +368,7 @@ func TestTheStepListSaysWhenItStoppedRecording(t *testing.T) {
 	assert.Equal(t, flowdebug.StepPending, state,
 		"the id past the bound should have no state recorded, which is what the notice is for")
 
-	assert.True(t, session.StepsTruncated(),
+	assert.True(t, session.Steps(0, -1).Truncated,
 		"the session dropped a step's outcome and did not say so, which makes a real step "+
 			"read as one the run never reached")
 }
@@ -371,13 +388,13 @@ func TestTheStepListIsAnsweredBetweenStops(t *testing.T) {
 	session, err := flowdebug.New(flowdebug.Options{
 		In:    strings.NewReader("continue\n"),
 		Out:   &console,
-		Steps: []string{"build", "test"},
+		Steps: declared("w", "build", "test"),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 
 	// Before anything runs: the workflow's steps, none of them anywhere.
-	assert.Equal(t, []string{"build", "test"}, idsOf(session.Steps()))
+	assert.Equal(t, []string{"build", "test"}, idsOf(allSteps(session)))
 
 	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, &ranSteps{}))
 	ctx = v1.NewContextWithDebugger(ctx, session)
@@ -394,7 +411,7 @@ func TestTheStepListIsAnsweredBetweenStops(t *testing.T) {
 	assert.ErrorIs(t, scopeErr, flowdebug.ErrNotPaused,
 		"the scope surface answered a session holding no run")
 
-	after := session.Steps()
+	after := allSteps(session)
 	assert.Equal(t, []string{"build", "test"}, idsOf(after))
 	for _, step := range after {
 		assert.Equal(t, flowdebug.StepDone, step.State, "%s", step.ID)

@@ -58,6 +58,21 @@ type Position struct {
 	// Kind is what that step is, in the same words `info` prints.
 	Kind string
 
+	// Workflow names the workflow whose steps are running here, which is what
+	// tells a caller's `build` from a called workflow's `build`.
+	//
+	// The engine's own answer, read at the boundary through
+	// [v1.TaskWorkflowFromContext] — `runCall` moves the runtime position
+	// across a call precisely so that "a consumer of the runtime position
+	// [cannot confuse] equal step ids in two different workflow files"
+	// (`eval.go:1804-1812`), and a debugger is such a consumer.
+	//
+	// Empty where the run carries no runtime position: an embedder driving
+	// [v1.Run] directly, and most tests. A consumer must treat that as "not
+	// said" rather than as a name — see [Session.StepPosition], which refuses
+	// to guess.
+	Workflow string
+
 	// Autopsy reports which of the two prompts is holding: a breakpoint before
 	// a step, or the account of a case that has already failed.
 	Autopsy bool
@@ -78,9 +93,10 @@ func (s *Session) Paused() (Position, bool) {
 	}
 
 	return Position{
-		Step:    subject.step,
-		Kind:    subject.kind,
-		Autopsy: subject.autopsy,
+		Step:     subject.step,
+		Kind:     subject.kind,
+		Workflow: subject.workflow,
+		Autopsy:  subject.autopsy,
 	}, true
 }
 
@@ -399,22 +415,158 @@ func (s StepState) String() string {
 
 // Step is one entry in the run's step list.
 type Step struct {
-	// ID is the step's id, which is the only name a run has for it.
+	// Workflow is the workflow that declares this step. It is what a reader
+	// sees, and it is *not* on its own an identity.
+	//
+	// A callee's step ids belong to the callee and not to its caller
+	// (`eval.go:1804-1812`), so a caller and a called workflow may both
+	// declare `build` — and an inventory of the two flattened together holds
+	// two rows nothing can tell apart. Empty where the caller listing the
+	// steps did not say, and where the list is the ids this session has merely
+	// watched go past.
+	Workflow string
+
+	// Declaration identifies the workflow *instance* this step belongs to.
+	//
+	// A name is not a declaration. One callee invoked from two `call:` steps
+	// appears twice in an inventory under one name, and so do two genuinely
+	// different embedded workflows that happen to share a `name:` — in both
+	// cases the rows are separate declarations whose outcomes belong to
+	// separate invocations, and grouping them by name says the session can
+	// attribute an outcome it cannot.
+	//
+	// The engine's own structure, read statically: `runNodes` descends into a
+	// callee once per `call:` node (`eval.go:1734`), so a walk's descents and
+	// that call's invocations are one-to-one by construction. Numbered rather
+	// than named because the only question ever asked of it is whether two
+	// rows are the same declaration.
+	//
+	// Zero is the root workflow and the value a caller that says nothing
+	// leaves. That is why the grouping key is this *and* [Step.Workflow]: an
+	// inventory built by hand distinguishes its workflows by name, and one
+	// built by a walk distinguishes them here, and neither has to know about
+	// the other.
+	Declaration int
+
+	// Via is the id of the `call:` step that reaches this declaration, empty
+	// at the root.
+	//
+	// For the reader rather than for the grouping: where two rows share a name
+	// *and* an id, the name cannot tell them apart on screen, and the call
+	// step an author wrote is the thing that can.
+	Via string
+
+	// ID is the step's id, which is the only name the *run* has for it: both
+	// [v1.Debugger] and [v1.RunObserver] are handed bare ids.
 	ID string
 
 	// State is what this session last watched it do.
+	//
+	// Ignored on the way in: [Options.Steps] is an inventory of what a run may
+	// reach, and nothing has happened to any of it yet.
 	State StepState
 }
 
-// Steps lists the run's steps and what each has done, in the order an author
-// wrote them.
+// StepList is a window onto the run's step list, with the facts about the whole
+// that a window cannot carry.
 //
-// Two sources, exactly as [Session.reachableSteps] has two and for the same
-// reason: a caller that holds the workflow said so ([Options.Steps]), and that
-// is the list worth drawing — it carries the steps the run has *not* reached,
-// which is most of a step list's value. A caller that does not gets the ids
-// this session has watched go past, in arrival order, which is at least the run
-// so far rather than nothing.
+// A window rather than the list, because the list is the author's file: a
+// workflow may declare thousands of nodes, a pane draws a dozen, and copying
+// every entry at every stop is O(N) allocation per stop and O(N²) across a walk
+// of the run. The shape is offset-and-total deliberately — it is what a pane
+// needs and what slice 2's wire message will need, so a network-attached
+// session answers the same question the same way.
+type StepList struct {
+	// Steps is the window, in the order an author wrote them.
+	Steps []Step
+
+	// Offset is where the window starts in the whole list, after clamping.
+	Offset int
+
+	// Total is how long the whole list is, so an elision can say how much it
+	// elided rather than that it elided some.
+	Total int
+
+	// Unattributed counts the rows whose outcome this session cannot
+	// attribute — see [Session.Steps] on what fails closed and why.
+	Unattributed int
+
+	// Truncated reports that this session stopped recording what it watched,
+	// so a state above may understate what a step actually did.
+	//
+	// The same flag completion reads, rather than a second one: what truncates
+	// is [Session.sawStep]'s one cache, so a second notice would be a second
+	// thing to keep true.
+	Truncated bool
+}
+
+// StepPosition reports where a step sits in the run's step list, and how long
+// that list is.
+//
+// Separate from [Session.Steps] and copying nothing, because a caller windowing
+// the list needs both numbers *before* it can say which slice it wants.
+//
+// The workflow is what disambiguates, and it may be empty. An empty one matches
+// by id alone and is the honest answer for a run whose position carries no
+// workflow ([v1.TaskWorkflowFromContext] reports none) — but where the id it
+// names is declared by more than one workflow, this reports -1 rather than the
+// first match. Pointing at a step the run is not at is the one thing a debugger
+// must never do, and "I cannot tell which" is an answer a renderer can draw.
+func (s *Session) StepPosition(workflow, id string) (index, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	order := s.inventory()
+
+	return positionIn(order, workflow, id), len(order)
+}
+
+// positionIn is the one resolution of "which row is this", shared by
+// [Session.StepPosition] and [Session.Steps].
+//
+// One function because the two were two, and the second was subtly wrong: it
+// marked the held row by comparing the position's workflow *name* to each
+// row's, which marks both rows when one callee is invoked twice — the very
+// defect the name-versus-declaration correction is about, wearing the other
+// hat (Codex, #1186). A single resolver cannot disagree with itself.
+//
+// -1 where no row answers, and -1 where more than one does. The second is the
+// load-bearing one: a boundary is told the callee's *name*
+// ([v1.TaskWorkflowFromContext]) and nothing about which invocation of it is
+// running, so two indistinguishable rows are answered with "cannot tell"
+// rather than with the first. Pointing at a step the run is not at is the one
+// thing a debugger must never do.
+func positionIn(order []Step, workflow, id string) int {
+	if id == "" {
+		return -1
+	}
+
+	index := -1
+	for i, step := range order {
+		if step.ID != id {
+			continue
+		}
+		if workflow != "" && step.Workflow != "" && step.Workflow != workflow {
+			continue
+		}
+		if index >= 0 {
+			return -1
+		}
+		index = i
+	}
+
+	return index
+}
+
+// Steps returns at most limit entries of the run's step list, starting at
+// offset, and what each has done.
+//
+// Two sources for the list itself, exactly as [Session.reachableSteps] has two
+// and for the same reason: a caller that holds the workflow said so
+// ([Options.Steps]), and that is the list worth drawing — it carries the steps
+// the run has *not* reached, which is most of a step list's value. A caller
+// that does not gets the ids this session has watched go past, in arrival
+// order, which is at least the run so far rather than nothing.
 //
 // Not gated on the session being paused, unlike [Session.Scope] and
 // [Session.Evaluate]. Those answer against a scope that only exists while a run
@@ -422,41 +574,103 @@ type Step struct {
 // which are as true between stops as at one. A pane that could only be drawn at
 // a pause would be a pane that vanished the moment somebody typed `continue`.
 //
-// Complete, and bounded by nothing — [MaxScopeNames]'s reasoning one type over.
-// The ids come from a list the caller already holds a whole workflow's worth
-// of, so returning all of them costs nothing new, and a renderer that wants
-// twenty rows is the one that knows it has twenty rows. What is bounded is the
-// *drawing*, in whichever renderer is doing it.
-func (s *Session) Steps() []Step {
+// # An outcome nothing can attribute is not attributed
+//
+// Outcomes arrive through [v1.RunObserver] as bare ids, so where two workflows
+// in this inventory both declare `build`, a `StepFinished("build")` names
+// neither of them. The rows for such an id therefore report [StepPending] — the
+// state meaning this session has watched nothing happen here — rather than one
+// workflow's outcome painted onto the other's row, and [StepList.Unattributed]
+// counts them so a renderer can say so. Fail closed: under-claiming is a gap a
+// reader can see, and mis-claiming is a debugger pointing at the wrong step.
+//
+// The one exception is the step the run is *held* at, which the position names
+// exactly when it carries a workflow — that row reads [StepRunning], because
+// there the session does know.
+func (s *Session) Steps(offset, limit int) StepList {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	order := s.steps
-	if len(order) == 0 {
-		order = s.seenOrder
+	order := s.inventory()
+
+	list := StepList{
+		Total:     len(order),
+		Truncated: s.seenShort,
 	}
 
-	steps := make([]Step, 0, len(order))
-	for _, id := range order {
+	// Counted in [New] rather than here: it is a property of an inventory that
+	// does not change, and recomputing it per call would put the O(N) pass
+	// back that the window exists to remove.
+	list.Unattributed = s.sharedCount
+
+	// Where the run is, resolved once and by index. The earlier draft compared
+	// the position's workflow name against each row's, which marks *both* rows
+	// when one callee is invoked from two call sites — see [positionIn].
+	held := -1
+	if at := s.at; at.scope != nil && !at.autopsy {
+		held = positionIn(order, at.workflow, at.step)
+	}
+
+	offset = max(0, min(offset, len(order)))
+
+	// The end is measured from what is *left* rather than from offset+limit,
+	// which overflows: this API is shaped for a caller that does not exist yet
+	// (slice 2's wire client), so the limit is untrusted, and `Steps(1,
+	// math.MaxInt)` wraps that sum negative — a negative end slices backwards
+	// and makes a negative capacity, both of which are a panic rather than a
+	// refusal. Saturating here means every limit past the end is the same
+	// answer as a limit exactly at it (Codex, #1186).
+	end := len(order)
+	if limit >= 0 {
+		end = offset + min(limit, len(order)-offset)
+	}
+	list.Offset = offset
+
+	list.Steps = make([]Step, 0, end-offset)
+	for i, step := range order[offset:end] {
 		// A declared id the session has watched nothing do is StepPending, the
 		// zero value — which is the answer, not a gap.
-		steps = append(steps, Step{ID: id, State: s.seen[id]})
+		step.State = s.seen[step.ID]
+
+		if s.ambiguous(step.ID) {
+			step.State = StepPending
+			if offset+i == held {
+				// The one row an ambiguous id can still be said something
+				// about: the position named exactly this row, so the run is
+				// here whatever the outcomes cannot say.
+				step.State = StepRunning
+			}
+		}
+
+		list.Steps = append(list.Steps, step)
 	}
 
-	return steps
+	return list
 }
 
-// StepsTruncated reports that this session stopped recording what it watched,
-// so a state in [Session.Steps] may understate what a step actually did.
+// inventory is the list [Session.Steps] and [Session.StepPosition] read, held
+// under s.mu by both.
 //
-// The same flag completion reads, rather than a second one: what truncates is
-// [Session.sawStep]'s one cache, so a second notice would be a second thing to
-// keep true. Named to rhyme with [Session.ScriptTruncated], which is this
-// package's existing spelling for "here is a list, and here is whether it is
-// the whole list".
-func (s *Session) StepsTruncated() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// The caller's own list where there is one, and the ids this session watched go
+// past otherwise. The second carries no workflow — nothing that reaches
+// [Session.sawStep] knows one — which is why [Session.ambiguous] can only ever
+// fire on the first.
+func (s *Session) inventory() []Step {
+	if len(s.steps) > 0 {
+		return s.steps
+	}
 
-	return s.seenShort
+	return s.seenOrder
+}
+
+// ambiguous reports that more than one workflow in this session's inventory
+// declares id, so an outcome naming it names neither.
+//
+// Read off a set computed once in [New], because the inventory is a caller's
+// answer and does not change: rebuilding it per call would put an O(N) map
+// where the point of the window is to keep a stop off O(N).
+func (s *Session) ambiguous(id string) bool {
+	_, shared := s.sharedIDs[id]
+
+	return shared
 }

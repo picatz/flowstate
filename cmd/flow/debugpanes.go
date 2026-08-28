@@ -131,12 +131,14 @@ func (p *debugPanes) paint() {
 		return
 	}
 
-	frame, paused := debugpane.Snapshot(p.ctx, session)
+	layout := p.layout()
+
+	frame, paused := debugpane.Snapshot(p.ctx, session, layout)
 	if !paused {
 		return
 	}
 
-	if text := debugpane.Render(frame, p.theme, p.symbols, p.layout()); text != "" {
+	if text := debugpane.Render(frame, p.theme, p.symbols, layout); text != "" {
 		_, _ = io.WriteString(p.out, text)
 	}
 }

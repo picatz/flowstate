@@ -270,7 +270,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			// This command holds the specification, so `break` and `until`
 			// complete over every step the run may reach rather than only the
 			// ones it has been to.
-			Steps: stepIDs(workflow),
+			Steps: stepList(workflow),
 		})
 		if err != nil {
 			return err
