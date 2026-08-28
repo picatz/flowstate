@@ -148,15 +148,17 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 // is what a debug adapter's `scopes` request wants before anyone has expanded a
 // pane; a negative limit asks for as many as this producer will do.
 //
-// It is a *request* rather than an instruction, and [MaxScopeEvaluations] is
-// the ceiling: an evaluation is bounded by cost and a set of them was bounded
-// by nothing, so a caller asking for every name in a scope a workload chose the
-// size of could buy unbounded work with one message (Codex, #1194). Asking for
-// more than the ceiling is the same answer as asking for exactly it.
+// It is a *request* rather than an instruction, and [MaxScopeBindings] is the
+// ceiling: an evaluation is bounded by cost, a set of them was bounded by
+// nothing, and the bindings carrying them were bounded by nothing either — so a
+// caller asking for every name in a scope whose size a *workload* chose could
+// buy unbounded work and an unbounded message (Codex, #1194). Asking for more
+// than the ceiling is the same answer as asking for exactly it.
 //
-// Every group keeps its total whatever the budget does, so a group entirely
-// past it arrives with no bindings rather than vanishing: that the group exists
-// is part of the answer to what kind of name a run can reach.
+// Every group keeps its total whatever the budget or the ceiling does, so a
+// group entirely past either arrives with no bindings rather than vanishing:
+// that the group exists is part of the answer to what kind of name a run can
+// reach, and the totals are what make an elision honest.
 //
 // Every value goes through [Session.Evaluate], which is the redacting door, and
 // a failed evaluation becomes the binding's error rather than dropping the
@@ -186,32 +188,63 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 
 	scope := &v1.DebugScope{Groups: make([]*v1.DebugScopeGroup, 0, len(groups))}
 
-	// The caller's request, held to the producer's ceiling. A negative limit is
-	// "as many as you will do" rather than "all", which is the whole of the
-	// difference between a budget and an instruction.
-	budget := MaxScopeEvaluations
+	// The caller's request. A negative limit is "as many as you carry" rather
+	// than "all", which is the whole of the difference between a budget and an
+	// instruction.
+	//
+	// Not clamped to [MaxScopeBindings], deliberately, and the first draft did
+	// clamp it: a value can only be resolved for a binding that was carried, so
+	// the ceiling below already holds `resolved <= carried <= MaxScopeBindings`
+	// and a `min` here is a second bound that cannot fire. A mutation deleting
+	// it survived, which is how it was found — two bounds that must agree, where
+	// one already decides.
+	budget := MaxScopeBindings
 	if limit >= 0 {
-		budget = min(limit, MaxScopeEvaluations)
+		budget = limit
 	}
 
-	resolved := 0
+	carried, resolved := 0, 0
 	for _, group := range groups {
 		out := &v1.DebugScopeGroup{
-			Group:    group.Group,
-			Root:     group.Root,
-			Bindings: make([]*v1.DebugBinding, 0, len(group.Names)),
+			Group: group.Group,
+			Root:  group.Root,
+			// Capped as well as counted: a group of a hundred thousand names
+			// would otherwise reserve a hundred thousand pointers before a
+			// single one of them was refused.
+			//
+			// A named survivor. A capacity is not observable — the slice holds
+			// the same bindings either way — so deleting the `min` fails
+			// nothing, and no honest test can be written for it. What it buys
+			// is that the reservation is bounded by this answer's ceiling
+			// rather than by a number the workload chose, which is the same
+			// shape as a chunk size that bounds allocation rather than count.
+			// Written down rather than left as coverage nobody can account for
+			// (CLAUDE.md).
+			Bindings: make([]*v1.DebugBinding, 0, min(len(group.Names), MaxScopeBindings)),
 			Total:    int32(len(group.Names)),
 		}
 		scope.Total += int32(len(group.Names))
 
 		for _, name := range group.Names {
+			// The ceiling is on what is *carried*, and the evaluations follow
+			// from it: a value can only be resolved for a binding that exists.
+			// Capping the evaluations alone still built a binding and an
+			// expression string per name, so the allocation and the response
+			// size stayed bounded by nothing (Codex, #1194).
+			//
+			// Counting continues past it, which is what keeps the totals above
+			// honest — an elision that reported the bound back as the size of
+			// the scope would say the run can reach fewer names than it can.
+			if carried >= MaxScopeBindings {
+				continue
+			}
+			carried++
+
 			binding := &v1.DebugBinding{Name: name, Expression: expressionFor(group.Root, name)}
 			out.Bindings = append(out.Bindings, binding)
 
 			if resolved >= budget {
-				// Counted past the budget by [DebugScopeGroup.total] above,
-				// deliberately: the total is what makes an elision honest, and
-				// a name whose value nobody asked for is still a name the run
+				// A name whose value nobody asked for is still a name the run
 				// can reach. The binding's answer stays unset, which is the
 				// oneof's third state and means exactly this.
 				continue

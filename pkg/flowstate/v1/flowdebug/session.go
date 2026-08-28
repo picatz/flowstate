@@ -91,18 +91,28 @@ const (
 	// bounded and prefix-filtered for exactly this.
 	MaxScopeNames = 20
 
-	// MaxScopeEvaluations bounds how many values one [Session.ScopeProto]
-	// answer resolves, whatever its caller asked for.
+	// MaxScopeBindings bounds how many names one [Session.ScopeProto] answer
+	// carries, and therefore how many values it resolves, whatever its caller
+	// asked for.
 	//
-	// A caller's budget is a *request* and this is the producer's ceiling, and
-	// they are different things for the reason CLAUDE.md gives: bounding one
-	// resource does not bound another the peer controls the ratio to.
-	// [v1.DefaultCostLimit] bounds a single evaluation, and nothing bounded how
-	// many of them one answer performs — a workload can name a great many
-	// bindings, and a negative limit asked for all of them, so a remote adapter
-	// could buy an unbounded amount of compilation and evaluation with one
-	// message (Codex, #1194). Cost per evaluation and evaluations per answer
-	// are two resources.
+	// A caller's budget is a *request* and this is the producer's ceiling. They
+	// are different things for the reason CLAUDE.md gives twice over, because
+	// this bound was arrived at in two steps and each step is the same lesson:
+	// bounding one resource does not bound another the peer controls the ratio
+	// to.
+	//
+	// First, [v1.DefaultCostLimit] bounds a single evaluation and nothing
+	// bounded how many of them one answer performs — a workload chooses how
+	// many names a scope holds, and a negative limit asked for all of them, so
+	// a caller could buy unbounded compilation with one message. Then, capping
+	// the *evaluations* still left a message materializing a binding and an
+	// expression string per name, so the CPU, the allocation and the response
+	// size were bounded by nothing an evaluation ceiling could see (Codex,
+	// #1194, twice).
+	//
+	// So the ceiling is on the bindings, and the evaluations follow: a value
+	// can only be resolved for a binding that was carried, so one number bounds
+	// both rather than two numbers that have to be kept in agreement.
 	//
 	// 500 rather than something smaller because a producer ceiling narrower
 	// than what a front legitimately asks for would quietly hand it less than
@@ -114,7 +124,7 @@ const (
 	// the run can reach, so an elision says how much it elided rather than
 	// reporting the bound back as the scope's size — the same distinction
 	// [MaxScopeNames] draws for a line somebody reads.
-	MaxScopeEvaluations = 500
+	MaxScopeBindings = 500
 )
 
 // Tone classifies one fragment of session output, so a terminal can colour

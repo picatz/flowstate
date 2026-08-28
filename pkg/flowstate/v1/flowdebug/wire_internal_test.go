@@ -372,20 +372,21 @@ func TestAScopeMessageDescribesOneStop(t *testing.T) {
 		"%d of 20 scope messages carried values from two different pauses, so one message described two stops", mixed)
 }
 
-// TestTheProducerCapsHowMuchOneScopeAnswerEvaluates is the bound on the
-// resource a caller's budget does not bound.
+// TestTheProducerCapsWhatOneScopeAnswerCarries is the bound on the resources a
+// caller's budget does not bound, both of them.
 //
 // [v1.DefaultCostLimit] bounds one evaluation; nothing bounded how many one
 // answer performs, and a workload chooses how many names a scope holds — so a
-// caller asking for all of them bought unbounded compilation and evaluation
-// with one message (Codex, #1194). The ceiling is the producer's and the budget
-// is the caller's, and asking for more than the ceiling is the same answer as
-// asking for exactly it.
-func TestTheProducerCapsHowMuchOneScopeAnswerEvaluates(t *testing.T) {
+// caller asking for all of them bought unbounded compilation. Capping the
+// evaluations then left a binding and an expression string built per name, so
+// the allocation and the response size were still bounded by nothing (Codex,
+// #1194, twice). The ceiling is therefore on what is *carried*, and the
+// evaluations follow from it.
+func TestTheProducerCapsWhatOneScopeAnswerCarries(t *testing.T) {
 	t.Parallel()
 
 	// Comfortably past the ceiling, so the clamp is what decides the answer.
-	const names = MaxScopeEvaluations + 137
+	const names = MaxScopeBindings + 137
 
 	session, err := New(Options{Out: &strings.Builder{}})
 	require.NoError(t, err)
@@ -401,7 +402,7 @@ func TestTheProducerCapsHowMuchOneScopeAnswerEvaluates(t *testing.T) {
 	for _, group := range session.scopeNames(taggedScope("A", names), nil) {
 		reachable += len(group.Names)
 	}
-	require.Greater(t, reachable, MaxScopeEvaluations,
+	require.Greater(t, reachable, MaxScopeBindings,
 		"the fixture holds fewer names than the ceiling, so the clamp below is never reached")
 
 	for _, tc := range []struct {
@@ -428,14 +429,17 @@ func TestTheProducerCapsHowMuchOneScopeAnswerEvaluates(t *testing.T) {
 				}
 			}
 
-			assert.Equal(t, MaxScopeEvaluations, resolved,
+			assert.Equal(t, MaxScopeBindings, resolved,
 				"one answer evaluated %d values, which is not the producer's ceiling", resolved)
+
+			// And the bindings themselves are capped, not merely their values:
+			// this is the half an evaluation ceiling could not see.
+			assert.Equal(t, MaxScopeBindings, listed,
+				"one answer carried %d bindings, so the allocation and the response size are bounded by nothing", listed)
 
 			// The totals are untouched by the ceiling, which is what keeps an
 			// elision honest: a total that reported the bound back would say
 			// the run can reach fewer names than it can.
-			assert.Equal(t, reachable, listed,
-				"the ceiling dropped names rather than leaving their values unresolved")
 			assert.Equal(t, int32(reachable), message.GetTotal(),
 				"the ceiling was reported back as the size of the scope")
 		})
@@ -446,13 +450,37 @@ func TestTheProducerCapsHowMuchOneScopeAnswerEvaluates(t *testing.T) {
 	fewer, err := session.ScopeProto(t.Context(), 3)
 	require.NoError(t, err)
 
-	resolved := 0
+	resolved, listed := 0, 0
 	for _, group := range fewer.GetGroups() {
 		for _, binding := range group.GetBindings() {
+			listed++
 			if binding.GetAnswer() != nil {
 				resolved++
 			}
 		}
 	}
 	assert.Equal(t, 3, resolved, "a caller's smaller budget was overridden by the producer's ceiling")
+
+	// A small budget bounds the *values* and the ceiling still bounds the
+	// names, so the two stay different questions: a `scopes` request asking for
+	// no values still lists what it can.
+	assert.Equal(t, MaxScopeBindings, listed,
+		"a small budget cut the names as well as the values")
+
+	// And the names-only mode is bounded too, which is the case an evaluation
+	// ceiling could not reach at all.
+	bare, err := session.ScopeProto(t.Context(), 0)
+	require.NoError(t, err)
+
+	listed = 0
+	for _, group := range bare.GetGroups() {
+		listed += len(group.GetBindings())
+		for _, binding := range group.GetBindings() {
+			require.Nil(t, binding.GetAnswer(), "a zero budget resolved a value anyway")
+		}
+	}
+	assert.Equal(t, MaxScopeBindings, listed,
+		"a zero budget carried %d bindings, so asking for no values still built one per name", listed)
+	assert.Equal(t, int32(reachable), bare.GetTotal(),
+		"the names-only answer reported the ceiling back as the size of the scope")
 }
