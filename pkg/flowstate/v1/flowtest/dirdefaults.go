@@ -47,7 +47,9 @@ type dirDefaults struct {
 	// path is the file this was read from, kept so a diagnostic about a value
 	// the fold below contributed can name the document that holds it rather
 	// than the suite that inherited it. Unexported, so the strict decode never
-	// sees a key for it.
+	// sees a key for it, and read only through [contribution.file] — the fold
+	// answers "which document" for the whole of its work at once, so nothing
+	// downstream has to ask a possibly-nil directory the same question twice.
 	path string
 }
 
@@ -72,17 +74,6 @@ type DirDefaultsError struct {
 
 	// Err is what went wrong with it: unreadable, over a bound, or invalid.
 	Err error
-}
-
-// sourcePath is the file a directory's defaults were read from, or empty when
-// the directory stated none. Nil-safe, because a suite with no sibling file
-// asks the same question.
-func (dd *dirDefaults) sourcePath() string {
-	if dd == nil {
-		return ""
-	}
-
-	return dd.path
 }
 
 func (e *DirDefaultsError) Error() string { return e.Path + ": " + e.Err.Error() }
@@ -119,6 +110,57 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 	return &dd, nil
 }
 
+// A contribution is what one directory fold moved into a suite, in the shapes a
+// diagnostic needs to name the document a value was written in.
+//
+// Two mechanisms, and which one a field gets is decided by whether the fold
+// moves its value *unchanged*. `fold_internal_test.go` holds the classification
+// for every field either struct has, and a walk that fails when a field exists
+// the table does not classify — so the next field added to a `defaults:` block
+// is classified before it can quietly take the wrong one.
+type contribution struct {
+	// file is the document the directory's values were written in, empty when
+	// the directory stated none.
+	file string
+
+	// paths are the values the fold moved unchanged, addressable in file at the
+	// very path they have here. [problems.wrote] takes these, and a problem at
+	// or under one of them is attributed to file and left unpositioned.
+	paths []loc
+
+	// ownChecks and ownStubs are how many claims and stubs the *suite's* own
+	// `defaults:` block wrote, counted before the fold. After it, index i of
+	// `defaults.check` is no longer entry i of the suite's list — the
+	// directory's claims are prepended — and any index at or past ownStubs
+	// addresses a stub the directory wrote, since its stubs are appended.
+	ownChecks int
+	ownStubs  int
+
+	// stubSource is the index each appended stub has in the directory's own
+	// list, which is the one fact no path can carry: the fold both renumbers
+	// them and drops the ones the suite already targets, so entry ownStubs+k of
+	// the combined list is neither entry k nor entry ownStubs+k of file.
+	stubSource []int
+}
+
+// stubWrittenElsewhere answers whether stub i of the combined `defaults.stubs`
+// was appended from the directory's file, and the index that file writes it at.
+//
+// A function rather than an expression at the two report sites, because the
+// suite's own stubs and the directory's agree about index i whenever the suite
+// wrote none — so a check written inline against real data is one no fixture can
+// drive (CLAUDE.md, "assert where the answers differ").
+func (c contribution) stubWrittenElsewhere(i int) (int, bool) {
+	if c.file == "" || i < c.ownStubs {
+		return i, false
+	}
+	if k := i - c.ownStubs; k < len(c.stubSource) {
+		return c.stubSource[k], true
+	}
+
+	return i, false
+}
+
 // combineInto folds the directory's contribution into a parsed suite, before
 // vars resolve and before anything validates — so a directory-stated
 // `${vars.x}` resolves against the combined vars exactly once, and every
@@ -136,6 +178,12 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 // one of them to [DirDefaultsName] instead, and declines to look for a position
 // it could only find by accident.
 //
+// A path answers "which document wrote this" only where the fold moves the value
+// unchanged. Where it **renumbers** — `check:` prepends, `stubs:` appends — no
+// path is recorded at all, because one string would name an entry in each
+// document at once; the check that knows is told the file and the source index
+// instead. See [contribution].
+//
 // A collection the suite states *no part of* is recorded as the collection
 // itself rather than entry by entry, because a refusal about the collection —
 // a bound on how many entries it may hold — reports at the collection's own
@@ -145,10 +193,18 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 // into a collection, its entries are recorded one by one and its *size* stays
 // the suite's: the overrun is a joint property, and the suite is the document
 // that can stop inheriting.
-func (dd *dirDefaults) combineInto(file *File) []loc {
-	if dd == nil {
-		return nil
+func (dd *dirDefaults) combineInto(file *File) contribution {
+	// Counted here rather than by the caller, so the count and the fold that
+	// invalidates it cannot come to be done in two places that disagree.
+	moved := contribution{}
+	if file.Defaults != nil {
+		moved.ownChecks = len(file.Defaults.Check)
+		moved.ownStubs = len(file.Defaults.Stubs)
 	}
+	if dd == nil {
+		return moved
+	}
+	moved.file = dd.path
 
 	var contributed []loc
 	if len(dd.Vars) > 0 {
@@ -169,7 +225,9 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 
 	outer := dd.Defaults
 	if outer == nil {
-		return contributed
+		moved.paths = contributed
+
+		return moved
 	}
 
 	base := at("defaults")
@@ -183,7 +241,16 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 		copied.Check = append([]CheckClaim(nil), outer.Check...)
 		file.Defaults = &copied
 
-		return append(contributed, base)
+		// Every stub here is the directory's, at the index it has there —
+		// recorded even though it is the identity, so the one rule that decides
+		// a stub's provenance is the same rule in both directions.
+		moved.stubSource = make([]int, len(copied.Stubs))
+		for i := range moved.stubSource {
+			moved.stubSource[i] = i
+		}
+		moved.paths = append(contributed, base)
+
+		return moved
 	}
 
 	inner := file.Defaults
@@ -219,15 +286,22 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 		combined := append([]Stub(nil), inner.Stubs...)
 		for i := range outer.Stubs {
 			if !taken[stubTargetKey(&outer.Stubs[i])] {
-				if !wholly {
-					// Appended, so the directory's stubs occupy the indices
-					// past the ones this suite wrote.
-					contributed = append(contributed, base.field("stubs").item(len(combined)))
-				}
+				// No `defaults.stubs[i]` path is recorded for these,
+				// deliberately, and for the reason no `defaults.check[i]` one
+				// is: the fold *appends* them, so the index they land on is
+				// the suite's numbering rather than the directory's, and a
+				// diagnostic attributed by that path sent a reader to an entry
+				// the named file does not have (Codex, #1185). The index the
+				// directory writes it at travels instead, to the check that
+				// reports it.
+				moved.stubSource = append(moved.stubSource, i)
 				combined = append(combined, outer.Stubs[i])
 			}
 		}
 		if wholly {
+			// The collection itself, for the refusal that is about the
+			// collection: its bound. Sound because the suite states no part of
+			// it, so no entry under this path is the suite's.
 			contributed = append(contributed, base.field("stubs"))
 		}
 		inner.Stubs = combined
@@ -248,6 +322,7 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 		// it has and a string cannot carry.
 		inner.Check = append(append([]CheckClaim(nil), outer.Check...), inner.Check...)
 	}
+	moved.paths = contributed
 
-	return contributed
+	return moved
 }
