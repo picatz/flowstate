@@ -176,7 +176,7 @@ func TestTheWorkerTakesThePluginFlags(t *testing.T) {
 		}
 		require.NotNil(t, cmd, "there is no %s command", command)
 
-		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
+		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins"} {
 			assert.NotNil(t, cmd.Flags().Lookup(name),
 				"`flow %s` does not take --%s, so a deployment cannot configure it", command, name)
 		}
@@ -203,7 +203,7 @@ func TestTheLanguageServerTakesThePluginFlags(t *testing.T) {
 	}
 	require.NotNil(t, cmd, "there is no lsp command")
 
-	for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
+	for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins"} {
 		assert.NotNil(t, cmd.Flags().Lookup(name),
 			"`flow lsp` does not take --%s, so an author cannot tell their editor "+
 				"about a plugin their worker runs", name)

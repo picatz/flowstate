@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,6 +43,11 @@ import (
 // variable into the image rather than into every command line.
 const pluginSearchPathEnv = "FLOWSTATE_PLUGIN_DIR"
 
+// pluginPinsEnv names a pins file the same way --plugin-pins does, mirroring
+// [taskPolicyEnv] for a container image that bakes configuration into the
+// environment rather than into every command line.
+const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
+
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
@@ -59,6 +66,13 @@ type pluginFlags struct {
 	// legitimate use — a container image whose whole filesystem is 0777 and whose
 	// only user is root — and no other one.
 	allowInsecureDirs bool
+
+	// pinnedDigests feeds [plugin.Config.PinnedDigests] directly: for the names
+	// it holds, the digest the binary answering to that name must have. Built
+	// by [pluginFlagsOf] from --plugin-pins and --plugin-pin together; see
+	// those flags' help for the merge and #1010 for why this surface exists at
+	// all.
+	pinnedDigests map[string]string
 }
 
 // pluginFlagsOf reads them off the command being run.
@@ -72,6 +86,8 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	only, _ := cmd.Flags().GetStringArray("plugin")
 	schemes, _ := cmd.Flags().GetStringArray("plugin-scheme")
 	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
+	pinFlags, _ := cmd.Flags().GetStringArray("plugin-pin")
+	pinsFile, _ := cmd.Flags().GetString("plugin-pins")
 
 	// The $FLOWSTATE_PLUGIN_DIR fallback is bound at registration time, in
 	// addPluginFlags, as the flag's own default — not here — so that the
@@ -89,7 +105,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	// --plugin-catalog rather than refusing the run.
 	if pluginCatalogPath(cmd) != "" {
 		var named []string
-		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
+		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins"} {
 			if cmd.Flags().Changed(name) {
 				named = append(named, "--"+name)
 			}
@@ -178,12 +194,118 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 			strings.Join(only, ", "), remedy))
 	}
 
+	pins, err := pluginPinsOf(pinsFile, pinFlags)
+	if err != nil {
+		return pluginFlags{}, err
+	}
+
+	// A digest pin with nowhere to look is refused for the identical reason a
+	// --plugin pin is, just above: the host that would enforce it never opens,
+	// since [pluginFlags.configured] never sees a directory. Silently launching
+	// nothing is the "believes it is pinned and is not" state #1010 exists to
+	// close.
+	if len(absolute) == 0 && len(pins) > 0 {
+		remedy := "pass --plugin-dir <directory> as well, or set $" + pluginSearchPathEnv
+		if editorOnly {
+			remedy = "pass --plugin-dir <absolute directory> as well"
+		}
+
+		return pluginFlags{}, newUsageError(fmt.Errorf(
+			"a plugin pin names a plugin that must launch, and there is nowhere to look for it: "+
+				"%s. A pinned plugin is never quietly skipped", remedy))
+	}
+
+	// A pin naming a plugin --plugin does not admit can never be checked,
+	// because [Config.Only] refuses the name before [Config.PinnedDigests] is
+	// ever consulted — so a pin here reads as protecting a plugin that this
+	// same command line already excludes. Refusing it at startup beats an
+	// operator believing a name is digest-pinned when it can never launch to
+	// be checked.
+	if len(only) > 0 {
+		permitted := make(map[string]bool, len(only))
+		for _, name := range only {
+			permitted[name] = true
+		}
+
+		for _, name := range slices.Sorted(maps.Keys(pins)) {
+			if !permitted[name] {
+				return pluginFlags{}, newUsageError(fmt.Errorf(
+					"a plugin pin names %q, which --plugin does not admit: %q can never launch to "+
+						"be checked against its pin. Add it to --plugin or remove its pin",
+					name, name))
+			}
+		}
+	}
+
 	return pluginFlags{
 		dirs:              absolute,
 		only:              only,
 		schemes:           schemes,
 		allowInsecureDirs: allowInsecure,
+		pinnedDigests:     pins,
 	}, nil
+}
+
+// pluginPinsOf builds [Config.PinnedDigests] from a pins file and repeatable
+// --plugin-pin entries together.
+//
+// The file, when given, is the base; --plugin-pin extends it, for pinning one
+// plugin without maintaining a file. A name given by both, or given twice on
+// the command line, is refused rather than resolved by which source ran last:
+// the effective pin would otherwise depend on an order nothing about the
+// command line states, which is the same "one value written down twice"
+// hazard CLAUDE.md already catalogues, arriving through two flags instead of
+// two code paths.
+func pluginPinsOf(pinsFile string, pinFlags []string) (map[string]string, error) {
+	var base map[string]string
+	if pinsFile != "" {
+		data, err := os.ReadFile(pinsFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading plugin pins %s: %w", pinsFile, err)
+		}
+
+		cfg, err := plugin.ParsePinsConfig(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing plugin pins %s: %w", pinsFile, err)
+		}
+
+		base = cfg.Pins
+	}
+
+	if len(base) == 0 && len(pinFlags) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[string]string, len(base)+len(pinFlags))
+	for name, digest := range base {
+		out[name] = digest
+	}
+
+	for _, entry := range pinFlags {
+		name, digest, found := strings.Cut(entry, "=")
+		if !found {
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-pin %q is not of the form name=sha256:hex", entry))
+		}
+
+		if existing, ok := out[name]; ok {
+			if _, fromFile := base[name]; !fromFile || pinsFile == "" {
+				return nil, newUsageError(fmt.Errorf(
+					"--plugin-pin names %q more than once (%s and %s). A name pinned twice is "+
+						"ambiguous even when the two digests agree — remove one",
+					name, existing, digest))
+			}
+
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-pins and --plugin-pin both pin %q (%s and %s). A name pinned twice is "+
+					"ambiguous even when the two digests agree — remove one",
+				name, existing, digest))
+		}
+
+		out[name] = digest
+	}
+
+	return out, nil
 }
 
 // ambientPluginSearchPath is what the environment says the search path is,
@@ -232,6 +354,7 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		SearchPath:              f.dirs,
 		AllowInsecureSearchPath: f.allowInsecureDirs,
 		Only:                    f.only,
+		PinnedDigests:           f.pinnedDigests,
 		PermittedSchemes:        f.schemes,
 		HostVersion:             version,
 		Logger:                  logger,
@@ -259,6 +382,15 @@ func addPluginFlags(cmd *cobra.Command) {
 		"secret reference scheme a plugin may claim, repeatable (default: any)")
 	cmd.Flags().Bool("allow-insecure-plugin-dir", false,
 		"permit a plugin directory other users can write to, which lets them choose what this worker runs")
+	cmd.Flags().StringArray("plugin-pin", nil,
+		"pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary "+
+			"answering to that name must match it or is refused before it runs. A name with no "+
+			"pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning "+
+			"is adopted one plugin at a time, not all at once")
+	cmd.Flags().String("plugin-pins", os.Getenv(pluginPinsEnv),
+		"path to a YAML pins file (default $"+pluginPinsEnv+"), the file form of --plugin-pin "+
+			"for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; "+
+			"merged with any --plugin-pin, and a name given by both is refused")
 }
 
 // pluginTrustAnnotation marks a command that does not trust its surroundings to
@@ -285,8 +417,8 @@ func commandLinePluginsOnly(cmd *cobra.Command) bool {
 	return cmd.Annotations[pluginTrustAnnotation] == pluginTrustCommandLineOnly
 }
 
-// addEditorPluginFlags declares the same four flags [addPluginFlags] does, then
-// narrows the two things an editor process may not let its surroundings decide.
+// addEditorPluginFlags declares the same flags [addPluginFlags] does, then
+// narrows the things an editor process may not let its surroundings decide.
 //
 // A narrowing on top of the one registration rather than a second reader beside
 // it: `flow lsp` still takes exactly the flags `flow worker` takes, still
@@ -298,9 +430,10 @@ func commandLinePluginsOnly(cmd *cobra.Command) bool {
 //
 // What is narrowed:
 //
-//   - The environment is not bound as the search path's default. An editor
-//     hands the language server whatever environment the desktop session has,
-//     which is not a command line a person wrote for this process.
+//   - The environment is not bound as the search path's default, nor as the
+//     pins-file default. An editor hands the language server whatever
+//     environment the desktop session has, which is not a command line a
+//     person wrote for this process.
 //   - A relative --plugin-dir is refused rather than resolved, in
 //     [pluginFlagsOf], because the working directory an editor starts a
 //     language server in is the opened workspace.
@@ -327,6 +460,16 @@ func addEditorPluginFlags(cmd *cobra.Command) {
 
 	dir.Usage = "absolute directory to discover plugins in, repeatable, in precedence order; " +
 		"a relative path is refused and $" + pluginSearchPathEnv + " is not read, because an " +
+		"editor starts this process in the workspace"
+
+	// $FLOWSTATE_PLUGIN_PINS is ambient configuration exactly as $FLOWSTATE_PLUGIN_DIR
+	// is, and the same claim applies: the desktop session's environment is not a
+	// command line a person wrote for this process, so it is not read as a
+	// pins-file default here either.
+	pins := cmd.Flags().Lookup("plugin-pins")
+	_ = pins.Value.Set("")
+	pins.DefValue = pins.Value.String()
+	pins.Usage = "path to a YAML pins file; $" + pluginPinsEnv + " is not read, because an " +
 		"editor starts this process in the workspace"
 }
 

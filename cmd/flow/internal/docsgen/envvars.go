@@ -196,6 +196,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
+			name:    "FLOWSTATE_PLUGIN_PINS",
+			value:   "unset",
+			purpose: "Default for `--plugin-pins`: a YAML file mapping plugin names to the digest the binary answering to each must have, merged with any --plugin-pin (#1010). Unset means no pins file; a deployment with neither this nor --plugin-pin configures no digest pins, and every plugin name launches exactly as it always has.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
 			name:    "FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS",
 			value:   "unset",
 			purpose: "Handshake: the protocol versions the host offers. Set by the host on the child process.",
