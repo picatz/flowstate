@@ -379,23 +379,84 @@ func (c Config) Enabled() bool { return !IsNull(c.codec()) }
 // Name is what a startup line and a diagnostic should say.
 func (c Config) Name() string { return c.codec().Name() }
 
+// serializer is the composite payload converter every flowstate process
+// serializes with, and the one place the ProtoJSON-versus-binary question is
+// answered (#911).
+//
+// # What differs from the SDK default, and why
+//
+// The list is the SDK's own (go.temporal.io/sdk@v1.47.0
+// converter/default_data_converter.go:5-17) with exactly one change: the binary
+// [converter.NewProtoPayloadConverter] is registered *ahead of*
+// [converter.NewProtoJSONPayloadConverter] rather than behind it.
+//
+// The SDK's comment on that pair explains why the order is the whole decision:
+// both converters match the same `proto.Message` interface, and
+// [converter.CompositeDataConverter.ToPayload] walks its converters in
+// registration order and takes the first one that returns a non-nil payload
+// (composite_data_converter.go:80-99). Flowstate hands this converter nothing
+// but proto messages — every RunState, every completed run's
+// Workflow_StepOutputs, every activity argument and result — so on the SDK's
+// order every one of them was stored as ProtoJSON, which runs 1.03x to 1.32x of
+// the binary encoding on real transcripts, against a blob budget
+// [v1.MaxRunStateBytes] argues can never be raised. The tax is worst on many
+// small map entries, which is the shape a run with many steps produces.
+//
+// # Why this is a two-way door
+//
+// Decoding does not consult the order at all.
+// [converter.CompositeDataConverter.FromPayload] reads the payload's own
+// `encoding` metadata and looks the converter up in a map keyed by encoding
+// (composite_data_converter.go:101-125), so a history holding both encodings
+// decodes fine and a run written by an older worker keeps replaying. That is
+// true only while *both* converters stay registered: this is a reorder, and
+// must never become a replace. A chain that drops ProtoJSON strands every
+// payload already written.
+//
+// # What deliberately did not change
+//
+// `v1.CheckRunStateSize` still measures ProtoJSON. It is called from workflow
+// code, so its arithmetic is a determinism input; see the comment on
+// `encodedPayloadSize` in size.go for the whole argument. The bound therefore
+// over-counts what is now written, which is safety margin and fails in the safe
+// direction.
+var serializer = converter.NewCompositeDataConverter(
+	converter.NewNilPayloadConverter(),
+	converter.NewByteSlicePayloadConverter(),
+
+	converter.NewProtoPayloadConverter(),
+	converter.NewProtoJSONPayloadConverter(),
+
+	converter.NewJSONPayloadConverter(),
+)
+
+// Serializer returns the converter flowstate serializes values with before any
+// codec sees them.
+//
+// Exported for the read paths that need to decode a payload without a codec
+// configured — and for tests that need to assert the decode-both property
+// directly. A caller wiring a client or worker wants [Config.DataConverter] or
+// [Config.Apply] instead, which pair it with the right codec and failure
+// converter.
+func Serializer() converter.DataConverter { return serializer }
+
 // DataConverter returns the converter every client and worker in the process
 // must be built with.
 //
-// The parent is the SDK default converter, which is what decides how a value
-// becomes bytes; the codec decides what happens to those bytes afterwards. That
-// order matters and is the SDK's, not a choice made here: the codec sees the
-// serialized payload and nothing about the Go type it came from, which is what
-// lets one codec serve a schema that changes.
+// The parent is [Serializer], which is what decides how a value becomes bytes;
+// the codec decides what happens to those bytes afterwards. That order matters
+// and is the SDK's, not a choice made here: the codec sees the serialized
+// payload and nothing about the Go type it came from, which is what lets one
+// codec serve a schema that changes.
 func (c Config) DataConverter() converter.DataConverter {
 	if !c.Enabled() {
-		// The default converter itself, rather than a codec converter wrapping
-		// the identity codec. They behave identically, and this way an
-		// unconfigured deployment's payload path is byte-for-byte the one it had
-		// before this package existed.
-		return converter.GetDefaultDataConverter()
+		// The serializer itself, rather than a codec converter wrapping the
+		// identity codec. They behave identically, and this way an unconfigured
+		// deployment's payload path is byte-for-byte the one a codec-configured
+		// deployment hands its codec.
+		return serializer
 	}
-	return converter.NewCodecDataConverter(converter.GetDefaultDataConverter(), c.codec())
+	return converter.NewCodecDataConverter(serializer, c.codec())
 }
 
 // FailureConverter returns the failure converter that must accompany

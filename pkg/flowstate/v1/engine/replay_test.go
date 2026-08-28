@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 )
 
 // The replay corpus, and what a failure of it means.
@@ -118,6 +119,58 @@ func TestReplayCorpus(t *testing.T) {
 					"This history was written by an earlier engine. A run in flight when this change "+
 					"deploys resumes exactly this way, and would fail exactly here. See the package "+
 					"comment in replay_test.go before changing anything in testdata/replay/.", path)
+		})
+	}
+}
+
+// TestReplayCorpusUnderTheFlowstateSerializer replays the same corpus through
+// the converter a real worker is built with, rather than the SDK default
+// [TestReplayCorpus] gets.
+//
+// The distinction only started mattering with #911. Every history in the corpus
+// was recorded before it, so every payload in them is `json/protobuf`, while a
+// worker built today serializes as `binary/protobuf`. The claim that made that
+// flip a two-way door is that decode does not care — Temporal picks a converter
+// per payload out of that payload's own `encoding` metadata — and the corpus is
+// the only place in this repository holding bytes an *older* build actually
+// wrote. Replaying them through the current converter is therefore the
+// strongest available statement that a run in flight survives the deploy.
+//
+// A failure here alongside a green [TestReplayCorpus] means the converter
+// rather than the interpreter: the reorder in payloadcodec became a replace,
+// and ProtoJSON is no longer registered.
+func TestReplayCorpusUnderTheFlowstateSerializer(t *testing.T) {
+	t.Parallel()
+
+	histories := replayCorpus(t)
+	require.NotEmpty(t, histories, "replay corpus is empty: %s holds no histories, so this gate is checking nothing", replayCorpusDir)
+
+	for _, path := range histories {
+		name := strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(path), replayCorpusDir+"/"), ".json")
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// The unconfigured deployment's converter, which is what
+			// payloadcodec answers with when no codec is set — and, since
+			// #911, binary proto first.
+			replayer, err := worker.NewWorkflowReplayerWithOptions(worker.WorkflowReplayerOptions{
+				DataConverter: payloadcodec.Config{}.DataConverter(),
+			})
+			require.NoError(t, err)
+			engine.RegisterWorkflows(replayer)
+
+			f, err := os.Open(path)
+			require.NoError(t, err)
+			defer f.Close()
+
+			history, err := client.HistoryFromJSON(f, client.HistoryJSONOptions{})
+			require.NoErrorf(t, err, "reading recorded history %s: the file is not a Temporal history", path)
+
+			require.NoErrorf(t, replayer.ReplayWorkflowHistory(nil, history),
+				"a history written as ProtoJSON no longer replays through the converter a worker is built with today (%s).\n\n"+
+					"Check payloadcodec: the write-side flip in #911 stays reversible only while both proto "+
+					"converters remain registered, and dropping ProtoJSON strands every run started before it.", path)
 		})
 	}
 }
