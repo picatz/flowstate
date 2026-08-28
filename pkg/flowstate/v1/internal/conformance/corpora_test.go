@@ -143,6 +143,7 @@ var unresolvedResults = map[string]account{
 	"ErrorKindTimeoutTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginIdentityTaskDef":   {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginTaskInputsTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
+	"RateLimitTaskDef":        {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"StepTimeoutTaskDef":      {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"TotalTimeoutTaskDef":     {what: "a v1.TaskDef, which is a struct rather than a slice"},
 }

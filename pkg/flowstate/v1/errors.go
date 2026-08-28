@@ -85,6 +85,27 @@ const (
 	// retried, on the assumption that a genuine defect is better surfaced by
 	// exhausting attempts than by being silently swallowed.
 	ErrorKindInternal ErrorKind = "Internal"
+
+	// ErrorKindRateLimited indicates a dependency refused the request because
+	// this caller is going too fast, not because the request is wrong — a 429
+	// with or without a Retry-After header telling us when to come back.
+	//
+	// Its own kind because neither neighbour is true of it.
+	// [ErrorKindLimitExceeded] says "the same request would produce the same
+	// result", which a rate limit contradicts by construction: the same
+	// request, sent again after the window resets, succeeds.
+	// [ErrorKindUpstream] says a dependency failed in a way that may be
+	// transient, and here nothing failed — the dependency answered exactly as
+	// designed, refusing on purpose rather than erroring by accident. Filing a
+	// deliberate, correctly-functioning refusal under "the dependency broke"
+	// is the same category mistake [ErrorKindTimeout]'s doc comment argues
+	// against for a bound that worked as configured.
+	//
+	// Retryable, so the [TaskError.RetryAfter] a 429's Retry-After header
+	// attaches (see eval_task_http.go) is not inert: both drivers gate the
+	// delay on [ErrorKind.Retryable], so a permanent kind here would make the
+	// header parsed and carried but never consulted.
+	ErrorKindRateLimited ErrorKind = "RateLimited"
 )
 
 // Retryable reports whether a failure of this kind could succeed if attempted
@@ -96,7 +117,7 @@ const (
 // surfacing a failure that might have resolved on its own.
 func (k ErrorKind) Retryable() bool {
 	switch k {
-	case ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal:
+	case ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
 		return true
 	default:
 		return false
@@ -108,7 +129,7 @@ func (k ErrorKind) String() string { return string(k) }
 
 // RetryableErrorKinds returns the kinds that are worth retrying.
 func RetryableErrorKinds() []ErrorKind {
-	return []ErrorKind{ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal}
+	return []ErrorKind{ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited}
 }
 
 // PermanentErrorKinds returns the kinds that cannot succeed on a retry.
@@ -225,7 +246,7 @@ func ParseErrorKind(s string) (ErrorKind, bool) {
 	switch ErrorKind(s) {
 	case ErrorKindInvalidInput, ErrorKindUnknownTask, ErrorKindExpression,
 		ErrorKindPolicyDenied, ErrorKindLimitExceeded, ErrorKindUpstreamUnknown,
-		ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal:
+		ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
 		return ErrorKind(s), true
 	default:
 		return "", false
