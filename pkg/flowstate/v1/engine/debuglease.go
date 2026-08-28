@@ -204,6 +204,54 @@ func (e *executor) deferDebugAsk(name string, delivery *v1.SignalDelivery) {
 	})
 }
 
+// pauseDisposition is what one pause ask does.
+type pauseDisposition int
+
+const (
+	// pauseGrants starts a session: nothing holds the run, and the run is not
+	// already parked at a boundary.
+	pauseGrants pauseDisposition = iota
+
+	// pauseExtends is the holder asking again, bounded by their session's own
+	// deadline.
+	pauseExtends
+
+	// pauseRefused is somebody else asking for a run this one is holding.
+	pauseRefused
+
+	// pausePutBy is an ask that would start a session while the run is inside a
+	// hold. It waits one step boundary rather than being obeyed or discarded.
+	pausePutBy
+)
+
+// dispositionOfPause decides one pause ask from the three facts that bear on it.
+//
+// Extracted from [executor.applyDebugAsk] because one of its four answers is a
+// combination the engine's own state cannot be driven into from a test: `parked`
+// and not `held` is the single wake where a lease lapses and an ask is *already*
+// buffered, which needs a Temporal task carrying a TimerFired and a
+// WorkflowExecutionSignaled together. That happens in production and does not
+// happen in the SDK's test environment, where a delayed callback delivers its
+// signal after the timer's task has run to completion.
+//
+// So the table is proved here, by a fixture, and the engine is left with a
+// switch over it — which is CLAUDE.md's rule about extracting a decision to
+// where a fixture can drive it, arrived at the hard way: the branch shipped
+// first, and a mutation that deleted it survived every end-to-end test written
+// for it.
+func dispositionOfPause(parked, held, holder bool) pauseDisposition {
+	switch {
+	case held && !holder:
+		return pauseRefused
+	case held:
+		return pauseExtends
+	case parked:
+		return pausePutBy
+	default:
+		return pauseGrants
+	}
+}
+
 // applyDebugAsk is the whole of what an ask can do to a lease.
 //
 // Every branch is a decision about who may hold this run, so every branch says
@@ -244,42 +292,41 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 	case v1.DebugPauseSignal:
 		requested := v1.DebugLeaseRequested(delivery.GetPayload())
 
-		// A second holder is refused rather than queued. A queue would mean a
-		// run whose total hold is the sum of everybody who asked, which is the
-		// unbounded wedge the lease exists to prevent — and it would mean the
-		// second debugger's session beginning at a step neither of them chose.
-		// Refusing is also the answer an operator can act on: the run is held,
-		// by somebody this record names.
-		if held && !v1.DebugLeaseHolder(e.debug.lease, sender.GetIdentity()) {
+		switch dispositionOfPause(parked, held,
+			v1.DebugLeaseHolder(e.debug.lease, sender.GetIdentity())) {
+		case pauseRefused:
+			// A second holder is refused rather than queued. A queue would mean
+			// a run whose total hold is the sum of everybody who asked, which is
+			// the unbounded wedge the lease exists to prevent — and it would
+			// mean the second debugger's session beginning at a step neither of
+			// them chose. Refusing is also the answer an operator can act on:
+			// the run is held, by somebody this record names.
 			logger.Warn("refusing a debug pause: this run is already held under another caller's lease",
 				"sender", who, "holder", v1.QualifiedSubject(
 					e.debug.lease.GetAttachedBy().GetIssuer(), e.debug.lease.GetAttachedBy().GetSubject()),
 				"session", e.debug.lease.GetSessionId())
 
-			return
-		}
-
-		// The holder asking again is renewal, and it is deliberately spelled as
-		// re-attaching rather than as a heartbeat verb of its own: every ask
-		// passes the workflow's `debug:` policy at the server and lands one
-		// audit record, so a lease can never outlive the authorization that
-		// granted it. A heartbeat that skipped the check would be exactly that.
-		//
-		// Bounded by the session's own deadline rather than by this ask alone.
-		// A renewal that could buy another full ceiling is the wedge with extra
-		// steps [v1.DebugHoldDeadline] exists to refuse, and the clamp lands on
-		// what the lease *says* as well as on what the engine does, so the
-		// expiry an operator reads is one the run really resumes at.
-		//
-		// A renewal reaching this branch always buys something, however little,
-		// and there is deliberately no arm here saying otherwise: every lease
-		// this session records expires at or before `holdUntil`, so `held` at
-		// `now` means `now` is before `holdUntil` too, and the clamped answer is
-		// therefore after `now`. A holder whose session really is spent is not
-		// holding, so their ask is put by below and answered by that log line
-		// instead. An arm for it would be a branch nothing can reach, which
-		// reads like a guarantee and is worse than no arm at all.
-		if held {
+		case pauseExtends:
+			// The holder asking again is renewal, and it is deliberately spelled
+			// as re-attaching rather than as a heartbeat verb of its own: every
+			// ask passes the workflow's `debug:` policy at the server and lands
+			// one audit record, so a lease can never outlive the authorization
+			// that granted it. A heartbeat that skipped the check would be
+			// exactly that.
+			//
+			// Bounded by the session's own deadline rather than by this ask
+			// alone. A renewal that could buy another full ceiling is the wedge
+			// with extra steps [v1.DebugHoldDeadline] exists to refuse, and the
+			// clamp lands on what the lease *says* as well as on what the engine
+			// does, so the expiry an operator reads is one the run really
+			// resumes at.
+			//
+			// A renewal reaching this arm always buys something, however little,
+			// and there is deliberately no branch here saying otherwise: every
+			// lease this session records expires at or before `holdUntil`, so
+			// `held` at `now` means `now` is before `holdUntil` too, and the
+			// clamped answer is therefore after `now`. A holder whose session
+			// really is spent is not holding, so their ask is put by instead.
 			extended := v1.ExtendDebugLease(e.debug.lease, now, requested, e.debug.holdUntil)
 			e.debug.lease = extended
 
@@ -288,28 +335,25 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 				"expires_at", extended.GetLeaseExpiresAt().AsTime(),
 				"session_ends_at", e.debug.holdUntil)
 
-			return
-		}
-
-		// A new session is never started from inside a hold. Without this, a
-		// queue of holders takes turns at one step — every lease inside its own
-		// ceiling, every session inside its own deadline, and the run still
-		// never moving — which is the wedge [v1.DebugHoldDeadline] cannot see,
-		// because nothing about it is over-long.
-		//
-		// Put by rather than refused: the ask is a legitimate one from a caller
-		// the policy admits, and it gets the boundary after this one. So the
-		// price of a second debugger is that the run runs a step, which is the
-		// same trade #928 made when it answered "resume" to the abandoned
-		// session.
-		//
-		// Two callers arrive here, and the message has to be true for both: a
-		// second debugger asking as the first one's hold ends, and the *first*
-		// debugger asking again after their own session ran out of deadline.
-		// Neither is holding the run at this instant — that is what `held`
-		// being false means — so the line says where the ask lands rather than
-		// what it collided with.
-		if parked {
+		case pausePutBy:
+			// A new session is never started from inside a hold. Without this, a
+			// queue of holders takes turns at one step — every lease inside its
+			// own ceiling, every session inside its own deadline, and the run
+			// still never moving — which is the wedge [v1.DebugHoldDeadline]
+			// cannot see, because nothing about it is over-long.
+			//
+			// Put by rather than refused: the ask is a legitimate one from a
+			// caller the policy admits, and it gets the boundary after this one.
+			// So the price of a second debugger is that the run runs a step,
+			// which is the same trade #928 made when it answered "resume" to the
+			// abandoned session.
+			//
+			// Two callers arrive here, and the message has to be true for both:
+			// a second debugger asking as the first one's hold ends, and the
+			// *first* debugger asking again after their own session ran out of
+			// deadline. Neither is holding the run at this instant — that is
+			// what `held` being false means — so the line says where the ask
+			// lands rather than what it collided with.
 			e.deferDebugAsk(name, delivery)
 
 			logger.Info("a debug pause ask arrived inside a hold this run is already leaving; it "+
@@ -317,27 +361,33 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 				"makes progress between holds",
 				"sender", who)
 
-			return
+		case pauseGrants:
+			e.debug.granted++
+			e.debug.holdUntil = v1.DebugHoldDeadline(now)
+			e.debug.lease = v1.NewDebugLease(
+				e.debug.sessionID(e.runID), e.debug.run, sender, now, requested, e.debug.holdUntil)
+
+			logger.Info("debug lease granted",
+				"sender", who, "session", e.debug.lease.GetSessionId(),
+				"requested", requested, "expires_at", e.debug.lease.GetLeaseExpiresAt().AsTime(),
+				"session_ends_at", e.debug.holdUntil)
 		}
-
-		e.debug.granted++
-		e.debug.holdUntil = v1.DebugHoldDeadline(now)
-		e.debug.lease = v1.NewDebugLease(
-			e.debug.sessionID(e.runID), e.debug.run, sender, now, requested, e.debug.holdUntil)
-
-		logger.Info("debug lease granted",
-			"sender", who, "session", e.debug.lease.GetSessionId(),
-			"requested", requested, "expires_at", e.debug.lease.GetLeaseExpiresAt().AsTime(),
-			"session_ends_at", e.debug.holdUntil)
 	}
 }
 
 // releaseDebugLease ends the session holding this run, whichever way it ended.
 //
 // One function rather than two assignments at four sites, because the lease and
-// its session deadline are one fact: a `holdUntil` left behind by a released
-// lease would clamp the *next* session to a deadline belonging to the last one,
-// which is a hold that ends early for a reason nothing in the record explains.
+// its session deadline are one fact.
+//
+// The deadline's own line is a **named survivor**: every path that reads
+// `holdUntil` is a renewal, a renewal happens only while a lease is held, and
+// the grant that made that lease wrote a fresh deadline — so a stale one is
+// never read and deleting this line fails nothing. It is kept for the reason
+// the `lease = nil` beside it is: a field that means "the deadline" and "a
+// deadline that used to be" at the same time is one the next reader would be
+// right to misread, and there is no honest test for a state nothing can
+// observe.
 func (e *executor) releaseDebugLease() {
 	e.debug.lease = nil
 	e.debug.holdUntil = time.Time{}

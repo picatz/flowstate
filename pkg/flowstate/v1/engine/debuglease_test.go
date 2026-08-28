@@ -428,40 +428,38 @@ func TestASecondSessionDoesNotHoldTheSameBoundary(t *testing.T) {
 	assert.Contains(t, outputs.GetStepValues(), "second")
 }
 
-// TestAnAskPutByDuringAHoldSurvivesContinueAsNew is the sharp edge of putting an
-// ask by rather than acting on it: something has to be holding it, and the only
-// place a delivery survives a segment boundary is the run's carried state.
+// TestARefusedAskIsRefusedRatherThanQueued is the durability half of the
+// second-holder rule: an ask this run said no to leaves nothing behind that
+// could hold it later.
 //
-// The window is narrow and entirely reachable — a pause ask that lands while
-// the run is already held, and a segment that runs out of budget before the
-// next boundary — and getting it wrong is invisible: a `flow signal` that
-// reported success, and a debugger that waits at a prompt for a run that is
-// never going to stop.
+// [TestASecondCallerCannotTakeAHeldRun] says the refusal happens. This says it
+// *sticks* — the ask is consumed and gone rather than waiting on a carry that
+// survives the Continue-As-New seam. The distinction is the whole of what
+// separates refusing from queueing, and it is invisible until a segment ends:
+// a refusal quietly turned into a put-by would give the second debugger the
+// run one boundary later, which is the queue this design refuses to be.
 //
-// A budget of two suspends after two steps, which puts the seam between the
-// boundary that holds and the boundary the put-by ask is owed.
-func TestAnAskPutByDuringAHoldSurvivesContinueAsNew(t *testing.T) {
+// The other direction is asserted first, so this is not a test satisfied by a
+// carry that never holds anything: the *first* holder's ask, delivered before
+// any boundary, does ride the seam ([TestAPauseAskSurvivesContinueAsNew]).
+//
+// A budget of two suspends after two steps, putting the seam just past the
+// boundary the refused ask would have been owed.
+func TestARefusedAskIsRefusedRatherThanQueued(t *testing.T) {
 	t.Parallel()
 
 	env := newWaitEnv(t)
 
-	// The first lease is taken at t=60s and lapses at t=90s. The second ask
-	// lands at exactly that instant — the one wake where the run is still
-	// inside the hold and nothing holds it — so it is put by for the boundary
-	// after this one, which is on the far side of the Continue-As-New.
-	//
-	// The tie is the point rather than an accident of the fixture: an ask a
-	// moment earlier is refused (somebody holds the run) and one a moment later
-	// is read at the next boundary like any other. It is the same window a
-	// production timer and a signal landing in one workflow task produce.
+	// The first lease is taken at t=60s and lapses at t=90s; the second ask
+	// lands at t=75s, while the run is held by somebody else.
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", 30*time.Second))
 	}, 30*time.Second)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-2@example.com", time.Minute))
-	}, 90*time.Second)
+	}, 75*time.Second)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: debugSpec("put-by-across-the-seam"), StepsBudget: 2})
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: debugSpec("refused-then-suspended"), StepsBudget: 2})
 
 	require.True(t, env.IsWorkflowCompleted())
 
@@ -476,28 +474,91 @@ func TestAnAskPutByDuringAHoldSurvivesContinueAsNew(t *testing.T) {
 		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried),
 		"could not read the state the suspended run carried")
 
-	var putBy []*v1.PendingSignal
+	var kept []*v1.PendingSignal
 	for _, pending := range carried.GetPendingSignals() {
 		if pending.GetName() == v1.DebugPauseSignal {
-			putBy = append(putBy, pending)
+			kept = append(kept, pending)
 		}
 	}
 
-	require.Len(t, putBy, 1,
-		"the ask that arrived during the hold was dropped at the Continue-As-New seam, which is a "+
-			"`flow signal` that reported success and did nothing")
-	assert.Equal(t, "sre-2@example.com", putBy[0].GetSender().GetIdentity().GetSubject(),
-		"and it is the ask that was put by, carried with the sender the server attested")
+	require.Empty(t, kept,
+		"a pause ask this run refused was carried across the seam, so the caller it refused takes "+
+			"the run at the next boundary after all — which is the queue refusing exists to avoid")
 
-	// And the segment that receives it acts on it, so the carry is a delivery
-	// rather than a record of one.
+	// And the next segment runs unheld, which is the same claim where a workload
+	// can see it.
 	second := newWaitEnv(t)
 	start := second.Now()
 	second.ExecuteWorkflow(engine.Run, &carried)
 
 	require.True(t, second.IsWorkflowCompleted())
-	assert.GreaterOrEqual(t, second.Now().Sub(start), time.Minute,
-		"the put-by ask should hold the first boundary the next segment reaches")
+	require.NoError(t, second.GetWorkflowError())
+	assert.Zero(t, second.Now().Sub(start),
+		"the segment after the seam was held by an ask its predecessor had already refused")
+}
+
+// TestABoundaryDrainsMoreThanOneAskAtATime is CLAUDE.md's "assert a bound was
+// reached as well as not exceeded": [v1.MaxDebugAsksPerBoundary] paces a drain,
+// and a drain that stopped after one would pace it to nothing while every test
+// above stayed green.
+//
+// Two asks from one holder, delivered together: the first starts the session and
+// the second renews it, so the run holds for the *second* one's duration. A drain
+// that read one ask per boundary would hold for the first's.
+func TestABoundaryDrainsMoreThanOneAskAtATime(t *testing.T) {
+	t.Parallel()
+
+	require.Greater(t, v1.MaxDebugAsksPerBoundary, 1,
+		"a bound of one would make the claim below unfalsifiable")
+
+	elapsed, _ := runHeldFor(t, debugSpec("two-asks-one-wake"), map[time.Duration][]scriptedAsk{
+		30 * time.Second: {
+			pauseAt("sre-1@example.com", 30*time.Second),
+			pauseAt("sre-1@example.com", 90*time.Second),
+		},
+	})
+
+	assert.Equal(t, settleFor+90*time.Second, elapsed,
+		"only the first of two asks buffered for one boundary was applied, so the drain paces to nothing")
+}
+
+// TestAHeldRunSaysSoOnTheSurfaceOperatorsRead is the attribution claim end to
+// end, through the query `flow`'s own views go through rather than through the
+// renderer alone.
+//
+// [TestCurrentDetailsMarkdownSaysWhenARunIsHeld] pins what the markdown says;
+// this pins that a real held run says it, and that a run which has walked on
+// stops saying it — the second half being the one a test of the renderer cannot
+// make, because "held here" is a fact about where the run is rather than about
+// the lease existing.
+func TestAHeldRunSaysSoOnTheSurfaceOperatorsRead(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", time.Minute))
+	}, 30*time.Second)
+
+	// t=90s is inside the hold (t=60s..t=120s); t=150s is after it, with the run
+	// running the steps that follow.
+	during, duringErr := askCurrentDetailsDuring(t, env, 90*time.Second)
+	after, afterErr := askCurrentDetailsDuring(t, env, 150*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: debugSpec("says-it-is-held")})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.NoError(t, *duringErr)
+	require.NoError(t, *afterErr)
+
+	assert.Contains(t, *during, "held by debug lease",
+		"a run stopped by a debugger does not say so where an operator meeting it would look")
+	assert.Contains(t, *during, "first",
+		"and it still says which step it is holding at")
+
+	assert.NotContains(t, *after, "held by debug lease",
+		"a run that resumed kept claiming to be held, which is worse than never saying it")
 }
 
 // TestNoAskCanHoldARunPastTheCeiling is the "non-negotiable upward" half,
@@ -640,7 +701,7 @@ func TestCancellingAHeldRunDoesNotWaitOutTheLease(t *testing.T) {
 	start := env.Now()
 
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", 10*time.Minute))
+		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", v1.MaxDebugLease))
 	}, 30*time.Second)
 	env.RegisterDelayedCallback(env.CancelWorkflow, 90*time.Second)
 
@@ -649,8 +710,13 @@ func TestCancellingAHeldRunDoesNotWaitOutTheLease(t *testing.T) {
 	require.True(t, env.IsWorkflowCompleted())
 	require.Error(t, env.GetWorkflowError(), "a cancelled run does not complete successfully")
 
-	assert.Less(t, env.Now().Sub(start), settleFor+10*time.Minute,
-		"the cancellation waited for the lease to lapse")
+	// Exactly when the cancellation arrived, not merely "sooner than the lease".
+	// The hold runs from t=60s to t=60s+MaxDebugLease, so anything that reads
+	// the cancellation at all beats that bound — including a park that spins on
+	// a cancelled context without leaving, which advances no virtual time and
+	// would pass a comparison against the lease while wedging a real worker.
+	assert.Equal(t, 90*time.Second, env.Now().Sub(start),
+		"a cancelled run left its hold at some moment other than the cancellation")
 }
 
 // TestAPauseAskSurvivesContinueAsNew: an ask delivered while a segment was

@@ -144,6 +144,13 @@ headings below, not this list.*
   - [Three answers, because an id can give three](#three-answers-because-an-id-can-give-three)
   - [Submit-time, which is why both drivers agree](#submit-time-which-is-why-both-drivers-agree)
   - [What it does not do](#what-it-does-not-do)
+- [The fourteenth round: `debug:`, and the hold that ends by itself](#the-fourteenth-round-debug-and-the-hold-that-ends-by-itself)
+  - [The spelling](#the-spelling-5)
+  - [It *is* the `signals:` policy, not a shape beside it](#it-is-the-signals-policy-not-a-shape-beside-it)
+  - [Absent denies, which is the opposite of `signals:`](#absent-denies-which-is-the-opposite-of-signals)
+  - [The hold is leased, and the lease is what makes this safe](#the-hold-is-leased-and-the-lease-is-what-makes-this-safe)
+  - [Two names the engine takes back](#two-names-the-engine-takes-back)
+  - [What it does not do yet](#what-it-does-not-do-yet)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -5418,6 +5425,118 @@ acceptance criteria were amended by the implementation: composing `overlap:` and
 **It does not lock a span of steps inside a run**, or anything shared between two
 different workflows. Both need a run able to reach another run, which no node kind
 can do — the open half of #913, and the author-side case for #133's Update.
+
+## The fourteenth round: `debug:`, and the hold that ends by itself
+
+A durable run could be watched and could not be stopped. `flow watch` renders a live
+view and `ProgressQuery` answers where a run has got to, but nothing could hold one
+still long enough to look at it — so the one workflow shape most worth inspecting,
+the production run behaving unlike its rehearsal, was the one nobody could inspect.
+
+The grep came first here too, and it decided the shape rather than decorating it.
+"Somebody outside the run acts on it, and the workflow's own policy says who" is a
+question this language already answers, in `signals:`. So `debug:` is not a new
+vocabulary for the same question; it is that vocabulary, asked about a different
+verb.
+
+### The spelling
+
+```yaml
+edition: v2026.3
+name: deploy-gate
+debug:
+  allow:
+    - claims:
+        team: sre
+  distinct_from_starter: true
+steps:
+  - id: ship
+    log:
+      message: shipping
+```
+
+A top-level block beside `signals:`, because it answers the same shape of question
+about the same outside world, and because an auditor asking "who may act on this run
+from outside" should find both answers in one place. One policy rather than a map:
+a signal policy is per name, and there is exactly one thing to debug — this run.
+
+### It *is* the `signals:` policy, not a shape beside it
+
+`allow:` is the same list of alternative rules, with the same `subject:`,
+`namespace:`, `claims:` and `subject: ${...}`, matched against the same attested
+sender by the same check, refused by the same narrowing rule, and reported by the
+same diagnostics — with the field path naming `debug:` rather than a stanza the
+author did not write.
+
+That is the #726 lesson applied before the fact rather than after it. A fourth
+spelling of "this claim must carry this value" was the mistake that section is a
+worked example of, and this stanza would have been the fourth.
+
+What reuse costs, stated: the message is named for signals, so an author meeting
+`debug:` has to be told once that its grammar is `signals:`'s. That is a sentence of
+documentation against a hand-maintained second claims vocabulary, and it is the
+trade already decided.
+
+### Absent denies, which is the opposite of `signals:`
+
+A signal name with no policy is unconstrained, because authorization there is opt-in
+and failing closed the day it landed would have denied every existing workflow's next
+delivery for a policy nobody had written. Nothing has ever been able to pause a
+durable run, so there is no prior behaviour to keep and no compatibility argument to
+make — and the only reachable default is the fail-closed one.
+
+So a workflow with no `debug:` cannot be paused by anybody, including whoever started
+it. `flow fmt` will not add an empty stanza to say so, because a file that gained one
+would mean something different from the file it was written as.
+
+### The hold is leased, and the lease is what makes this safe
+
+An ask pauses the run at its next *step boundary* — never mid-activity, and never at
+a place the run is in several positions at once — under a lease that names its
+holder, says when it lapses, and resumes the run when it does. A debugger who closes
+their laptop cannot wedge a release, which is the property that makes pausing
+production a thing an operator can allow at all.
+
+The bounds are two readings of one number. No single ask may hold longer than the
+longest an ordinary step may legitimately take across all its attempts; and no
+*session* may, however often its holder asks again, because a per-ask ceiling bounds
+one ask and how many asks arrive is the holder's own choice. A pause ask that lands
+while a run is already held takes the next boundary rather than that one, so a queue
+of debuggers cannot take turns at a single step either. What the two buy together is
+the sentence worth remembering: **a debugged run advances at least one step per
+lease, however many asks arrive from however many callers.**
+
+Every part of it is attributable. The holder is the identity the server attested,
+never anything the ask said; the acceptance time is the server's own clock; pause,
+renewal, refusal and expiry each land in the run's record naming who and why.
+
+### Two names the engine takes back
+
+Both asks travel as ordinary signals, on two channels named `flowstate_debug_pause`
+and `flowstate_debug_resume`, so the policy gate, the attested sender, the payload
+bound and the audit record are the ones every signal already goes through rather than
+a second set written for debugging.
+
+That makes the whole `flowstate_` prefix the engine's. A workflow may no longer wait
+for a signal whose name begins with it, nor declare a `signals:` policy for one — a
+gate on that channel would be answered by an ask to pause the run. Both are refused
+in the compiler with a line and a column, and again at the server for a specification
+built by hand.
+
+### What it does not do yet
+
+**It has no verbs.** Stage two of the debugger arc is the hold: pause, renew, resume,
+expire. Inspecting a paused run's scope, stepping, and breakpoints are the attach
+surface, and they arrive with it.
+
+**It does not narrow.** The recorded decision is that a file declares and a deployment
+may narrow but never widen; the widening half is refused today by the ceiling being
+in workflow code, where no caller reaches it, and there is no deployment surface for
+the narrowing half yet.
+
+**It says nothing about local runs.** `flow run local --debug` holds the author's own
+process, which costs the author and nobody else, so it is unleased and needs no
+policy — the same trust model `flow test` already has.
 
 ## The standing rule
 
