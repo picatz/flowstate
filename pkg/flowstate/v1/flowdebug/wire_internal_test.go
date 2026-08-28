@@ -1,0 +1,192 @@
+package flowdebug
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+)
+
+// The two vocabularies this package shares with the schema, walked rather than
+// remembered.
+//
+// Both tables are hand-written and both have to be, because Go cannot
+// enumerate a package's constants at run time — which is the same position
+// `tools/fuzztargets` and `tools/vacuity`'s corpus registry are in, and the
+// answer is theirs: a written-out list is trustworthy only when something walks
+// the thing it claims to cover and fails when the two disagree. A verb known to
+// the prompt and unknown on the wire is exactly the bug the command table's own
+// comment exists to prevent, one surface further out.
+
+// TestEveryCommandVerbIsOnTheWire fails in both directions, which is what makes
+// the table impossible to leave stale.
+//
+// A verb added to [commands] with no enum value fails here, and an enum value
+// added with no verb fails here, and a verb removed from the table while the
+// enum keeps its value fails here too — the last being the one a rename
+// produces.
+func TestEveryCommandVerbIsOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	require.NotEmpty(t, commands, "the command table is empty, so every claim below is vacuous")
+
+	// Every verb the prompt understands can be sent.
+	for _, c := range commands {
+		verb, ok := verbFor(c.verb)
+		assert.True(t, ok,
+			"the prompt understands %q and the wire has no verb for it, so a client cannot send a command a person can type", c.verb)
+		assert.NotEqual(t, v1.DebugCommandVerb_DEBUG_COMMAND_VERB_UNSPECIFIED, verb,
+			"%q maps to the unspecified verb, which no boundary accepts", c.verb)
+	}
+
+	// Every verb that can be sent is one the prompt understands, spelled the
+	// way the prompt spells it. An alias here would be a wire vocabulary the
+	// canonical table does not have.
+	values := v1.DebugCommandVerb(0).Descriptor().Values()
+	require.Positive(t, values.Len(), "the enum has no values, so every claim below is vacuous")
+
+	for i := range values.Len() {
+		verb := v1.DebugCommandVerb(values.Get(i).Number())
+		if verb == v1.DebugCommandVerb_DEBUG_COMMAND_VERB_UNSPECIFIED {
+			assert.NotContains(t, verbs, verb,
+				"the unspecified verb was given a spelling, so a command with no verb renders as a command")
+
+			continue
+		}
+
+		spelling, ok := verbs[verb]
+		require.True(t, ok,
+			"the wire has %v and this package has no verb for it, so a client can send a command the session cannot run", verb)
+
+		known, ok := resolve(spelling)
+		require.True(t, ok, "%v spells %q, which the prompt does not understand", verb, spelling)
+		assert.Equal(t, known.verb, spelling,
+			"%v spells %q, which is an alias rather than the canonical verb", verb, spelling)
+	}
+
+	assert.Len(t, verbs, len(commands),
+		"the wire vocabulary and the prompt's are different sizes, so one of them has a verb the other does not")
+}
+
+// definedStepStates are the outcomes this package has a word for.
+//
+// Discovered rather than listed: a [StepState] is defined when it names itself
+// something other than the default, so a member added with a [StepState.String]
+// case turns up here without anybody editing this test. A member added *without*
+// one would not — and that is the honest limit, stated rather than left for a
+// reader to assume, because such a member is already broken in every place the
+// prompt prints it.
+func definedStepStates(t *testing.T) []StepState {
+	t.Helper()
+
+	// Generously past the vocabulary, so growing it does not silently outrun
+	// the probe.
+	const probe = 64
+
+	states := []StepState{StepPending}
+	for i := 1; i < probe; i++ {
+		if state := StepState(i); state.String() != StepPending.String() {
+			states = append(states, state)
+		}
+	}
+
+	require.Greater(t, len(states), 1, "only the zero state was found, so the probe is not reaching the vocabulary")
+
+	return states
+}
+
+// TestEveryStepStateHasAWireValue is the same walk over the outcome
+// vocabulary, and it carries one claim the command walk does not need.
+//
+// The two vocabularies are deliberately offset by one. [StepPending] is Go's
+// zero and means "this session watched nothing happen here"; the schema's zero
+// is UNSPECIFIED and means "the producer did not say". A mapping that let those
+// meet — a numeric conversion, or a table entry pointing PENDING at the
+// unspecified value — would report every unreached step as an answer nobody
+// gave, on a surface whose whole job is to be precise about what it does not
+// know.
+func TestEveryStepStateHasAWireValue(t *testing.T) {
+	t.Parallel()
+
+	states := definedStepStates(t)
+
+	seen := map[v1.DebugStepState]StepState{}
+	for _, state := range states {
+		wire, ok := stepStates[state]
+		require.True(t, ok,
+			"%v is a step outcome with no wire value, so a window would report it as an answer nobody gave", state)
+		assert.NotEqual(t, v1.DebugStepState_DEBUG_STEP_STATE_UNSPECIFIED, wire,
+			"%v maps to the unspecified state, which means the producer said nothing — and this producer did", state)
+
+		if other, clash := seen[wire]; clash {
+			t.Errorf("%v and %v both map to %v, so two outcomes are one on the wire", state, other, wire)
+		}
+		seen[wire] = state
+	}
+
+	assert.Len(t, stepStates, len(states),
+		"the table has entries for states this package does not define, so a removed outcome left a spelling behind")
+
+	// And the reverse: every value the schema has is one this package can
+	// produce, or the wire advertises an outcome nothing reports.
+	values := v1.DebugStepState(0).Descriptor().Values()
+	require.Positive(t, values.Len(), "the enum has no values, so every claim above is vacuous")
+
+	for i := range values.Len() {
+		wire := v1.DebugStepState(values.Get(i).Number())
+		if wire == v1.DebugStepState_DEBUG_STEP_STATE_UNSPECIFIED {
+			continue
+		}
+		assert.Contains(t, seen, wire,
+			"the schema has %v and nothing in this package produces it", wire)
+	}
+}
+
+// TestPendingIsNotTheWireZero states the offset on its own, because the walk
+// above would still pass if PENDING and UNSPECIFIED were the same number and
+// every other member shifted with them.
+func TestPendingIsNotTheWireZero(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, v1.DebugStepState_DEBUG_STEP_STATE_PENDING, stepStates[StepPending],
+		"the zero Go outcome does not map to the schema's PENDING, so a session that watched nothing "+
+			"is reported as a producer that said nothing")
+	assert.Equal(t, StepPending, StepState(0),
+		"StepPending is no longer the zero value, which is what makes the offset above load-bearing")
+}
+
+// TestNarrowRefusesWhatItCannotSay is the guard on the one count an embedder
+// chooses freely.
+//
+// Extracted to a function taking its input for the reason CLAUDE.md gives: the
+// real inventories in this tree all hold small numbers, so a check written
+// where those are read is one no test can reach, and deleting it would survive.
+func TestNarrowRefusesWhatItCannotSay(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   int
+		want int32
+		fits bool
+	}{
+		{name: "the root declaration", in: 0, want: 0, fits: true},
+		{name: "an ordinary descent", in: 7, want: 7, fits: true},
+		{name: "the largest that fits", in: 1<<31 - 1, want: 1<<31 - 1, fits: true},
+		{name: "one past it, which wraps negative under a bare conversion", in: 1 << 31, fits: false},
+		{name: "the smallest that fits", in: -1 << 31, want: -1 << 31, fits: true},
+		{name: "one below it", in: -1<<31 - 1, fits: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, fits := narrow(tc.in)
+			assert.Equal(t, tc.fits, fits)
+			if tc.fits {
+				assert.Equal(t, tc.want, got)
+			}
+		})
+	}
+}

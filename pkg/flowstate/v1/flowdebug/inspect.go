@@ -591,6 +591,21 @@ func (s *Session) Steps(offset, limit int) StepList {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	list, _ := s.stepWindow(offset, limit)
+
+	return list
+}
+
+// stepWindow is [Session.Steps]' whole answer, plus where the held row sits in
+// the *whole* list, held under s.mu by every caller.
+//
+// Split out rather than copied because [Session.StepWindowProto] needs both
+// halves and computing them twice is how the two would come to disagree — the
+// same argument [positionIn] itself is, one level up. The index is absolute so
+// that a caller can say whether the held row falls inside a window it chose;
+// -1 where nothing is held, which is an autopsy, a session between stops, and a
+// position no row can be attributed to.
+func (s *Session) stepWindow(offset, limit int) (StepList, int) {
 	order := s.inventory()
 
 	list := StepList{
@@ -645,7 +660,7 @@ func (s *Session) Steps(offset, limit int) StepList {
 		list.Steps = append(list.Steps, step)
 	}
 
-	return list
+	return list, held
 }
 
 // inventory is the list [Session.Steps] and [Session.StepPosition] read, held
