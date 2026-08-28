@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,74 @@ func TestWhatAPauseAskDoes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestTheExpiryTimerNamesItsHolder is the attribution claim at the one surface
+// that carries it.
+//
+// A hold ends two ways and an operator has to be able to tell them apart: a
+// release is a `flowstate_debug_resume` delivery in history naming its sender,
+// and an expiry is this timer firing. Without a holder on it, "the run resumed
+// on its own" is an event with nobody attached to it — so the summary is the
+// whole of what makes the vanished-debugger case attributable.
+//
+// Tested here rather than through a run because the SDK's test environment
+// gives no handle on a timer's summary, and the engine's own logger is not a
+// contract. What is a contract is what this function returns.
+func TestTheExpiryTimerNamesItsHolder(t *testing.T) {
+	t.Parallel()
+
+	summary := debugLeaseSummary(&v1.DebugSession{
+		SessionId: "run-1/debug/0",
+		AttachedBy: &v1.WorkloadIdentity{
+			Issuer: "https://issuer.example.com", Subject: "sre-1@example.com",
+		},
+	})
+
+	assert.Contains(t, summary, "run-1/debug/0", "the summary does not say which lease expired")
+	assert.Contains(t, summary, "https://issuer.example.com#sre-1@example.com",
+		"the summary does not say who was holding the run, so an expiry has nobody attached to it")
+
+	// Issuer-qualified rather than the bare subject, for [v1.DebugLeaseHolder]'s
+	// reason: two identity providers can each mint an `sre-1`, and a record that
+	// named only the subject would be a record of the wrong person a third of
+	// the time it mattered.
+	assert.NotEqual(t, "sre-1@example.com", summary,
+		"the holder is written issuer-qualified, as everywhere else a subject is compared")
+}
+
+// TestTheSummaryBoundsWhatACallerPutInIt: a subject is attested but not
+// grammar-constrained the way a step id is, so the one caller-influenced value
+// this function renders is bounded before it reaches a Temporal-rendered
+// surface.
+//
+// The unbounded direction is checked first, because a bound that truncated
+// everything would satisfy the assertion below and describe a summary that
+// never names anybody.
+func TestTheSummaryBoundsWhatACallerPutInIt(t *testing.T) {
+	t.Parallel()
+
+	ordinary := "https://issuer.example.com#sre-1@example.com"
+	require.Equal(t, ordinary, boundSummaryText(ordinary),
+		"an ordinary qualified subject is rendered whole")
+
+	atTheBound := strings.Repeat("s", maxSummaryTextBytes)
+	require.Equal(t, atTheBound, boundSummaryText(atTheBound),
+		"a value exactly at the bound is not cut, so the bound is a ceiling rather than a target")
+
+	overlong := strings.Repeat("s", maxSummaryTextBytes*4)
+	bounded := boundSummaryText(overlong)
+	assert.Less(t, len(bounded), len(overlong), "an over-long value reached the summary intact")
+	assert.True(t, strings.HasPrefix(bounded, strings.Repeat("s", maxSummaryTextBytes)),
+		"the value was cut somewhere other than at the bound")
+	assert.True(t, strings.HasSuffix(bounded, "…"),
+		"a cut value does not say it was cut, so a reader cannot tell a truncation from a subject")
+
+	// And through the function that uses it, so the bound is on the path rather
+	// than only on the helper.
+	assert.NotContains(t, debugLeaseSummary(&v1.DebugSession{
+		AttachedBy: &v1.WorkloadIdentity{Issuer: "https://i", Subject: overlong},
+	}), overlong, "the summary rendered an unbounded subject a caller's issuer minted")
 }
 
 // TestAnAskPutByGoesOnTheRunsOwnCarry is the other half: where a put-by ask

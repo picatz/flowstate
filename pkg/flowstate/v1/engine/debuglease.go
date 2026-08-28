@@ -326,6 +326,16 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 		// and a resume from a holder whose lease already lapsed must not release
 		// the *next* holder's — the run auto-resumed when it expired, and by the
 		// time this arrives the lease may belong to somebody else entirely.
+		//
+		// The first half is a **named survivor**: deleting it changes no answer,
+		// because nothing holding the run means either no lease at all — which
+		// the holder check below then refuses, since nobody holds nothing — or a
+		// lapsed one, whose release is a no-op on a hold that had already ended.
+		// What it changes is which sentence an operator reads, and those two
+		// sentences send them to different places: "nothing holds this run" says
+		// the hold is already over, and "you are not the holder" says somebody
+		// else has it. A diagnostic that misdescribes what happened is worse
+		// than no diagnostic, so the arm stays and the reason is here.
 		if !held {
 			logger.Info("ignoring a debug resume: this run holds no debug lease",
 				"sender", who)
@@ -533,6 +543,17 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// reach a paused run — the alternative is an operator's cancellation
 		// waiting out a debugger's lease — and the walk above turns the
 		// cancelled context into the run's failure the moment this returns.
+		//
+		// A **named survivor**, and the one whose absence costs the most: with
+		// this arm deleted the loop finds the lease still held, re-parks on an
+		// already-cancelled context, and every construction it waits on resolves
+		// at once — a spin that completes no workflow task, so the task times
+		// out and Temporal hands it to the next worker to spin as well. The
+		// SDK's test environment does not reproduce that; it ends the run by
+		// another road at the same instant, so a fixture cannot tell the two
+		// apart. `TestCancellingAHeldRunDoesNotWaitOutTheLease` pins the instant
+		// the hold ends, which is the part that *is* observable, and this
+		// comment is the part that is not.
 		if e.ctx.Err() != nil {
 			logger.Info("the run was cancelled while held under a debug lease",
 				"id", node.GetId(), "session", session)
@@ -547,6 +568,16 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// retired yet — and worse, an expiry that a queued ask immediately
 		// replaced would leave no record of having happened at all, so the run
 		// would show one continuous hold where two sessions really occurred.
+		//
+		// A **named survivor**, and it is the record rather than the behaviour:
+		// deleting the whole arm changes no answer any test can see, because a
+		// lapsed lease left in place already answers "not held" everywhere it is
+		// consulted and is overwritten by the next grant. What it costs is the
+		// one line saying the hold ended by lapsing rather than by a release —
+		// the half of "an operator can tell the debugger let go from the
+		// debugger vanished" that does not travel on the expiry timer's summary
+		// (`debugLeaseSummary`, which is tested). There is no honest test for a
+		// log line, and there is no honest version of this feature without it.
 		if e.debug.lease != nil && !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
 			logger.Info("the debug lease expired; resuming the run",
 				"id", node.GetId(), "session", e.debug.lease.GetSessionId(),
@@ -571,6 +602,15 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 	}
 
 	// Nothing is holding this boundary any more, whichever way that happened.
+	//
+	// A **named survivor**: `e.debug.lease` is nil on every path that reaches
+	// here today except cancellation, whose run is failing anyway, so passing it
+	// instead of nil changes nothing observable. The explicit nil is the claim
+	// rather than the value — "held *here*" is what this surface reports, and it
+	// is false the moment this returns whatever the run's lease state is. The
+	// day a lease can outlive this loop, the mutation that reads the field would
+	// put a "held" line on a run that is walking on, and this line is what stops
+	// that from being a silent change.
 	e.showDebugLease(nil)
 }
 

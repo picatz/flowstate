@@ -560,6 +560,53 @@ func TestABoundaryDrainsMoreThanOneAskAtATime(t *testing.T) {
 		"only the first of two asks buffered for one boundary was applied, so the drain paces to nothing")
 }
 
+// TestABoundaryDrainsMoreThanOneCarriedAsk is the same claim about the other
+// list, and it needs its own test because the two loops are bounded separately:
+// the channel's asks and the ones a Continue-As-New carried are different
+// sources, and a limit of one on either paces that source to nothing while the
+// other stays green.
+//
+// Two carried asks from one holder, the second asking for longer, so the
+// segment holds for the second one's duration. A carry drained one at a time
+// would hold for the first's — and, because a carried ask is *consumed* when it
+// is applied, the second would arrive a boundary later than the sender was told
+// it had.
+func TestABoundaryDrainsMoreThanOneCarriedAsk(t *testing.T) {
+	t.Parallel()
+
+	spec := debugSpec("two-carried-asks")
+
+	carried := &v1.RunState{
+		Workflow: spec,
+		PendingSignals: []*v1.PendingSignal{
+			{
+				Name:    v1.DebugPauseSignal,
+				Payload: debugAsk("sre-1@example.com", 30*time.Second).GetPayload(),
+				Sender:  debugAsk("sre-1@example.com", 0).GetSender(),
+			},
+			{
+				Name:    v1.DebugPauseSignal,
+				Payload: debugAsk("sre-1@example.com", 90*time.Second).GetPayload(),
+				Sender:  debugAsk("sre-1@example.com", 0).GetSender(),
+			},
+		},
+	}
+
+	env := newWaitEnv(t)
+	start := env.Now()
+
+	env.ExecuteWorkflow(engine.Run, carried)
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	// Both are applied at the first boundary — which is before `settle`, since a
+	// carried ask needs no delivery — so the run holds ninety seconds and then
+	// sleeps.
+	assert.Equal(t, 90*time.Second+settleFor, env.Now().Sub(start),
+		"only the first of two carried asks was applied, so the carry paces to nothing")
+}
+
 // TestAHeldRunSaysSoOnTheSurfaceOperatorsRead is the attribution claim end to
 // end, through the query `flow`'s own views go through rather than through the
 // renderer alone.
