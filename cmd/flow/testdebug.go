@@ -216,12 +216,23 @@ func stepIDs(workflow *v1.Workflow) []string {
 func stepList(workflow *v1.Workflow) []flowdebug.Step {
 	var steps []flowdebug.Step
 
-	var walk func(wf *v1.Workflow, depth int)
-	walk = func(wf *v1.Workflow, depth int) {
+	// Every descent is its own declaration, numbered as the walk reaches it.
+	// A name cannot do this job: one callee invoked from two `call:` steps is
+	// two declarations under one name, and so are two different embedded
+	// workflows that share a `name:`. The numbering is the engine's own
+	// structure read statically — `runNodes` descends into a callee once per
+	// `call:` node (`eval.go:1734`), so a walk's descents and that call's
+	// invocations are one-to-one by construction.
+	declaration := 0
+
+	var walk func(wf *v1.Workflow, mine int, via string, depth int)
+	walk = func(wf *v1.Workflow, mine int, via string, depth int) {
 		name := wf.GetName()
 		v1.WalkWorkflow(wf, v1.Walk{Node: func(node *v1.Node) {
 			if id := node.GetId(); id != "" {
-				steps = append(steps, flowdebug.Step{Workflow: name, ID: id})
+				steps = append(steps, flowdebug.Step{
+					Workflow: name, Declaration: mine, Via: via, ID: id,
+				})
 			}
 
 			// Bounded, because this descends a structure rather than a list.
@@ -230,11 +241,12 @@ func stepList(workflow *v1.Workflow) []flowdebug.Step {
 			// under nobody's compiler, and a completion inventory is not the
 			// place to find that out by running out of stack.
 			if call := node.GetCall(); call != nil && depth < maxCallInventoryDepth {
-				walk(call.GetWorkflow(), depth+1)
+				declaration++
+				walk(call.GetWorkflow(), declaration, node.GetId(), depth+1)
 			}
 		}})
 	}
-	walk(workflow, 0)
+	walk(workflow, 0, "", 0)
 
 	return steps
 }

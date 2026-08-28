@@ -2,6 +2,7 @@ package flowdebug_test
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -95,6 +96,17 @@ func TestAWindowPastTheEndIsEmptyRatherThanAPanic(t *testing.T) {
 		{name: "an offset past the end", offset: 500, limit: 3, want: 0},
 		{name: "a negative offset", offset: -4, limit: 3, want: 3},
 		{name: "a zero limit", offset: 0, limit: 0, want: 0},
+
+		// The three that overflow rather than merely overrun. `offset+limit`
+		// wraps negative for a large limit, and a negative end slices
+		// backwards and asks for a negative capacity — both a panic rather
+		// than a refusal. This API is shaped for a caller that does not exist
+		// yet, so the limit is untrusted (Codex, #1186).
+		{name: "the largest limit there is", offset: 1, limit: math.MaxInt, want: 9},
+		{name: "the largest limit at zero", offset: 0, limit: math.MaxInt, want: 10},
+		{name: "both huge", offset: math.MaxInt, limit: math.MaxInt, want: 0},
+		{name: "a huge offset and an ordinary limit", offset: math.MaxInt, limit: 3, want: 0},
+		{name: "a negative offset and the largest limit", offset: math.MinInt, limit: math.MaxInt, want: 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -453,19 +453,19 @@ func stepRows(frame Frame, theme ui.Theme, symbols ui.SymbolSet) []string {
 		return nil
 	}
 
-	// Where two rows in the *window* share an id, each is drawn against the
-	// workflow that declares it. Only where they share one: a qualifier on
+	// Where two rows in the *window* share an id, each is drawn against
+	// whatever tells them apart. Only where they share one: a qualifier on
 	// every row would be noise on the ordinary workflow that has no call in
 	// it, and the pane's rows are meant to be typed back at the prompt, where
 	// the name is the id.
-	qualify := sharedInWindow(frame.Steps)
+	qualify := qualifiers(frame.Steps)
 
 	rows := make([]string, 0, len(frame.Steps)+4)
 	if frame.StepsBefore > 0 {
 		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d earlier", symbols.Ellipsis, frame.StepsBefore)))
 	}
 	for i, step := range frame.Steps {
-		rows = append(rows, stepRow(step, i == frame.Held, qualify[step.ID], theme, symbols))
+		rows = append(rows, stepRow(step, i == frame.Held, qualify[i], theme, symbols))
 	}
 	if frame.StepsAfter > 0 {
 		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d later", symbols.Ellipsis, frame.StepsAfter)))
@@ -496,26 +496,51 @@ func stepRows(frame Frame, theme ui.Theme, symbols ui.SymbolSet) []string {
 	return rows
 }
 
-// sharedInWindow are the ids more than one row of the window carries.
+// qualifiers is the prefix to draw each row against, by row index, and "" for
+// a row that needs none.
 //
-// A function taking the rows rather than a loop inside [stepRows], because the
-// case it exists for is the one real fixtures rarely produce and a caller has
-// to be able to build: two steps of one name, from two workflows, on screen at
-// once.
-func sharedInWindow(steps []flowdebug.Step) map[string]bool {
-	seen := make(map[string]int, len(steps))
-	for _, step := range steps {
-		seen[step.ID]++
+// Three cases, and the third is why this is a function taking its rows rather
+// than a loop inside [stepRows]: only the first is what real fixtures produce,
+// and a test has to be able to build the others.
+//
+//   - An id only one row in the window carries needs nothing. The id is the
+//     name, and a qualifier on every row is noise on the ordinary workflow.
+//   - Rows sharing an id from differently-named workflows are told apart by
+//     the workflow, which is what a reader already has in the file.
+//   - Rows sharing an id *and* a workflow name are one callee invoked from two
+//     `call:` steps, or two embedded workflows that share a `name:`. The name
+//     cannot separate those, so the call step an author wrote does — see
+//     [flowdebug.Step.Via]. Where even that is equal the rows are drawn
+//     unqualified rather than decorated with something that distinguishes
+//     nothing.
+func qualifiers(steps []flowdebug.Step) []string {
+	rowsFor := make(map[string][]int, len(steps))
+	for i, step := range steps {
+		rowsFor[step.ID] = append(rowsFor[step.ID], i)
 	}
 
-	shared := make(map[string]bool, len(seen))
-	for id, count := range seen {
-		if count > 1 {
-			shared[id] = true
+	out := make([]string, len(steps))
+	for _, rows := range rowsFor {
+		if len(rows) < 2 {
+			continue
+		}
+
+		names := map[string]struct{}{}
+		for _, i := range rows {
+			names[steps[i].Workflow] = struct{}{}
+		}
+
+		for _, i := range rows {
+			switch {
+			case len(names) > 1 && steps[i].Workflow != "":
+				out[i] = steps[i].Workflow
+			case steps[i].Via != "":
+				out[i] = steps[i].Via
+			}
 		}
 	}
 
-	return shared
+	return out
 }
 
 // window is the half-open range of a list of n items to show, given a budget of
@@ -553,14 +578,14 @@ func window(n, at, budget int) (first, last int) {
 // "the status is the word RUNNING, and the mark beside it only helps the eye
 // find the row". Removing every colour and every mark from this pane loses
 // emphasis and no information.
-func stepRow(step flowdebug.Step, held, qualify bool, theme ui.Theme, symbols ui.SymbolSet) string {
+func stepRow(step flowdebug.Step, held bool, qualifier string, theme ui.Theme, symbols ui.SymbolSet) string {
 	gutter := " "
 	name := step.ID
-	if qualify && step.Workflow != "" {
-		// The workflow first, muted, because the id is still the name: a
-		// reader scanning the column is looking for `build`, and the qualifier
-		// is there to tell two of them apart rather than to be read.
-		name = theme.Muted.Render(step.Workflow+".") + step.ID
+	if qualifier != "" {
+		// The qualifier first, muted, because the id is still the name: a
+		// reader scanning the column is looking for `build`, and the prefix is
+		// there to tell two of them apart rather than to be read.
+		name = theme.Muted.Render(qualifier+".") + step.ID
 	}
 
 	id := name

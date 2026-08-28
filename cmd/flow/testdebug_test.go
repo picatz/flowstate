@@ -128,6 +128,59 @@ func TestTheStepInventoryNamesTheWorkflowThatDeclaresEachStep(t *testing.T) {
 	}
 }
 
+// TestTheStepInventoryNumbersEveryDescentSeparately is the identity a name
+// cannot carry.
+//
+// One callee invoked from two `call:` steps appears twice under one name, and
+// so do two different embedded workflows that share a `name:`. Grouped by name
+// those are one declaration, and the session then attributes an outcome that
+// names one of two invocations to both rows (Codex, #1186). The walk's descents
+// are the engine's own structure read statically — `runNodes` descends into a
+// callee once per `call:` node (`eval.go:1734`) — so each gets its own number.
+func TestTheStepInventoryNumbersEveryDescentSeparately(t *testing.T) {
+	t.Parallel()
+
+	callee := func() *v1.Workflow {
+		return &v1.Workflow{Name: "inner", Steps: []*v1.Node{
+			{Id: "build", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}},
+		}}
+	}
+	workflow := &v1.Workflow{Name: "outer", Steps: []*v1.Node{
+		{Id: "first_call", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee()}}},
+		{Id: "second_call", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee()}}},
+	}}
+
+	steps := stepList(workflow)
+	require.Len(t, steps, 4, "the walk did not reach both callees")
+
+	declarations := map[int]struct{}{}
+	reachedBy := map[string]string{}
+	for _, step := range steps {
+		if step.ID != "build" {
+			continue
+		}
+		declarations[step.Declaration] = struct{}{}
+		reachedBy[step.Via] = step.Workflow
+	}
+
+	assert.Len(t, declarations, 2,
+		"two invocations of one callee were numbered as one declaration")
+
+	// And each row says which `call:` reached it, which is the only thing that
+	// differs when the workflow name does not — what the pane draws them
+	// against.
+	assert.Equal(t, map[string]string{"first_call": "inner", "second_call": "inner"}, reachedBy)
+
+	// The caller's own steps share the root declaration and are reached
+	// through no call: the numbering separates descents, not rows.
+	for _, step := range steps {
+		if step.Workflow == "outer" {
+			assert.Zero(t, step.Declaration, "%s", step.ID)
+			assert.Empty(t, step.Via, "%s is the caller's own", step.ID)
+		}
+	}
+}
+
 // TestTheStepInventoryStopsAtTheEnginesOwnCallDepth pins the bound to the
 // engine's rather than to a number chosen here.
 //

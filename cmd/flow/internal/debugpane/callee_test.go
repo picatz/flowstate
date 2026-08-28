@@ -233,3 +233,131 @@ func TestAnOrdinaryWorkflowIsUnaffected(t *testing.T) {
 		"an unambiguous list was qualified, which is noise on every ordinary workflow")
 	assert.Contains(t, text, "checkout ok", "an ordinary row stopped reporting its outcome")
 }
+
+// One callee, two call sites — the same defect one level deeper.
+//
+// A workflow *name* is not a declaration. Invoking one callee from two `call:`
+// steps puts two rows in the inventory under one name, and grouping by name
+// says the session can attribute an outcome that names one of two invocations
+// (Codex, #1186). The identity is the walk's own descent, which is the engine's
+// structure read statically: `runNodes` descends into a callee once per `call:`
+// node (`eval.go:1734`).
+
+// twiceCalledWorkflow invokes one callee from two call sites.
+func twiceCalledWorkflow() *v1.Workflow {
+	callee := func() *v1.Workflow {
+		return &v1.Workflow{Name: "inner", Steps: []*v1.Node{markStep("build")}}
+	}
+
+	return &v1.Workflow{Name: "outer", Steps: []*v1.Node{
+		{Id: "first_call", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee()}}},
+		{Id: "second_call", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee()}}},
+	}}
+}
+
+// twiceCalledInventory is what `stepList` produces for it: four rows, two of
+// them `inner.build`, each against its own declaration.
+func twiceCalledInventory() []flowdebug.Step {
+	return []flowdebug.Step{
+		{Workflow: "outer", Declaration: 0, ID: "first_call"},
+		{Workflow: "inner", Declaration: 1, Via: "first_call", ID: "build"},
+		{Workflow: "outer", Declaration: 0, ID: "second_call"},
+		{Workflow: "inner", Declaration: 2, Via: "second_call", ID: "build"},
+	}
+}
+
+// TestOneCalleeCalledTwiceIsTwoDeclarations is the fix.
+//
+// Grouped by name the two `build` rows are one declaration, so the observer's
+// bare-id outcome lands on both and `Unattributed` reads zero — the session
+// claiming an attribution it cannot make. Grouped by declaration they are two,
+// which is what they are.
+func TestOneCalleeCalledTwiceIsTwoDeclarations(t *testing.T) {
+	t.Parallel()
+
+	caps := paneCapabilities(80, 24, colorprofile.NoTTY, true)
+	layout := debugpane.Layout{Width: caps.Width, Height: caps.Height}
+
+	var (
+		last  debugpane.Frame
+		found bool
+	)
+
+	var session *flowdebug.Session
+
+	session, err := flowdebug.New(flowdebug.Options{
+		// Four boundaries; the last is the second callee's `build`.
+		In:    strings.NewReader("step\nstep\nstep\nstep\ncontinue\n"),
+		Out:   &strings.Builder{},
+		Steps: twiceCalledInventory(),
+		Emit: func(_ string, tone flowdebug.Tone) {
+			if tone != flowdebug.ToneBreak {
+				return
+			}
+			if frame, paused := debugpane.Snapshot(t.Context(), session, layout); paused {
+				last, found = frame, true
+			}
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
+		Step: auth.StepRef{Workflow: "outer", Run: "run-1"},
+	})
+
+	_, runErr := v1.Run(ctx, twiceCalledWorkflow())
+	require.NoError(t, runErr)
+	require.True(t, found)
+
+	// The first callee's `build` genuinely finished before the run reached the
+	// second. Neither row may claim that outcome, because `StepFinished` named
+	// only `build` and both rows answer to it.
+	assert.Equal(t, 2, last.StepsUnattributed,
+		"two invocations of one callee were grouped as one declaration, so an "+
+			"outcome naming neither was attributed to both")
+
+	require.Len(t, last.Steps, 4)
+	for _, i := range []int{1, 3} {
+		assert.Equal(t, flowdebug.StepPending, last.Steps[i].State,
+			"row %d claimed an outcome that names two invocations", i)
+	}
+
+	// And the position cannot be placed: the boundary is told the callee's
+	// *name* and nothing about which invocation is running, so the pane marks
+	// no row rather than the wrong one.
+	assert.Equal(t, "inner", last.At.Workflow)
+	assert.Equal(t, -1, last.Held,
+		"the pane pointed at one of two indistinguishable invocations")
+
+	// The rows are still told apart on screen, by the call step an author
+	// wrote — the one thing that differs when the name does not.
+	text := debugpane.Render(last, ui.NewTheme(true, caps), caps.Symbols(), layout)
+	assert.Contains(t, text, "first_call.build")
+	assert.Contains(t, text, "second_call.build")
+	assert.NotContains(t, text, "outer.first_call",
+		"a row whose id nothing else carries was qualified anyway")
+}
+
+// TestTwoEmbeddedWorkflowsSharingANameAreTwoDeclarations is the other shape of
+// the same defect, and it is the one a name can never fix: two genuinely
+// different callees that happen to declare the same `name:`.
+func TestTwoEmbeddedWorkflowsSharingANameAreTwoDeclarations(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{
+		Out: &strings.Builder{},
+		Steps: []flowdebug.Step{
+			{Workflow: "shared", Declaration: 1, Via: "a", ID: "build"},
+			{Workflow: "shared", Declaration: 2, Via: "b", ID: "build"},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	assert.Equal(t, 2, session.Steps(0, -1).Unattributed,
+		"two workflows sharing a display name were read as one declaration")
+}

@@ -573,33 +573,43 @@ func New(opts Options) (*Session, error) {
 // `CallScope`). Two `build`s in two workflows are the pair
 // [v1.RunObserver]'s bare ids cannot tell apart.
 //
-// An unnamed workflow groups with every other unnamed one, and that is a stated
-// limit rather than an oversight. It means an inventory that names no workflow
-// at all — a caller that did not say — reports nothing shared, which is right:
-// there is no evidence of a second declaring workflow and blanking every
-// ordinary duplicate id on a guess would be worse than the disease. It also
-// means two workflows that both omit `name:` are read as one, so an id they
-// share is attributed as if it were one workflow's. A workflow with no name is
-// already outside what any of this can identify — `runCall` names the callee in
-// the run's own position (`eval.go:1811`) and would name it "" too — so the
-// honest thing is to say so here rather than to invent an identity for it.
+// A *name* is not a declaration, which is the correction this key carries: one
+// callee invoked from two `call:` steps appears twice under one name, and so do
+// two different embedded workflows that happen to share a `name:`. Grouping
+// those by name says the session can attribute an outcome it cannot, which is
+// the same defect this whole rule exists to prevent, one level down (Codex,
+// #1186). [Step.Declaration] is what separates them, and the pair is the key so
+// that an inventory built by hand — which numbers nothing and distinguishes its
+// workflows by name — is served by the same function.
 //
-// The earlier draft skipped unnamed entries entirely. That did nothing for the
+// An unnamed workflow at the same declaration groups with every other one, and
+// that is a stated limit rather than an oversight. An inventory that names no
+// workflow *and* numbers no declaration — a caller that said neither — reports
+// nothing shared, which is right: there is no evidence of a second declaration
+// and blanking every ordinary duplicate id on a guess would be worse than the
+// disease.
+//
+// An earlier draft skipped unnamed entries entirely. That did nothing for the
 // all-unnamed case it was written for (they group under one key either way) and
 // took fail-closed *away* from the mixed case, where a named caller and an
 // unnamed callee genuinely are two workflows.
 func sharedStepIDs(steps []Step) map[string]struct{} {
-	declaring := make(map[string]map[string]struct{}, len(steps))
+	type declaration struct {
+		number   int
+		workflow string
+	}
+
+	declaring := make(map[string]map[declaration]struct{}, len(steps))
 	for _, step := range steps {
 		if declaring[step.ID] == nil {
-			declaring[step.ID] = map[string]struct{}{}
+			declaring[step.ID] = map[declaration]struct{}{}
 		}
-		declaring[step.ID][step.Workflow] = struct{}{}
+		declaring[step.ID][declaration{number: step.Declaration, workflow: step.Workflow}] = struct{}{}
 	}
 
 	shared := map[string]struct{}{}
-	for id, workflows := range declaring {
-		if len(workflows) > 1 {
+	for id, declarations := range declaring {
+		if len(declarations) > 1 {
 			shared[id] = struct{}{}
 		}
 	}
