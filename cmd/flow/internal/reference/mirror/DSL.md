@@ -149,7 +149,7 @@ headings below, not this list.*
   - [It *is* the `signals:` policy, not a shape beside it](#it-is-the-signals-policy-not-a-shape-beside-it)
   - [Absent denies, which is the opposite of `signals:`](#absent-denies-which-is-the-opposite-of-signals)
   - [The hold is leased, and the lease is what makes this safe](#the-hold-is-leased-and-the-lease-is-what-makes-this-safe)
-  - [Two names the engine takes back](#two-names-the-engine-takes-back)
+  - [One name the engine takes back](#one-name-the-engine-takes-back)
   - [What it does not do yet](#what-it-does-not-do-yet)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
@@ -5513,18 +5513,31 @@ Every part of it is attributable. The holder is the identity the server attested
 never anything the ask said; the acceptance time is the server's own clock; pause,
 renewal, refusal and expiry each land in the run's record naming who and why.
 
-### Two names the engine takes back
+### One name the engine takes back
 
-Both asks travel as ordinary signals, on two channels named `flowstate_debug_pause`
-and `flowstate_debug_resume`, so the policy gate, the attested sender, the payload
-bound and the audit record are the ones every signal already goes through rather than
-a second set written for debugging.
+Every ask travels as an ordinary signal, on one channel named `flowstate_debug`, so
+the policy gate, the attested sender, the payload bound and the audit record are the
+ones every signal already goes through rather than a second set written for
+debugging.
+
+One channel rather than one per ask, and that is a correctness property rather than
+tidiness. A run drains its channels one at a time, so a channel per verb would make
+the *engine's* loop order decide which of two interleaved asks won — somebody who
+resumed and then paused would have the later pause applied first and released by the
+earlier resume, and their run would walk on when they had asked it to stop. One
+channel has one queue, filled in the order history records, so what an ask does is
+decided by when it arrived. The ask itself is named in the payload.
 
 That makes the whole `flowstate_` prefix the engine's. A workflow may no longer wait
 for a signal whose name begins with it, nor declare a `signals:` policy for one — a
 gate on that channel would be answered by an ask to pause the run. Both are refused
 in the compiler with a line and a column, and again at the server for a specification
 built by hand.
+
+A workflow written before this stanza existed keeps whatever it had. The debug
+machinery reads nothing at all on a run whose file declares no `debug:`, which is
+every run that predates it — so a workload that was using one of those names as an
+ordinary signal goes on being answered by it.
 
 ### What it does not do yet
 

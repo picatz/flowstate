@@ -206,13 +206,17 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 		return
 	}
 
-	e.applyDebugAsks(false)
+	backlogged := e.applyDebugAsks(false)
 
 	if !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
+		// Nothing holds the run, so the step runs next — and running a step is
+		// an activity, which ends this workflow task on its own. A backlog left
+		// here therefore needs no yield of its own: the next boundary reads the
+		// next batch, on a task the step already forced.
 		return
 	}
 
-	e.holdForDebugLease(node)
+	e.holdForDebugLease(node, backlogged)
 }
 
 // applyDebugAsks consumes the debug asks waiting for this run, in the order
@@ -234,7 +238,11 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 // Temporal fills from history. That is why every ask is on one channel with its
 // verb in the payload ([v1.DebugSignal]) — with a channel per verb, this
 // function's own loop order decided which of two interleaved asks won.
-func (e *executor) applyDebugAsks(parked bool) {
+// It reports whether the drain stopped at [v1.MaxDebugAsksPerBoundary] with the
+// channel still holding messages — a backlog, which the caller has to answer by
+// ending the workflow task rather than by reading more. See
+// [v1.DebugBacklogPace].
+func (e *executor) applyDebugAsks(parked bool) (backlogged bool) {
 	if !parked {
 		// Bounded for the reason the channel drain below is, and for one more
 		// of its own. How many carried asks there are is the peer's choice —
@@ -278,11 +286,17 @@ func (e *executor) applyDebugAsks(parked bool) {
 		for range v1.MaxDebugAsksPerBoundary {
 			var delivery v1.SignalDelivery
 			if !channel.ReceiveAsync(&delivery) {
-				break
+				return false
 			}
 
 			e.applyDebugAsk(&delivery, parked)
 		}
+
+		// Every one of the cap was taken and the channel was not exhausted, so
+		// there is more. Said out loud rather than left for the caller to
+		// notice, because the caller's answer is to stop the workflow task and
+		// nothing else about the loop makes that necessary.
+		return true
 	}
 }
 
@@ -536,7 +550,7 @@ func (e *executor) releaseDebugLease() {
 //
 // The two ways out are indistinguishable to the run — both return here, and the
 // next step runs exactly as it would have — and distinguishable in the record:
-// a release is a `flowstate_debug_resume` delivery in history naming its sender,
+// a release is a `flowstate_debug` delivery naming its sender and the verb
 // and a lapse is the expiry timer firing, whose own TimerStarted event carries
 // the holder in its summary. That is the asymmetry the mechanism needs: an
 // operator must be able to tell "the debugger let go" from "the debugger
@@ -557,7 +571,7 @@ func (e *executor) releaseDebugLease() {
 // is inside its own ceiling and the run still never moves. Together they buy
 // the run a step between any two holds — the only version of "expiry resumes
 // the run" that a second ask cannot undo.
-func (e *executor) holdForDebugLease(node *v1.Node) {
+func (e *executor) holdForDebugLease(node *v1.Node, backlogged bool) {
 	logger := workflow.GetLogger(e.ctx)
 
 	session := e.debug.lease.GetSessionId()
@@ -579,6 +593,22 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		e.showDebugLease(e.debug.lease)
 
 		remaining := e.debug.lease.GetLeaseExpiresAt().AsTime().Sub(now)
+
+		// A backlog changes the park in the one way that ends the workflow
+		// task. The channel still holds messages, so a selector watching it is
+		// ready the instant it is built and `Select` returns without blocking —
+		// which is how a bound on one drain became no bound at all on one
+		// task. Waiting on a timer *nobody has fired yet*, with the channel
+		// deliberately left out, is the only construction here that blocks; the
+		// remainder is drained on the task that timer wakes.
+		//
+		// Left out rather than watched-and-ignored, because a ready receive in
+		// the selector is exactly the thing that does not block.
+		wait, summary := remaining, debugLeaseSummary(e.debug.lease)
+		if backlogged {
+			wait = min(remaining, v1.DebugBacklogPace)
+			summary = debugBacklogSummary(e.debug.lease)
+		}
 
 		// The timer is built on its own cancellable child context so whichever
 		// branch wins can free it — #770's lesson, applied at a second park:
@@ -605,10 +635,12 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// takes nothing off it — a delivery is applied below, through the
 		// function that applies every ask — so this is a wake-up, not a read.
 		selector := workflow.NewSelector(e.ctx)
-		selector.AddReceive(workflow.GetSignalChannel(e.ctx, v1.DebugSignal), func(workflow.ReceiveChannel, bool) {})
+		if !backlogged {
+			selector.AddReceive(workflow.GetSignalChannel(e.ctx, v1.DebugSignal), func(workflow.ReceiveChannel, bool) {})
+		}
 		selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
-		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, remaining,
-			workflow.TimerOptions{Summary: debugLeaseSummary(e.debug.lease)}),
+		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, wait,
+			workflow.TimerOptions{Summary: summary}),
 			func(workflow.Future) {})
 		selector.Select(e.ctx)
 
@@ -669,7 +701,7 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// holder rules a resume that arrives between boundaries is. `true`
 		// because this is the parked call — the one where a would-be new
 		// session is put by rather than started.
-		e.applyDebugAsks(true)
+		backlogged = e.applyDebugAsks(true)
 
 		// Whatever that changed, the loop's own condition decides what happens
 		// next: this lease still holding re-parks, and it having been let go or
@@ -723,6 +755,16 @@ func debugLeaseSummary(lease *v1.DebugSession) string {
 
 	return fmt.Sprintf("debug lease %s held by %s expires",
 		lease.GetSessionId(), boundSummaryText(holder))
+}
+
+// debugBacklogSummary is what the pacing timer says about itself in history.
+//
+// Distinct from [debugLeaseSummary] because the two timers mean opposite things
+// to somebody reading a stuck run's history: one says the run resumes when this
+// fires, the other says it reads more asks. A history full of the second is a
+// flood being paced, which is a fact worth being able to see.
+func debugBacklogSummary(lease *v1.DebugSession) string {
+	return fmt.Sprintf("debug lease %s pacing a backlog of asks", lease.GetSessionId())
 }
 
 // maxSummaryTextBytes bounds one caller-influenced value rendered into a

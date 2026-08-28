@@ -209,8 +209,46 @@ const (
 	// applied at the next boundary, or drained into the run's carried state at a
 	// Continue-As-New exactly as an early-arriving signal is. It paces, it does
 	// not discard.
+	//
+	// On its own it bounds one *drain* and not one workflow task, which is a
+	// distinction a review had to point out: a held run re-parks after draining,
+	// and a channel with a sixty-fifth message on it is immediately ready, so
+	// the park returns at once and the same task drains again. See
+	// [DebugBacklogPace] for the other half.
 	MaxDebugAsksPerBoundary = 64
 )
+
+// DebugBacklogPace is how long a held run waits before reading the next batch of
+// a backlog it did not finish draining.
+//
+// # Why a bound on batches needs a bound on task boundaries too
+//
+// [MaxDebugAsksPerBoundary] stops one drain at sixty-four asks. It does not stop
+// the *task*: a signal channel that still holds messages is immediately ready,
+// so a hold that re-parks on it returns without blocking, drains another
+// sixty-four, and arms and cancels another timer — all inside one workflow task,
+// for as long as the backlog lasts. How long the backlog lasts is the peer's
+// choice, which makes the commands that task issues the peer's choice too, and a
+// workflow task that exceeds its limits fails and is retried forever.
+//
+// That is the same shape as the bound this file already carries twice over:
+// bounding one resource does not bound another the peer controls the ratio to
+// (CLAUDE.md). The resource here is *workflow tasks*, and the only way to bound
+// it is to end one — so when a drain stops at the cap, the run waits on a real
+// timer before reading more. The remainder becomes the next task's work.
+//
+// # A second, derived rather than picked
+//
+// Short enough that a maximal backlog is drained well inside a lease's own life:
+// Temporal's default per-workflow signal limit is ten thousand, which is 157
+// batches, which is under three minutes — comfortably inside
+// [DefaultDebugLease]. Long enough to be a durable round trip rather than a
+// spin, which is the whole point: anything that does not block leaves the task
+// running.
+//
+// The only asks it ever delays are ones from a flood. A debugger sends one ask
+// and renews occasionally, and never reaches the cap at all.
+const DebugBacklogPace = time.Second
 
 // IsReservedSignalName reports whether name belongs to the engine rather than
 // to a workflow's author.

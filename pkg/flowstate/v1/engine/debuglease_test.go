@@ -394,7 +394,7 @@ func TestAnAbandonedLeaseExpiresAndTheRunResumesItself(t *testing.T) {
 // workload and different to whoever is watching it.
 //
 // The record's half is not asserted here, because it is a Temporal history
-// fact rather than a workflow result — a release is a `flowstate_debug_resume`
+// fact rather than a workflow result — a release is a `flowstate_debug`
 // event naming its sender, an expiry is the lease timer firing, and neither
 // reaches the outputs. What *is* asserted is the half a mutation could break:
 // that the run itself cannot tell.
@@ -690,6 +690,67 @@ func TestABoundaryDrainsMoreThanOneAskAtATime(t *testing.T) {
 
 	assert.Equal(t, settleFor+90*time.Second, elapsed,
 		"only the first of two asks buffered for one boundary was applied, so the drain paces to nothing")
+}
+
+// TestABacklogOfAsksIsPacedAcrossWorkflowTasks is the other half of
+// [v1.MaxDebugAsksPerBoundary], and the half it did not have: a cap on one
+// drain is not a cap on one workflow task.
+//
+// A held run re-parks after draining, and a signal channel that still holds
+// messages is ready the instant the selector is built — so `Select` returns
+// without blocking, the run drains another batch, arms and cancels another
+// timer, and does it again. All of that is one workflow task, and how long it
+// goes on for is the sender's choice: a backlog big enough takes the task past
+// its command and history limits, where it fails and is retried forever.
+//
+// So a drain that stops at the cap makes the run wait on a real timer before
+// reading more, and [v1.DebugBacklogPace] of virtual time is what that wait
+// looks like from here. Counting workflow tasks is not something this
+// environment exposes; the clock moving is the same fact, because the *only*
+// thing that moves it is a timer nobody had fired yet — which is precisely the
+// blocking this test is about.
+//
+// The positive control runs first and is what makes the figure mean anything:
+// a backlog inside the cap is drained in one go and costs no pacing at all.
+func TestABacklogOfAsksIsPacedAcrossWorkflowTasks(t *testing.T) {
+	t.Parallel()
+
+	// Every ask is a renewal from the holder, so none of them changes when the
+	// lease expires by more than the last one says — which keeps the run's
+	// finishing time a fact about pacing rather than about leases.
+	backlog := func(n int) []scriptedAsk {
+		asks := make([]scriptedAsk, 0, n)
+		for range n {
+			asks = append(asks, pauseAt("sre-1@example.com", time.Minute))
+		}
+
+		return asks
+	}
+
+	// Inside the cap: one drain takes all of them, the hold runs its minute, and
+	// nothing waits on a pacing timer.
+	within, _ := runHeldFor(t, debugSpec("backlog-within-the-cap"), map[time.Duration][]scriptedAsk{
+		30 * time.Second: backlog(v1.MaxDebugAsksPerBoundary),
+	})
+	require.Equal(t, settleFor+time.Minute, within,
+		"a backlog inside the cap is drained in one go, so the run is held for exactly its lease")
+
+	// Past the cap. Each batch after the first costs one pacing wait, and the
+	// lease is renewed to a full minute by the last ask of every batch — so the
+	// run finishes a minute after the final batch is read rather than a minute
+	// after the first.
+	const batches = 3
+	past, outputs := runHeldFor(t, debugSpec("backlog-past-the-cap"), map[time.Duration][]scriptedAsk{
+		30 * time.Second: backlog(v1.MaxDebugAsksPerBoundary*batches + 1),
+	})
+
+	assert.Greater(t, past, settleFor+time.Minute,
+		"a backlog past the cap was consumed without the run ever blocking, so one workflow task "+
+			"drained all of it — which is the cap bounding a drain and not a task")
+	assert.Equal(t, settleFor+time.Duration(batches)*v1.DebugBacklogPace+time.Minute, past,
+		"the run did not pace one batch per wait")
+	assert.Contains(t, outputs.GetStepValues(), "second",
+		"and it still finished rather than wedging")
 }
 
 // TestABoundaryDrainsMoreThanOneCarriedAsk is the same claim about the other

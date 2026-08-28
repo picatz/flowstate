@@ -72,7 +72,7 @@ func TestWhatAPauseAskDoes(t *testing.T) {
 // that carries it.
 //
 // A hold ends two ways and an operator has to be able to tell them apart: a
-// release is a `flowstate_debug_resume` delivery in history naming its sender,
+// release is a `flowstate_debug` delivery naming its sender and the verb
 // and an expiry is this timer firing. Without a holder on it, "the run resumed
 // on its own" is an event with nobody attached to it — so the summary is the
 // whole of what makes the vanished-debugger case attributable.

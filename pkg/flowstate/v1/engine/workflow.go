@@ -618,11 +618,16 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// approval gone and wait forever.
 		pending := drainSignals(ctx, st.Workflow, exec.signals.pending)
 
-		// And the two channels the engine owns rather than the specification.
-		// A pause ask buffered when this segment ran out of budget would
-		// otherwise be dropped at the seam — a `flow signal` that reported
-		// success and did nothing — which is precisely the failure drainSignals
-		// exists to prevent, on a channel [v1.SignalNames] cannot know about.
+		// And the one channel the engine owns rather than the specification. A
+		// pause ask buffered when this segment ran out of budget would otherwise
+		// be dropped at the seam — a `flow signal` that reported success and did
+		// nothing — which is precisely the failure drainSignals exists to
+		// prevent, on a channel [v1.SignalNames] cannot know about.
+		//
+		// Skipped entirely for a run whose workflow declares no `debug:`, which
+		// is every run written before that field existed: on those, the same
+		// name may be an ordinary signal the specification waits for, and this
+		// drain would take it. See [debugControl.declared].
 		pending = drainDebugAsks(ctx, pending, exec.debug)
 
 		next := &v1.RunState{
