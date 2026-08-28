@@ -239,14 +239,27 @@ type File struct {
 	// is not itself a bug — see #203's discussion of `examples/call-a-workflow/workflow.test.yaml`.
 	Edition string `yaml:"edition"`
 
-	// Vars are the literal values this file states once and references
-	// everywhere (#1072): a whole-value `${vars.x}` in a fixture position is
-	// substituted at load, and `expect.check:` reads `vars.x` at evaluation.
-	// Literals only — any `${` inside one is refused, including a reference
-	// to another var — so there is no evaluation order and no cycles; see
-	// vars.go for the design and the one deliberate asymmetry (a stub's
-	// `vars.` stays the workflow's).
+	// Vars are the values this file states once and references everywhere
+	// (#1072): a whole-value `${vars.x}` in a fixture position is substituted
+	// at load, and `expect.check:` reads `vars.x` at evaluation.
+	//
+	// A value that is itself a whole-value `${...}` fence is an expression over
+	// the block's other vars, evaluated once at load in dependency order; every
+	// other value is a literal, and a fence nested inside a structure is
+	// refused. See vars.go for the ordering, the cycle diagnostic, the bounds,
+	// and the one deliberate asymmetry (a stub's `vars.` stays the workflow's).
 	Vars map[string]any `yaml:"vars"`
+
+	// varsWithheld is which of those vars a value surface may never print, and
+	// the strings it must clear from one — the taint a var inherits from a
+	// secret it was computed from ([withheldFrom]).
+	//
+	// Written by the loader rather than by an author, so it carries no yaml tag
+	// and the strict decode never offers a key for it — the same bookkeeping
+	// [Stub.fromDefaults] and [CheckClaim.fromDefaults] are. A [File] built in
+	// Go carries none, exactly as it carries no substitution: those doors
+	// evaluate nothing, so there is nothing for a taint to travel through.
+	varsWithheld withheldVars
 
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
@@ -1214,13 +1227,17 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	moved := dd.combineInto(&file)
 	p.wrote(moved.file, moved.paths)
 
-	// Vars validate and substitute first, before tables expand and before
-	// `defaults:` is checked: an inherited `${vars.x}` resolves to its
-	// literal exactly once, and the fixture rule below then checks what the
-	// run will actually see.
+	// Vars validate, evaluate and substitute first, before tables expand and
+	// before `defaults:` is checked: a computed var is evaluated exactly once
+	// here (#1072 slice 4), an inherited `${vars.x}` resolves to its literal
+	// exactly once, and the fixture rule below then checks what the run will
+	// actually see. That ordering is the reason evaluation is at load rather
+	// than per case — the substitution contract this comment states would
+	// otherwise have nothing to substitute.
 	if !checkVars(p, file.Vars) {
 		return nil, p.err()
 	}
+	file.evaluateVars(p)
 	file.resolveVars(p)
 
 	// Rows are expanded before defaults are merged, which is what makes the
@@ -1711,10 +1728,10 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 
 		return false
 	}
-	checkNoExpressions(p, site{at: base.field("workflow")}, "defaults.workflow", d.Workflow, 0)
+	checkNoExpressions(p, site{at: base.field("workflow")}, "defaults.workflow", defaultsAreFixtures, d.Workflow, 0)
 	for _, name := range slices.Sorted(maps.Keys(d.Inputs)) {
 		checkNoExpressions(p, site{at: base.field("inputs").field(name)},
-			"defaults.inputs."+name, d.Inputs[name], 0)
+			"defaults.inputs."+name, defaultsAreFixtures, d.Inputs[name], 0)
 	}
 	for i := range d.Stubs {
 		s := &d.Stubs[i]
@@ -1738,11 +1755,11 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 		if !checkStubShape(p, spot, where, s) {
 			continue
 		}
-		checkNoExpressions(p, spot.in(spot.at.field("where")), where+".where", s.Where, 0)
-		checkNoExpressions(p, spot.in(spot.at.field("returns")), where+".returns", s.Returns, 0)
+		checkNoExpressions(p, spot.in(spot.at.field("where")), where+".where", defaultsAreFixtures, s.Where, 0)
+		checkNoExpressions(p, spot.in(spot.at.field("returns")), where+".returns", defaultsAreFixtures, s.Returns, 0)
 	}
 	if d.Sender != nil {
-		checkNoExpressions(p, site{at: base.field("sender")}, "defaults.sender", d.Sender, 0)
+		checkNoExpressions(p, site{at: base.field("sender")}, "defaults.sender", defaultsAreFixtures, d.Sender, 0)
 		// Judged here, where it is written, rather than only on the signals
 		// that inherit it. [mergeDefaults] installs this one identity on every
 		// signal that omits its own, so checking it there alone reported one
@@ -1760,16 +1777,40 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 	return true
 }
 
-// checkNoExpressions descends a default value and refuses every string that
-// carries a `${` fence, naming and positioning each. The bound on depth is the
-// fail-closed answer to a pathological fixture rather than a constraint on an
-// ordinary one (CLAUDE.md, "bound anything that consumes untrusted input"): the
-// walk is recursive, so recursion gets its own bound.
+// A fixtureRule is the second sentence a `${...}` refusal carries: which block
+// the value sits in, and what to write instead.
+//
+// Passed rather than derived from the field path, because the path is prose:
+// a rule that read its own noun back out of a string would be one textual
+// search away from the mistake this type was added to fix, where every var
+// refused for holding an expression was told that "a test file's `defaults:`
+// is a fixture" (#1072, repair 5).
+type fixtureRule string
+
+const (
+	// defaultsAreFixtures is #416's rule, in the block it was written for.
+	defaultsAreFixtures fixtureRule = "a test file's `defaults:` is a fixture, so it may not hold an " +
+		"expression. Write the literal value, or move it into the case that needs it"
+
+	// varsFenceWholeValues is the same refusal where an expression *is* legal —
+	// as the whole value, never inside a structure, which is the rule every
+	// reference position in a test file already follows.
+	varsFenceWholeValues fixtureRule = "a var holds a literal, or one whole-value `${...}` expression; " +
+		"a fence inside a structure is not evaluated. State it literally, or build the structure in " +
+		"one expression: `${{'region': vars.base.region}}`"
+)
+
+// checkNoExpressions descends a value and refuses every string that carries a
+// `${` fence, naming and positioning each and closing with rule's sentence.
+// The bound on depth is the fail-closed answer to a pathological fixture
+// rather than a constraint on an ordinary one (CLAUDE.md, "bound anything that
+// consumes untrusted input"): the walk is recursive, so recursion gets its own
+// bound.
 //
 // The prose path and the source path descend together, one line apart at every
 // step, so the name a reader is given and the line they are sent to cannot come
 // to disagree.
-func checkNoExpressions(p *problems, r site, where string, v any, depth int) {
+func checkNoExpressions(p *problems, r site, where string, rule fixtureRule, v any, depth int) {
 	if depth > maxDefaultsDepth {
 		// Reported once and not descended into: every level below this one
 		// would report the same fact about the same value.
@@ -1783,9 +1824,7 @@ func checkNoExpressions(p *problems, r site, where string, v any, depth int) {
 		return
 	case string:
 		if strings.Contains(value, "${") {
-			p.report(r, "%s holds the expression %q; a test file's `defaults:` is a fixture, "+
-				"so it may not hold an expression. Write the literal value, or move it into the case that needs it",
-				where, value)
+			p.report(r, "%s holds the expression %q; %s", where, value, rule)
 		}
 
 		return
@@ -1801,17 +1840,17 @@ func checkNoExpressions(p *problems, r site, where string, v any, depth int) {
 			{"issuer", value.Issuer},
 			{"namespace", value.Namespace},
 		} {
-			checkNoExpressions(p, r.in(r.at.field(field.name)), where+"."+field.name, field.value, depth+1)
+			checkNoExpressions(p, r.in(r.at.field(field.name)), where+"."+field.name, rule, field.value, depth+1)
 		}
 		for _, name := range slices.Sorted(maps.Keys(value.Claims)) {
 			checkNoExpressions(p, r.in(r.at.field("claims").field(name)),
-				where+".claims."+name, value.Claims[name], depth+1)
+				where+".claims."+name, rule, value.Claims[name], depth+1)
 		}
 
 		return
 	case []any:
 		for i, element := range value {
-			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i), element, depth+1)
+			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i), rule, element, depth+1)
 		}
 
 		return
@@ -1831,7 +1870,7 @@ func checkNoExpressions(p *problems, r site, where string, v any, depth int) {
 		}
 		slices.Sort(keys)
 		for _, key := range keys {
-			checkNoExpressions(p, r.in(r.at.field(key)), where+"."+key,
+			checkNoExpressions(p, r.in(r.at.field(key)), where+"."+key, rule,
 				rv.MapIndex(reflect.ValueOf(key).Convert(rv.Type().Key())).Interface(), depth+1)
 		}
 
@@ -1839,7 +1878,7 @@ func checkNoExpressions(p *problems, r site, where string, v any, depth int) {
 	}
 	if rv.Kind() == reflect.Slice {
 		for i := range rv.Len() {
-			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i),
+			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i), rule,
 				rv.Index(i).Interface(), depth+1)
 		}
 

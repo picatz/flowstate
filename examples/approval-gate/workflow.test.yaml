@@ -32,8 +32,22 @@
 # The issuer is the one fact every sender in this file shares, stated once
 # (#1072): a fixture position takes a whole-value `${vars.x}` reference, and
 # the loader substitutes the literal before anything else reads it.
+#
+# The three people below are derived from the one domain they share, which is
+# what a *computed* var is for (#1072 slice 4): a var value that is itself a
+# whole-value `${...}` fence is an expression over the block's other vars,
+# evaluated once when the file loads, in dependency order. The addresses and
+# the issuer then agree with each other by construction rather than by
+# everyone remembering to edit eight lines — and the workflow's own
+# `signals:` rule qualifies its subject with exactly this issuer
+# (workflow.yaml, `subject: ${"https://issuer.example.com#" + ...}`), so the
+# two halves of that comparison are stated in one place here.
 vars:
-  issuer: https://issuer.example.com
+  domain: example.com
+  issuer: "${'https://issuer.' + vars.domain}"
+  approver: "${'sre-lead@' + vars.domain}"
+  requester: "${'release-requester@' + vars.domain}"
+  outsider: "${'someone-else@' + vars.domain}"
 
 edition: v2026.3
 defaults:
@@ -43,13 +57,13 @@ defaults:
   inputs:
     version: v1.4.2
     environment: production
-    expected_approver: sre-lead@example.com
+    expected_approver: "${vars.approver}"
   # The approver most cases name. A case that names its own `sender:` overrides
   # this (explicit beats inherited); the "without an attested sender" case opts
   # out with an explicit empty `sender: {}`, which is refused exactly as an
   # omitted one was before defaults existed.
   sender:
-    subject: sre-lead@example.com
+    subject: "${vars.approver}"
     issuer: "${vars.issuer}"
     claims:
       team: release-managers
@@ -68,7 +82,7 @@ tests:
       others: skipped
       outputs:
         decision: deployed
-        approver_subject: sre-lead@example.com
+        approver_subject: "${vars.approver}"
 
   # The pair `distinct_from_starter: true` exists for, and the reason this
   # file needs a `starter:` to state it: the two cases differ in exactly one
@@ -77,7 +91,7 @@ tests:
   - name: a distinct starter admits the approver this run named
     workflow: ./workflow.yaml
     starter:
-      subject: release-requester@example.com
+      subject: "${vars.requester}"
       issuer: "${vars.issuer}"
     signals:
       - name: deploy-approved
@@ -88,7 +102,7 @@ tests:
       others: skipped
       outputs:
         decision: deployed
-        approver_subject: sre-lead@example.com
+        approver_subject: "${vars.approver}"
 
   # Refused for being the run's own starter, not for anything about the
   # payload: the sender satisfies the rule's `subject:` and its `claims:`
@@ -102,7 +116,7 @@ tests:
   - name: the starter cannot approve their own deploy
     workflow: ./workflow.yaml
     starter:
-      subject: sre-lead@example.com
+      subject: "${vars.approver}"
       issuer: "${vars.issuer}"
     signals:
       - name: deploy-approved
@@ -121,14 +135,14 @@ tests:
   - name: a distinct approver the run did not name is still refused
     workflow: ./workflow.yaml
     starter:
-      subject: release-requester@example.com
+      subject: "${vars.requester}"
       issuer: "${vars.issuer}"
     signals:
       - name: deploy-approved
         payload:
           approved: true
         sender:
-          subject: someone-else@example.com
+          subject: "${vars.outsider}"
           issuer: "${vars.issuer}"
           claims:
             team: release-managers
@@ -149,7 +163,7 @@ tests:
           # Satisfies the claim, but not the narrowed subject this run
           # named — signals: refuses it before it is ever delivered, so
           # the wait simply times out, the same as nobody answering at all.
-          subject: someone-else@example.com
+          subject: "${vars.outsider}"
           issuer: "${vars.issuer}"
           claims:
             team: release-managers

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -187,9 +188,18 @@ func postRunScope(spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Wor
 // finished case is questioned under. The `run` root is the engine's own,
 // read through the unshadowed activation and extended with failed/error —
 // derived, never restated, so no hand-kept key list exists to stop being
-// complete — and the file's `vars` bind beside it (nothing to shadow: this
-// scope carries no workflow ambient vars, and the day they join, #1072's
-// per-case collision refusal lands with them). One construction, shared by
+// complete — and the file's `vars` bind beside it.
+//
+// Nothing to shadow, still: [postRunScope] carries no workflow ambient vars,
+// so a file var and a workflow var of the same name are two names in two
+// scopes rather than a collision. #1072's per-case collision refusal is
+// narrowed to exactly that — it gates the day workflow ambient vars join this
+// scope and no earlier (repair 2), because refusing the pair today would
+// refuse TestAStubsVarsAreTheWorkflowsNotTheFiles, a file where both meanings
+// are deliberate: a stub's `where:` reads the workflow's `greeting` and a
+// check reads the file's, in the same case, on purpose.
+//
+// One construction, shared by
 // `expect.check:` evaluation and the debugger's autopsy (Codex, #1107) —
 // the autopsy through [autopsyExtras], which redacts what these bindings
 // would print, so the two surfaces share the names and shapes while only
@@ -230,7 +240,7 @@ func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, ru
 // text can echo one. Evaluation stays raw in [assertChecks]: a check
 // comparing a secret value must see the value; only what renders withholds
 // it — the same split the transcript already lives by.
-func autopsyExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, runErr error, sensitive sensitiveInputs) map[string]ref.Val {
+func autopsyExtras(ctx context.Context, scope *v1.Scope, vars fileVars, runErr error, sensitive sensitiveInputs) map[string]ref.Val {
 	if runErr != nil {
 		text := sensitive.RedactSubstrings(runErr.Error())
 		if sensitive.WithholdAll() {
@@ -252,16 +262,26 @@ func autopsyExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, ru
 // string however deep the value was — while this one hands back a structured
 // value for CEL to walk: a map var holding "Bearer " + secret in a nested
 // field would otherwise reach `inspect vars.request` intact (Codex, #1109).
-func redactedVars(vars map[string]any, sensitive sensitiveInputs) map[string]any {
-	if len(vars) == 0 {
-		return vars
+//
+// A var the file withholds is replaced whole rather than walked, which is the
+// name half of [withheldVars]: its *material* is in the redaction set too and
+// would clear the strings, but a value derived from a secret can carry the
+// shape of one — a size, a count, a key that survives its value — and the
+// question "may this var print" was already answered at load (#1072, repair 4).
+func redactedVars(vars fileVars, sensitive sensitiveInputs) map[string]any {
+	if len(vars.values) == 0 {
+		return vars.values
 	}
 
-	out := make(map[string]any, len(vars))
-	for name, value := range vars {
+	out := make(map[string]any, len(vars.values))
+	for name, value := range vars.values {
 		if sensitive.WithholdAll() {
 			// The word [redactedScalarText] uses for the same posture.
 			out[name] = "[withheld]"
+			continue
+		}
+		if vars.withheld.holds(name) {
+			out[name] = sensitiveMarker
 			continue
 		}
 		out[name] = redactSubstringsTree(sensitive.RedactTree(value), sensitive)
@@ -307,7 +327,7 @@ func redactSubstringsTree(v any, sensitive sensitiveInputs) any {
 // Checks run whether or not the run failed — an error claim (`run.error`)
 // exists precisely for failed runs — against whatever the partial transcript
 // holds; a claim reaching a step the failure preceded errors, honestly.
-func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars map[string]any, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
+func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	if len(claims) == 0 {
 		return nil
 	}
@@ -319,7 +339,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 	// carries `local` as well as the two fields checks exist for — dropping
 	// it would make `run.local` unreadable inside a check while every other
 	// expression in the run reads it true.
-	extra := postRunExtras(ctx, scope, vars, runErr)
+	extra := postRunExtras(ctx, scope, vars.values, runErr)
 	activation := scope.ActivationWith(ctx, extra)
 
 	libs, err := v1.ProfileLibraries(spec.GetProfile())
@@ -335,7 +355,8 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		out, err := ev.EvalString(ctx, claim.That, libs, activation)
 		if err != nil {
 			failures = append(failures, &v1.Diagnostic{Field: field,
-				Message: fmt.Sprintf("check errored: %s\n           %v", claim.That, err)})
+				Message: fmt.Sprintf("check errored: %s\n           %s", claim.That,
+					checkErrorText(ev, err, claim.That, vars.withheld, sensitive))})
 			continue
 		}
 		held, ok := out.Value().(bool)
@@ -352,13 +373,97 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		if claim.Because != "" {
 			message += "\n           because: " + claim.Because
 		}
-		for _, witness := range checkWitnesses(ctx, ev, libs, activation, claim.That, sensitive) {
+		for _, witness := range checkWitnesses(ctx, ev, libs, activation, claim.That, vars.withheld, sensitive) {
 			message += "\n           " + witness
 		}
 		failures = append(failures, &v1.Diagnostic{Field: field, Message: message})
 	}
 
 	return failures
+}
+
+// checkErrorText is what a claim's own evaluator failure may say (Codex,
+// #1197).
+//
+// A check that *errors* rather than answering false is the third rendering in
+// this file, and it was the one that went through neither redaction: it
+// formatted cel-go's error straight into the diagnostic while the witnesses
+// beside it went through [redactedScalarText] and the withheld-var rule. An
+// error carries its operands — `no such key: <value>` — so a claim reading a
+// withheld var printed that var's value in the clear, past every guard the
+// witnesses apply.
+//
+// Two rules, and they are the two every other rendering here already uses:
+//
+//   - The set's own pair. A posture that withholds everything withholds this
+//     too, and otherwise the substring backstop clears what it recognises —
+//     the shape [formatUnmatchedStubEvalError] states one file over.
+//   - The withheld-var rule, because the set is not enough on its own. An
+//     evaluator error can report on a value *derived inside the claim*, which
+//     no set ever saw: `[0][size(vars.header)]` fails with the length of a
+//     withheld string, and there is no "13" to match. So a claim that reads a
+//     withheld var says which one and stops, rather than quoting a failure
+//     computed from it — the same answer [checkWitnesses] gives a path rooted
+//     at one.
+//
+// Naming the var rather than withholding silently is the useful half: an author
+// reading it knows which claim to rewrite, and a name is not a value.
+func checkErrorText(ev *v1.Evaluator, err error, claim string, withheld withheldVars, sensitive sensitiveInputs) string {
+	if sensitive.WithholdAll() {
+		return "[withheld]"
+	}
+	if name, reads := claimReadsWithheld(ev, claim, withheld); reads {
+		if name == "" {
+			return "[withheld: this claim indexes `vars` with an expression, so which var it " +
+				"reads is not known until it runs, and this file withholds at least one]"
+		}
+
+		return fmt.Sprintf("[withheld: this claim reads vars.%s, which this file withholds]", name)
+	}
+
+	return sensitive.RedactSubstrings(err.Error())
+}
+
+// claimReadsWithheld reports whether a claim references a withheld var, and
+// names the first one it finds in the claim's own reading order.
+//
+// Over the same AST walk [checkWitnesses] uses, so the two surfaces cannot
+// come to disagree about what "reads a withheld var" means. A claim this
+// package cannot parse reads nothing: it never evaluated either, so its error
+// is about syntax rather than about a value.
+func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (string, bool) {
+	if len(withheld.names) == 0 {
+		return "", false
+	}
+	env, err := ev.Env()
+	if err != nil {
+		return "", false
+	}
+	parsed, issues := env.Parse(claim)
+	if issues != nil && issues.Err() != nil {
+		return "", false
+	}
+
+	found, dynamic := "", false
+	walkVarReads(parsed.NativeRep().Expr(), map[string]bool{}, func(read varRead) {
+		switch {
+		case read.dynamic:
+			dynamic = true
+		case found == "" && slices.Contains(withheld.names, read.name):
+			found = read.name
+		}
+	})
+	if found != "" {
+		return found, true
+	}
+	if dynamic {
+		// `vars[<expression>]` names its sibling when it runs, so this claim
+		// may be reading any of them — including a withheld one. Fail closed
+		// and say so without naming a var, since naming one would be a guess.
+		return "", true
+	}
+
+	return "", false
 }
 
 // checkWitnesses renders the values a failed claim read: each maximal
@@ -372,11 +477,17 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 // sensitive input or a case secret that a claim happens to reference never
 // reaches the report by this new road (#1052's rule).
 //
+// A path reading a var the file withholds renders as the marker without being
+// evaluated at all (#1072, repair 4). The set above catches a withheld var's
+// *strings* wherever they travel, and a value computed from a secret can carry
+// what a string comparison cannot see — a size, a boolean answer about it —
+// so the question "may this var print" is answered by the name, once, at load.
+//
 // A path that fails to re-evaluate is skipped rather than reported — a
 // comprehension's iteration variable resolves nowhere outside its loop, and a
 // step a failed run never reached has no value to witness. Bounded by
 // [MaxCheckWitnesses]; only ever paid on a failing check.
-func checkWitnesses(ctx context.Context, ev *v1.Evaluator, libs []string, activation cel.Activation, claim string, sensitive sensitiveInputs) []string {
+func checkWitnesses(ctx context.Context, ev *v1.Evaluator, libs []string, activation cel.Activation, claim string, withheld withheldVars, sensitive sensitiveInputs) []string {
 	if sensitive.WithholdAll() {
 		return []string{"(values withheld: the redaction set could not be built)"}
 	}
@@ -404,6 +515,15 @@ func checkWitnesses(ctx context.Context, ev *v1.Evaluator, libs []string, activa
 		if len(witnesses) >= MaxCheckWitnesses {
 			witnesses = append(witnesses, fmt.Sprintf("(and %d more)", len(paths)-MaxCheckWitnesses))
 			break
+		}
+		if withheld.covers(path) {
+			// Named rather than dropped: a claim that read a withheld var and
+			// failed is one whose evidence exists and is being kept back, which
+			// is a different thing for a reader than a value nothing could
+			// produce.
+			witnesses = append(witnesses, path+" = "+sensitiveMarker)
+
+			continue
 		}
 		out, err := ev.EvalString(ctx, path, libs, activation)
 		if err != nil {
