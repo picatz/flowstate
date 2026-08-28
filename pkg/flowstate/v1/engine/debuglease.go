@@ -270,6 +270,15 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 		// steps [v1.DebugHoldDeadline] exists to refuse, and the clamp lands on
 		// what the lease *says* as well as on what the engine does, so the
 		// expiry an operator reads is one the run really resumes at.
+		//
+		// A renewal reaching this branch always buys something, however little,
+		// and there is deliberately no arm here saying otherwise: every lease
+		// this session records expires at or before `holdUntil`, so `held` at
+		// `now` means `now` is before `holdUntil` too, and the clamped answer is
+		// therefore after `now`. A holder whose session really is spent is not
+		// holding, so their ask is put by below and answered by that log line
+		// instead. An arm for it would be a branch nothing can reach, which
+		// reads like a guarantee and is worse than no arm at all.
 		if held {
 			extended := v1.ExtendDebugLease(e.debug.lease, now, requested, e.debug.holdUntil)
 			e.debug.lease = extended
@@ -278,20 +287,6 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 				"sender", who, "session", extended.GetSessionId(),
 				"expires_at", extended.GetLeaseExpiresAt().AsTime(),
 				"session_ends_at", e.debug.holdUntil)
-
-			if !v1.DebugLeaseHeld(extended, now) {
-				// The renewal bought nothing, because the session was already
-				// out of deadline. Said out loud, because "I renewed and the
-				// run resumed anyway" is otherwise indistinguishable from a
-				// dropped ask, and the answer — ask again for a fresh session,
-				// which will hold the next boundary — is one only somebody who
-				// knows which of the two happened can act on.
-				logger.Warn("the renewed debug lease is already spent: this session has reached "+
-					"its maximum hold, so the run resumes and a further pause ask starts a new "+
-					"session at the next step boundary",
-					"sender", who, "session", extended.GetSessionId(),
-					"session_ends_at", e.debug.holdUntil)
-			}
 
 			return
 		}
@@ -307,11 +302,19 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 		// price of a second debugger is that the run runs a step, which is the
 		// same trade #928 made when it answered "resume" to the abandoned
 		// session.
+		//
+		// Two callers arrive here, and the message has to be true for both: a
+		// second debugger asking as the first one's hold ends, and the *first*
+		// debugger asking again after their own session ran out of deadline.
+		// Neither is holding the run at this instant — that is what `held`
+		// being false means — so the line says where the ask lands rather than
+		// what it collided with.
 		if parked {
 			e.deferDebugAsk(name, delivery)
 
-			logger.Info("a debug pause ask arrived while this run was already held; it takes the "+
-				"next step boundary rather than this one, so the run makes progress between holds",
+			logger.Info("a debug pause ask arrived inside a hold this run is already leaving; it "+
+				"starts a new session at the next step boundary rather than this one, so the run "+
+				"makes progress between holds",
 				"sender", who)
 
 			return
