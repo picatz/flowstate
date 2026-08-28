@@ -371,3 +371,88 @@ func TestAScopeMessageDescribesOneStop(t *testing.T) {
 	assert.Zero(t, mixed,
 		"%d of 20 scope messages carried values from two different pauses, so one message described two stops", mixed)
 }
+
+// TestTheProducerCapsHowMuchOneScopeAnswerEvaluates is the bound on the
+// resource a caller's budget does not bound.
+//
+// [v1.DefaultCostLimit] bounds one evaluation; nothing bounded how many one
+// answer performs, and a workload chooses how many names a scope holds — so a
+// caller asking for all of them bought unbounded compilation and evaluation
+// with one message (Codex, #1194). The ceiling is the producer's and the budget
+// is the caller's, and asking for more than the ceiling is the same answer as
+// asking for exactly it.
+func TestTheProducerCapsHowMuchOneScopeAnswerEvaluates(t *testing.T) {
+	t.Parallel()
+
+	// Comfortably past the ceiling, so the clamp is what decides the answer.
+	const names = MaxScopeEvaluations + 137
+
+	session, err := New(Options{Out: &strings.Builder{}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.prompting(promptSubject{scope: taggedScope("A", names)})
+
+	// What the run can reach, read from the session rather than assumed: the
+	// steps are most of it and the scope carries other groups too, and a total
+	// this test wrote down would be a second copy of a number the session
+	// already computes.
+	reachable := 0
+	for _, group := range session.scopeNames(taggedScope("A", names), nil) {
+		reachable += len(group.Names)
+	}
+	require.Greater(t, reachable, MaxScopeEvaluations,
+		"the fixture holds fewer names than the ceiling, so the clamp below is never reached")
+
+	for _, tc := range []struct {
+		name  string
+		limit int
+	}{
+		{name: "a negative limit asks for as many as the producer will do", limit: -1},
+		{name: "a limit past the ceiling is the ceiling", limit: names},
+		{name: "and so is one absurdly past it", limit: 1 << 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			message, scopeErr := session.ScopeProto(t.Context(), tc.limit)
+			require.NoError(t, scopeErr)
+
+			resolved, listed := 0, 0
+			for _, group := range message.GetGroups() {
+				for _, binding := range group.GetBindings() {
+					listed++
+					if binding.GetAnswer() != nil {
+						resolved++
+					}
+				}
+			}
+
+			assert.Equal(t, MaxScopeEvaluations, resolved,
+				"one answer evaluated %d values, which is not the producer's ceiling", resolved)
+
+			// The totals are untouched by the ceiling, which is what keeps an
+			// elision honest: a total that reported the bound back would say
+			// the run can reach fewer names than it can.
+			assert.Equal(t, reachable, listed,
+				"the ceiling dropped names rather than leaving their values unresolved")
+			assert.Equal(t, int32(reachable), message.GetTotal(),
+				"the ceiling was reported back as the size of the scope")
+		})
+	}
+
+	// The other direction, so the clamp is a ceiling rather than a floor: a
+	// caller asking for less still gets less.
+	fewer, err := session.ScopeProto(t.Context(), 3)
+	require.NoError(t, err)
+
+	resolved := 0
+	for _, group := range fewer.GetGroups() {
+		for _, binding := range group.GetBindings() {
+			if binding.GetAnswer() != nil {
+				resolved++
+			}
+		}
+	}
+	assert.Equal(t, 3, resolved, "a caller's smaller budget was overridden by the producer's ceiling")
+}

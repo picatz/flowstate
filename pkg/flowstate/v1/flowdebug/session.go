@@ -90,6 +90,31 @@ const (
 	// enumeration through tab completion and `inspect steps.`, which are
 	// bounded and prefix-filtered for exactly this.
 	MaxScopeNames = 20
+
+	// MaxScopeEvaluations bounds how many values one [Session.ScopeProto]
+	// answer resolves, whatever its caller asked for.
+	//
+	// A caller's budget is a *request* and this is the producer's ceiling, and
+	// they are different things for the reason CLAUDE.md gives: bounding one
+	// resource does not bound another the peer controls the ratio to.
+	// [v1.DefaultCostLimit] bounds a single evaluation, and nothing bounded how
+	// many of them one answer performs — a workload can name a great many
+	// bindings, and a negative limit asked for all of them, so a remote adapter
+	// could buy an unbounded amount of compilation and evaluation with one
+	// message (Codex, #1194). Cost per evaluation and evaluations per answer
+	// are two resources.
+	//
+	// 500 rather than something smaller because a producer ceiling narrower
+	// than what a front legitimately asks for would quietly hand it less than
+	// it requested: this repository's two renderers cap themselves at 200
+	// (`debugpane.MaxScopeEvaluations`) and 500 (`flowdap.MaxScopeVariables`),
+	// so this is the larger of them. Nothing here has a use for more.
+	//
+	// The totals are untouched by it. [Session.ScopeProto] still reports what
+	// the run can reach, so an elision says how much it elided rather than
+	// reporting the bound back as the scope's size — the same distinction
+	// [MaxScopeNames] draws for a line somebody reads.
+	MaxScopeEvaluations = 500
 )
 
 // Tone classifies one fragment of session output, so a terminal can colour

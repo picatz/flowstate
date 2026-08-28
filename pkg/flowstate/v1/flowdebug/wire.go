@@ -144,9 +144,15 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 // Resolving a value is an evaluation, so how many to resolve is a budget rather
 // than a property of the scope — the same reason [Session.Steps] takes its
 // window from its caller and [MaxScopeNames] is applied by a renderer instead
-// of here. A negative limit resolves every name; a zero limit resolves none and
-// answers with the names alone, which is what a debug adapter's `scopes`
-// request wants before anyone has expanded a pane.
+// of here. A zero limit resolves none and answers with the names alone, which
+// is what a debug adapter's `scopes` request wants before anyone has expanded a
+// pane; a negative limit asks for as many as this producer will do.
+//
+// It is a *request* rather than an instruction, and [MaxScopeEvaluations] is
+// the ceiling: an evaluation is bounded by cost and a set of them was bounded
+// by nothing, so a caller asking for every name in a scope a workload chose the
+// size of could buy unbounded work with one message (Codex, #1194). Asking for
+// more than the ceiling is the same answer as asking for exactly it.
 //
 // Every group keeps its total whatever the budget does, so a group entirely
 // past it arrives with no bindings rather than vanishing: that the group exists
@@ -180,6 +186,14 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 
 	scope := &v1.DebugScope{Groups: make([]*v1.DebugScopeGroup, 0, len(groups))}
 
+	// The caller's request, held to the producer's ceiling. A negative limit is
+	// "as many as you will do" rather than "all", which is the whole of the
+	// difference between a budget and an instruction.
+	budget := MaxScopeEvaluations
+	if limit >= 0 {
+		budget = min(limit, MaxScopeEvaluations)
+	}
+
 	resolved := 0
 	for _, group := range groups {
 		out := &v1.DebugScopeGroup{
@@ -194,7 +208,7 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 			binding := &v1.DebugBinding{Name: name, Expression: expressionFor(group.Root, name)}
 			out.Bindings = append(out.Bindings, binding)
 
-			if limit >= 0 && resolved >= limit {
+			if resolved >= budget {
 				// Counted past the budget by [DebugScopeGroup.total] above,
 				// deliberately: the total is what makes an elision honest, and
 				// a name whose value nobody asked for is still a name the run
