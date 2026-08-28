@@ -1264,7 +1264,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// The stub count is the bound that has to stop the pass rather than be
 	// noted: a default is copied into every case below, so an over-limit block
 	// multiplies by the case count before anything checks it.
-	if !checkDefaults(p, file.Defaults, ownDefaultChecks) {
+	if !checkDefaults(p, file.Defaults, ownDefaultChecks, dd.sourcePath()) {
 		return nil, p.err()
 	}
 	if file.Defaults != nil {
@@ -1325,7 +1325,9 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		checkScriptedIdentity(p, r.in(source.path.field("starter")),
 			fmt.Sprintf("test %q starter:", test.Name), test.Starter)
 		checkCheckClaims(p, r.in(source.path.field("expect").field("check")),
-			fmt.Sprintf("test %q expect", test.Name), test.Expect.Check, source.ownChecks, nil)
+			// A case's inherited claims came from a block or an entry this
+			// path does not reach, so there is no document to name for them.
+			fmt.Sprintf("test %q expect", test.Name), test.Expect.Check, source.ownChecks, "")
 		for j := range test.Signals {
 			signal := &test.Signals[j]
 			// The identity [mergeDefaults] installed on a signal that wrote no
@@ -1665,7 +1667,7 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 // refusal of the whole document rather than one more diagnostic: an
 // over-limit block is copied into every case a moment later, so this is the
 // one bound here whose overrun multiplies.
-func checkDefaults(p *problems, d *Defaults, ownChecks int) bool {
+func checkDefaults(p *problems, d *Defaults, ownChecks int, inheritedFrom string) bool {
 	if d == nil {
 		return true
 	}
@@ -1701,9 +1703,9 @@ func checkDefaults(p *problems, d *Defaults, ownChecks int) bool {
 		// not a case happens to reach it.
 		checkScriptedIdentity(p, site{at: base.field("sender")}, "defaults.sender:", d.Sender)
 	}
-	// The inherited claims here are the directory file's own list, prepended in
-	// order, so they are addressable at the same path in *that* document.
-	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, ownChecks, base.field("check"))
+	// The inherited claims here are the directory file's own, prepended — named
+	// after that file rather than addressed by an index the two documents share.
+	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, ownChecks, inheritedFrom)
 
 	return true
 }

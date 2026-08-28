@@ -107,16 +107,19 @@ func (c *CheckClaim) UnmarshalYAML(unmarshal func(any) error) error {
 // merged list, because that list is what the run evaluates and what a reader is
 // being told about.
 //
-// inheritedAt says where the *earlier* entries are addressable, when they are:
-// a `defaults:` block's inherited claims were prepended from the directory's
-// file in order, so entry i of the merged list is entry i of that file's list
-// and [problems] can name it. A case's inherited claims are addressable
-// nowhere — they came from a block or an entry this path does not reach — so
-// the caller passes nil and they are refused with the same words and no line.
+// inheritedFrom names the document the *earlier* entries came from, when the
+// caller knows it: a `defaults:` block's inherited claims were prepended from
+// the directory's file. It is named here rather than addressed by a path,
+// because the prepend puts the two documents' claims in one index namespace —
+// `defaults.check[0]` is the sibling's first claim and the suite's first claim
+// at once, and a path keyed on that string sent a suite-written claim to the
+// wrong file and lost its real position (Codex, #1185). A case's inherited
+// claims came from a block or an entry this path does not reach, so the caller
+// passes nothing and they are refused with the same words and no line.
 //
 // Mutates the slice in place: a whole-value fence is stripped here, once, so
 // everything downstream evaluates bare CEL.
-func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, own int, inheritedAt loc) {
+func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, own int, inheritedFrom string) {
 	if len(claims) == 0 {
 		return
 	}
@@ -149,9 +152,11 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 		spot := r.in(nil)
 		switch {
 		case i >= inherited:
+			// The document holding this list wrote this one, at the index it
+			// has once the inherited ones ahead of it are subtracted.
 			spot = r.in(r.at.item(i - inherited))
-		case inheritedAt != nil:
-			spot = r.in(inheritedAt.item(i))
+		case inheritedFrom != "":
+			spot = r.writtenIn(inheritedFrom)
 		}
 		if inner, fenced := flowfile.SplitFence(claims[i].That); fenced {
 			claims[i].That = inner

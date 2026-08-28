@@ -276,11 +276,30 @@ type site struct {
 	// write the value — an inherited stub, a default folded in from a sibling
 	// file — which is exactly when no position may be claimed.
 	at loc
+
+	// file names the document that wrote the value, for a check that knows it
+	// directly rather than by the path.
+	//
+	// Two mechanisms answer one question, and the split is the point. A path
+	// answers it for a value the fold moves *unchanged*: `defaults.sender`
+	// means the same thing in both documents, so [problems.writtenElsewhere]
+	// can look it up. It cannot answer it where the fold **renumbers** — the
+	// directory's claims are prepended, so `defaults.check[0]` names the
+	// sibling's first claim and the suite's first claim on the same string,
+	// and a lookup keyed on that string attributed a suite-written claim to
+	// the sibling and threw away its real position (Codex, #1185). Where a
+	// path is that ambiguous, the check that knows the answer says it here
+	// instead of encoding it in an identity another site can forge.
+	file string
 }
 
 // in returns the site with its path replaced, for a check that descends into a
-// value while staying in the same case.
-func (r site) in(path loc) site { return site{test: r.test, at: path} }
+// value while staying in the same case and the same document.
+func (r site) in(path loc) site { return site{test: r.test, at: path, file: r.file} }
+
+// writtenIn returns the site with the document that wrote the value named, and
+// no path: a path into another document is not one this parse can resolve.
+func (r site) writtenIn(file string) site { return site{test: r.test, file: file} }
 
 // problems collects every refusal one document earns.
 //
@@ -372,6 +391,10 @@ func (p *problems) record(r site, atKey bool, message string) {
 
 	d := Diagnostic{Test: r.test, Field: r.at.String(), Message: message}
 	switch {
+	case r.file != "":
+		// The check named the document itself, which it does where a path
+		// could not tell the two apart — see [site.file].
+		d.File = r.file
 	case p.writtenElsewhere(r.at):
 		// Another document wrote this value, so it is named after that
 		// document and positioned in neither: the path addresses the file that

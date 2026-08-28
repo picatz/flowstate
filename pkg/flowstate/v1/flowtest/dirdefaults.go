@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"maps"
 	"path/filepath"
+	"slices"
 )
 
 // `testdefaults.yaml` (#1072, slice 3): the values every suite in one
@@ -134,6 +135,16 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 // The loader hands these to [problems], which attributes a problem at or under
 // one of them to [DirDefaultsName] instead, and declines to look for a position
 // it could only find by accident.
+//
+// A collection the suite states *no part of* is recorded as the collection
+// itself rather than entry by entry, because a refusal about the collection —
+// a bound on how many entries it may hold — reports at the collection's own
+// path, which is an ancestor of every leaf and therefore matches none of them
+// (Codex, #1185). That is this function's existing rule for a `defaults:` block
+// the suite states nothing of, applied one level down. Where both files write
+// into a collection, its entries are recorded one by one and its *size* stays
+// the suite's: the overrun is a joint property, and the suite is the document
+// that can stop inheriting.
 func (dd *dirDefaults) combineInto(file *File) []loc {
 	if dd == nil {
 		return nil
@@ -144,9 +155,13 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 		combined := make(map[string]any, len(dd.Vars)+len(file.Vars))
 		maps.Copy(combined, dd.Vars)
 		maps.Copy(combined, file.Vars)
-		for name := range dd.Vars {
-			if _, stated := file.Vars[name]; !stated {
-				contributed = append(contributed, at("vars").field(name))
+		if len(file.Vars) == 0 {
+			contributed = append(contributed, at("vars"))
+		} else {
+			for _, name := range slices.Sorted(maps.Keys(dd.Vars)) {
+				if _, stated := file.Vars[name]; !stated {
+					contributed = append(contributed, at("vars").field(name))
+				}
 			}
 		}
 		file.Vars = combined
@@ -182,9 +197,13 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 		combined := make(map[string]any, len(outer.Inputs)+len(inner.Inputs))
 		maps.Copy(combined, outer.Inputs)
 		maps.Copy(combined, inner.Inputs)
-		for name := range outer.Inputs {
-			if _, stated := inner.Inputs[name]; !stated {
-				contributed = append(contributed, base.field("inputs").field(name))
+		if len(inner.Inputs) == 0 {
+			contributed = append(contributed, base.field("inputs"))
+		} else {
+			for _, name := range slices.Sorted(maps.Keys(outer.Inputs)) {
+				if _, stated := inner.Inputs[name]; !stated {
+					contributed = append(contributed, base.field("inputs").field(name))
+				}
 			}
 		}
 		inner.Inputs = combined
@@ -192,6 +211,7 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 	if len(outer.Stubs) > 0 {
 		// The file's stub for a target replaces the directory's — the
 		// identity rule [mergeDefaults] already applies one level down.
+		wholly := len(inner.Stubs) == 0
 		taken := make(map[string]bool, len(inner.Stubs))
 		for i := range inner.Stubs {
 			taken[stubTargetKey(&inner.Stubs[i])] = true
@@ -199,11 +219,16 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 		combined := append([]Stub(nil), inner.Stubs...)
 		for i := range outer.Stubs {
 			if !taken[stubTargetKey(&outer.Stubs[i])] {
-				// Appended, so the directory's stubs occupy the indices past
-				// the ones this suite wrote.
-				contributed = append(contributed, base.field("stubs").item(len(combined)))
+				if !wholly {
+					// Appended, so the directory's stubs occupy the indices
+					// past the ones this suite wrote.
+					contributed = append(contributed, base.field("stubs").item(len(combined)))
+				}
 				combined = append(combined, outer.Stubs[i])
 			}
+		}
+		if wholly {
+			contributed = append(contributed, base.field("stubs"))
 		}
 		inner.Stubs = combined
 	}
@@ -214,12 +239,13 @@ func (dd *dirDefaults) combineInto(file *File) []loc {
 		inner.Sender = outer.Sender
 	}
 	if len(outer.Check) > 0 {
-		// Prepended, so the directory's claims occupy the front of the
-		// combined list — which is the index [checkCheckClaims] addresses an
-		// inherited claim by.
-		for i := range outer.Check {
-			contributed = append(contributed, base.field("check").item(i))
-		}
+		// No path is recorded for these, deliberately. They are *prepended*,
+		// so `defaults.check[0]` names the directory's first claim and the
+		// suite's first claim at once, and a set keyed on that string cannot
+		// tell them apart — it sent a suite-written claim to the wrong file and
+		// dropped its real position (Codex, #1185). [checkCheckClaims] is told
+		// which document the inherited ones came from instead, which is a fact
+		// it has and a string cannot carry.
 		inner.Check = append(append([]CheckClaim(nil), outer.Check...), inner.Check...)
 	}
 

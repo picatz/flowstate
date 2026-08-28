@@ -533,6 +533,151 @@ tests:
 	assert.Zero(t, d.Line, "an index into another document's list is not a line in this one")
 }
 
+// TestAWhollyInheritedCollectionIsNamedAfterTheFileThatHoldsIt (Codex, #1185):
+// a bound on how many entries a collection may hold reports at the
+// *collection's* path, which is an ancestor of every leaf the fold recorded and
+// therefore matches none of them — so a suite that states no `vars:` of its own
+// was told off for two hundred and one vars it does not contain.
+//
+// A collection the suite states no part of is recorded as itself, which is the
+// rule already applied to a `defaults:` block the suite states nothing of.
+func TestAWhollyInheritedCollectionIsNamedAfterTheFileThatHoldsIt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		sibling  func() string
+		suite    string
+		says     string
+		takeOver string // what the suite writes when it shares the collection
+	}{
+		{
+			name: "vars",
+			sibling: func() string {
+				var b strings.Builder
+				b.WriteString("vars:\n")
+				for i := range flowtest.MaxVarsPerFile + 1 {
+					fmt.Fprintf(&b, "  v%d: x\n", i)
+				}
+
+				return b.String()
+			},
+			suite: "tests:\n  - name: the case\n    workflow: ./workflow.yaml\n    expect:\n      ran: [a]\n",
+			says:  "declares 201 vars",
+			takeOver: "vars:\n  mine: x\n" +
+				"tests:\n  - name: the case\n    workflow: ./workflow.yaml\n    expect:\n      ran: [a]\n",
+		},
+		{
+			name: "defaults.stubs",
+			sibling: func() string {
+				var b strings.Builder
+				b.WriteString("defaults:\n  stubs:\n")
+				for i := range flowtest.MaxDefaultStubs + 1 {
+					fmt.Fprintf(&b, "    - task: t%d\n      returns: {}\n", i)
+				}
+
+				return b.String()
+			},
+			suite:    "defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: the case\n    expect:\n      ran: [a]\n",
+			says:     "defaults declares 101 stubs",
+			takeOver: "defaults:\n  workflow: ./workflow.yaml\n  stubs:\n    - task: mine\n      returns: {}\ntests:\n  - name: the case\n    expect:\n      ran: [a]\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			sibling := filepath.Join(dir, "testdefaults.yaml")
+			writeFile(t, sibling, tc.sibling())
+			path := filepath.Join(dir, "workflow.test.yaml")
+			writeFile(t, path, tc.suite)
+
+			_, err := flowtest.Load(path)
+			require.Error(t, err)
+			problems, refused := errors.AsType[*flowtest.Diagnostics](err)
+			require.True(t, refused)
+
+			d := only(t, problems)
+			assert.Contains(t, d.Message, tc.says)
+			assert.Equal(t, sibling, d.File,
+				"a collection wholly inherited was reported against the file that inherited it")
+
+			// The other direction: once the suite writes into the collection
+			// too, its size is a joint property and the suite is the document
+			// that can stop inheriting, so the count stays its own.
+			writeFile(t, path, tc.takeOver)
+
+			_, err = flowtest.Load(path)
+			require.Error(t, err)
+			problems, refused = errors.AsType[*flowtest.Diagnostics](err)
+			require.True(t, refused)
+
+			shared := only(t, problems)
+			assert.Contains(t, shared.Message, "more than the limit")
+			assert.Equal(t, path, shared.File,
+				"a collection both files write into is the suite's to answer for")
+		})
+	}
+}
+
+// TestTwoDocumentsDoNotShareOneIndexNamespace (Codex, #1185) is the collision
+// the round before this one shipped: the directory's `check:` claims are
+// *prepended*, so `defaults.check[0]` named the sibling's first claim and the
+// suite's first claim on the same string. A set keyed on that string could only
+// answer one way, and it answered wrongly for the suite — the worse direction,
+// because a correct position was replaced by a wrong file.
+//
+// Both claims are malformed in one load, because the collision is precisely
+// their interaction.
+func TestTwoDocumentsDoNotShareOneIndexNamespace(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sibling := filepath.Join(dir, "testdefaults.yaml")
+	writeFile(t, sibling, `
+defaults:
+  check:
+    - "steps.a.value ==="
+`)
+	suite := `
+defaults:
+  workflow: ./workflow.yaml
+  check:
+    - "steps.b.value !=="
+tests:
+  - name: the case
+    expect:
+      ran: [a]
+`
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, suite)
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err)
+	problems, refused := errors.AsType[*flowtest.Diagnostics](err)
+	require.True(t, refused)
+	require.Equal(t, 2, problems.Total, "expected one problem per claim: %v", problems)
+
+	byFile := map[string]flowtest.Diagnostic{}
+	for _, problem := range problems.Problems {
+		byFile[problem.File] = problem
+	}
+	require.Contains(t, byFile, sibling, "the directory's claim lost its file: %v", problems)
+	require.Contains(t, byFile, path, "the suite's own claim was attributed elsewhere: %v", problems)
+
+	// The directory's: named after it, and positioned in neither, since an
+	// index into another document is not a line in this one.
+	assert.Zero(t, byFile[sibling].Line)
+	assert.Contains(t, byFile[sibling].Message, "steps.a.value")
+
+	// The suite's own: its exact line and column, which the shared namespace
+	// took away.
+	line, column := spot(t, suite, `"steps.b.value !=="`)
+	assert.Equal(t, line, byFile[path].Line, "the suite's own claim lost the position it has")
+	assert.Equal(t, column, byFile[path].Column)
+	assert.Contains(t, byFile[path].Message, "steps.b.value")
+}
+
 // TestAProblemInsideTheDefaultsBlockIsPositionedThere is the other half of the
 // same rule, and the reason the merged stub carries provenance at all: the stub
 // really is written in this file, in `defaults:`, so the refusal lands on it
