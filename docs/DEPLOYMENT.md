@@ -1149,6 +1149,76 @@ row panels the table above; its "Runs and steps" row now also panels
 previously undashboarded, which left the slot-exhaustion runbook below's
 "watch both" only half-answerable from the shipped dashboard.
 
+## Audit trail
+
+`flow server` and `flow server dev` write down every authorization decision —
+allow and deny alike — before the mutation the decision permits. This is not
+telemetry: it is unconditional, it is not sampled, and it does not depend on
+`OTEL_*` being configured at all. picatz/flowstate#1018 is the design; this is
+the part of it an operator turns a knob on.
+
+**What is recorded.** One record per decision, keyed by the closed
+`AuthorizationAction` vocabulary (`proto/flowstate/v1/authorization.proto`)
+rather than a second list of verbs — the audited surface is every action a
+WorkflowService RPC actually reaches, derived from the same bindings
+`TestEveryRPCHasExactlyOneAuthorizationAction` already checks, so a new RPC
+cannot arrive unaudited without that test failing first. Each record carries
+the action, the allow/deny decision, the RPC name, the caller's attested
+`WorkloadIdentity` (absent when the deployment runs `--insecure-no-auth`), the
+kind and id of the resource addressed (a workflow id, a schedule name, or a
+namespace), the server's own clock, and — on a denial — a code from a small
+closed set (`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`).
+There is no free-text field: no error message, no request payload, no
+specification. That is deliberate, not an oversight — see
+`pkg/flowstate/v1/audit`'s package doc and `proto/flowstate/v1/audit.proto`'s
+file comment for why a scrubber was rejected in favor of a record with nothing
+in it for a scrubber to catch.
+
+**Where it goes.** Every deployment gets stderr, unconditionally, one JSON
+object per line — the floor that survives an operator who configured no
+collector. When telemetry logs are configured (`OTEL_LOGS_EXPORTER=otlp`, or
+`OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` — the same
+[variables the Metrics section above documents](#metrics)), records also go
+out through an OTel `LoggerProvider` the audit trail owns for itself, on its
+own instrumentation scope (`flowstate.audit`) and its own event name
+(`flowstate.audit.authorization_decision`). It is never the global logger
+provider telemetry logs use: that one is a no-op until an operator configures
+it, which is correct for ordinary logs and exactly wrong for a trail that has
+to survive nobody configuring anything. A collector can therefore route or
+filter on the scope without having to recognize an audit record by shape.
+
+**`--audit-required`.** By default a sink's own failure is swallowed: an
+operator's collector outage does not become an outage of the service they
+never asked to gate on it, and the record simply does not reach that sink this
+time. `--audit-required` changes that trade — pass it, and a decision that
+cannot be written to *every* configured sink fails the request instead,
+matching the shape `flow worker --allow-unversioned-interpreter` already
+uses for the same kind of choice: a deployment's refusal belongs at the
+command, with a `--help` entry, not in an environment variable documented only
+in prose. The cost is stated in the flag's own help text: this is availability
+traded for a complete trail, and it is why the OTel sink switches from an
+ordinary batch processor to a synchronous one under `--audit-required` — a
+batch processor's export happens after the request has already been answered,
+so a "required" sink backed by one would prove nothing at the decision point.
+Stderr needs no such switch; every write to it is already synchronous.
+
+The default is auditing **on**, best-effort — every deployment gets a stderr
+trail from the moment it starts serving, and nothing has to be configured to
+get one. `--audit-required` is the opt-in for a deployment that would rather
+refuse a request than let it go unrecorded. The alternative default —
+auditing off until asked for — was rejected: an audit trail nobody remembered
+to enable is indistinguishable, to whoever goes looking for it after the
+fact, from one that was never built at all, and the whole cost of the
+default here is a line of JSON on stderr per decision.
+
+**Recording the decision, not the effect.** A record is written *before* the
+mutation it authorizes, because the record's subject is the decision, not what
+happened afterward: "this caller was authorized for `workload.signal` on run X
+at server time T" is true the instant the check returns, whether or not
+Temporal goes on to deliver the signal. This trail therefore cannot answer
+"did the signal actually reach the run" — the run's own timeline and Temporal's
+event history are the artifacts for that question, not this one.
+
 ## Worker capacity
 
 `flow worker` builds its Temporal worker from exactly five fixed fields —

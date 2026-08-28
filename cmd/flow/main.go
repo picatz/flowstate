@@ -1152,6 +1152,21 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// every run, and hide the whole deployment from the tenants that own it.
 	// See [server.WithDataConverter].
 	serverOpts := []server.Option{server.WithDataConverter(cfg.Codec.DataConverter())}
+
+	// picatz/flowstate#1018: every authorization decision this server reaches
+	// gets written down, stderr at minimum. Built after temporalConfig above so
+	// [startTelemetry] has already resolved this process's OTEL_* environment
+	// once, and started rather than initialized for the same reason telemetry
+	// is — this function can call temporalConfig twice on a pooled deployment,
+	// and a second recorder must not replace the server's reference to the
+	// first, orphaning its OTel LoggerProvider.
+	auditRequired, _ := cmd.Flags().GetBool(auditRequiredFlag)
+	recorder, err := startAudit(cmd.Context(), auditRequired)
+	if err != nil {
+		return fmt.Errorf("configuring the audit trail: %w", err)
+	}
+	serverOpts = append(serverOpts, server.WithAudit(recorder))
+
 	if taskQueues.Enabled() {
 		serverOpts = append(serverOpts, server.WithTaskQueues(taskQueues))
 	}
@@ -1486,6 +1501,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// Flushed on the way out of this path too, because a server that had to
 		// be forced down is the case where the last spans matter most.
 		flushTelemetry()
+		flushAudit()
 
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
@@ -1497,8 +1513,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	// After the in-flight requests have drained, so their spans are in the
-	// batch rather than in the one nobody sends.
+	// batch rather than in the one nobody sends. The audit trail's own batch,
+	// when its sink is OTel rather than the always-synchronous stderr writer.
 	flushTelemetry()
+	flushAudit()
 
 	if runErr != nil {
 		return runErr
@@ -2663,6 +2681,11 @@ flow server --verbose`,
 			"refusePlaintextListener requires --tls-cert-file/--tls-key-file or "+
 			"--tls-terminated-upstream")
 
+	// picatz/flowstate#1018: whether an audit sink's own failure fails the
+	// request. Auditing itself has no flag — every deployment gets it, stderr at
+	// minimum — see [addAuditRequiredFlag]'s help.
+	addAuditRequiredFlag(serverCmd)
+
 	// The public listener's TLS configuration and its ACME
 	// automatic-certificate alternative — see cmd/flow/tls.go and
 	// cmd/flow/acme.go. Server only: a worker binds no public listener, so it
@@ -3351,6 +3374,10 @@ func main() {
 	//
 	// Costs nothing when telemetry was never started, which is the default.
 	flushTelemetry()
+
+	// Same shape, for the audit trail's own OTel sink — costs nothing when
+	// auditing was never started, which client commands never do.
+	flushAudit()
 
 	if err != nil {
 		os.Exit(exitCodeFor(err))
