@@ -53,12 +53,14 @@ func callingInventory() []flowdebug.Step {
 // insideTheCallee runs that workflow to the boundary inside the callee and
 // returns the frame drawn there, plus its rendering.
 //
-// withRuntimePosition decides whether the run carries one at all: `flow run
-// local` and `flow test` both install a [v1.TaskRuntime]
-// (`cmd/flow/secrets.go:607`, `flowtest/run.go:615`), and an embedder driving
-// [v1.Run] directly does not — which is the case the pane must degrade for
-// rather than guess through.
-func insideTheCallee(t *testing.T, withRuntimePosition bool) (debugpane.Frame, string) {
+// withSecrets decides whether a [v1.TaskRuntime] is installed, and the answer
+// must not matter. It used to be the only way the workflow reached the
+// boundary, which made the whole qualification inert on an ordinary `flow run
+// local --debug` — `cmd/flow/secrets.go` hands back the context untouched when
+// neither secrets nor an identity broker is configured — and on every `flow
+// test --debug`, whose runtime carries an empty `Step` (Codex, #1186). The
+// engine stamps it now, so both values of this flag are the same run.
+func insideTheCallee(t *testing.T, withSecrets bool) (debugpane.Frame, string) {
 	t.Helper()
 
 	caps := paneCapabilities(80, 24, colorprofile.NoTTY, true)
@@ -99,7 +101,7 @@ func insideTheCallee(t *testing.T, withRuntimePosition bool) (debugpane.Frame, s
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
 	ctx = v1.NewContextWithDebugger(ctx, session)
 	ctx = v1.NewContextWithRunObserver(ctx, session)
-	if withRuntimePosition {
+	if withSecrets {
 		ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 			Step: auth.StepRef{Workflow: workflow.GetName(), Run: "run-1"},
 		})
@@ -181,22 +183,79 @@ func TestAnOutcomeNothingCanAttributeIsNotAttributed(t *testing.T) {
 		"rows read pending for a reason the pane never gave")
 }
 
-// TestAPositionWithNoWorkflowPointsAtNothingRatherThanAtTheWrongStep is the
-// degradation, and the reason the fix does not depend on a runtime position
-// being installed.
+// TestTheDefaultPathsAllReportTheWorkflow is the reachability claim, and it is
+// the one the previous head failed.
 //
-// An embedder driving [v1.Run] with no [v1.TaskRuntime] gives the boundary no
-// workflow to report. The list still holds two rows called `build`, and the
-// honest answer is that the pane cannot say which — not the first one.
-func TestAPositionWithNoWorkflowPointsAtNothingRatherThanAtTheWrongStep(t *testing.T) {
+// The qualification is worth nothing if it only works where secrets happen to
+// be configured. `flow run local --debug` with no secret providers and no
+// identity broker gets its context back untouched from `cmd/flow/secrets.go`,
+// and `flow test --debug` gets a runtime whose `Step` is empty — so on both
+// paths the boundary was told no workflow, `positionIn` read the shared id as
+// ambiguous, and the pane marked no row at all. Fail-closed, and useless
+// exactly where people are.
+//
+// Both values of the flag are asserted because the point is that it stopped
+// mattering: the engine stamps the workflow, so a run with secrets and a run
+// without are the same run as far as this is concerned.
+func TestTheDefaultPathsAllReportTheWorkflow(t *testing.T) {
 	t.Parallel()
 
-	frame, text := insideTheCallee(t, false)
+	for _, withSecrets := range []bool{false, true} {
+		frame, text := insideTheCallee(t, withSecrets)
 
-	assert.Empty(t, frame.At.Workflow, "a run with no runtime position reported one anyway")
+		assert.Equal(t, "inner", frame.At.Workflow,
+			"withSecrets=%v: the boundary reported no workflow, so nothing can be qualified", withSecrets)
+		require.Equal(t, 2, frame.Held,
+			"withSecrets=%v: the pane marked no row, which is what an unreported workflow looks like",
+			withSecrets)
+		assert.Contains(t, text, ui.Capabilities{Unicode: true}.Symbols().Arrow,
+			"withSecrets=%v: no row carries the held marker", withSecrets)
+	}
+}
+
+// TestASessionTheEngineNeverDrovePointsAtNothing is the degradation that
+// remains, and it is now the only one.
+//
+// The two absences are told apart by who is running the workflow. A run the
+// engine interprets always carries the workflow, whatever a deployment
+// configured — that is the whole of the fix above. What is left is a
+// [v1.Debugger] an embedder drives itself, through [flowdebug.Session.Control]
+// or by calling BeforeStep directly: no engine ran, so no position was stamped,
+// and the honest answer for a shared id is that the pane cannot say which row.
+func TestASessionTheEngineNeverDrovePointsAtNothing(t *testing.T) {
+	t.Parallel()
+
+	caps := paneCapabilities(80, 24, colorprofile.NoTTY, true)
+	layout := debugpane.Layout{Width: caps.Width, Height: caps.Height}
+
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled: true,
+		Out:        &strings.Builder{},
+		Steps:      callingInventory(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{},
+	})
+
+	// Driven by hand, on a context the engine never touched — which is exactly
+	// what an embedder holding the seam has.
+	finished := make(chan error, 1)
+	go func() { finished <- session.BeforeStep(t.Context(), markStep("build"), scope) }()
+
+	_, err = session.WaitForPause(t.Context())
+	require.NoError(t, err)
+
+	frame, paused := debugpane.Snapshot(t.Context(), session, layout)
+	require.True(t, paused)
+
+	assert.Empty(t, frame.At.Workflow, "a context the engine never stamped reported a workflow anyway")
 	assert.Equal(t, -1, frame.Held,
 		"with nothing to disambiguate them the pane picked a row anyway, which is the defect")
 
+	text := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
 	assert.NotContains(t, text, ui.Capabilities{Unicode: true}.Symbols().Arrow,
 		"a row was marked held on a position that cannot be placed")
 
@@ -205,6 +264,9 @@ func TestAPositionWithNoWorkflowPointsAtNothingRatherThanAtTheWrongStep(t *testi
 	assert.Contains(t, text, "inner.build")
 	assert.Contains(t, text, "outer.build")
 	assert.Contains(t, text, "3 step(s)")
+
+	require.NoError(t, session.Control(t.Context(), "continue"))
+	require.NoError(t, <-finished)
 }
 
 // TestAnOrdinaryWorkflowIsUnaffected is the positive control the three tests
@@ -305,10 +367,6 @@ func TestOneCalleeCalledTwiceIsTwoDeclarations(t *testing.T) {
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
 	ctx = v1.NewContextWithDebugger(ctx, session)
 	ctx = v1.NewContextWithRunObserver(ctx, session)
-	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
-		Step: auth.StepRef{Workflow: "outer", Run: "run-1"},
-	})
-
 	_, runErr := v1.Run(ctx, twiceCalledWorkflow())
 	require.NoError(t, runErr)
 	require.True(t, found)

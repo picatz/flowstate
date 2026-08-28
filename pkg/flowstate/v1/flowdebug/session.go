@@ -682,12 +682,14 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	// answer questions about a position the run has left.
 	// The workflow whose steps are running here, taken from where the engine
 	// records it rather than from where the step was written: `runCall` moves
-	// the runtime position across a call so that a consumer cannot "confus[e]
-	// equal step ids in two different workflow files" (`eval.go:1804-1812`),
-	// and a debugger holding a run inside a callee is exactly that consumer.
-	// Empty where nothing installed a runtime position, which a reader must
-	// treat as unsaid — see [Position.Workflow].
-	workflow, _ := v1.TaskWorkflowFromContext(ctx)
+	// the position across a call so that a consumer cannot "confus[e] equal
+	// step ids in two different workflow files" (`eval.go:1804-1812`), and a
+	// debugger holding a run inside a callee is exactly that consumer.
+	//
+	// Empty only where the engine never ran — a session an embedder drives
+	// through [v1.Debugger] itself — which a reader must treat as unsaid
+	// rather than as a name. See [Position.Workflow].
+	workflow, _ := v1.ExecutingWorkflowFromContext(ctx)
 
 	s.prompting(promptSubject{
 		scope: scope, step: node.GetId(), kind: NodeKind(node), workflow: workflow,

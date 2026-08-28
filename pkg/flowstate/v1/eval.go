@@ -1009,6 +1009,11 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
+	// Which workflow's steps are about to run. Stamped here, unconditionally,
+	// because it is a fact about the run and not about how the run was
+	// configured — see [ExecutingWorkflowFromContext].
+	ctx = contextWithExecutingWorkflow(ctx, w.GetName())
+
 	// Registered for the whole run, not per wait: a [VirtualClock] must not see
 	// this goroutine as "gone" between two waits, or a second, unrelated
 	// participant's own wait (`flow test`'s scripted signal delivery, running
@@ -1802,13 +1807,20 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 	}
 
 	// A callee's step ids belong to the callee, not to its caller. Move the
-	// runtime position across that boundary before runNodes stamps each local
-	// step id; besides keeping policy references accurate, this prevents a
-	// consumer of the runtime position from confusing equal step ids in two
-	// different workflow files.
-	calleeCtx := ctx
+	// position across that boundary before runNodes stamps each local step id;
+	// besides keeping policy references accurate, this prevents a consumer of
+	// the position from confusing equal step ids in two different workflow
+	// files.
+	//
+	// Two carriers, one decision, written adjacently so they cannot drift: the
+	// first is the run's own and is always set, the second is the *secret
+	// policy's* and exists only where a [TaskRuntime] does. They take the same
+	// `callee.GetName()`, so there is one source and two audiences rather than
+	// two spellings — and the first is what a step boundary reads, because a
+	// run with no secrets configured still has a workflow.
+	calleeCtx := contextWithExecutingWorkflow(ctx, callee.GetName())
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
-		calleeCtx = ContextWithSecretStep(ctx, callee.GetName(), runtime.Step.Run, "")
+		calleeCtx = ContextWithSecretStep(calleeCtx, callee.GetName(), runtime.Step.Run, "")
 	}
 	if err := runNodes(calleeCtx, callee.GetSteps(), inner, undo, placement, depth, nil); err != nil {
 		// Named, because a failure inside a called workflow reported without
