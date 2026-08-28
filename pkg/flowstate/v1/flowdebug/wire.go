@@ -307,15 +307,26 @@ var verbs = map[v1.DebugCommandVerb]string{
 // Aliases resolve, so `s` and `p` arrive as the verbs they are short for: the
 // alias table is the prompt's, and the wire's vocabulary is canonical.
 func CommandProto(line string) (*v1.DebugCommand, bool) {
-	if IsComment(line) {
+	// The session's own two refusals about a *line*, made before anything is
+	// read out of it, so that this function cannot build a message out of input
+	// the session would not have accepted ([Session.takeControl]).
+	//
+	// Length first, and first of everything: a line of nothing but whitespace,
+	// however long, trims to the empty string and would otherwise be normalized
+	// into `step` — an over-long line the console rejects, turned into a valid
+	// command by the very step that was meant to read it (Codex, #1194).
+	if len(line) > MaxCommandBytes {
 		return nil, false
 	}
 
 	// One command is one line. A caller handing two of them at once is handing
 	// something no prompt could have produced, with the second landing wherever
-	// the first left the run — [Session.takeControl]'s refusal, made here so a
-	// message is never built out of a thing that is not a command.
+	// the first left the run.
 	if strings.ContainsAny(line, "\r\n") {
+		return nil, false
+	}
+
+	if IsComment(line) {
 		return nil, false
 	}
 
@@ -350,6 +361,23 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 		_, text := cutWord(strings.TrimLeft(line, " \t"))
 
 		return &v1.DebugCommand{Verb: verb, Argument: text}, true
+	}
+
+	// A verb the table gives no argument gets none, whatever followed it.
+	//
+	// Dropped rather than carried, and dropped rather than refused, because
+	// dropping is what the *session* does: `dispatch` reads no remainder for
+	// these verbs and records the bare verb — `s.record("scope")`, not the line
+	// that was typed. So `scope anything` means `scope`, here as there, and the
+	// message this returns renders back to the line the session would have
+	// recorded.
+	//
+	// Refusing instead would make a line the prompt happily runs into "not a
+	// command", and carrying it would make a message [CommandLine] refuses:
+	// this function must only ever produce messages that one can render, or the
+	// pair is not a pair (Codex, #1194).
+	if known.argument == "" {
+		return &v1.DebugCommand{Verb: verb}, true
 	}
 
 	return &v1.DebugCommand{Verb: verb, Argument: strings.TrimSpace(rest)}, true

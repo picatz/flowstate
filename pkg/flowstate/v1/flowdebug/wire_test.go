@@ -820,3 +820,117 @@ func TestALineWithABreakIsNotOneCommand(t *testing.T) {
 		assert.Nil(t, command)
 	}
 }
+
+// TestEveryMessageTheParserProducesIsOneTheRendererCanSend is the invariant the
+// two conversions are a pair under, stated once instead of case by case.
+//
+// The two rounds of findings on this file were both instances of it: a line
+// [flowdebug.CommandProto] accepted, turned into a message
+// [flowdebug.CommandLine] refused or `v1.Validate` rejected. A test per case
+// would have grown one case per discovery; this one fails on the next shape as
+// well (Codex, #1194).
+func TestEveryMessageTheParserProducesIsOneTheRendererCanSend(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{
+		"", "   ", "\t",
+		"step", "s", "continue", "c",
+		"scope", "scope anything", "scope    trailing   ",
+		"info", "info extra", "help why", "quit now", "breakpoints all",
+		"until build", "until   build   ", "u build",
+		"break build", "break build if steps.build.ok == 'build'", "break",
+		"delete build", "delete", "d build",
+		"inspect steps.build.ok", "p 1 + 1", "inspect",
+		"complete inspect steps.", "complete ", "complete",
+		// At and around the line bound, which is where the parser and the
+		// renderer last disagreed.
+		"inspect " + strings.Repeat("x", flowdebug.MaxCommandBytes-len("inspect ")),
+		strings.Repeat(" ", flowdebug.MaxCommandBytes),
+	}
+	require.NotEmpty(t, lines)
+
+	produced := 0
+	for _, line := range lines {
+		command, ok := flowdebug.CommandProto(line)
+		if !ok {
+			continue
+		}
+		produced++
+
+		assert.NoError(t, v1.Validate(command),
+			"the parser built a message the schema rejects, from %q", line)
+
+		back, err := flowdebug.CommandLine(command)
+		assert.NoError(t, err,
+			"the parser built a message the renderer refuses, from %q", line)
+
+		// And what it renders is itself a command, so the pair is closed rather
+		// than merely total in one direction.
+		again, ok := flowdebug.CommandProto(back)
+		require.True(t, ok, "the renderer produced %q, which the parser does not read as a command", back)
+		assert.Equal(t, command.GetVerb(), again.GetVerb(), "the round trip changed the verb of %q", line)
+		assert.Equal(t, command.GetArgument(), again.GetArgument(), "the round trip changed the argument of %q", line)
+	}
+
+	assert.Greater(t, produced, len(lines)/2,
+		"most of the corpus was refused, so this test is mostly about refusals rather than about the pair")
+}
+
+// TestAnOverlongLineIsNotACommand is the bound on the way in, including the
+// case that used to be normalized into one.
+func TestAnOverlongLineIsNotACommand(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{
+			name: "an argument past what the session accepts",
+			line: "inspect " + strings.Repeat("x", flowdebug.MaxCommandBytes),
+		},
+		{
+			// The one that reads as a valid command rather than as a large
+			// argument: it trims to nothing, and a bare line is one step.
+			name: "whitespace, which trims to a bare line",
+			line: strings.Repeat(" ", flowdebug.MaxCommandBytes+1),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			command, ok := flowdebug.CommandProto(tc.line)
+			assert.False(t, ok, "a line the console rejects was read as a command")
+			assert.Nil(t, command)
+		})
+	}
+
+	// The premise: a line exactly at the bound is accepted, so the refusal is a
+	// bound rather than a blanket.
+	command, ok := flowdebug.CommandProto(strings.Repeat(" ", flowdebug.MaxCommandBytes))
+	require.True(t, ok, "a line at the bound was refused, so the check is off by one")
+	assert.Equal(t, v1.DebugCommandVerb_DEBUG_COMMAND_VERB_STEP, command.GetVerb())
+}
+
+// TestAnArgumentlessVerbKeepsNoArgument pins the normalization, and that it is
+// the session's own rather than this file's idea.
+//
+// `dispatch` reads no remainder for these verbs and records the bare verb —
+// `s.record("scope")` — so `scope anything` means `scope` in the session, in
+// its replay script, and here.
+func TestAnArgumentlessVerbKeepsNoArgument(t *testing.T) {
+	t.Parallel()
+
+	for _, line := range []string{"scope anything", "step twice", "info please", "quit now", "breakpoints all", "help me"} {
+		command, ok := flowdebug.CommandProto(line)
+		require.True(t, ok, "%q is a line the prompt runs and the wire refused", line)
+		assert.Empty(t, command.GetArgument(),
+			"%q carried text the session would have ignored, into a message the renderer refuses", line)
+	}
+
+	// The other side of it: a verb that *does* take an argument keeps it, so
+	// the rule is about the table rather than about dropping text.
+	command, ok := flowdebug.CommandProto("until build")
+	require.True(t, ok)
+	assert.Equal(t, "build", command.GetArgument())
+}
