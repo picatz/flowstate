@@ -527,7 +527,15 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// can survive the seam is an ask the run accepted delivery of and has
 		// not yet acted on, and that travels in `PendingSignals` exactly as an
 		// early-arriving approval does. See debuglease.go.
-		debug: &debugControl{run: runAddress(ctx)},
+		debug: &debugControl{
+			run: runAddress(ctx),
+
+			// Read from the run's own specification rather than from the memo,
+			// because workflow code cannot see a memo — and it does not need
+			// to: this is the presence question, and the two copies agree about
+			// presence by construction. See [debugControl.declared].
+			declared: st.GetWorkflow().GetDebug() != nil,
+		},
 
 		progress:   position,
 		detailsCtx: detailsCtx,

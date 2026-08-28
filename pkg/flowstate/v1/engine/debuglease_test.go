@@ -181,6 +181,44 @@ func TestALeaseHoldsTheDurableCorpusWhereItSaysItDoes(t *testing.T) {
 	}
 }
 
+// TestARunWhoseWorkflowDeclaresNothingIsNeverHeld is the engine's own
+// fail-closed backstop, and the negative direction of every test in this file:
+// they all hand the run a `debug:` stanza, so all of them would pass against an
+// engine that honoured a pause ask from anybody at all.
+//
+// The server is the door and it refuses this already. This asserts the run
+// refuses it too, so that "a workflow that declares nothing is not debuggable"
+// is a property of the engine rather than of one door — see
+// [debugControl.declared] for why it is the presence question and not the
+// policy one.
+func TestARunWhoseWorkflowDeclaresNothingIsNeverHeld(t *testing.T) {
+	t.Parallel()
+
+	// The permitted direction first, so the refusal below is known to be about
+	// the missing stanza rather than about an ask nothing ever acts on.
+	declared := debugSpec("declares-a-debug-policy")
+	require.NotNil(t, declared.GetDebug(), "the fixture has no policy to remove")
+
+	held, _ := runHeldFor(t, declared, map[time.Duration][]scriptedAsk{
+		30 * time.Second: {pauseAt("sre-1@example.com", 45*time.Second)},
+	})
+	require.Equal(t, settleFor+45*time.Second, held,
+		"the same ask against a workflow that declares a policy does hold the run")
+
+	silent := debugSpec("declares-nothing")
+	silent.Debug = nil
+
+	elapsed, outputs := runHeldFor(t, silent, map[time.Duration][]scriptedAsk{
+		30 * time.Second: {pauseAt("sre-1@example.com", 45*time.Second)},
+	})
+
+	assert.Equal(t, settleFor, elapsed,
+		"a workflow declaring no `debug:` stanza was paused anyway, so the engine trusts a door "+
+			"rather than the rule")
+	assert.Contains(t, outputs.GetStepValues(), "second",
+		"and it ran to the end, unbothered")
+}
+
 // TestARunNobodyDebugsIsUnchanged is the baseline every figure below is read
 // against, and the performance claim: a run that receives no ask pays two
 // empty channel reads per boundary and finishes at the same moment it always
@@ -534,18 +572,30 @@ func TestABoundaryDrainsMoreThanOneAskAtATime(t *testing.T) {
 func TestAHeldRunSaysSoOnTheSurfaceOperatorsRead(t *testing.T) {
 	t.Parallel()
 
+	// A second sleep after the held step, so that there is still a run to ask
+	// at t=150s. The bare [debugSpec] finishes the instant its hold ends, and a
+	// query after that never runs at all — which `askCurrentDetailsDuring`
+	// reports as a test that asserted on an empty answer rather than as a pass.
+	spec := debugSpec("says-it-is-held")
+	spec.Steps = []*v1.Node{
+		sleepStep("settle", settleFor),
+		logStep("first", "one"),
+		sleepStep("settle-again", settleFor),
+		logStep("second", "two"),
+	}
+
 	env := newWaitEnv(t)
 
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", time.Minute))
 	}, 30*time.Second)
 
-	// t=90s is inside the hold (t=60s..t=120s); t=150s is after it, with the run
-	// running the steps that follow.
+	// t=90s is inside the hold (t=60s..t=120s); t=150s is after it, while the
+	// run is in the second sleep and holding nothing.
 	during, duringErr := askCurrentDetailsDuring(t, env, 90*time.Second)
 	after, afterErr := askCurrentDetailsDuring(t, env, 150*time.Second)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: debugSpec("says-it-is-held")})
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
 
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())

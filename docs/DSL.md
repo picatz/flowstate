@@ -5500,11 +5500,14 @@ production a thing an operator can allow at all.
 The bounds are two readings of one number. No single ask may hold longer than the
 longest an ordinary step may legitimately take across all its attempts; and no
 *session* may, however often its holder asks again, because a per-ask ceiling bounds
-one ask and how many asks arrive is the holder's own choice. A pause ask that lands
-while a run is already held takes the next boundary rather than that one, so a queue
-of debuggers cannot take turns at a single step either. What the two buy together is
-the sentence worth remembering: **a debugged run advances at least one step per
-lease, however many asks arrive from however many callers.**
+one ask and how many asks arrive is the holder's own choice.
+
+A second caller asking for a run somebody else is holding is refused rather than
+queued, and an ask arriving in the very moment a hold ends takes the *next* boundary
+rather than that one — so a line of debuggers cannot take turns at a single step
+either. What all of it buys is the sentence worth remembering: **a debugged run
+advances at least one step per lease, however many asks arrive from however many
+callers.**
 
 Every part of it is attributable. The holder is the identity the server attested,
 never anything the ask said; the acceptance time is the server's own clock; pause,

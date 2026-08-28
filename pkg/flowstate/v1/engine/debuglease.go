@@ -67,6 +67,29 @@ type debugControl struct {
 	// landed in #1194 for this stage to fill in.
 	lease *v1.DebugSession
 
+	// declared says whether the workflow this run is executing carries a
+	// `debug:` stanza at all, and nothing is ever held when it does not.
+	//
+	// The engine's own fail-closed backstop, and deliberately the *presence*
+	// question rather than the policy one. `FlowstateServer.Signal` is the door
+	// every ask arrives through today, and it evaluates the rules against the
+	// resolved policy frozen on the run's memo; the copy a run carries is the
+	// workflow's own, where a `subject: ${...}` has *not* been resolved. So
+	// evaluating rules here would be a second answer to one question, and the
+	// two would disagree exactly where an interpolated subject was used — which
+	// is the drift CLAUDE.md's "one value, written down twice" rule is about,
+	// wearing a security hat.
+	//
+	// Presence cannot disagree: absent is absent on both sides, and it is the
+	// whole of #928's "no policy, no pause, no inspect". So "a workflow that
+	// declares nothing is not debuggable" becomes a property of the engine
+	// rather than of one door somebody might later route around — a second
+	// signalling path, a future internal caller, or an operator with direct
+	// namespace access. That last one can already terminate the run, so this
+	// closes no privilege gap on its own; what it closes is the gap between the
+	// rule and the number of places that enforce it.
+	declared bool
+
 	// granted counts the leases this segment has handed out, which is what
 	// makes [debugControl.sessionID] deterministic. It counts grants and not
 	// extensions: an extension is the same session held longer.
@@ -264,6 +287,21 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 	who := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
 	now := workflow.Now(e.ctx)
 	held := v1.DebugLeaseHeld(e.debug.lease, now)
+
+	// The fail-closed backstop — see [debugControl.declared]. Read here rather
+	// than at the boundary so that the ask is consumed as well as refused: a run
+	// that never drains a channel nothing will ever act on carries every ask
+	// that ever reached it across every Continue-As-New, growing its own state
+	// until [v1.CheckRunStateSize] fails it. Refusing loudly and discarding is
+	// the answer; leaving them to pile up is a denial of service with a polite
+	// name.
+	if !e.debug.declared {
+		logger.Warn("ignoring a debug ask: this workflow declares no `debug:` policy, so its "+
+			"durable runs are not debuggable by anybody",
+			"signal", name, "sender", who)
+
+		return
+	}
 
 	switch name {
 	case v1.DebugResumeSignal:
