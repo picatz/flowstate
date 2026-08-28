@@ -51,6 +51,78 @@ Concretely: a plugin, or anything that achieves code execution inside a
 worker process, reaches every secret material that worker holds for every
 tenant it serves — not just the tenant whose run happened to launch it.
 
+**What the host isolates, stated plainly (#1010):** a plugin runs as the same
+user as the worker, with the worker's full filesystem, network and kernel
+reach. The host guarantees which bytes run when pinned, that the plugin
+cannot read the worker's memory or its environment-borne credentials, cannot
+impersonate the host on its socket, and cannot outlive it. It does not
+constrain what the plugin does with the worker's own privileges — resource
+limits, filesystem visibility and syscall filtering are the deployment's job,
+exactly as they are for the worker itself. The host isolates **by process,
+not by privilege**, and no schema vocabulary claims otherwise; see [the
+four-tier isolation model](#the-four-tier-isolation-model) for where that
+kind of control actually lives.
+
+### Pinning which bytes a plugin name may run
+
+A plugin name is a mutable reference: whoever can write the file at that
+path chooses what this worker executes under it, forever and silently. A
+digest pin turns one name into an immutable reference, checked before the
+process exists — a compromised plugin's own announcement of itself cannot
+take part in the decision to admit it. It is opt-in per name: an unpinned
+name launches exactly as it always has, so pinning is adopted one plugin at a
+time rather than as a flag day for a whole fleet (`pkg/flowstate/v1/plugin/config.go`).
+
+Compute the digest to pin the same way the host measures one at launch —
+`sha256sum` over the installed binary, prefixed `sha256:` — which is also
+what the worker's own log line for a launched plugin already reports
+(`distribution` in the "loaded plugin" line):
+
+```console
+$ echo "sha256:$(sha256sum /usr/local/lib/flowstate/plugins/flowstate-plugin-github | cut -d' ' -f1)"
+sha256:1f3d...c2
+```
+
+One-off pins go straight on the command line, repeatable:
+
+```console
+$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+    --plugin-pin github=sha256:1f3d...c2
+```
+
+A deployment pinning more than a couple of plugins keeps them in a file
+instead — the artifact an operator diffs in code review — and points every
+verb that launches plugins at it, the same way `--task-policy` and
+`--egress-policy` point at theirs:
+
+```yaml
+# /etc/flowstate/plugin-pins.yaml
+pins:
+  github: sha256:1f3d...c2
+  slack: sha256:9ab0...44
+```
+
+```console
+$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+    --plugin-pins /etc/flowstate/plugin-pins.yaml
+```
+
+Unknown keys and a name pinned twice — in the file, on the command line, or
+split across both — are startup errors rather than a pin silently dropped:
+the same "fail closed on configuration" rule `--task-policy` follows. A pin
+naming a plugin `--plugin` does not admit, or any pin given with no
+`--plugin-dir` for it to apply to, is refused for the identical reason: a
+pin nothing can ever check is not protecting anything, however confidently
+an operator believes it is. `$FLOWSTATE_PLUGIN_PINS` is the pins-file
+default, mirroring `$FLOWSTATE_PLUGIN_DIR`, and every worker-facing verb that
+launches plugins — `worker`, `server`, `mcp`, `run local`, `lsp`, `plugins` —
+takes both flags, because all of them build a host through the one place in
+the CLI that does (`cmd/flow/plugins.go`'s `pluginFlags.host`).
+
+A pin says only that these exact bytes are the ones entitled to answer to
+this name. It says nothing about who built them or whether anyone vouches
+for them — that is the open half of #146, and it is not what this answers.
+
 **The good news, which nobody had written down before this document:**
 `pluginEnv` builds a plugin's environment from nothing, not by inheriting the
 worker's own (`pkg/flowstate/v1/plugin/launch.go`, `pluginEnv`). The worker's
