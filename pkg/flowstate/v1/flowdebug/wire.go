@@ -157,10 +157,26 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 // binding — so this message cannot come to list fewer names than the scope
 // holds.
 func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, error) {
-	groups, err := s.Scope()
-	if err != nil {
-		return nil, err
+	// One pause for the whole message, taken once here rather than once per
+	// call inside [Session.Scope] and again inside each [Session.Evaluate].
+	//
+	// That is what makes this message describe one stop. Reading `s.at` per
+	// evaluation lets a run that resumes partway through answer the later names
+	// from a *different* stop — or as ErrNotPaused — so one message would
+	// attribute values from two steps to the names listed at one, which is a
+	// debugger pointing at the wrong step wearing the scope's clothes (Codex,
+	// #1194). It is a snapshot rather than a race because [Session.prompting]
+	// freezes the scope into the subject, exactly so a reader admitted to a
+	// pause can outlive it.
+	s.mu.Lock()
+	subject := s.at
+	s.mu.Unlock()
+
+	if subject.scope == nil {
+		return nil, ErrNotPaused
 	}
+
+	groups := s.scopeNames(subject.scope, subject.extra)
 
 	scope := &v1.DebugScope{Groups: make([]*v1.DebugScopeGroup, 0, len(groups))}
 
@@ -188,7 +204,7 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 			}
 			resolved++
 
-			text, _, evalErr := s.Evaluate(ctx, binding.GetExpression())
+			text, _, evalErr := s.evaluateIn(ctx, subject, binding.GetExpression())
 			if evalErr != nil {
 				// The name is real — the run said so — and only its value
 				// could not be produced. The error is already redacted by the

@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -242,4 +243,131 @@ func TestNoSpellingOfAVerbProducesALineTheRendererRefuses(t *testing.T) {
 
 	assert.Positive(t, checked,
 		"every spelling was refused at the bound, so this test is about refusals rather than about the pair")
+}
+
+// One message describes one stop.
+//
+// A scope answer is made of many evaluations, and reading the session's current
+// pause per evaluation lets a run that resumes partway through answer the later
+// names from a *different* stop — one message attributing values from two steps
+// to the names listed at one (Codex, #1194). The two tests below are the
+// mechanism and the property.
+
+// taggedScope is a scope of n steps, every one carrying the same tag, so a
+// rendering says which scope it came from.
+func taggedScope(tag string, n int) *v1.Scope {
+	values := make(map[string]*v1.Node_Outputs, n)
+	for i := range n {
+		values[fmt.Sprintf("s%03d", i)] = &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"tag": v1.NewLiteral(tag)},
+		}
+	}
+
+	return &v1.Scope{Outputs: &v1.Workflow_StepOutputs{StepValues: values}}
+}
+
+// TestAnEvaluationIsPinnedToThePauseItWasGiven is the mechanism, stated where a
+// fixture can drive it rather than left to a concurrent interleave.
+//
+// [Session.evaluateIn] answers against the pause it is handed and
+// [Session.Evaluate] answers against the session's current one. That difference
+// is the whole of what makes a multi-evaluation answer coherent, and it is
+// deterministic: no goroutine has to win a race for this to be checkable.
+func TestAnEvaluationIsPinnedToThePauseItWasGiven(t *testing.T) {
+	t.Parallel()
+
+	session, err := New(Options{Out: &strings.Builder{}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.prompting(promptSubject{scope: taggedScope("A", 1)})
+
+	session.mu.Lock()
+	first := session.at
+	session.mu.Unlock()
+
+	// The premise: the pause that was captured really does answer, so the
+	// claim after the move is about the pinning rather than about an empty
+	// subject.
+	before, _, err := session.evaluateIn(t.Context(), first, "steps.s000.tag")
+	require.NoError(t, err)
+	require.Contains(t, before, "A")
+
+	// The run moves on.
+	session.prompting(promptSubject{scope: taggedScope("B", 1)})
+
+	after, _, err := session.evaluateIn(t.Context(), first, "steps.s000.tag")
+	require.NoError(t, err)
+	assert.Contains(t, after, "A",
+		"an evaluation handed a pause answered from the session's current one instead, so an answer "+
+			"made of several of them would mix two stops")
+
+	// And the session's own accessor does follow the session, which is what
+	// makes the pinning above a difference rather than a coincidence.
+	current, _, err := session.Evaluate(t.Context(), "steps.s000.tag")
+	require.NoError(t, err)
+	assert.Contains(t, current, "B",
+		"Evaluate stopped following the session's current pause, so the two are no longer different questions")
+}
+
+// TestAScopeMessageDescribesOneStop is the property, under a run that keeps
+// moving.
+//
+// Fifty names is enough evaluation for a flipping pause to land in the middle
+// of the answer, and both scopes carry the same *names* so only the values can
+// differ — which makes "this message mixes two stops" a thing an assertion can
+// see rather than a thing a reader would have to notice.
+func TestAScopeMessageDescribesOneStop(t *testing.T) {
+	t.Parallel()
+
+	const names = 50
+
+	session, err := New(Options{Out: &strings.Builder{}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	scopes := []*v1.Scope{taggedScope("A", names), taggedScope("B", names)}
+	session.prompting(promptSubject{scope: scopes[0]})
+
+	stop := make(chan struct{})
+	flipping := make(chan struct{})
+	go func() {
+		defer close(flipping)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			session.prompting(promptSubject{scope: scopes[i%2]})
+		}
+	}()
+
+	mixed := 0
+	for range 20 {
+		message, scopeErr := session.ScopeProto(t.Context(), -1)
+		require.NoError(t, scopeErr)
+
+		tags := map[string]int{}
+		for _, group := range message.GetGroups() {
+			for _, binding := range group.GetBindings() {
+				rendered := binding.GetRendered()
+				switch {
+				case strings.Contains(rendered, "A"):
+					tags["A"]++
+				case strings.Contains(rendered, "B"):
+					tags["B"]++
+				}
+			}
+		}
+		if len(tags) > 1 {
+			mixed++
+		}
+	}
+
+	close(stop)
+	<-flipping
+
+	assert.Zero(t, mixed,
+		"%d of 20 scope messages carried values from two different pauses, so one message described two stops", mixed)
 }
