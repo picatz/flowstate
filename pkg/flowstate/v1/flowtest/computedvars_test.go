@@ -470,7 +470,8 @@ outputs: {}
 vars:
   token: s3cr3t-value
   header: "${'Bearer ' + vars.token}"
-  fingerprint: "${size(vars.token)}"
+  envelope: "${ {'auth': vars.token, 'kind': 'bearer'} }"
+  region: eu-west-1
 tests:
   - name: the derived values never print
     workflow: ./workflow.yaml
@@ -485,7 +486,10 @@ tests:
       check:
         - that: vars.header == 'nope'
           because: this claim is false on purpose, so its witnesses render
-        - vars.fingerprint == 0
+        - that: vars.envelope.kind == 'nope'
+          because: and so does a structured one, whose leaves are strings
+        - that: vars.region == 'nope'
+          because: the control — a var on no path to a secret still shows its value
 `)
 
 	report := flowtest.RunFile(path)
@@ -497,14 +501,16 @@ tests:
 	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
 	assert.Contains(t, rendered, "vars.header = [redacted]",
 		"a var computed from a secret must be withheld in a witness, not merely cleared of the secret")
-	assert.Contains(t, rendered, "vars.fingerprint = [redacted]",
-		"a number derived from a secret shares no string with it, so only the taint can withhold it")
+	assert.Contains(t, rendered, "vars.envelope.kind = [redacted]",
+		"a path *into* a withheld var is withheld with it, or the container is a way around the name")
 	assert.NotContains(t, rendered, "s3cr3t-value")
 	assert.NotContains(t, rendered, "Bearer s3cr3t")
-	// The size of the plaintext, which `fingerprint` holds. The claim text
-	// beside it is the author's own and prints in full, so the assertion is
-	// about the rendered *value*, checked above.
-	assert.NotContains(t, rendered, "= 12")
+	assert.NotContains(t, rendered, "bearer",
+		"the untainted half of a tainted structure travels with it; withholding is per var")
+
+	// The control, without which every assertion above would also pass on a
+	// loader that withheld everything: a var on no path to a secret prints.
+	assert.Contains(t, rendered, `vars.region = \"eu-west-1\"`)
 }
 
 // TestAWithheldVarsMaterialIsWithheldWhereverItTravelled is the other half of
@@ -559,6 +565,144 @@ tests:
 		"`Bearer [redacted]` is what the substring backstop alone produces, and it says "+
 			"that a header derived from a secret is a header — which is the shape #1072 "+
 			"repair 4 withholds")
+}
+
+// TestASourceOfASecretIsWithheldToo is Codex's scenario on #1197, exactly: a
+// computed var is what `secrets:` names, so the redaction set holds the whole
+// `Bearer …` string and nothing matches the token on its own. A check
+// witnessing `vars.token` printed it.
+//
+// The taint therefore runs backward through the dependencies of a
+// secret-holding var as well as forward through its readers — the source
+// material of a secret is secret. This test fails on f4dcbca6.
+func TestASourceOfASecretIsWithheldToo(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bearer-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      bearer: ${secret('env:TOKEN')}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: s3cr3t-value
+  derived: "${'Bearer ' + vars.token}"
+  region: eu-west-1
+tests:
+  - name: the source never prints
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.derived}"
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+      check:
+        - that: vars.token == 'nope'
+          because: false on purpose, so the witness for the source renders
+        - that: vars.region == 'nope'
+          because: and so does the witness for a var on no path to a secret
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claims are false on purpose")
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.Contains(t, rendered, "vars.token = [redacted]",
+		"the token is what `Bearer <token>` was built from, and the set holds only the whole string")
+	assert.NotContains(t, rendered, "s3cr3t-value")
+
+	// The positive control, without which the assertion above would also pass
+	// on a loader that withheld every var it has: a var on no path to a secret
+	// still prints, or checks stop being able to say what they saw.
+	assert.Contains(t, rendered, `vars.region = \"eu-west-1\"`)
+}
+
+// TestASecretDerivedValueRedactionCannotWithholdIsRefused is Codex's second
+// P1: a tainted var holding a non-string adds nothing to the redaction set, so
+// once a fixture substitutes it the transcript line is rooted at `steps.*`
+// rather than at the withheld `vars.*` name and the number prints. It is also
+// a length oracle in its own right.
+//
+// So it may not exist. The refusal is scoped to the tainted set exactly, which
+// is what the second subtest is for: the identical expression over a var on no
+// path to a secret is an ordinary fixture. Both fail on f4dcbca6 — the first
+// loads there, and the second is the control that keeps this from being a ban
+// on `size()`.
+func TestASecretDerivedValueRedactionCannotWithholdIsRefused(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tainted", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  fingerprint: "${size(vars.token)}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "vars.fingerprint is computed from a secret and holds an integer")
+		assert.Contains(t, err.Error(), "which redaction cannot withhold")
+		assert.Contains(t, err.Error(), `vars.fingerprint → vars.token, which tests[0].secrets["env:TOKEN"] references`,
+			"the refusal names the chain, or its claim is one an author cannot check")
+		assert.NotContains(t, err.Error(), "s3cr3t-value")
+	})
+
+	t.Run("untainted", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  hostlist: "${['a', 'b', 'c']}"
+  count: "${size(vars.hostlist)}"
+tests:
+  - name: loads
+    workflow: ./workflow.yaml
+`))
+		require.NoError(t, err, "a size() over a var on no path to a secret is an ordinary fixture")
+		require.Equal(t, int64(3), file.Vars["count"])
+	})
+}
+
+// TestATransitivelyTaintedNonStringIsRefused is where the two decisions meet:
+// the backward closure is what makes `fingerprint` tainted at all — it reads a
+// var that is only reachable by walking *into* the secret's sources — and the
+// non-string rule is what refuses it. Neither alone reaches this file.
+func TestATransitivelyTaintedNonStringIsRefused(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  derived: "${'Bearer ' + vars.token}"
+  fingerprint: "${size(vars.token)}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.derived}"
+`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "vars.fingerprint is computed from a secret and holds an integer")
+	require.Contains(t, err.Error(),
+		`vars.fingerprint → vars.token → vars.derived, which tests[0].secrets["env:TOKEN"] references`,
+		"the chain runs out through the source and back to the entry that names it")
 }
 
 // TestAVarsRefusalQuotesTheExpressionNotTheValue: a load-time refusal is the

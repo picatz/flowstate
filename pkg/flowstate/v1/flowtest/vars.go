@@ -335,7 +335,7 @@ func (f *File) evaluateVars(p *problems) {
 	// means in #1072's record: the seed is a syntactic fact about the document
 	// and the closure is a fact about the dependency graph, so a refusal below
 	// knows what it may not print before there is a value to print.
-	tainted := taintedVars(declared, secretHoldingVars(f.Tests))
+	taint := taintedVars(declared, secretHoldingVars(f.Tests))
 
 	base, err := varEvaluator().Env()
 	if err != nil {
@@ -375,7 +375,7 @@ func (f *File) evaluateVars(p *problems) {
 		value, err := evaluateVar(base, d, activation)
 		if err != nil {
 			p.report(site{at: block.field(name)}, "vars.%s: evaluating %s: %s",
-				name, d.fence, scrubbedVarError(err, tainted, d.deps, f.Vars))
+				name, d.fence, scrubbedVarError(err, taint, d.deps, f.Vars))
 
 			continue
 		}
@@ -383,7 +383,11 @@ func (f *File) evaluateVars(p *problems) {
 		resolved[name] = true
 	}
 
-	f.varsWithheld = withheldMaterial(p, block, declared, tainted, resolved, f.Vars)
+	// Refused before the material is collected, because a value redaction
+	// cannot withhold is one no set can be built to hold: the refusal is the
+	// protection.
+	refuseUnprotectableVars(p, block, taint, resolved, f.Vars)
+	f.varsWithheld = withheldMaterial(p, block, declared, taint, resolved, f.Vars)
 }
 
 // declareVars classifies the block and prepares every computed var: the fence
@@ -647,10 +651,10 @@ func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any) (a
 // Every diagnostic here quotes the *expression* rather than the value, which
 // is the same rule stated on [varDeclaration.fence]; this is the one place a
 // value could reach a message by another road, and this is that road closed.
-func scrubbedVarError(err error, tainted []string, deps []string, values map[string]any) string {
+func scrubbedVarError(err error, taint varTaint, deps []string, values map[string]any) string {
 	var material []string
 	for _, dep := range deps {
-		if !slices.Contains(tainted, dep) {
+		if !taint.holds(dep) {
 			continue
 		}
 		collectVarStrings(values[dep], 0, &material)
@@ -747,91 +751,262 @@ func (p *problems) renderVarCycle(cycle []string) string {
 	return strings.Join(hops, " → ")
 }
 
-// secretHoldingVars are the vars a `secrets:` position references, which is
-// the seed of [withheldFrom]: a var whose value stands in for a secret holds
-// that secret's plaintext.
+// secretHoldingVars are the vars a `secrets:` position references, and the
+// position that references each — the seed of [taintedVars], and the far end
+// of the path its diagnostics name.
 //
 // Syntactic, and answered before anything is evaluated or substituted. The
 // walk mirrors [resolveVarsInTest]'s, because a row is a case and its
 // `secrets:` are its own; its depth is the document's, already bounded by
-// [checkExpansionBounds] before this walk exists.
-func secretHoldingVars(tests []Test) map[string]bool {
-	holding := map[string]bool{}
+// [checkExpansionBounds] before this walk exists. Keys are visited in sorted
+// order and the first position to name a var is the one kept, so a file with
+// two references to one var says the same thing every time.
+func secretHoldingVars(tests []Test) map[string]string {
+	holding := map[string]string{}
 
-	var walk func(tests []Test)
-	walk = func(tests []Test) {
+	var walk func(where string, tests []Test)
+	walk = func(where string, tests []Test) {
 		for i := range tests {
-			for _, value := range tests[i].Secrets {
-				if match := varReference.FindStringSubmatch(value); match != nil {
-					holding[match[1]] = true
+			at := fmt.Sprintf("%s[%d]", where, i)
+			for _, key := range slices.Sorted(maps.Keys(tests[i].Secrets)) {
+				match := varReference.FindStringSubmatch(tests[i].Secrets[key])
+				if match == nil {
+					continue
+				}
+				if _, seen := holding[match[1]]; !seen {
+					holding[match[1]] = fmt.Sprintf("%s.secrets[%q]", at, key)
 				}
 			}
-			walk(tests[i].Cases)
+			walk(at+".cases", tests[i].Cases)
 		}
 	}
-	walk(tests)
+	walk("tests", tests)
 
 	return holding
 }
 
-// taintedVars closes the seed forward over the dependency graph: a var that
-// reads a secret-holding one holds that secret's material, and so does
-// anything reading *it* (#1072, repair 4).
+// A varTaint is which vars hold secret material, and how each one came to —
+// the second half being what lets a refusal name the path rather than assert a
+// verdict (#1072, repair 4; Codex on #1197).
+type varTaint struct {
+	// via is the next hop from a tainted var toward the `secrets:` reference
+	// that taints it. A seed maps to the empty string: it *is* the reference.
+	via map[string]string
+
+	// reference is the `secrets:` position naming each seed, in the prose the
+	// rest of this loader addresses a position with.
+	reference map[string]string
+}
+
+// holds reports whether one var carries secret material.
+func (t varTaint) holds(name string) bool {
+	_, tainted := t.via[name]
+
+	return tainted
+}
+
+// names are the tainted vars, sorted.
+func (t varTaint) names() []string { return slices.Sorted(maps.Keys(t.via)) }
+
+// path renders how one var came to be tainted: the hops to the seed, and the
+// `secrets:` position that names it.
 //
-// Taint by reference rather than by inspecting a value, which is what makes it
-// answerable at load — before there is a value at all, which is what lets a
-// refusal about a failed evaluation know what it may not print. It is also
-// what makes it answer for a value that shares no whole string with its
-// source: `${'x' in vars.token}` is a boolean about a secret, and
-// `${size(vars.token)}` a number, and the redaction set's substring backstop
-// looks for neither. That gap is why this rule exists — the backstop was
-// complete only while no var could transform anything.
-//
-// The seeds are included in the answer even when they are literals, because a
-// literal seed is still a hop: a computed var reading it inherits the taint,
-// and a diagnostic about that var must not print what it read.
-//
-// One breadth-first pass over reversed edges, O(V+E).
-func taintedVars(declared map[string]*varDeclaration, holding map[string]bool) []string {
-	readers := map[string][]string{}
-	for name, d := range declared {
-		for _, dep := range d.deps {
-			readers[dep] = append(readers[dep], name)
+// `vars.port → vars.dsn, which tests[0].secrets["db"] references` — a sentence
+// an author can walk, rather than a verdict they have to take on trust. The
+// direction is deliberately one way for both halves of the closure: reading
+// *from* a secret and contributing *to* one are the same relation seen from
+// two ends, and a reader who has the chain does not need to be told which.
+func (t varTaint) path(name string) string {
+	hops := []string{v1.VarsRoot + "." + name}
+	for hop := t.via[name]; hop != ""; hop = t.via[hop] {
+		hops = append(hops, v1.VarsRoot+"."+hop)
+		if len(hops) > MaxVarsPerFile {
+			// Unreachable: `via` is a breadth-first tree, so it has no cycle.
+			// A bound anyway, because a rendering that walks a map somebody
+			// else fills in is a rendering that must terminate on its own
+			// terms — the rule position.go states for its own second walls.
+			break
 		}
 	}
+	seed := hops[len(hops)-1]
 
-	tainted := map[string]bool{}
+	return fmt.Sprintf("%s, which %s references", strings.Join(hops, " → "),
+		t.reference[strings.TrimPrefix(seed, v1.VarsRoot+".")])
+}
+
+// taintedVars closes the seeds over the dependency graph in *both* directions,
+// to a fixed point.
+//
+// Forward — a var that reads a secret-holding one holds that secret's material
+// — was the original rule (#1072, repair 4). Backward is Codex's P1 on #1197
+// and the owner's call on it: `derived: "${'Bearer ' + vars.token}"` named from
+// `secrets:` puts the whole `Bearer …` string in the redaction set and leaves
+// `vars.token` printable, so a check witnessing it prints the token. The source
+// material of a secret is secret.
+//
+// The two are one closure rather than two, and that is a decision worth
+// stating. A var reached backward *is* secret material by the sentence above,
+// and the forward rule then applies to it by its own terms — so `b` in
+// `a = f(x)`, `b = g(x)`, `secrets: a` is tainted, two hops from anything the
+// file called a secret. Stopping after one pass in each direction would leave
+// exactly the leak shape this closure was widened to fix, one hop further out.
+// Concretely the answer is the connected component of the undirected
+// dependency graph containing a seed.
+//
+// The cost is accepted and it is real: a benign var that merely contributed to
+// a secret — a `"Bearer"` prefix, a port — is withheld, and under
+// [refuseUnprotectableVars] a non-string one is refused outright. Fail closed
+// is the posture (CLAUDE.md), and a token minus its prefix is still a token.
+//
+// One breadth-first pass, O(V+E), over an adjacency built once.
+func taintedVars(declared map[string]*varDeclaration, holding map[string]string) varTaint {
+	adjacent := map[string][]string{}
+	for name, d := range declared {
+		for _, dep := range d.deps {
+			// Both directions in one table: dep → name is the forward edge a
+			// reader inherits along, name → dep the backward one a source is
+			// reached by.
+			adjacent[dep] = append(adjacent[dep], name)
+			adjacent[name] = append(adjacent[name], dep)
+		}
+	}
+	for name := range adjacent {
+		slices.Sort(adjacent[name])
+		adjacent[name] = slices.Compact(adjacent[name])
+	}
+
+	taint := varTaint{via: map[string]string{}, reference: holding}
 	queue := slices.Sorted(maps.Keys(holding))
+	for _, seed := range queue {
+		taint.via[seed] = ""
+	}
 	for len(queue) > 0 {
 		name := queue[0]
 		queue = queue[1:]
-		if tainted[name] {
-			continue
+		for _, next := range adjacent[name] {
+			if _, already := taint.via[next]; already {
+				continue
+			}
+			taint.via[next] = name
+			queue = append(queue, next)
 		}
-		tainted[name] = true
-		queue = append(queue, readers[name]...)
 	}
 
-	return slices.Sorted(maps.Keys(tainted))
+	return taint
+}
+
+// refuseUnprotectableVars refuses every tainted var holding a value the
+// redaction set cannot withhold (#1072, repair 4; Codex's second P1 on #1197).
+//
+// The set protects by *content*: a string is compared whole and cleared
+// wherever it is embedded. A number, a boolean, a null — nothing in them can
+// be matched, so a tainted `${size(vars.token)}` substituted into a case's
+// `inputs:` reaches a transcript line rooted at `steps.*` rather than at
+// `vars.*`, where neither the withheld name nor the withheld material can
+// reach it. It is also a length oracle in its own right.
+//
+// So it may not exist, rather than existing unprotected. The refusal is scoped
+// to the tainted set exactly — an untainted `${size(vars.hostlist)}` is an
+// ordinary fixture and stays legal — which is what keeps a rule this blunt from
+// reaching files that have nothing to do with secrets.
+//
+// A var whose evaluation failed is skipped: the document is refused already,
+// and there is no value to judge. The diagnostic names the taint path, because
+// "this is derived from a secret" is a claim about a chain the author can only
+// check if they are shown it.
+func refuseUnprotectableVars(p *problems, block loc, taint varTaint, resolved map[string]bool, values map[string]any) {
+	for _, name := range taint.names() {
+		if !resolved[name] {
+			continue
+		}
+		kind, unprotectable := unprotectableValue(values[name], 0)
+		if !unprotectable {
+			continue
+		}
+		p.report(site{at: block.field(name)},
+			"vars.%s is computed from a secret and holds %s, which redaction cannot withhold — "+
+				"only a string can be matched and cleared wherever it travels, and a number derived "+
+				"from a secret is a fact about it. The chain: %s. State the value as a string, or "+
+				"compute it outside the derivation that reaches a `secrets:` entry",
+			name, kind, taint.path(name))
+	}
+}
+
+// unprotectableValue answers with the first scalar in a value that redaction
+// could never match, in the words a diagnostic uses, or reports false when
+// every scalar it holds is a string.
+//
+// Maps are walked in sorted key order, so a value with two unprotectable
+// leaves names the same one every time — the rule every map walk here follows.
+// An empty container holds nothing and is therefore protectable by not being
+// anything; so is the empty string, which carries no material and which
+// [collectVarStrings] already declines to put in the set.
+//
+// Takes its value rather than reading one out of a [File], because in a real
+// document a tainted var is almost always a string and a check written where
+// the values agree is one no fixture can drive (CLAUDE.md).
+func unprotectableValue(value any, depth int) (string, bool) {
+	if depth > maxDefaultsDepth {
+		// Deeper than the walk goes is deeper than [collectVarStrings] reaches
+		// either, so nothing below here could have joined the set. Refused for
+		// that reason rather than passed over.
+		return "a value nested deeper than redaction walks", true
+	}
+	switch v := value.(type) {
+	case string:
+		return "", false
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			if kind, unprotectable := unprotectableValue(v[key], depth+1); unprotectable {
+				return kind, true
+			}
+		}
+
+		return "", false
+	case []any:
+		for _, entry := range v {
+			if kind, unprotectable := unprotectableValue(entry, depth+1); unprotectable {
+				return kind, true
+			}
+		}
+
+		return "", false
+	case bool:
+		return "a boolean", true
+	case int64, int, uint64, uint:
+		return "an integer", true
+	case float64, float32:
+		return "a number", true
+	case nil:
+		return "null", true
+	default:
+		return fmt.Sprintf("a %T", v), true
+	}
 }
 
 // withheldMaterial narrows the taint to what a case has to be told about, and
 // pairs each name with the strings its value holds.
 //
-// Only *computed* vars are withheld. A literal var referenced from `secrets:`
-// needs nothing new — its plaintext is that case's own secret and already
-// joins that case's redaction set (run.go's `WithValues`) — and withholding it
-// file-wide would change what a case that never named the secret redacts,
-// which is a behaviour change this slice has no reason to make.
+// A literal var referenced from `secrets:` is left out. Its plaintext is that
+// case's own secret and already joins that case's redaction set (run.go's
+// `WithValues`), and withholding it file-wide would change what a case that
+// never named the secret redacts — a behaviour change this slice has no reason
+// to make. Every *other* tainted var is in, computed or not: a literal can only
+// be tainted by standing on a path between expressions, which no file without
+// expressions has, so nothing an existing suite can express changes meaning.
 //
 // A var whose evaluation failed contributes nothing, and needs to: the
 // document is refused, so no case will run and there is no value to protect.
 // Over [maxWithheldVarStrings] the file is refused rather than partly
 // protected — the fail-closed direction every redaction seam here takes.
-func withheldMaterial(p *problems, block loc, declared map[string]*varDeclaration, tainted []string, resolved map[string]bool, values map[string]any) withheldVars {
+func withheldMaterial(p *problems, block loc, declared map[string]*varDeclaration, taint varTaint, resolved map[string]bool, values map[string]any) withheldVars {
 	var names, text []string
-	for _, name := range tainted {
-		if _, computed := declared[name]; !computed {
+	for _, name := range taint.names() {
+		_, computed := declared[name]
+		if !computed && taint.via[name] == "" {
+			// A literal seed: the `secrets:` entry naming it already carries its
+			// plaintext into the case that declared it, and this is the one
+			// place widening would reach a file that states no expression.
 			continue
 		}
 		names = append(names, name)
