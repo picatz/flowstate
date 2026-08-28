@@ -333,6 +333,26 @@ func Test_activityError_retryAfter(t *testing.T) {
 		require.True(t, appErr.NonRetryable())
 	})
 
+	t.Run("a rate-limited failure with a delay carries it (#912)", func(t *testing.T) {
+		// ErrorKindRateLimited alongside the Upstream case above: the gate this
+		// function applies is kind.Retryable(), not a specific kind, but #912's
+		// defect was precisely a kind that should have gated true and did not
+		// (ErrorKindInvalidInput, permanent, classifying 429). This pins the
+		// kind that replaced it the same way, rather than trusting that a
+		// generic gate covers a member nothing named explicitly.
+		err := activityError("http", &v1.TaskError{
+			Task:       "http",
+			Kind:       v1.ErrorKindRateLimited,
+			Err:        errors.New("429 Too Many Requests"),
+			RetryAfter: 30 * time.Second,
+		}, false)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, 30*time.Second, appErr.NextRetryDelay())
+		require.False(t, appErr.NonRetryable(), "RateLimited must be retryable, or its Retry-After stays inert")
+	})
+
 	t.Run("a delay is found through wrapping", func(t *testing.T) {
 		// A plugin's failure arrives inside fmt.Errorf("plugin %q: %w", ...), so a
 		// type assertion would miss every one of them.
