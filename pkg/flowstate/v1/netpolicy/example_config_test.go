@@ -3,6 +3,7 @@ package netpolicy
 import (
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,4 +139,40 @@ func TestShippedEgressPolicyExampleHoldsItsOtherPromises(t *testing.T) {
 	requireDenied(t,
 		policy.CheckAddr(netip.MustParseAddrPort("169.254.169.254:443")),
 		ReasonAddress, "within denied network 169.254.0.0/16")
+}
+
+// TestShippedEgressPolicyExampleRateLimitsTheHostItNames is the same rule the
+// tests above apply to the file's rules, applied to the bound it now also
+// carries: a number in an example that nothing enforces is documentation that
+// has stopped being true, and this one is easy to leave behind — a limiter that
+// silently never fired would look identical.
+//
+// The bound is asserted as *reached*: the eleventh request under a limit of ten
+// per second is refused, and the refusal is not a denial. Asserting only that
+// ten are allowed would pass against no limiter at all.
+func TestShippedEgressPolicyExampleRateLimitsTheHostItNames(t *testing.T) {
+	t.Parallel()
+
+	policy := shippedEgressPolicy(t)
+
+	target, err := url.Parse("https://api.github.com/repos/picatz/flowstate")
+	require.NoError(t, err)
+
+	for i := range 10 {
+		require.NoError(t, policy.checkRate(t.Context(), target, target.String()),
+			"request %d is inside the file's own limit of 10 per second", i+1)
+	}
+
+	err = policy.checkRate(t.Context(), target, target.String())
+	require.ErrorIs(t, err, ErrRateLimited)
+	require.NotErrorIs(t, err, ErrDenied,
+		"the file promises this is not a denial: the step comes back after the wait")
+
+	// A host the file names no rate for draws on no bucket, so the number
+	// applies to the host it was written under and to nothing else.
+	other, err := url.Parse("https://partner-a.example.com/v1")
+	require.NoError(t, err)
+	for range 20 {
+		require.NoError(t, policy.checkRate(t.Context(), other, other.String()))
+	}
 }
