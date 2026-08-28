@@ -445,6 +445,52 @@ message Workflow {
   // it once per trigger is one fact written three times, which is the shape that
   // drifts.
   Concurrency concurrency = 14 [(google.api.field_behavior) = OPTIONAL];
+
+  // Debug declares who may pause a durable run of this workflow under a debug
+  // lease — the `debug:` stanza beside `signals:`, and the answer to picatz/flowstate#928's
+  // "who may debug this workflow", recorded as an owner decision on 2026-08-23.
+  //
+  // # It *is* [SignalPolicy], rather than a shape beside it
+  //
+  // "This claim must carry this value, checked against the sender the server
+  // attested" is a question this schema already answers, and answers here:
+  // [SignalPolicyRule] is a structured claims map gating an action on a run.
+  // A fourth spelling of it is the mistake CLAUDE.md's design-sketch rule
+  // names with a worked example, so this field's type is that message and
+  // its enforcement is [SignalPolicyCheck] — the same function `authorizeSignal`
+  // reaches, not a second matcher beside it.
+  //
+  // What it costs to reuse rather than to specialize: the message is named for
+  // signals, so a reader meeting `debug:` in a file has to be told that its
+  // grammar is `signals:`'s. That is one sentence of documentation against a
+  // hand-maintained second claims vocabulary, and the trade is the one #726
+  // already decided.
+  //
+  // # The zero case is the opposite of [signals]'s, deliberately
+  //
+  // Absent means **not debuggable durably**. [signals] fails open per name
+  // because authorization there is opt-in — failing closed the day it landed
+  // would have denied every existing workflow's next `flow signal` for a
+  // policy nobody wrote. Nothing has ever been able to pause a durable run, so
+  // there is no existing behavior to preserve and no compatibility argument to
+  // make; the only reachable default is the fail-closed one, which is also the
+  // decision recorded on #928 ("no policy, no pause, no inspect") and the rule
+  // CLAUDE.md states for every policy surface. A run with no `debug:` stanza
+  // refuses every pause ask, including one from the identity that started it.
+  //
+  // # Frozen at submit, enforced where the ask is accepted
+  //
+  // Extracted into the run's memo at submit exactly as [signals] is, and read
+  // back by the same `DescribeWorkflowExecution` every verb already makes, so
+  // a pause ask is refused before Temporal sees it rather than by a check the
+  // workflow could skip. See `server/lifecycle.go`'s `authorizeDebug`.
+  //
+  // # Bounded
+  //
+  // By [SignalPolicy]'s own rules — at most 32 alternative rules, each with at
+  // most 16 claim entries — and by `CheckSpecSize`/`CheckRunStateSize` weighing
+  // the whole message, the same two bounds [signals] carries.
+  SignalPolicy debug = 15 [(google.api.field_behavior) = OPTIONAL];
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.

@@ -151,6 +151,15 @@ const (
 	// at most one run of this workflow may hold at a time. Evaluated at submit
 	// against the run's bound inputs and nothing else; see [Concurrency.key].
 	SlotConcurrencyKey
+
+	// SlotDebugSubject is a `debug:` policy rule's computed `subject:`.
+	//
+	// Its own slot rather than sharing [SlotSignalSubject], for the reason
+	// [SlotWaitBatchPrompt] states next door: one schema position is one slot,
+	// and a slot covering two would let a third land on an already-claimed name
+	// — exactly the blindness `TestEveryValuePositionInTheSchemaIsWalked`
+	// exists to prevent. The two stanzas share a *message*, not a position.
+	SlotDebugSubject
 )
 
 // ValueSlotSchemaPath maps each slot to the schema field it names.
@@ -191,6 +200,7 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotCallArgument:     "Workflow.steps[].call.arguments{}",
 
 		SlotConcurrencyKey: "Workflow.concurrency.key",
+		SlotDebugSubject:   "Workflow.debug.allow[].subject_from",
 	}
 }
 
@@ -281,6 +291,11 @@ func (s ValueSite) Field() string {
 		return "outputs." + s.Name
 	case SlotSignalSubject:
 		return "signals." + s.Owner + ".allow[" + strconv.Itoa(s.Index) + "].subject"
+	case SlotDebugSubject:
+		// No owner, because there is one thing to debug — this run — where a
+		// signal policy is per name. The path is the one the author wrote, and
+		// the one flowfile's own diagnostics use.
+		return "debug.allow[" + strconv.Itoa(s.Index) + "].subject"
 	case SlotWebhookIdempotencyKey:
 		return s.triggerPath() + ".idempotency_key"
 	case SlotWebhookArgument:
@@ -420,6 +435,20 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 				Value: rule.GetSubjectFrom(),
 			})
 		}
+	}
+
+	// The `debug:` stanza's own rules, walked beside `signals:` because they
+	// are the same message in the same class of position — a fact about who
+	// outside the run may act on it, resolved once at submit. Visited even
+	// though only one caller has an opinion about it: a walk that skipped a
+	// position because today's callers do not read it is the blindness this
+	// file exists to prevent.
+	for i, rule := range wf.GetDebug().GetAllow() {
+		w.value(ValueSite{
+			Slot:  SlotDebugSubject,
+			Index: i,
+			Value: rule.GetSubjectFrom(),
+		})
 	}
 
 	for i, webhook := range wf.GetTriggers().GetWebhooks() {

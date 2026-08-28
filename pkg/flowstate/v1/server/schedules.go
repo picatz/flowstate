@@ -237,7 +237,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// the zero case, reached by a workflow that had in fact declared a
 	// policy. Sharing the one encoding function with [Run] is what makes
 	// that impossible to reintroduce by editing one path and not the other.
-	signalEntry, err := signalPolicyMemoEntry(ctx, workflow, inputs)
+	signalEntry, err := policyMemoEntries(ctx, workflow, inputs)
 	if err != nil {
 		// Symmetric with Run's own refusal: an InvalidArgument covers a
 		// caller-supplied input that a rule's subject_from cannot resolve to

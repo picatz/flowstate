@@ -134,6 +134,7 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			path:      e.path,
 			budget:    e.budget,
 			signals:   e.signals,
+			debug:     e.debug,
 			undo:      e.undo,
 			undoSlot:  &slot,
 			undoScope: e.undoScope,

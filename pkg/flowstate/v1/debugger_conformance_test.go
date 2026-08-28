@@ -51,6 +51,20 @@ func TestRunWorkflowDebuggerBoundaries(t *testing.T) {
 
 			assert.Equal(t, test.Offered, offers.seen(),
 				"the boundaries offered are not the ones the corpus states")
+
+			// The local half of [conformance.DebuggerCase.Held]: every place a
+			// durable lease says it can hold is a place this driver really
+			// stopped. The durable half asserts the lease takes effect there;
+			// this one asserts the two drivers are talking about the same
+			// boundaries, which is the claim a durable-only assertion could not
+			// make on its own.
+			require.NotEmpty(t, test.Held,
+				"a case with no holdable boundary states nothing about the durable driver")
+			assert.Subset(t, offers.seen(), test.Held,
+				"the durable driver claims it can hold at a boundary this driver never offered, "+
+					"so the two disagree about which boundaries a run has")
+			assert.LessOrEqual(t, len(test.Held), len(test.Offered),
+				"a lease holds at a subset of the boundaries a session is offered, never a superset")
 		})
 	}
 }

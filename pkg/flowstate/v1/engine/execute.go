@@ -121,6 +121,17 @@ type executor struct {
 	// so only one of them runs at a time.
 	signals *signalCarry
 
+	// debug is the run's debug lease, or nil in a segment that was handed none.
+	//
+	// Shared by pointer with every nested executor for [executor.signals]'
+	// reason and one of its own: a lease is a hold on *the run*, so a callee's
+	// boundary and its caller's must be able to see the same one. Only
+	// boundaries at `susp == 0` ever read it — see debuglease.go for why the
+	// run's single representable position is the only place a lease can hold —
+	// and workflow coroutines are scheduled cooperatively, so no lock is
+	// needed here either.
+	debug *debugControl
+
 	// progress is where the run has got to, for the query handler to answer from.
 	// Shared by pointer for the same reason signals is, and for the sharper version
 	// of it: a copy per level would leave the query reading the root's copy, which
@@ -321,6 +332,22 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
 			continue
+		}
+
+		// The step boundary a durable debug lease holds the run at (#928 stage
+		// 2): the same point the local driver offers [v1.Debugger] — after the
+		// condition decided this step runs, before any of its work, an
+		// `async:` step included — and only at `susp == 0`, the run's own
+		// single representable position. See debuglease.go for why a lease
+		// cannot hold where a run is in several places at once, and for the
+		// asymmetry with the local driver that follows from it.
+		//
+		// A run nobody is debugging pays two `ReceiveAsync` calls on empty
+		// channels here, which issue no commands and write no history. That is
+		// the whole cost of the feature being off, and it is why the check
+		// lives at the boundary rather than inside a step.
+		if susp == 0 {
+			e.debugAsksAtBoundary(node)
 		}
 
 		if node.GetAsync() {
@@ -639,6 +666,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// executor shares them with every nested one: a signal or a compensation
 		// belongs to the run, not to the level that happens to be executing.
 		signals:    e.signals,
+		debug:      e.debug,
 		progress:   e.progress,
 		detailsCtx: e.detailsCtx,
 		waits:      e.waits,
@@ -1486,6 +1514,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		frames:    e.frames,
 
 		signals:    e.signals,
+		debug:      e.debug,
 		progress:   e.progress,
 		detailsCtx: e.detailsCtx,
 		waits:      e.waits,
@@ -1573,6 +1602,7 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		// same place a top-level one does, and consuming it here has to remove it
 		// for the whole run.
 		signals:    e.signals,
+		debug:      e.debug,
 		progress:   e.progress,
 		detailsCtx: e.detailsCtx,
 		waits:      e.waits,
@@ -1652,6 +1682,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					path:      body,
 					budget:    e.budget,
 					signals:   e.signals,
+					debug:     e.debug,
 					undo:      iterationUndo,
 					undoScope: v1.UndoScopeConcurrent,
 					callDepth: e.callDepth,
@@ -1760,6 +1791,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				path:      branchPath,
 				budget:    e.budget,
 				signals:   e.signals,
+				debug:     e.debug,
 				undo:      branchUndo,
 				undoScope: v1.UndoScopeConcurrent,
 				callDepth: e.callDepth,
