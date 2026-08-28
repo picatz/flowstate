@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -412,6 +413,11 @@ func checkErrorText(ev *v1.Evaluator, err error, claim string, withheld withheld
 		return "[withheld]"
 	}
 	if name, reads := claimReadsWithheld(ev, claim, withheld); reads {
+		if name == "" {
+			return "[withheld: this claim indexes `vars` with an expression, so which var it " +
+				"reads is not known until it runs, and this file withholds at least one]"
+		}
+
 		return fmt.Sprintf("[withheld: this claim reads vars.%s, which this file withholds]", name)
 	}
 
@@ -438,17 +444,26 @@ func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (
 		return "", false
 	}
 
-	found := ""
-	collectReferencePaths(parsed.NativeRep().Expr(), func(path string) {
-		if found != "" {
-			return
-		}
-		if name, covered := withheld.coveredName(path); covered {
-			found = name
+	found, dynamic := "", false
+	walkVarReads(parsed.NativeRep().Expr(), map[string]bool{}, func(read varRead) {
+		switch {
+		case read.dynamic:
+			dynamic = true
+		case found == "" && slices.Contains(withheld.names, read.name):
+			found = read.name
 		}
 	})
+	if found != "" {
+		return found, true
+	}
+	if dynamic {
+		// `vars[<expression>]` names its sibling when it runs, so this claim
+		// may be reading any of them — including a withheld one. Fail closed
+		// and say so without naming a var, since naming one would be a guess.
+		return "", true
+	}
 
-	return found, found != ""
+	return "", false
 }
 
 // checkWitnesses renders the values a failed claim read: each maximal

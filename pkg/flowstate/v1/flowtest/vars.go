@@ -90,6 +90,14 @@ import (
 //	                      | a fixed  | secret is secret, and a var reached backward
 //	                      | point    | is itself a source for its own readers
 //	                      |          | ([taintedVars])
+//	what a reference IS   | one      | CEL binds `vars.token` and `vars['token']`
+//	                      | recog-   | to one value, so ONE function answers "which
+//	                      | nizer,   | var does this reference" and every site routes
+//	                      | both     | through it ([readsVar] on an AST node,
+//	                      | spell-   | [varNameInPath] on a rendered path). The list
+//	                      | ings     | of sites is pinned by
+//	                      |          | TestEverySiteRecognisesBothSpellings, which
+//	                      |          | drives each in both and fails when they differ
 //	what graph it walks   | what the | a declaration refused for an unrelated
 //	                      | file     | mistake still SAYS what it reads, and a
 //	                      | SAYS     | refusal removes a value from existence, never
@@ -126,6 +134,11 @@ import (
 //     structure at the position that uses it, with `${vars.x}` at its leaves —
 //     is the only spelling that composes. An expressiveness gap, tracked on
 //     #1072 rather than widened in a review.
+//   - `vars[<expression>]` is refused in the block, because a dependency
+//     decided at evaluation cannot order it or carry a taint. In a *claim* it
+//     is legal and fails closed instead: the error is withheld without naming a
+//     var, since naming one would be a guess. The cost is a claim that reads
+//     nothing withheld losing its evaluator detail for using that spelling.
 //   - The empty-string refusal's own message reveals which branch produced ""
 //     for a file whose author wrote the conditional. It is deterministic per
 //     file, second-order, and strictly less than what every witness of that var
@@ -193,8 +206,178 @@ var varReference = regexp.MustCompile(`^\$\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*
 // varName is the same grammar, for declaration-side validation.
 var varName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// varTextualRead matches a `vars.<name>` read anywhere in an expression's text.
-var varTextualRead = regexp.MustCompile(`\bvars\.([A-Za-z_][A-Za-z0-9_]*)`)
+// varTextualRead matches a read of a file var anywhere in an expression's
+// text, in either spelling the grammar binds — see [readsVar] for why both
+// have to be here and not just the one an author usually writes.
+var varTextualRead = regexp.MustCompile(
+	`\bvars(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])`)
+
+// A varRead is what [readsVar] answers with: which file var an expression node
+// reads, or that it reads one whose name cannot be known at load.
+type varRead struct {
+	// name is the var read, empty when dynamic.
+	name string
+
+	// dynamic marks `vars[<expression>]` — a read of the block whose subject
+	// is decided at evaluation. Every caller fails closed on it.
+	dynamic bool
+
+	// bracket marks the `vars['x']` spelling, which the `vars:` block refuses
+	// and a check accepts. Carried because the *recognizer* answers what is
+	// read and each site decides what to do about it.
+	bracket bool
+}
+
+// readsVar is THE recognizer: given one expression node, which file var does it
+// reference?
+//
+// It exists because the answer was being computed in four places and two of
+// them knew only the dotted spelling (Codex, #1197, ninth and tenth). CEL binds
+// `vars.token` and `vars['token']` to the same value, so a walk that recognises
+// only the first records no dependency edge for the second — which defeated the
+// round-eight rule that a refusal must not remove an edge — and a check reading
+// `vars['header']` rendered its evaluator error unredacted. That is CLAUDE.md's
+// rewriter lesson verbatim: the recognizer has to know what the *grammar*
+// binds, taken from where the evaluator binds it rather than from the spelling
+// an author usually reaches for.
+//
+// So there is one function, both spellings, and every site that asks the
+// question routes through it — the list is pinned by
+// TestEverySiteRecognisesBothSpellings, which drives each one in both and fails
+// when their answers differ.
+//
+// bound is the comprehension's own bindings: a macro that binds `vars` shadows
+// the root, and inside it no reference is a file var at all.
+func readsVar(e celast.Expr, bound map[string]bool) (varRead, bool) {
+	if bound[v1.VarsRoot] {
+		return varRead{}, false
+	}
+	switch e.Kind() {
+	case celast.SelectKind:
+		// `vars.x`, and `has(vars.x)` — the same selection marked test-only.
+		if sel := e.AsSelect(); rootsAtVars(sel.Operand()) {
+			return varRead{name: sel.FieldName()}, true
+		}
+	case celast.CallKind:
+		call := e.AsCall()
+		if call.FunctionName() != operatorIndex || len(call.Args()) != 2 || !rootsAtVars(call.Args()[0]) {
+			return varRead{}, false
+		}
+		if index := call.Args()[1]; index.Kind() == celast.LiteralKind {
+			if name, isText := index.AsLiteral().Value().(string); isText {
+				return varRead{name: name, bracket: true}, true
+			}
+		}
+
+		return varRead{dynamic: true, bracket: true}, true
+	}
+
+	return varRead{}, false
+}
+
+// operatorIndex is CEL's index operator, which is how `vars['x']` parses.
+const operatorIndex = "_[_]"
+
+// walkVarReads visits every file-var read in an expression, through [readsVar]
+// and nothing else.
+//
+// The traversal a caller needs when it wants the reads and not the rest —
+// [checkVarExpression] has its own walk because it also judges roots and
+// functions along the way, and this is that walk's reading half for everyone
+// else. Comprehension bindings are tracked here too, for the reason they are
+// tracked there: a macro may bind `vars`, and inside it nothing is a file var.
+func walkVarReads(e celast.Expr, bound map[string]bool, visit func(varRead)) {
+	if read, reads := readsVar(e, bound); reads {
+		visit(read)
+
+		return
+	}
+	switch e.Kind() {
+	case celast.SelectKind:
+		walkVarReads(e.AsSelect().Operand(), bound, visit)
+	case celast.CallKind:
+		call := e.AsCall()
+		if call.IsMemberFunction() {
+			walkVarReads(call.Target(), bound, visit)
+		}
+		for _, arg := range call.Args() {
+			walkVarReads(arg, bound, visit)
+		}
+	case celast.ListKind:
+		for _, element := range e.AsList().Elements() {
+			walkVarReads(element, bound, visit)
+		}
+	case celast.MapKind:
+		for _, entry := range e.AsMap().Entries() {
+			pair := entry.AsMapEntry()
+			walkVarReads(pair.Key(), bound, visit)
+			walkVarReads(pair.Value(), bound, visit)
+		}
+	case celast.StructKind:
+		for _, field := range e.AsStruct().Fields() {
+			walkVarReads(field.AsStructField().Value(), bound, visit)
+		}
+	case celast.ComprehensionKind:
+		comp := e.AsComprehension()
+		walkVarReads(comp.IterRange(), bound, visit)
+		walkVarReads(comp.AccuInit(), bound, visit)
+
+		inner := maps.Clone(bound)
+		for _, bind := range []string{comp.IterVar(), comp.IterVar2(), comp.AccuVar()} {
+			if bind != "" {
+				inner[bind] = true
+			}
+		}
+		walkVarReads(comp.LoopCondition(), inner, visit)
+		walkVarReads(comp.LoopStep(), inner, visit)
+		walkVarReads(comp.Result(), inner, visit)
+	}
+}
+
+// rootsAtVars reports whether one node is the bare `vars` root.
+func rootsAtVars(e celast.Expr) bool {
+	return e.Kind() == celast.IdentKind && e.AsIdent() == v1.VarsRoot
+}
+
+// varNameInPath is [readsVar]'s answer for a *rendered* path rather than an
+// AST node — the form [referencePath] produces for a witness, which keeps
+// whichever spelling the author wrote.
+//
+// The same recognizer's job at the other end of the pipe, and it has to agree
+// with it: `vars.token`, `vars['token']` and anything selected or indexed from
+// either all name `token`.
+func varNameInPath(path string) (string, bool) {
+	rest, rooted := strings.CutPrefix(path, v1.VarsRoot)
+	if !rooted {
+		return "", false
+	}
+	name := ""
+	switch {
+	case strings.HasPrefix(rest, "."):
+		name = rest[1:]
+		if cut := strings.IndexAny(name, ".["); cut >= 0 {
+			name = name[:cut]
+		}
+	case strings.HasPrefix(rest, "['"):
+		inner := strings.TrimPrefix(rest, "['")
+		end := strings.Index(inner, "']")
+		if end < 0 {
+			return "", false
+		}
+		name = inner[:end]
+	default:
+		return "", false
+	}
+	// A name that is not a CEL identifier is not a var of this file's: the
+	// block refuses one at declaration ([checkVars]), so a path carrying one
+	// roots at something else. Answering with the text *and* false would let a
+	// caller that reads only the string act on a name nothing declares.
+	if !varName.MatchString(name) {
+		return "", false
+	}
+
+	return name, true
+}
 
 // textualVarDeps reads one expression's sibling reads out of its *text*, for
 // the one case where there is no AST to read them from: the expression did not
@@ -214,7 +397,15 @@ var varTextualRead = regexp.MustCompile(`\bvars\.([A-Za-z_][A-Za-z0-9_]*)`)
 func textualVarDeps(text string) []string {
 	found := map[string]bool{}
 	for _, match := range varTextualRead.FindAllStringSubmatch(text, -1) {
-		found[match[1]] = true
+		// Group 1 is the dotted spelling, group 2 the bracket one; exactly one
+		// of them matched. Both are here for [readsVar]'s reason — the grammar
+		// binds the same value either way, and a recognizer that knows one
+		// spelling drops the edges written in the other.
+		for _, name := range match[1:] {
+			if name != "" {
+				found[name] = true
+			}
+		}
 	}
 
 	return slices.Sorted(maps.Keys(found))
@@ -386,17 +577,12 @@ func (w withheldVars) covers(path string) bool {
 // not quote, since a name is not a value and an author needs to know which
 // claim to rewrite.
 func (w withheldVars) coveredName(path string) (string, bool) {
-	for _, name := range w.names {
-		rooted := v1.VarsRoot + "." + name
-		if path == rooted {
-			return name, true
-		}
-		if strings.HasPrefix(path, rooted) && (path[len(rooted)] == '.' || path[len(rooted)] == '[') {
-			return name, true
-		}
+	name, rooted := varNameInPath(path)
+	if !rooted || !slices.Contains(w.names, name) {
+		return "", false
 	}
 
-	return "", false
+	return name, true
 }
 
 // fileVars is what one case is given of the file's `vars:`: the values a check
@@ -621,8 +807,28 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 		v1.StepsRoot: true, v1.InputsRoot: true, v1.RunRoot: true, v1.TriggerRoot: true,
 	}
 
+	bracketed := map[string]bool{}
+	dynamic := false
+
 	var walk func(e celast.Expr, bound map[string]bool)
 	walk = func(e celast.Expr, bound map[string]bool) {
+		// The one recognizer, first, so both spellings record an edge before
+		// any policy below decides what to do about the one that was written.
+		// An edge recorded here survives a refusal, which is what the taint
+		// component is built from ([File.declareVars]).
+		if read, reads := readsVar(e, bound); reads {
+			switch {
+			case read.dynamic:
+				dynamic = true
+			default:
+				deps[read.name] = true
+				if read.bracket {
+					bracketed[read.name] = true
+				}
+			}
+
+			return
+		}
 		switch e.Kind() {
 		case celast.IdentKind:
 			ident := e.AsIdent()
@@ -634,18 +840,7 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 				roots[ident] = true
 			}
 		case celast.SelectKind:
-			sel := e.AsSelect()
-			if operand := sel.Operand(); operand.Kind() == celast.IdentKind &&
-				operand.AsIdent() == v1.VarsRoot && !bound[v1.VarsRoot] {
-				// `vars.x`, and `has(vars.x)`, which is the same selection
-				// marked test-only: both read the sibling and neither reads the
-				// block, so the walk stops rather than descending onto the
-				// operand and calling it a bare read.
-				deps[sel.FieldName()] = true
-
-				return
-			}
-			walk(sel.Operand(), bound)
+			walk(e.AsSelect().Operand(), bound)
 		case celast.CallKind:
 			call := e.AsCall()
 			function := call.FunctionName()
@@ -712,6 +907,22 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 	if block {
 		refuse("vars.%s reads the whole `vars` block: a var reads a sibling by name (`vars.other`), "+
 			"because reading the block would make every var depend on every other one — itself included", name)
+	}
+	if dynamic {
+		refuse("vars.%s indexes `vars` with an expression: which sibling that reads is decided when "+
+			"the expression runs, and a var's dependencies have to be known before anything is "+
+			"evaluated — they are what orders the block and what carries a secret's taint. "+
+			"Name the sibling (`vars.other`)", name)
+	}
+	// The bracket spelling reads exactly one sibling, and the recognizer above
+	// has already recorded that edge — so this refusal is about the spelling
+	// and nothing else. It used to arrive as "reads the whole `vars` block",
+	// which was false about what the expression does and, worse, was reported
+	// by a path that recorded no dependency at all (Codex, #1197, ninth).
+	for _, read := range slices.Sorted(maps.Keys(bracketed)) {
+		refuse("vars.%s reads vars['%s']: a var names its sibling with a dot (`vars.%s`), which is "+
+			"the one spelling this block takes — the same value, said the way every reference "+
+			"position in a test file says it", name, read, read)
 	}
 	for _, read := range slices.Sorted(maps.Keys(roots)) {
 		switch read {

@@ -2,10 +2,13 @@ package flowtest
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The three decisions computed vars turn on, driven directly rather than
@@ -122,6 +125,183 @@ func TestTaintedVarsReachesSourcesAndReaders(t *testing.T) {
 		"a var reading a backward-reached source holds that source's material too")
 	assert.False(t, taint.holds("unrelated"))
 	assert.False(t, taint.holds("region"))
+}
+
+// varSpellings are the two ways CEL binds a read of a file var. Every site
+// that asks "does this reference var N" must answer identically for both, and
+// the table below is what makes that a contradiction rather than a
+// possibility.
+var varSpellings = map[string]func(name string) string{
+	"dotted":  func(name string) string { return "vars." + name },
+	"bracket": func(name string) string { return "vars['" + name + "']" },
+}
+
+// varReferenceSites is every place that asks the question, with a driver that
+// exercises it in one spelling and answers with what that site concluded.
+//
+// The shape `fold_internal_test.go` uses, one level up: there a table of struct
+// fields is checked against reflection, and here a table of *sites* is checked
+// against behaviour. A site that stops routing through [readsVar] answers
+// differently for the two spellings, and the walk below fails naming it.
+//
+// why is required, for the reason every classification table in this package
+// requires one.
+var varReferenceSites = map[string]struct {
+	why    string
+	answer func(t *testing.T, spell func(string) string) string
+}{
+	"the dep walk over a parsed declaration": {
+		why: "edges feed the taint component and the topological order; a spelling it " +
+			"cannot see is a var that never enters either",
+		answer: func(t *testing.T, spell func(string) string) string {
+			t.Helper()
+
+			declared := declaredFrom(t, "${"+spell("token")+" + 'x'}")
+
+			return strings.Join(declared["probe"].deps, ",")
+		},
+	},
+	"the textual fallback for an unparseable declaration": {
+		why: "the same edges, for an expression with no AST — the fallback is a second " +
+			"recognizer and has to agree with the first",
+		answer: func(t *testing.T, spell func(string) string) string {
+			t.Helper()
+
+			return strings.Join(textualVarDeps("${"+spell("token")+" + }"), ",")
+		},
+	},
+	"the withheld-path recognizer": {
+		why: "a witness path keeps whichever spelling the author wrote, and `covers` " +
+			"decides whether that witness prints",
+		answer: func(t *testing.T, spell func(string) string) string {
+			t.Helper()
+
+			withheld := withheldVars{names: []string{"token"}}
+			name, _ := withheld.coveredName(spell("token") + ".field")
+
+			return name
+		},
+	},
+	"a claim's read set": {
+		why: "decides whether a check's evaluator error is withheld; the site Codex " +
+			"found reading only the dotted spelling",
+		answer: func(t *testing.T, spell func(string) string) string {
+			t.Helper()
+
+			name, reads := claimReadsWithheld(v1.DefaultEvaluator(),
+				"{'known': 1}["+spell("token")+"] == 1", withheldVars{names: []string{"token"}})
+
+			return fmt.Sprintf("%s/%v", name, reads)
+		},
+	},
+}
+
+// declaredFrom runs one var expression through the real declaration pass and
+// answers with what it recorded, so a site's driver exercises the loader rather
+// than a copy of it.
+func declaredFrom(t *testing.T, fence string) map[string]*varDeclaration {
+	t.Helper()
+
+	file := &File{Vars: map[string]any{"token": "s3cr3t", "probe": fence}}
+
+	return file.declareVars(newProblems(nil))
+}
+
+// TestEverySiteRecognisesBothSpellings is the audit. `vars.token` and
+// `vars['token']` are the same value to CEL, so every site that asks which var
+// an expression references must answer the same for both — and the two that did
+// not were a taint component missing an edge and a check error printing a
+// withheld value (Codex, #1197, ninth and tenth).
+func TestEverySiteRecognisesBothSpellings(t *testing.T) {
+	t.Parallel()
+
+	require.NotEmpty(t, varReferenceSites, "an empty table audits nothing")
+
+	for name, site := range varReferenceSites {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NotEmpty(t, site.why, "%s is in the table with no reason", name)
+
+			answers := map[string]string{}
+			for spelling, spell := range varSpellings {
+				answers[spelling] = site.answer(t, spell)
+			}
+			assert.Equal(t, answers["dotted"], answers["bracket"],
+				"%s answers differently for the two spellings CEL binds identically; route it "+
+					"through readsVar/varNameInPath", name)
+			assert.NotEmpty(t, answers["dotted"],
+				"%s recognised neither spelling, so agreeing proves nothing", name)
+		})
+	}
+}
+
+// TestReadsVarRecognisesWhatTheGrammarBinds drives the recognizer itself, over
+// the shapes the sites above only reach indirectly.
+func TestReadsVarRecognisesWhatTheGrammarBinds(t *testing.T) {
+	t.Parallel()
+
+	env, err := varEvaluator().Env()
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		expr string
+		want varRead
+		ok   bool
+	}{
+		"dotted":                {expr: "vars.token", want: varRead{name: "token"}, ok: true},
+		"bracket":               {expr: "vars['token']", want: varRead{name: "token", bracket: true}, ok: true},
+		"bracket, double quote": {expr: `vars["token"]`, want: varRead{name: "token", bracket: true}, ok: true},
+		"a dynamic index":       {expr: "vars[vars.which]", want: varRead{dynamic: true, bracket: true}, ok: true},
+		"a selection into one":  {expr: "vars.order.region", want: varRead{name: "order"}, ok: false},
+		"the bare root":         {expr: "vars", ok: false},
+		"another root":          {expr: "steps.x", ok: false},
+		"an index of not-vars":  {expr: "other['token']", ok: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ast, issues := env.Parse(tc.expr)
+			require.Nil(t, issues.Err())
+
+			read, reads := readsVar(ast.NativeRep().Expr(), map[string]bool{})
+			assert.Equal(t, tc.ok, reads)
+			if tc.ok {
+				assert.Equal(t, tc.want, read)
+			}
+		})
+	}
+
+	// A comprehension that binds `vars` shadows the root, and inside it nothing
+	// is a file var — the grammar's own answer, which the recognizer takes.
+	ast, issues := env.Parse("vars.token")
+	require.Nil(t, issues.Err())
+	_, reads := readsVar(ast.NativeRep().Expr(), map[string]bool{v1.VarsRoot: true})
+	assert.False(t, reads, "a bound `vars` is the macro's, not the file's")
+}
+
+// TestVarNameInPathReadsBothSpellings is the path-level half of the recognizer,
+// including the neighbour cases a prefix match gets wrong.
+func TestVarNameInPathReadsBothSpellings(t *testing.T) {
+	t.Parallel()
+
+	for path, want := range map[string]string{
+		"vars.token":            "token",
+		"vars.token.field":      "token",
+		"vars.token[0]":         "token",
+		"vars['token']":         "token",
+		"vars['token'].field":   "token",
+		"vars.tokenish":         "tokenish",
+		"vars":                  "",
+		"varstoken":             "",
+		"steps.token":           "",
+		"vars['not an ident']":  "",
+		"prefix.vars.token.bit": "",
+	} {
+		name, rooted := varNameInPath(path)
+		assert.Equal(t, want, name, "varNameInPath(%q)", path)
+		assert.Equal(t, want != "", rooted, "varNameInPath(%q)", path)
+	}
 }
 
 // TestTextualVarDepsOverApproximates is the fallback for an expression with no

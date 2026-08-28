@@ -307,7 +307,13 @@ func TestAComputedVarReadsItsSiblingsAndNothingElse(t *testing.T) {
 		{"run", "${run.failed}", "describes a case that has finished"},
 		{"trigger", "${trigger.kind}", "a delivery belongs to the case that replays it"},
 		{"the whole block", "${vars}", "reads the whole `vars` block"},
-		{"the block, indexed", "${vars['other']}", "reads the whole `vars` block"},
+		// Still refused — the block takes one spelling — but the refusal now
+		// says what the expression actually does. It used to arrive as "reads
+		// the whole `vars` block", which was false about a read of exactly one
+		// sibling and, worse, came from a path that recorded no dependency edge
+		// at all (Codex, #1197, ninth).
+		{"the block, indexed", "${vars['other']}", "reads vars['other']"},
+		{"the block, indexed dynamically", "${vars[vars.other]}", "indexes `vars` with an expression"},
 		{"an undeclared sibling", "${vars.nope}", "names no \"nope\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1215,6 +1221,168 @@ tests:
 	assert.Contains(t, messages, "vars.seed:", "the syntax error is still reported")
 	assert.Contains(t, messages, "[withheld: this expression reads vars.token, which this file withholds]")
 	assert.NotContains(t, messages, "s3cr3t-value")
+}
+
+// TestBothSpellingsCarryTheSameEdge is Codex's ninth P1: the round-eight rule
+// that a refusal must not remove an edge, defeated by the other spelling. CEL
+// binds `vars['token']` and `vars.token` to the same value, and the dep walk
+// recognised only the second — so a refused declaration written the first way
+// contributed nothing to the taint component and an independent var's
+// evaluator error printed the plaintext.
+//
+// Driven in both spellings from one fixture, because "these agree" is the
+// claim. Fails on 447648ef in the bracket case only, which is what makes it
+// this finding rather than the last one.
+func TestBothSpellingsCarryTheSameEdge(t *testing.T) {
+	t.Parallel()
+
+	for spelling, read := range map[string]string{
+		"dotted":  "vars.token",
+		"bracket": "vars['token']",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  seed: "${`+read+` + steps.nope}"
+  probe: "${ {'known': 1}[vars.token] }"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:AUTH: "${vars.seed}"
+`))
+			require.Error(t, err)
+
+			problems, refused := errorAsDiagnostics(t, err)
+			require.True(t, refused)
+			messages := problemMessages(problems)
+
+			assert.Contains(t, messages,
+				"[withheld: this expression reads vars.token, which this file withholds]",
+				"the edge is the same edge whichever way the grammar spells it")
+			assert.NotContains(t, messages, "s3cr3t-value")
+		})
+	}
+}
+
+// TestACheckReadingAWithheldVarInEitherSpellingIsWithheld is Codex's tenth: the
+// same recognizer gap at the check-error surface, where the bracket spelling is
+// legal CEL rather than refused, so it is a leak an author can reach without
+// their file being refused at all.
+func TestACheckReadingAWithheldVarInEitherSpellingIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	for spelling, read := range map[string]string{
+		"dotted":  "vars.header",
+		"bracket": "vars['header']",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bearer-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      bearer: ${secret('env:TOKEN')}
+outputs: {}
+`)
+			path := filepath.Join(dir, "workflow.test.yaml")
+			writeFile(t, path, `
+vars:
+  token: s3cr3t-value
+  header: "${'Bearer ' + vars.token}"
+tests:
+  - name: an erroring claim in either spelling
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+      check:
+        - that: "{'known': 1}[`+read+`] == 1"
+          because: errors on the missing key, whose text carries the key itself
+`)
+
+			report := flowtest.RunFile(path)
+			require.Empty(t, report.GetRefused())
+			c := report.GetCases()[0]
+			require.False(t, c.GetPassed(), "the claim errors on purpose")
+
+			rendered := fmt.Sprintf("%v %+v %#v %s",
+				c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+			assert.Contains(t, rendered, "withheld: this claim reads vars.header")
+			assert.NotContains(t, rendered, "s3cr3t-value")
+			assert.NotContains(t, rendered, "Bearer s3cr3t")
+		})
+	}
+}
+
+// TestACheckIndexingVarsDynamicallyIsWithheld is the fail-closed end of the
+// same recognizer. `vars[expr]` names its sibling when it runs, so a claim
+// using it may be reading a withheld var and nothing at load can say which —
+// the answer is to withhold without naming one, since naming would be a guess.
+//
+// A declaration is refused for the same expression rather than withheld
+// (dependencies must be known before anything evaluates); a claim is not
+// refused, because a check is judged after the run and its vars are already
+// values by then. Both directions are the same rule seen from two moments.
+func TestACheckIndexingVarsDynamicallyIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bearer-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      bearer: ${secret('env:TOKEN')}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: s3cr3t-value
+  header: "${'Bearer ' + vars.token}"
+  which: header
+tests:
+  - name: a dynamic index is withheld without naming a var
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+      check:
+        - that: "{'known': 1}[vars[vars.which]] == 1"
+          because: which var this reads is decided when it runs
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim errors on purpose")
+
+	rendered := fmt.Sprintf("%v", c.GetFailures())
+	assert.Contains(t, rendered, "indexes `vars` with an expression",
+		"fail closed, and say why rather than naming a var it would be guessing at")
+	assert.NotContains(t, rendered, "s3cr3t-value")
+	assert.NotContains(t, rendered, "Bearer s3cr3t")
 }
 
 // TestARefusalDoesNotOverTaint is that fix's control, and the reason it is a
