@@ -1314,7 +1314,18 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 	clone.Algorithms = slices.Clone(t.Algorithms)
 	clone.Require = slices.Clone(t.Require)
 	for i, rule := range clone.Require {
+		// Every slice inside a rule, not only the accepting one. A NoneOf left
+		// aliased is the fail-open direction of this bug: a caller that emptied
+		// or rewrote its own copy after building a verifier would be removing
+		// exclusions the running verifier is still reading, so an entry written
+		// to keep callers out would start letting them in — and the write would
+		// race concurrent verification besides.
+		//
+		// TestCloneSharesNoClaimRuleSliceWithItsSource walks these fields by
+		// reflection rather than by name, so a third list added to [ClaimRule]
+		// later fails there rather than being quietly left aliased here.
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
+		clone.Require[i].NoneOf = slices.Clone(rule.NoneOf)
 	}
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
 

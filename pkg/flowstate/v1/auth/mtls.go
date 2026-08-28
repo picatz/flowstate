@@ -108,6 +108,12 @@ type PeerVerifier interface {
 type mtlsEntry struct {
 	issuer  TrustedIssuer
 	caCerts []*x509.Certificate
+
+	// policyIndex is this entry's row in [Policy.Issuers], carried because
+	// this list holds only the kind: mtls entries and a position in it is
+	// therefore not a row an operator can count to. See [oidcEntry], where the
+	// reasoning is written down once for both verifiers.
+	policyIndex int
 }
 
 // MTLSVerifier is the [PeerVerifier] built from a [Policy]'s kind: mtls
@@ -141,7 +147,7 @@ var _ PeerVerifier = (*MTLSVerifier)(nil)
 func NewMTLSVerifier(policy Policy) (*MTLSVerifier, error) {
 	var entries []mtlsEntry
 
-	for _, issuer := range policy.Issuers {
+	for policyIndex, issuer := range policy.Issuers {
 		if issuer.kind() != IssuerKindMTLS {
 			continue
 		}
@@ -154,7 +160,15 @@ func NewMTLSVerifier(policy Policy) (*MTLSVerifier, error) {
 		// Copied, not aliased, for the identical reason [NewOIDCVerifier]
 		// copies each entry: this verifier is read from many goroutines on
 		// every request and must not be something a caller can still change.
-		entries = append(entries, mtlsEntry{issuer: issuer.clone(), caCerts: certs})
+		//
+		// policyIndex, not len(entries): this list is filtered by kind, so a
+		// position in it is not a row an operator can count to in their file.
+		// See [oidcEntry], which carries the same field for the same reason.
+		entries = append(entries, mtlsEntry{
+			issuer:      issuer.clone(),
+			caCerts:     certs,
+			policyIndex: policyIndex,
+		})
 	}
 
 	if len(entries) == 0 {
@@ -207,14 +221,18 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 
 	// The subject a certificate presents is per entry, because SubjectFrom is:
 	// two entries selecting different SANs read different names off one leaf.
-	// So the admitted subject is carried alongside the match rather than
-	// recomputed after one is chosen.
+	// So the winning entry and the subject it read are kept together, and
+	// winner is meaningful only where it is read, under exactly one match.
+	type peerMatch struct {
+		entry   mtlsEntry
+		subject string
+	}
 	var (
 		failures []error
 		admitted []matchedEntry
-		subjects []string
+		winner   peerMatch
 	)
-	for index, entry := range v.entries {
+	for _, entry := range v.entries {
 		if !chainMatchesCA(chains, entry.caCerts) {
 			continue
 		}
@@ -235,8 +253,12 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 			continue
 		}
 
-		admitted = append(admitted, matchedEntry{index: index, name: entry.issuer.Name, issuer: entry.issuer.Issuer})
-		subjects = append(subjects, subject)
+		admitted = append(admitted, matchedEntry{
+			policyIndex: entry.policyIndex,
+			name:        entry.issuer.Name,
+			issuer:      entry.issuer.Issuer,
+		})
+		winner = peerMatch{entry: entry, subject: subject}
 	}
 
 	if len(admitted) > 1 {
@@ -260,8 +282,8 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		}
 	}
 
-	entry := v.entries[admitted[0].index]
-	subject := subjects[0]
+	entry := winner.entry
+	subject := winner.subject
 	claims := map[string]any{"subject": subject}
 
 	// The tenant is established here, from the verified certificate, and

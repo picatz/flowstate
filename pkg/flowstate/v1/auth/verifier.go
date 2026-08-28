@@ -191,10 +191,11 @@ func (c config) validate() error {
 // An OIDCVerifier is safe for concurrent use by many goroutines.
 type OIDCVerifier struct {
 	// entries maps an exact "iss" claim value to the trust policy entries that
-	// may admit it. Policy order is kept so that a refusal can name an entry by
-	// the position its file gives it, and for nothing else: every candidate is
-	// asked, and exactly one has to admit — see [Policy.Issuers].
-	entries map[string][]TrustedIssuer
+	// may admit it. Order within a bucket is policy order, kept so that a
+	// refusal names entries the way the file lists them, and for nothing else:
+	// every candidate is asked, and exactly one has to admit — see
+	// [Policy.Issuers].
+	entries map[string][]oidcEntry
 
 	// algorithms maps an issuer to the union of the algorithms its entries
 	// allow, used to reject a token before any key is fetched for it. The
@@ -258,14 +259,14 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 	}
 
 	verifier := &OIDCVerifier{
-		entries:    make(map[string][]TrustedIssuer),
+		entries:    make(map[string][]oidcEntry),
 		algorithms: make(map[string][]jwa.Algorithm),
 		keys:       make(map[string]*keySet),
 		clock:      cfg.clock,
 		skew:       cfg.skew,
 	}
 
-	for _, entry := range policy.Issuers {
+	for policyIndex, entry := range policy.Issuers {
 		// A kind: mtls entry's Issuer is an operator-chosen label naming a
 		// trusted CA, not an OIDC issuer URL: [TrustedIssuer.validateMTLS] asks
 		// only that it be non-empty. Indexing one here would make that label
@@ -289,7 +290,13 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 		// on every request, and must not be something a caller can still change.
 		entry = entry.clone()
 
-		verifier.entries[entry.Issuer] = append(verifier.entries[entry.Issuer], entry)
+		// policyIndex, not the length of the bucket: this map is filtered twice
+		// over — by kind, and by issuer — so a position inside a bucket is not
+		// a row an operator can count to. See [oidcEntry].
+		verifier.entries[entry.Issuer] = append(verifier.entries[entry.Issuer], oidcEntry{
+			issuer:      entry,
+			policyIndex: policyIndex,
+		})
 
 		for _, alg := range entry.algorithms() {
 			if !slices.Contains(verifier.algorithms[entry.Issuer], alg) {
@@ -432,16 +439,28 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 	// entries decide which namespace and role a caller runs with, silently —
 	// see [Policy.Issuers] for the contract and [AmbiguousIssuerError] for
 	// what a second match costs.
+	// winner is meaningful only where it is read, under exactly one match: it
+	// holds whichever entry was assigned last, which under one match is that
+	// one. Keeping the entry itself rather than an index into candidates is
+	// what stops the reporting index and the retrieval index from being the
+	// same number — they are not, and conflating them is the defect
+	// [oidcEntry] exists to prevent.
 	var (
 		failures []error
 		admitted []matchedEntry
+		winner   TrustedIssuer
 	)
-	for index, entry := range candidates {
-		if err := entry.admits(alg, audiences, lifetime, claims, v.skew); err != nil {
-			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", entry.Name, err))
+	for _, candidate := range candidates {
+		if err := candidate.issuer.admits(alg, audiences, lifetime, claims, v.skew); err != nil {
+			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", candidate.issuer.Name, err))
 			continue
 		}
-		admitted = append(admitted, matchedEntry{index: index, name: entry.Name, issuer: entry.Issuer})
+		admitted = append(admitted, matchedEntry{
+			policyIndex: candidate.policyIndex,
+			name:        candidate.issuer.Name,
+			issuer:      candidate.issuer.Issuer,
+		})
+		winner = candidate.issuer
 	}
 
 	if len(admitted) > 1 {
@@ -462,7 +481,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		}
 	}
 
-	entry := candidates[admitted[0].index]
+	entry := winner
 
 	// The tenant is established here, from the verified token, and nowhere
 	// else. A caller whose namespace the policy cannot determine is refused
@@ -487,16 +506,33 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 	}, nil
 }
 
+// oidcEntry is one kind: oidc trust policy entry together with the row it
+// occupies in [Policy.Issuers].
+//
+// The row travels with the entry because a verifier's own list is *filtered* —
+// [NewOIDCVerifier] drops every entry that is not kind: oidc and then buckets
+// what remains by issuer — so a position inside that list is not a position an
+// operator can count to in their own file. A policy whose first entry is
+// kind: mtls has its first bearer entry at bucket position 0 and file row 1,
+// and a diagnostic reporting the former sends somebody to the wrong line.
+//
+// [UnreachableIssuer] already reports file rows, so this is also what keeps the
+// load-time lint and the verification refusal naming the same thing. mtlsEntry
+// carries the same field for the same reason.
+type oidcEntry struct {
+	issuer      TrustedIssuer
+	policyIndex int
+}
+
 // matchedEntry is one trust policy entry that admitted a credential, carried
 // with enough of the entry to name it in a refusal and nothing else. Both
 // verifiers build these, which is what lets them share one refusal rather than
 // writing two sentences that drift.
 type matchedEntry struct {
-	// index is the entry's position within the candidates the verifier
-	// considered: for kind: oidc the entries sharing the token's issuer, for
-	// kind: mtls the whole of the verifier's own entry list. Both are the list
-	// an operator counts down when a refusal names a position.
-	index int
+	// policyIndex is the entry's row in [Policy.Issuers] — the operator's own
+	// file — and never a position in whatever filtered list the verifier
+	// walked. See [oidcEntry].
+	policyIndex int
 
 	name   string
 	issuer string
@@ -512,7 +548,7 @@ func ambiguousIssuer(admitted []matchedEntry) error {
 	}
 	for _, match := range admitted {
 		err.Entries = append(err.Entries, match.name)
-		err.Indexes = append(err.Indexes, match.index)
+		err.Indexes = append(err.Indexes, match.policyIndex)
 	}
 	return err
 }

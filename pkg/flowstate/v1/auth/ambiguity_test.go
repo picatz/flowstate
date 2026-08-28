@@ -318,6 +318,57 @@ func TestNoneOfRefusesAListCarryingAnExcludedElement(t *testing.T) {
 	require.NoError(t, verify([]any{"engineering", "support"}))
 }
 
+// TestAVerifierKeepsItsOwnExclusionsAfterTheCallerMutatesThePolicy is the
+// aliasing half, through the public API: a caller that still holds the policy
+// it built a verifier from must not be able to rewrite the exclusions that
+// verifier is enforcing.
+//
+// The direction is what makes it worth a test of its own. Every other field
+// this package copies protects an entry from being *widened* by a later write;
+// so does this one, and an exclusion is the field where widening is spelled as
+// "remove a value". A verifier that shared NoneOf with its caller would start
+// admitting the branch the entry was written to keep out, with the policy on
+// disk unchanged, and it would do so through a data race on top.
+//
+// The AnyOf case beside it is the control: it was already copied, so seeing it
+// hold proves the mutation below reaches what it is aimed at.
+func TestAVerifierKeepsItsOwnExclusionsAfterTheCallerMutatesThePolicy(t *testing.T) {
+	issuer := newTestIssuer(t)
+
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name: "everyone-but-main", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
+		Require: []auth.ClaimRule{
+			auth.RequireClaim("repository", "picatz/flowstate"),
+			auth.RequireClaimNoneOf("ref", "refs/heads/main"),
+		},
+		Role:      "viewer",
+		Namespace: "acme",
+	}}}
+
+	verifier, err := auth.NewOIDCVerifier(policy, auth.WithEgressPolicy(authtest.EgressPolicy()))
+	require.NoError(t, err)
+
+	// The caller rewrites both lists in place, after construction. Pointing the
+	// exclusion at a branch nobody uses is the widening a shared slice would
+	// deliver; pointing the acceptance at another repository is the narrowing
+	// the already-copied field is proof against.
+	policy.Issuers[0].Require[0].AnyOf[0] = "somebody/else"
+	policy.Issuers[0].Require[1].NoneOf[0] = "refs/heads/never-used"
+
+	verify := func(ref string) error {
+		_, err := verifier.Verify(context.Background(), issuer.MintToken(
+			map[string]any{"repository": "picatz/flowstate", "ref": ref},
+			authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
+		))
+		return err
+	}
+
+	require.ErrorIs(t, verify("refs/heads/main"), auth.ErrClaimMismatch,
+		"the exclusion the verifier was built with still holds; a caller cannot widen an entry after the fact")
+	require.NoError(t, verify("refs/heads/topic"),
+		"and the repository rule the caller rewrote still admits its own repository")
+}
+
 // TestNoneOfIsNotAWayToPinAPublicMultiTenantIssuer is the negative direction on
 // the guard [auth.ClaimRule.narrowsWho] feeds: on a platform anyone may run a
 // workload on, excluding one account admits every other account on earth, so an
@@ -565,6 +616,98 @@ func TestAmbiguousIssuerErrorRendersEntriesWithoutIndexes(t *testing.T) {
 	require.Contains(t, message, `"first"`)
 	require.Contains(t, message, `"second"`)
 	require.NotContains(t, message, "issuers[", "with no positions to report, the names stand alone")
+}
+
+// TestAmbiguousIssuerErrorNamesPolicyRowsNotFilteredPositions is the other
+// aliasing-of-a-different-kind: each verifier walks a *filtered* list — the
+// OIDC one drops kind: mtls entries and then buckets by issuer, the mTLS one
+// keeps only kind: mtls — so a position inside either list is not a row an
+// operator can count to in their own YAML.
+//
+// Both halves put an entry of the other kind at row 0, so the filtered
+// positions (0 and 1) and the policy rows (1 and 2) are different numbers. A
+// diagnostic reporting the former sends somebody to the wrong two lines, and to
+// a third entry that is working correctly. This is also what keeps the refusal
+// agreeing with [auth.UnreachableIssuer], which has always reported policy
+// rows.
+func TestAmbiguousIssuerErrorNamesPolicyRowsNotFilteredPositions(t *testing.T) {
+	ca := newTestCA(t, "root")
+	caFile := ca.clientCAFile(t)
+
+	t.Run("a bearer refusal past a leading mtls entry", func(t *testing.T) {
+		issuer := newTestIssuer(t)
+
+		overlapping := auth.TrustedIssuer{
+			Issuer: issuer.URL(), Audiences: []string{"flowstate"},
+			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+			Namespace: "acme",
+		}
+		first, second := overlapping, overlapping
+		first.Name, second.Name = "bearer-one", "bearer-two"
+
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{
+			{
+				Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
+				ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN, Namespace: "acme",
+			},
+			first,
+			second,
+		}}
+
+		verifier, err := auth.NewOIDCVerifier(policy, auth.WithEgressPolicy(authtest.EgressPolicy()))
+		require.NoError(t, err)
+
+		_, err = verifier.Verify(context.Background(), issuer.MintToken(
+			map[string]any{"repository": "picatz/flowstate"},
+			authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
+		))
+		require.ErrorIs(t, err, auth.ErrAmbiguousIdentity)
+
+		ambiguous, ok := errors.AsType[*auth.AmbiguousIssuerError](err)
+		require.True(t, ok)
+		require.Equal(t, []string{"bearer-one", "bearer-two"}, ambiguous.Entries)
+		require.Equal(t, []int{1, 2}, ambiguous.Indexes,
+			"the rows the operator's file has, not the positions inside the verifier's filtered bucket")
+		require.Contains(t, err.Error(), `issuers[1] ("bearer-one")`)
+		require.Contains(t, err.Error(), `issuers[2] ("bearer-two")`)
+		require.NotContains(t, err.Error(), "issuers[0]", "row 0 is the mtls entry, which admitted nobody here")
+	})
+
+	t.Run("a certificate refusal past a leading oidc entry", func(t *testing.T) {
+		mesh := auth.TrustedIssuer{
+			Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
+			ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN, Namespace: "acme",
+		}
+		first, second := mesh, mesh
+		first.Name, second.Name = "mesh-one", "mesh-two"
+
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{
+			{
+				Name: "bearer", Issuer: "https://issuer.example", Audiences: []string{"flowstate"},
+				Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+				Namespace: "acme",
+			},
+			first,
+			second,
+		}}
+		require.NoError(t, policy.Validate())
+
+		verifier, err := auth.NewMTLSVerifier(policy)
+		require.NoError(t, err)
+
+		leaf := ca.issueLeaf(t, withURISAN("spiffe://example.org/ns/ci/sa/runner"))
+		_, err = verifier.VerifyPeer(t.Context(), chainFor(t, leaf, ca))
+		require.ErrorIs(t, err, auth.ErrAmbiguousIdentity)
+
+		ambiguous, ok := errors.AsType[*auth.AmbiguousIssuerError](err)
+		require.True(t, ok)
+		require.Equal(t, []string{"mesh-one", "mesh-two"}, ambiguous.Entries)
+		require.Equal(t, []int{1, 2}, ambiguous.Indexes,
+			"NewMTLSVerifier's list holds only the mtls entries, so its own positions would have been 0 and 1")
+		require.Contains(t, err.Error(), `issuers[1] ("mesh-one")`)
+		require.Contains(t, err.Error(), `issuers[2] ("mesh-two")`)
+		require.NotContains(t, err.Error(), "issuers[0]", "row 0 is the bearer entry, which this verifier never sees")
+	})
 }
 
 // TestVerifyPeerRefusesACertificateTwoEntriesAdmit is the same contract for
