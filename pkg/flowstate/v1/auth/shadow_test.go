@@ -2,6 +2,8 @@ package auth_test
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -14,11 +16,16 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
 
-// TestBroadEntryShadowsNarrowOne is the defect itself, proved through the
-// verifier rather than asserted about the policy: a broad entry placed above a
-// narrower one for the same issuer admits every token the narrow entry was
-// written for, under the broad entry's role.
-func TestBroadEntryShadowsNarrowOne(t *testing.T) {
+// TestBroadEntryBesideNarrowOneRefusesTheToken is the contract, proved through
+// the verifier rather than asserted about the policy: a token two entries for
+// one issuer both admit is refused, naming both, rather than attributed to
+// whichever comes first.
+//
+// This test used to assert the opposite — the first entry winning, with its
+// role, pinned as "the defect itself" — which is what #1073's precedence design
+// made of the same policy. #1051's decision replaced it: order decides nothing,
+// and this overlap is a misconfiguration everywhere.
+func TestBroadEntryBesideNarrowOneRefusesTheToken(t *testing.T) {
 	issuer := newTestIssuer(t)
 
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
@@ -53,19 +60,28 @@ func TestBroadEntryShadowsNarrowOne(t *testing.T) {
 	)
 
 	principal, err := verifier.Verify(context.Background(), token)
-	require.NoError(t, err)
 
-	// The token satisfies both entries. The first wins, so the second entry
-	// cannot admit anybody, and the workload runs as "admin" rather than the
-	// "deployer" its own entry names.
-	require.Equal(t, "ci-any-branch", principal.IssuerName)
-	require.Equal(t, "admin", principal.Role)
+	// The token satisfies both entries, so neither admits it.
+	require.ErrorIs(t, err, auth.ErrAmbiguousIdentity)
+	require.Equal(t, auth.Principal{}, principal, "a refused caller is nobody, not a partly filled principal")
+
+	ambiguous, ok := errors.AsType[*auth.AmbiguousIssuerError](err)
+	require.True(t, ok, "the refusal carries which entries matched, not only that something did")
+	require.Equal(t, []string{"ci-any-branch", "ci-main-only"}, ambiguous.Entries)
+	require.Equal(t, []int{0, 1}, ambiguous.Indexes)
+
+	// Neither entry's role is granted, and neither is named as the winner —
+	// the whole failure this refuses is a workload quietly running as "admin"
+	// because "ci-any-branch" happened to be written first.
+	require.NotContains(t, err.Error(), "admin")
+	require.NotContains(t, err.Error(), "deployer")
 }
 
 // TestUnreachableIssuersReportsShadowedEntry is the other half of
-// TestBroadEntryShadowsNarrowOne: the same policy, now with the symptom the
-// defect lacks. The diagnostic has to name both entries by index and name and
-// say what to do, per CLAUDE.md's "Diagnostics are a feature".
+// TestBroadEntryBesideNarrowOneRefusesTheToken: the same policy, reported at
+// load rather than discovered by a workload that cannot authenticate. The
+// diagnostic has to name both entries by index and name and say what to do, per
+// CLAUDE.md's "Diagnostics are a feature".
 func TestUnreachableIssuersReportsShadowedEntry(t *testing.T) {
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
 		{
@@ -102,24 +118,35 @@ func TestUnreachableIssuersReportsShadowedEntry(t *testing.T) {
 	message := findings[0].String()
 	require.Contains(t, message, `issuers[1] ("ci-main-only")`, "the diagnostic names the dead entry's position")
 	require.Contains(t, message, `issuers[0] ("ci-any-branch")`, "and the entry that kills it")
-	require.Contains(t, message, "move", "and what to do instead")
-	require.Contains(t, message, "narrow", "and the other way to fix it")
+	require.Contains(t, message, "narrow", "and what to do instead")
+	require.Contains(t, message, "none_of", "naming the field that expresses the narrowing")
+	require.Contains(t, message, "delete", "and the other way to fix it")
 
-	// The message says those callers are admitted by an entry above this one,
-	// never that they all hold the named entry's role: an entry above the
-	// named one may take some of them without admitting all of them, and
-	// naming one entry's namespace and role for every caller would be a
-	// confident wrong answer about who has what.
-	require.Contains(t, message, "admitted by an entry above this one")
+	// Reordering is never offered, because under the current contract it fixes
+	// nothing: the two entries overlap in either arrangement. The word is
+	// checked rather than the whole old sentence because the old sentence is
+	// what a careless rewrite would leave behind.
+	require.NotContains(t, message, "move", "reordering is not a remedy; entries are disjoint or they are broken")
+	require.NotContains(t, message, "above")
+
+	// The message says those callers are refused, never that they all hold the
+	// named entry's role: some other entry may take some of them without
+	// admitting all of them, and naming one entry's namespace and role for
+	// every caller would be a confident wrong answer about who has what.
+	require.Contains(t, message, "refused rather than admitted under either")
 	require.NotContains(t, message, `under "ci-any-branch"'s namespace`)
 }
 
 // TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller is that precision
-// as a policy rather than as a string. Here a rule on "ref" sits above a
-// repository-wide entry, and the unreachable entry below them is reported
-// against the repository-wide one — but main-branch callers are admitted by the
-// first entry, with its role, so no diagnostic may say every caller lands on
-// the entry it names.
+// as a policy rather than as a string. A rule on "ref" sits beside a
+// repository-wide entry, and the unreachable third entry is reported against
+// the repository-wide one — the only one that covers all of it. A main-branch
+// caller matches the "ref" entry too, so the pair a finding names is never the
+// whole account of who else takes those callers.
+//
+// The live half is what makes that concrete, and it changed with the contract:
+// such a caller used to be admitted by the first entry with its role, and is
+// now refused by all three at once.
 func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
@@ -142,9 +169,9 @@ func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 	require.Equal(t, "any-repo-caller", findings[0].ShadowedByName,
 		"the first entry admits only some of the dead entry's callers, so it is not the one that proves it dead")
 
-	// A token for the dead entry that the *first* entry takes, with that
-	// entry's role: the reason the message does not attribute every caller to
-	// the entry it names.
+	// A token for the dead entry that the *first* entry also takes: the reason
+	// the message does not attribute every caller to the entry it names. The
+	// refusal names all three, where the finding named a pair.
 	issuer := newTestIssuer(t)
 	live := policy
 	for i := range live.Issuers {
@@ -153,19 +180,23 @@ func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 	verifier, err := auth.NewOIDCVerifier(live, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
-	principal, err := verifier.Verify(context.Background(), issuer.MintToken(
+	_, err = verifier.Verify(context.Background(), issuer.MintToken(
 		map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/main"},
 		authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
 	))
-	require.NoError(t, err)
-	require.Equal(t, "main-branch", principal.IssuerName)
-	require.Equal(t, "deployer", principal.Role)
+	require.ErrorIs(t, err, auth.ErrAmbiguousIdentity)
+
+	ambiguous, ok := errors.AsType[*auth.AmbiguousIssuerError](err)
+	require.True(t, ok)
+	require.Equal(t, []string{"main-branch", "any-repo-caller", "repo-scoped"}, ambiguous.Entries,
+		"every entry that admitted is named, not only the pair the load-time finding compared")
 }
 
-// TestUnreachableIssuersSilentOnCorrectOrder is the ordering this diagnostic
-// exists to steer operators towards: narrow first, broad second, every entry
-// reachable.
-func TestUnreachableIssuersSilentOnCorrectOrder(t *testing.T) {
+// TestUnreachableIssuersSilentOnDisjointEntries is the shape this diagnostic
+// exists to steer operators towards, rewritten with the contract: the same two
+// tiers, made disjoint with none_of instead of arranged by order, and every
+// entry reachable.
+func TestUnreachableIssuersSilentOnDisjointEntries(t *testing.T) {
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
 		{
 			Name:      "ci-main-only",
@@ -179,16 +210,83 @@ func TestUnreachableIssuersSilentOnCorrectOrder(t *testing.T) {
 			Namespace: "acme",
 		},
 		{
-			Name:      "ci-any-branch",
+			Name:      "ci-other-branches",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
-			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+			Require: []auth.ClaimRule{
+				auth.RequireClaim("repository", "picatz/flowstate"),
+				auth.RequireClaimNoneOf("ref", "refs/heads/main"),
+			},
 			Role:      "viewer",
 			Namespace: "acme",
 		},
 	}}
 	require.NoError(t, policy.Validate())
 	require.Empty(t, policy.UnreachableIssuers())
+}
+
+// TestUnreachableIssuersSilentOnAnOverlapItCannotProve is the honest limit,
+// stated as a test so that reading a clean report never means "no ambiguity is
+// possible". The narrow entry does not shadow the broad one — plenty of the
+// broad entry's callers are outside it — so nothing is reported, and a token
+// satisfying both is still refused at verification time.
+//
+// This is the policy the old ordering advice produced, and its two halves are
+// the whole reason the load-time lint is not the guarantee: silence here, a
+// refusal there.
+func TestUnreachableIssuersSilentOnAnOverlapItCannotProve(t *testing.T) {
+	entries := []auth.TrustedIssuer{
+		{
+			Name:      "ci-main-only",
+			Audiences: []string{"flowstate"},
+			Require: []auth.ClaimRule{
+				auth.RequireClaim("repository", "picatz/flowstate"),
+				auth.RequireClaim("ref", "refs/heads/main"),
+			},
+			Role:      "deployer",
+			Namespace: "acme",
+		},
+		{
+			Name:      "ci-any-branch",
+			Audiences: []string{"flowstate"},
+			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+			Role:      "viewer",
+			Namespace: "acme",
+		},
+	}
+
+	atRest := auth.Policy{Issuers: slices.Clone(entries)}
+	for i := range atRest.Issuers {
+		atRest.Issuers[i].Issuer = "https://token.actions.githubusercontent.com"
+	}
+	require.NoError(t, atRest.Validate())
+	require.Empty(t, atRest.UnreachableIssuers(),
+		"the narrow entry does not cover the broad one, so no entry is provably dead")
+
+	issuer := newTestIssuer(t)
+	live := auth.Policy{Issuers: slices.Clone(entries)}
+	for i := range live.Issuers {
+		live.Issuers[i].Issuer = issuer.URL()
+	}
+	verifier, err := auth.NewOIDCVerifier(live, auth.WithEgressPolicy(authtest.EgressPolicy()))
+	require.NoError(t, err)
+
+	// A main-branch token satisfies both entries: this is what the lint cannot
+	// see and the verifier refuses.
+	_, err = verifier.Verify(context.Background(), issuer.MintToken(
+		map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/main"},
+		authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
+	))
+	require.ErrorIs(t, err, auth.ErrAmbiguousIdentity)
+
+	// And a token only the broad entry takes still authenticates, which is what
+	// makes the refusal above about the overlap rather than about the policy.
+	principal, err := verifier.Verify(context.Background(), issuer.MintToken(
+		map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/topic"},
+		authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
+	))
+	require.NoError(t, err)
+	require.Equal(t, "ci-any-branch", principal.IssuerName)
 }
 
 // TestUnreachableIssuersDetectsMTLSShadowing covers the other kind: mtls

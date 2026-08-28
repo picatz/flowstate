@@ -7,61 +7,95 @@ import (
 )
 
 // UnreachableIssuer names one entry of [Policy.Issuers] that can never admit
-// anybody, because an entry above it admits every caller it would.
+// anybody, because another entry admits every caller it would.
 //
-// [Policy.Issuers] is precedence-ordered on purpose — several entries may name
-// one issuer, and the first whose rules a token satisfies wins — so ordering a
-// broad entry ahead of a narrower one for the same issuer is a mistake with no
-// symptom: the file reads correctly, nothing fails, nothing logs, and a
-// workload simply runs with the broad entry's namespace and role instead of the
-// narrow entry's. This type is that missing symptom.
+// Entries for one issuer are *disjoint or they are broken*: a credential more
+// than one of them admits is refused with [AmbiguousIssuerError], because each
+// entry carries its own namespace and role and there is no safe way to pick
+// between them. So an entry whose callers another entry also admits is dead —
+// every one of them is refused before either entry's role is granted — and the
+// entry is dead whichever position it occupies, since order decides nothing.
+// This type is that finding, reported before a token arrives rather than
+// discovered as a wall of 401s.
+//
+// This supersedes the design that shipped with #1073, where [Policy.Issuers]
+// was precedence-ordered and the first entry whose rules a token satisfied won.
+// Under that contract a shadowed entry was a mistake with *no* symptom — the
+// file read correctly, nothing failed, nothing logged, and a workload simply
+// ran with the broad entry's namespace and role instead of its own — and the
+// two entries above are what this diagnostic was originally written to supply.
+// The finding survives the contract change with a heavier consequence attached:
+// what used to be the wrong role is now no admission at all. The decision is
+// recorded on #1051.
 type UnreachableIssuer struct {
 	// Index is the position of the unreachable entry in [Policy.Issuers], and
 	// Name is its [TrustedIssuer.Name].
 	Index int
 	Name  string
 
-	// ShadowedByIndex and ShadowedByName identify the earlier entry that
-	// admits everything this one would. It is the first such entry, which is
-	// the one that actually wins at verification time.
+	// ShadowedByIndex and ShadowedByName identify the entry that admits
+	// everything this one would. It is the first such entry in policy order,
+	// which is a stable choice and no longer a claim about which entry wins:
+	// under the current contract neither of them wins.
 	ShadowedByIndex int
 	ShadowedByName  string
 }
 
 // String renders the diagnostic an operator reads: which entry is dead, which
-// entry killed it, and the two ways to fix it.
+// entry proves it dead, and the two ways to fix it.
 //
-// It says the shadowed entry's callers are admitted *by an entry above it*
-// rather than by the named one specifically, because those are not the same
-// claim. The named entry is the first that admits everything this one would,
-// which is enough to prove this entry dead; an entry above even that one may
-// still take some of those callers without admitting all of them — a rule on
-// "ref" above a repository-wide entry, say — and telling an operator that every
-// such caller holds one named entry's role would be a confident wrong answer
-// about who has what.
+// It says those callers are *refused* rather than admitted anywhere, which is
+// the whole of what this pair proves. An entry other than the named one may
+// also admit some of them — a rule on "ref" beside a repository-wide entry, say
+// — so naming a specific role any of them ends up with would be a confident
+// wrong answer about who has what; and under the current contract there is no
+// such role to name in any case.
+//
+// Both remedies make the two entries disjoint, because that is the only shape a
+// policy has: narrow the broad entry so it stops covering this one's callers —
+// `none_of` is the field for saying "everyone the other entry does not take" —
+// or delete the entry that is not wanted. Reordering is not offered, because
+// reordering fixes nothing.
 func (u UnreachableIssuer) String() string {
 	return fmt.Sprintf(
-		"issuers[%d] (%q) can never be reached: issuers[%d] (%q) above it admits every caller it would, "+
-			"so those callers are admitted by an entry above this one, with that entry's namespace and role "+
-			"rather than this one's; move issuers[%d] (%q) above issuers[%d] (%q), or narrow %q",
+		"issuers[%d] (%q) can never admit anybody: issuers[%d] (%q) admits every caller it would, so every "+
+			"one of those callers matches two entries and is refused rather than admitted under either; "+
+			"narrow issuers[%d] (%q) so it no longer covers them — a require rule with none_of excludes "+
+			"exactly the callers %q is for — or delete whichever entry is not wanted",
 		u.Index, u.Name, u.ShadowedByIndex, u.ShadowedByName,
-		u.Index, u.Name, u.ShadowedByIndex, u.ShadowedByName, u.ShadowedByName,
+		u.ShadowedByIndex, u.ShadowedByName, u.Name,
 	)
 }
 
 // UnreachableIssuers reports every entry of [Policy.Issuers] that an earlier
 // entry makes unreachable, in policy order, at most one finding per entry
-// (naming the first entry that shadows it, which is the one that wins).
+// (naming the first entry that shadows it, which is a stable choice rather than
+// a claim about precedence — see [UnreachableIssuer]).
 //
 // It is a lint and never a refusal: [Policy.Validate] does not call it, and a
 // policy with findings loads and serves exactly as before. Two reasons, and
 // both matter. A shadowed entry is usually a mistake and not always — an
-// operator mid-migration may deliberately park a narrow entry behind a broad
+// operator mid-migration may deliberately park a narrow entry beside a broad
 // one they are about to delete — and refusing to load would turn a lint into
 // an outage for a deployment whose authentication was working a moment ago.
 // This follows warnUnpolledTenantQueues in cmd/flow: a loud start-up line
 // naming exactly what is wrong and what to do, for a configuration mistake
 // whose real answer belongs to the operator.
+//
+// # What this is, now that the verifier refuses ambiguity
+//
+// A shadowing pair is a *subset* of the overlaps [OIDCVerifier.Verify] and
+// [MTLSVerifier.VerifyPeer] refuse: the ones provable from the policy text
+// alone, before any credential exists. Keeping it is worth the code because
+// the refusal is discovered by a workload failing to authenticate, and this is
+// read at start-up by the person who can still fix it.
+//
+// It is deliberately not widened into "report every overlap". Two entries that
+// overlap *partially* — each admitting callers the other does not — are a
+// misconfiguration the verifier will refuse for the callers in the middle, and
+// this cannot report them without the union reasoning the section below rules
+// out. So a clean report means no *provably dead* entry, never "no ambiguity is
+// possible"; the verifier is where that guarantee lives.
 //
 // # What counts as unreachable
 //
@@ -84,35 +118,39 @@ func (u UnreachableIssuer) String() string {
 //     selects candidates by which entry's CA pool the verified chain
 //     intersects, not by Issuer, and an identical path in one process is an
 //     identical pool — and the same SubjectFrom, because a certificate that
-//     carries no SAN of the earlier entry's kind fails that entry and reaches
-//     the later one;
-//   - claim rules that are no narrower: for every rule the earlier entry
-//     requires, the later entry has a rule on the same claim whose AnyOf is a
-//     subset. A claim the earlier entry does not constrain at all is the widest
-//     case and covers any rule the later entry has on it; a claim the later
-//     entry constrains and the earlier one does not is the later entry being
-//     narrower, which is exactly the case being detected.
+//     carries no SAN of the earlier entry's kind fails that entry entirely;
+//   - claim rules that are no narrower, in both directions the rule can point:
+//     for every rule the earlier entry requires, the later entry has a rule on
+//     the same claim whose AnyOf is a subset *and* whose NoneOf is a superset.
+//     A claim the earlier entry does not constrain at all is the widest case
+//     and covers any rule the later entry has on it; a claim the later entry
+//     constrains and the earlier one does not is the later entry being
+//     narrower, which is exactly the case being detected. See
+//     [claimRulesCover], where the NoneOf half is argued — it is the direction
+//     that makes tiered entries provably disjoint, and getting it backwards
+//     would report a correct policy as broken.
 //
 // Namespace, NamespaceClaim, NamespaceMap and Role are deliberately not
 // consulted. None of them takes part in admission: [TrustedIssuer.namespaceFor]
-// runs after an entry has already won, and a namespace it cannot determine
-// rejects the caller rather than falling through to the next entry. An entry
-// shadowed by one whose namespace_map lacks the caller's value is still
-// unreachable — the caller is refused, never handed on.
+// runs only once exactly one entry has admitted, and a namespace it cannot
+// determine rejects the caller. An entry shadowed by one whose namespace_map
+// lacks the caller's value is still unreachable — that caller matched two
+// entries and was refused before any namespace was looked up.
 //
 // # What this deliberately does not detect
 //
 // False silence is the chosen failure. A wrong "this can never be reached" on a
-// correct policy would send an operator to reorder authentication that was
+// correct policy would send an operator to rewrite authentication that was
 // right, so nothing is reported that is not provable from the policy text
-// alone:
+// alone — and the cost of staying silent is now bounded by the verifier, which
+// refuses what this misses rather than admitting it:
 //
-//   - Union shadowing. Two earlier entries that between them cover a later one
-//     — one requiring ref refs/heads/main, another refs/heads/dev, above an
-//     entry accepting either — leave the later entry unreachable, and nothing
-//     here reports it. Only pairs are compared. Reporting a union means
-//     reasoning about a set of entries whose claim rules interact, and the first
-//     wrong answer there costs more than every right one saves.
+//   - Union shadowing. Two entries that between them cover a third — one
+//     requiring ref refs/heads/main, another refs/heads/dev, beside an entry
+//     accepting either — leave the third unreachable, and nothing here reports
+//     it. Only pairs are compared. Reporting a union means reasoning about a
+//     set of entries whose claim rules interact, and the first wrong answer
+//     there costs more than every right one saves.
 //   - Two kind: mtls entries whose ClientCAFile paths differ but name the same
 //     certificates (a symlink, a copy, two bundles sharing an issuer). Paths are
 //     compared as strings; certificate contents are not read here, because this
@@ -120,8 +158,11 @@ func (u UnreachableIssuer) String() string {
 //     put I/O on a path a validator may run in an editor.
 //   - An entry unreachable for reasons outside the policy: rules naming claims
 //     the issuer never mints, or two rules on one claim with disjoint AnyOf
-//     (self-contradictory, and dead regardless of what is above it). This
-//     package does not model any issuer's claim vocabulary.
+//     (self-contradictory, and dead whatever else the policy says). This
+//     package does not model any issuer's claim vocabulary. A single rule
+//     naming one value in both any_of and none_of is the one shape of this
+//     that is caught, and it is caught where it belongs — at load, by
+//     [TrustedIssuer.validateRequire], as a refusal rather than a lint.
 //   - Any kind other than oidc and mtls. A kind added to the schema later is
 //     compared to nothing until somebody decides what containment means for it,
 //     rather than inheriting a rule written before it existed.
@@ -183,9 +224,14 @@ func (t TrustedIssuer) shadowKey() string {
 	}
 }
 
-// shadows reports whether every caller t admits, a later entry would also have
-// admitted — which, since t is earlier in precedence order, makes that later
-// entry unreachable.
+// shadows reports whether every caller the later entry admits, t admits too —
+// which makes the later entry unreachable, since each of those callers now
+// matches two entries and is refused rather than attributed to either.
+//
+// The relation is directional but the consequence is not: t is called the
+// earlier entry only because that is the order [Policy.UnreachableIssuers]
+// walks in, and which of the pair a report blames is a reporting choice rather
+// than a claim about what happens at verification time.
 //
 // Each check below is the containment form of one check in
 // [TrustedIssuer.admits]; see [Policy.UnreachableIssuers] for the reasoning and
@@ -226,8 +272,16 @@ func (t TrustedIssuer) shadows(later TrustedIssuer) bool {
 }
 
 // covers reports whether every element of narrow appears in broad, and that
-// narrow is non-empty — an entry accepting nothing is not something to reason
-// about, and [TrustedIssuer.validate] already refuses one with no audiences.
+// narrow is non-empty.
+//
+// The non-empty requirement is not an aside; it is what makes every caller
+// correct on the empty case, and the empty case means something different in
+// each of them. For audiences and algorithms an entry listing none is not
+// something to reason about, and [TrustedIssuer.validate] already refuses one
+// with no audiences. In [ruleImplies] an empty list is a rule half that says
+// nothing at all — an unconstrained AnyOf accepts values outside any list, and
+// an unconstrained NoneOf excludes none of them — which is precisely a narrow
+// rule that fails to imply the broad one.
 func covers[T comparable](broad, narrow []T) bool {
 	if len(narrow) == 0 {
 		return false
@@ -254,21 +308,53 @@ func ageIsAtLeastAsPermissive(broad, narrow time.Duration) bool {
 }
 
 // claimRulesCover reports whether every rule the broad entry requires is
-// implied by some rule the narrow entry requires: a rule on the same claim
-// whose accepted values are a subset of the broad rule's.
-//
-// A rule on a list-valued claim holds when any element matches, and that does
-// not weaken the implication: if the narrow rule held, some claim value is in
-// its AnyOf, and therefore in the broad rule's AnyOf, so the broad rule holds
-// too.
+// implied by some rule the narrow entry requires — a rule on the same claim
+// that cannot hold without the broad one holding too.
 func claimRulesCover(broad, narrow []ClaimRule) bool {
 	for _, broadRule := range broad {
 		implied := slices.ContainsFunc(narrow, func(narrowRule ClaimRule) bool {
-			return narrowRule.Claim == broadRule.Claim && covers(broadRule.AnyOf, narrowRule.AnyOf)
+			return narrowRule.Claim == broadRule.Claim && ruleImplies(narrowRule, broadRule)
 		})
 		if !implied {
 			return false
 		}
+	}
+	return true
+}
+
+// ruleImplies reports whether every claim value a narrow rule accepts, a broad
+// rule on the same claim accepts as well. Both are assumed to name the same
+// claim; claimRulesCover checks that.
+//
+// The two halves of a [ClaimRule] point in opposite directions, and writing
+// either one backwards would report a correct policy as broken:
+//
+//   - AnyOf narrows by listing, so the narrow rule's list must be *contained*
+//     in the broad rule's. A rule on a list-valued claim holds when any element
+//     matches, and that does not weaken the implication: if the narrow rule
+//     held, some claim value is in its AnyOf, and therefore in the broad rule's
+//     AnyOf, so the broad rule holds too. A broad rule with no AnyOf accepts
+//     any value, so there is nothing to check.
+//   - NoneOf narrows by excluding, so the *broad* rule's list must be contained
+//     in the narrow rule's — an entry excluding {main} is narrower than one
+//     excluding nothing, and broader than one excluding {main, dev}. A broad
+//     rule with no NoneOf excludes nothing, so again there is nothing to check.
+//
+// This is exactly the tiered pair from [ClaimRule.NoneOf] read as containment,
+// and it answers "no" for it: `ref none_of [main]` does not shadow
+// `ref any_of [main]`, because the excluded value is the only one the other
+// entry takes. That is the whole point of writing the pair that way, and a
+// version of this function that ignored NoneOf would report the disjoint,
+// correct policy as a broken one.
+//
+// It is sound rather than complete, in the direction [Policy.UnreachableIssuers]
+// chooses everywhere: a pair it cannot prove goes unreported.
+func ruleImplies(narrow, broad ClaimRule) bool {
+	if len(broad.AnyOf) > 0 && !covers(broad.AnyOf, narrow.AnyOf) {
+		return false
+	}
+	if len(broad.NoneOf) > 0 && !covers(narrow.NoneOf, broad.NoneOf) {
+		return false
 	}
 	return true
 }

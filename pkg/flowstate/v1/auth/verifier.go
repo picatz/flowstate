@@ -191,7 +191,9 @@ func (c config) validate() error {
 // An OIDCVerifier is safe for concurrent use by many goroutines.
 type OIDCVerifier struct {
 	// entries maps an exact "iss" claim value to the trust policy entries that
-	// may admit it, in policy order.
+	// may admit it. Policy order is kept so that a refusal can name an entry by
+	// the position its file gives it, and for nothing else: every candidate is
+	// asked, and exactly one has to admit — see [Policy.Issuers].
 	entries map[string][]TrustedIssuer
 
 	// algorithms maps an issuer to the union of the algorithms its entries
@@ -425,46 +427,123 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		return Principal{}, err
 	}
 
-	var failures []error
-	for _, entry := range candidates {
+	// Every candidate entry is asked, and the answer has to be exactly one.
+	// Stopping at the first entry that admits would make the *order* of two
+	// entries decide which namespace and role a caller runs with, silently —
+	// see [Policy.Issuers] for the contract and [AmbiguousIssuerError] for
+	// what a second match costs.
+	var (
+		failures []error
+		admitted []matchedEntry
+	)
+	for index, entry := range candidates {
 		if err := entry.admits(alg, audiences, lifetime, claims, v.skew); err != nil {
 			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", entry.Name, err))
 			continue
 		}
+		admitted = append(admitted, matchedEntry{index: index, name: entry.Name, issuer: entry.Issuer})
+	}
 
-		// The tenant is established here, from the verified token, and nowhere
-		// else. A caller whose namespace the policy cannot determine is refused
-		// rather than admitted to a shared one, so this is a rejection and not a
-		// reason to try the next entry.
-		namespace, err := entry.namespaceFor(claims)
-		if err != nil {
-			return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
+	if len(admitted) > 1 {
+		return Principal{}, ambiguousIssuer(admitted)
+	}
+
+	if len(admitted) == 0 {
+		switch len(failures) {
+		case 0:
+			// Unreachable: an issuer is only trusted because it has entries. Stated
+			// anyway, because errors.Join of nothing is nil, and this function
+			// returning a nil error would be authenticating a caller as nobody.
+			return Principal{}, fmt.Errorf("%w: %q has no trust policy entries", ErrUntrustedIssuer, truncate(issuer, maxClaimValueLength))
+		case 1:
+			return Principal{}, failures[0]
+		default:
+			return Principal{}, errors.Join(failures...)
 		}
-
-		return Principal{
-			Issuer:     issuer,
-			IssuerName: entry.Name,
-			Subject:    subject,
-			Audience:   audiences,
-			Namespace:  namespace,
-			Role:       entry.Role,
-			IssuedAt:   lifetime.issuedAt,
-			ExpiresAt:  lifetime.expiresAt,
-			Claims:     claims,
-		}, nil
 	}
 
-	switch len(failures) {
-	case 0:
-		// Unreachable: an issuer is only trusted because it has entries. Stated
-		// anyway, because errors.Join of nothing is nil, and this function
-		// returning a nil error would be authenticating a caller as nobody.
-		return Principal{}, fmt.Errorf("%w: %q has no trust policy entries", ErrUntrustedIssuer, truncate(issuer, maxClaimValueLength))
-	case 1:
-		return Principal{}, failures[0]
-	default:
-		return Principal{}, errors.Join(failures...)
+	entry := candidates[admitted[0].index]
+
+	// The tenant is established here, from the verified token, and nowhere
+	// else. A caller whose namespace the policy cannot determine is refused
+	// rather than admitted to a shared one — and with exactly one entry
+	// admitting, there is no next entry it could have fallen through to
+	// anyway.
+	namespace, err := entry.namespaceFor(claims)
+	if err != nil {
+		return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
 	}
+
+	return Principal{
+		Issuer:     issuer,
+		IssuerName: entry.Name,
+		Subject:    subject,
+		Audience:   audiences,
+		Namespace:  namespace,
+		Role:       entry.Role,
+		IssuedAt:   lifetime.issuedAt,
+		ExpiresAt:  lifetime.expiresAt,
+		Claims:     claims,
+	}, nil
+}
+
+// matchedEntry is one trust policy entry that admitted a credential, carried
+// with enough of the entry to name it in a refusal and nothing else. Both
+// verifiers build these, which is what lets them share one refusal rather than
+// writing two sentences that drift.
+type matchedEntry struct {
+	// index is the entry's position within the candidates the verifier
+	// considered: for kind: oidc the entries sharing the token's issuer, for
+	// kind: mtls the whole of the verifier's own entry list. Both are the list
+	// an operator counts down when a refusal names a position.
+	index int
+
+	name   string
+	issuer string
+}
+
+// ambiguousIssuer builds the refusal for a credential that more than one entry
+// admits, naming each of them.
+func ambiguousIssuer(admitted []matchedEntry) error {
+	err := &AmbiguousIssuerError{
+		Issuer:  sharedIssuer(admitted),
+		Entries: make([]string, 0, len(admitted)),
+		Indexes: make([]int, 0, len(admitted)),
+	}
+	for _, match := range admitted {
+		err.Entries = append(err.Entries, match.name)
+		err.Indexes = append(err.Indexes, match.index)
+	}
+	return err
+}
+
+// sharedIssuer returns the issuer identifier every matched entry names, or the
+// empty string when they do not all name the same one.
+//
+// For kind: oidc they always agree: the verifier keyed the candidates by an
+// exact "iss" match before any of this. For kind: mtls they need not —
+// [MTLSVerifier.VerifyPeer] selects by which entry's CA pool the verified chain
+// intersects, and [TrustedIssuer.Issuer] there is an operator-chosen label for
+// the CA rather than anything read off the certificate, so two entries can
+// share a pool and label it differently. Naming one of those labels as "the"
+// issuer would be a confident wrong answer about which authority is in
+// question, so the refusal says nothing about the issuer instead — see
+// [AmbiguousIssuerError.Error], which drops the clause.
+func sharedIssuer(admitted []matchedEntry) string {
+	// Only ambiguousIssuer calls this, and only with at least two matches, so
+	// this guard is unreachable through the package and no test kills it. It
+	// stays because the alternative is indexing [0] on a slice whose length
+	// this function would otherwise be assuming.
+	if len(admitted) == 0 {
+		return ""
+	}
+	issuer := admitted[0].issuer
+	for _, match := range admitted[1:] {
+		if match.issuer != issuer {
+			return ""
+		}
+	}
+	return issuer
 }
 
 // lifetime is a token's validated time window, together with the instant it was
