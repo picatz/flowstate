@@ -44,6 +44,12 @@ type dirDefaults struct {
 
 	Vars     map[string]any `yaml:"vars"`
 	Defaults *Defaults      `yaml:"defaults"`
+
+	// path is the file this was read from, kept so a diagnostic about a value
+	// the fold below contributed can name the document that holds it rather
+	// than the suite that inherited it. Unexported, so the strict decode never
+	// sees a key for it.
+	path string
 }
 
 // DirDefaultsError reports that the thing that could not be read was a
@@ -67,6 +73,17 @@ type DirDefaultsError struct {
 
 	// Err is what went wrong with it: unreadable, over a bound, or invalid.
 	Err error
+}
+
+// sourcePath is the file a directory's defaults were read from, or empty when
+// the directory stated none. Nil-safe, because a suite with no sibling file
+// asks the same question.
+func (dd *dirDefaults) sourcePath() string {
+	if dd == nil {
+		return ""
+	}
+
+	return dd.path
 }
 
 func (e *DirDefaultsError) Error() string { return e.Path + ": " + e.Err.Error() }
@@ -95,6 +112,7 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 	if err := yaml.UnmarshalWithOptions(data, &dd, yaml.Strict()); err != nil {
 		return nil, refuse(err)
 	}
+	dd.path = path
 
 	return &dd, nil
 }
@@ -107,41 +125,67 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 // One direction, per field: the file wins where both speak. Checks are the
 // accumulating exception, directory first, so a failure lists claims in the
 // order a reader meets the files in.
-func (dd *dirDefaults) combineInto(file *File) {
+//
+// It answers with every path it contributed, because after this fold the
+// combined value no longer says which file each part of it came from — and a
+// diagnostic about a directory-stated value that named the *suite* would send a
+// reader to a file that does not contain the text being refused (Codex, #1179).
+// The loader hands these to [problems], which attributes a problem at or under
+// one of them to [DirDefaultsName] instead, and declines to look for a position
+// it could only find by accident.
+func (dd *dirDefaults) combineInto(file *File) []loc {
 	if dd == nil {
-		return
+		return nil
 	}
 
+	var contributed []loc
 	if len(dd.Vars) > 0 {
 		combined := make(map[string]any, len(dd.Vars)+len(file.Vars))
 		maps.Copy(combined, dd.Vars)
 		maps.Copy(combined, file.Vars)
+		for name := range dd.Vars {
+			if _, stated := file.Vars[name]; !stated {
+				contributed = append(contributed, at("vars").field(name))
+			}
+		}
 		file.Vars = combined
 	}
 
 	outer := dd.Defaults
 	if outer == nil {
-		return
+		return contributed
 	}
+
+	base := at("defaults")
 	if file.Defaults == nil {
 		// The suite states no defaults of its own: the directory's are its
 		// defaults, copied so two suites sharing the file cannot append into
-		// each other's slices through the shared struct.
+		// each other's slices through the shared struct. One path covers the
+		// whole block, since every part of it came from the directory.
 		copied := *outer
 		copied.Stubs = append([]Stub(nil), outer.Stubs...)
 		copied.Check = append([]CheckClaim(nil), outer.Check...)
 		file.Defaults = &copied
-		return
+
+		return append(contributed, base)
 	}
 
 	inner := file.Defaults
 	if inner.Workflow == "" {
+		if outer.Workflow != "" {
+			contributed = append(contributed, base.field("workflow"))
+		}
 		inner.Workflow = outer.Workflow
 	}
 	if len(outer.Inputs) > 0 {
 		combined := make(map[string]any, len(outer.Inputs)+len(inner.Inputs))
 		maps.Copy(combined, outer.Inputs)
 		maps.Copy(combined, inner.Inputs)
+		for name := range outer.Inputs {
+			if _, stated := inner.Inputs[name]; !stated {
+				contributed = append(contributed, base.field("inputs").field(name))
+			}
+		}
 		inner.Inputs = combined
 	}
 	if len(outer.Stubs) > 0 {
@@ -154,15 +198,29 @@ func (dd *dirDefaults) combineInto(file *File) {
 		combined := append([]Stub(nil), inner.Stubs...)
 		for i := range outer.Stubs {
 			if !taken[stubTargetKey(&outer.Stubs[i])] {
+				// Appended, so the directory's stubs occupy the indices past
+				// the ones this suite wrote.
+				contributed = append(contributed, base.field("stubs").item(len(combined)))
 				combined = append(combined, outer.Stubs[i])
 			}
 		}
 		inner.Stubs = combined
 	}
 	if inner.Sender == nil {
+		if outer.Sender != nil {
+			contributed = append(contributed, base.field("sender"))
+		}
 		inner.Sender = outer.Sender
 	}
 	if len(outer.Check) > 0 {
+		// Prepended, so the directory's claims occupy the front of the
+		// combined list — which is the index [checkCheckClaims] addresses an
+		// inherited claim by.
+		for i := range outer.Check {
+			contributed = append(contributed, base.field("check").item(i))
+		}
 		inner.Check = append(append([]CheckClaim(nil), outer.Check...), inner.Check...)
 	}
+
+	return contributed
 }

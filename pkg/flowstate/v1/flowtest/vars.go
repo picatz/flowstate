@@ -57,10 +57,16 @@ var varName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // Every name is judged rather than the first bad one, and they are judged in
 // sorted order, because a map's iteration order is not something a report may
 // depend on — the rule [checkScriptedIdentity] already states for claims.
-func checkVars(p *problems, vars map[string]any) {
+//
+// Reports false when the count bound stopped it, which the loader takes as a
+// refusal of the whole document: the walk below is per var, and a legal file
+// can declare tens of thousands of them.
+func checkVars(p *problems, vars map[string]any) bool {
 	block := at("vars")
 	if len(vars) > MaxVarsPerFile {
 		p.report(site{at: block}, "this file declares %d vars, more than the limit of %d", len(vars), MaxVarsPerFile)
+
+		return false
 	}
 	for _, name := range slices.Sorted(maps.Keys(vars)) {
 		if !varName.MatchString(name) {
@@ -70,6 +76,8 @@ func checkVars(p *problems, vars map[string]any) {
 		}
 		checkNoExpressions(p, site{at: block.field(name)}, "vars."+name, vars[name], 0)
 	}
+
+	return true
 }
 
 // resolveVars substitutes every whole-value `${vars.x}` reference in the
