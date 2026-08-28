@@ -986,6 +986,13 @@ correctly under load; this repo's own design bias (`CLAUDE.md`, "proto-first",
 "leaning into Temporal") is to surface what Temporal does rather than
 reimplement it, and this is exactly that call.
 
+That refusal is about *inbound* admission — runs arriving at `flow server` —
+and is unchanged. It is not in tension with the outbound bound described under
+[Per-host egress rate limits](#per-host-egress-rate-limits) below: no substrate
+control knows that some third-party API publishes a limit, so there is nothing
+there to surface rather than reimplement, and the bound that does exist for it
+is the API's own 429.
+
 ## Metrics
 
 Telemetry is OTLP push, gated per signal on the standard `OTEL_*` environment
@@ -1426,6 +1433,62 @@ status in the SDK; a cgroup-correct `SysInfoProvider` is available (from
 `--max-concurrent-activities`/`--max-concurrent-workflow-tasks` rather than
 sitting beside them — two live spellings of "how many slots" is a
 maintenance burden, not a feature.
+
+### Per-host egress rate limits
+
+Neither worker-capacity lever above can say "at most 100 requests per second to
+`api.stripe.com`". Both bound *this deployment's activity start rate*, and one
+task queue serves every step, so throttling to one API's published limit
+throttles `log`, every other API, and every tenant with it (#912). What can say
+it is the egress policy, which is already host-scoped, deployment-owned, and
+sitting on the chokepoint every outbound HTTP call crosses:
+
+```yaml
+egress:
+  max_requests_per_second_per_process:
+    api.stripe.com: 100
+    api.github.com: 10
+```
+
+Loaded the same way every other egress setting is — `flow worker
+--egress-policy` / `flow run local --egress-policy` (or
+`FLOWSTATE_EGRESS_POLICY`). There is no new flag and no new mechanism: it is a
+field in the file `examples/egress-policy.yaml` already demonstrates.
+
+**The number is per worker process. N workers multiply it.** The token bucket
+lives in the policy object, and one policy is bound into the `http` task once
+per process, so a fleet of ten workers loading this file sends up to ten times
+these numbers. Dividing by the worker count is the operator's job, and a fleet
+that autoscales is a fleet whose effective ceiling moves with it. This is the
+same property `--max-activities-per-second` has, named for the same reason
+rather than hidden.
+
+**The deployment-wide bound is the upstream's own 429, and it now works.** A
+429 used to be classified as a permanent invalid-input failure, which meant the
+`Retry-After` header the http task parsed and attached was never consulted by
+either driver — the one status the header exists for was the one that dropped
+it. `ErrorKindRateLimited` (retryable) fixed that: a rate-limited response is
+retried, and its `Retry-After` is what schedules the next attempt, on both the
+local and the durable driver. So the honest division of labor is: **the API's
+own limit is what protects the API; this field caps what one process
+contributes before the API has to say no.** If you need a true fleet-wide cap,
+this is not it, and nothing in Flowstate is — the API's 429 is.
+
+**Exceeding it is not a denial, and nothing blocks.** A refused request fails
+as `RateLimited` carrying the wait until the bucket frees a token, and the
+step's retry schedules from that. It deliberately does not sleep inside the
+activity: a limiter that waited would hold a worker slot for the whole wait,
+turning a bound on one host's traffic into a concurrency bound on everything
+the worker does. The visible cost of refusing instead is that a held-back
+attempt spends one of the step's `attempts:`, so a step calling a
+heavily-limited host wants a retry policy with room in it.
+
+**Two more properties worth knowing before writing a number.** The key is the
+host with no port and no wildcards, normalized the way the `host` rule attribute
+is (case, the trailing root dot, Punycode, and canonical IP literals) — so one
+host serving two services on two ports shares one budget. And this covers the
+`http` task only: a plugin making its own outbound calls is a separate process
+with its own client and is not governed by the egress policy at all.
 
 ## Worker versioning, every time
 

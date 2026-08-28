@@ -3,6 +3,7 @@ package netpolicy
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrDenied is the sentinel error wrapped by every egress policy denial. Callers
@@ -15,6 +16,17 @@ var ErrDenied = errors.New("denied by egress policy")
 // that merely ended early, so callers can report truncation distinctly from a
 // read failure.
 var ErrBodyTooLarge = errors.New("response body exceeds egress policy limit")
+
+// ErrRateLimited is the sentinel error wrapped when a request exceeds a per-host
+// rate bound configured by [WithMaxRequestsPerSecondPerProcess].
+//
+// It is deliberately not [ErrDenied], and a [*RateLimitedError] is deliberately
+// not a [*DenyError]. Every denial in this package means the request is not
+// permitted and asking again will not change it, which is why a caller maps
+// [ErrDenied] to a permanent failure. This means the opposite: the request is
+// permitted, and it is early. Callers tell the two apart with errors.As and
+// should try again after [RateLimitedError.RetryAfter].
+var ErrRateLimited = errors.New("rate limited by egress policy")
 
 // ErrInvalidPolicy is the sentinel error wrapped by [New] when the supplied
 // options do not describe a usable policy, such as a CEL rule that does not
@@ -100,6 +112,45 @@ func (e *DenyError) Unwrap() []error {
 
 	return []error{ErrDenied, e.Err}
 }
+
+// RateLimitedError reports that a request exceeded the per-host rate bound this
+// process is configured with. It wraps [ErrRateLimited], names the host whose
+// bucket refused it, and carries how long until a token exists so the caller can
+// schedule the next attempt instead of guessing.
+//
+// The wait is the caller's to take, elsewhere. This package never sleeps on it:
+// blocking inside the request would hold the worker's activity slot for the
+// duration, turning a bound on one host's traffic into a bound on everything the
+// worker does.
+type RateLimitedError struct {
+	// Host is the normalized host whose bucket refused the request, which is the
+	// key an operator wrote in the policy.
+	Host string
+
+	// Target is the request URL with any password redacted, for a message that
+	// says which request was held back.
+	Target string
+
+	// RequestsPerSecond is the configured per-process rate, repeated here so a
+	// report can say what the bound was without re-reading the policy file.
+	RequestsPerSecond float64
+
+	// RetryAfter is how long until this bucket frees a token — synthetic, in the
+	// sense that no server said it, but derived from the bucket's own state
+	// rather than guessed.
+	RetryAfter time.Duration
+}
+
+// Error implements the error interface.
+func (e *RateLimitedError) Error() string {
+	return fmt.Sprintf("%s: %s (%s: %g requests per second per process, retry after %s)",
+		ErrRateLimited, e.Target, e.Host, e.RequestsPerSecond, e.RetryAfter)
+}
+
+// Unwrap returns [ErrRateLimited]. Notably not [ErrDenied]: see that sentinel's
+// own documentation for why a caller must be able to tell "not permitted" from
+// "not yet".
+func (e *RateLimitedError) Unwrap() error { return ErrRateLimited }
 
 // BodyTooLargeError reports that a response body exceeded the policy's limit. It
 // wraps [ErrBodyTooLarge] and records the limit so the caller can report it.

@@ -552,12 +552,42 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 
 		httpResp, err := policy.Client().Do(httpReq)
 		if err != nil {
+			// Read the typed rate refusal off the error the transport returned,
+			// before scrubbing, because [secrets.Scrubber.ScrubError]
+			// deliberately breaks errors.As — a typed error can hold the
+			// unredacted URL in an exported field, so it exposes nothing but
+			// errors.Is. plugin/task.go makes the same move for the same
+			// reason. Only the delay and the host are taken from it; the
+			// message reported below is built from the scrubbed error.
+			var limited *netpolicy.RateLimitedError
+			rateLimited := errors.As(err, &limited)
+
 			err = scrubber.ScrubError(err)
 			// A policy denial is deliberate and will happen again; a connection
 			// reset, DNS failure, or timeout may succeed later. Distinguishing
 			// them is what stops a denied request from being retried.
 			if errors.Is(err, netpolicy.ErrDenied) {
 				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
+			}
+
+			// The policy's own per-host rate bound (#912 phase two). Checked
+			// before the two classifications below, because it is neither of
+			// the things they decide: the request was permitted and was never
+			// sent, so it is not a denial and its outcome is not unknown — a
+			// bucket that refuses cannot have reached the peer. Classifying it
+			// as UpstreamUnknown on a POST would make a request nobody made
+			// look like one that might have taken effect.
+			//
+			// RateLimited is retryable and carries the bucket's own wait, so
+			// this rides the machinery a 429's Retry-After already rides
+			// (#1180): both drivers read RetryAfter off the error and schedule
+			// the next attempt from it. Nothing blocks in the activity.
+			if rateLimited {
+				rateErr := NewTaskError("http", ErrorKindRateLimited, fmt.Errorf(
+					"%s %s was held back by this worker's own rate limit for %s of %g requests per second per process: %w",
+					taskInputs.GetMethod(), taskInputs.GetUrl(), limited.Host, limited.RequestsPerSecond, err))
+				rateErr.RetryAfter = limited.RetryAfter
+				return nil, rateErr
 			}
 
 			if !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err) {
