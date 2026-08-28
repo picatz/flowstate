@@ -213,7 +213,7 @@ name: collides
 steps:
   - id: gate
     wait_for_signal:
-      name: ` + v1.DebugPauseSignal + `
+      name: ` + v1.DebugSignal + `
       timeout: 1h
 `))
 	require.NoError(t, err)
@@ -238,7 +238,7 @@ name: collides-in-a-batch
 steps:
   - id: gate
     wait_for_signals:
-      name: ` + v1.DebugResumeSignal + `
+      name: ` + v1.DebugSignal + `
       max_batch: 2
       timeout: 1h
 `))
@@ -274,7 +274,7 @@ steps:
     log:
       message: hello
 signals:
-  ` + v1.DebugPauseSignal + `:
+  ` + v1.DebugSignal + `:
     allow:
       - claims:
           team: sre

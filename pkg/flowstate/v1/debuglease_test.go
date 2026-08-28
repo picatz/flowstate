@@ -244,24 +244,21 @@ func TestALeaseRequestThatCannotBeReadAsksForNothing(t *testing.T) {
 func TestTheEngineOwnsTheReservedSignalPrefix(t *testing.T) {
 	t.Parallel()
 
-	require.True(t, v1.IsReservedSignalName(v1.DebugPauseSignal))
-	require.True(t, v1.IsReservedSignalName(v1.DebugResumeSignal))
-	require.True(t, v1.IsDebugSignalName(v1.DebugPauseSignal))
-	require.True(t, v1.IsDebugSignalName(v1.DebugResumeSignal))
+	require.True(t, v1.IsReservedSignalName(v1.DebugSignal))
+	require.True(t, v1.IsDebugSignalName(v1.DebugSignal))
 
 	assert.False(t, v1.IsReservedSignalName("deploy-approved"),
 		"an ordinary signal name is the author's")
 	assert.True(t, v1.IsReservedSignalName(v1.ReservedSignalPrefix+"whatever"),
-		"the whole prefix is reserved, not only the two names this build reads")
+		"the whole prefix is reserved, not only the one name this build reads")
 	assert.False(t, v1.IsDebugSignalName(v1.ReservedSignalPrefix+"whatever"),
 		"a reserved name this build has no channel for is not a debug ask")
 
-	// Both reserved names must be spellable through the door the ask arrives at,
-	// or the reservation would describe names nobody could ever send.
-	for _, name := range v1.DebugSignalNames() {
-		assert.NoError(t, v1.Validate(&v1.SignalRequest{WorkflowId: "run-1", Name: name}),
-			"%s has to satisfy SignalRequest.name's own pattern, or it can never be delivered", name)
-	}
+	// The reserved name must be spellable through the door the ask arrives at,
+	// or the reservation would describe a name nobody could ever send.
+	assert.NoError(t, v1.Validate(&v1.SignalRequest{WorkflowId: "run-1", Name: v1.DebugSignal}),
+		"%s has to satisfy SignalRequest.name's own pattern, or it can never be delivered",
+		v1.DebugSignal)
 
 	ordinary := &v1.Workflow{
 		Name: "ordinary", Profile: v1.CurrentProfile,
@@ -275,7 +272,7 @@ func TestTheEngineOwnsTheReservedSignalPrefix(t *testing.T) {
 	colliding := &v1.Workflow{
 		Name: "colliding", Profile: v1.CurrentProfile,
 		Steps: []*v1.Node{{Id: "gate", Kind: &v1.Node_Wait{Wait: &v1.Wait{
-			Kind: &v1.Wait_Signal{Signal: &v1.Signal{Name: v1.DebugPauseSignal}},
+			Kind: &v1.Wait_Signal{Signal: &v1.Signal{Name: v1.DebugSignal}},
 		}}}},
 	}
 	assert.Error(t, v1.CheckReservedSignalNames(colliding),
@@ -284,7 +281,7 @@ func TestTheEngineOwnsTheReservedSignalPrefix(t *testing.T) {
 	policied := &v1.Workflow{
 		Name: "policied", Profile: v1.CurrentProfile,
 		Signals: map[string]*v1.SignalPolicy{
-			v1.DebugPauseSignal: debugPolicy(&v1.SignalPolicyRule{Namespace: "team-a"}),
+			v1.DebugSignal: debugPolicy(&v1.SignalPolicyRule{Namespace: "team-a"}),
 		},
 	}
 	assert.Error(t, v1.CheckReservedSignalNames(policied),

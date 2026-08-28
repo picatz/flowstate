@@ -623,7 +623,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// otherwise be dropped at the seam — a `flow signal` that reported
 		// success and did nothing — which is precisely the failure drainSignals
 		// exists to prevent, on a channel [v1.SignalNames] cannot know about.
-		pending = drainDebugAsks(ctx, pending)
+		pending = drainDebugAsks(ctx, pending, exec.debug)
 
 		next := &v1.RunState{
 			Workflow:    st.Workflow,

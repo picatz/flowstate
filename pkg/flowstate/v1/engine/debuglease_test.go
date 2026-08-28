@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -61,14 +62,9 @@ func debugSpec(name string) *v1.Workflow {
 // identity the server attested and its own acceptance clock — because that is
 // the only shape the engine ever sees, and a fixture that invented a different
 // one would be testing a door nothing arrives at.
-func debugAsk(subject string, lease time.Duration) *v1.SignalDelivery {
-	payload := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}}
-	if lease > 0 {
-		payload.NamedValues[v1.DebugLeaseInput] = v1.NewLiteral(lease.String())
-	}
-
+func debugAsk(verb, subject string, lease time.Duration) *v1.SignalDelivery {
 	return &v1.SignalDelivery{
-		Payload: payload,
+		Payload: v1.NewDebugAsk(verb, lease),
 		Sender: &v1.SignalSender{
 			Identity: &v1.WorkloadIdentity{
 				Issuer:    "https://issuer.example.com",
@@ -94,7 +90,7 @@ func runHeldFor(
 	for at, asks := range script {
 		for _, ask := range asks {
 			env.RegisterDelayedCallback(func() {
-				env.SignalWorkflow(ask.name, ask.delivery)
+				env.SignalWorkflow(v1.DebugSignal, ask.delivery)
 			}, at)
 		}
 	}
@@ -111,16 +107,15 @@ func runHeldFor(
 }
 
 type scriptedAsk struct {
-	name     string
 	delivery *v1.SignalDelivery
 }
 
 func pauseAt(subject string, lease time.Duration) scriptedAsk {
-	return scriptedAsk{name: v1.DebugPauseSignal, delivery: debugAsk(subject, lease)}
+	return scriptedAsk{delivery: debugAsk(v1.DebugVerbPause, subject, lease)}
 }
 
 func resumeBy(subject string) scriptedAsk {
-	return scriptedAsk{name: v1.DebugResumeSignal, delivery: debugAsk(subject, 0)}
+	return scriptedAsk{delivery: debugAsk(v1.DebugVerbResume, subject, 0)}
 }
 
 // TestALeaseHoldsTheDurableCorpusWhereItSaysItDoes is the durable half of
@@ -157,7 +152,7 @@ func TestALeaseHoldsTheDurableCorpusWhereItSaysItDoes(t *testing.T) {
 			start := env.Now()
 
 			env.RegisterDelayedCallback(func() {
-				env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", lease))
+				env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", lease))
 			}, 0)
 
 			held, queryErr := askDuring(t, env, lease/2)
@@ -217,6 +212,136 @@ func TestARunWhoseWorkflowDeclaresNothingIsNeverHeld(t *testing.T) {
 			"rather than the rule")
 	assert.Contains(t, outputs.GetStepValues(), "second",
 		"and it ran to the end, unbothered")
+}
+
+// TestARunFromBeforeDebugExistedKeepsItsOwnSignals is the compatibility claim,
+// and it is about a history this engine will meet rather than a shape anybody
+// would write today.
+//
+// [engine.Run] is one interpreter for every workload, so a change to what it
+// takes off a channel changes every run already in flight — and a deployment
+// running with `--allow-unversioned-interpreter` replays old history through new
+// code (versioning.go). Before this change nothing refused a specification that
+// waited on `flowstate_debug`: the compiler had no reservation and
+// `authorizeSignal` admitted any undeclared name, so `waitForSignal` consumed
+// that delivery at the gate. An engine that drains the channel at a step
+// boundary instead takes the delivery away, the wait times out where history
+// records it being answered, and the run wedges on the first replay after the
+// deploy.
+//
+// The gate is [debugControl.declared]: `Workflow.debug` is a field no earlier
+// interpreter set, so it reads as absent on every such history and the whole
+// subsystem is inert for exactly those runs — invariant 10 in
+// docs/ARCHITECTURE.md, and the answer replay_test.go names as this engine's
+// usual one.
+//
+// The spec is built in Go because the compiler now refuses to produce it
+// (`TestAWaitOnAReservedNameIsRefused`), which is the point: only a run that
+// predates the reservation can be in this shape, and this is what one looks
+// like.
+func TestARunFromBeforeDebugExistedKeepsItsOwnSignals(t *testing.T) {
+	t.Parallel()
+
+	// No `Debug` stanza — field 15 did not exist when this run started.
+	spec := &v1.Workflow{
+		Name:    "written-before-debug-existed",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{
+			sleepStep("settle", settleFor),
+			{Id: "gate", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: v1.DebugSignal}},
+				Timeout: durationpb.New(time.Hour),
+			}}},
+			logStep("after", "one"),
+		},
+	}
+	require.Nil(t, spec.GetDebug(), "a run from before this change carries no debug policy")
+
+	env := newWaitEnv(t)
+	start := env.Now()
+
+	// Delivered while `settle` is running, so the run reaches a step boundary
+	// with it buffered — the boundary that would consume it.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugSignal, &v1.SignalDelivery{
+			Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+				"approved": v1.NewLiteral(true),
+			}},
+		})
+	}, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	// The wait was answered by its signal, at the moment the sleep ended, rather
+	// than timing out an hour later because a debug drain had eaten it.
+	assert.Equal(t, settleFor, env.Now().Sub(start),
+		"a run whose specification predates `debug:` had its own signal consumed by the debug "+
+			"machinery, so an in-flight run would wedge the moment this deploys")
+
+	var outputs v1.Workflow_StepOutputs
+	require.NoError(t, env.GetWorkflowResult(&outputs))
+
+	gate := outputs.GetStepValues()["gate"].GetNamedValues()
+	assert.False(t, gate["timed_out"].GetLiteral().GetBoolValue(),
+		"the wait timed out, which is what it does when something else took its delivery")
+	assert.Contains(t, outputs.GetStepValues(), "after", "and the run walked on")
+}
+
+// TestARunFromBeforeDebugExistedCarriesItsSignalAcrossTheSeam is the other half
+// of the same claim, at the seam replay does not cover.
+//
+// An unread `flowstate_debug` delivery on a pre-change run belongs to
+// `drainSignals`, which carries the names the *specification* declares. If the
+// debug drain took it instead, the Continue-As-New would write a different
+// carry than the one history's next segment was started from — and the wait on
+// the far side would never be answered.
+func TestARunFromBeforeDebugExistedCarriesItsSignalAcrossTheSeam(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1.Workflow{
+		Name:    "suspends-before-its-gate",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{
+			logStep("first", "one"),
+			{Id: "gate", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: v1.DebugSignal}},
+				Timeout: durationpb.New(time.Hour),
+			}}},
+		},
+	}
+
+	env := newWaitEnv(t)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugSignal, &v1.SignalDelivery{
+			Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+				"approved": v1.NewLiteral(true),
+			}},
+		})
+	}, 0)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
+
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continueAsNew)
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried))
+
+	require.Len(t, carried.GetPendingSignals(), 1,
+		"the delivery the workflow's own gate is waiting for was lost at the seam")
+	assert.Equal(t, v1.DebugSignal, carried.GetPendingSignals()[0].GetName())
+	assert.True(t,
+		carried.GetPendingSignals()[0].GetPayload().GetNamedValues()["approved"].GetLiteral().GetBoolValue(),
+		"and it is the author's own payload, carried whole rather than read as a debug ask")
 }
 
 // TestARunNobodyDebugsIsUnchanged is the baseline every figure below is read
@@ -491,10 +616,10 @@ func TestARefusedAskIsRefusedRatherThanQueued(t *testing.T) {
 	// The first lease is taken at t=60s and lapses at t=90s; the second ask
 	// lands at t=75s, while the run is held by somebody else.
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", 30*time.Second))
+		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", 30*time.Second))
 	}, 30*time.Second)
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-2@example.com", time.Minute))
+		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-2@example.com", time.Minute))
 	}, 75*time.Second)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: debugSpec("refused-then-suspended"), StepsBudget: 2})
@@ -514,7 +639,7 @@ func TestARefusedAskIsRefusedRatherThanQueued(t *testing.T) {
 
 	var kept []*v1.PendingSignal
 	for _, pending := range carried.GetPendingSignals() {
-		if pending.GetName() == v1.DebugPauseSignal {
+		if pending.GetName() == v1.DebugSignal {
 			kept = append(kept, pending)
 		}
 	}
@@ -587,14 +712,14 @@ func TestABoundaryDrainsMoreThanOneCarriedAsk(t *testing.T) {
 		Workflow: spec,
 		PendingSignals: []*v1.PendingSignal{
 			{
-				Name:    v1.DebugPauseSignal,
-				Payload: debugAsk("sre-1@example.com", 30*time.Second).GetPayload(),
-				Sender:  debugAsk("sre-1@example.com", 0).GetSender(),
+				Name:    v1.DebugSignal,
+				Payload: v1.NewDebugAsk(v1.DebugVerbPause, 30*time.Second),
+				Sender:  debugAsk(v1.DebugVerbPause, "sre-1@example.com", 0).GetSender(),
 			},
 			{
-				Name:    v1.DebugPauseSignal,
-				Payload: debugAsk("sre-1@example.com", 90*time.Second).GetPayload(),
-				Sender:  debugAsk("sre-1@example.com", 0).GetSender(),
+				Name:    v1.DebugSignal,
+				Payload: v1.NewDebugAsk(v1.DebugVerbPause, 90*time.Second),
+				Sender:  debugAsk(v1.DebugVerbPause, "sre-1@example.com", 0).GetSender(),
 			},
 		},
 	}
@@ -641,7 +766,7 @@ func TestAHeldRunSaysSoOnTheSurfaceOperatorsRead(t *testing.T) {
 	env := newWaitEnv(t)
 
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", time.Minute))
+		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Minute))
 	}, 30*time.Second)
 
 	// t=90s is inside the hold (t=60s..t=120s); t=150s is after it, while the
@@ -663,6 +788,49 @@ func TestAHeldRunSaysSoOnTheSurfaceOperatorsRead(t *testing.T) {
 
 	assert.NotContains(t, *after, "held by debug lease",
 		"a run that resumed kept claiming to be held, which is worse than never saying it")
+}
+
+// TestAResumeFollowedByAPauseLeavesThePauseHolding is the ordering claim, and
+// it is the exact interleaving a review found this getting wrong.
+//
+// Both asks arrive while a step is running, so both are buffered when the
+// boundary is reached and the run applies them back to back. Arrival order says
+// the resume is stale — nothing was holding the run when it was sent — and the
+// pause that came after it should hold the next boundary.
+//
+// With a channel per verb, the engine's own loop decided instead: it drained
+// pause first, granted a lease, then drained the older resume and released it,
+// and the run walked on when its caller had asked it to stop. One channel makes
+// the order a fact of history rather than of this package's loop.
+//
+// The mirrored case runs first and is the reason this one means anything: the
+// same two asks the other way round *do* leave the run unheld, so the assertion
+// below is about order rather than about a resume that never works.
+func TestAResumeFollowedByAPauseLeavesThePauseHolding(t *testing.T) {
+	t.Parallel()
+
+	// Pause at t=30s, resume at t=40s. The pause is the older ask, so the
+	// resume releases it and the run is never held.
+	unheld, _ := runHeldFor(t, debugSpec("pause-then-resume"), map[time.Duration][]scriptedAsk{
+		30 * time.Second: {pauseAt("sre-1@example.com", time.Minute)},
+		40 * time.Second: {resumeBy("sre-1@example.com")},
+	})
+	require.Equal(t, settleFor, unheld,
+		"a pause followed by a resume has to leave the run unheld, or the case below proves nothing")
+
+	// The same two asks, the other way round. The resume arrives first and finds
+	// nothing holding the run; the pause arrives after it and holds the boundary
+	// at t=60s for its minute.
+	elapsed, outputs := runHeldFor(t, debugSpec("resume-then-pause"), map[time.Duration][]scriptedAsk{
+		30 * time.Second: {resumeBy("sre-1@example.com")},
+		40 * time.Second: {pauseAt("sre-1@example.com", time.Minute)},
+	})
+
+	assert.Equal(t, settleFor+time.Minute, elapsed,
+		"an earlier resume released a lease taken by a pause that arrived after it, so asks are "+
+			"applied in an order the engine chose rather than the one they arrived in")
+	assert.Contains(t, outputs.GetStepValues(), "second",
+		"and the run still finished")
 }
 
 // TestNoAskCanHoldARunPastTheCeiling is the "non-negotiable upward" half,
@@ -805,7 +973,7 @@ func TestCancellingAHeldRunDoesNotWaitOutTheLease(t *testing.T) {
 	start := env.Now()
 
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", v1.MaxDebugLease))
+		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", v1.MaxDebugLease))
 	}, 30*time.Second)
 	env.RegisterDelayedCallback(env.CancelWorkflow, 90*time.Second)
 
@@ -838,7 +1006,7 @@ func TestAPauseAskSurvivesContinueAsNew(t *testing.T) {
 
 	first := newWaitEnv(t)
 	first.RegisterDelayedCallback(func() {
-		first.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", 45*time.Second))
+		first.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", 45*time.Second))
 	}, 30*time.Second)
 
 	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
@@ -860,7 +1028,7 @@ func TestAPauseAskSurvivesContinueAsNew(t *testing.T) {
 	for _, pending := range carried.GetPendingSignals() {
 		names = append(names, pending.GetName())
 	}
-	require.Contains(t, names, v1.DebugPauseSignal,
+	require.Contains(t, names, v1.DebugSignal,
 		"the pause ask was dropped at the Continue-As-New seam")
 
 	// And the second segment acts on it: the carried ask holds the run at the

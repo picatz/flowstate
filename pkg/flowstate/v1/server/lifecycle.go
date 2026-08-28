@@ -309,12 +309,13 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 // authorizeReservedSignal decides a delivery on a channel the engine owns
 // rather than one a workflow declared.
 //
-// Two names exist ([v1.DebugPauseSignal] and [v1.DebugResumeSignal]), and both
-// are governed by [v1.Workflow.Debug] — which fails closed, so a workflow with
-// no `debug:` stanza refuses every one of them, including from the identity
-// that started the run. Any other reserved name is refused outright: the prefix
-// is the engine's, this build knows two names in it, and accepting a third
-// would deliver onto a channel nothing reads while telling the caller it
+// One name exists ([v1.DebugSignal] — every ask travels on it, with its verb in
+// the payload so that ordering comes from one FIFO rather than from a channel
+// per verb), and it is governed by [v1.Workflow.Debug] — which fails closed, so
+// a workflow with no `debug:` stanza refuses every delivery, including from the
+// identity that started the run. Any other reserved name is refused outright:
+// the prefix is the engine's, this build knows one name in it, and accepting a
+// second would deliver onto a channel nothing reads while telling the caller it
 // worked.
 //
 // # Why this is a signal at all

@@ -40,16 +40,32 @@ import (
 // `wait_for_signal:` uses — so what holds the run is the run's own durable
 // state, and a worker that dies mid-hold resumes the hold on the next one.
 //
-// # Determinism, and why no version gate
+// # Determinism, and the gate that is not a version marker
 //
 // Every clock read here is `workflow.Now` and every wait is a workflow timer.
-// The drain that runs at every boundary issues no commands and writes no
-// history — `GetSignalChannel` registers a channel and `ReceiveAsync` on an
-// empty one returns false — so replaying a history recorded before this
-// existed produces the identical command sequence, and there is nothing for a
-// [workflow.GetVersion] gate to separate. The one construction that *does*
-// write history, the expiry timer, is reached only by a run that received a
-// pause ask, which no such history can contain.
+//
+// The compatibility question is sharper than "does this write history", and an
+// earlier draft of this comment got it wrong in a way worth leaving recorded:
+// it argued that the boundary drain issues no commands, so a pre-change history
+// replays identically and nothing needs gating. That is true of an *empty*
+// channel and false of the case that matters. `ReceiveAsync` is not a read, it
+// is a *consume* — and before this change a specification could legitimately
+// wait on `flowstate_debug`, because nothing refused the name. Draining it at a
+// step boundary takes the delivery away from the `wait_for_signal:` that
+// history says consumed it, and the run's next command stops matching.
+//
+// So there is a gate, and it is [debugControl.declared] rather than
+// [workflow.GetVersion]: the whole subsystem is inert for a run whose workflow
+// carries no `debug:` stanza, which is every run written before this existed.
+// That field's own comment carries the reasoning and the citations.
+//
+// # One channel
+//
+// Every ask arrives on [v1.DebugSignal] with its verb in the payload. Two
+// channels would make *this package's loop order* decide which of two
+// interleaved asks won, and a selector does not fix it — the SDK's `Select`
+// takes the first ready case in the order the cases were added, not the order
+// the messages arrived. One channel has one FIFO, filled from history.
 
 // debugControl is a run segment's lease state, shared by every executor in it.
 //
@@ -68,9 +84,12 @@ type debugControl struct {
 	lease *v1.DebugSession
 
 	// declared says whether the workflow this run is executing carries a
-	// `debug:` stanza at all, and nothing is ever held when it does not.
+	// `debug:` stanza at all. It does two jobs, and the second one is the
+	// reason it is read before anything touches a channel rather than after.
 	//
-	// The engine's own fail-closed backstop, and deliberately the *presence*
+	// # Fail closed
+	//
+	// Nothing is ever held when it is false — deliberately the *presence*
 	// question rather than the policy one. `FlowstateServer.Signal` is the door
 	// every ask arrives through today, and it evaluates the rules against the
 	// resolved policy frozen on the run's memo; the copy a run carries is the
@@ -83,11 +102,42 @@ type debugControl struct {
 	// Presence cannot disagree: absent is absent on both sides, and it is the
 	// whole of #928's "no policy, no pause, no inspect". So "a workflow that
 	// declares nothing is not debuggable" becomes a property of the engine
-	// rather than of one door somebody might later route around — a second
-	// signalling path, a future internal caller, or an operator with direct
-	// namespace access. That last one can already terminate the run, so this
-	// closes no privilege gap on its own; what it closes is the gap between the
-	// rule and the number of places that enforce it.
+	// rather than of one door somebody might later route around.
+	//
+	// # And it is the compatibility gate for every history written before this
+	//
+	// [Run] is one interpreter for every workload, so a change to what it reads
+	// off a channel is a change to every run in flight (versioning.go). A
+	// deployment that has not opted into Worker Versioning gets "whatever is
+	// deployed executes whatever is in flight", and `flow worker` supports
+	// exactly that behind `--allow-unversioned-interpreter` — so histories must
+	// survive an engine upgrade, and this one has to survive two shapes of
+	// history that predate it:
+	//
+	//   - a run whose specification *waits* on `flowstate_debug`. Nothing
+	//     refused that before this change, and `waitForSignal` consumed the
+	//     delivery at the gate. An engine that drains the channel at a step
+	//     boundary takes that delivery away from the wait, and the run's next
+	//     command is not the one history recorded.
+	//   - a run that merely *received* one, because `authorizeSignal` admitted
+	//     any undeclared name. It sat unread; draining it into the carry
+	//     changes what a Continue-As-New writes.
+	//
+	// `Workflow.debug` is field 15, which no interpreter before this one set,
+	// so it reads as absent on every such history — and the whole subsystem is
+	// then inert for exactly the runs that can replay across the change. That
+	// is invariant 10 in docs/ARCHITECTURE.md ("read a field the writer did not
+	// set as absent rather than as a default that means something") and it is
+	// the answer replay_test.go's own "If this test fails" section names as the
+	// more common one in this engine, in preference to `workflow.GetVersion`.
+	//
+	// Why not a version gate as well: `GetVersion` writes a marker into every
+	// run's history the first time it is reached, for a distinction this field
+	// already makes for free — and it would make the answer depend on a replay
+	// artefact where it currently depends on the run's own carried state. The
+	// two would also have to agree forever. If the debug machinery ever becomes
+	// reachable for a specification that predates it, that reasoning expires
+	// and `GetVersion` is what replaces this.
 	declared bool
 
 	// granted counts the leases this segment has handed out, which is what
@@ -115,6 +165,21 @@ type debugControl struct {
 	holdUntil time.Time
 }
 
+// enabled reports whether this run reads the debug channel at all.
+//
+// The one function both entry points ask — the step boundary and the
+// Continue-As-New drain — so that "does this run take part in debugging" is a
+// single answer rather than a condition spelled twice. Nil-safe on the
+// receiver because a segment can be handed no control at all.
+//
+// Read *before* anything receives from a channel, which is the whole point:
+// [debugControl.declared] documents both jobs it does, and the compatibility
+// half is about a delivery that must stay where an older engine left it. A
+// check made after the receive would already have taken it.
+func (d *debugControl) enabled() bool {
+	return d != nil && d.declared
+}
+
 // sessionID names a lease.
 //
 // Derived rather than minted, because minting needs randomness and workflow
@@ -137,7 +202,7 @@ func (d *debugControl) sessionID(runID string) string {
 // a step is running waits for the step to finish, exactly as an early signal
 // waits for the wait that consumes it.
 func (e *executor) debugAsksAtBoundary(node *v1.Node) {
-	if e.debug == nil {
+	if !e.debug.enabled() {
 		return
 	}
 
@@ -150,7 +215,8 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 	e.holdForDebugLease(node)
 }
 
-// applyDebugAsks consumes the pause and resume asks waiting for this run.
+// applyDebugAsks consumes the debug asks waiting for this run, in the order
+// they arrived.
 //
 // parked says whether the run is already held at a boundary, which changes one
 // answer and one only: an ask that would start a *new* session is put by for
@@ -162,32 +228,36 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 // now. Carried asks are read only at a boundary — never while parked — because
 // putting an ask by is *writing* to that same carry, and a loop that read what
 // it had just written would never end.
+//
+// Within each of those two, order is the one thing this function does not
+// choose: the carry is a list in arrival order and the channel is a FIFO
+// Temporal fills from history. That is why every ask is on one channel with its
+// verb in the payload ([v1.DebugSignal]) — with a channel per verb, this
+// function's own loop order decided which of two interleaved asks won.
 func (e *executor) applyDebugAsks(parked bool) {
 	if !parked {
-		for _, name := range v1.DebugSignalNames() {
-			// Bounded for the reason the channel drain below is, and for one
-			// more of its own. How many carried asks there are is the peer's
-			// choice — every ask that reached the server before a seam is on
-			// this list — so a loop over it is one whose progress is measured in
-			// units the far side decides.
-			//
-			// And it is a loop that *writes to the list it is reading*: the
-			// put-by path appends there. Nothing reaches it from here today,
-			// because putting by is the parked answer and this is the unparked
-			// call — but "today's call graph makes it terminate" is a worse
-			// guarantee than a count, and a mutation that made a refusal put by
-			// instead turned this into a loop that never ended rather than a
-			// test that failed. A hang is the one failure a test cannot report.
-			for range v1.MaxDebugAsksPerBoundary {
-				if !e.takeCarriedDebugAsk(name) {
-					break
-				}
+		// Bounded for the reason the channel drain below is, and for one more
+		// of its own. How many carried asks there are is the peer's choice —
+		// every ask that reached the server before a seam is on this list — so
+		// a loop over it is one whose progress is measured in units the far
+		// side decides.
+		//
+		// And it is a loop that *writes to the list it is reading*: the put-by
+		// path appends there. Nothing reaches it from here today, because
+		// putting by is the parked answer and this is the unparked call — but
+		// "today's call graph makes it terminate" is a worse guarantee than a
+		// count, and a mutation that made a refusal put by instead turned this
+		// into a loop that never ended rather than a test that failed. A hang
+		// is the one failure a test cannot report.
+		for range v1.MaxDebugAsksPerBoundary {
+			if !e.takeCarriedDebugAsk() {
+				break
 			}
 		}
 	}
 
-	for _, name := range v1.DebugSignalNames() {
-		channel := workflow.GetSignalChannel(e.ctx, name)
+	{
+		channel := workflow.GetSignalChannel(e.ctx, v1.DebugSignal)
 
 		// Bounded, because how many asks are buffered is the peer's choice —
 		// see [v1.MaxDebugAsksPerBoundary]. What is left stays on the channel
@@ -211,20 +281,20 @@ func (e *executor) applyDebugAsks(parked bool) {
 				break
 			}
 
-			e.applyDebugAsk(name, &delivery, parked)
+			e.applyDebugAsk(&delivery, parked)
 		}
 	}
 }
 
 // takeCarriedDebugAsk applies one debug ask carried across a Continue-As-New,
 // reporting whether there was one.
-func (e *executor) takeCarriedDebugAsk(name string) bool {
-	payload, sender, ok := e.takePendingSignal(name)
+func (e *executor) takeCarriedDebugAsk() bool {
+	payload, sender, ok := e.takePendingSignal(v1.DebugSignal)
 	if !ok {
 		return false
 	}
 
-	e.applyDebugAsk(name, &v1.SignalDelivery{Payload: payload, Sender: sender}, false)
+	e.applyDebugAsk(&v1.SignalDelivery{Payload: payload, Sender: sender}, false)
 
 	return true
 }
@@ -242,13 +312,13 @@ func (e *executor) takeCarriedDebugAsk(name string) bool {
 // would vanish at a seam, which is a `flow signal` that reported success and did
 // nothing: the exact failure `drainSignals` and `drainDebugAsks` both exist to
 // prevent, arriving through the one door neither of them watches.
-func (e *executor) deferDebugAsk(name string, delivery *v1.SignalDelivery) {
+func (e *executor) deferDebugAsk(delivery *v1.SignalDelivery) {
 	if e.signals == nil {
 		return
 	}
 
 	e.signals.pending = append(e.signals.pending, &v1.PendingSignal{
-		Name:    name,
+		Name:    v1.DebugSignal,
 		Payload: delivery.GetPayload(),
 		Sender:  delivery.GetSender(),
 	})
@@ -308,30 +378,15 @@ func dispositionOfPause(parked, held, holder bool) pauseDisposition {
 // what it decided and about whom. The server already refused a caller the
 // workflow's `debug:` policy does not admit — this is the second half, the part
 // only the run knows: whether somebody else is already holding it.
-func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parked bool) {
+func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) {
 	logger := workflow.GetLogger(e.ctx)
 	sender := delivery.GetSender()
 	who := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
 	now := workflow.Now(e.ctx)
 	held := v1.DebugLeaseHeld(e.debug.lease, now)
 
-	// The fail-closed backstop — see [debugControl.declared]. Read here rather
-	// than at the boundary so that the ask is consumed as well as refused: a run
-	// that never drains a channel nothing will ever act on carries every ask
-	// that ever reached it across every Continue-As-New, growing its own state
-	// until [v1.CheckRunStateSize] fails it. Refusing loudly and discarding is
-	// the answer; leaving them to pile up is a denial of service with a polite
-	// name.
-	if !e.debug.declared {
-		logger.Warn("ignoring a debug ask: this workflow declares no `debug:` policy, so its "+
-			"durable runs are not debuggable by anybody",
-			"signal", name, "sender", who)
-
-		return
-	}
-
-	switch name {
-	case v1.DebugResumeSignal:
+	switch v1.DebugAskVerb(delivery.GetPayload()) {
+	case v1.DebugVerbResume:
 		// Fail closed on both halves of "you do not hold this". A resume from a
 		// caller who never held the lease must not release somebody else's hold,
 		// and a resume from a holder whose lease already lapsed must not release
@@ -364,7 +419,7 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 			"sender", who, "session", e.debug.lease.GetSessionId())
 		e.releaseDebugLease()
 
-	case v1.DebugPauseSignal:
+	case v1.DebugVerbPause:
 		requested := v1.DebugLeaseRequested(delivery.GetPayload())
 
 		switch dispositionOfPause(parked, held,
@@ -429,7 +484,7 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 			// deadline. Neither is holding the run at this instant — that is
 			// what `held` being false means — so the line says where the ask
 			// lands rather than what it collided with.
-			e.deferDebugAsk(name, delivery)
+			e.deferDebugAsk(delivery)
 
 			logger.Info("a debug pause ask arrived inside a hold this run is already leaving; it "+
 				"starts a new session at the next step boundary rather than this one, so the run "+
@@ -447,6 +502,14 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parke
 				"requested", requested, "expires_at", e.debug.lease.GetLeaseExpiresAt().AsTime(),
 				"session_ends_at", e.debug.holdUntil)
 		}
+
+	default:
+		// A verb this build does not know, which [v1.DebugAskVerb] answers ""
+		// for. Consumed and ignored rather than guessed at: the two guesses
+		// available are "stop this production run" and "let go of it", and
+		// neither is a safe default for a word nobody here defined.
+		logger.Warn("ignoring a debug ask: it names no verb this build understands",
+			"sender", who)
 	}
 }
 
@@ -538,10 +601,11 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// where determinism bugs live; the trade is recorded rather than taken.
 		timerCtx, cancelTimer := workflow.WithCancel(e.ctx)
 
+		// One receive for the one channel every ask arrives on. The callback
+		// takes nothing off it — a delivery is applied below, through the
+		// function that applies every ask — so this is a wake-up, not a read.
 		selector := workflow.NewSelector(e.ctx)
-		for _, name := range v1.DebugSignalNames() {
-			selector.AddReceive(workflow.GetSignalChannel(e.ctx, name), func(workflow.ReceiveChannel, bool) {})
-		}
+		selector.AddReceive(workflow.GetSignalChannel(e.ctx, v1.DebugSignal), func(workflow.ReceiveChannel, bool) {})
 		selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
 		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, remaining,
 			workflow.TimerOptions{Summary: debugLeaseSummary(e.debug.lease)}),
@@ -692,11 +756,21 @@ func boundSummaryText(s string) string {
 // Returns what to carry; nothing is dropped here, exactly as nothing is dropped
 // there. The bound is [v1.CheckRunStateSize], weighed by the caller over the
 // whole carry.
-func drainDebugAsks(ctx workflow.Context, carried []*v1.PendingSignal) []*v1.PendingSignal {
+func drainDebugAsks(ctx workflow.Context, carried []*v1.PendingSignal, debug *debugControl) []*v1.PendingSignal {
+	// The compatibility gate, on the second of the two paths that can read this
+	// channel — see [debugControl.declared]. A run whose specification predates
+	// `debug:` may legitimately hold an unread `flowstate_debug` delivery, and
+	// draining it into the carry here would change what its Continue-As-New
+	// writes and take a delivery away from a `wait_for_signal:` that history
+	// says consumed it.
+	if !debug.enabled() {
+		return carried
+	}
+
 	pending := carried
 
-	for _, name := range v1.DebugSignalNames() {
-		channel := workflow.GetSignalChannel(ctx, name)
+	{
+		channel := workflow.GetSignalChannel(ctx, v1.DebugSignal)
 
 		for {
 			var delivery v1.SignalDelivery
@@ -705,10 +779,11 @@ func drainDebugAsks(ctx workflow.Context, carried []*v1.PendingSignal) []*v1.Pen
 			}
 
 			workflow.GetLogger(ctx).Info(
-				"carrying a debug ask that arrived before a step boundary was reached", "signal", name)
+				"carrying a debug ask that arrived before a step boundary was reached",
+				"signal", v1.DebugSignal)
 
 			pending = append(pending, &v1.PendingSignal{
-				Name: name,
+				Name: v1.DebugSignal,
 
 				// The payload is carried because [v1.DebugLeaseRequested] has
 				// still to read the requested duration out of it — and nothing

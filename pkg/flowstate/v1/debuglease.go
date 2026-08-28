@@ -84,22 +84,66 @@ const (
 	// pause the run would answer somebody's approval gate.
 	ReservedSignalPrefix = "flowstate_"
 
-	// DebugPauseSignal is the ask: hold this run at its next step boundary,
-	// under a lease held by whoever the server attested for the request.
+	// DebugSignal is the one channel every debug ask arrives on, whatever it
+	// asks for.
 	//
 	// Delivered like any other signal, and gated by [Workflow.debug] rather
 	// than by [Workflow.signals] — see [DebugPolicyCheck] for the zero case,
 	// which is the opposite of an ordinary signal's.
-	DebugPauseSignal = ReservedSignalPrefix + "debug_pause"
+	//
+	// # One channel, because ordering has to come from history
+	//
+	// This began as two names, `..._pause` and `..._resume`, and that was a
+	// defect a review caught. A run drains its channels one at a time, so two
+	// channels means the *engine* decides which name is read first — and a
+	// caller who resumed and then paused had the later pause applied first and
+	// then released by the earlier resume. Their run walked on when they had
+	// asked it to stop.
+	//
+	// Nothing about a selector fixes that, which is worth writing down because
+	// it is the obvious repair: [workflow.Selector.Select] iterates the cases in
+	// the order they were *added* and takes the first that is ready
+	// (go.temporal.io/sdk@v1.47.0 internal/internal_workflow.go:1427-1461), so
+	// a two-channel selector reorders exactly as a two-channel drain does.
+	//
+	// One channel has one FIFO, and Temporal fills it in history order. So the
+	// order asks are applied in is a fact the history records rather than a
+	// consequence of how this package happens to loop — which is the property
+	// workflow code needs from anything it reads.
+	//
+	// The ask itself is therefore in the payload: see [DebugVerbInput].
+	DebugSignal = ReservedSignalPrefix + "debug"
 
-	// DebugResumeSignal releases a lease its own holder took, and nobody
-	// else's. It is [DebugCommandVerb.DEBUG_COMMAND_VERB_CONTINUE] spelled for
-	// a run that is not in this process: run on, to the next breakpoint or to
-	// the end, and stage 2 has no breakpoints.
-	DebugResumeSignal = ReservedSignalPrefix + "debug_resume"
+	// DebugVerbInput names what an ask wants, since the channel no longer does.
+	//
+	// Two values, [DebugVerbPause] and [DebugVerbResume], and anything else is
+	// ignored — a build that does not know a verb must not guess, because the
+	// two guesses are "hold this production run" and "stop holding it".
+	DebugVerbInput = "verb"
 
-	// DebugLeaseInput is the one thing a pause ask may say for itself: how long
-	// it wants to hold the run, as a duration string ("90s", "5m").
+	// DebugVerbPause asks the run to hold at its next step boundary, under a
+	// lease held by whoever the server attested for the request.
+	DebugVerbPause = "pause"
+
+	// DebugVerbResume releases a lease its own holder took, and nobody else's.
+	//
+	// It is [DebugCommandVerb.DEBUG_COMMAND_VERB_CONTINUE] spelled for a run
+	// that is not in this process: run on, to the next breakpoint or to the
+	// end, and stage 2 has no breakpoints.
+	//
+	// Spelled as a payload string rather than as that enum, deliberately.
+	// [DebugCommandVerb] is the vocabulary of a *prompt* — step, inspect,
+	// scope, break — where being paused is the precondition rather than
+	// something to ask for, which is why it has no `pause` at all. Bending it
+	// to carry a lease ask would be the #726 mistake pointed the other way:
+	// reusing a message because it is nearby rather than because it answers the
+	// question. Stage 3's attach RPC is where a lease ask gets a typed request
+	// of its own (#1194 sketches `DebugAttachRequest`), and this is the
+	// signal-shaped stand-in until there is one.
+	DebugVerbResume = "resume"
+
+	// DebugLeaseInput is the one other thing a pause ask may say for itself:
+	// how long it wants to hold the run, as a duration string ("90s", "5m").
 	//
 	// A request rather than an instruction — see [BoundDebugLease]. Anything
 	// else in the payload is ignored and never carried, which is what keeps an
@@ -179,21 +223,46 @@ func IsReservedSignalName(name string) bool {
 	return strings.HasPrefix(name, ReservedSignalPrefix)
 }
 
-// IsDebugSignalName reports whether name is one of the two asks the lease
-// mechanics read.
+// IsDebugSignalName reports whether name is the channel the lease mechanics
+// read.
 func IsDebugSignalName(name string) bool {
-	return name == DebugPauseSignal || name == DebugResumeSignal
+	return name == DebugSignal
 }
 
-// DebugSignalNames are the channels a run reads debug asks from, in a fixed
-// order so that draining them is deterministic in workflow code.
+// DebugAskVerb reads what an ask wants out of its payload, or "" when it does
+// not say anything this build understands.
 //
-// A function rather than a package-level slice, for the reason every corpus in
-// this repository is one: a slice a caller can append to is a shared mutable
-// value, and this one is read from inside a workflow where a mutation would be
-// a non-determinism.
-func DebugSignalNames() []string {
-	return []string{DebugPauseSignal, DebugResumeSignal}
+// Fail closed on everything it cannot read, which here means *doing nothing*:
+// an unrecognized verb is neither a pause nor a resume, so a build meeting a
+// verb from a newer one holds no run and releases no lease. The alternative —
+// treating an unknown ask as one of the two — is a coin flip between stopping a
+// production workload and letting go of it, and there is no reading of "fail
+// closed" under which either is the safe guess.
+func DebugAskVerb(payload *Node_Outputs) string {
+	verb := payload.GetNamedValues()[DebugVerbInput].GetLiteral().GetStringValue()
+
+	switch verb {
+	case DebugVerbPause, DebugVerbResume:
+		return verb
+	default:
+		return ""
+	}
+}
+
+// NewDebugAsk builds the payload a debug ask travels in.
+//
+// One constructor, so the two spellings of an ask — what a caller sends and
+// what [DebugAskVerb] and [DebugLeaseRequested] read back — cannot drift into
+// disagreeing about a key name. `lease` is omitted where it is not positive,
+// because an ask that names no duration and an ask that names zero are the same
+// ask and should be the same message.
+func NewDebugAsk(verb string, lease time.Duration) *Node_Outputs {
+	values := map[string]*Value{DebugVerbInput: NewLiteral(verb)}
+	if lease > 0 {
+		values[DebugLeaseInput] = NewLiteral(lease.String())
+	}
+
+	return &Node_Outputs{NamedValues: values}
 }
 
 // DebugPolicyCheck reports whether identity may hold a debug lease on a run

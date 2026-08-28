@@ -149,19 +149,17 @@ func TestAnAskPutByGoesOnTheRunsOwnCarry(t *testing.T) {
 	sender := &v1.SignalSender{Identity: &v1.WorkloadIdentity{
 		Issuer: "https://issuer.example.com", Subject: "sre-2@example.com",
 	}}
-	payload := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
-		v1.DebugLeaseInput: v1.NewLiteral("45s"),
-	}}
+	payload := v1.NewDebugAsk(v1.DebugVerbPause, 45*time.Second)
 
 	exec := &executor{signals: &signalCarry{}}
 	require.Empty(t, exec.signals.pending, "the carry starts empty, so anything on it below was put there here")
 
-	exec.deferDebugAsk(v1.DebugPauseSignal, &v1.SignalDelivery{Payload: payload, Sender: sender})
+	exec.deferDebugAsk(&v1.SignalDelivery{Payload: payload, Sender: sender})
 
 	require.Len(t, exec.signals.pending, 1, "the put-by ask was dropped rather than kept")
 
 	kept := exec.signals.pending[0]
-	assert.Equal(t, v1.DebugPauseSignal, kept.GetName(),
+	assert.Equal(t, v1.DebugSignal, kept.GetName(),
 		"it waits on the channel it arrived on, so the next boundary reads it as a pause ask")
 	assert.Equal(t, "sre-2@example.com", kept.GetSender().GetIdentity().GetSubject(),
 		"with the sender the server attested, because that is who the lease will name")
@@ -171,13 +169,13 @@ func TestAnAskPutByGoesOnTheRunsOwnCarry(t *testing.T) {
 	// It appends rather than replaces: an approval already waiting on the carry
 	// is not lost by a debugger asking to pause the run.
 	exec.signals.pending = append(exec.signals.pending, &v1.PendingSignal{Name: "deploy-approved"})
-	exec.deferDebugAsk(v1.DebugPauseSignal, &v1.SignalDelivery{Payload: payload, Sender: sender})
+	exec.deferDebugAsk(&v1.SignalDelivery{Payload: payload, Sender: sender})
 
 	names := make([]string, 0, len(exec.signals.pending))
 	for _, pending := range exec.signals.pending {
 		names = append(names, pending.GetName())
 	}
 	assert.Equal(t,
-		[]string{v1.DebugPauseSignal, "deploy-approved", v1.DebugPauseSignal}, names,
+		[]string{v1.DebugSignal, "deploy-approved", v1.DebugSignal}, names,
 		"a put-by ask joins the back of the carry, in arrival order, disturbing nothing already on it")
 }

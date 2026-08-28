@@ -56,10 +56,10 @@ func TestOnlyADeclaredDebugPolicyAdmitsAPauseAsk(t *testing.T) {
 	}})
 
 	require.NoError(t,
-		mustNew(t, nil).authorizeSignal(declared, v1types.DebugPauseSignal, allowed),
+		mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, allowed),
 		"a caller matching the declared debug policy may pause the run")
 	require.NoError(t,
-		mustNew(t, nil).authorizeSignal(declared, v1types.DebugResumeSignal, allowed),
+		mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, allowed),
 		"and may resume it — both asks are governed by the one stanza")
 
 	// The negative direction, which is the claim that matters: a run that says
@@ -68,7 +68,7 @@ func TestOnlyADeclaredDebugPolicyAdmitsAPauseAsk(t *testing.T) {
 	silent := memoWithNoSignalPolicy()
 
 	require.Error(t,
-		mustNew(t, nil).authorizeSignal(silent, v1types.DebugPauseSignal, allowed),
+		mustNew(t, nil).authorizeSignal(silent, v1types.DebugSignal, allowed),
 		"a run with no `debug:` stanza refused nobody, so anyone could pause production")
 	require.NoError(t,
 		mustNew(t, nil).authorizeSignal(silent, "deploy-approved", allowed),
@@ -82,12 +82,12 @@ func TestACallerTheDebugPolicyDoesNotNameCannotPause(t *testing.T) {
 		{Claims: map[string]string{"role": "sre"}},
 	}})
 
-	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugPauseSignal,
+	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal,
 		sender("https://issuer.example.com", "dev-1@example.com", "team-a",
 			map[string]string{"role": "developer"})),
 		"a caller carrying the wrong claim may not pause the run")
 
-	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugPauseSignal,
+	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal,
 		sender("https://issuer.example.com", "anon@example.com", "team-a", nil)),
 		"a caller carrying no claims at all may not pause the run")
 }
@@ -101,11 +101,11 @@ func TestARehearsalIdentityNeverTakesADebugLease(t *testing.T) {
 	}})
 
 	local := sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)
-	require.NoError(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugPauseSignal, local),
+	require.NoError(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, local),
 		"the same sender is admitted while it is not marked local")
 
 	local.Local = true
-	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugPauseSignal, local),
+	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, local),
 		"a sender marked as a local rehearsal identity may not take a durable debug lease")
 }
 
@@ -135,7 +135,7 @@ func TestAnUnreadableDebugPolicyRefusesEverybody(t *testing.T) {
 		},
 	}
 
-	require.Error(t, mustNew(t, nil).authorizeSignal(corrupt, v1types.DebugPauseSignal,
+	require.Error(t, mustNew(t, nil).authorizeSignal(corrupt, v1types.DebugSignal,
 		sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)),
 		"a debug policy that cannot be decoded authorizes nobody")
 }
@@ -152,18 +152,18 @@ func TestADebugPolicyThisServerWouldNotHaveWrittenIsRefused(t *testing.T) {
 
 	t.Run("a present key holding nothing", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
-			memoWithDebugPolicy(t, nil), v1types.DebugPauseSignal, caller))
+			memoWithDebugPolicy(t, nil), v1types.DebugSignal, caller))
 	})
 
 	t.Run("a policy with no rules", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
-			memoWithDebugPolicy(t, &v1types.SignalPolicy{}), v1types.DebugPauseSignal, caller))
+			memoWithDebugPolicy(t, &v1types.SignalPolicy{}), v1types.DebugSignal, caller))
 	})
 
 	t.Run("a rule matching every sender", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
 			memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{{}}}),
-			v1types.DebugPauseSignal, caller))
+			v1types.DebugSignal, caller))
 	})
 
 	t.Run("an expression that survived resolution", func(t *testing.T) {
@@ -171,7 +171,7 @@ func TestADebugPolicyThisServerWouldNotHaveWrittenIsRefused(t *testing.T) {
 			memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{{
 				SubjectFrom: v1types.NewExpr("inputs.approver"),
 				Claims:      map[string]string{"role": "sre"},
-			}}}), v1types.DebugPauseSignal, caller),
+			}}}), v1types.DebugSignal, caller),
 			"the enforcement path never evaluates an expression, so one arriving here is a bug that skipped resolution")
 	})
 }
