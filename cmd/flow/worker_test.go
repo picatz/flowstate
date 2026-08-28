@@ -34,6 +34,8 @@ func workerCommand(t *testing.T) *cobra.Command {
 	t.Setenv("FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS", "")
 	t.Setenv("FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND", "")
 	t.Setenv("FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND", "")
+	// Same reasoning, for #921's sticky cache flag.
+	t.Setenv("FLOWSTATE_WORKER_STICKY_CACHE_SIZE", "")
 
 	cmd, _, err := newRootCommand().Find([]string{"worker"})
 	require.NoError(t, err)
@@ -474,6 +476,7 @@ func TestWorkerCapacityOptionsRefuseNegativeValues(t *testing.T) {
 		"max-concurrent-workflow-tasks",
 		"max-activities-per-second",
 		"task-queue-activities-per-second",
+		"sticky-cache-size",
 	} {
 		t.Run(flag, func(t *testing.T) {
 			cmd := workerCommand(t)
@@ -520,6 +523,7 @@ func TestWorkerCapacityOptionsRefuseUnparsableValues(t *testing.T) {
 		"max-concurrent-workflow-tasks",
 		"max-activities-per-second",
 		"task-queue-activities-per-second",
+		"sticky-cache-size",
 	} {
 		t.Run(flag, func(t *testing.T) {
 			cmd := workerCommand(t)
@@ -563,4 +567,97 @@ func TestWorkerCapacityOptionsRefusalIsReachedBeforeTemporalIs(t *testing.T) {
 	).Err
 
 	require.ErrorContains(t, err, "--max-concurrent-activities")
+}
+
+// TestWorkerCapacityOptionsStickyCacheSizeFromFlag pins that
+// --sticky-cache-size reaches workerCapacity's two sticky-cache fields, and
+// that stickyCacheSizeSet is derived from the flag being positive rather than
+// merely present.
+func TestWorkerCapacityOptionsStickyCacheSizeFromFlag(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("sticky-cache-size", "5000"))
+
+	got, err := workerCapacityOptions(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, 5000, got.stickyCacheSize)
+	require.True(t, got.stickyCacheSizeSet)
+}
+
+// TestWorkerCapacityOptionsStickyCacheSizeUnsetIsNotConfigured is the
+// negative direction of the same fact: an unset (or explicitly zero)
+// --sticky-cache-size must leave stickyCacheSizeSet false, because that bool
+// is what stands between an operator's "I did not ask for this" and this
+// worker configuring the SDK's sticky cache down to zero entries. See
+// TestApplyStickyCacheSizeNotCalledWhenUnset for the half of this trap that
+// lives past workerCapacityOptions, in the setter call itself.
+func TestWorkerCapacityOptionsStickyCacheSizeUnsetIsNotConfigured(t *testing.T) {
+	for _, value := range []string{"", "0"} {
+		t.Run("value="+value, func(t *testing.T) {
+			cmd := workerCommand(t)
+			if value != "" {
+				require.NoError(t, cmd.Flags().Set("sticky-cache-size", value))
+			}
+
+			got, err := workerCapacityOptions(cmd)
+
+			require.NoError(t, err)
+			require.Equal(t, 0, got.stickyCacheSize)
+			require.False(t, got.stickyCacheSizeSet)
+		})
+	}
+}
+
+// TestApplyStickyCacheSizeCalledWhenSet is the positive direction of the
+// sentinel #921 ratified: a positive --sticky-cache-size must reach
+// worker.SetStickyWorkflowCacheSize with exactly that value. Routed through
+// stickyWorkflowCacheSizeSetter rather than the real SDK function so this
+// assertion does not depend on — or mutate — Temporal's actual process-global
+// cache.
+func TestApplyStickyCacheSizeCalledWhenSet(t *testing.T) {
+	var calls []int
+	orig := stickyWorkflowCacheSizeSetter
+	stickyWorkflowCacheSizeSetter = func(n int) { calls = append(calls, n) }
+	t.Cleanup(func() { stickyWorkflowCacheSizeSetter = orig })
+
+	applyStickyCacheSize(workerCapacity{stickyCacheSize: 7500, stickyCacheSizeSet: true})
+
+	require.Equal(t, []int{7500}, calls)
+}
+
+// TestApplyStickyCacheSizeNotCalledWhenUnset is the trap #921's design pass
+// exists to prevent, pinned as its own negative-direction test rather than
+// folded into the positive one: worker.SetStickyWorkflowCacheSize assigns its
+// argument unconditionally, so if applyStickyCacheSize ever called it with a
+// zero-value workerCapacity — the value an unset flag, or a caller who never
+// parsed flags at all, produces — every worker this binary starts would
+// silently run with a zero-entry sticky cache, replaying full history on
+// every workflow task. Nothing this test asserts is directly reachable from
+// TestApplyStickyCacheSizeCalledWhenSet passing; the setter must be observed
+// to stay silent, not merely to behave correctly when called.
+func TestApplyStickyCacheSizeNotCalledWhenUnset(t *testing.T) {
+	var calls []int
+	orig := stickyWorkflowCacheSizeSetter
+	stickyWorkflowCacheSizeSetter = func(n int) { calls = append(calls, n) }
+	t.Cleanup(func() { stickyWorkflowCacheSizeSetter = orig })
+
+	applyStickyCacheSize(workerCapacity{})
+
+	require.Empty(t, calls)
+}
+
+// TestWorkerStickyCacheSizeHelpTextExplainsTheSentinel mirrors
+// serverlisten_test.go's assertions on flag.Usage: the zero sentinel here
+// means something different from the other four capacity flags' ("0 takes
+// the SDK default" reached by calling the setter with a computed value; here
+// it is reached by not calling the setter at all), and an operator reading
+// --help rather than this source file needs to be told so, not just the
+// source comment.
+func TestWorkerStickyCacheSizeHelpTextExplainsTheSentinel(t *testing.T) {
+	cmd := workerCommand(t)
+
+	flag := cmd.Flags().Lookup("sticky-cache-size")
+	require.NotNil(t, flag)
+	require.Contains(t, flag.Usage, "zero-entry")
+	require.Contains(t, flag.Usage, "10000")
 }
