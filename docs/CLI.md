@@ -718,7 +718,25 @@ tests:
         - steps.join.value.region == vars.order.region
 ```
 
-Literals only, for now: any `${` inside a var is refused, including a reference to another var, so there is no evaluation order and no cycles — and a mixed string (`"https://${vars.host}/v1"`) is refused too, because a partial substitution would be a template language this file deliberately is not. Build combined text in the workflow, or state it literally.
+A var value that is *itself* a whole-value `${...}` fence is an expression over the block's other vars, evaluated once when the file loads (#1072). That is the same fence rule the workflow's own `vars:` follows, and for the same reason: a var legitimately holds the literal string `steps.greet.result`, so the syntax rather than the content says which one you meant. Composition is what it is for — a base fixture stated once, a variant built from it:
+
+```yaml
+vars:
+  region: eu-west-1
+  base: "${ {'id': 'ord_1', 'region': vars.region} }"
+  rush: "${ {'id': vars.base.id + '_rush', 'region': vars.base.region} }"
+  endpoint: "${'https://api.' + vars.region + '.example.com/v1'}"
+```
+
+The rules, each with the reason it exists:
+
+- **A computed var reads its sibling vars and nothing else.** No `steps` (the block is evaluated before any case runs, so nothing has produced anything), no `inputs` (a file's vars are shared by every case and a case's `inputs:` are its own), no `run` or `trigger`. Each is refused in its own words.
+- **Evaluation is in dependency order, once per var.** A cycle is refused at load, naming the path: `vars.a → vars.b → vars.a`. Where a directory's `testdefaults.yaml` is in play the diagnostic names the file each hop was written in, because a cycle can exist in neither document on its own.
+- **The environment is library-less and deterministic.** A file's vars are not bound to a workflow — `defaults.workflow` and a case's own `workflow:` may name different files in one suite — so a var that compiled under one case's profile and failed under another's would make load-time evaluation depend on which case you looked at. A call needing a profile library (`json_parse`, `split`, `base64.encode`) is therefore a load-time refusal naming the function; write it in `expect.check:`, which compiles under the case's own profile.
+- **Bounded by cost, per expression and across the file.** Each var's expression spends at most `MaxVarsPerFile`-th of the budget one ordinary expression gets, so a file declaring the maximum 200 vars spends, in total, what a single expression elsewhere in the system may.
+- **A var computed from a secret is withheld wherever the value would print.** If a var's plaintext stands in for a secret (it is referenced from a case's `secrets:`), every var computed from it is withheld too — in a check's witness, in the transcript, in a debugger's autopsy. The taint follows the reference rather than the value, because `${size(vars.token)}` shares no text with the secret it came from and would otherwise slip past the redaction set entirely.
+
+A fence *inside* a structure is still refused, and so is a mixed string (`"https://${vars.host}/v1"`): a partial substitution would be a template language this file deliberately is not. Build the combined text in a var — `"${'https://' + vars.host + '/v1'}"` — and reference that.
 
 **One asymmetry, stated because it is load-bearing**: inside a stub's `where:` and `returns:`, `vars.` keeps meaning the *workflow's* own `vars:` block — those expressions evaluate against the run's scope, and a load-time substitution there would silently hijack that meaning. A stub speaks the run's language; everywhere else in the test file, `vars.` is the file's.
 

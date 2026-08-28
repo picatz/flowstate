@@ -235,7 +235,8 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// invocations (Codex, #1052, twice).
 				record := !opts.skipTranscript &&
 					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
-				return runCase(ctx, &test, l.deliveryPath, l.load, record, file.Vars)
+				return runCase(ctx, &test, l.deliveryPath, l.load, record,
+					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
@@ -535,7 +536,7 @@ func RunSourceWith(ctx context.Context, label string, workflowSource, testSource
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars map[string]any) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -741,6 +742,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// skipped — replacing the empty string would mark every position in
 	// every line while protecting nothing.
 	sensitive = sensitive.WithValues(slices.Collect(maps.Values(test.Secrets))...)
+
+	// And what a computed var inherited from one (#1072, repair 4). The
+	// substring backstop above is complete only while no var can *transform*
+	// anything: `${vars.token.substring(0, 8)}` is a prefix of a secret, so it
+	// matches no sensitive value and contains none, and it would have printed
+	// in a witness in the clear. The taint is decided at load, by reference
+	// rather than by inspecting a value ([withheldFrom]), and this is where it
+	// becomes the one redaction set every surface of this case already shares.
+	sensitive = sensitive.WithValues(vars.withheld.text...)
 
 	// A debugging session prints what the transcript prints, so it withholds
 	// what the transcript withholds (Codex, #1109). Capability-discovered the
