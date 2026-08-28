@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -89,6 +90,58 @@ const (
 	// enumeration through tab completion and `inspect steps.`, which are
 	// bounded and prefix-filtered for exactly this.
 	MaxScopeNames = 20
+
+	// MaxScopeBindings bounds how many names one [Session.ScopeProto] answer
+	// carries, and therefore how many values it resolves, whatever its caller
+	// asked for.
+	//
+	// A caller's budget is a *request* and this is the producer's ceiling. They
+	// are different things for the reason CLAUDE.md gives twice over, because
+	// this bound was arrived at in two steps and each step is the same lesson:
+	// bounding one resource does not bound another the peer controls the ratio
+	// to.
+	//
+	// First, [v1.DefaultCostLimit] bounds a single evaluation and nothing
+	// bounded how many of them one answer performs — a workload chooses how
+	// many names a scope holds, and a negative limit asked for all of them, so
+	// a caller could buy unbounded compilation with one message. Then, capping
+	// the *evaluations* still left a message materializing a binding and an
+	// expression string per name, so the CPU, the allocation and the response
+	// size were bounded by nothing an evaluation ceiling could see (Codex,
+	// #1194, twice).
+	//
+	// So the ceiling is on the bindings, and the evaluations follow: a value
+	// can only be resolved for a binding that was carried, so one number bounds
+	// both rather than two numbers that have to be kept in agreement.
+	//
+	// 500 rather than something smaller because a producer ceiling narrower
+	// than what a front legitimately asks for would quietly hand it less than
+	// it requested: this repository's two renderers cap themselves at 200
+	// (`debugpane.MaxScopeEvaluations`) and 500 (`flowdap.MaxScopeVariables`),
+	// so this is the larger of them. Nothing here has a use for more.
+	//
+	// The totals are untouched by it. [Session.ScopeProto] still reports what
+	// the run can reach, so an elision says how much it elided rather than
+	// reporting the bound back as the scope's size — the same distinction
+	// [MaxScopeNames] draws for a line somebody reads.
+	MaxScopeBindings = 500
+
+	// MaxStepWindow bounds how many rows one [Session.StepWindowProto] answer
+	// carries, whatever its caller asked for.
+	//
+	// [Session.Steps] takes its window from its caller because an in-process
+	// caller pays for its own copy; a wire answer is a *message*, and the
+	// inventory's size is the workload's choice, so a negative or enormous
+	// limit bought an O(N) response from a caller this API explicitly treats as
+	// untrusted (Codex, #1194). The same argument as [MaxScopeBindings], on the
+	// other listing.
+	//
+	// Deliberately the same number as that one and written as that one, so the
+	// two cannot drift: they answer one question — how many entries may one
+	// debug answer carry — for two listings. A pane asks for a terminal's
+	// height and a wire client pages by [DebugStepWindow.total], so nothing
+	// here has a use for more.
+	MaxStepWindow = MaxScopeBindings
 )
 
 // Tone classifies one fragment of session output, so a terminal can colour
@@ -510,6 +563,22 @@ type promptSubject struct {
 func New(opts Options) (*Session, error) {
 	if len(opts.Breakpoints) > MaxBreakpoints {
 		return nil, fmt.Errorf("a session may hold %d breakpoints, and %d were named", MaxBreakpoints, len(opts.Breakpoints))
+	}
+
+	// The inventory's declaration numbers are checked here rather than where
+	// they are rendered, because here is the only place that can answer with an
+	// error. `DebugStep.declaration` is a non-negative int32, so a negative or
+	// unrepresentable number produces a message the schema rejects — and the
+	// rejection would arrive at whoever asked for a window, about an inventory
+	// somebody else supplied, which is a refusal nobody can act on. Rules
+	// compile when configuration loads rather than when a request arrives
+	// (CLAUDE.md); this is that rule applied to an inventory (Codex, #1194).
+	for i, step := range opts.Steps {
+		if !validDeclaration(step.Declaration) {
+			return nil, fmt.Errorf(
+				"step %d (%q) carries declaration %d; a declaration numbers a walk's descents from the root's 0 upward, so it must be between 0 and %d",
+				i, step.ID, step.Declaration, math.MaxInt32)
+		}
 	}
 
 	s := &Session{

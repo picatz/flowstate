@@ -1,0 +1,629 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/identity.proto";
+import "flowstate/v1/run.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// The step debugger's boundary-crossing shapes: where a run is held, what it
+// can name, which steps it may reach, and the commands that move it.
+//
+// This is stage 1 of picatz/flowstate#928's durable-debug arc — the wire
+// messages first, engine lease mechanics second, `flow debug attach` third. It
+// answers the criterion #1120's follow-up wrote down rather than leaving as
+// taste: "These become schema types in the PR that first puts them on a wire,
+// and that PR reconciles Position.Step with RunProgress.step_id." Nothing here
+// is an RPC; the service that carries these is stage 3's, and defining the
+// shapes before the transport is the sequencing the owner recorded.
+//
+// # What is here and what deliberately is not
+//
+// A debug session has two halves, and only one of them is a value. The half
+// that answers questions — where the run stopped, what is in scope, what the
+// step list holds — is described here. The half that *is* the session is a
+// live resource: an open reader and writer, a console, a registry, and a run's
+// own goroutine parked at a step boundary. None of that can be serialized, so
+// per CLAUDE.md's proto-first exception none of it is a schema type, and
+// `pkg/flowstate/v1/flowdebug`'s package doc says the same thing from the
+// other side.
+//
+// Three members of that half are worth naming, because each is a thing
+// somebody would reasonably try to "fix" into this file:
+//
+//   - The redactors a session holds. They are closures over secret material,
+//     held that way precisely because reflection cannot reach a captured
+//     variable (CLAUDE.md, "Secrets never enter workflow history"). A schema
+//     type for one would be a field holding the thing it exists to withhold.
+//   - The paused [Scope]. It is already a schema type, and it is not what a
+//     debugger hands out: it reaches resolved values. What crosses is the
+//     *rendering* of an inspection, after the redacting door — see
+//     [DebugBinding].
+//   - The structured value an inspection produces. `Session.Evaluate` returns
+//     one so a pane can decide whether a variable expands; a wire message
+//     carrying it would open on a new surface the hole that redaction seam
+//     closes. [DebugBinding] carries text, and only text.
+//
+// # Redaction is structural here, not a rule somebody remembers
+//
+// The single field that could ever carry run data is [DebugBinding.rendered],
+// and its type is `string` for that reason: it holds what `Session.Evaluate`
+// already redacted, which is the same door a person at a prompt goes through.
+// There is no [Value] field anywhere in this file, and adding one would be the
+// mistake [SecretRef]'s own comment refuses in the same words — a value
+// resolved for display that is then durable and broadly readable.
+//
+// # Bounds
+//
+// Two of these messages are things a *caller* sends ([DebugCommand]) and the
+// rest are things a producer answers with, and they are bounded differently on
+// purpose. A command's argument is untrusted input on the way in, so the bound
+// is written here where the boundary can refuse it: [MaxCommandBytes], the same
+// bound a console reader enforces on a typed line, because the two are one
+// resource reached two ways. An answer's size is not bounded by a repeated
+// field's `max_items`, because a hostile *producer* is bounded below the RPC
+// library rather than by a validation rule the library only applies on paths it
+// treats as successful — see `plugin/transport.go` and CLAUDE.md's note on
+// `connect.WithReadMaxBytes`. What the answers carry instead is a total beside
+// every window, so a short answer says how short it is.
+//
+// # Invocation identity: what the engine can say, and where the rest will go
+//
+// A callee's step ids belong to the callee (`eval.go:1804-1812`), so one
+// inventory flattening a caller and a callee holds rows nothing can tell apart
+// by name. #1186 answered the static half: the walk numbers each descent into a
+// `call:` into [DebugStep.declaration], and that numbering *is* the engine's
+// structure rather than a proxy for it, because `runNodes` descends into a
+// callee exactly once per `call:` node (`eval.go:1734`).
+//
+// The dynamic half is not available and is not invented here. At a boundary the
+// engine reports the callee's *name* (`ExecutingWorkflowFromContext`) and
+// nothing about which invocation is running; the call-site identity it does
+// build, `waitReporting.ancestry`, is unexported, wait-scoped, and blanked by
+// `enterConcurrentWait`. So with one callee invoked from two `call:` steps this
+// schema says **not attributable** — exactly what the local pane draws, and for
+// the same reason — through two absences that mean different things:
+//
+//   - [DebugPosition.declaration] absent: the producer could not resolve the
+//     position to one declaration. This is `positionIn`'s -1, on the wire.
+//   - [DebugStepWindow.held] absent with that declaration *present*: the held
+//     row is real and simply outside this window.
+//
+// When the engine learns to report which invocation is running, the field that
+// carries it exists already and is the one the rows carry, asked of the
+// position — so tomorrow's answer arrives as a field being set more often
+// rather than as a fifth spelling of step identity. The cost of that choice,
+// stated: if the eventual dynamic identity turns out to be richer than "which
+// declaration" — a loop iteration, say — this field is a narrowing of it and
+// the richer one goes beside it rather than replacing it.
+
+// DebugPosition is where a paused debug session is holding a run.
+//
+// # Its relationship to RunProgress
+//
+// [RunProgress] is the neighbouring spelling and it answers a different
+// question, which is why this is not that message. RunProgress is *the run's*
+// answer to "where have you got to", served by a Temporal query against a live
+// workflow: its `step_id` is deliberately the outermost step and its `path`
+// walks inward, because a run inside a `parallel:` block is on several steps at
+// once and has no single position. This is *a debugger's* answer to "where are
+// you holding", and a debugger holds exactly one step boundary — the boundary
+// `runNodes` visits before a step, the same one `StepsBudget` is checked at. So
+// `step_id` here names that step exactly, at whatever depth it sits, and there
+// is no `path`: a position that needed one would be a run held in two places,
+// which is not a state this seam can be in.
+//
+// The two therefore share a field name and not a meaning, and the name is
+// shared on purpose: `step_id` is what this schema calls a step's id in
+// [RunProgress], in [PendingWait], and here.
+message DebugPosition {
+  // StepId is the id of the step the run is stopped before.
+  //
+  // Empty at an autopsy, where the run is over and there is no step to be at —
+  // which is why [autopsy] is a separate field rather than something a reader
+  // infers from this one being empty.
+  string step_id = 1;
+
+  // Workflow names the workflow whose steps are running here, which is what
+  // tells a caller's `build` from a called workflow's `build`.
+  //
+  // The engine's own answer, stamped at the run's start and moved across every
+  // `call:` boundary (`ExecutingWorkflowFromContext`), so it is present on
+  // every driver and every configuration rather than only where secrets or
+  // workload identity happen to be configured.
+  //
+  // Empty means *not said*, never "a workflow named empty string": a
+  // [Debugger] an embedder drives itself is handed no such stamp, and two steps
+  // that answer to no workflow are not thereby the same step. A consumer that
+  // reads an empty name as a name will confuse exactly the ids this field
+  // exists to separate.
+  string workflow = 2;
+
+  // Kind is what that step is, in the same words `flow`'s `info` command
+  // prints — `task`, `wait`, `for_each`, and the rest of what `NodeKind`
+  // computes.
+  //
+  // A rendering rather than an enum, and that is a decision with a cost. An
+  // enum would be checkable on the wire; what it would also be is a second
+  // vocabulary for node kinds beside the one [Node]'s own `kind` oneof already
+  // is, kept in step by hand. This field is derived from that oneof, so it
+  // cannot describe a node kind the schema does not have.
+  string kind = 3;
+
+  // Autopsy reports which of the two prompts is holding: false for a
+  // breakpoint before a step, true for the account of a case that has already
+  // failed.
+  //
+  // A distinct fact from [step_id] being empty, and both are needed: an
+  // autopsy is a real pause with no step to name, so "there is a position" and
+  // "the position has a step" have to stay separable.
+  bool autopsy = 4;
+
+  // Declaration says which invocation of a workflow this position is in, when
+  // the producer can tell, keyed to [DebugStep.declaration] on the rows.
+  //
+  // Present exactly when the producer resolved the position to one row of its
+  // own inventory. Absent when it could not — one callee invoked from two
+  // `call:` steps gives two rows a boundary's (workflow, step id) pair cannot
+  // choose between, and the producer says so rather than naming the first. See
+  // this file's comment on invocation identity for why the dynamic half is not
+  // available and what will fill this when it is.
+  //
+  // Absent is *not said*, never declaration zero — zero is the root workflow
+  // and a real answer. That is why this carries explicit presence: a consumer
+  // reading an unset int as the root would place every unattributable position
+  // in the outermost workflow, which is the one thing a debugger must never do.
+  //
+  // Meaningful only against the inventory the same producer answers
+  // [DebugStepWindow] from. It numbers a walk's descents, so it is an identity
+  // *within one step list*, not a durable id — two producers holding different
+  // specifications may number differently, and comparing across them is
+  // meaningless.
+  optional int32 declaration = 5 [(buf.validate.field).int32 = {gte: 0}];
+}
+
+// DebugStepState is what a session last watched one step do.
+//
+// The vocabulary is [RunObserver]'s, read once: a step is entered, and then it
+// finishes, is absorbed, fails, or is skipped by its `if:`.
+enum DebugStepState {
+  // The producer did not say. An inventory a caller built by hand carries no
+  // outcomes, and a peer older than this enum has no value to send.
+  //
+  // Distinct from [DEBUG_STEP_STATE_PENDING], which is a session saying it
+  // watched nothing happen here — an answer, rather than the absence of one.
+  // The Go vocabulary this is derived from has no member for "not said",
+  // because in-process there is always a session to have watched; the wire
+  // needs one because there is not always a producer that did.
+  DEBUG_STEP_STATE_UNSPECIFIED = 0;
+
+  // A step the session has not watched do anything: not reached yet, or
+  // reached by work this session could not attribute.
+  DEBUG_STEP_STATE_PENDING = 1;
+
+  // A step the run entered and whose outcome has not arrived. The step a
+  // session is paused at is one of these; so is a step still in flight on
+  // another branch.
+  DEBUG_STEP_STATE_RUNNING = 2;
+
+  // A step that finished without an error.
+  DEBUG_STEP_STATE_DONE = 3;
+
+  // A step that failed and whose failure the run absorbed
+  // (`continue_on_error`).
+  //
+  // Distinct from [DEBUG_STEP_STATE_DONE] because a run that carried on is not
+  // a step that worked, and that is usually the thing somebody opened a
+  // debugger to find.
+  DEBUG_STEP_STATE_TOLERATED = 4;
+
+  // A step that failed and whose failure the run did not absorb.
+  DEBUG_STEP_STATE_FAILED = 5;
+
+  // A step whose `if:` was false. It never reaches a boundary — there is no
+  // work to hold — so it is only ever reported by the observer seam.
+  DEBUG_STEP_STATE_SKIPPED = 6;
+}
+
+// DebugStep is one row of a run's step list.
+message DebugStep {
+  // Workflow is the workflow that declares this step. It is what a reader
+  // sees, and it is not on its own an identity — see [declaration].
+  //
+  // Empty where the producer did not say: an inventory that is merely the ids
+  // a session has watched go past carries no workflow, because nothing that
+  // reaches the observer seam knows one.
+  string workflow = 1;
+
+  // Declaration identifies the workflow *instance* this row belongs to.
+  //
+  // A name is not a declaration. One callee invoked from two `call:` steps
+  // appears twice under one name, and so do two genuinely different embedded
+  // workflows that happen to share a `name:`; in both cases the rows are
+  // separate declarations whose outcomes belong to separate invocations, and
+  // grouping them by name claims an attribution the producer does not have.
+  //
+  // Numbered rather than named because the only question ever asked of it is
+  // whether two rows are the same declaration. Zero is the root workflow and
+  // the value a producer that numbers nothing leaves, which is why a consumer
+  // separating rows must key on this *and* [workflow]: an inventory built by
+  // hand distinguishes its workflows by name, one built by a walk distinguishes
+  // them here, and neither has to know about the other.
+  //
+  // Not [RunProgress.path] and not [Frame], though all three describe position
+  // in a nesting. Those two say where inside one workflow's control flow a run
+  // stands; this says which invocation of a workflow a row belongs to, which is
+  // a different question and one neither of them can answer.
+  int32 declaration = 2 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Via is the id of the `call:` step that reaches this declaration, empty at
+  // the root.
+  //
+  // For the reader rather than for the grouping: where two rows share a name
+  // *and* an id, the name cannot tell them apart on screen, and the `call:`
+  // step an author wrote is the thing that can.
+  string via = 3;
+
+  // StepId is the step's id, which is the only name the *run* has for it: both
+  // the debugger seam and the observer seam are handed bare ids.
+  string step_id = 4;
+
+  // State is what the producing session last watched this step do.
+  DebugStepState state = 5 [(buf.validate.field).enum.defined_only = true];
+}
+
+// DebugStepWindow is a window onto a run's step list, with the facts about the
+// whole that a window cannot carry.
+//
+// A window rather than the list, and the reason is the same one it is a window
+// in process: the list is the author's file, a workflow may declare thousands
+// of nodes, a pane draws a dozen, and answering with all of them at every stop
+// is O(N) per stop and O(N^2) across a walk of the run. Offset-and-total is the
+// shape `Session.Steps` already answers in, so a network-attached session
+// answers the same question the same way.
+message DebugStepWindow {
+  // Steps is the window, in the order an author wrote them.
+  repeated DebugStep steps = 1;
+
+  // Offset is where the window starts in the whole list, after clamping.
+  int32 offset = 2 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Total is how long the whole list is, so an elision can say how much it
+  // elided rather than that it elided some.
+  int32 total = 3 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Unattributed counts the rows *of the whole list* whose outcome the
+  // producer cannot attribute, because another workflow in the same inventory
+  // declares the same id and an outcome naming that id names neither.
+  //
+  // Of the whole list and not of this window, deliberately: it is a property of
+  // the inventory, so a consumer paging through the list would otherwise see it
+  // rise and fall for reasons that are about its own paging.
+  //
+  // Those rows report [DEBUG_STEP_STATE_PENDING] rather than one workflow's
+  // outcome painted onto another's row. Fail closed: under-claiming is a gap a
+  // reader can see, and mis-claiming is a debugger pointing at the wrong step.
+  int32 unattributed = 4 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Truncated reports that the producing session stopped recording what it
+  // watched, so a [DebugStep.state] above may understate what a step did.
+  //
+  // Not about this window's own cut, which [offset] and [total] already
+  // describe. It is about the session's record of outcomes running out.
+  bool truncated = 5;
+
+  // Held is the index *within* [steps] of the row the run is held at.
+  //
+  // The producer's answer rather than the inputs to it, and that is the point:
+  // resolving a position against rows is one function on the producing side
+  // (`positionIn`), and two resolvers is exactly how the local surface came to
+  // mark both rows of a twice-invoked callee. A consumer re-deriving this from
+  // ids would be that second resolver.
+  //
+  // Absent means the run's held row is not at an index of this window, and
+  // [DebugPosition.declaration] is what separates the two ways that happens: a
+  // position carrying a declaration is a real row the window simply does not
+  // reach, and a position carrying none could not be attributed at all. Absent
+  // also for an autopsy, where the run is over and no row is held.
+  optional int32 held = 6 [(buf.validate.field).int32 = {gte: 0}];
+}
+
+// DebugBinding is one name a paused run can reach, with the rendering of what
+// it holds.
+//
+// # Why the value is text
+//
+// This is the one message in this file that can carry anything derived from a
+// run's data, and it carries it as an already-redacted rendering because that
+// is the only form that has been through the door. `Session.Evaluate` redacts
+// both halves of its answer — the text through a substring backstop and the
+// structured value by equality — and hands out the redacted value precisely so
+// that a debugger's structured answer cannot become a way around a `sensitive:`
+// declaration. A [Value] field here would put the structured half back on a new
+// surface, so there is not one, and there must never be one.
+message DebugBinding {
+  // Name is the binding as the scope lists it.
+  string name = 1;
+
+  // Expression is what would be typed to ask for this value again — the
+  // group's root and the name, or the bare name where the group has no root
+  // (a loop's `as:`, a step's own `vars:`, an autopsy's bindings).
+  //
+  // Carried rather than left for a consumer to join, because the join is the
+  // producer's own answer: two renderers kept a private switch over group names
+  // to rebuild it, and one of them said in its comment that it was "the same
+  // fact read for a different renderer", which is the parallel declaration that
+  // always eventually drifts.
+  string expression = 2;
+
+  // The answer, or the reason there is not one, or neither.
+  //
+  // A oneof rather than two strings and a flag, because the three states are
+  // exclusive and one of them is "the producer did not resolve this" — a scope
+  // answered for its names alone. With two plain fields, a value that renders
+  // as the empty string and a name nobody resolved are the same bytes.
+  oneof answer {
+    // Rendered is the redacted rendering of the value, cut by the producer at
+    // `flowdebug.MaxInspectRunes` runes of *content* plus a marker saying how
+    // much it cut.
+    //
+    // `max_len` and not `max_bytes`, and the unit is the whole reason to say
+    // so: protovalidate's `max_len` counts Unicode code points, which is what
+    // a rune bound counts, while `max_bytes` counts what Go's `len` counts.
+    // The two disagree on any non-ASCII rendering, and a limit written down
+    // twice in two units is a boundary that refuses values its producer
+    // considers legal. Same unit, both layers — the rule
+    // [WorkloadIdentity.claims] states at length.
+    //
+    // 4160 rather than the content bound of 4096, because the marker is part
+    // of what travels and a bound that forgot it would refuse a value
+    // *precisely when it was cut* — the one case this field exists to
+    // describe honestly (Codex, #1194). The 64 runes of headroom are provable
+    // rather than generous: the marker is `… (%d more)` and the number it
+    // carries is a count of runes held in memory, so at most 19 digits, so at
+    // most 28 runes.
+    string rendered = 3 [(buf.validate.field).string = {max_len: 4160}];
+
+    // Error is the redacted reason this name has no value: an expression that
+    // did not compile, a key that is not there, an evaluation that failed.
+    //
+    // Redacted for a reason that is easy to miss: a CEL runtime error
+    // interpolates the value that caused it, so an error is a way for a value
+    // to leave. It is rebuilt rather than wrapped on the producing side, so
+    // nothing reachable through an unwrap chain survives into it — the same
+    // leak Temporal's default failure converter causes by walking that chain.
+    //
+    // Bounded on the same terms as [rendered], and by the producer rather than
+    // by whatever failed: an error is the one string here whose length a peer's
+    // failure chooses. See the note there on the unit and on the headroom.
+    string error = 4 [(buf.validate.field).string = {max_len: 4160}];
+  }
+}
+
+// DebugScopeGroup is one group of names a paused run can reach, as `scope`
+// groups them.
+//
+// Grouped rather than flattened because the grouping is part of the answer: a
+// debug adapter renders one pane per group, and a person reading `scope` is
+// looking for which *kind* of name they can reach.
+message DebugScopeGroup {
+  // Group is the root the names hang from as a reader sees it — `steps`,
+  // `vars`, the workflow's declared vars, and the bare bindings an autopsy
+  // adds.
+  string group = 1;
+
+  // Root is the expression prefix these names hang from — `steps`, `inputs`,
+  // `vars`, `run`, `trigger` — or empty where they are bound bare and resolve
+  // under no root at all.
+  //
+  // Distinct from [group], which is a label. This is the part a consumer
+  // computes with, and [DebugBinding.expression] is already that computation
+  // done once by the producer.
+  string root = 2;
+
+  // Bindings are this group's names, and may be a prefix of them: resolving a
+  // value is an evaluation, so how many to resolve is the caller's budget.
+  repeated DebugBinding bindings = 3;
+
+  // Total is how many names this group holds, so an elision can say how many
+  // it left out rather than that it left some out.
+  //
+  // A group whose names were all past the budget appears with no bindings and
+  // a total, rather than vanishing: that the group exists is part of the answer
+  // to "what kind of name can I reach here".
+  int32 total = 4 [(buf.validate.field).int32 = {gte: 0}];
+}
+
+// DebugScope is what a paused run can name, and what those names hold.
+message DebugScope {
+  // Groups are the scope's groups, in the order the session lists them.
+  repeated DebugScopeGroup groups = 1;
+
+  // Total is how many names the run can reach across every group.
+  //
+  // There is deliberately no `truncated` flag beside this, unlike
+  // [EntityState.truncated] and [RunProgress.pending_waits_truncated]. Those
+  // answers omit data without saying how much; this one carries the total, so
+  // "fewer bindings arrived than names exist" is derivable and a flag would be
+  // a second spelling of a fact already here.
+  int32 total = 2 [(buf.validate.field).int32 = {gte: 0}];
+}
+
+// DebugCommandVerb is the closed vocabulary of what a debug session can be
+// told to do.
+//
+// Derived from the session's own command table, which is the one place a verb
+// is written down — `dispatch` resolves through it, `help` prints it, and the
+// completer offers it. A test walks that table against this enum in both
+// directions, so a verb cannot come to be understood by the prompt and unknown
+// on the wire, or the reverse.
+//
+// Closed on purpose, and that is a property rather than a style: a caller that
+// could name a verb this enum does not have would be naming a capability the
+// deployment never granted, which is the reasoning [PendingActivity.phase]
+// states for its own vocabulary. Aliases are deliberately not here — `s`, `c`,
+// `p` and the rest are a convenience for somebody typing, and a wire client
+// spells the verb.
+enum DebugCommandVerb {
+  // No verb. Not a command; a boundary refuses it rather than guessing, for
+  // the reason the prompt names an unknown verb rather than ignoring it —
+  // silently doing nothing gives the caller no reason to doubt what they sent.
+  DEBUG_COMMAND_VERB_UNSPECIFIED = 0;
+
+  // Run this step and stop at the next.
+  DEBUG_COMMAND_VERB_STEP = 1;
+
+  // Run until the next breakpoint, or to the end.
+  DEBUG_COMMAND_VERB_CONTINUE = 2;
+
+  // Run until the step whose id the argument names.
+  DEBUG_COMMAND_VERB_UNTIL = 3;
+
+  // Stop at a step, always or when an expression holds. The argument is
+  // `<step-id> [if <expr>]`.
+  DEBUG_COMMAND_VERB_BREAK = 4;
+
+  // Remove the breakpoint at the step the argument names.
+  DEBUG_COMMAND_VERB_DELETE = 5;
+
+  // List the breakpoints this session holds.
+  DEBUG_COMMAND_VERB_BREAKPOINTS = 6;
+
+  // Evaluate the argument as a CEL expression against the paused run's scope,
+  // bounded by the run's own cost limit.
+  DEBUG_COMMAND_VERB_INSPECT = 7;
+
+  // List what the run can name right now.
+  DEBUG_COMMAND_VERB_SCOPE = 8;
+
+  // List what could be written at the end of the argument's text.
+  DEBUG_COMMAND_VERB_COMPLETE = 9;
+
+  // Describe the step the run is stopped at.
+  DEBUG_COMMAND_VERB_INFO = 10;
+
+  // End the run here.
+  DEBUG_COMMAND_VERB_QUIT = 11;
+
+  // List the commands.
+  DEBUG_COMMAND_VERB_HELP = 12;
+}
+
+// DebugCommand is one thing a debug session is told to do.
+//
+// A verb and one argument string, which is the grammar the session already has
+// rather than a second one: a command line is split into its first word and the
+// rest, and the rest is parsed by whoever owns the verb — `break`'s
+// `<step-id> [if <expr>]` by the breakpoint code, `inspect`'s by the evaluator.
+// A structured argument here would be a second parser for a grammar that
+// already has one, and the two would drift; this repository has paid for that
+// shape.
+//
+// It also keeps a recorded session replayable across the boundary. The session
+// records the canonical command lines it accepted and replays a run from them,
+// so a wire command that renders back to exactly such a line is the same
+// artifact a person can paste into an issue.
+message DebugCommand {
+  // Verb is what to do.
+  DebugCommandVerb verb = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+
+  // Argument is the text after the verb, empty for the verbs that take none.
+  //
+  // Bounded by `flowdebug.MaxCommandBytes`, the bound a console reader already
+  // enforces on a typed line: the two are one resource reached two ways, and a
+  // caller arriving here arrives on no surface that has already bounded it.
+  //
+  // This bounds the *field*, which is all a field rule can bound, and it is
+  // deliberately not the whole story. The session refuses two further things
+  // about a **line** — a total past that same bound once the verb and its
+  // separator are added, and any line break at all, since one command is one
+  // line — and neither is expressible here, because neither is a property of
+  // this field alone. `flowdebug.CommandLine` makes both refusals where the
+  // line is built, so a message that satisfies this rule and still cannot be
+  // delivered is refused before it is rendered rather than after (Codex,
+  // #1194).
+  //
+  // `max_bytes` and not `max_len` here, the opposite unit from
+  // [DebugBinding.rendered] and for the same reason — the resource being
+  // bounded is memory in a scanner, which is bytes, where a rendering's bound
+  // is about how much text a reader is handed.
+  string argument = 2 [(buf.validate.field).string = {max_bytes: 65536}];
+}
+
+// DebugSession is who is debugging which run, and until when.
+//
+// Separate from [DebugPosition] because these facts do not change as the run
+// moves: a position is answered again at every stop, and this is answered once
+// at attach and again when a lease is extended. Stage 2's lease mechanics —
+// pause, expiry, auto-resume, all attributable — read this message; the
+// mechanics themselves are not here.
+//
+// # Why there is no second sender shape
+//
+// "Who acted on this run, as the server attested rather than as they claimed"
+// is a question this schema already answers, and the answer is
+// [WorkloadIdentity] — established by authenticating the request, never taken
+// from it, because a caller who could name their own identity could name
+// anyone else's. [SignalSender] is the neighbouring use of it, and this message
+// deliberately reuses the identity rather than that wrapper: a wrapper here
+// would mean a second `{identity, timestamp, local}` triple whose timestamp
+// field is named for signals, so the timestamp and the local marker sit on this
+// message directly and there is one shape for who, not two.
+message DebugSession {
+  // SessionId addresses this debug session.
+  //
+  // Empty for a local session, which is not addressed by anything: it is the
+  // author's own process, reached by typing at it. A durable session is
+  // addressed because something has to be able to name the lease it holds.
+  //
+  // Bounded at the length this schema already gives a run id.
+  string session_id = 1 [(buf.validate.field).string = {max_len: 256}];
+
+  // Run is the run being debugged.
+  //
+  // Unset for a local session: [RunAddress] names a durable execution, and a
+  // run interpreted in the author's own process is not one. A consumer must not
+  // read an unset run as a missing value — [local] is what says which case this
+  // is.
+  RunAddress run = 2;
+
+  // AttachedBy is the authenticated caller the server established when this
+  // session attached, by the same path a run's own identity is established.
+  //
+  // Never taken from the request. Unset where nothing was attested, which is
+  // every local session and is what [local] marks.
+  WorkloadIdentity attached_by = 3;
+
+  // AttachedAt is when the server accepted the attach, from the server's own
+  // clock, never the caller's. A self-reported time is exactly the kind of
+  // claim an attested field replaces.
+  google.protobuf.Timestamp attached_at = 4;
+
+  // Local marks a session debugging a local run — `flow run local --debug`,
+  // `flow test --debug`, the MCP and DAP fronts over either — which has no
+  // authenticated caller at all, because there is no server in front of it to
+  // attest anything.
+  //
+  // The same marker [SignalSender.local] is, for the same reason and with the
+  // same warning: it means "the local driver", and a consumer must not read it
+  // as the general "nothing was attested", which is also what an unset
+  // [attached_by] means on a session this schema has no other explanation for.
+  bool local = 5;
+
+  // LeaseExpiresAt is when this session's hold on the run lapses of its own
+  // accord, after which the run resumes.
+  //
+  // Unset means no lease, which is a real answer rather than a missing one: a
+  // local run is the author's own process and holds itself for as long as they
+  // want it held, which is #928's recorded decision that local debugging is
+  // always-on. A durable session is leased because a run held paused by a
+  // vanished debugger is an availability incident, and expiry resuming the run
+  // is that decision's other half.
+  optional google.protobuf.Timestamp lease_expires_at = 6;
+}

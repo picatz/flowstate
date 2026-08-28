@@ -133,6 +133,24 @@ func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.
 	subject := s.at
 	s.mu.Unlock()
 
+	return s.evaluateIn(ctx, subject, expression)
+}
+
+// evaluateIn is [Session.Evaluate] against a pause the caller already holds.
+//
+// Split out so that an answer made of *several* evaluations can be made of one
+// pause. [Session.Evaluate] reads `s.at` each time it is called, which is right
+// for one question and wrong for a set of them: a run that resumes partway
+// through a scope listing would leave the later names answered from a different
+// stop, and one message attributing values from two steps to the names of one
+// is a debugger pointing at the wrong step in the scope's clothing (Codex,
+// #1194).
+//
+// Safe to hold a subject past the pause it names, which is what makes this a
+// snapshot rather than a race: [Session.prompting] freezes the scope into the
+// subject precisely because the engine resumes writing to the live one the
+// moment the pause ends.
+func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, expression string) (string, ref.Val, error) {
 	if subject.scope == nil {
 		return "", nil, ErrNotPaused
 	}
@@ -591,6 +609,21 @@ func (s *Session) Steps(offset, limit int) StepList {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	list, _ := s.stepWindow(offset, limit)
+
+	return list
+}
+
+// stepWindow is [Session.Steps]' whole answer, plus where the held row sits in
+// the *whole* list, held under s.mu by every caller.
+//
+// Split out rather than copied because [Session.StepWindowProto] needs both
+// halves and computing them twice is how the two would come to disagree — the
+// same argument [positionIn] itself is, one level up. The index is absolute so
+// that a caller can say whether the held row falls inside a window it chose;
+// -1 where nothing is held, which is an autopsy, a session between stops, and a
+// position no row can be attributed to.
+func (s *Session) stepWindow(offset, limit int) (StepList, int) {
 	order := s.inventory()
 
 	list := StepList{
@@ -645,7 +678,7 @@ func (s *Session) Steps(offset, limit int) StepList {
 		list.Steps = append(list.Steps, step)
 	}
 
-	return list
+	return list, held
 }
 
 // inventory is the list [Session.Steps] and [Session.StepPosition] read, held
