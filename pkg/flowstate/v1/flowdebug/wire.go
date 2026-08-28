@@ -352,15 +352,15 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 		return nil, false
 	}
 
+	command := &v1.DebugCommand{Verb: verb, Argument: strings.TrimSpace(rest)}
+
 	// `complete`'s argument is taken from the raw line rather than from the
 	// trimmed remainder, because trailing space is the thing that says the
 	// current word is empty — the same distinction [cutWord] exists for, and
 	// the one [Session.dispatch] makes at this exact verb. Trimming it here
 	// would move a remote client's cursor three characters left of where it is.
 	if known.verb == "complete" {
-		_, text := cutWord(strings.TrimLeft(line, " \t"))
-
-		return &v1.DebugCommand{Verb: verb, Argument: text}, true
+		_, command.Argument = cutWord(strings.TrimLeft(line, " \t"))
 	}
 
 	// A verb the table gives no argument gets none, whatever followed it.
@@ -373,14 +373,31 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 	// recorded.
 	//
 	// Refusing instead would make a line the prompt happily runs into "not a
-	// command", and carrying it would make a message [CommandLine] refuses:
-	// this function must only ever produce messages that one can render, or the
-	// pair is not a pair (Codex, #1194).
+	// command" (Codex, #1194).
 	if known.argument == "" {
-		return &v1.DebugCommand{Verb: verb}, true
+		command.Argument = ""
 	}
 
-	return &v1.DebugCommand{Verb: verb, Argument: strings.TrimSpace(rest)}, true
+	// The pair's invariant, held by construction rather than by two checks that
+	// have to agree: this returns a message only where [CommandLine] can render
+	// it.
+	//
+	// Two bounds are at work and they are on two different strings, which is
+	// why the length check at the top does not cover this one. That one bounds
+	// the line as *read*, which is what a console's reader would have refused —
+	// including a line of nothing but whitespace, which trims away to a bare
+	// `step` and would otherwise arrive here looking ordinary. This bounds the
+	// line as *delivered*, which is the canonical one, and an alias is where
+	// the two part company: `p ` plus 65,534 bytes is exactly [MaxCommandBytes]
+	// as typed and eight bytes over it once `p` becomes `inspect` (Codex,
+	// #1194). Asking [CommandLine] rather than repeating its arithmetic is the
+	// point — a second copy of that sum is how the two would come to disagree
+	// about which alias fits.
+	if _, err := CommandLine(command); err != nil {
+		return nil, false
+	}
+
+	return command, true
 }
 
 // CommandLine is a wire command as the line [Session.dispatch] understands.

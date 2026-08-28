@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -191,4 +192,54 @@ func TestValidDeclarationRefusesWhatTheWireCannotSay(t *testing.T) {
 			assert.Equal(t, tc.ok, validDeclaration(tc.in))
 		})
 	}
+}
+
+// TestNoSpellingOfAVerbProducesALineTheRendererRefuses is the corpus repair,
+// and the reason it is here rather than beside its siblings.
+//
+// The pair's invariant already had a test, and that test missed an alias
+// expanding past the bound — `p ` plus 65,534 bytes is exactly
+// [MaxCommandBytes] as typed and eight bytes over it once `p` becomes
+// `inspect` (Codex, #1194). The corpus was hand-listed and used the canonical
+// spelling at the bound, so the one length where an alias differs from its verb
+// was the one length it did not try.
+//
+// A hand-listed corpus is only as good as what somebody thought of, so this one
+// is *derived*: every spelling in [commands], canonical and alias alike, at
+// exactly the bound. An alias added to the table is covered without anybody
+// editing this test, which is the property `tools/fuzztargets` exists for and
+// the same one the two vocabulary walks above have.
+func TestNoSpellingOfAVerbProducesALineTheRendererRefuses(t *testing.T) {
+	t.Parallel()
+
+	require.NotEmpty(t, commands, "the command table is empty, so this test is vacuous")
+
+	checked := 0
+	for _, c := range commands {
+		for _, spelling := range append([]string{c.verb}, c.aliases...) {
+			// Exactly at the bound as typed, which is where a spelling shorter
+			// than its canonical verb crosses it once expanded.
+			prefix := spelling + " "
+			require.LessOrEqual(t, len(prefix), MaxCommandBytes)
+			line := prefix + strings.Repeat("x", MaxCommandBytes-len(prefix))
+			require.Len(t, line, MaxCommandBytes, "the line under test is not at the bound")
+
+			command, ok := CommandProto(line)
+			if !ok {
+				// Refused on the way in is a fine answer — what must not happen
+				// is a message this cannot render.
+				continue
+			}
+			checked++
+
+			back, err := CommandLine(command)
+			require.NoError(t, err,
+				"%q parsed into a message the renderer refuses, so the two conversions are not a pair", line)
+			assert.LessOrEqual(t, len(back), MaxCommandBytes,
+				"%q rendered to a line longer than the session accepts", line)
+		}
+	}
+
+	assert.Positive(t, checked,
+		"every spelling was refused at the bound, so this test is about refusals rather than about the pair")
 }
