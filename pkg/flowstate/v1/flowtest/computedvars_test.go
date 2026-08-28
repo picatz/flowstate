@@ -1106,6 +1106,47 @@ tests:
 	assert.NotContains(t, rendered, "withheld")
 }
 
+// TestAVarErrorOverATransformedTaintIsWithheldWhole is Codex's seventh P1, and
+// the same shape as its sixth at the sibling surface: a rendering that clears
+// *known strings* cannot reach a fact computed inside the failing expression.
+//
+// `${[0][size(vars.token)]}` transforms its tainted dependency and fails in one
+// step, so cel-go's error carries the token's length rather than the token —
+// nothing the set ever held — and the eager unprotectable-value refusal never
+// runs, because the var produced no value at all. The load-time error is
+// therefore withheld whole whenever the expression reads a tainted var, which
+// is what `checkErrorText` already does one file over. Fails on 90241327.
+func TestAVarErrorOverATransformedTaintIsWithheldWhole(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  bad: "${[0][size(vars.token)]}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused)
+	messages := problemMessages(problems)
+
+	assert.Contains(t, messages, "vars.bad: evaluating ${[0][size(vars.token)]}",
+		"the expression the author wrote is still quoted; it is theirs")
+	assert.Contains(t, messages, "[withheld: this expression reads vars.token, which this file withholds]",
+		"and the dependency that cost it its detail is named, because a name is not a value")
+	assert.NotContains(t, messages, "index out of bounds")
+	// The token's length, which cel-go's error carried and no redaction set
+	// could have matched. Messages rather than the rendering, for the
+	// `t.TempDir()` digit reason the neighbouring tests record.
+	assert.NotContains(t, messages, strconv.Itoa(len("s3cr3t-value")))
+	assert.NotContains(t, messages, "s3cr3t-value")
+}
+
 // TestAnUntaintedValuesEvaluationErrorIsStillQuoted is the positive control for
 // that fix, and the reason it is scoped to the tainted set: the eager refusal
 // must not swallow legitimate error detail. The identical misuse over vars on

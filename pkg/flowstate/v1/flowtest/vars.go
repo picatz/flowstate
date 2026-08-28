@@ -55,11 +55,11 @@ import (
 //
 // # The containment contract, whole
 //
-// Five review rounds on #1197 each found one more way a value derived from a
-// secret reaches a report, and each was answered on its own. The answers are
-// one rule, and it is written here rather than spread across five functions so
-// that the next review has something to check against instead of rediscovering
-// the shape. This table is the contract:
+// Five review rounds on #1197 found seven ways a value derived from a secret
+// reaches a report, and each was answered on its own. The answers are one rule,
+// and it is written here rather than left spread across the functions that
+// implement it, so that the next review has something to check against instead
+// of rediscovering the shape. This table is the contract:
 //
 //	A value derived from secret material is WITHHELD where it is a non-empty
 //	string, and REFUSED INTO EXISTENCE where it is anything else — because
@@ -96,9 +96,16 @@ import (
 //	what a refused var's  | nothing  | the root refusal stands for the chain, the
 //	  dependents report   |          | rule #1185 set for a refused stub's shape
 //	how a rendering hides | one pair | WithholdAll withholds, else RedactSubstrings,
-//	  what it must        | only     | plus the withheld-var rule — witnesses, the
-//	                      |          | autopsy, stub diagnostics and a check's own
-//	                      |          | evaluator error, all through it (check.go)
+//	  what it must        | only     | plus the withheld-var rule. FIVE surfaces:
+//	                      |          | witnesses, the autopsy, stub diagnostics, a
+//	                      |          | check's evaluator error ([checkErrorText]),
+//	                      |          | and a var's own ([scrubbedVarError]). A sixth
+//	                      |          | is a leak until it meets this row
+//	what a rendering does | withhold | an error can quote something computed INSIDE
+//	  with a derived fact |  whole   | the failing expression — `[0][size(vars.t)]`
+//	                      |          | says `index out of bounds: 11` — which no set
+//	                      |          | ever held, so clearing known strings cannot
+//	                      |          | reach it and the whole message is withheld
 //
 // Two costs, accepted rather than discovered: a benign var that merely
 // contributed to a secret is withheld, and refused if it is not a non-empty
@@ -457,7 +464,7 @@ func (f *File) evaluateVars(p *problems) {
 		value, err := evaluateVar(base, d, activation)
 		if err != nil {
 			p.report(site{at: block.field(name)}, "vars.%s: evaluating %s: %s",
-				name, d.fence, scrubbedVarError(err, taint, d.deps, f.Vars))
+				name, d.fence, scrubbedVarError(err, taint, d.deps))
 
 			continue
 		}
@@ -723,33 +730,40 @@ func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any) (a
 	return literalToGo(literal)
 }
 
-// scrubbedVarError is one evaluation failure's text with every tainted value
-// the expression could have read taken out of it.
+// scrubbedVarError is what one evaluation failure may say.
 //
 // A CEL failure carries its operands — `no such key: <value>` — so a refusal
 // about a var reading a secret-holding one could print the very material
-// [taintedVars] exists to hold back. Scrubbed against exactly the tainted vars
-// this expression names, whose values are already computed (dependency order
-// guarantees it), through the one redaction spelling this package uses: the
-// message stays as informative as it can be without becoming a second output
-// channel around the set.
+// [taintedVars] exists to hold back. An expression reading a tainted var
+// therefore has its error withheld whole, and says which var cost it that.
+//
+// Withheld rather than *scrubbed*, and the difference is the whole finding
+// (Codex, #1197, seventh). Scrubbing worked by collecting the tainted deps'
+// strings and clearing them from the message, which covers an error quoting a
+// dependency and misses an error quoting something computed *from* one inside
+// the same expression: `${[0][size(vars.token)]}` fails with `index out of
+// bounds: 11`, a length no set ever held, and the eager unprotectable-value
+// refusal never runs because the var produced no value at all — it errored.
+// That is the same shape as [checkErrorText]'s, at the load-time surface, and
+// it gets the same answer: a rendering either withholds what it cannot bound or
+// it is a second output channel around the set.
+//
+// Naming the var is the useful half, as it is there: an author learns which
+// dependency to break, and a name is not a value.
 //
 // Every diagnostic here quotes the *expression* rather than the value, which
 // is the same rule stated on [varDeclaration.fence]; this is the one place a
 // value could reach a message by another road, and this is that road closed.
-func scrubbedVarError(err error, taint varTaint, deps []string, values map[string]any) string {
-	var material []string
+func scrubbedVarError(err error, taint varTaint, deps []string) string {
+	// deps are sorted by [checkVarExpression], so the var named here is the
+	// same one on every run over the same file.
 	for _, dep := range deps {
-		if !taint.holds(dep) {
-			continue
+		if taint.holds(dep) {
+			return fmt.Sprintf("[withheld: this expression reads vars.%s, which this file withholds]", dep)
 		}
-		collectVarStrings(values[dep], 0, &material)
-	}
-	if len(material) == 0 {
-		return err.Error()
 	}
 
-	return v1.SensitiveValues{}.WithValues(material...).RedactSubstrings(err.Error())
+	return err.Error()
 }
 
 // varOrder returns the computed vars in an order where every var's
