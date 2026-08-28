@@ -366,17 +366,26 @@ message DebugBinding {
   // answered for its names alone. With two plain fields, a value that renders
   // as the empty string and a name nobody resolved are the same bytes.
   oneof answer {
-    // Rendered is the redacted rendering of the value, bounded by the
-    // producer at `flowdebug.MaxInspectRunes` runes.
+    // Rendered is the redacted rendering of the value, cut by the producer at
+    // `flowdebug.MaxInspectRunes` runes of *content* plus a marker saying how
+    // much it cut.
     //
     // `max_len` and not `max_bytes`, and the unit is the whole reason to say
     // so: protovalidate's `max_len` counts Unicode code points, which is what
     // a rune bound counts, while `max_bytes` counts what Go's `len` counts.
     // The two disagree on any non-ASCII rendering, and a limit written down
     // twice in two units is a boundary that refuses values its producer
-    // considers legal. Same number, same unit, both layers — the rule
+    // considers legal. Same unit, both layers — the rule
     // [WorkloadIdentity.claims] states at length.
-    string rendered = 3 [(buf.validate.field).string = {max_len: 4096}];
+    //
+    // 4160 rather than the content bound of 4096, because the marker is part
+    // of what travels and a bound that forgot it would refuse a value
+    // *precisely when it was cut* — the one case this field exists to
+    // describe honestly (Codex, #1194). The 64 runes of headroom are provable
+    // rather than generous: the marker is `… (%d more)` and the number it
+    // carries is a count of runes held in memory, so at most 19 digits, so at
+    // most 28 runes.
+    string rendered = 3 [(buf.validate.field).string = {max_len: 4160}];
 
     // Error is the redacted reason this name has no value: an expression that
     // did not compile, a key that is not there, an evaluation that failed.
@@ -387,8 +396,10 @@ message DebugBinding {
     // nothing reachable through an unwrap chain survives into it — the same
     // leak Temporal's default failure converter causes by walking that chain.
     //
-    // Bounded on the same terms as [rendered]; see the note there on the unit.
-    string error = 4 [(buf.validate.field).string = {max_len: 4096}];
+    // Bounded on the same terms as [rendered], and by the producer rather than
+    // by whatever failed: an error is the one string here whose length a peer's
+    // failure chooses. See the note there on the unit and on the headroom.
+    string error = 4 [(buf.validate.field).string = {max_len: 4160}];
   }
 }
 
@@ -528,11 +539,15 @@ message DebugCommand {
   // enforces on a typed line: the two are one resource reached two ways, and a
   // caller arriving here arrives on no surface that has already bounded it.
   //
-  // The whole number rather than the number minus a verb's length, matching
-  // what `Session.Evaluate` already applies to a bare expression. The resource
-  // is a scanner's buffer and the difference is eleven bytes, so subtracting
-  // the verb would be a second, slightly different bound written down for one
-  // meaning — which is the shape this repository refuses elsewhere.
+  // This bounds the *field*, which is all a field rule can bound, and it is
+  // deliberately not the whole story. The session refuses two further things
+  // about a **line** — a total past that same bound once the verb and its
+  // separator are added, and any line break at all, since one command is one
+  // line — and neither is expressible here, because neither is a property of
+  // this field alone. `flowdebug.CommandLine` makes both refusals where the
+  // line is built, so a message that satisfies this rule and still cannot be
+  // delivered is refused before it is rendered rather than after (Codex,
+  // #1194).
   //
   // `max_bytes` and not `max_len` here, the opposite unit from
   // [DebugBinding.rendered] and for the same reason — the resource being

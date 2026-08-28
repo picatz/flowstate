@@ -652,3 +652,171 @@ func TestEveryWireVerbReachesTheSession(t *testing.T) {
 		})
 	}
 }
+
+// The messages a real session builds are messages the schema accepts.
+//
+// The three claims below are one shape: a producer and a schema rule that
+// disagree is a boundary refusing its own side's output, and the refusal
+// arrives at whoever asked rather than at whoever caused it. Each is driven
+// through [v1.Validate] — the real protovalidate rules, against a message a
+// real session built — because a hand-built message would be a test of the test
+// (Codex, #1194).
+
+// TestACutValueStillSatisfiesTheSchema is the bound the marker used to break.
+//
+// `capRunes` keeps its limit's worth of runes and *then* appends `… (N more)`,
+// so a value long enough to be cut used to render longer than the field's own
+// `max_len` — the message becoming invalid precisely when the value was cut,
+// which is the one case the field exists to describe.
+func TestACutValueStillSatisfiesTheSchema(t *testing.T) {
+	t.Parallel()
+
+	// Comfortably past MaxInspectRunes, so the rendering is certainly cut.
+	long := strings.Repeat("x", 4*flowdebug.MaxInspectRunes)
+
+	scope := &v1.Scope{
+		Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+			"deploy": {NamedValues: map[string]*v1.Value{"blob": v1.NewLiteral(long)}},
+		}},
+	}
+
+	pausedAt(t, scope, nil, func(s *flowdebug.Session) {
+		message, err := s.ScopeProto(t.Context(), -1)
+		require.NoError(t, err)
+
+		// The premise: something here really was cut. Without it the claim
+		// below is satisfied by a scope of short values.
+		var cut bool
+		for _, binding := range flatten(message) {
+			cut = cut || strings.Contains(binding.GetRendered(), "more)")
+		}
+		require.True(t, cut,
+			"nothing was cut, so this test is not about the bound it names")
+
+		assert.NoError(t, v1.Validate(message),
+			"a session's own scope message is one the schema rejects")
+	})
+}
+
+// TestAWindowASessionBuiltSatisfiesTheSchema is the same claim for the rows,
+// and the reason [New] refuses a declaration the wire cannot say.
+func TestAWindowASessionBuiltSatisfiesTheSchema(t *testing.T) {
+	t.Parallel()
+
+	stops := wireStops(t, twiceCalled(), "step\nstep\nstep\nstep\ncontinue\n", twiceCalledSteps(), 0, -1)
+
+	for i, stop := range stops {
+		assert.NoError(t, v1.Validate(stop.window), "stop %d: the window is a message the schema rejects", i)
+		assert.NoError(t, v1.Validate(stop.position), "stop %d: the position is a message the schema rejects", i)
+	}
+}
+
+// TestNewRefusesADeclarationTheWireCannotSay is the door.
+//
+// A negative declaration is not representable by `DebugStep.declaration`'s own
+// `gte: 0`, and one past int32 wraps into a number naming a different
+// invocation. Neither can be answered where a row is built — `StepWindowProto`
+// has no error to return — so the inventory is refused when it is handed over,
+// which is the one place with something to say about it.
+func TestNewRefusesADeclarationTheWireCannotSay(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		declaration int
+		ok          bool
+	}{
+		{name: "the root", declaration: 0, ok: true},
+		{name: "an ordinary descent", declaration: 3, ok: true},
+		{name: "negative", declaration: -1},
+		{name: "past what an int32 holds", declaration: 1 << 31},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			session, err := flowdebug.New(flowdebug.Options{
+				Out:   &strings.Builder{},
+				Steps: []flowdebug.Step{{Workflow: "wide", Declaration: tc.declaration, ID: "build"}},
+			})
+			if tc.ok {
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = session.Close() })
+
+				return
+			}
+
+			require.Error(t, err, "an inventory the wire cannot describe was accepted")
+			assert.Contains(t, err.Error(), "build",
+				"the refusal does not name the step it is about, so nobody can act on it")
+			assert.Nil(t, session, "a refused session was handed back anyway")
+		})
+	}
+}
+
+// TestCommandLineRefusesALineTheSessionWouldReject closes the gap between the
+// field's rule and the line's.
+//
+// `Session.takeControl` refuses a line past MaxCommandBytes and a line holding a
+// break; neither is a property of `DebugCommand.argument` alone, so a message
+// can pass every schema rule and still be undeliverable. Both refusals are made
+// where the line is built.
+func TestCommandLineRefusesALineTheSessionWouldReject(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a line break", func(t *testing.T) {
+		t.Parallel()
+
+		for _, argument := range []string{"steps.build\nquit", "steps.build\rquit"} {
+			command := &v1.DebugCommand{
+				Verb:     v1.DebugCommandVerb_DEBUG_COMMAND_VERB_INSPECT,
+				Argument: argument,
+			}
+
+			// The message itself is legal — which is the point: the schema has
+			// no reason to forbid the character, and the line does.
+			require.NoError(t, v1.Validate(command),
+				"the premise fails: the schema already refuses this, so the check below is about nothing")
+
+			_, err := flowdebug.CommandLine(command)
+			assert.Error(t, err, "a line the session refuses was rendered anyway")
+		}
+	})
+
+	t.Run("a line past the bound the verb also counts toward", func(t *testing.T) {
+		t.Parallel()
+
+		// Exactly the field's own limit, so the message is valid and the line
+		// it renders to is not.
+		command := &v1.DebugCommand{
+			Verb:     v1.DebugCommandVerb_DEBUG_COMMAND_VERB_INSPECT,
+			Argument: strings.Repeat("x", flowdebug.MaxCommandBytes),
+		}
+		require.NoError(t, v1.Validate(command),
+			"the premise fails: the field rule already refuses this, so the line check is about nothing")
+
+		_, err := flowdebug.CommandLine(command)
+		assert.Error(t, err, "a line longer than the session accepts was rendered")
+
+		// And one that does fit still renders, so the refusal is a bound rather
+		// than a blanket.
+		fits := &v1.DebugCommand{
+			Verb:     v1.DebugCommandVerb_DEBUG_COMMAND_VERB_INSPECT,
+			Argument: strings.Repeat("x", flowdebug.MaxCommandBytes-len("inspect ")),
+		}
+		line, err := flowdebug.CommandLine(fits)
+		require.NoError(t, err)
+		assert.Len(t, line, flowdebug.MaxCommandBytes,
+			"the largest line the session accepts is not the largest this renders")
+	})
+}
+
+// TestALineWithABreakIsNotOneCommand is the same refusal on the way in.
+func TestALineWithABreakIsNotOneCommand(t *testing.T) {
+	t.Parallel()
+
+	for _, line := range []string{"inspect a\nquit", "scope\r\nquit", "step\n"} {
+		command, ok := flowdebug.CommandProto(line)
+		assert.False(t, ok, "%q was read as one command", line)
+		assert.Nil(t, command)
+	}
+}

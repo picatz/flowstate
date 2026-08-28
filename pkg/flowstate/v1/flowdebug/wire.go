@@ -81,9 +81,9 @@ func (s *Session) PositionProto() (*v1.DebugPosition, bool) {
 		return position, true
 	}
 
-	if declaration, ok := narrow(order[index].Declaration); ok {
-		position.Declaration = proto.Int32(declaration)
-	}
+	// Narrowed without a check, because [New] refused an inventory whose
+	// declarations the wire cannot say — see [validDeclaration].
+	position.Declaration = proto.Int32(int32(order[index].Declaration))
 
 	return position, true
 }
@@ -115,10 +115,11 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 	}
 
 	for _, step := range list.Steps {
-		declaration, _ := narrow(step.Declaration)
 		window.Steps = append(window.Steps, &v1.DebugStep{
-			Workflow:    step.Workflow,
-			Declaration: declaration,
+			Workflow: step.Workflow,
+			// Narrowed without a check for [Session.PositionProto]'s reason:
+			// the inventory was refused at the door if it could not be said.
+			Declaration: int32(step.Declaration),
 			Via:         step.Via,
 			StepId:      step.ID,
 			State:       stepStates[step.State],
@@ -235,19 +236,22 @@ func expressionFor(root, name string) string {
 	return root + "." + name
 }
 
-// narrow reports a Go count as the schema's int32, and whether it fits.
+// validDeclaration reports whether a declaration number is one the wire can
+// say, which is what [New] refuses an inventory for.
 //
-// The check exists for [Step.Declaration], which an embedder chooses freely;
-// every other count here is a slice length. A caller that cannot represent a
-// declaration says nothing about it rather than reporting a wrapped number,
-// because a wrapped declaration names a different invocation and pointing at
-// the wrong step is the one thing a debugger must never do.
-func narrow(n int) (int32, bool) {
-	if n < math.MinInt32 || n > math.MaxInt32 {
-		return 0, false
-	}
-
-	return int32(n), true
+// Non-negative because a declaration numbers a walk's descents from the root's
+// zero upward, and `DebugStep.declaration` carries `gte: 0` to say so; bounded
+// above because the schema's field is an int32 and Go's is an int, and a
+// wrapped declaration names a *different invocation*, which is the one thing
+// this whole design refuses to do.
+//
+// A function taking its input, and checked at the door rather than where a row
+// is built, for the two reasons CLAUDE.md gives. Every inventory this
+// repository produces holds small numbers, so a check written where those are
+// read is one no test could reach; and the door is the only place with an
+// error to return, so it is the only place the refusal can name what is wrong.
+func validDeclaration(n int) bool {
+	return n >= 0 && n <= math.MaxInt32
 }
 
 // stepStates maps this package's outcome vocabulary onto the schema's.
@@ -307,6 +311,14 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 		return nil, false
 	}
 
+	// One command is one line. A caller handing two of them at once is handing
+	// something no prompt could have produced, with the second landing wherever
+	// the first left the run — [Session.takeControl]'s refusal, made here so a
+	// message is never built out of a thing that is not a command.
+	if strings.ContainsAny(line, "\r\n") {
+		return nil, false
+	}
+
 	typed, rest := split(line)
 	if typed == "" {
 		return &v1.DebugCommand{Verb: v1.DebugCommandVerb_DEBUG_COMMAND_VERB_STEP}, true
@@ -360,6 +372,20 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 // it is a line the prompt answers with a usage sentence, and a wire client
 // sending one should meet that same answer rather than a different refusal
 // here.
+//
+// # The two refusals a field rule cannot make
+//
+// [Session.takeControl] refuses a line past [MaxCommandBytes] and a line
+// holding a line break, and neither is expressible as a rule on
+// `DebugCommand.argument`: the first is about the *line*, which is the verb and
+// a separator longer than the argument, and the second is about a character
+// this message has no reason to forbid in isolation. So a message can satisfy
+// every schema rule and still be undeliverable to the session it names, which
+// is a refusal arriving one layer too late (Codex, #1194).
+//
+// They are made here, where the line is built, and they are the session's own
+// two checks rather than a second opinion about them — the bound is
+// [MaxCommandBytes] and the character set is the one `takeControl` names.
 func CommandLine(command *v1.DebugCommand) (string, error) {
 	verb, ok := verbs[command.GetVerb()]
 	if !ok {
@@ -367,6 +393,9 @@ func CommandLine(command *v1.DebugCommand) (string, error) {
 	}
 
 	argument := command.GetArgument()
+	if strings.ContainsAny(argument, "\r\n") {
+		return "", fmt.Errorf("flowdebug: a command is one line, and %s's argument holds a line break", verb)
+	}
 	if argument == "" {
 		return verb, nil
 	}
@@ -383,7 +412,14 @@ func CommandLine(command *v1.DebugCommand) (string, error) {
 		return "", fmt.Errorf("flowdebug: %s takes no argument, and %q was sent with it", verb, argument)
 	}
 
-	return verb + " " + argument, nil
+	line := verb + " " + argument
+	if len(line) > MaxCommandBytes {
+		return "", fmt.Errorf(
+			"flowdebug: a command may be %d bytes and this one is %d; the verb and its separator count toward it, so an argument at the field's own limit does not fit",
+			MaxCommandBytes, len(line))
+	}
+
+	return line, nil
 }
 
 // verbFor is the wire verb for a canonical spelling, the reverse of [verbs].

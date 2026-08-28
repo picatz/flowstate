@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -510,6 +511,22 @@ type promptSubject struct {
 func New(opts Options) (*Session, error) {
 	if len(opts.Breakpoints) > MaxBreakpoints {
 		return nil, fmt.Errorf("a session may hold %d breakpoints, and %d were named", MaxBreakpoints, len(opts.Breakpoints))
+	}
+
+	// The inventory's declaration numbers are checked here rather than where
+	// they are rendered, because here is the only place that can answer with an
+	// error. `DebugStep.declaration` is a non-negative int32, so a negative or
+	// unrepresentable number produces a message the schema rejects — and the
+	// rejection would arrive at whoever asked for a window, about an inventory
+	// somebody else supplied, which is a refusal nobody can act on. Rules
+	// compile when configuration loads rather than when a request arrives
+	// (CLAUDE.md); this is that rule applied to an inventory (Codex, #1194).
+	for i, step := range opts.Steps {
+		if !validDeclaration(step.Declaration) {
+			return nil, fmt.Errorf(
+				"step %d (%q) carries declaration %d; a declaration numbers a walk's descents from the root's 0 upward, so it must be between 0 and %d",
+				i, step.ID, step.Declaration, math.MaxInt32)
+		}
 	}
 
 	s := &Session{

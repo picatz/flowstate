@@ -157,36 +157,38 @@ func TestPendingIsNotTheWireZero(t *testing.T) {
 		"StepPending is no longer the zero value, which is what makes the offset above load-bearing")
 }
 
-// TestNarrowRefusesWhatItCannotSay is the guard on the one count an embedder
-// chooses freely.
+// TestValidDeclarationRefusesWhatTheWireCannotSay is the door's rule, on the
+// one count an embedder chooses freely.
 //
 // Extracted to a function taking its input for the reason CLAUDE.md gives: the
-// real inventories in this tree all hold small numbers, so a check written
-// where those are read is one no test can reach, and deleting it would survive.
-func TestNarrowRefusesWhatItCannotSay(t *testing.T) {
+// real inventories in this tree all hold small non-negative numbers, so a check
+// written where those are read is one no test can reach, and deleting it would
+// survive.
+//
+// Both directions matter and they fail differently. Too large wraps, and a
+// wrapped declaration names a *different invocation*. Negative does not wrap
+// and is rejected by `DebugStep.declaration`'s own `gte: 0`, so it would
+// produce a message the schema refuses — which is why the refusal happens at
+// the door, where there is an error to return (Codex, #1194).
+func TestValidDeclarationRefusesWhatTheWireCannotSay(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name string
 		in   int
-		want int32
-		fits bool
+		ok   bool
 	}{
-		{name: "the root declaration", in: 0, want: 0, fits: true},
-		{name: "an ordinary descent", in: 7, want: 7, fits: true},
-		{name: "the largest that fits", in: 1<<31 - 1, want: 1<<31 - 1, fits: true},
-		{name: "one past it, which wraps negative under a bare conversion", in: 1 << 31, fits: false},
-		{name: "the smallest that fits", in: -1 << 31, want: -1 << 31, fits: true},
-		{name: "one below it", in: -1<<31 - 1, fits: false},
+		{name: "the root declaration", in: 0, ok: true},
+		{name: "an ordinary descent", in: 7, ok: true},
+		{name: "the largest that fits", in: 1<<31 - 1, ok: true},
+		{name: "one past it, which wraps negative under a bare conversion", in: 1 << 31},
+		{name: "negative, which the schema's gte rejects", in: -1},
+		{name: "the smallest int32, which fits the type and not the rule", in: -1 << 31},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, fits := narrow(tc.in)
-			assert.Equal(t, tc.fits, fits)
-			if tc.fits {
-				assert.Equal(t, tc.want, got)
-			}
+			assert.Equal(t, tc.ok, validDeclaration(tc.in))
 		})
 	}
 }
