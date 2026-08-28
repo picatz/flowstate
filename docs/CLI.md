@@ -736,9 +736,27 @@ The rules, each with the reason it exists:
 - **Bounded by cost, per expression and across the file.** Each var's expression spends at most `MaxVarsPerFile`-th of the budget one ordinary expression gets, so a file declaring the maximum 200 vars spends, in total, what a single expression elsewhere in the system may.
 - **A var on any path to a secret is withheld, and one redaction cannot withhold is refused.** If a var's value stands in for a secret — it is referenced from a case's `secrets:` — the taint spreads through the dependency graph in *both* directions, to a fixed point: every var computed from it, and every var it was computed *from*. The source material of a secret is secret, so `derived: "${'Bearer ' + vars.token}"` named from `secrets:` withholds `vars.token` as well as `vars.derived`. The taint follows references rather than values, which is what makes it answerable when the file loads.
 
-  That gives the contract three parts. A tainted **string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else. A tainted **non-string** — `${size(vars.token)}`, a boolean about a secret — is **refused when the file loads**, because nothing in it can be matched and cleared once a fixture has substituted it into a run, and because a length is a fact about a secret in its own right; the refusal names the chain that taints it and what to write instead. And a var on no path to any secret is untouched, so `${size(vars.hostlist)}` stays an ordinary fixture.
+  The contract in one sentence: **a value derived from secret material is withheld where it is a string, and refused into existence where it is anything else** — because anything else can carry the secret in a form redaction cannot reach: its digits, its truth, its shape.
 
-  The cost, stated: a benign var that merely contributed to a secret is withheld too — a `"Bearer"` prefix, a port — and if it is a non-string it is refused. Fail closed is the posture; a token minus its prefix is still a token.
+  A tainted **string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else. Everything else is a load-time refusal naming the chain that taints it. A **number or boolean** — `${size(vars.token)}` — has nothing in it to match once a fixture has carried it into a run, and a length is a fact about a secret in its own right. A **container** leaks by shape, which survives leaf redaction completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality oracle whose answer is whether the map is empty, and clearing every string inside it changes nothing about that — so a tainted container is refused whatever its leaves are.
+
+  The refusal costs one respelling, and says so: keep the derived value a string and express the structure at the position that *uses* it, where a `${vars.x}` leaf resolves at any depth, inside lists, and through `defaults.inputs:`.
+
+  ```yaml
+  vars:
+    token: s3cr3t
+    header: "${'Bearer ' + vars.token}"     # a string: withheld wherever it prints
+  tests:
+    - name: the structure lives where it is used
+      inputs:
+        headers:
+          Authorization: "${vars.header}"
+          Accept: application/json          # untainted, and still shown
+  ```
+
+  A var on no path to any secret is untouched, so `${size(vars.hostlist)}` and a map of hostnames stay ordinary fixtures.
+
+  The cost, stated: a benign var that merely contributed to a secret is withheld too — a `"Bearer"` prefix, a port — and refused if it is not a string. Fail closed is the posture; a token minus its prefix is still a token.
 
 A fence *inside* a structure is still refused, and so is a mixed string (`"https://${vars.host}/v1"`): a partial substitution would be a template language this file deliberately is not. Build the combined text in a var — `"${'https://' + vars.host + '/v1'}"` — and reference that.
 

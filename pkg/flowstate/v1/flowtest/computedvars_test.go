@@ -458,23 +458,35 @@ func TestAVarComputedFromASecretIsWithheldWhereverItPrints(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
 edition: v2026.3
 name: bearer-request
+inputs:
+  headers:
+    type: struct
 steps:
   - id: call
     http:
       url: https://api.example.com/status
       bearer: ${secret('env:TOKEN')}
+  - id: echo
+    value: ${inputs.headers.Authorization}
 outputs: {}
 `)
 	path := filepath.Join(dir, "workflow.test.yaml")
+	// The structure lives at the position that *uses* it, with a computed
+	// string var at its leaf — the spelling the container refusal points an
+	// author at, and legal at any depth because resolveVarsInValue substitutes
+	// a whole-value `${vars.x}` wherever it appears in a fixture tree.
 	writeFile(t, path, `
 vars:
   token: s3cr3t-value
   header: "${'Bearer ' + vars.token}"
-  envelope: "${ {'auth': vars.token, 'kind': 'bearer'} }"
   region: eu-west-1
 tests:
   - name: the derived values never print
     workflow: ./workflow.yaml
+    inputs:
+      headers:
+        Authorization: "${vars.header}"
+        Accept: application/json
     secrets:
       env:TOKEN: "${vars.token}"
     stubs:
@@ -482,14 +494,16 @@ tests:
         returns:
           status_code: 200
     expect:
-      ran: [call]
+      ran: [call, echo]
       check:
         - that: vars.header == 'nope'
           because: this claim is false on purpose, so its witnesses render
-        - that: vars.envelope.kind == 'nope'
-          because: and so does a structured one, whose leaves are strings
+        - that: steps.echo.value == 'nope'
+          because: and the leaf, once the fixture has carried it into the run
+        - that: inputs.headers.Accept == 'nope'
+          because: the untainted leaf of the same structure still shows itself
         - that: vars.region == 'nope'
-          because: the control — a var on no path to a secret still shows its value
+          because: and so does a var on no path to a secret at all
 `)
 
 	report := flowtest.RunFile(path)
@@ -501,15 +515,18 @@ tests:
 	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
 	assert.Contains(t, rendered, "vars.header = [redacted]",
 		"a var computed from a secret must be withheld in a witness, not merely cleared of the secret")
-	assert.Contains(t, rendered, "vars.envelope.kind = [redacted]",
-		"a path *into* a withheld var is withheld with it, or the container is a way around the name")
+	assert.Contains(t, rendered, `steps.echo.value = \"[redacted]\"`,
+		"and withheld whole once a fixture has carried it into the run, where no `vars.` name roots it")
 	assert.NotContains(t, rendered, "s3cr3t-value")
 	assert.NotContains(t, rendered, "Bearer s3cr3t")
-	assert.NotContains(t, rendered, "bearer",
-		"the untainted half of a tainted structure travels with it; withholding is per var")
+	assert.NotContains(t, rendered, `\"Bearer [redacted]\"`,
+		"partial clearing still says a header derived from a secret is a header")
 
-	// The control, without which every assertion above would also pass on a
-	// loader that withheld everything: a var on no path to a secret prints.
+	// The controls, without which every assertion above would also pass on a
+	// loader that withheld everything. Both matter: withholding is per var, so
+	// the untainted leaf of the very structure carrying the tainted one is
+	// still shown, and so is a var on no path to a secret at all.
+	assert.Contains(t, rendered, `inputs.headers.Accept = \"application/json\"`)
 	assert.Contains(t, rendered, `vars.region = \"eu-west-1\"`)
 }
 
@@ -658,7 +675,7 @@ tests:
 `))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "vars.fingerprint is computed from a secret and holds an integer")
-		assert.Contains(t, err.Error(), "which redaction cannot withhold")
+		assert.Contains(t, err.Error(), "only a string can be withheld")
 		assert.Contains(t, err.Error(), `vars.fingerprint → vars.token, which tests[0].secrets["env:TOKEN"] references`,
 			"the refusal names the chain, or its claim is one an author cannot check")
 		assert.NotContains(t, err.Error(), "s3cr3t-value")
@@ -678,6 +695,134 @@ tests:
 		require.NoError(t, err, "a size() over a var on no path to a secret is an ordinary fixture")
 		require.Equal(t, int64(3), file.Vars["count"])
 	})
+}
+
+// TestATaintedContainerIsRefusedForItsShape is Codex's third P1 on #1197 and
+// the owner's ruling on it, which completes the family: a string leaks by
+// value and is withheld, a scalar leaks by value with nothing to match and is
+// refused, and a container leaks by *shape*.
+//
+// The ternary is the scenario as filed. Redaction clears every string in the
+// map and leaves whether the map is empty, which is an equality oracle about
+// the secret — so a tainted container may not exist, whatever its leaves turn
+// out to be. Both subtests fail on 7e600f67, where the classifier walked to
+// the first non-string leaf and called a map of strings protectable.
+func TestATaintedContainerIsRefusedForItsShape(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		value string
+		kind  string
+	}{
+		{
+			name:  "a shape a secret chooses",
+			value: "${vars.token == 'guess' ? {} : {'x': 'y'}}",
+			kind:  "a map",
+		},
+		{
+			// The delta from the previous classifier, and the reason the rule
+			// is about containers rather than about leaves: every leaf here is
+			// a string, and redaction still leaves the shape standing.
+			name:  "a container whose every leaf is a string",
+			value: "${ {'Authorization': 'Bearer ' + vars.token} }",
+			kind:  "a map",
+		},
+		{
+			name:  "a list",
+			value: "${ [vars.token] }",
+			kind:  "a list",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  shaped: "`+tc.value+`"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "vars.shaped is computed from a secret and holds "+tc.kind)
+			assert.Contains(t, err.Error(), "a container's shape, which survives even when every leaf")
+			assert.Contains(t, err.Error(),
+				`vars.shaped → vars.token, which tests[0].secrets["env:TOKEN"] references`)
+			assert.Contains(t, err.Error(), "express any structure where it is used",
+				"the refusal costs one respelling, so it names it")
+			assert.NotContains(t, err.Error(), "s3cr3t-value")
+		})
+	}
+
+	// The control: the identical shapes over vars on no path to any secret are
+	// ordinary fixtures, which is what keeps a rule this blunt off files that
+	// have nothing to do with secrets.
+	t.Run("untainted containers are ordinary fixtures", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  region: eu-west-1
+  order: "${ {'id': 'ord_1', 'region': vars.region} }"
+  hosts: "${ ['a', 'b'] }"
+tests:
+  - name: loads
+    workflow: ./workflow.yaml
+`))
+		require.NoError(t, err)
+		require.Equal(t, map[string]any{"id": "ord_1", "region": "eu-west-1"}, file.Vars["order"])
+		require.Equal(t, []any{"a", "b"}, file.Vars["hosts"])
+	})
+}
+
+// TestATaintedStructureRespellsAtTheFixture is the other half of that
+// refusal's promise: the diagnostic tells an author to express the structure
+// where it is used and keep the derived value a string, and that spelling has
+// to actually work — at depth, inside a list, and through `defaults.inputs:`.
+//
+// A refusal whose advice does not compile is worse than no advice.
+func TestATaintedStructureRespellsAtTheFixture(t *testing.T) {
+	t.Parallel()
+
+	file, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  header: "${'Bearer ' + vars.token}"
+defaults:
+  workflow: ./workflow.yaml
+  inputs:
+    headers:
+      - name: Authorization
+        value: "${vars.header}"
+tests:
+  - name: loads
+    inputs:
+      envelope:
+        auth:
+          scheme: bearer
+          credential: "${vars.header}"
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+	require.NoError(t, err, "the respelling the refusal names must load")
+
+	require.Equal(t,
+		map[string]any{"headers": []any{map[string]any{"name": "Authorization", "value": "Bearer s3cr3t-value"}}},
+		file.Defaults.Inputs, "a `${vars.x}` leaf resolves inside a list under defaults")
+
+	// The case's own inputs, which by now also carry the block's — `Load`
+	// merges `defaults:` into every case — so both halves of the respelling
+	// are asserted here on the effective fixture the run will see.
+	require.Equal(t, map[string]any{
+		"envelope": map[string]any{
+			"auth": map[string]any{"scheme": "bearer", "credential": "Bearer s3cr3t-value"},
+		},
+		"headers": []any{map[string]any{"name": "Authorization", "value": "Bearer s3cr3t-value"}},
+	}, file.Tests[0].Inputs, "and at depth in a case's own inputs")
 }
 
 // TestATransitivelyTaintedNonStringIsRefused is where the two decisions meet:

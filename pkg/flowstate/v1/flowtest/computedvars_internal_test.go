@@ -1,6 +1,7 @@
 package flowtest
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -144,53 +145,64 @@ func TestTaintPathNamesTheChainAndTheSecretsEntry(t *testing.T) {
 		taint.path("seedmaterial"))
 }
 
-// TestUnprotectableValueNamesWhatRedactionCannotMatch is the decision the
-// non-string refusal turns on, taken as a value: in a real document a tainted
-// var is nearly always a string, so a check written where the values agree is
-// one no fixture could reach.
-func TestUnprotectableValueNamesWhatRedactionCannotMatch(t *testing.T) {
+// TestOnlyAStringIsProtectable is the decision the refusal turns on, taken as
+// a value: in a real document a tainted var is nearly always a string, so a
+// check written where the values agree is one no fixture could reach.
+//
+// The container rows are the delta from this classifier's first shape, which
+// walked to the first non-string leaf and called a map of strings protectable.
+// A container is unprotectable *as a container*.
+func TestOnlyAStringIsProtectable(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
 		value any
 		kind  string
 	}{
-		"a string":            {value: "s3cr3t"},
-		"the empty string":    {value: ""},
-		"a map of strings":    {value: map[string]any{"a": "b"}},
-		"a list of strings":   {value: []any{"a", "b"}},
-		"an empty map":        {value: map[string]any{}},
-		"an empty list":       {value: []any{}},
-		"an integer":          {value: int64(12), kind: "an integer"},
-		"a boolean":           {value: true, kind: "a boolean"},
-		"a double":            {value: 1.5, kind: "a number"},
-		"null":                {value: nil, kind: "null"},
-		"an integer in a map": {value: map[string]any{"len": int64(3)}, kind: "an integer"},
-		"a boolean deep in a list": {value: []any{"a", map[string]any{"ok": false}},
-			kind: "a boolean"},
+		"a string":          {value: "s3cr3t"},
+		"the empty string":  {value: ""},
+		"a map of strings":  {value: map[string]any{"a": "b"}, kind: "a map"},
+		"a list of strings": {value: []any{"a", "b"}, kind: "a list"},
+		"an empty map":      {value: map[string]any{}, kind: "a map"},
+		"an empty list":     {value: []any{}, kind: "a list"},
+		"an integer":        {value: int64(12), kind: "an integer"},
+		"a boolean":         {value: true, kind: "a boolean"},
+		"a double":          {value: 1.5, kind: "a number"},
+		"null":              {value: nil, kind: "null"},
+		"a nested map":      {value: map[string]any{"h": map[string]any{"a": "b"}}, kind: "a map"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			kind, unprotectable := unprotectableValue(tc.value, 0)
+			kind, unprotectable := unprotectableValue(tc.value)
 			assert.Equal(t, tc.kind != "", unprotectable)
 			assert.Equal(t, tc.kind, kind)
 		})
 	}
 }
 
-// TestUnprotectableValueNamesTheFirstLeafEveryTime: two unprotectable leaves
-// in one map must name the same one on every run, or a diagnostic depends on
-// a map's iteration order.
-func TestUnprotectableValueNamesTheFirstLeafEveryTime(t *testing.T) {
+// TestAContainersShapeIsWhatSurvivesLeafRedaction is the reason the container
+// rows above are refusals rather than protectable values, stated as the thing
+// an author could otherwise read off a report: two values a secret chooses
+// between, every string in each cleared identically, still saying which branch
+// was taken.
+//
+// The positive direction first, as CLAUDE.md asks — redaction has to actually
+// leave the difference standing, or there would be nothing to refuse.
+func TestAContainersShapeIsWhatSurvivesLeafRedaction(t *testing.T) {
 	t.Parallel()
 
-	value := map[string]any{"b": true, "a": int64(1), "c": 2.5}
-	for range 20 {
-		kind, unprotectable := unprotectableValue(value, 0)
-		require.True(t, unprotectable)
-		require.Equal(t, "an integer", kind, "the sorted-first key decides, every time")
-	}
+	sensitive := sensitiveInputs{}.WithValues("s3cr3t", "x", "y")
+
+	empty := fmt.Sprint(sensitive.RedactTree(map[string]any{}))
+	full := fmt.Sprint(sensitive.RedactTree(map[string]any{"x": "y"}))
+
+	require.NotEqual(t, empty, full,
+		"redaction clears the leaves and leaves the shape: %s vs %s", empty, full)
+
+	kind, unprotectable := unprotectableValue(map[string]any{"x": "y"})
+	assert.True(t, unprotectable, "so a container may not exist in a tainted position")
+	assert.Equal(t, "a map", kind)
 }
 
 // TestWithheldMaterialKeepsEveryTaintedVarButALiteralSeed is the one narrowing

@@ -895,82 +895,100 @@ func taintedVars(declared map[string]*varDeclaration, holding map[string]string)
 	return taint
 }
 
-// refuseUnprotectableVars refuses every tainted var holding a value the
-// redaction set cannot withhold (#1072, repair 4; Codex's second P1 on #1197).
+// refuseUnprotectableVars refuses every tainted var holding anything but a
+// string (#1072, repair 4; three P1s from Codex on #1197, and the owner's
+// rulings on them).
 //
-// The set protects by *content*: a string is compared whole and cleared
-// wherever it is embedded. A number, a boolean, a null — nothing in them can
-// be matched, so a tainted `${size(vars.token)}` substituted into a case's
-// `inputs:` reaches a transcript line rooted at `steps.*` rather than at
-// `vars.*`, where neither the withheld name nor the withheld material can
-// reach it. It is also a length oracle in its own right.
+// # The rule, and why it is exactly this blunt
 //
-// So it may not exist, rather than existing unprotected. The refusal is scoped
-// to the tainted set exactly — an untainted `${size(vars.hostlist)}` is an
-// ordinary fixture and stays legal — which is what keeps a rule this blunt from
-// reaching files that have nothing to do with secrets.
+// The redaction set protects by *content*: a string is compared whole and
+// cleared wherever it is embedded. Nothing else in the language can be reached
+// that way, and the three ways a derived value carries its secret out are now
+// each accounted for:
+//
+//   - **A string** leaks by value, and is withheld — the whole of what this
+//     package's redaction machinery is for.
+//   - **A scalar that is not a string** leaks by value with nothing to match:
+//     `${size(vars.token)}` substituted into a case's `inputs:` reaches a
+//     transcript line rooted at `steps.*`, where neither the withheld name nor
+//     the withheld material can find it, and a length is a fact about a secret
+//     in its own right.
+//   - **A container** leaks by *shape*, which survives leaf redaction
+//     completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality
+//     oracle whose answer is whether the map is empty, and clearing every
+//     string inside it changes nothing about that.
+//
+// So a tainted var is a string or it does not exist. The alternative for the
+// third case was to tell fixed-shape containers from secret-dependent ones,
+// which is an information-flow analysis over CEL ASTs — real machinery and
+// real maintenance, guarding a corner of a load-time fixture feature.
+//
+// # What the refusal costs, measured rather than assumed
+//
+// One respelling, and the diagnostic names it. A structure whose leaves are
+// computed strings is legal today at the position that *uses* it — a case's
+// `inputs:`, `defaults.inputs:`, a signal payload, at any depth and inside
+// lists — because [resolveVarsInValue] substitutes a whole-value `${vars.x}`
+// wherever it appears in a fixture tree. So `{'Authorization': 'Bearer ' +
+// vars.token}` moves from the var to the fixture and keeps the computed part
+// as a string var. What is *not* legal is a fence inside a structured var
+// value ([checkVars] refuses it, and says so in its own words), which is the
+// expressiveness gap this refusal makes visible rather than creates.
+//
+// The refusal is scoped to the tainted set exactly — an untainted
+// `${size(vars.hostlist)}` or a map of hostnames is an ordinary fixture and
+// stays legal — which is what keeps a rule this blunt away from files that
+// have nothing to do with secrets.
 //
 // A var whose evaluation failed is skipped: the document is refused already,
 // and there is no value to judge. The diagnostic names the taint path, because
-// "this is derived from a secret" is a claim about a chain the author can only
+// "this is derived from a secret" is a claim about a chain an author can only
 // check if they are shown it.
 func refuseUnprotectableVars(p *problems, block loc, taint varTaint, resolved map[string]bool, values map[string]any) {
 	for _, name := range taint.names() {
 		if !resolved[name] {
 			continue
 		}
-		kind, unprotectable := unprotectableValue(values[name], 0)
+		kind, unprotectable := unprotectableValue(values[name])
 		if !unprotectable {
 			continue
 		}
 		p.report(site{at: block.field(name)},
-			"vars.%s is computed from a secret and holds %s, which redaction cannot withhold — "+
-				"only a string can be matched and cleared wherever it travels, and a number derived "+
-				"from a secret is a fact about it. The chain: %s. State the value as a string, or "+
-				"compute it outside the derivation that reaches a `secrets:` entry",
+			"vars.%s is computed from a secret and holds %s; only a string can be withheld. A value "+
+				"derived from secret material carries it in a form redaction cannot reach — a number's "+
+				"digits, a boolean's truth, a container's shape, which survives even when every leaf "+
+				"inside it is cleared. The chain: %s. Keep the derived value a string, and express any "+
+				"structure where it is used — a case's `inputs:`, `defaults.inputs:`, a signal payload — "+
+				"where a `${vars.x}` leaf resolves at any depth",
 			name, kind, taint.path(name))
 	}
 }
 
-// unprotectableValue answers with the first scalar in a value that redaction
-// could never match, in the words a diagnostic uses, or reports false when
-// every scalar it holds is a string.
+// unprotectableValue names what a value is, in the words the diagnostic uses,
+// and reports whether redaction could never withhold it — which is everything
+// that is not a string.
 //
-// Maps are walked in sorted key order, so a value with two unprotectable
-// leaves names the same one every time — the rule every map walk here follows.
-// An empty container holds nothing and is therefore protectable by not being
-// anything; so is the empty string, which carries no material and which
-// [collectVarStrings] already declines to put in the set.
+// Flat rather than recursive, and that is the decision rather than an
+// omission: a container is unprotectable *as a container*, whatever its leaves
+// turn out to be, because its shape is what survives clearing them. An earlier
+// version walked to the first non-string leaf and called a map of strings
+// protectable, which is the hole Codex's third P1 names.
+//
+// The empty string is a string. It carries no material — [collectVarStrings]
+// already declines to put it in the set, since it occurs at every position of
+// every string — and refusing it would refuse a value that says nothing.
 //
 // Takes its value rather than reading one out of a [File], because in a real
 // document a tainted var is almost always a string and a check written where
 // the values agree is one no fixture can drive (CLAUDE.md).
-func unprotectableValue(value any, depth int) (string, bool) {
-	if depth > maxDefaultsDepth {
-		// Deeper than the walk goes is deeper than [collectVarStrings] reaches
-		// either, so nothing below here could have joined the set. Refused for
-		// that reason rather than passed over.
-		return "a value nested deeper than redaction walks", true
-	}
+func unprotectableValue(value any) (string, bool) {
 	switch v := value.(type) {
 	case string:
 		return "", false
 	case map[string]any:
-		for _, key := range slices.Sorted(maps.Keys(v)) {
-			if kind, unprotectable := unprotectableValue(v[key], depth+1); unprotectable {
-				return kind, true
-			}
-		}
-
-		return "", false
+		return "a map", true
 	case []any:
-		for _, entry := range v {
-			if kind, unprotectable := unprotectableValue(entry, depth+1); unprotectable {
-				return kind, true
-			}
-		}
-
-		return "", false
+		return "a list", true
 	case bool:
 		return "a boolean", true
 	case int64, int, uint64, uint:
