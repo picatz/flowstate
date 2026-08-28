@@ -169,6 +169,18 @@ type Diagnostics struct {
 	// goccy's, and the language server reads its token to underline the exact
 	// characters at fault.
 	cause error
+
+	// summaryFile is the document every problem *found* belongs to, kept and
+	// dropped alike, and spansFiles says a second one was seen. Only the tail
+	// line of a bounded report reads them.
+	//
+	// Carried from the collector rather than derived from Problems, and that is
+	// the whole point: Problems is a prefix of what was found, so a report whose
+	// kept twenty are all the sibling's and whose dropped ten are the suite's
+	// reads as single-file from the outside — and the line these answer is a
+	// claim about exactly the ones that are gone (Codex, #1193).
+	summaryFile string
+	spansFiles  bool
 }
 
 // Error renders every problem on its own line, each naming its own file.
@@ -186,14 +198,15 @@ func (ds *Diagnostics) Error() string {
 		tail := fmt.Sprintf("%d more problems were found and %d are shown",
 			ds.Total-len(ds.Problems), len(ds.Problems))
 		// Named only when there is one file to name. What was dropped is not
-		// necessarily about the file the first kept problem happens to be
-		// about: a suite and the directory's `testdefaults.yaml` are refused
-		// together, and prefixing that line with either one asserts a
-		// provenance for problems nobody can see (Codex, #1185). The count is
-		// the honest part, and it is the whole line when the report spans two
-		// documents.
-		if file := ds.oneFile(); file != "" {
-			tail = file + ": " + tail
+		// necessarily about the file the kept problems are about: a suite and
+		// the directory's `testdefaults.yaml` are refused together, and
+		// prefixing that line with either one asserts a provenance for problems
+		// nobody can see (Codex, #1185, and #1193 for the corner where every
+		// problem *kept* is one file's and every problem dropped is the other's).
+		// The count is the honest part, and it is the whole line when the report
+		// spans two documents.
+		if !ds.spansFiles && ds.summaryFile != "" {
+			tail = ds.summaryFile + ": " + tail
 		}
 		lines = append(lines, tail)
 	}
@@ -203,30 +216,6 @@ func (ds *Diagnostics) Error() string {
 
 // Unwrap returns the error a problem was translated from, when there was one.
 func (ds *Diagnostics) Unwrap() error { return ds.cause }
-
-// oneFile is the document every problem shown is about, or empty when they are
-// about more than one — or when none of them names a file, which is what bytes
-// with no path answer.
-//
-// A function taking its input from the problems rather than a comparison written
-// where they are built, because a report that spans two files is the only input
-// that tells the two answers apart, and a real report usually does not
-// (CLAUDE.md, "assert where the answers differ").
-func (ds *Diagnostics) oneFile() string {
-	file := ""
-	for _, d := range ds.Problems {
-		switch {
-		case d.File == "":
-			continue
-		case file == "":
-			file = d.File
-		case d.File != file:
-			return ""
-		}
-	}
-
-	return file
-}
 
 // inFile stamps path on every problem that does not already name a file, for
 // the doors that have one.
@@ -244,6 +233,13 @@ func (ds *Diagnostics) inFile(path string) *Diagnostics {
 		if ds.Problems[i].File == "" {
 			ds.Problems[i].File = path
 		}
+	}
+	if !ds.spansFiles && ds.summaryFile == "" {
+		// The one document everything was found in was this door's own, which is
+		// the case the collector cannot name and this one can. Left alone when
+		// the report spans files: there is then nothing to name, and a field
+		// holding a file the tail must not print is a trap for the next reader.
+		ds.summaryFile = path
 	}
 
 	return ds
@@ -347,6 +343,17 @@ type problems struct {
 	// in this one could only match by accident.
 	elsewhere     []loc
 	elsewhereFile string
+
+	// sole is the file every problem *found* has named so far, and spans records
+	// that a second one was seen. Empty means this document's own, which only
+	// the door that opened it can name ([Diagnostics.inFile]).
+	//
+	// Kept here, over everything found, because the only consumer is a claim
+	// about the problems that were dropped — and by the time anything can read
+	// [Diagnostics.Problems], those are gone. Two fields and no allocation, so
+	// the collector pays nothing for a line most reports never print.
+	sole  string
+	spans bool
 }
 
 // newProblems collects against a parsed document, or against none — the Go
@@ -398,6 +405,20 @@ func (p *problems) reportKey(r site, format string, args ...any) {
 // record appends one problem, up to both bounds, counting every one.
 func (p *problems) record(r site, atKey bool, message string) {
 	p.total++
+
+	// Which document the problem is about is decided for every problem found,
+	// before either bound can drop it. The tail line of a bounded report is a
+	// claim about the ones that were dropped, so deciding this only for the ones
+	// kept answered it from a set that by construction excludes its subject
+	// (Codex, #1193). The position is not decided here, because that is a tree
+	// walk and a dropped problem has nowhere to put the answer.
+	file := p.fileOf(r)
+	if p.total == 1 {
+		p.sole = file
+	} else if file != p.sole {
+		p.spans = true
+	}
+
 	if len(p.found) >= MaxLoadProblems {
 		return
 	}
@@ -408,18 +429,10 @@ func (p *problems) record(r site, atKey bool, message string) {
 	}
 	p.bytes += len(message)
 
-	d := Diagnostic{Test: r.test, Field: r.at.String(), Message: message}
-	switch {
-	case r.file != "":
-		// The check named the document itself, which it does where a path
-		// could not tell the two apart — see [site.file].
-		d.File = r.file
-	case p.writtenElsewhere(r.at):
-		// Another document wrote this value, so it is named after that
-		// document and positioned in neither: the path addresses the file that
-		// holds the text, and this parse has no tree for it.
-		d.File = p.elsewhereFile
-	default:
+	d := Diagnostic{File: file, Test: r.test, Field: r.at.String(), Message: message}
+	if file == "" {
+		// This document wrote the value, and so is the only one this parse holds
+		// a tree for: everything else is positioned in a file it cannot see.
 		locate := p.doc.positionOf
 		if atKey {
 			locate = p.doc.positionOfKey
@@ -429,6 +442,30 @@ func (p *problems) record(r site, atKey bool, message string) {
 		}
 	}
 	p.found = append(p.found, d)
+}
+
+// fileOf names the document that wrote the value r is about, or empty for the
+// document being parsed — whose name only the door that opened it knows, since
+// the same bytes reach this loader from a file, an editor's buffer and an MCP
+// request (see [Diagnostics.inFile]).
+//
+// Separated from [problems.record] so the answer can be taken for a problem
+// that is about to be dropped, where computing a whole [Diagnostic] would be
+// waste.
+func (p *problems) fileOf(r site) string {
+	switch {
+	case r.file != "":
+		// The check named the document itself, which it does where a path could
+		// not tell the two apart — see [site.file].
+		return r.file
+	case p.writtenElsewhere(r.at):
+		// Another document wrote this value, so it is named after that document
+		// and positioned in neither: the path addresses the file that holds the
+		// text, and this parse has no tree for it.
+		return p.elsewhereFile
+	}
+
+	return ""
 }
 
 // err returns the collected problems, or nil when there are none.
@@ -458,5 +495,12 @@ func (p *problems) err() *Diagnostics {
 		return strings.Compare(a.Message, b.Message)
 	})
 
-	return &Diagnostics{Problems: p.found, Total: p.total}
+	return &Diagnostics{
+		Problems: p.found,
+		Total:    p.total,
+		// Taken from the collector, which is the only thing that saw the
+		// problems the bounds dropped — see [Diagnostics.summaryFile].
+		summaryFile: p.sole,
+		spansFiles:  p.spans,
+	}
 }

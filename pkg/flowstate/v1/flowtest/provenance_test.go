@@ -230,6 +230,79 @@ tests:
 	assert.Equal(t, column, d.Column)
 }
 
+// TestATruncationSummaryLooksPastTheProblemsItKept (Codex, #1193) is the corner
+// the fix below did not reach on its first pass: it decided "is there one file
+// to name" by reading the problems that were *kept*, which is a set that by
+// construction excludes the ones the line is about.
+//
+// Twenty problems in the sibling and ten in the suite is the shape that
+// separates the two answers, because the bound then keeps twenty problems that
+// really are all one document's — and drops ten that are all the other's. So the
+// provenance is decided where a problem is found, over everything found.
+func TestATruncationSummaryLooksPastTheProblemsItKept(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sibling := filepath.Join(dir, "testdefaults.yaml")
+	path := filepath.Join(dir, "workflow.test.yaml")
+
+	inherited := func(n int) string {
+		var b strings.Builder
+		b.WriteString("defaults:\n  inputs:\n")
+		for i := range n {
+			fmt.Fprintf(&b, "    a%02d: \"${nope.x}\"\n", i)
+		}
+
+		return b.String()
+	}
+	suite := func(n int) string {
+		var b strings.Builder
+		b.WriteString("defaults:\n  workflow: ./workflow.yaml\n  inputs:\n")
+		for i := range n {
+			fmt.Fprintf(&b, "    b%02d: \"${nope.x}\"\n", i)
+		}
+		b.WriteString("tests:\n  - name: the case\n    expect:\n      ran: [a]\n")
+
+		return b.String()
+	}
+	load := func(t *testing.T) *flowtest.Diagnostics {
+		t.Helper()
+
+		_, err := flowtest.Load(path)
+		require.Error(t, err)
+		problems, refused := errors.AsType[*flowtest.Diagnostics](err)
+		require.True(t, refused)
+		require.Equal(t, 30, problems.Total, "the fixture stopped producing 30 problems: %v", problems)
+		require.Len(t, problems.Problems, flowtest.MaxLoadProblems)
+
+		return problems
+	}
+
+	writeFile(t, sibling, inherited(20))
+	writeFile(t, path, suite(10))
+	problems := load(t)
+
+	// Asserted, not assumed: if the kept twenty ever stop being one document's,
+	// this fixture has stopped exercising the corner and the claim below would
+	// pass for the wrong reason.
+	for _, d := range problems.Problems {
+		require.Equal(t, sibling, d.File,
+			"the fixture no longer keeps twenty problems from one file, so the corner is untested")
+	}
+	assert.Equal(t, "10 more problems were found and 20 are shown", lastLine(problems.Error()),
+		"the dropped problems are the suite's, and the line named the sibling every kept problem is in")
+
+	// The control, in the same shape: thirty problems, twenty kept and ten
+	// dropped, all of them one document's. A fix that simply stopped naming a
+	// file under truncation would pass the assertion above and fail this one.
+	writeFile(t, sibling, inherited(30))
+	writeFile(t, path, "defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: the case\n    expect:\n      ran: [a]\n")
+	problems = load(t)
+
+	assert.Equal(t, sibling+": 10 more problems were found and 20 are shown", lastLine(problems.Error()),
+		"a truncated report about one document stopped naming it")
+}
+
 // TestATruncationSummaryNamesAFileOnlyWhenThereIsOneToName (Codex, #1185): the
 // tail line prefixed the first *kept* problem's file, and what was dropped is
 // not necessarily about that file — a suite and the directory's defaults are
