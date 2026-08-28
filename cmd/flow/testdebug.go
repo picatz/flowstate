@@ -108,7 +108,7 @@ func debugSession(
 		// A workflow that does not parse contributes nothing and says nothing:
 		// the run is about to report that properly, with positions, and a
 		// second complaint from the completer would be the same news told worse.
-		Steps: workflowStepIDs(flowtest.WorkflowPath(files[0], &only)),
+		Steps: workflowStepList(flowtest.WorkflowPath(files[0], &only)),
 	})
 	if err != nil {
 		restore()
@@ -157,16 +157,16 @@ func consoleOrNil(console *debugConsole) flowdebug.Console {
 	return console
 }
 
-// workflowStepIDs is [stepIDs] for a workflow this command has not parsed yet.
+// workflowStepList is [stepList] for a workflow this command has not parsed yet.
 //
 // Errors are deliberately silent — see the call site.
-func workflowStepIDs(path string) []string {
+func workflowStepList(path string) []flowdebug.Step {
 	workflow, _, err := flowfile.ParseFile(path)
 	if err != nil {
 		return nil
 	}
 
-	return stepIDs(workflow)
+	return stepList(workflow)
 }
 
 // stepIDs are the ids of every step a workflow declares, for completing
@@ -190,13 +190,38 @@ func workflowStepIDs(path string) []string {
 // blind to them, which is the worst version: a complete-looking inventory with
 // a whole workflow missing from it (Codex, #1114).
 func stepIDs(workflow *v1.Workflow) []string {
-	var ids []string
+	steps := stepList(workflow)
+
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.ID)
+	}
+
+	return ids
+}
+
+// stepList is the same inventory with each step against the workflow that
+// declares it.
+//
+// The walk itself, with [stepIDs] derived from it rather than being a second
+// one: two walks over one structure is the parallel declaration that always
+// eventually disagrees about a `call:`.
+//
+// The workflow is what makes an entry an identity rather than a name. `runCall`
+// moves the run's position across a call precisely because "a callee's step ids
+// belong to the callee, not to its caller" (`eval.go:1804-1812`), so an
+// inventory that flattened a caller and a callee into bare ids holds two rows
+// called `build` that nothing downstream can tell apart — and a step list drawn
+// from it points at whichever came first.
+func stepList(workflow *v1.Workflow) []flowdebug.Step {
+	var steps []flowdebug.Step
 
 	var walk func(wf *v1.Workflow, depth int)
 	walk = func(wf *v1.Workflow, depth int) {
+		name := wf.GetName()
 		v1.WalkWorkflow(wf, v1.Walk{Node: func(node *v1.Node) {
 			if id := node.GetId(); id != "" {
-				ids = append(ids, id)
+				steps = append(steps, flowdebug.Step{Workflow: name, ID: id})
 			}
 
 			// Bounded, because this descends a structure rather than a list.
@@ -211,7 +236,7 @@ func stepIDs(workflow *v1.Workflow) []string {
 	}
 	walk(workflow, 0)
 
-	return ids
+	return steps
 }
 
 // maxCallInventoryDepth is how far [stepIDs] follows `call:` into `call:`.

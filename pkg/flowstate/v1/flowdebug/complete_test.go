@@ -232,7 +232,7 @@ func TestBreakCompletesOverStepsTheRunHasNotReached(t *testing.T) {
 	t.Parallel()
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: []string{"build", "test", "deploy"}},
+		flowdebug.Options{Steps: declared("completed", "build", "test", "deploy")},
 		[]string{"continue"},
 		[][]string{{"break de"}})
 
@@ -265,7 +265,7 @@ func TestDeleteCompletesOverBreakpointsAndNotOverSteps(t *testing.T) {
 	t.Parallel()
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: []string{"build", "test", "deploy"}, Breakpoints: []string{"deploy"}},
+		flowdebug.Options{Steps: declared("completed", "build", "test", "deploy"), Breakpoints: []string{"deploy"}},
 		[]string{"continue"},
 		[][]string{{"delete "}})
 
@@ -297,7 +297,7 @@ func TestTheVerbIsReadTheWayTheSessionReadsIt(t *testing.T) {
 	t.Parallel()
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: []string{"deploy"}},
+		flowdebug.Options{Steps: declared("completed", "deploy")},
 		[]string{"continue"},
 		[][]string{{"   break de", "break\tde", "  br"}})
 
@@ -322,7 +322,7 @@ func TestCompletionIsBounded(t *testing.T) {
 	}
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: many},
+		flowdebug.Options{Steps: declared("completed", many...)},
 		[]string{"continue"},
 		[][]string{{"break step"}})
 

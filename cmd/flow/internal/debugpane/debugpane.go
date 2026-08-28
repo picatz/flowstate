@@ -150,12 +150,44 @@ type Frame struct {
 	// rather than that there were some.
 	BindingsTotal int
 
-	// Steps are the run's steps and what each has done.
+	// Steps is the window of the run's step list this frame draws, and what
+	// each of those has done.
+	//
+	// A window rather than the list, and taken at [Snapshot] rather than cut
+	// at [Render]. The list is the author's file — a workflow may declare
+	// thousands of nodes and a pane draws a dozen — so copying every entry at
+	// every stop is O(N) per stop and O(N²) across a walk of the run. It is
+	// also the shape a wire message wants, which is what keeps slice 3's
+	// network-attached session answering the same question the same way.
 	Steps []flowdebug.Step
 
+	// StepsBefore and StepsAfter are how many steps the window left out on
+	// each side, so an elision can say how many rather than that there were
+	// some.
+	StepsBefore int
+	StepsAfter  int
+
+	// StepsTotal is the length of the whole list the window is onto.
+	StepsTotal int
+
+	// Held is the index *within Steps* of the step the run is held at, or -1
+	// where the window holds none — an autopsy, or a position the step list
+	// cannot place.
+	//
+	// An index rather than a comparison left to [Render], because the
+	// comparison is the thing that was wrong: matching rows by bare id marks
+	// every row of that name held, and across a `call:` a caller and a callee
+	// may both declare `build` (`eval.go:1804-1812`). The session resolves it
+	// once, against the workflow the engine says the run is in.
+	Held int
+
+	// StepsUnattributed is how many rows of the whole list carry an id another
+	// workflow also declares, and whose outcome the session therefore cannot
+	// attribute. See [flowdebug.Session.Steps].
+	StepsUnattributed int
+
 	// StepsTruncated reports that the session stopped recording what it
-	// watched, so a state above may understate what a step actually did. See
-	// [flowdebug.Session.StepsTruncated].
+	// watched, so a state above may understate what a step actually did.
 	StepsTruncated bool
 }
 
@@ -167,20 +199,42 @@ type Frame struct {
 // evaluation becomes the row's value rather than dropping the row, so the pane
 // cannot come to disagree with the scope the session reports.
 //
+// It takes the layout because the *window* is part of the read: asking the
+// session for the whole step list and cutting it here would copy an entry per
+// declared node at every stop, which is the allocation the window exists to
+// avoid. A frame is therefore sized for the terminal it is about to be drawn
+// on, and [Render] draws what it is given.
+//
 // The second return reports whether there was a pause to read at all. A session
 // between stops has no scope to answer against, and drawing a frame of its last
 // one would report a position the run has left.
-func Snapshot(ctx context.Context, session *flowdebug.Session) (Frame, bool) {
+func Snapshot(ctx context.Context, session *flowdebug.Session, layout Layout) (Frame, bool) {
 	at, paused := session.Paused()
 	if !paused {
 		return Frame{}, false
 	}
 
-	frame := Frame{
-		At:             at,
-		Paused:         true,
-		Steps:          session.Steps(),
-		StepsTruncated: session.StepsTruncated(),
+	frame := Frame{At: at, Paused: true, Held: -1}
+
+	// Where the run is in the list, and how long the list is — both without
+	// copying it, so the window can be chosen before anything is allocated.
+	// The workflow is what makes the position resolvable across a `call:`; the
+	// session answers -1 rather than guessing when it cannot tell (see
+	// [flowdebug.Session.StepPosition]).
+	index, total := session.StepPosition(at.Workflow, positionStep(at))
+	first, last := window(total, index, paneRows(layout.Height))
+
+	list := session.Steps(first, last-first)
+
+	frame.Steps = list.Steps
+	frame.StepsBefore = list.Offset
+	frame.StepsAfter = list.Total - list.Offset - len(list.Steps)
+	frame.StepsTotal = list.Total
+	frame.StepsUnattributed = list.Unattributed
+	frame.StepsTruncated = list.Truncated
+
+	if index >= list.Offset && index < list.Offset+len(list.Steps) {
+		frame.Held = index - list.Offset
 	}
 
 	groups, err := session.Scope()
@@ -254,6 +308,18 @@ func capValue(text string) string {
 	return string(runes[:MaxValueRunes]) + " (cut)"
 }
 
+// positionStep is the step a position names, or "" where it names none.
+//
+// An autopsy is a real pause with no step to be at — the run is over — so it
+// windows the front of the list rather than pointing into it.
+func positionStep(at flowdebug.Position) string {
+	if at.Autopsy {
+		return ""
+	}
+
+	return at.Step
+}
+
 // Layout is the space the panes have.
 type Layout struct {
 	// Width is the columns to draw within. Zero or less is answered with the
@@ -293,6 +359,9 @@ func Render(frame Frame, theme ui.Theme, symbols ui.SymbolSet, layout Layout) st
 	// budget of its own, because they are printed one above the other into one
 	// transcript: two panes each holding to a dozen rows is two dozen rows of
 	// somebody's screen, whatever the terminal's height said.
+	//
+	// The step pane's share was already spent, at [Snapshot], which is what
+	// keeps a stop from copying the whole list; this is the scope pane's.
 	rows := paneRows(layout.Height)
 
 	var b strings.Builder
@@ -302,7 +371,7 @@ func Render(frame Frame, theme ui.Theme, symbols ui.SymbolSet, layout Layout) st
 	// the names they are about to type are the ones nearest their cursor, and
 	// the position, which the `break at` line above has already told them, is
 	// further away.
-	steps := stepRows(frame, theme, symbols, rows)
+	steps := stepRows(frame, theme, symbols)
 	scope := scopeRows(frame, theme, rows)
 
 	writePane(&b, width, theme, symbols, "steps", steps)
@@ -379,52 +448,74 @@ func heading(label string, width int, theme ui.Theme, symbols ui.SymbolSet) stri
 // is about position: what matters is the step the run is held at and what is on
 // either side of it, and a tail would put the paused step at the bottom edge
 // with nothing after it to say what comes next.
-func stepRows(frame Frame, theme ui.Theme, symbols ui.SymbolSet, budget int) []string {
-	steps := frame.Steps
-	if len(steps) == 0 {
+func stepRows(frame Frame, theme ui.Theme, symbols ui.SymbolSet) []string {
+	if len(frame.Steps) == 0 {
 		return nil
 	}
 
-	first, last := window(len(steps), positionOf(steps, frame.At), budget)
+	// Where two rows in the *window* share an id, each is drawn against the
+	// workflow that declares it. Only where they share one: a qualifier on
+	// every row would be noise on the ordinary workflow that has no call in
+	// it, and the pane's rows are meant to be typed back at the prompt, where
+	// the name is the id.
+	qualify := sharedInWindow(frame.Steps)
 
-	rows := make([]string, 0, budget+2)
-	if first > 0 {
-		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d earlier", symbols.Ellipsis, first)))
+	rows := make([]string, 0, len(frame.Steps)+4)
+	if frame.StepsBefore > 0 {
+		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d earlier", symbols.Ellipsis, frame.StepsBefore)))
 	}
-	for i := first; i < last; i++ {
-		rows = append(rows, stepRow(steps[i], steps[i].ID == frame.At.Step && !frame.At.Autopsy, theme, symbols))
+	for i, step := range frame.Steps {
+		rows = append(rows, stepRow(step, i == frame.Held, qualify[step.ID], theme, symbols))
 	}
-	if last < len(steps) {
-		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d later", symbols.Ellipsis, len(steps)-last)))
+	if frame.StepsAfter > 0 {
+		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d later", symbols.Ellipsis, frame.StepsAfter)))
 	}
 
-	// The count, because the rows are a window and this is the whole of it —
-	// and the truncation notice, because a state this session stopped
-	// recording reads as `pending` and a reader has no way to tell that from a
-	// step the run has not reached.
-	total := fmt.Sprintf("  %d step(s)", len(steps))
+	// The count, because the rows are a window and this is the whole of it.
+	rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %d step(s)", frame.StepsTotal)))
+
+	// Then the two things a row cannot say about itself, each on a line of its
+	// own rather than appended to the count. Every line here is trimmed to the
+	// margin, and a sentence explaining why a row reads `pending` is worth
+	// nothing cut in half — which is what a single long line becomes on an
+	// eighty-column terminal.
 	if frame.StepsTruncated {
-		total += "; this session stopped recording outcomes, so some read as pending that are not"
+		// A state this session stopped recording reads as `pending`, which a
+		// reader has no way to tell from a step the run has not reached.
+		rows = append(rows, theme.Muted.Render("  outcomes stopped being recorded; some `pending` are not"))
 	}
-	rows = append(rows, theme.Muted.Render(total))
+	if frame.StepsUnattributed > 0 {
+		// The same shape for a different reason: an outcome arrives naming a
+		// bare id, so where two workflows declare that id nothing can say
+		// whose it was. Said out loud, because `pending` on a step that has
+		// plainly run is otherwise a pane that looks broken.
+		rows = append(rows, theme.Muted.Render(fmt.Sprintf(
+			"  %d share an id across a `call:`; outcomes not attributed", frame.StepsUnattributed)))
+	}
 
 	return rows
 }
 
-// positionOf is the index of the step the run is held at, or -1 where the frame
-// names none — an autopsy, where the run is over and there is no step to be at.
-func positionOf(steps []flowdebug.Step, at flowdebug.Position) int {
-	if at.Autopsy || at.Step == "" {
-		return -1
+// sharedInWindow are the ids more than one row of the window carries.
+//
+// A function taking the rows rather than a loop inside [stepRows], because the
+// case it exists for is the one real fixtures rarely produce and a caller has
+// to be able to build: two steps of one name, from two workflows, on screen at
+// once.
+func sharedInWindow(steps []flowdebug.Step) map[string]bool {
+	seen := make(map[string]int, len(steps))
+	for _, step := range steps {
+		seen[step.ID]++
 	}
 
-	for i, step := range steps {
-		if step.ID == at.Step {
-			return i
+	shared := make(map[string]bool, len(seen))
+	for id, count := range seen {
+		if count > 1 {
+			shared[id] = true
 		}
 	}
 
-	return -1
+	return shared
 }
 
 // window is the half-open range of a list of n items to show, given a budget of
@@ -462,12 +553,20 @@ func window(n, at, budget int) (first, last int) {
 // "the status is the word RUNNING, and the mark beside it only helps the eye
 // find the row". Removing every colour and every mark from this pane loses
 // emphasis and no information.
-func stepRow(step flowdebug.Step, held bool, theme ui.Theme, symbols ui.SymbolSet) string {
+func stepRow(step flowdebug.Step, held, qualify bool, theme ui.Theme, symbols ui.SymbolSet) string {
 	gutter := " "
-	id := step.ID
+	name := step.ID
+	if qualify && step.Workflow != "" {
+		// The workflow first, muted, because the id is still the name: a
+		// reader scanning the column is looking for `build`, and the qualifier
+		// is there to tell two of them apart rather than to be read.
+		name = theme.Muted.Render(step.Workflow+".") + step.ID
+	}
+
+	id := name
 	if held {
 		gutter = symbols.Arrow
-		id = theme.Strong.Render(id)
+		id = theme.Strong.Render(name)
 	}
 
 	mark, style := stepMark(step.State, theme, symbols)

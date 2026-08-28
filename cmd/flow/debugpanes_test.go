@@ -46,7 +46,7 @@ func scriptedDebugOutput(t *testing.T, emit func(string, flowdebug.Tone)) string
 	session, err := flowdebug.New(flowdebug.Options{
 		In:    strings.NewReader("step\nscope\ncontinue\n"),
 		Out:   &out,
-		Steps: []string{"build", "deploy"},
+		Steps: stepList(panesWorkflow()),
 		Emit: func(text string, tone flowdebug.Tone) {
 			out.WriteString(text)
 			emit(text, tone)
@@ -143,7 +143,7 @@ func TestAConsolePaintsThePanes(t *testing.T) {
 	session, err := flowdebug.New(flowdebug.Options{
 		In:    strings.NewReader("step\ncontinue\n"),
 		Out:   &out,
-		Steps: []string{"build", "deploy"},
+		Steps: stepList(panesWorkflow()),
 		Emit:  emit,
 	})
 	require.NoError(t, err)

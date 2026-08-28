@@ -57,6 +57,17 @@ func paneRegistry(t *testing.T) *v1.Registry {
 	return registry
 }
 
+// declared is an inventory of one workflow's steps, which is what a caller
+// holding the file hands over.
+func declared(workflow string, ids ...string) []flowdebug.Step {
+	steps := make([]flowdebug.Step, 0, len(ids))
+	for _, id := range ids {
+		steps = append(steps, flowdebug.Step{Workflow: workflow, ID: id})
+	}
+
+	return steps
+}
+
 // markStep is one succeeding step.
 func markStep(id string) *v1.Node {
 	return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{
@@ -110,7 +121,7 @@ func replayed(t *testing.T, workflow *v1.Workflow, script string, caps ui.Capabi
 			return
 		}
 
-		frame, paused := debugpane.Snapshot(t.Context(), session)
+		frame, paused := debugpane.Snapshot(t.Context(), session, layout)
 		if !paused {
 			return
 		}
@@ -134,6 +145,50 @@ func replayed(t *testing.T, workflow *v1.Workflow, script string, caps ui.Capabi
 	return frames.String()
 }
 
+// lastFrameOf drives a workflow under a scripted session and returns the frame
+// as it stood at the final stop.
+//
+// [replayed]'s sibling, for a test whose claim is about a frame's values rather
+// than about its rendering.
+func lastFrameOf(t *testing.T, workflow *v1.Workflow, script string, caps ui.Capabilities, opts flowdebug.Options) debugpane.Frame {
+	t.Helper()
+
+	layout := debugpane.Layout{Width: caps.Width, Height: caps.Height}
+
+	var (
+		last  debugpane.Frame
+		found bool
+	)
+
+	var session *flowdebug.Session
+
+	opts.In = strings.NewReader(script)
+	opts.Out = &strings.Builder{}
+	opts.Emit = func(_ string, tone flowdebug.Tone) {
+		if tone != flowdebug.ToneBreak {
+			return
+		}
+		if frame, paused := debugpane.Snapshot(t.Context(), session, layout); paused {
+			last, found = frame, true
+		}
+	}
+
+	var err error
+	session, err = flowdebug.New(opts)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+
+	_, _ = v1.RunWithInputs(ctx, workflow, map[string]*v1.Value{"version": v1.NewLiteral("2026.9.0")})
+
+	require.True(t, found, "the run never stopped, so no frame was taken")
+
+	return last
+}
+
 // paneScript walks the run to the fourth boundary and then lets it finish, so
 // the last frame drawn holds every state at once: two done, one tolerated, one
 // skipped, one held, one pending.
@@ -150,7 +205,7 @@ func TestPaneFramesGolden(t *testing.T) {
 	caps := paneCapabilities(80, 24, colorprofile.TrueColor, true)
 
 	golden.RequireEqual(t, []byte(replayed(t, paneWorkflow(), paneScript, caps, flowdebug.Options{
-		Steps: []string{"checkout", "build", "flaky", "gated", "deploy", "notify"},
+		Steps: declared("release", "checkout", "build", "flaky", "gated", "deploy", "notify"),
 	})))
 }
 
@@ -163,7 +218,7 @@ func TestPaneFramesGoldenASCII(t *testing.T) {
 	caps := paneCapabilities(80, 24, colorprofile.TrueColor, false)
 
 	golden.RequireEqual(t, []byte(replayed(t, paneWorkflow(), paneScript, caps, flowdebug.Options{
-		Steps: []string{"checkout", "build", "flaky", "gated", "deploy", "notify"},
+		Steps: declared("release", "checkout", "build", "flaky", "gated", "deploy", "notify"),
 	})))
 }
 
@@ -177,7 +232,7 @@ func TestPaneFramesGoldenPlain(t *testing.T) {
 	caps := paneCapabilities(80, 24, colorprofile.NoTTY, true)
 
 	golden.RequireEqual(t, []byte(replayed(t, paneWorkflow(), paneScript, caps, flowdebug.Options{
-		Steps: []string{"checkout", "build", "flaky", "gated", "deploy", "notify"},
+		Steps: declared("release", "checkout", "build", "flaky", "gated", "deploy", "notify"),
 	})))
 }
 
@@ -191,7 +246,7 @@ func TestPaneFramesGoldenPlain(t *testing.T) {
 // terminal, or a map in map order.
 func TestTheSameScriptDrawsTheSameFrames(t *testing.T) {
 	caps := paneCapabilities(80, 24, colorprofile.TrueColor, true)
-	opts := flowdebug.Options{Steps: []string{"checkout", "build", "flaky", "gated", "deploy", "notify"}}
+	opts := flowdebug.Options{Steps: declared("release", "checkout", "build", "flaky", "gated", "deploy", "notify")}
 
 	first := replayed(t, paneWorkflow(), paneScript, caps, opts)
 	second := replayed(t, paneWorkflow(), paneScript, caps, opts)
@@ -251,21 +306,21 @@ func redactedRun(t *testing.T, redacting bool) string {
 	var session *flowdebug.Session
 
 	theme := ui.NewTheme(true, caps)
+	layout := debugpane.Layout{Width: caps.Width, Height: caps.Height}
 
 	session, err := flowdebug.New(flowdebug.Options{
 		In:    strings.NewReader("step\nstep\ncontinue\n"),
 		Out:   &strings.Builder{},
-		Steps: []string{"first", "composed", "second"},
+		Steps: declared("carries-a-secret", "first", "composed", "second"),
 		Emit: func(_ string, tone flowdebug.Tone) {
 			if tone != flowdebug.ToneBreak {
 				return
 			}
-			frame, paused := debugpane.Snapshot(t.Context(), session)
+			frame, paused := debugpane.Snapshot(t.Context(), session, layout)
 			if !paused {
 				return
 			}
-			frames.WriteString(debugpane.Render(frame, theme, caps.Symbols(),
-				debugpane.Layout{Width: caps.Width, Height: caps.Height}))
+			frames.WriteString(debugpane.Render(frame, theme, caps.Symbols(), layout))
 		},
 	})
 	require.NoError(t, err)
@@ -362,29 +417,43 @@ func TestAHugeScopeTruncatesLegibly(t *testing.T) {
 // The window is the bound, and the counts either side of it are what make it
 // legible: a reader has to be able to tell "there are more steps" from "the run
 // has six".
+//
+// Driven through [debugpane.Snapshot] rather than by building a [debugpane.Frame]
+// by hand, because that is where the window is taken. [debugpane.Render] draws
+// what it is given — a frame carrying five thousand rows is five thousand rows,
+// and it is not Render's business to second-guess the caller that built one.
+// Cutting at the read rather than at the draw is the whole point: a stop that
+// copies the file to render a dozen lines is O(N) per stop and O(N²) across the
+// walk (Codex, #1182).
 func TestAHugeStepListTruncatesLegibly(t *testing.T) {
 	t.Parallel()
 
 	const count = 5_000
 
 	caps := paneCapabilities(80, 24, colorprofile.NoTTY, true)
+	layout := debugpane.Layout{Width: caps.Width, Height: caps.Height}
 
-	ids := make([]string, 0, count)
+	// A workflow whose declared breadth is the author's, held at a step in the
+	// middle of it so the window has something to elide on both sides.
+	steps := make([]*v1.Node, 0, count)
+	inventory := make([]flowdebug.Step, 0, count)
 	for i := range count {
-		ids = append(ids, fmt.Sprintf("s%05d", i))
+		id := fmt.Sprintf("s%05d", i)
+		steps = append(steps, markStep(id))
+		inventory = append(inventory, flowdebug.Step{Workflow: "wide", ID: id})
 	}
+	held := inventory[count/2].ID
 
-	frame := debugpane.Frame{
-		Paused: true,
-		At:     flowdebug.Position{Step: ids[count/2], Kind: `task "mark"`},
-		Steps:  make([]flowdebug.Step, 0, count),
-	}
-	for _, id := range ids {
-		frame.Steps = append(frame.Steps, flowdebug.Step{ID: id})
-	}
+	frame := frameAtStep(t, layout, inventory, &v1.Workflow{Name: "wide", Steps: steps},
+		fmt.Sprintf("until %s\n", held))
 
-	text := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(),
-		debugpane.Layout{Width: caps.Width, Height: caps.Height})
+	assert.LessOrEqual(t, len(frame.Steps), debugpane.MaxPaneRows,
+		"the snapshot copied more rows than a pane can draw")
+	assert.Equal(t, count, frame.StepsTotal)
+	assert.Positive(t, frame.StepsBefore, "the window elided nothing at the front of a five-thousand-step list")
+	assert.Positive(t, frame.StepsAfter, "the window elided nothing at the tail")
+
+	text := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
 
 	lines := strings.Count(text, "\n")
 	assert.Less(t, lines, 40, "five thousand steps filled the screen rather than a pane")
@@ -395,7 +464,46 @@ func TestAHugeStepListTruncatesLegibly(t *testing.T) {
 
 	// And the window is centred on where the run is held, which is the whole
 	// reason it is a window rather than a head or a tail.
-	assert.Contains(t, text, ids[count/2], "the paused step was not in the window drawn around it")
+	assert.Contains(t, text, held, "the paused step was not in the window drawn around it")
+}
+
+// frameAtStep runs a workflow under a script and returns the frame at the last
+// stop it reached.
+func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.Step, workflow *v1.Workflow, script string) debugpane.Frame {
+	t.Helper()
+
+	var (
+		last  debugpane.Frame
+		found bool
+	)
+
+	var session *flowdebug.Session
+
+	session, err := flowdebug.New(flowdebug.Options{
+		In:    strings.NewReader(script),
+		Out:   &strings.Builder{},
+		Steps: inventory,
+		Emit: func(_ string, tone flowdebug.Tone) {
+			if tone != flowdebug.ToneBreak {
+				return
+			}
+			if frame, paused := debugpane.Snapshot(t.Context(), session, layout); paused {
+				last, found = frame, true
+			}
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+
+	_, _ = v1.Run(ctx, workflow)
+
+	require.True(t, found, "the run never stopped, so there is no frame to assert about")
+
+	return last
 }
 
 // TestAnUnmeasurableStreamStillDrawsBoundedPanes covers the layout a pipe
@@ -469,6 +577,8 @@ func TestATerminalNarrowerThanAPaneHeadingStillDraws(t *testing.T) {
 
 // frameAtAStop holds a run at one step and snapshots the frame there.
 func frameAtAStop(t *testing.T, scope *v1.Scope, step string) debugpane.Frame {
+	layout := debugpane.Layout{Width: 80, Height: 24}
+
 	t.Helper()
 
 	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &strings.Builder{}})
@@ -481,7 +591,7 @@ func frameAtAStop(t *testing.T, scope *v1.Scope, step string) debugpane.Frame {
 	_, err = session.WaitForPause(t.Context())
 	require.NoError(t, err)
 
-	frame, paused := debugpane.Snapshot(t.Context(), session)
+	frame, paused := debugpane.Snapshot(t.Context(), session, layout)
 	require.True(t, paused)
 
 	require.NoError(t, session.Control(t.Context(), "continue"))

@@ -75,6 +75,37 @@ func TaskStepRefFromContext(ctx context.Context) (auth.StepRef, bool) {
 	return runtime.Step, true
 }
 
+// TaskWorkflowFromContext reports which workflow's steps are running on this
+// context, when the engine recorded a runtime position on it.
+//
+// The same value [TaskStepRefFromContext] carries in its Workflow field, read
+// without that function's requirement that a *step* has been stamped too. The
+// two callers differ in when they ask: a task asks from inside a step, where
+// both halves are set, and a step *boundary* asks before the node's own stamp
+// exists — [runNodes] builds that context for the node's work and hands the
+// enclosing one to the debugger seam. A boundary that used the full reference
+// would therefore be told nothing at all.
+//
+// What makes it worth reading is [runCall], which moves the position across a
+// call before the callee's steps are stamped, "so a consumer of the runtime
+// position [cannot confuse] equal step ids in two different workflow files"
+// (eval.go:1804-1812). A caller and a callee may both declare `build`; this is
+// how they are told apart, and it is the engine's own answer rather than a
+// second one derived from where the steps were written.
+//
+// It reports ("", false) where nothing installed a [TaskRuntime] — an embedder
+// driving [Run] directly, and most tests. That is the honest answer and callers
+// must have one: the position is a fact the run reports, not one they can
+// require.
+func TaskWorkflowFromContext(ctx context.Context) (string, bool) {
+	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
+	if !ok || runtime.Step.Workflow == "" {
+		return "", false
+	}
+
+	return runtime.Step.Workflow, true
+}
+
 // TaskStepFromContext reports only the id from [TaskStepRefFromContext].
 // Callers that need to distinguish steps in different workflows must use the
 // full reference instead.

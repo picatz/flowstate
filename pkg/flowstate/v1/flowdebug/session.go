@@ -163,8 +163,9 @@ type Options struct {
 	// In, and In is then not read at all. See [Console].
 	Console Console
 
-	// Steps are the ids this run may reach, for completing `break` and
-	// `until` before the run has been anywhere.
+	// Steps are the steps this run may reach, for completing `break` and
+	// `until` before the run has been anywhere, and for the list
+	// [Session.Steps] answers.
 	//
 	// Optional, and a session with none still completes over the steps it has
 	// watched go past — see [Session.reachableSteps]. It is a caller's answer
@@ -173,10 +174,17 @@ type Options struct {
 	// workflow: `flow run local --debug` has the specification in hand, and an
 	// embedder with only the seam honestly does not.
 	//
-	// Unbounded here, deliberately: these are ids the caller already holds a
+	// Unbounded here, deliberately: these are steps the caller already holds a
 	// whole workflow's worth of, so storing them costs nothing new. What is
-	// bounded is the *answer*, in [Session.Complete].
-	Steps []string
+	// bounded is the *answer* — in [Session.Complete], and in the window
+	// [Session.Steps] copies.
+	//
+	// Each entry names the workflow that declares it as well as its id, because
+	// an id is not an identity across a `call:`: a caller and a callee may both
+	// declare `build` (`eval.go:1804-1812`), and a flattened inventory of the
+	// two holds two rows nothing can tell apart. [Step.State] is ignored here —
+	// nothing has happened to any of them yet.
+	Steps []Step
 
 	// Controlled says this session is driven by [Session.Control] as well as,
 	// or instead of, by lines of text.
@@ -387,14 +395,26 @@ type Session struct {
 	// watched *do* something, and a separate state map would be a second thing
 	// to bound, a second thing to truncate, and a second place for the two to
 	// disagree about which ids the run reached.
-	steps []string
+	steps []Step
 	seen  map[string]StepState
 
 	// seenOrder is the same ids in arrival order, for a caller that named no
 	// steps: a map has none, and a step list in map order is a different list
 	// every time it is drawn. Held under the same bound as seen — an id seen
-	// refuses is one this never hears about.
-	seenOrder []string
+	// refuses is one this never hears about. Its entries carry no workflow,
+	// because nothing that reaches [Session.sawStep] knows one.
+	seenOrder []Step
+
+	// sharedIDs are the ids more than one workflow in steps declares, and
+	// sharedCount how many rows carry one.
+	//
+	// Computed once in [New] because steps is a caller's answer and does not
+	// change. They are what makes [Session.Steps] fail closed on an outcome
+	// nothing can attribute: [v1.RunObserver] hands over bare ids, so a
+	// `StepFinished("build")` across a `call:` boundary names two rows and
+	// belongs to one.
+	sharedIDs   map[string]struct{}
+	sharedCount int
 
 	// seenShort reports that seen refused an id it had not already got,
 	// which makes it a *prefix* of the run rather than the run. Completion
@@ -467,6 +487,10 @@ type promptSubject struct {
 	step string
 	kind string
 
+	// workflow is which workflow's steps those are — see [Position.Workflow].
+	// Empty at an autopsy, and empty on a run carrying no runtime position.
+	workflow string
+
 	// redactText and redactValue are the withholding that was in force when
 	// this pause began, captured with the scope rather than read when an
 	// answer is returned.
@@ -497,6 +521,7 @@ func New(opts Options) (*Session, error) {
 		done:        make(chan struct{}),
 		steps:       slices.Clone(opts.Steps),
 		seen:        map[string]StepState{},
+		sharedIDs:   sharedStepIDs(opts.Steps),
 
 		controlled:   opts.Controlled,
 		control:      make(chan controlRequest),
@@ -529,7 +554,57 @@ func New(opts Options) (*Session, error) {
 		s.mode = modeRun
 	}
 
+	for _, step := range s.steps {
+		if _, shared := s.sharedIDs[step.ID]; shared {
+			s.sharedCount++
+		}
+	}
+
 	return s, nil
+}
+
+// sharedStepIDs are the ids more than one *workflow* in an inventory declares.
+//
+// By workflow rather than by row, which is the whole distinction. A workflow
+// that declares one `build` inside a `for_each` body and another at the top
+// level has two rows a run reaches separately, and a session can still
+// attribute outcomes to them because both are that workflow's steps — the
+// engine's own scope isolation is per call, not per row (`eval.go:1799`,
+// `CallScope`). Two `build`s in two workflows are the pair
+// [v1.RunObserver]'s bare ids cannot tell apart.
+//
+// An unnamed workflow groups with every other unnamed one, and that is a stated
+// limit rather than an oversight. It means an inventory that names no workflow
+// at all — a caller that did not say — reports nothing shared, which is right:
+// there is no evidence of a second declaring workflow and blanking every
+// ordinary duplicate id on a guess would be worse than the disease. It also
+// means two workflows that both omit `name:` are read as one, so an id they
+// share is attributed as if it were one workflow's. A workflow with no name is
+// already outside what any of this can identify — `runCall` names the callee in
+// the run's own position (`eval.go:1811`) and would name it "" too — so the
+// honest thing is to say so here rather than to invent an identity for it.
+//
+// The earlier draft skipped unnamed entries entirely. That did nothing for the
+// all-unnamed case it was written for (they group under one key either way) and
+// took fail-closed *away* from the mixed case, where a named caller and an
+// unnamed callee genuinely are two workflows.
+func sharedStepIDs(steps []Step) map[string]struct{} {
+	declaring := make(map[string]map[string]struct{}, len(steps))
+	for _, step := range steps {
+		if declaring[step.ID] == nil {
+			declaring[step.ID] = map[string]struct{}{}
+		}
+		declaring[step.ID][step.Workflow] = struct{}{}
+	}
+
+	shared := map[string]struct{}{}
+	for id, workflows := range declaring {
+		if len(workflows) > 1 {
+			shared[id] = struct{}{}
+		}
+	}
+
+	return shared
 }
 
 // Script returns the commands this session accepted, in order. Feeding them
@@ -595,7 +670,18 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	// own goroutine answers against the scope the run is actually held in.
 	// Cleared on the way out: a session that kept the last scope alive would
 	// answer questions about a position the run has left.
-	s.prompting(promptSubject{scope: scope, step: node.GetId(), kind: NodeKind(node)})
+	// The workflow whose steps are running here, taken from where the engine
+	// records it rather than from where the step was written: `runCall` moves
+	// the runtime position across a call so that a consumer cannot "confus[e]
+	// equal step ids in two different workflow files" (`eval.go:1804-1812`),
+	// and a debugger holding a run inside a callee is exactly that consumer.
+	// Empty where nothing installed a runtime position, which a reader must
+	// treat as unsaid — see [Position.Workflow].
+	workflow, _ := v1.TaskWorkflowFromContext(ctx)
+
+	s.prompting(promptSubject{
+		scope: scope, step: node.GetId(), kind: NodeKind(node), workflow: workflow,
+	})
 	defer s.prompting(promptSubject{})
 
 	s.announce(node)
@@ -1334,7 +1420,9 @@ func (s *Session) sawStep(id string) {
 		return
 	}
 	s.seen[id] = StepPending
-	s.seenOrder = append(s.seenOrder, id)
+	// No workflow: this seam is handed a bare id and nothing else, which is
+	// exactly why a caller that holds the file is asked for one.
+	s.seenOrder = append(s.seenOrder, Step{ID: id})
 }
 
 // noteStep records what a step was last watched doing.

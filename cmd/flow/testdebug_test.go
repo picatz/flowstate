@@ -73,7 +73,12 @@ steps:
 func TestTheStepInventoryReachesIntoACall(t *testing.T) {
 	t.Parallel()
 
-	ids := workflowStepIDs(callingFixture(t))
+	steps := workflowStepList(callingFixture(t))
+
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.ID)
+	}
 
 	assert.Contains(t, ids, "the_call", "the calling step itself")
 	assert.Contains(t, ids, "inside_the_callee", "and the steps it runs")
@@ -84,6 +89,43 @@ func TestTheStepInventoryReachesIntoACall(t *testing.T) {
 	// The caller's own steps are still all there: descending must add to the
 	// inventory rather than replace it.
 	assert.Subset(t, ids, []string{"before", "the_call", "after"})
+}
+
+// TestTheStepInventoryNamesTheWorkflowThatDeclaresEachStep is what makes the
+// flattened list above safe to draw as rows.
+//
+// `runCall` moves the run's position across a call because "a callee's step ids
+// belong to the callee, not to its caller" (`eval.go:1804-1812`). An inventory
+// that walks into a callee and keeps only bare ids re-creates exactly the
+// confusion that move prevents: two rows called `build`, and a step list that
+// points at whichever came first (Codex, #1182).
+//
+// Asserted through the real parser and a real `call:` for [callingFixture]'s
+// own reason — a `*v1.Workflow` assembled in Go would prove the walk carries a
+// name and say nothing about whether the compiled callee has one.
+func TestTheStepInventoryNamesTheWorkflowThatDeclaresEachStep(t *testing.T) {
+	t.Parallel()
+
+	steps := workflowStepList(callingFixture(t))
+	require.NotEmpty(t, steps, "the fixture produced no inventory, so nothing below is asserted")
+
+	declaring := map[string]string{}
+	for _, step := range steps {
+		declaring[step.ID] = step.Workflow
+	}
+
+	assert.Equal(t, "caller", declaring["before"], "a caller's own step")
+	assert.Equal(t, "caller", declaring["the_call"], "the calling step itself, which is the caller's")
+	assert.Equal(t, "callee", declaring["inside_the_callee"],
+		"a callee's step was attributed to the workflow that called it")
+	assert.Equal(t, "callee", declaring["deep_in_the_callee"],
+		"including one nested inside the callee's own loop")
+
+	// The negative direction: nothing in the inventory is left unattributed,
+	// because a row carrying no workflow is a row a step list cannot place.
+	for _, step := range steps {
+		assert.NotEmpty(t, step.Workflow, "%s carries no declaring workflow", step.ID)
+	}
 }
 
 // TestTheStepInventoryStopsAtTheEnginesOwnCallDepth pins the bound to the
