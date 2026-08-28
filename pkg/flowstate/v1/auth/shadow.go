@@ -34,9 +34,18 @@ type UnreachableIssuer struct {
 	Name  string
 
 	// ShadowedByIndex and ShadowedByName identify the entry that admits
-	// everything this one would. It is the first such entry in policy order,
-	// which is a stable choice and no longer a claim about which entry wins:
-	// under the current contract neither of them wins.
+	// everything this one would. It may sit either side of this entry in the
+	// file: it is the first such entry in policy order, which is a stable
+	// choice and not a claim about which entry wins, because under the current
+	// contract neither of them does.
+	//
+	// When two entries cover each other — identical rules, or rules that
+	// differ only in ways admission cannot see — both are dead, and both are
+	// reported, each naming the other. That is the honest reading of a
+	// contract where neither can ever admit anybody: reporting only one of
+	// them would tell an operator to fix the entry that is no more broken than
+	// its twin, and leave a policy that still refuses every caller after the
+	// fix. See [Policy.UnreachableIssuers].
 	ShadowedByIndex int
 	ShadowedByName  string
 }
@@ -67,10 +76,16 @@ func (u UnreachableIssuer) String() string {
 	)
 }
 
-// UnreachableIssuers reports every entry of [Policy.Issuers] that an earlier
-// entry makes unreachable, in policy order, at most one finding per entry
-// (naming the first entry that shadows it, which is a stable choice rather than
-// a claim about precedence — see [UnreachableIssuer]).
+// UnreachableIssuers reports every entry of [Policy.Issuers] that another entry
+// makes unreachable, in policy order, at most one finding per entry (naming the
+// first entry that shadows it, which is a stable choice rather than a claim
+// about precedence — see [UnreachableIssuer]).
+//
+// "Another entry" is either side of it in the file. Every pair is asked in both
+// directions, because the position of an entry no longer decides anything: a
+// broad entry written after a narrow one kills it exactly as thoroughly as one
+// written before it. Two entries that cover each other are both dead and both
+// reported.
 //
 // It is a lint and never a refusal: [Policy.Validate] does not call it, and a
 // policy with findings loads and serves exactly as before. Two reasons, and
@@ -99,32 +114,34 @@ func (u UnreachableIssuer) String() string {
 //
 // # What counts as unreachable
 //
-// An earlier entry shadows a later one only when the earlier one admits every
-// caller the later one could — a containment claim, not a similarity heuristic.
-// Every condition [TrustedIssuer.admits] checks (for kind: oidc) or
+// One entry shadows another only when it admits every caller the other could —
+// a containment claim, not a similarity heuristic. The two are called the broad
+// and the narrow entry below, which is about what they admit and never about
+// where they sit: the same test is applied to each pair both ways round. Every
+// condition [TrustedIssuer.admits] checks (for kind: oidc) or
 // [TrustedIssuer.admitsPeer] plus [MTLSVerifier.VerifyPeer]'s chain and subject
-// selection (for kind: mtls) has to be at least as permissive on the earlier
+// selection (for kind: mtls) has to be at least as permissive on the broad
 // entry:
 //
 //   - the same kind, since an mtls entry and an oidc entry are reached by
 //     different verifiers and can never compete;
 //   - for kind: oidc, the same Issuer string (the verifier groups candidates by
-//     it, exact-match), audiences that cover the later entry's, an algorithm
-//     allowlist that covers the later entry's, and a MaxTokenAge at least as
-//     permissive (unset, or no smaller than the later entry's — note that an
-//     unset MaxTokenAge on the later entry is the widest case, so an earlier
-//     entry that bounds age never shadows it);
+//     it, exact-match), audiences that cover the narrow entry's, an algorithm
+//     allowlist that covers the narrow entry's, and a MaxTokenAge at least as
+//     permissive (unset, or no smaller than the narrow entry's — note that an
+//     unset MaxTokenAge is the widest case, so an entry that bounds age never
+//     shadows one that does not);
 //   - for kind: mtls, the same ClientCAFile path — [MTLSVerifier.VerifyPeer]
 //     selects candidates by which entry's CA pool the verified chain
 //     intersects, not by Issuer, and an identical path in one process is an
 //     identical pool — and the same SubjectFrom, because a certificate that
-//     carries no SAN of the earlier entry's kind fails that entry entirely;
-//   - claim rules that are no narrower, in both directions the rule can point:
-//     for every rule the earlier entry requires, the later entry has a rule on
+//     carries no SAN of an entry's kind fails that entry entirely;
+//   - claim rules that are no narrower, in both directions a rule can point:
+//     for every rule the broad entry requires, the narrow entry has a rule on
 //     the same claim whose AnyOf is a subset *and* whose NoneOf is a superset.
-//     A claim the earlier entry does not constrain at all is the widest case
-//     and covers any rule the later entry has on it; a claim the later entry
-//     constrains and the earlier one does not is the later entry being
+//     A claim the broad entry does not constrain at all is the widest case and
+//     covers any rule the narrow entry has on it; a claim the narrow entry
+//     constrains and the broad one does not is the narrow entry being
 //     narrower, which is exactly the case being detected. See
 //     [claimRulesCover], where the NoneOf half is argued — it is the direction
 //     that makes tiered entries provably disjoint, and getting it backwards
@@ -172,31 +189,48 @@ func (u UnreachableIssuer) String() string {
 func (p Policy) UnreachableIssuers() []UnreachableIssuer {
 	var findings []UnreachableIssuer
 
-	// Entries are compared only against the earlier entries they could
-	// possibly compete with: shadowing requires the same kind and the same
-	// issuer (or, for kind: mtls, the same CA file), so entries keyed
-	// differently can be skipped without comparing them at all. That keeps a
-	// policy naming many distinct issuers linear rather than quadratic in the
-	// number of entries. Entries for one issuer are still compared pairwise —
-	// they are exactly the entries this diagnostic exists to compare, a
-	// policy's own operator writes them, and a handful per issuer is what
-	// "several entries may name one issuer" means.
+	// Entries are compared only against the entries they could possibly
+	// compete with: shadowing requires the same kind and the same issuer (or,
+	// for kind: mtls, the same CA file), so entries keyed differently can be
+	// skipped without comparing them at all. That keeps a policy naming many
+	// distinct issuers linear rather than quadratic in the number of entries.
+	// Entries for one issuer are still compared pairwise — they are exactly
+	// the entries this diagnostic exists to compare, a policy's own operator
+	// writes them, and a handful per issuer is what "several entries may name
+	// one issuer" means.
+	//
+	// The groups are built in full before anything is compared, because both
+	// directions of every pair have to be asked. Under the precedence contract
+	// this replaced, only an *earlier* entry could starve a later one, so
+	// walking the entries once and comparing each against what came before it
+	// was the whole relation. Order decides nothing now: a broad entry written
+	// *after* a narrow one makes the narrow one just as dead, since every
+	// credential the narrow entry admits matches both and is refused. Asking
+	// one direction would have gone on silently missing exactly the
+	// narrow-then-broad arrangement the old advice told operators to write.
 	groups := make(map[string][]int, len(p.Issuers))
 	for index, issuer := range p.Issuers {
 		key := issuer.shadowKey()
-		for _, earlier := range groups[key] {
-			if !p.Issuers[earlier].shadows(p.Issuers[index]) {
+		groups[key] = append(groups[key], index)
+	}
+
+	for index, issuer := range p.Issuers {
+		// The first other entry in policy order that covers this one, which is
+		// a stable choice rather than a claim about which entry wins — neither
+		// does. One finding per dead entry keeps the output one line per thing
+		// an operator has to fix.
+		for _, other := range groups[issuer.shadowKey()] {
+			if other == index || !p.Issuers[other].shadows(issuer) {
 				continue
 			}
 			findings = append(findings, UnreachableIssuer{
 				Index:           index,
 				Name:            issuer.Name,
-				ShadowedByIndex: earlier,
-				ShadowedByName:  p.Issuers[earlier].Name,
+				ShadowedByIndex: other,
+				ShadowedByName:  p.Issuers[other].Name,
 			})
 			break
 		}
-		groups[key] = append(groups[key], index)
 	}
 
 	return findings
@@ -224,51 +258,53 @@ func (t TrustedIssuer) shadowKey() string {
 	}
 }
 
-// shadows reports whether every caller the later entry admits, t admits too —
-// which makes the later entry unreachable, since each of those callers now
+// shadows reports whether every caller the other entry admits, t admits too —
+// which makes that other entry unreachable, since each of those callers now
 // matches two entries and is refused rather than attributed to either.
 //
-// The relation is directional but the consequence is not: t is called the
-// earlier entry only because that is the order [Policy.UnreachableIssuers]
-// walks in, and which of the pair a report blames is a reporting choice rather
-// than a claim about what happens at verification time.
+// The relation is directional and its consequence is not, which is why
+// [Policy.UnreachableIssuers] asks it of every pair both ways round. Neither
+// argument is "the earlier one": nothing here reads a position, and which of a
+// pair a report blames is a reporting choice rather than a claim about what
+// happens at verification time. Both can hold at once, and then both entries
+// are dead.
 //
 // Each check below is the containment form of one check in
 // [TrustedIssuer.admits]; see [Policy.UnreachableIssuers] for the reasoning and
 // for the shapes deliberately left undetected. TestShadowsMirrorsAdmits proves
 // the two agree by running admits itself, and TestTrustedIssuerFieldsAreAccountedFor
 // fails when a field is added to [TrustedIssuer] without a decision here.
-func (t TrustedIssuer) shadows(later TrustedIssuer) bool {
-	if t.kind() != later.kind() {
+func (t TrustedIssuer) shadows(narrow TrustedIssuer) bool {
+	if t.kind() != narrow.kind() {
 		return false
 	}
 
 	switch t.kind() {
 	case IssuerKindOIDC:
-		if t.Issuer != later.Issuer {
+		if t.Issuer != narrow.Issuer {
 			return false
 		}
-		if !covers(t.Audiences, later.Audiences) {
+		if !covers(t.Audiences, narrow.Audiences) {
 			return false
 		}
-		if !covers(t.algorithms(), later.algorithms()) {
+		if !covers(t.algorithms(), narrow.algorithms()) {
 			return false
 		}
-		if !ageIsAtLeastAsPermissive(t.MaxTokenAge, later.MaxTokenAge) {
+		if !ageIsAtLeastAsPermissive(t.MaxTokenAge, narrow.MaxTokenAge) {
 			return false
 		}
 	case IssuerKindMTLS:
-		if t.ClientCAFile == "" || t.ClientCAFile != later.ClientCAFile {
+		if t.ClientCAFile == "" || t.ClientCAFile != narrow.ClientCAFile {
 			return false
 		}
-		if t.SubjectFrom != later.SubjectFrom {
+		if t.SubjectFrom != narrow.SubjectFrom {
 			return false
 		}
 	default:
 		return false
 	}
 
-	return claimRulesCover(t.Require, later.Require)
+	return claimRulesCover(t.Require, narrow.Require)
 }
 
 // covers reports whether every element of narrow appears in broad, and that

@@ -138,15 +138,17 @@ func TestUnreachableIssuersReportsShadowedEntry(t *testing.T) {
 }
 
 // TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller is that precision
-// as a policy rather than as a string. A rule on "ref" sits beside a
-// repository-wide entry, and the unreachable third entry is reported against
-// the repository-wide one — the only one that covers all of it. A main-branch
-// caller matches the "ref" entry too, so the pair a finding names is never the
-// whole account of who else takes those callers.
+// as a policy rather than as a string, and it is also where the traversal being
+// order-free is visible: an entry with no rules at all sits *between* a
+// ref-pinned entry and a repository-pinned one, and kills both — the one above
+// it and the one below it — while a report that only ever looked backwards saw
+// just the second.
 //
-// The live half is what makes that concrete, and it changed with the contract:
+// A finding names one covering entry, never all of them, which is the precision
+// the string half pins: a main-branch caller here matches all three entries at
+// once. The live half makes that concrete, and it changed with the contract —
 // such a caller used to be admitted by the first entry with its role, and is
-// now refused by all three at once.
+// now refused outright.
 func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
@@ -163,11 +165,16 @@ func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 		entry("repo-scoped", "admin", auth.RequireClaim("repository", "picatz/flowstate")),
 	}}
 
+	// Two dead entries, not one: "any-repo-caller" constrains nothing, so it
+	// covers the ref-pinned entry above it and the repository-pinned entry
+	// below it alike. Only the unconstrained entry survives, and it is the one
+	// no finding names as dead.
 	findings := policy.UnreachableIssuers()
-	require.Len(t, findings, 1)
-	require.Equal(t, 2, findings[0].Index)
-	require.Equal(t, "any-repo-caller", findings[0].ShadowedByName,
-		"the first entry admits only some of the dead entry's callers, so it is not the one that proves it dead")
+	require.Len(t, findings, 2)
+	require.Equal(t, []auth.UnreachableIssuer{
+		{Index: 0, Name: "main-branch", ShadowedByIndex: 1, ShadowedByName: "any-repo-caller"},
+		{Index: 2, Name: "repo-scoped", ShadowedByIndex: 1, ShadowedByName: "any-repo-caller"},
+	}, findings, "the entry that covers the other two is not itself covered by either of them")
 
 	// A token for the dead entry that the *first* entry also takes: the reason
 	// the message does not attribute every caller to the entry it names. The
@@ -227,27 +234,31 @@ func TestUnreachableIssuersSilentOnDisjointEntries(t *testing.T) {
 
 // TestUnreachableIssuersSilentOnAnOverlapItCannotProve is the honest limit,
 // stated as a test so that reading a clean report never means "no ambiguity is
-// possible". The narrow entry does not shadow the broad one — plenty of the
-// broad entry's callers are outside it — so nothing is reported, and a token
-// satisfying both is still refused at verification time.
+// possible".
 //
-// This is the policy the old ordering advice produced, and its two halves are
-// the whole reason the load-time lint is not the guarantee: silence here, a
-// refusal there.
+// The shape has to be a *partial* overlap, and getting that right is the point
+// of the test. One entry pins the branch, the other pins the repository, and
+// neither contains the other: each admits callers the other refuses. Nothing is
+// reported, because neither entry is dead — and a token in the middle, matching
+// both, is still refused at verification time.
+//
+// This test previously used a narrow entry beside a broad one that covered it,
+// which is not this limit at all: that is provable containment, and once the
+// traversal started asking both directions the lint reported it, correctly. A
+// containment pair is [TestUnreachableIssuersReportsShadowedEntry]'s subject;
+// what stays invisible here is two entries that merely intersect. #1192 tracks
+// whether pairwise intersection is worth reporting at all.
 func TestUnreachableIssuersSilentOnAnOverlapItCannotProve(t *testing.T) {
 	entries := []auth.TrustedIssuer{
 		{
-			Name:      "ci-main-only",
+			Name:      "any-repo-on-main",
 			Audiences: []string{"flowstate"},
-			Require: []auth.ClaimRule{
-				auth.RequireClaim("repository", "picatz/flowstate"),
-				auth.RequireClaim("ref", "refs/heads/main"),
-			},
+			Require:   []auth.ClaimRule{auth.RequireClaim("ref", "refs/heads/main")},
 			Role:      "deployer",
 			Namespace: "acme",
 		},
 		{
-			Name:      "ci-any-branch",
+			Name:      "one-repo-any-branch",
 			Audiences: []string{"flowstate"},
 			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 			Role:      "viewer",
@@ -261,7 +272,7 @@ func TestUnreachableIssuersSilentOnAnOverlapItCannotProve(t *testing.T) {
 	}
 	require.NoError(t, atRest.Validate())
 	require.Empty(t, atRest.UnreachableIssuers(),
-		"the narrow entry does not cover the broad one, so no entry is provably dead")
+		"neither entry contains the other, so neither is provably dead in either direction")
 
 	issuer := newTestIssuer(t)
 	live := auth.Policy{Issuers: slices.Clone(entries)}
@@ -271,22 +282,27 @@ func TestUnreachableIssuersSilentOnAnOverlapItCannotProve(t *testing.T) {
 	verifier, err := auth.NewOIDCVerifier(live, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
-	// A main-branch token satisfies both entries: this is what the lint cannot
-	// see and the verifier refuses.
-	_, err = verifier.Verify(context.Background(), issuer.MintToken(
-		map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/main"},
-		authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
-	))
+	verify := func(claims map[string]any) (auth.Principal, error) {
+		return verifier.Verify(context.Background(), issuer.MintToken(
+			claims, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
+		))
+	}
+
+	// The intersection: this repository, on main. It satisfies both entries,
+	// which is what the lint cannot see and the verifier refuses.
+	_, err = verify(map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/main"})
 	require.ErrorIs(t, err, auth.ErrAmbiguousIdentity)
 
-	// And a token only the broad entry takes still authenticates, which is what
-	// makes the refusal above about the overlap rather than about the policy.
-	principal, err := verifier.Verify(context.Background(), issuer.MintToken(
-		map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/topic"},
-		authtest.WithSubject("runner"), authtest.WithAudience("flowstate"),
-	))
+	// And each entry's own callers still authenticate, one on each side of the
+	// intersection. Without these the silence above could be a policy that
+	// admits nobody, which would make the whole test vacuous.
+	principal, err := verify(map[string]any{"repository": "somebody/else", "ref": "refs/heads/main"})
 	require.NoError(t, err)
-	require.Equal(t, "ci-any-branch", principal.IssuerName)
+	require.Equal(t, "any-repo-on-main", principal.IssuerName)
+
+	principal, err = verify(map[string]any{"repository": "picatz/flowstate", "ref": "refs/heads/topic"})
+	require.NoError(t, err)
+	require.Equal(t, "one-repo-any-branch", principal.IssuerName)
 }
 
 // TestUnreachableIssuersDetectsMTLSShadowing covers the other kind: mtls
@@ -357,24 +373,6 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 		why     string
 		issuers []auth.TrustedIssuer
 	}{
-		{
-			name: "union of two earlier entries",
-			why:  "unreachable, but only two entries taken together prove it; pairs are all this compares",
-			issuers: []auth.TrustedIssuer{
-				{
-					Name: "main", Issuer: issuerURL, Audiences: []string{"flowstate"}, Namespace: "acme",
-					Require: []auth.ClaimRule{auth.RequireClaim("ref", "refs/heads/main")},
-				},
-				{
-					Name: "dev", Issuer: issuerURL, Audiences: []string{"flowstate"}, Namespace: "acme",
-					Require: []auth.ClaimRule{auth.RequireClaim("ref", "refs/heads/dev")},
-				},
-				{
-					Name: "either", Issuer: issuerURL, Audiences: []string{"flowstate"}, Namespace: "acme",
-					Require: []auth.ClaimRule{auth.RequireClaimAnyOf("ref", "refs/heads/main", "refs/heads/dev")},
-				},
-			},
-		},
 		{
 			name: "different issuers",
 			why:  "reachable: the verifier groups candidates by the exact iss value",
@@ -493,6 +491,145 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 			policy := auth.Policy{Issuers: testCase.issuers}
 			require.Emptyf(t, policy.UnreachableIssuers(), "reported a shadow it cannot prove: %s", testCase.why)
 		})
+	}
+}
+
+// TestUnreachableIssuersReportsRegardlessOfOrder is the traversal being
+// order-free, pinned over the two arrangements of one pair.
+//
+// Narrow-then-broad is the case that matters, and it is the arrangement the
+// superseded contract's own advice told operators to write ("order them
+// narrowest first"). Under precedence only an earlier entry could starve a
+// later one, so a lint that compared each entry against what came before it saw
+// nothing here — while under the current contract every caller the narrow entry
+// admits matches the broad one too and is refused, which makes the narrow entry
+// exactly as dead as it would be in the other order, and silently so.
+//
+// The finding is identical either way but for the rows, which is the property:
+// the same two entries in the other sequence are the same misconfiguration.
+func TestUnreachableIssuersReportsRegardlessOfOrder(t *testing.T) {
+	const issuerURL = "https://token.actions.githubusercontent.com"
+
+	narrow := auth.TrustedIssuer{
+		Name: "ci-main-only", Issuer: issuerURL, Audiences: []string{"flowstate"},
+		Require: []auth.ClaimRule{
+			auth.RequireClaim("repository", "picatz/flowstate"),
+			auth.RequireClaim("ref", "refs/heads/main"),
+		},
+		Role: "deployer", Namespace: "acme",
+	}
+	broad := auth.TrustedIssuer{
+		Name: "ci-any-branch", Issuer: issuerURL, Audiences: []string{"flowstate"},
+		Require: []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+		Role:    "viewer", Namespace: "acme",
+	}
+
+	for _, testCase := range []struct {
+		name    string
+		issuers []auth.TrustedIssuer
+		want    auth.UnreachableIssuer
+	}{
+		{
+			name:    "broad first",
+			issuers: []auth.TrustedIssuer{broad, narrow},
+			want: auth.UnreachableIssuer{
+				Index: 1, Name: "ci-main-only", ShadowedByIndex: 0, ShadowedByName: "ci-any-branch",
+			},
+		},
+		{
+			name:    "narrow first, which the old advice recommended",
+			issuers: []auth.TrustedIssuer{narrow, broad},
+			want: auth.UnreachableIssuer{
+				Index: 0, Name: "ci-main-only", ShadowedByIndex: 1, ShadowedByName: "ci-any-branch",
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			policy := auth.Policy{Issuers: testCase.issuers}
+			require.NoError(t, policy.Validate())
+			require.Equal(t, []auth.UnreachableIssuer{testCase.want}, policy.UnreachableIssuers())
+		})
+	}
+}
+
+// TestUnreachableIssuersReportsBothOfAMutuallyDeadPair is the reporting
+// decision for the case where containment holds in both directions.
+//
+// Two entries that cover each other are both dead: every caller either admits,
+// the other admits too, so every one of them matches two entries and is
+// refused. Naming only one would tell an operator to fix the entry that is no
+// more broken than its twin — and leave a policy that still refuses every
+// caller after the fix, since deleting or narrowing the named one is not what
+// the other one's deadness requires. So both are reported, each naming the
+// other, and [auth.UnreachableIssuer] says so at the field.
+//
+// The pair differs in role and name, which are exactly the fields admission
+// does not read: that is what makes them a *pair* rather than one entry written
+// twice, and it is the realistic way an operator arrives here.
+func TestUnreachableIssuersReportsBothOfAMutuallyDeadPair(t *testing.T) {
+	const issuerURL = "https://token.actions.githubusercontent.com"
+
+	entry := func(name, role string) auth.TrustedIssuer {
+		return auth.TrustedIssuer{
+			Name: name, Issuer: issuerURL, Audiences: []string{"flowstate"},
+			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+			Role:      role,
+			Namespace: "acme",
+		}
+	}
+
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
+		entry("ci-deploy", "deployer"),
+		entry("ci-read", "viewer"),
+	}}
+	require.NoError(t, policy.Validate(), "a mutually dead pair is still a loadable policy: this is a lint")
+
+	require.Equal(t, []auth.UnreachableIssuer{
+		{Index: 0, Name: "ci-deploy", ShadowedByIndex: 1, ShadowedByName: "ci-read"},
+		{Index: 1, Name: "ci-read", ShadowedByIndex: 0, ShadowedByName: "ci-deploy"},
+	}, policy.UnreachableIssuers(), "neither can ever admit anybody, so neither is reported as the survivor")
+}
+
+// TestUnreachableIssuersDoesNotProveAUnion is the union limit, which needs its
+// own test now that the traversal asks both directions: the shape it is about
+// is no longer one where the lint stays silent altogether.
+//
+// Three entries: main, dev, and one accepting either. The "either" entry is
+// dead — every caller it admits matches main or dev too, so all of them are
+// refused — and *nothing here reports it*, because proving it means reasoning
+// about two entries taken together and only pairs are compared. That silence is
+// the limit.
+//
+// What the same policy does report is main and dev, each of which "either"
+// covers on its own. Asserting both halves is what keeps this a test of the
+// limit rather than of the traversal: the entry the lint cannot prove dead is
+// named by no finding, while the two it can are named by one each.
+func TestUnreachableIssuersDoesNotProveAUnion(t *testing.T) {
+	const issuerURL = "https://token.actions.githubusercontent.com"
+
+	entry := func(name string, rules ...auth.ClaimRule) auth.TrustedIssuer {
+		return auth.TrustedIssuer{
+			Name: name, Issuer: issuerURL, Audiences: []string{"flowstate"},
+			Require: rules, Namespace: "acme",
+		}
+	}
+
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
+		entry("main", auth.RequireClaim("ref", "refs/heads/main")),
+		entry("dev", auth.RequireClaim("ref", "refs/heads/dev")),
+		entry("either", auth.RequireClaimAnyOf("ref", "refs/heads/main", "refs/heads/dev")),
+	}}
+	require.NoError(t, policy.Validate())
+
+	findings := policy.UnreachableIssuers()
+	require.Equal(t, []auth.UnreachableIssuer{
+		{Index: 0, Name: "main", ShadowedByIndex: 2, ShadowedByName: "either"},
+		{Index: 1, Name: "dev", ShadowedByIndex: 2, ShadowedByName: "either"},
+	}, findings, "each of the two is individually covered by the entry accepting both")
+
+	for _, finding := range findings {
+		require.NotEqual(t, 2, finding.Index,
+			"the union-dead entry is exactly what pairwise containment cannot prove, and must not be reported")
 	}
 }
 
