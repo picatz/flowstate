@@ -42,10 +42,21 @@ import (
 //     the request at the server and never read out of the payload.
 //   - when it was acquired — [SignalSender.accepted_at], the server's own
 //     clock at the moment it accepted the ask.
-//   - when it lapses — `workflow.Now` at the boundary that took the lease,
-//     plus [BoundDebugLease] of whatever was requested. The workflow clock and
-//     not the server's, because expiry is a decision workflow code makes and
-//     must make identically on every replay.
+//   - when it lapses — `workflow.Now` at the boundary that took the lease, plus
+//     [BoundDebugLease] of whatever was requested, and never past the session's
+//     own [DebugHoldDeadline]. The workflow clock and not the server's, because
+//     expiry is a decision workflow code makes and must make identically on
+//     every replay.
+//
+// # What bounds it
+//
+// Two readings of one number, because two different resources need bounding and
+// only one of them is the duration an ask names. [MaxDebugLease] is what a
+// single ask may buy; [DebugHoldDeadline] is what a whole session may, however
+// often its holder asks again. The second exists because the first bounds
+// nothing on its own: how many asks arrive is the holder's choice, and a
+// debugger renewing every nine minutes holds a production workload forever
+// while every individual lease sits politely inside the ceiling.
 //
 // # Nothing here carries run data
 //

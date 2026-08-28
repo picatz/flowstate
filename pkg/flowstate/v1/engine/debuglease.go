@@ -165,7 +165,23 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 func (e *executor) applyDebugAsks(parked bool) {
 	if !parked {
 		for _, name := range v1.DebugSignalNames() {
-			for e.takeCarriedDebugAsk(name) {
+			// Bounded for the reason the channel drain below is, and for one
+			// more of its own. How many carried asks there are is the peer's
+			// choice — every ask that reached the server before a seam is on
+			// this list — so a loop over it is one whose progress is measured in
+			// units the far side decides.
+			//
+			// And it is a loop that *writes to the list it is reading*: the
+			// put-by path appends there. Nothing reaches it from here today,
+			// because putting by is the parked answer and this is the unparked
+			// call — but "today's call graph makes it terminate" is a worse
+			// guarantee than a count, and a mutation that made a refusal put by
+			// instead turned this into a loop that never ended rather than a
+			// test that failed. A hang is the one failure a test cannot report.
+			for range v1.MaxDebugAsksPerBoundary {
+				if !e.takeCarriedDebugAsk(name) {
+					break
+				}
 			}
 		}
 	}
