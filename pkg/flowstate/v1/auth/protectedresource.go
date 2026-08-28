@@ -621,7 +621,7 @@ func validateResourceURI(raw string) (*url.URL, error) {
 // Several entries may share one Issuer with different Audiences (the same
 // shape [Policy.Issuers]'s own doc describes for splitting one platform into
 // several roles), so this is "any entry accepts it", matching how
-// [TrustedIssuer.admits] is tried in order until one succeeds.
+// [OIDCVerifier.Verify] asks every candidate entry rather than only one.
 //
 // kind: mtls entries are skipped — by [bearerIssuers], which is where that
 // filter is written down for every caller that only asks about the policy:

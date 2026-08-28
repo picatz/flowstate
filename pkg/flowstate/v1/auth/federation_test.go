@@ -36,8 +36,9 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 	policy := auth.Policy{
 		Issuers: []auth.TrustedIssuer{
 			// A CI provider grants a privileged role only to the main branch of
-			// one repository. Ordering matters: this entry is narrower than the
-			// one that follows, so it is listed first.
+			// one repository. Order does not matter; disjointness does — the
+			// entry below excludes exactly what this one requires, so no token
+			// satisfies both.
 			{
 				Name:      "ci-main",
 				Issuer:    actions.URL(),
@@ -57,6 +58,7 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 				Audiences: []string{"flowstate"},
 				Require: []auth.ClaimRule{
 					auth.RequireClaim("repository", "picatz/flowstate"),
+					auth.RequireClaimNoneOf("ref", "refs/heads/main"),
 				},
 				Role: "reader",
 			},
@@ -113,7 +115,7 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 			},
 		},
 		{
-			name: "CI token from another branch falls through to the lesser role",
+			name: "CI token from another branch reaches the lesser-role entry",
 			token: func(t *testing.T) string {
 				claims := actions.Claims(authtest.WithSubject("repo:picatz/flowstate:ref:refs/heads/topic"), authtest.WithAudience("flowstate"))
 				claims["repository"] = "picatz/flowstate"
@@ -155,16 +157,15 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 				claims["ref"] = "refs/heads/main"
 				return actions.MintToken(claims)
 			},
-			// The narrow entry rejects it on age, the broader one has no age
-			// limit but does not require the ref, so it admits the caller as a
-			// reader. This is what entry ordering means, and why the age limit
-			// belongs on every entry that needs it.
-			want: auth.Principal{
-				Issuer:     actions.URL(),
-				IssuerName: "ci-branch",
-				Subject:    "repo:picatz/flowstate:ref:refs/heads/main",
-				Role:       "reader",
-			},
+			// Refused outright, and this is the case where disjoint entries are
+			// plainly better than ordered ones. Under precedence the narrow
+			// entry rejected this token on age and the broad one — which had no
+			// age limit and said nothing about the ref — admitted the same
+			// stale main-branch token as a reader, so exceeding a maximum token
+			// age was a silent *downgrade* rather than a refusal. Now the broad
+			// entry excludes the main branch, so an expired main-branch token
+			// satisfies neither and the age bound means what it says.
+			wantErr: auth.ErrTokenExpired,
 		},
 		{
 			name: "cluster token with an array audience is accepted",

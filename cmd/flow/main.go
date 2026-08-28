@@ -1705,33 +1705,35 @@ func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
 	return verifier, &policy, nil
 }
 
-// warnUnreachableIssuers reports every trust policy entry that an earlier entry
+// warnUnreachableIssuers reports every trust policy entry that another entry
 // makes unreachable, one loud start-up line each.
 //
 // A warning rather than a refusal, the same choice and for the same kind of
 // reason as [warnUnpolledTenantQueues]: a shadowed entry is a mistake often
 // enough to be worth saying and not always — an operator mid-migration may have
-// deliberately parked a narrow entry behind a broad one they are about to
+// deliberately parked a narrow entry beside a broad one they are about to
 // delete — and a server that refused to start over it would turn a lint into an
-// outage for a deployment whose authentication was working a minute ago. The
-// symptom this exists to supply is that there is no symptom: the file reads
-// correctly, every token verifies, and a workload quietly holds the broad
-// entry's namespace and role instead of the narrow entry's own. See
-// [auth.Policy.UnreachableIssuers] for what counts as unreachable and for the
-// shapes it deliberately does not report.
+// outage for a deployment whose authentication was working a minute ago.
+//
+// What it buys is time. Entries for one issuer have to be disjoint, and the
+// verifier refuses a credential two of them admit; without this line that
+// refusal is discovered by a workload that cannot authenticate, at whatever
+// hour it next runs. Here it is read at start-up by the person who can still
+// edit the file. See [auth.Policy.UnreachableIssuers] for what counts as
+// unreachable and for the overlaps it deliberately does not report.
 func warnUnreachableIssuers(logger *slog.Logger, policy *auth.Policy) {
 	if policy == nil {
 		return
 	}
 	for _, finding := range policy.UnreachableIssuers() {
-		logger.Warn("a trust policy entry can never admit anybody; an entry above it admits every caller it would, "+
-			"so those callers are admitted further up the list, with some other entry's namespace and role "+
-			"rather than this entry's",
+		logger.Warn("a trust policy entry can never admit anybody; another entry admits every caller it would, "+
+			"so each of those callers matches two entries and is refused rather than admitted under either",
 			"entry", finding.Name,
 			"entry_index", finding.Index,
 			"shadowed_by", finding.ShadowedByName,
 			"shadowed_by_index", finding.ShadowedByIndex,
-			"fix", "move "+finding.Name+" above "+finding.ShadowedByName+", or narrow "+finding.ShadowedByName)
+			"fix", "narrow "+finding.ShadowedByName+" with a require rule using none_of so it no longer covers "+
+				finding.Name+"'s callers, or delete whichever entry is not wanted")
 	}
 }
 
