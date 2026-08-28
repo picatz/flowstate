@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -823,6 +824,160 @@ tests:
 		},
 		"headers": []any{map[string]any{"name": "Authorization", "value": "Bearer s3cr3t-value"}},
 	}, file.Tests[0].Inputs, "and at depth in a case's own inputs")
+}
+
+// TestARefusedValueNeverReachesALaterEvaluation is Codex's fourth P1 on #1197,
+// which is an ordering defect rather than a change to what is refused: every
+// var used to evaluate before the refusal swept the block, so an unprotectable
+// value existed long enough to be quoted by a *downstream* CEL error —
+// `index out of bounds: 12` naming a secret's length.
+//
+// "Refused into existence" has to mean it. A var is now judged the moment it
+// evaluates and before it is stored, so it never enters the activation and no
+// later expression can read it. Fails on 3a8c5485, where the digits appear.
+func TestARefusedValueNeverReachesALaterEvaluation(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  length: "${size(vars.token)}"
+  bad: "${[0][vars.length]}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused)
+
+	// Every problem the report carries, message and field only. Deliberately
+	// not `err.Error()`: that prefixes each line with the file's path, and a
+	// `t.TempDir()` path is full of random digits — the assertion below is
+	// about digits, and CLAUDE.md records the run-in-three flake that costs
+	// ("NotContains(stderr, \"42\")", #1145). The path is covered separately
+	// for the substrings that cannot occur in one.
+	messages := problemMessages(problems)
+
+	assert.Contains(t, messages, "vars.length is computed from a secret and holds an integer")
+	assert.NotContains(t, messages, strconv.Itoa(len("s3cr3t-value")),
+		"the length of the secret must appear in no diagnostic: %s", messages)
+	assert.NotContains(t, messages, "s3cr3t-value")
+	assert.NotContains(t, err.Error(), "index out of bounds",
+		"the dependent must not evaluate at all, so its error cannot exist to quote anything")
+	assert.NotContains(t, err.Error(), "vars.bad",
+		"a dependent of a refused var adds no cascade diagnostic; the root refusal stands for the chain")
+}
+
+// problemMessages joins what a refusal says, without the file path each line is
+// rendered with — so an assertion about digits is about the diagnostic rather
+// than about the random ones in a `t.TempDir()`.
+func problemMessages(problems *flowtest.Diagnostics) string {
+	var b strings.Builder
+	for _, d := range problems.Problems {
+		b.WriteString(d.Message + " " + d.Field + "\n")
+	}
+
+	return b.String()
+}
+
+// TestARefusedLiteralNeverReachesALaterEvaluation is the same ordering claim
+// on the other code path. A literal is never "evaluated", so it is in the
+// activation from the first expression onward — which means judging it in the
+// loop would be too late and it is judged before the loop begins.
+//
+// Reachable only through the backward closure: `port` is a literal integer
+// that contributes to a value `secrets:` names, so it is secret material.
+func TestARefusedLiteralNeverReachesALaterEvaluation(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  port: 8080
+  password: hunter2
+  dsn: "${'postgres://u:' + vars.password + '@h:' + string(vars.port)}"
+  bad: "${[0][vars.port]}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:DSN: "${vars.dsn}"
+`))
+	require.Error(t, err)
+
+	problems, refused := errorAsDiagnostics(t, err)
+	require.True(t, refused)
+	messages := problemMessages(problems)
+
+	assert.Contains(t, messages, "vars.port is computed from a secret and holds an integer")
+	assert.Contains(t, messages,
+		`vars.port → vars.dsn, which tests[0].secrets["env:DSN"] references`)
+	// Messages rather than the rendering, for the `t.TempDir()` digit reason
+	// the test above records.
+	assert.NotContains(t, messages, "8080",
+		"a literal source of a secret must not reach a later evaluation's error either: %s", messages)
+	assert.NotContains(t, messages, "hunter2")
+	assert.NotContains(t, err.Error(), "index out of bounds")
+}
+
+// TestAnUntaintedValuesEvaluationErrorIsStillQuoted is the positive control for
+// that fix, and the reason it is scoped to the tainted set: the eager refusal
+// must not swallow legitimate error detail. The identical misuse over vars on
+// no path to any secret still produces cel-go's own message, digits and all.
+func TestAnUntaintedValuesEvaluationErrorIsStillQuoted(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  hosts: "${['a', 'b', 'c']}"
+  length: "${size(vars.hosts)}"
+  bad: "${[0][vars.length]}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vars.bad")
+	assert.Contains(t, err.Error(), "index out of bounds: 3",
+		"an untainted value's evaluation error keeps the detail that makes it useful")
+	assert.NotContains(t, err.Error(), "computed from a secret")
+}
+
+// TestARefusedVarStillLetsAnIndependentProblemBeReported: the cascade rule
+// silences the *chain*, never the file. A second mistake somewhere else is a
+// second mistake, and an author fixing a suite one run at a time is what the
+// collecting loader exists to prevent.
+func TestARefusedVarStillLetsAnIndependentProblemBeReported(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  length: "${size(vars.token)}"
+  bad: "${[0][vars.length]}"
+  unrelated: "${steps.nope.value}"
+coverage:
+  allow_unreached:
+    orphan: ""
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), "vars.length is computed from a secret",
+		"the root refusal")
+	assert.Contains(t, err.Error(), "vars.unrelated reads `steps`",
+		"a var with its own mistake, on no path to the refused one, is still judged")
+	assert.Contains(t, err.Error(), "coverage.allow_unreached[\"orphan\"] has no reason",
+		"and so is a problem in another stanza entirely")
+	assert.NotContains(t, err.Error(), "vars.bad",
+		"only the dependents of the refused var are silent")
 }
 
 // TestATransitivelyTaintedNonStringIsRefused is where the two decisions meet:

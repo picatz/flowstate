@@ -740,6 +740,8 @@ The rules, each with the reason it exists:
 
   A tainted **string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else. Everything else is a load-time refusal naming the chain that taints it. A **number or boolean** — `${size(vars.token)}` — has nothing in it to match once a fixture has carried it into a run, and a length is a fact about a secret in its own right. A **container** leaks by shape, which survives leaf redaction completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality oracle whose answer is whether the map is empty, and clearing every string inside it changes nothing about that — so a tainted container is refused whatever its leaves are.
 
+  Each var is judged the moment it evaluates, before any var that reads it — so a value redaction cannot withhold never enters the block at all, and no later expression's error can quote it. A refused var's dependents do not evaluate and add no diagnostics of their own; the root refusal stands for the chain, while an unrelated problem elsewhere in the file is still reported.
+
   The refusal costs one respelling, and says so: keep the derived value a string and express the structure at the position that *uses* it, where a `${vars.x}` leaf resolves at any depth, inside lists, and through `defaults.inputs:`.
 
   ```yaml

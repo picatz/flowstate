@@ -52,6 +52,56 @@ import (
 // would silently hijack that meaning. A stub speaks the run's language;
 // everywhere else in the test file, `vars.` is the file's. The
 // disambiguation is pinned by TestAStubsVarsAreTheWorkflowsNotTheFiles.
+//
+// # The containment contract, whole
+//
+// Four review rounds on #1197 each found one more way a value derived from a
+// secret reaches a report, and each was answered on its own. The answers are
+// one rule, and it is written here rather than spread across four functions so
+// that a fifth review has something to check against instead of rediscovering
+// the shape:
+//
+//	A value derived from secret material is WITHHELD where it is a string, and
+//	REFUSED INTO EXISTENCE where it is anything else — because anything else
+//	carries the secret in a form redaction cannot reach: its digits, its truth,
+//	its shape.
+//
+// The table below is that sentence with its mechanisms, and every row is a
+// decision an owner made on a filed finding rather than an implementation
+// detail:
+//
+//	what                 | answer   | why, and where
+//	---------------------|----------|--------------------------------------------
+//	a tainted string     | withheld | the set matches content: whole in a witness
+//	                     |          | and the autopsy, cleared from any line that
+//	                     |          | embeds it ([withheldMaterial], run.go)
+//	a tainted non-string | refused  | nothing in a number or a boolean can be
+//	  scalar             |          | matched once a fixture carries it into a run,
+//	                     |          | and a length is a fact about a secret
+//	                     |          | ([refuseUnprotectableVar])
+//	a tainted container  | refused  | its SHAPE survives leaf redaction entirely:
+//	                     |          | `${t == 'guess' ? {} : {'x':'y'}}` answers a
+//	                     |          | question about the secret either way
+//	which vars are       | both     | the closure walks readers AND dependencies
+//	  tainted            | ways, to | to a fixed point — the source material of a
+//	                     | a fixed  | secret is secret, and a var reached backward
+//	                     | point    | is itself a source for its own readers
+//	                     |          | ([taintedVars])
+//	when a refusal fires | eagerly, | a value judged after the block evaluates has
+//	                     | per var  | already been quotable by a later expression's
+//	                     |          | error ([File.evaluateVars]'s loop)
+//	what a refused var's | nothing  | the root refusal stands for the chain, the
+//	  dependents report  |          | rule #1185 set for a refused stub's shape
+//
+// Two costs, accepted rather than discovered: a benign var that merely
+// contributed to a secret is withheld, and refused if it is not a string; and
+// the refusal is per file rather than per case, since the block is shared.
+//
+// One residual, named rather than closed: a fence inside a *structured* var
+// value does not evaluate ([checkVars] refuses it), so the respelling the
+// container refusal points at — the structure at the position that uses it,
+// with `${vars.x}` at its leaves — is the only spelling that composes. That is
+// an expressiveness gap, tracked on #1072 rather than widened in a review.
 
 // MaxVarsPerFile bounds how many vars one file may declare. A test file is
 // untrusted input (CLAUDE.md); each var is substituted into every position
@@ -353,10 +403,17 @@ func (f *File) evaluateVars(p *problems) {
 	activation := map[string]any{v1.VarsRoot: f.Vars}
 
 	resolved := make(map[string]bool, len(f.Vars))
-	for name := range f.Vars {
-		if _, computed := declared[name]; !computed {
-			resolved[name] = true
+	for _, name := range slices.Sorted(maps.Keys(f.Vars)) {
+		if _, computed := declared[name]; computed {
+			continue
 		}
+		// A literal is in the activation before anything evaluates, so it is
+		// judged before anything evaluates. There is no moment at which it
+		// exists unprotected and reachable.
+		if refuseUnprotectableVar(p, block, taint, name, f.Vars[name]) {
+			continue
+		}
+		resolved[name] = true
 	}
 
 	for _, name := range order {
@@ -379,14 +436,18 @@ func (f *File) evaluateVars(p *problems) {
 
 			continue
 		}
+		// Judged the moment it exists, and *before* it is stored — so it never
+		// enters the activation, and no later evaluation can quote it (Codex,
+		// #1197). Its dependents then skip on the guard above, which is the
+		// cascade rule this loop already follows: the root refusal stands for
+		// the chain.
+		if refuseUnprotectableVar(p, block, taint, name, value) {
+			continue
+		}
 		f.Vars[name] = value
 		resolved[name] = true
 	}
 
-	// Refused before the material is collected, because a value redaction
-	// cannot withhold is one no set can be built to hold: the refusal is the
-	// protection.
-	refuseUnprotectableVars(p, block, taint, resolved, f.Vars)
 	f.varsWithheld = withheldMaterial(p, block, declared, taint, resolved, f.Vars)
 }
 
@@ -895,9 +956,33 @@ func taintedVars(declared map[string]*varDeclaration, holding map[string]string)
 	return taint
 }
 
-// refuseUnprotectableVars refuses every tainted var holding anything but a
-// string (#1072, repair 4; three P1s from Codex on #1197, and the owner's
-// rulings on them).
+// refuseUnprotectableVar refuses one tainted var holding anything but a
+// string, and reports whether it did (#1072, repair 4; four P1s from Codex on
+// #1197, and the owner's rulings on them).
+//
+// # When, and why the timing is the fix rather than a detail
+//
+// Called the moment a value exists and before it is stored — for a literal
+// before any expression evaluates at all, for a computed var between its own
+// evaluation and its entry into the activation. Refusing afterwards, in one
+// sweep at the end, still refused the file but left the value reachable in
+// between: `length: "${size(vars.token)}"` followed by `bad:
+// "${[0][vars.length]}"` printed the secret-derived length inside cel-go's
+// `index out of bounds: <n>` before the sweep ever ran. "Refused into
+// existence" has to mean it, or the promise is only about the last diagnostic
+// rather than every one.
+//
+// The alternative — scrubbing canonical scalar renderings out of downstream
+// error text — is the substring arms race this package already declined once
+// (see [taintedVars] on why the taint follows references rather than values).
+// A number has a dozen renderings and an attacker picks the expression.
+//
+// A refused var is not marked resolved, so its dependents skip on the same
+// guard a failed evaluation uses and add no diagnostics of their own — the
+// cascade rule #1185 set for a stub whose shape is refused: a thing whose shape
+// is wrong does not have its inside judged. An *independent* problem elsewhere
+// in the file is still collected, because this reports and returns rather than
+// stopping the pass.
 //
 // # The rule, and why it is exactly this blunt
 //
@@ -940,28 +1025,26 @@ func taintedVars(declared map[string]*varDeclaration, holding map[string]string)
 // stays legal — which is what keeps a rule this blunt away from files that
 // have nothing to do with secrets.
 //
-// A var whose evaluation failed is skipped: the document is refused already,
-// and there is no value to judge. The diagnostic names the taint path, because
-// "this is derived from a secret" is a claim about a chain an author can only
-// check if they are shown it.
-func refuseUnprotectableVars(p *problems, block loc, taint varTaint, resolved map[string]bool, values map[string]any) {
-	for _, name := range taint.names() {
-		if !resolved[name] {
-			continue
-		}
-		kind, unprotectable := unprotectableValue(values[name])
-		if !unprotectable {
-			continue
-		}
-		p.report(site{at: block.field(name)},
-			"vars.%s is computed from a secret and holds %s; only a string can be withheld. A value "+
-				"derived from secret material carries it in a form redaction cannot reach — a number's "+
-				"digits, a boolean's truth, a container's shape, which survives even when every leaf "+
-				"inside it is cleared. The chain: %s. Keep the derived value a string, and express any "+
-				"structure where it is used — a case's `inputs:`, `defaults.inputs:`, a signal payload — "+
-				"where a `${vars.x}` leaf resolves at any depth",
-			name, kind, taint.path(name))
+// The diagnostic names the taint path, because "this is derived from a secret"
+// is a claim about a chain an author can only check if they are shown it.
+func refuseUnprotectableVar(p *problems, block loc, taint varTaint, name string, value any) bool {
+	if !taint.holds(name) {
+		return false
 	}
+	kind, unprotectable := unprotectableValue(value)
+	if !unprotectable {
+		return false
+	}
+	p.report(site{at: block.field(name)},
+		"vars.%s is computed from a secret and holds %s; only a string can be withheld. A value "+
+			"derived from secret material carries it in a form redaction cannot reach — a number's "+
+			"digits, a boolean's truth, a container's shape, which survives even when every leaf "+
+			"inside it is cleared. The chain: %s. Keep the derived value a string, and express any "+
+			"structure where it is used — a case's `inputs:`, `defaults.inputs:`, a signal payload — "+
+			"where a `${vars.x}` leaf resolves at any depth",
+		name, kind, taint.path(name))
+
+	return true
 }
 
 // unprotectableValue names what a value is, in the words the diagnostic uses,
