@@ -5,8 +5,6 @@ import (
 	"io/fs"
 	"maps"
 	"path/filepath"
-
-	"github.com/goccy/go-yaml"
 )
 
 // `testdefaults.yaml` (#1072, slice 3): the values every suite in one
@@ -109,7 +107,10 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 	}
 
 	var dd dirDefaults
-	if err := yaml.UnmarshalWithOptions(data, &dd, yaml.Strict()); err != nil {
+	// Through the same contained decode the suite's own bytes go through: this
+	// file is untrusted for the identical reasons, and a panic here would take
+	// the process down over a directory's shared fixture.
+	if err := decodeStrict(data, &dd); err != nil {
 		return nil, refuse(err)
 	}
 	dd.path = path

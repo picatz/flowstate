@@ -280,48 +280,141 @@ func TestAnUnpositionedProblemStillReadsAsItAlwaysHas(t *testing.T) {
 
 // TestAnInheritedValueIsRefusedWithoutBorrowingACasesPosition is the rule that
 // keeps a position honest, in the direction that is easy to get wrong: the
-// sender under test is written once in `defaults:` and reaches the case by
-// merge, so the case's own lines say nothing about it. Pointing at the case
+// `others:` under test is written once on the table entry and reaches each row
+// by merge, so the row's own lines say nothing about it. Pointing at the row
 // would underline correct text and send an author to fix it.
+//
+// A table entry is the fixture because it is the inheritance this loader still
+// judges per case. The `defaults:` block's own values — a sender, a check
+// claim — are judged where they are written now, which is the stronger answer
+// and the one #1185 landed; an entry's are not, because the row is the only
+// thing that survives expansion. That gap is filed rather than hidden: it is
+// the open thread on this PR.
 func TestAnInheritedValueIsRefusedWithoutBorrowingACasesPosition(t *testing.T) {
 	t.Parallel()
 
 	source := `
-defaults:
-  workflow: ./workflow.yaml
-  sender:
-    subject: approver@example.com
 tests:
-  - name: the case
-    signals:
-      - name: approve
-        payload: {}
+  - name: tabled
+    workflow: ./workflow.yaml
     expect:
-      ran: [a]
+      others: sometimes
+    cases:
+      - name: the row
+        expect:
+          ran: [a]
 `
 	problems, _ := refuse(t, source)
 	d := only(t, problems)
 
-	assert.Contains(t, d.Message, `test "the case" signal 1 ("approve") sender:`,
+	assert.Contains(t, d.Message, `test "tabled/the row" expect.others:`,
 		"the by-name prose is what still identifies an inherited value")
 	assert.Zero(t, d.Line,
 		"a value this document did not write at the case must not be positioned at the case, "+
 			"nor at any node enclosing it")
 	assert.Zero(t, d.Column)
-	assert.Equal(t, "the case", d.Test, "the case is still named, structurally")
+	assert.Equal(t, "tabled/the row", d.Test, "the case is still named, structurally")
 
 	// The positive direction, because an absence assertion is worth nothing
-	// until the thing could have been present: the identical mistake written
-	// on the signal itself is positioned exactly.
-	written := strings.Replace(source, "  sender:\n    subject: approver@example.com\n", "", 1)
-	written = strings.Replace(written, "        payload: {}",
-		"        sender:\n          subject: approver@example.com", 1)
+	// until the thing could have been present: the identical mistake written on
+	// the row itself is positioned exactly.
+	written := strings.Replace(source, "    expect:\n      others: sometimes\n", "", 1)
+	written = strings.Replace(written, "          ran: [a]", "          others: sometimes", 1)
 
 	problems, _ = refuse(t, written)
-	line, column := spot(t, written, "subject: approver@example.com")
+	// The value, which is what the refusal is about — the key is not what an
+	// author has to change.
+	line, column := spot(t, written, "sometimes")
 	positioned := only(t, problems)
 	assert.Equal(t, line, positioned.Line, "the same mistake, written in the case, must be positioned")
 	assert.Equal(t, column, positioned.Column)
+}
+
+// TestADefaultsSenderIsJudgedWhereItIsWritten (Codex, #1185): one identity in
+// `defaults:` is installed on every signal that omits its own, so judging it
+// only on those signals reported one mistake once per inheriting signal — and
+// against `tests[i].signals[j].sender`, a path no document holds, which cost a
+// sibling-file default its own name.
+//
+// It is judged at the block instead, which answers both halves at once: once,
+// and named after whichever file wrote it.
+func TestADefaultsSenderIsJudgedWhereItIsWritten(t *testing.T) {
+	t.Parallel()
+
+	// Two signals inherit it, so a per-signal check would report twice.
+	const suite = `
+defaults:
+  workflow: ./workflow.yaml
+tests:
+  - name: the case
+    signals:
+      - name: approve
+      - name: reject
+`
+	dir := t.TempDir()
+	sibling := filepath.Join(dir, "testdefaults.yaml")
+	writeFile(t, sibling, `
+defaults:
+  sender:
+    subject: approver@example.com
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, suite)
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err)
+	problems, refused := errors.AsType[*flowtest.Diagnostics](err)
+	require.True(t, refused)
+
+	d := only(t, problems)
+	assert.Contains(t, d.Message, "defaults.sender: names a subject or an issuer without the other")
+	assert.Equal(t, sibling, d.File, "the identity is written in the directory's file, not the suite")
+	assert.Zero(t, d.Line, "a path into another document is not a line in this one")
+
+	// Written in the suite instead: same single refusal, named and positioned
+	// here.
+	own := strings.Replace(suite, "defaults:\n  workflow: ./workflow.yaml\n",
+		"defaults:\n  workflow: ./workflow.yaml\n  sender:\n    subject: approver@example.com\n", 1)
+	second := t.TempDir()
+	path = filepath.Join(second, "workflow.test.yaml")
+	writeFile(t, path, own)
+
+	_, err = flowtest.Load(path)
+	require.Error(t, err)
+	problems, refused = errors.AsType[*flowtest.Diagnostics](err)
+	require.True(t, refused)
+
+	d = only(t, problems)
+	line, column := spot(t, own, "subject: approver@example.com")
+	assert.Equal(t, path, d.File)
+	assert.Equal(t, line, d.Line, "a default this suite wrote must be positioned in it")
+	assert.Equal(t, column, d.Column)
+
+	// And the positive control the skip must not swallow: a signal that writes
+	// its OWN malformed sender is still judged, at its own position.
+	mine := strings.Replace(own, "      - name: reject",
+		"      - name: reject\n        sender:\n          issuer: https://issuer.example.com", 1)
+	third := t.TempDir()
+	path = filepath.Join(third, "workflow.test.yaml")
+	writeFile(t, path, mine)
+
+	_, err = flowtest.Load(path)
+	require.Error(t, err)
+	problems, refused = errors.AsType[*flowtest.Diagnostics](err)
+	require.True(t, refused)
+
+	require.Equal(t, 2, problems.Total, "expected the block's own and the signal's own: %v", problems)
+	var signalProblem flowtest.Diagnostic
+	for _, problem := range problems.Problems {
+		if strings.Contains(problem.Message, `signal 2 ("reject")`) {
+			signalProblem = problem
+		}
+	}
+	require.NotZero(t, signalProblem.Line, "the signal's own sender was swallowed by the skip: %v", problems)
+	line, column = spot(t, mine, "issuer: https://issuer.example.com")
+	assert.Equal(t, line, signalProblem.Line)
+	assert.Equal(t, column, signalProblem.Column)
+	assert.Equal(t, "the case", signalProblem.Test)
 }
 
 // TestADefaultFromTheSiblingFileIsNamedAfterThatFile is the same rule one level
@@ -713,6 +806,41 @@ func TestTheProblemsAreBoundedByBytesAsWellAsByCount(t *testing.T) {
 	assert.Less(t, len(problems.Error()), 2*flowtest.MaxLoadProblemBytes,
 		"a megabyte of document must not answer with an unbounded refusal")
 	assert.Contains(t, problems.Error(), "more problems were found")
+}
+
+// TestADocumentTheDecoderCannotReadIsRefusedRatherThanFatal pins the crasher
+// `FuzzLoadSource` found in CI: goccy v1.19.2 dereferences a nil ArrayNode on a
+// sequence nested inside structs inside a sequence when the inner one is an
+// empty tagged node, so thirty-seven bytes took the process down — which for
+// `flow test` is the run and for `flow mcp` is every session that server holds.
+//
+// The corpus entry beside this package pins the input; this pins what the
+// loader now *says* about it, which the fuzz target cannot: a refusal a reader
+// can act on, in the same shape as every other refusal here.
+func TestADocumentTheDecoderCannotReadIsRefusedRatherThanFatal(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.LoadSource([]byte("tests:\n  - expect:\n      ran: !!seq\n"))
+	require.Error(t, err, "the decoder's panic was swallowed into a successful load")
+
+	problems, refused := errors.AsType[*flowtest.Diagnostics](err)
+	require.True(t, refused, "a decoder failure must arrive as this loader's own refusal: %v", err)
+
+	d := only(t, problems)
+	assert.Contains(t, d.Message, "the YAML decoder stopped on this document")
+	assert.Contains(t, d.Message, "`ran: []`",
+		"a refusal an author cannot act on is half a diagnostic")
+
+	// The sibling file goes through the same contained decode, and a panic
+	// there would be the same process for the same reason.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "defaults:\n  stubs: !!seq\n")
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n  - name: the case\n    workflow: ./workflow.yaml\n    expect:\n      ran: [a]\n")
+
+	_, err = flowtest.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "testdefaults.yaml", "the refusal must name the file that could not be read")
 }
 
 // TestAStrictKeyRefusalKeepsItsPositionAndItsCause: the decoder's own refusals

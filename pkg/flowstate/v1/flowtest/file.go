@@ -168,7 +168,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/parser"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -1152,7 +1151,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	}
 
 	var file File
-	if err := yaml.UnmarshalWithOptions(data, &file, yaml.Strict()); err != nil {
+	if err := decodeStrict(data, &file); err != nil {
 		return nil, yamlProblem(err)
 	}
 
@@ -1329,6 +1328,16 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			fmt.Sprintf("test %q expect", test.Name), test.Expect.Check, source.ownChecks, nil)
 		for j := range test.Signals {
 			signal := &test.Signals[j]
+			// The identity [mergeDefaults] installed on a signal that wrote no
+			// `sender:` is the `defaults:` block's own, judged there a moment
+			// ago — where it is addressable and where the file that wrote it is
+			// known. Judging the same identity again here would report one
+			// mistake once per inheriting signal, against a path no document
+			// holds. Compared by pointer because that is exactly what the merge
+			// installed: a signal's own sender is its own value, and is judged.
+			if file.Defaults != nil && signal.Sender != nil && signal.Sender == file.Defaults.Sender {
+				continue
+			}
 			// Checked at load, alongside every other shape check in this
 			// loop, rather than when the scripted goroutine delivers: a
 			// delivery refused there disappears the way a production
@@ -1682,6 +1691,15 @@ func checkDefaults(p *problems, d *Defaults, ownChecks int) bool {
 	}
 	if d.Sender != nil {
 		checkNoExpressions(p, site{at: base.field("sender")}, "defaults.sender", d.Sender, 0)
+		// Judged here, where it is written, rather than only on the signals
+		// that inherit it. [mergeDefaults] installs this one identity on every
+		// signal that omits its own, so checking it there alone reported one
+		// mistake once per inheriting signal — and reported it against a path
+		// no document holds, which cost the sibling file its name (Codex,
+		// #1185). This is the rule the block's own expression check has always
+		// followed: a default is refused where an author can see it, whether or
+		// not a case happens to reach it.
+		checkScriptedIdentity(p, site{at: base.field("sender")}, "defaults.sender:", d.Sender)
 	}
 	// The inherited claims here are the directory file's own list, prepended in
 	// order, so they are addressable at the same path in *that* document.
