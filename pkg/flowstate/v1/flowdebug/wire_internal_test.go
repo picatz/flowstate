@@ -484,3 +484,62 @@ func TestTheProducerCapsWhatOneScopeAnswerCarries(t *testing.T) {
 	assert.Equal(t, int32(reachable), bare.GetTotal(),
 		"the names-only answer reported the ceiling back as the size of the scope")
 }
+
+// TestTheProducerCapsWhatOneStepWindowCarries is [MaxScopeBindings]'s argument
+// on the other listing.
+//
+// [Session.Steps] hands its caller whatever window it asks for, because an
+// in-process caller pays for its own copy. A wire answer is a *message*, and
+// how many rows the inventory holds is the workload's choice — so a negative or
+// enormous limit bought an O(N) response from a caller this API explicitly
+// treats as untrusted (Codex, #1194).
+func TestTheProducerCapsWhatOneStepWindowCarries(t *testing.T) {
+	t.Parallel()
+
+	const rows = MaxStepWindow + 91
+
+	steps := make([]Step, 0, rows)
+	for i := range rows {
+		steps = append(steps, Step{Workflow: "wide", ID: fmt.Sprintf("s%05d", i)})
+	}
+
+	session, err := New(Options{Out: &strings.Builder{}, Steps: steps})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	for _, tc := range []struct {
+		name  string
+		limit int
+	}{
+		{name: "a negative limit asks for as many as the producer will carry", limit: -1},
+		{name: "a limit past the ceiling is the ceiling", limit: rows},
+		{name: "and so is one absurdly past it", limit: 1 << 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			window := session.StepWindowProto(0, tc.limit)
+
+			assert.Len(t, window.GetSteps(), MaxStepWindow,
+				"one answer carried %d rows, which is not the producer's ceiling", len(window.GetSteps()))
+
+			// The total is untouched, which is what lets a caller page for the
+			// rest rather than believe it has seen the list.
+			assert.Equal(t, int32(rows), window.GetTotal(),
+				"the ceiling was reported back as the length of the step list")
+			assert.Equal(t, int32(0), window.GetOffset())
+		})
+	}
+
+	// The other direction, so the clamp is a ceiling rather than a floor.
+	fewer := session.StepWindowProto(0, 4)
+	assert.Len(t, fewer.GetSteps(), 4, "a caller's smaller window was overridden by the producer's ceiling")
+	assert.Equal(t, int32(rows), fewer.GetTotal())
+
+	// And paging past the ceiling reaches the rows it left out, which is the
+	// property that makes a ceiling different from dropping them.
+	next := session.StepWindowProto(MaxStepWindow, 3)
+	require.Len(t, next.GetSteps(), 3)
+	assert.Equal(t, fmt.Sprintf("s%05d", MaxStepWindow), next.GetSteps()[0].GetStepId(),
+		"the page after the ceiling does not start where the first one stopped")
+}

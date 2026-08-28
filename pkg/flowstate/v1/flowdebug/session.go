@@ -125,6 +125,23 @@ const (
 	// reporting the bound back as the scope's size — the same distinction
 	// [MaxScopeNames] draws for a line somebody reads.
 	MaxScopeBindings = 500
+
+	// MaxStepWindow bounds how many rows one [Session.StepWindowProto] answer
+	// carries, whatever its caller asked for.
+	//
+	// [Session.Steps] takes its window from its caller because an in-process
+	// caller pays for its own copy; a wire answer is a *message*, and the
+	// inventory's size is the workload's choice, so a negative or enormous
+	// limit bought an O(N) response from a caller this API explicitly treats as
+	// untrusted (Codex, #1194). The same argument as [MaxScopeBindings], on the
+	// other listing.
+	//
+	// Deliberately the same number as that one and written as that one, so the
+	// two cannot drift: they answer one question — how many entries may one
+	// debug answer carry — for two listings. A pane asks for a terminal's
+	// height and a wire client pages by [DebugStepWindow.total], so nothing
+	// here has a use for more.
+	MaxStepWindow = MaxScopeBindings
 )
 
 // Tone classifies one fragment of session output, so a terminal can colour

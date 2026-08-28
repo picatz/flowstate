@@ -100,9 +100,20 @@ func (s *Session) PositionProto() (*v1.DebugPosition, bool) {
 // clamps them: this API is shaped for a caller that does not exist yet, so the
 // limit is untrusted, and a window measured as offset+limit wraps negative on a
 // limit near the maximum.
+//
+// The limit is additionally held to [MaxStepWindow], which [Session.Steps] does
+// not do: a caller in this process pays for its own copy, and a wire answer is
+// a message whose size the *workload* would otherwise decide. A caller wanting
+// more pages, which is what [DebugStepWindow.total] is for.
 func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Held to the producer's ceiling before the window is cut, so the bound is
+	// on the copy rather than on the message built from it (Codex, #1194).
+	if limit < 0 || limit > MaxStepWindow {
+		limit = MaxStepWindow
+	}
 
 	list, held := s.stepWindow(offset, limit)
 
