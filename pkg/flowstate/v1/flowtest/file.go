@@ -1205,21 +1205,14 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		}
 	}
 
-	// Counted before the directory's contribution is folded in, because that
-	// fold *prepends* its claims: after it, index i of `defaults.check` is no
-	// longer entry i of this document's own list, and a position taken from
-	// the index would underline one claim to report another. Stubs need no
-	// such count — the directory's are appended, so the indices this document
-	// wrote keep their meaning and the rest simply address nothing here.
-	ownDefaultChecks := 0
-	if file.Defaults != nil {
-		ownDefaultChecks = len(file.Defaults.Check)
-	}
-
 	// What the fold brought in from the sibling file, so a diagnostic about one
 	// of those values names the document that holds the text rather than the
-	// suite that inherited it.
-	p.wrote(dd.sourcePath(), dd.combineInto(&file))
+	// suite that inherited it. The counts it carries are taken before it folds,
+	// because both of the collections it merges renumber: `check:` prepends and
+	// `stubs:` appends, so afterwards an index alone no longer says which
+	// document wrote the entry it addresses.
+	moved := dd.combineInto(&file)
+	p.wrote(moved.file, moved.paths)
 
 	// Vars validate and substitute first, before tables expand and before
 	// `defaults:` is checked: an inherited `${vars.x}` resolves to its
@@ -1264,7 +1257,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// The stub count is the bound that has to stop the pass rather than be
 	// noted: a default is copied into every case below, so an over-limit block
 	// multiplies by the case count before anything checks it.
-	if !checkDefaults(p, file.Defaults, ownDefaultChecks, dd.sourcePath()) {
+	if !checkDefaults(p, file.Defaults, moved) {
 		return nil, p.err()
 	}
 	if file.Defaults != nil {
@@ -1354,55 +1347,19 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		}
 		for j := range test.Stubs {
 			stub := &test.Stubs[j]
-			where := r.in(source.stubPath(j, stub, file.Defaults))
-			// The target decides what this stub *is*, so a stub that names none
-			// or names two is not judged further: every check below quotes
-			// [stubTarget], which for a targetless stub reads `task ""` — a
-			// second diagnostic about a stub the first one already said does
-			// not identify anything, spending the report's bound on a cascade
-			// (Codex, #1179). Same rule as the trigger stanza that names both a
-			// webhook and a kind.
-			switch {
-			case stub.Task == "" && stub.Step == "":
-				p.report(where, "test %q stub %d names neither a task nor a step; "+
-					"give one, either `task: <name>` or `step: <id>`", test.Name, j+1)
-
-				continue
-			case stub.Task != "" && stub.Step != "":
-				p.report(where, "test %q stub %d names both a task (%q) and a step (%q); "+
-					"a stub targets one or the other, never both", test.Name, j+1, stub.Task, stub.Step)
-
+			// A stub [mergeDefaults] copied in from the `defaults:` block was
+			// judged there a moment ago, where it is addressable and where the
+			// file that wrote it is known. Judging the copy again would report
+			// one mistake once per case, against a merged index that for a
+			// directory-written stub addresses neither document — the same two
+			// failures the block's claims and its sender were fixed for
+			// (Codex, #1185). A stub inherited from a table entry is nobody
+			// else's to judge and is judged here.
+			where, judgedAtTheBlock := source.stubOrigin(j, stub, file.Defaults)
+			if judgedAtTheBlock {
 				continue
 			}
-			if stub.Returns != nil && stub.Fails != nil {
-				p.report(where,
-					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
-					test.Name, j+1, stubTarget(stub))
-			}
-			if stub.Response != nil && stub.Returns != nil {
-				p.report(where,
-					"test %q stub %d for %s declares both response and returns; a stub answers with a raw "+
-						"response the task interprets, or with outputs already shaped, not both",
-					test.Name, j+1, stubTarget(stub))
-			}
-			if stub.Response != nil && stub.Fails != nil {
-				p.report(where,
-					"test %q stub %d for %s declares both response and fails; a failing response is a "+
-						"response — write the status the failure would carry, and let the step's own "+
-						"expect: decide",
-					test.Name, j+1, stubTarget(stub))
-			}
-			// `times: 0` is refused rather than read as "never answers": a
-			// stub that can answer nothing asserts nothing, and an author who
-			// wrote 0 meant something — most likely deleting the stub, or the
-			// unbounded default they get by writing no `times:` at all.
-			// Negative is the same mistake with less ambiguity.
-			if stub.Times != nil && *stub.Times <= 0 {
-				p.report(where,
-					"test %q stub %d for %s declares times: %d, which is a stub that never answers; "+
-						"delete the stub, or drop `times:` for the unbounded default",
-					test.Name, j+1, stubTarget(stub), *stub.Times)
-			}
+			checkStubShape(p, r.in(where), fmt.Sprintf("test %q stub %d", test.Name, j+1), stub)
 		}
 		checkOthers(p, r, test)
 		checkTrigger(p, r, test, requireWorkflow)
@@ -1441,21 +1398,35 @@ type caseSource struct {
 	ownChecks int
 }
 
-// stubPath addresses stub j of a merged case, or nothing when the stub was
-// inherited and this document did not write it.
+// stubOrigin says where stub j of a merged case was written: the path this
+// document addresses it at, and whether the `defaults:` block already answered
+// for it.
 //
-// An inherited stub is looked for in the file's own `defaults:` — the common
-// case, and the one where a `returns:` and a `fails:` on one entry is a real
-// mistake an author has to be sent to. It is accepted only when the two stubs
-// are the same value: a case can inherit an identical stub from its table entry
-// while a file default of the same target sits unused beside it, and pointing
-// at the unused one would be the false position [document.positionOf] refuses.
-func (c caseSource) stubPath(j int, stub *Stub, defaults *Defaults) loc {
+// A case's own stub has a path here. An inherited one has none — a position on
+// the case would underline a stub the case did not write — and the question that
+// remains is which document owes the diagnostic. A stub the `defaults:` block
+// holds was judged by [checkDefaults] a moment ago, where it is addressable and
+// where the file that wrote it is known, so judging the copy again would report
+// one mistake once per case; a stub that matches nothing there came from the
+// case's table entry, which nothing else judges, and is judged in the case.
+//
+// The block is searched by value, and accepting a match only when the two stubs
+// are the same value is the whole of the rule: a case can inherit an identical
+// stub from its table entry while a file default of the same target sits unused
+// beside it, and the two say the same thing about the same shape, so answering
+// once at the block is the report an author can act on.
+//
+// The mark [Stub.fromDefaults] cannot answer that question, and finding out
+// nearly cost a fail-open regression the tests now pin: [mergeRow] folds a table
+// entry through [mergeDefaults] with the entry standing in as the block, so an
+// entry's stubs carry the mark too — and skipping on it left an entry's
+// malformed stub judged by nobody at all.
+func (c caseSource) stubOrigin(j int, stub *Stub, defaults *Defaults) (loc, bool) {
 	if j < c.ownStubs {
-		return c.path.field("stubs").item(j)
+		return c.path.field("stubs").item(j), false
 	}
 	if defaults == nil {
-		return nil
+		return nil, false
 	}
 	for k := range defaults.Stubs {
 		// Compared with the provenance mark set aside, since it is what the
@@ -1463,11 +1434,69 @@ func (c caseSource) stubPath(j int, stub *Stub, defaults *Defaults) loc {
 		candidate := defaults.Stubs[k]
 		candidate.fromDefaults = stub.fromDefaults
 		if reflect.DeepEqual(candidate, *stub) {
-			return at("defaults").field("stubs").item(k)
+			return nil, true
 		}
 	}
 
-	return nil
+	return nil, false
+}
+
+// checkStubShape refuses a stub whose fields contradict each other, naming it as
+// where — `test "the rollback" stub 2`, or `defaults.stubs[0]`.
+//
+// One list, two callers: a case's own stubs and the `defaults:` block's. Written
+// out twice they would drift, and a drift here means a mistake refused in a case
+// and accepted in the block every case inherits from.
+//
+// Answers whether the stub was found coherent enough to keep judging. The target
+// decides what a stub *is*, so a stub that names none or names two is not judged
+// further: every check below quotes [stubTarget], which for a targetless stub
+// reads `task ""` — a second diagnostic about a stub the first one already said
+// does not identify anything, spending the report's bound on a cascade (Codex,
+// #1179). Same rule as the trigger stanza that names both a webhook and a kind.
+func checkStubShape(p *problems, spot site, where string, stub *Stub) bool {
+	switch {
+	case stub.Task == "" && stub.Step == "":
+		p.report(spot, "%s names neither a task nor a step; "+
+			"give one, either `task: <name>` or `step: <id>`", where)
+
+		return false
+	case stub.Task != "" && stub.Step != "":
+		p.report(spot, "%s names both a task (%q) and a step (%q); "+
+			"a stub targets one or the other, never both", where, stub.Task, stub.Step)
+
+		return false
+	}
+	if stub.Returns != nil && stub.Fails != nil {
+		p.report(spot,
+			"%s for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
+			where, stubTarget(stub))
+	}
+	if stub.Response != nil && stub.Returns != nil {
+		p.report(spot,
+			"%s for %s declares both response and returns; a stub answers with a raw "+
+				"response the task interprets, or with outputs already shaped, not both",
+			where, stubTarget(stub))
+	}
+	if stub.Response != nil && stub.Fails != nil {
+		p.report(spot,
+			"%s for %s declares both response and fails; a failing response is a "+
+				"response — write the status the failure would carry, and let the step's own "+
+				"expect: decide",
+			where, stubTarget(stub))
+	}
+	// `times: 0` is refused rather than read as "never answers": a stub that can
+	// answer nothing asserts nothing, and an author who wrote 0 meant something —
+	// most likely deleting the stub, or the unbounded default they get by writing
+	// no `times:` at all. Negative is the same mistake with less ambiguity.
+	if stub.Times != nil && *stub.Times <= 0 {
+		p.report(spot,
+			"%s for %s declares times: %d, which is a stub that never answers; "+
+				"delete the stub, or drop `times:` for the unbounded default",
+			where, stubTarget(stub), *stub.Times)
+	}
+
+	return true
 }
 
 // stubTarget names a stub by what it targets, for a diagnostic: `task "http"`
@@ -1667,7 +1696,10 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 // refusal of the whole document rather than one more diagnostic: an
 // over-limit block is copied into every case a moment later, so this is the
 // one bound here whose overrun multiplies.
-func checkDefaults(p *problems, d *Defaults, ownChecks int, inheritedFrom string) bool {
+//
+// from is what the directory's fold moved in, which is how the two collections
+// it renumbers are named after the file that wrote them: see [contribution].
+func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 	if d == nil {
 		return true
 	}
@@ -1685,11 +1717,29 @@ func checkDefaults(p *problems, d *Defaults, ownChecks int, inheritedFrom string
 			"defaults.inputs."+name, d.Inputs[name], 0)
 	}
 	for i := range d.Stubs {
-		s := d.Stubs[i]
-		spot := base.field("stubs").item(i)
-		where := fmt.Sprintf("defaults.stubs[%d]", i)
-		checkNoExpressions(p, site{at: spot.field("where")}, where+".where", s.Where, 0)
-		checkNoExpressions(p, site{at: spot.field("returns")}, where+".returns", s.Returns, 0)
+		s := &d.Stubs[i]
+		index, elsewhere := from.stubWrittenElsewhere(i)
+		// Numbered the way the document that wrote it numbers it, and named
+		// after that document: a stub the fold appended sits at an index the
+		// directory's file does not use, so both the path and the prose have to
+		// count from *its* list or a reader is sent to an entry that is not
+		// there (Codex, #1185).
+		spot := site{at: base.field("stubs").item(index)}
+		if elsewhere {
+			spot.file = from.file
+		}
+		where := fmt.Sprintf("defaults.stubs[%d]", index)
+		// Judged here, once, rather than once per case that inherits it. The
+		// same rule the block's claims and its sender already follow, and the
+		// last field of a `defaults:` block that did not: [mergeDefaults] copies
+		// a stub into every case, so judging the copies reported one mistake
+		// once per case — against a merged index, which for a directory-written
+		// stub addressed neither document.
+		if !checkStubShape(p, spot, where, s) {
+			continue
+		}
+		checkNoExpressions(p, spot.in(spot.at.field("where")), where+".where", s.Where, 0)
+		checkNoExpressions(p, spot.in(spot.at.field("returns")), where+".returns", s.Returns, 0)
 	}
 	if d.Sender != nil {
 		checkNoExpressions(p, site{at: base.field("sender")}, "defaults.sender", d.Sender, 0)
@@ -1705,7 +1755,7 @@ func checkDefaults(p *problems, d *Defaults, ownChecks int, inheritedFrom string
 	}
 	// The inherited claims here are the directory file's own, prepended — named
 	// after that file rather than addressed by an index the two documents share.
-	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, ownChecks, inheritedFrom)
+	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, from.ownChecks, from.file)
 
 	return true
 }

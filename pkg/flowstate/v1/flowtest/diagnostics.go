@@ -185,7 +185,14 @@ func (ds *Diagnostics) Error() string {
 	if ds.Total > len(ds.Problems) {
 		tail := fmt.Sprintf("%d more problems were found and %d are shown",
 			ds.Total-len(ds.Problems), len(ds.Problems))
-		if file := ds.file(); file != "" {
+		// Named only when there is one file to name. What was dropped is not
+		// necessarily about the file the first kept problem happens to be
+		// about: a suite and the directory's `testdefaults.yaml` are refused
+		// together, and prefixing that line with either one asserts a
+		// provenance for problems nobody can see (Codex, #1185). The count is
+		// the honest part, and it is the whole line when the report spans two
+		// documents.
+		if file := ds.oneFile(); file != "" {
 			tail = file + ": " + tail
 		}
 		lines = append(lines, tail)
@@ -197,16 +204,28 @@ func (ds *Diagnostics) Error() string {
 // Unwrap returns the error a problem was translated from, when there was one.
 func (ds *Diagnostics) Unwrap() error { return ds.cause }
 
-// file is the document these problems are about, or empty for bytes with no
-// path.
-func (ds *Diagnostics) file() string {
+// oneFile is the document every problem shown is about, or empty when they are
+// about more than one — or when none of them names a file, which is what bytes
+// with no path answer.
+//
+// A function taking its input from the problems rather than a comparison written
+// where they are built, because a report that spans two files is the only input
+// that tells the two answers apart, and a real report usually does not
+// (CLAUDE.md, "assert where the answers differ").
+func (ds *Diagnostics) oneFile() string {
+	file := ""
 	for _, d := range ds.Problems {
-		if d.File != "" {
-			return d.File
+		switch {
+		case d.File == "":
+			continue
+		case file == "":
+			file = d.File
+		case d.File != file:
+			return ""
 		}
 	}
 
-	return ""
+	return file
 }
 
 // inFile stamps path on every problem that does not already name a file, for
