@@ -55,53 +55,68 @@ import (
 //
 // # The containment contract, whole
 //
-// Four review rounds on #1197 each found one more way a value derived from a
+// Five review rounds on #1197 each found one more way a value derived from a
 // secret reaches a report, and each was answered on its own. The answers are
-// one rule, and it is written here rather than spread across four functions so
-// that a fifth review has something to check against instead of rediscovering
-// the shape:
+// one rule, and it is written here rather than spread across five functions so
+// that the next review has something to check against instead of rediscovering
+// the shape. This table is the contract:
 //
-//	A value derived from secret material is WITHHELD where it is a string, and
-//	REFUSED INTO EXISTENCE where it is anything else — because anything else
-//	carries the secret in a form redaction cannot reach: its digits, its truth,
-//	its shape.
+//	A value derived from secret material is WITHHELD where it is a non-empty
+//	string, and REFUSED INTO EXISTENCE where it is anything else — because
+//	anything else carries the secret in a form redaction cannot reach: its
+//	digits, its truth, its shape, its very emptiness.
 //
-// The table below is that sentence with its mechanisms, and every row is a
-// decision an owner made on a filed finding rather than an implementation
-// detail:
+// Every row is a decision an owner made on a filed finding rather than an
+// implementation detail:
 //
-//	what                 | answer   | why, and where
-//	---------------------|----------|--------------------------------------------
-//	a tainted string     | withheld | the set matches content: whole in a witness
-//	                     |          | and the autopsy, cleared from any line that
-//	                     |          | embeds it ([withheldMaterial], run.go)
-//	a tainted non-string | refused  | nothing in a number or a boolean can be
-//	  scalar             |          | matched once a fixture carries it into a run,
-//	                     |          | and a length is a fact about a secret
-//	                     |          | ([refuseUnprotectableVar])
-//	a tainted container  | refused  | its SHAPE survives leaf redaction entirely:
-//	                     |          | `${t == 'guess' ? {} : {'x':'y'}}` answers a
-//	                     |          | question about the secret either way
-//	which vars are       | both     | the closure walks readers AND dependencies
-//	  tainted            | ways, to | to a fixed point — the source material of a
-//	                     | a fixed  | secret is secret, and a var reached backward
-//	                     | point    | is itself a source for its own readers
-//	                     |          | ([taintedVars])
-//	when a refusal fires | eagerly, | a value judged after the block evaluates has
-//	                     | per var  | already been quotable by a later expression's
-//	                     |          | error ([File.evaluateVars]'s loop)
-//	what a refused var's | nothing  | the root refusal stands for the chain, the
-//	  dependents report  |          | rule #1185 set for a refused stub's shape
+//	what                  | answer   | why, and where
+//	----------------------|----------|-------------------------------------------
+//	a tainted NON-EMPTY   | withheld | the set matches content: whole in a witness
+//	  string              |          | and the autopsy, cleared from any line that
+//	                      |          | embeds it ([withheldMaterial], run.go)
+//	a tainted non-string  | refused  | nothing in a number or a boolean can be
+//	  scalar              |          | matched once a fixture carries it into a
+//	                      |          | run, and a length is a fact about a secret
+//	                      |          | ([refuseUnprotectableVar])
+//	a tainted container   | refused  | its SHAPE survives leaf redaction entirely:
+//	                      |          | `${t == 'guess' ? {} : {'x':'y'}}` answers a
+//	                      |          | question about the secret either way
+//	a tainted EMPTY       | refused  | emptiness is shape, and the set cannot hold
+//	  string              |          | "" — it occurs at every position of every
+//	                      |          | string — so `${t == 'guess' ? '' : 'x'}`
+//	                      |          | renders `""` beside `[redacted]`
+//	which vars are        | both     | the closure walks readers AND dependencies
+//	  tainted             | ways, to | to a fixed point — the source material of a
+//	                      | a fixed  | secret is secret, and a var reached backward
+//	                      | point    | is itself a source for its own readers
+//	                      |          | ([taintedVars])
+//	when a refusal fires  | eagerly, | a value judged after the block evaluates has
+//	                      | per var  | already been quotable by a later expression's
+//	                      |          | error ([File.evaluateVars]'s loop)
+//	what a refused var's  | nothing  | the root refusal stands for the chain, the
+//	  dependents report   |          | rule #1185 set for a refused stub's shape
+//	how a rendering hides | one pair | WithholdAll withholds, else RedactSubstrings,
+//	  what it must        | only     | plus the withheld-var rule — witnesses, the
+//	                      |          | autopsy, stub diagnostics and a check's own
+//	                      |          | evaluator error, all through it (check.go)
 //
 // Two costs, accepted rather than discovered: a benign var that merely
-// contributed to a secret is withheld, and refused if it is not a string; and
-// the refusal is per file rather than per case, since the block is shared.
+// contributed to a secret is withheld, and refused if it is not a non-empty
+// string; and the refusal is per file rather than per case, since the block is
+// shared.
 //
-// One residual, named rather than closed: a fence inside a *structured* var
-// value does not evaluate ([checkVars] refuses it), so the respelling the
-// container refusal points at — the structure at the position that uses it,
-// with `${vars.x}` at its leaves — is the only spelling that composes. That is
-// an expressiveness gap, tracked on #1072 rather than widened in a review.
+// Two residuals, named rather than claimed away:
+//
+//   - A fence inside a *structured* var value does not evaluate ([checkVars]
+//     refuses it), so the respelling the container refusal points at — the
+//     structure at the position that uses it, with `${vars.x}` at its leaves —
+//     is the only spelling that composes. An expressiveness gap, tracked on
+//     #1072 rather than widened in a review.
+//   - The empty-string refusal's own message reveals which branch produced ""
+//     for a file whose author wrote the conditional. It is deterministic per
+//     file, second-order, and strictly less than what every witness of that var
+//     would otherwise have printed — but it is not nothing, and a contract that
+//     claimed completeness here would be claiming more than it has.
 
 // MaxVarsPerFile bounds how many vars one file may declare. A test file is
 // untrusted input (CLAUDE.md); each var is substituted into every position
@@ -320,17 +335,27 @@ func (w withheldVars) holds(name string) bool { return slices.Contains(w.names, 
 // var's name is a CEL identifier by [checkVars] — so `vars.<name>` followed by
 // a separator or the end of the path cannot be produced by any other var.
 func (w withheldVars) covers(path string) bool {
+	_, covered := w.coveredName(path)
+
+	return covered
+}
+
+// coveredName is [withheldVars.covers] with the var it matched, for a caller
+// that has to say which one — a check's evaluator error names the var it may
+// not quote, since a name is not a value and an author needs to know which
+// claim to rewrite.
+func (w withheldVars) coveredName(path string) (string, bool) {
 	for _, name := range w.names {
 		rooted := v1.VarsRoot + "." + name
 		if path == rooted {
-			return true
+			return name, true
 		}
 		if strings.HasPrefix(path, rooted) && (path[len(rooted)] == '.' || path[len(rooted)] == '[') {
-			return true
+			return name, true
 		}
 	}
 
-	return false
+	return "", false
 }
 
 // fileVars is what one case is given of the file's `vars:`: the values a check
@@ -1036,12 +1061,13 @@ func refuseUnprotectableVar(p *problems, block loc, taint varTaint, name string,
 		return false
 	}
 	p.report(site{at: block.field(name)},
-		"vars.%s is computed from a secret and holds %s; only a string can be withheld. A value "+
-			"derived from secret material carries it in a form redaction cannot reach — a number's "+
-			"digits, a boolean's truth, a container's shape, which survives even when every leaf "+
-			"inside it is cleared. The chain: %s. Keep the derived value a string, and express any "+
-			"structure where it is used — a case's `inputs:`, `defaults.inputs:`, a signal payload — "+
-			"where a `${vars.x}` leaf resolves at any depth",
+		"vars.%s is computed from a secret and holds %s; only a non-empty string can be withheld. "+
+			"A value derived from secret material carries it in a form redaction cannot reach — a "+
+			"number's digits, a boolean's truth, a container's shape, an empty string's very "+
+			"emptiness — none of which the redaction set can match, and each of which answers a "+
+			"question about the secret. The chain: %s. Keep the derived value a non-empty string, "+
+			"and express any structure where it is used — a case's `inputs:`, `defaults.inputs:`, "+
+			"a signal payload — where a `${vars.x}` leaf resolves at any depth",
 		name, kind, taint.path(name))
 
 	return true
@@ -1049,24 +1075,35 @@ func refuseUnprotectableVar(p *problems, block loc, taint varTaint, name string,
 
 // unprotectableValue names what a value is, in the words the diagnostic uses,
 // and reports whether redaction could never withhold it — which is everything
-// that is not a string.
+// that is not a non-empty string.
 //
 // Flat rather than recursive, and that is the decision rather than an
 // omission: a container is unprotectable *as a container*, whatever its leaves
 // turn out to be, because its shape is what survives clearing them. An earlier
 // version walked to the first non-string leaf and called a map of strings
-// protectable, which is the hole Codex's third P1 names.
+// protectable, which is the hole Codex's third P1 named.
 //
-// The empty string is a string. It carries no material — [collectVarStrings]
-// already declines to put it in the set, since it occurs at every position of
-// every string — and refusing it would refuse a value that says nothing.
+// The empty string was excluded from this list once, on the reasoning that it
+// carries no material and that refusing it would refuse a value which says
+// nothing. That was wrong, and Codex's fifth P1 is why: it says exactly one
+// bit, which is the only thing it can say. [collectVarStrings] declines to put
+// it in the set — an empty string occurs at every position of every string, so
+// redacting it would destroy the text while protecting nothing — and a value
+// the set cannot hold is a value that prints. `${t == 'guess' ? ” : 'x'}`
+// renders `""` in one branch and `[redacted]` in the other, which is an
+// equality oracle read straight off a report. Emptiness is shape, and the
+// family had already decided shape is refused.
 //
 // Takes its value rather than reading one out of a [File], because in a real
-// document a tainted var is almost always a string and a check written where
-// the values agree is one no fixture can drive (CLAUDE.md).
+// document a tainted var is almost always a non-empty string and a check
+// written where the values agree is one no fixture can drive (CLAUDE.md).
 func unprotectableValue(value any) (string, bool) {
 	switch v := value.(type) {
 	case string:
+		if v == "" {
+			return "the empty string", true
+		}
+
 		return "", false
 	case map[string]any:
 		return "a map", true

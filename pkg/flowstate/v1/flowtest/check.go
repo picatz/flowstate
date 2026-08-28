@@ -354,7 +354,8 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		out, err := ev.EvalString(ctx, claim.That, libs, activation)
 		if err != nil {
 			failures = append(failures, &v1.Diagnostic{Field: field,
-				Message: fmt.Sprintf("check errored: %s\n           %v", claim.That, err)})
+				Message: fmt.Sprintf("check errored: %s\n           %s", claim.That,
+					checkErrorText(ev, err, claim.That, vars.withheld, sensitive))})
 			continue
 		}
 		held, ok := out.Value().(bool)
@@ -378,6 +379,76 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 	}
 
 	return failures
+}
+
+// checkErrorText is what a claim's own evaluator failure may say (Codex,
+// #1197).
+//
+// A check that *errors* rather than answering false is the third rendering in
+// this file, and it was the one that went through neither redaction: it
+// formatted cel-go's error straight into the diagnostic while the witnesses
+// beside it went through [redactedScalarText] and the withheld-var rule. An
+// error carries its operands — `no such key: <value>` — so a claim reading a
+// withheld var printed that var's value in the clear, past every guard the
+// witnesses apply.
+//
+// Two rules, and they are the two every other rendering here already uses:
+//
+//   - The set's own pair. A posture that withholds everything withholds this
+//     too, and otherwise the substring backstop clears what it recognises —
+//     the shape [formatUnmatchedStubEvalError] states one file over.
+//   - The withheld-var rule, because the set is not enough on its own. An
+//     evaluator error can report on a value *derived inside the claim*, which
+//     no set ever saw: `[0][size(vars.header)]` fails with the length of a
+//     withheld string, and there is no "13" to match. So a claim that reads a
+//     withheld var says which one and stops, rather than quoting a failure
+//     computed from it — the same answer [checkWitnesses] gives a path rooted
+//     at one.
+//
+// Naming the var rather than withholding silently is the useful half: an author
+// reading it knows which claim to rewrite, and a name is not a value.
+func checkErrorText(ev *v1.Evaluator, err error, claim string, withheld withheldVars, sensitive sensitiveInputs) string {
+	if sensitive.WithholdAll() {
+		return "[withheld]"
+	}
+	if name, reads := claimReadsWithheld(ev, claim, withheld); reads {
+		return fmt.Sprintf("[withheld: this claim reads vars.%s, which this file withholds]", name)
+	}
+
+	return sensitive.RedactSubstrings(err.Error())
+}
+
+// claimReadsWithheld reports whether a claim references a withheld var, and
+// names the first one it finds in the claim's own reading order.
+//
+// Over the same AST walk [checkWitnesses] uses, so the two surfaces cannot
+// come to disagree about what "reads a withheld var" means. A claim this
+// package cannot parse reads nothing: it never evaluated either, so its error
+// is about syntax rather than about a value.
+func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (string, bool) {
+	if len(withheld.names) == 0 {
+		return "", false
+	}
+	env, err := ev.Env()
+	if err != nil {
+		return "", false
+	}
+	parsed, issues := env.Parse(claim)
+	if issues != nil && issues.Err() != nil {
+		return "", false
+	}
+
+	found := ""
+	collectReferencePaths(parsed.NativeRep().Expr(), func(path string) {
+		if found != "" {
+			return
+		}
+		if name, covered := withheld.coveredName(path); covered {
+			found = name
+		}
+	})
+
+	return found, found != ""
 }
 
 // checkWitnesses renders the values a failed claim read: each maximal

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -676,7 +677,7 @@ tests:
 `))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "vars.fingerprint is computed from a secret and holds an integer")
-		assert.Contains(t, err.Error(), "only a string can be withheld")
+		assert.Contains(t, err.Error(), "only a non-empty string can be withheld")
 		assert.Contains(t, err.Error(), `vars.fingerprint → vars.token, which tests[0].secrets["env:TOKEN"] references`,
 			"the refusal names the chain, or its claim is one an author cannot check")
 		assert.NotContains(t, err.Error(), "s3cr3t-value")
@@ -750,7 +751,7 @@ tests:
 `))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "vars.shaped is computed from a secret and holds "+tc.kind)
-			assert.Contains(t, err.Error(), "a container's shape, which survives even when every leaf")
+			assert.Contains(t, err.Error(), "a container's shape, an empty string's very emptiness")
 			assert.Contains(t, err.Error(),
 				`vars.shaped → vars.token, which tests[0].secrets["env:TOKEN"] references`)
 			assert.Contains(t, err.Error(), "express any structure where it is used",
@@ -778,6 +779,66 @@ tests:
 		require.Equal(t, map[string]any{"id": "ord_1", "region": "eu-west-1"}, file.Vars["order"])
 		require.Equal(t, []any{"a", "b"}, file.Vars["hosts"])
 	})
+}
+
+// TestATaintedEmptyStringIsRefused is Codex's fifth P1 and the ruling that
+// completes the family: emptiness is shape, and shape was already refused.
+//
+// The set cannot hold `""` — it occurs at every position of every string, so
+// [collectVarStrings] declines it and redacting it would destroy the text while
+// protecting nothing — and a value the set cannot hold is a value that prints.
+// `${t == 'guess' ? ” : 'x'}` therefore renders `""` in one branch and
+// `[redacted]` in the other, which is an equality oracle read straight off a
+// report. Fails on af336db4.
+//
+// The conditional below is written so the *empty* branch is the one taken,
+// because the refusal reads the evaluated value: a file whose ternary lands on
+// the non-empty side produces an ordinary withheld string and is not refused.
+// That asymmetry is the second-order residual the package doc names — the
+// refusal firing at all tells the file's own author which branch ran — and it
+// is strictly less than the `""` it stops from being printed.
+func TestATaintedEmptyStringIsRefused(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  probe: "${vars.token == 's3cr3t-value' ? '' : 'x'}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vars.probe is computed from a secret and holds the empty string")
+	assert.Contains(t, err.Error(), "an empty string's very emptiness")
+	assert.Contains(t, err.Error(),
+		`vars.probe → vars.token, which tests[0].secrets["env:TOKEN"] references`)
+}
+
+// TestATaintedNonEmptyStringIsWithheldNotRefused is the boundary's edge, and
+// the control the ruling above needs: the refusal reaches emptiness and stops
+// there. A tainted string with content in it is still the *withheld* case, or
+// the whole first row of the contract has quietly become a refusal.
+func TestATaintedNonEmptyStringIsWithheldNotRefused(t *testing.T) {
+	t.Parallel()
+
+	file, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: s3cr3t-value
+  header: "${'Bearer ' + vars.token}"
+  space: "${' '}"
+tests:
+  - name: loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+`))
+	require.NoError(t, err, "a tainted string with content is withheld, never refused")
+	assert.Equal(t, "Bearer s3cr3t-value", file.Vars["header"])
+	assert.Equal(t, " ", file.Vars["space"],
+		"a single space is content: the rule is emptiness, not blankness")
 }
 
 // TestATaintedStructureRespellsAtTheFixture is the other half of that
@@ -921,6 +982,128 @@ tests:
 		"a literal source of a secret must not reach a later evaluation's error either: %s", messages)
 	assert.NotContains(t, messages, "hunter2")
 	assert.NotContains(t, err.Error(), "index out of bounds")
+}
+
+// TestACheckErrorQuotingAWithheldValueIsWithheld is Codex's sixth P1: a check
+// that *errors* rather than answering false was the third rendering in
+// check.go, and the one going through neither redaction — it formatted cel-go's
+// error straight in while the witnesses beside it were guarded.
+//
+// The claim below fails because a map has no such key, and cel-go's error
+// carries the key: the withheld header's full value. Fails on af336db4.
+func TestACheckErrorQuotingAWithheldValueIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bearer-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      bearer: ${secret('env:TOKEN')}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: s3cr3t-value
+  header: "${'Bearer ' + vars.token}"
+  region: eu-west-1
+tests:
+  - name: an erroring claim says nothing it may not
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.token}"
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+      check:
+        - that: "{'known': 1}[vars.header] == 1"
+          because: errors on the missing key, whose text carries the key itself
+        - that: "[0][size(vars.header)] == 1"
+          because: errors with a length computed inside the claim, which no set ever saw
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claims error on purpose")
+	require.Len(t, c.GetFailures(), 2)
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.Contains(t, rendered, "check errored",
+		"the failure must still be reported, or this hides a real problem")
+	assert.Contains(t, rendered, "withheld: this claim reads vars.header",
+		"the var is named so an author knows which claim to rewrite; a name is not a value")
+	assert.NotContains(t, rendered, "s3cr3t-value")
+	assert.NotContains(t, rendered, "Bearer s3cr3t")
+
+	// The second claim is why the withheld-var rule exists beside the set. Its
+	// error reports on a length computed *inside* the claim, which the set never
+	// saw and could not match — the fourth finding's shape at this surface — so
+	// the digits must be absent because the claim was refused a rendering, not
+	// because a substring happened to be recognised.
+	assert.NotContains(t, problemDigits(t, c.GetFailures()), strconv.Itoa(len("Bearer s3cr3t-value")))
+}
+
+// problemDigits joins failure messages for an assertion about digits, keeping
+// the author's own claim text out of it: the claims above quote `1` and `0`,
+// and the question is what the *evaluator's* answer said.
+func problemDigits(t *testing.T, failures []*v1.Diagnostic) string {
+	t.Helper()
+
+	var b strings.Builder
+	for _, f := range failures {
+		_, after, found := strings.Cut(f.GetMessage(), "\n")
+		if found {
+			b.WriteString(after + "\n")
+		}
+	}
+
+	return b.String()
+}
+
+// TestACheckErrorOverUntaintedValuesKeepsItsDetail is that fix's control: the
+// same shape of failure over vars on no path to a secret keeps cel-go's own
+// message, because a diagnostic that withholds what it need not is a diagnostic
+// that stopped being useful.
+func TestACheckErrorOverUntaintedValuesKeepsItsDetail(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), echoWorkflow)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+vars:
+  region: eu-west-1
+  order: "${ {'id': 'ord_1'} }"
+tests:
+  - name: an erroring claim over ordinary values
+    workflow: ./workflow.yaml
+    inputs:
+      order: "${vars.order}"
+    expect:
+      ran: [keep]
+      check:
+        - that: "{'known': 1}[vars.region] == 1"
+          because: errors on the missing key, and nothing here is secret
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim errors on purpose")
+
+	rendered := fmt.Sprintf("%v", c.GetFailures())
+	assert.Contains(t, rendered, "check errored")
+	assert.Contains(t, rendered, "eu-west-1",
+		"an untainted value's evaluator error keeps the detail that makes it actionable")
+	assert.NotContains(t, rendered, "withheld")
 }
 
 // TestAnUntaintedValuesEvaluationErrorIsStillQuoted is the positive control for

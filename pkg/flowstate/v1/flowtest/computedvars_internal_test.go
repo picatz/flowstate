@@ -159,8 +159,12 @@ func TestOnlyAStringIsProtectable(t *testing.T) {
 		value any
 		kind  string
 	}{
-		"a string":          {value: "s3cr3t"},
-		"the empty string":  {value: ""},
+		"a string": {value: "s3cr3t"},
+		// Emptiness is shape, and shape is refused: the set cannot hold "" —
+		// it occurs at every position of every string — so a value the set
+		// cannot hold is a value that prints beside a `[redacted]` sibling.
+		"the empty string":  {value: "", kind: "the empty string"},
+		"a single space":    {value: " "},
 		"a map of strings":  {value: map[string]any{"a": "b"}, kind: "a map"},
 		"a list of strings": {value: []any{"a", "b"}, kind: "a list"},
 		"an empty map":      {value: map[string]any{}, kind: "a map"},
