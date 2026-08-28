@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
@@ -70,6 +71,25 @@ type debugControl struct {
 	// makes [debugControl.sessionID] deterministic. It counts grants and not
 	// extensions: an extension is the same session held longer.
 	granted int
+
+	// holdUntil is [lease]'s session deadline — [v1.DebugHoldDeadline] over the
+	// instant the session was granted — and the zero time when nothing holds
+	// this run.
+	//
+	// Engine state rather than a field on [v1.DebugSession], because the
+	// message already carries the observable consequence: every lease this
+	// session records has an expiry at or before this instant, so an operator
+	// reading `lease_expires_at` is reading a time the run really resumes at.
+	// Adding a second timestamp to a public message to say the same thing in a
+	// different unit is the parallel declaration CLAUDE.md's design rule warns
+	// about — and the message is pinned by `buf breaking` from the moment it
+	// ships, so a field added on a guess is a field forever.
+	//
+	// The cost, stated: stage 3's attach RPC cannot answer "how much of your
+	// session is left" without either recomputing it from `attached_at` — which
+	// is the server's clock rather than this one's — or landing the field then.
+	// That is a decision better made where a caller exists to want it.
+	holdUntil time.Time
 }
 
 // sessionID names a lease.
@@ -186,7 +206,7 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery) {
 
 		logger.Info("debug lease released by its holder",
 			"sender", who, "session", e.debug.lease.GetSessionId())
-		e.debug.lease = nil
+		e.releaseDebugLease()
 
 	case v1.DebugPauseSignal:
 		requested := v1.DebugLeaseRequested(delivery.GetPayload())
@@ -211,28 +231,63 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery) {
 		// passes the workflow's `debug:` policy at the server and lands one
 		// audit record, so a lease can never outlive the authorization that
 		// granted it. A heartbeat that skipped the check would be exactly that.
+		//
+		// Bounded by the session's own deadline rather than by this ask alone.
+		// A renewal that could buy another full ceiling is the wedge with extra
+		// steps [v1.DebugHoldDeadline] exists to refuse, and the clamp lands on
+		// what the lease *says* as well as on what the engine does, so the
+		// expiry an operator reads is one the run really resumes at.
 		if held {
-			extended := v1.NewDebugLease(e.debug.lease.GetSessionId(), e.debug.run, sender, now, requested)
+			extended := v1.ExtendDebugLease(e.debug.lease, now, requested, e.debug.holdUntil)
 			e.debug.lease = extended
 
 			logger.Info("debug lease extended by its holder",
 				"sender", who, "session", extended.GetSessionId(),
-				"expires_at", extended.GetLeaseExpiresAt().AsTime())
+				"expires_at", extended.GetLeaseExpiresAt().AsTime(),
+				"session_ends_at", e.debug.holdUntil)
+
+			if !v1.DebugLeaseHeld(extended, now) {
+				// The renewal bought nothing, because the session was already
+				// out of deadline. Said out loud, because "I renewed and the
+				// run resumed anyway" is otherwise indistinguishable from a
+				// dropped ask, and the answer — ask again for a fresh session,
+				// which will hold the next boundary — is one only somebody who
+				// knows which of the two happened can act on.
+				logger.Warn("the renewed debug lease is already spent: this session has reached "+
+					"its maximum hold, so the run resumes and a further pause ask starts a new "+
+					"session at the next step boundary",
+					"sender", who, "session", extended.GetSessionId(),
+					"session_ends_at", e.debug.holdUntil)
+			}
 
 			return
 		}
 
 		e.debug.granted++
+		e.debug.holdUntil = v1.DebugHoldDeadline(now)
 		e.debug.lease = v1.NewDebugLease(
-			e.debug.sessionID(e.runID), e.debug.run, sender, now, requested)
+			e.debug.sessionID(e.runID), e.debug.run, sender, now, requested, e.debug.holdUntil)
 
 		logger.Info("debug lease granted",
 			"sender", who, "session", e.debug.lease.GetSessionId(),
-			"requested", requested, "expires_at", e.debug.lease.GetLeaseExpiresAt().AsTime())
+			"requested", requested, "expires_at", e.debug.lease.GetLeaseExpiresAt().AsTime(),
+			"session_ends_at", e.debug.holdUntil)
 	}
 }
 
-// holdForDebugLease parks the run until its lease is released or lapses.
+// releaseDebugLease ends the session holding this run, whichever way it ended.
+//
+// One function rather than two assignments at four sites, because the lease and
+// its session deadline are one fact: a `holdUntil` left behind by a released
+// lease would clamp the *next* session to a deadline belonging to the last one,
+// which is a hold that ends early for a reason nothing in the record explains.
+func (e *executor) releaseDebugLease() {
+	e.debug.lease = nil
+	e.debug.holdUntil = time.Time{}
+}
+
+// holdForDebugLease parks the run until this session's lease is released or
+// lapses.
 //
 // The two ways out are indistinguishable to the run — both return here, and the
 // next step runs exactly as it would have — and distinguishable in the record:
@@ -241,27 +296,45 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery) {
 // the holder in its summary. That is the asymmetry the mechanism needs: an
 // operator must be able to tell "the debugger let go" from "the debugger
 // vanished", and a workload must not be able to tell them apart at all.
+//
+// # One session, one boundary
+//
+// The loop ends when *this* session stops holding, and a session granted while
+// it is parked does not inherit the park. That is the second half of the wedge
+// bound, and it is a different half from [v1.DebugHoldDeadline]: the deadline
+// stops one holder renewing forever, and this stops a queue of holders taking
+// turns at the same step — each new grant is inside its own ceiling, so no
+// lease is ever over-long and the run still never moves. What the two together
+// buy is that the run runs a step between any two holds, which is the only
+// version of "expiry resumes the run" that a second ask cannot undo.
+//
+// A lease granted while parked is not discarded: it holds the *next* boundary,
+// one step later. So an ask is never lost, it is paced — the same word
+// [v1.MaxDebugAsksPerBoundary] earns for the drain.
 func (e *executor) holdForDebugLease(node *v1.Node) {
 	logger := workflow.GetLogger(e.ctx)
 
-	logger.Info("holding the run at a step boundary under a debug lease",
-		"id", node.GetId(), "session", e.debug.lease.GetSessionId(),
-		"expires_at", e.debug.lease.GetLeaseExpiresAt().AsTime())
+	// The session this park belongs to, read once. Every later comparison is
+	// against this rather than against "is anything holding", because those two
+	// questions have different answers exactly when somebody else has taken the
+	// run over — which is the case this is about.
+	session := e.debug.lease.GetSessionId()
 
-	// The position, on the surface `flow`'s own views already read (#753).
-	// Written here as well as at [progress.enter] because the lease is a fact
-	// about the same position and arrives after it, and through
-	// [executor.detailsCtx] for the reason that field's own doc gives.
-	e.progress.setDebugLease(e.debug.lease)
-	if e.progress != nil {
-		workflow.SetCurrentDetails(e.detailsCtx, e.progress.currentDetailsMarkdown())
-	}
+	logger.Info("holding the run at a step boundary under a debug lease",
+		"id", node.GetId(), "session", session,
+		"expires_at", e.debug.lease.GetLeaseExpiresAt().AsTime(),
+		"session_ends_at", e.debug.holdUntil)
 
 	for {
 		now := workflow.Now(e.ctx)
-		if !v1.DebugLeaseHeld(e.debug.lease, now) {
+		if !e.holdsSession(session, now) {
 			break
 		}
+
+		// Published here rather than once above the loop, so that a renewal —
+		// which is the one thing that moves the expiry while parked — moves what
+		// an operator reads too.
+		e.showDebugLease(e.debug.lease)
 
 		remaining := e.debug.lease.GetLeaseExpiresAt().AsTime().Sub(now)
 
@@ -272,6 +345,18 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// No [workflow.GetVersion] gate is needed here where the wait does have
 		// one, because no history predating this code can reach this line: a
 		// run only gets here after receiving a pause ask.
+		//
+		// Re-armed on every wake rather than kept across iterations, which is
+		// the same construction `executor.waitForSignal` uses and a cost worth
+		// naming: an ask that changes nothing — a second caller refused, a
+		// resume from somebody who does not hold this — still spends a
+		// TimerStarted and a TimerCanceled. That is a constant multiple of
+		// history the peer already writes by signalling at all, on a channel
+		// whose every delivery has already been through authentication, the
+		// `debug:` policy and one audit record, so it is linear in asks rather
+		// than a ratio the peer controls. Keeping one timer across renewals
+		// would trade that for a mutable future in workflow code, which is
+		// where determinism bugs live; the trade is recorded rather than taken.
 		timerCtx, cancelTimer := workflow.WithCancel(e.ctx)
 
 		selector := workflow.NewSelector(e.ctx)
@@ -292,9 +377,26 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// cancelled context into the run's failure the moment this returns.
 		if e.ctx.Err() != nil {
 			logger.Info("the run was cancelled while held under a debug lease",
-				"id", node.GetId(), "session", e.debug.lease.GetSessionId())
+				"id", node.GetId(), "session", session)
 
 			break
+		}
+
+		// The lapse is noticed and recorded *before* anything new is applied,
+		// which is the ordering the whole session bound rests on. Applied the
+		// other way round, a pause ask sitting on the channel at the instant
+		// this lease ran out would be read against a lease that had not been
+		// retired yet — and worse, an expiry that a queued ask immediately
+		// replaced would leave no record of having happened at all, so the run
+		// would show one continuous hold where two sessions really occurred.
+		if e.debug.lease != nil && !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
+			logger.Info("the debug lease expired; resuming the run",
+				"id", node.GetId(), "session", e.debug.lease.GetSessionId(),
+				"holder", v1.QualifiedSubject(
+					e.debug.lease.GetAttachedBy().GetIssuer(), e.debug.lease.GetAttachedBy().GetSubject()),
+				"expired_at", e.debug.lease.GetLeaseExpiresAt().AsTime())
+
+			e.releaseDebugLease()
 		}
 
 		// Nothing is read off the channel by the selector's callback: a
@@ -303,35 +405,50 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// holder rules a resume that arrives between boundaries is.
 		e.applyDebugAsks()
 
-		if v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
-			continue
-		}
-
-		if e.debug.lease != nil {
-			logger.Info("the debug lease expired; resuming the run",
-				"id", node.GetId(), "session", e.debug.lease.GetSessionId(),
-				"holder", v1.QualifiedSubject(
-					e.debug.lease.GetAttachedBy().GetIssuer(), e.debug.lease.GetAttachedBy().GetSubject()),
-				"expired_at", e.debug.lease.GetLeaseExpiresAt().AsTime())
-
-			// Cleared on the way out, and a **named survivor**: deleting this
-			// line fails nothing, because every reader asks
-			// [v1.DebugLeaseHeld] — hold-ness is a function of the lease *and
-			// the clock*, never of this field being non-nil, so a lapsed lease
-			// left here already answers "not held" everywhere it is consulted.
-			//
-			// Kept because the alternative is a field that means two things at
-			// once, "the lease" and "a lease that used to be", and the next
-			// person to write `if e.debug.lease != nil` would be right to
-			// expect the first. There is no honest test for it: a state nothing
-			// can observe is a state no assertion can reach.
-			e.debug.lease = nil
-		}
-
-		break
+		// Whatever that changed, the loop's own condition decides what happens
+		// next: this session still holding re-parks, and anything else — it let
+		// go, it lapsed, or somebody else's session now holds the run — leaves.
+		// A grant that arrived just now therefore holds the next boundary
+		// rather than this one, which is what keeps a queue of debuggers from
+		// stopping a run at one step forever.
 	}
 
-	e.progress.setDebugLease(nil)
+	// Nothing is holding this boundary any more, whichever way that happened —
+	// including the way where a lease does still exist, because it belongs to a
+	// session that will hold the *next* boundary. "Held here" is what this line
+	// reports, and it is false the moment this returns.
+	e.showDebugLease(nil)
+}
+
+// holdsSession reports whether the lease this run is under is still session's,
+// and still holding at now.
+//
+// The two halves are one question asked of one value, and separating them is
+// what a caller would get wrong: "is anything holding" re-parks on somebody
+// else's lease, and "is this session's lease still here" re-parks on one that
+// has lapsed. Written as a function rather than inline because that is the only
+// shape a fixture can drive — the engine's own state always agrees with itself,
+// so a comparison written where the state is read is one no test can reach
+// (CLAUDE.md, "assert where the answers differ").
+func (e *executor) holdsSession(session string, now time.Time) bool {
+	return e.debug.lease.GetSessionId() == session && v1.DebugLeaseHeld(e.debug.lease, now)
+}
+
+// showDebugLease publishes the lease holding the run *here* — or nil, that
+// nothing is — on the surface `flow`'s own views already read (#753).
+//
+// Written on every change rather than once on the way in and once on the way
+// out, because a renewal moves the expiry an operator is reading: a details
+// line still naming the first lease's expiry would be a run reporting it was
+// about to resume, for as long as somebody kept holding it. Through
+// [executor.detailsCtx] for the reason that field's own doc gives.
+//
+// It takes the lease rather than reading `e.debug.lease`, because the two
+// differ in exactly the case worth being right about: a session granted while
+// this boundary was parked is a real lease that is not holding *this* step, and
+// reporting it here would put a "held" line on a run that is walking on.
+func (e *executor) showDebugLease(lease *v1.DebugSession) {
+	e.progress.setDebugLease(lease)
 	if e.progress != nil {
 		workflow.SetCurrentDetails(e.detailsCtx, e.progress.currentDetailsMarkdown())
 	}

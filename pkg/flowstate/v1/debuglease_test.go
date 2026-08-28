@@ -56,6 +56,42 @@ func TestADebugLeaseIsHonouredUpToTheCeilingAndNeverPastIt(t *testing.T) {
 		"the default has to be reachable, or every ask is silently capped")
 }
 
+// TestTheTwoLeaseBoundsAreBothReachable checks which of them decides, in the
+// cases where they differ.
+//
+// Two bounds over one instant is exactly the shape where a test can be green
+// against a function that only ever applies one of them: real asks mostly sit
+// well inside both, so the interesting inputs have to be built rather than
+// waited for.
+func TestTheTwoLeaseBoundsAreBothReachable(t *testing.T) {
+	t.Parallel()
+
+	granted := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
+	deadline := v1.DebugHoldDeadline(granted)
+
+	assert.Equal(t, granted.Add(30*time.Second),
+		v1.BoundDebugLeaseExpiry(granted, 30*time.Second, deadline),
+		"an ask inside both bounds is honoured at its value")
+
+	// The per-ask ceiling decides: asked at the very start, for longer than one
+	// ask may buy, with the whole session still ahead of it.
+	assert.Equal(t, granted.Add(v1.MaxDebugLease),
+		v1.BoundDebugLeaseExpiry(granted, 365*24*time.Hour, deadline.Add(time.Hour)),
+		"the per-ask ceiling did not decide where it is the tighter of the two")
+
+	// The session deadline decides: a modest ask, late in a session.
+	assert.Equal(t, deadline,
+		v1.BoundDebugLeaseExpiry(deadline.Add(-time.Second), time.Minute, deadline),
+		"the session deadline did not decide where it is the tighter of the two")
+
+	// Past the deadline, the answer is the deadline — which is in the past, so
+	// it holds nothing. Fail-closed rather than clamped to "now".
+	spent := v1.BoundDebugLeaseExpiry(deadline.Add(time.Hour), time.Minute, deadline)
+	assert.Equal(t, deadline, spent)
+	assert.True(t, spent.Before(deadline.Add(time.Hour)),
+		"an expiry answered for a spent session has to be in that ask's own past, or it holds the run")
+}
+
 // TestAWorkflowWithNoDebugStanzaIsNotDebuggable is the fail-closed zero case,
 // and the one place this policy differs from its neighbour.
 //
@@ -308,7 +344,8 @@ func TestADebugLeaseTakesEveryFactFromWhatWasAttested(t *testing.T) {
 		AcceptedAt: timestamppb.New(accepted),
 	}
 
-	lease := v1.NewDebugLease("run-1/debug/0", &v1.RunAddress{RunId: "run-1"}, sender, noticed, 45*time.Second)
+	lease := v1.NewDebugLease("run-1/debug/0", &v1.RunAddress{RunId: "run-1"}, sender, noticed,
+		45*time.Second, v1.DebugHoldDeadline(noticed))
 
 	assert.Equal(t, "sre-1", lease.GetAttachedBy().GetSubject(),
 		"the holder is the identity the server attested")
@@ -318,11 +355,111 @@ func TestADebugLeaseTakesEveryFactFromWhatWasAttested(t *testing.T) {
 		"the lease runs from the boundary's own deterministic clock")
 	assert.False(t, lease.GetLocal(), "a durable lease is never marked local")
 
-	capped := v1.NewDebugLease("run-1/debug/0", nil, sender, noticed, 365*24*time.Hour)
+	capped := v1.NewDebugLease("run-1/debug/0", nil, sender, noticed,
+		365*24*time.Hour, v1.DebugHoldDeadline(noticed))
 	assert.Equal(t, noticed.Add(v1.MaxDebugLease), capped.GetLeaseExpiresAt().AsTime(),
 		"an over-long request is cut where it is built, not where it is read")
 
 	require.NoError(t, v1.Validate(lease), "the lease is a message the schema accepts")
+}
+
+// TestASessionsHoldIsBoundedHoweverOftenItsHolderAsks is the renewal bound: a
+// per-ask ceiling bounds one ask, and how many asks arrive is the holder's own
+// choice, so the figure that matters is what they add up to.
+//
+// The honoured direction runs first and twice — a renewal that really does move
+// the expiry, and one that really is refused — because a clamp that answered the
+// deadline for *every* renewal would satisfy the refusal on its own, and only a
+// renewal that moves can tell a ceiling from a constant.
+func TestASessionsHoldIsBoundedHoweverOftenItsHolderAsks(t *testing.T) {
+	t.Parallel()
+
+	granted := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
+	deadline := v1.DebugHoldDeadline(granted)
+
+	require.Equal(t, granted.Add(v1.MaxDebugLease), deadline,
+		"a session's whole hold is bounded by the same figure one ask is, rather than by a second number")
+
+	sender := &v1.SignalSender{
+		Identity:   debugIdentity("https://idp.example", "sre-1", nil),
+		AcceptedAt: timestamppb.New(granted),
+	}
+	lease := v1.NewDebugLease("run-1/debug/0", &v1.RunAddress{RunId: "run-1"}, sender,
+		granted, 30*time.Second, deadline)
+
+	// A renewal inside the deadline is honoured at its value.
+	renewed := v1.ExtendDebugLease(lease, granted.Add(20*time.Second), time.Minute, deadline)
+	assert.Equal(t, granted.Add(80*time.Second), renewed.GetLeaseExpiresAt().AsTime(),
+		"a renewal well inside the session's deadline is honoured at what it asked for")
+	assert.True(t, v1.DebugLeaseHeld(renewed, granted.Add(70*time.Second)),
+		"and holds the run")
+
+	// One that would reach past it is cut to it, so the total hold is the
+	// deadline however many asks arrive.
+	late := v1.ExtendDebugLease(lease, deadline.Add(-time.Second), v1.MaxDebugLease, deadline)
+	assert.Equal(t, deadline, late.GetLeaseExpiresAt().AsTime(),
+		"a renewal reaching past the session's deadline was allowed to widen it")
+	assert.False(t, v1.DebugLeaseHeld(late, deadline),
+		"and the run resumes at the deadline rather than a moment after it")
+
+	// And a renewal arriving after the deadline buys nothing at all, which is
+	// the fail-closed direction: a spent session cannot ask itself alive.
+	spent := v1.ExtendDebugLease(lease, deadline.Add(time.Minute), time.Minute, deadline)
+	assert.False(t, v1.DebugLeaseHeld(spent, deadline.Add(time.Minute)),
+		"a session past its deadline renewed itself back into holding the run")
+
+	// A hundred renewals are one deadline, which is the claim in the shape the
+	// wedge would take: a debugger asking again forever.
+	forever := lease
+	at := granted
+	for range 100 {
+		at = at.Add(time.Minute)
+		forever = v1.ExtendDebugLease(forever, at, v1.MaxDebugLease, deadline)
+	}
+	assert.False(t, at.Before(deadline),
+		"the loop has to reach past the deadline, or it proves nothing about it")
+	assert.Equal(t, deadline, forever.GetLeaseExpiresAt().AsTime(),
+		"renewing forever held the run past its session's deadline")
+}
+
+// TestARenewalIsTheSameSessionHeldLonger pins what renewal does *not* move.
+//
+// [v1.DebugSession.attached_at] is defined as when the server accepted the
+// attach, and a renewal is not an attach. Rebuilding the message from the
+// renewing ask moves that timestamp forward every time somebody asks, so a
+// session held for an hour reports having attached a minute ago — the record
+// saying the hold is younger than it is, which is the one fact an operator
+// meeting a stopped workload is reading it for.
+func TestARenewalIsTheSameSessionHeldLonger(t *testing.T) {
+	t.Parallel()
+
+	attached := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
+	deadline := v1.DebugHoldDeadline(attached)
+
+	lease := v1.NewDebugLease("run-1/debug/0", &v1.RunAddress{RunId: "run-1"},
+		&v1.SignalSender{
+			Identity:   debugIdentity("https://idp.example", "sre-1", map[string]string{"role": "sre"}),
+			AcceptedAt: timestamppb.New(attached),
+		}, attached, 30*time.Second, deadline)
+
+	renewed := v1.ExtendDebugLease(lease, attached.Add(20*time.Second), time.Minute, deadline)
+
+	assert.Equal(t, lease.GetSessionId(), renewed.GetSessionId(),
+		"a renewal is the same session, so it keeps its name")
+	assert.Equal(t, attached, renewed.GetAttachedAt().AsTime(),
+		"a renewal moved when the session says it attached")
+	assert.Equal(t, "sre-1", renewed.GetAttachedBy().GetSubject(),
+		"and who attached it")
+	assert.Equal(t, "run-1", renewed.GetRun().GetRunId(),
+		"and which run it is on")
+	assert.False(t, renewed.GetLocal(), "and that it is not a local session")
+
+	// The expiry is the one field a renewal exists to move, so the assertions
+	// above are about what stayed rather than about a function that copies.
+	assert.NotEqual(t, lease.GetLeaseExpiresAt().AsTime(), renewed.GetLeaseExpiresAt().AsTime(),
+		"the renewal moved nothing at all, so nothing above is evidence of anything")
+
+	require.NoError(t, v1.Validate(renewed), "a renewed lease is still a message the schema accepts")
 }
 
 // TestTheLeaseCeilingsAreDerivedRatherThanTyped pins the derivation itself.

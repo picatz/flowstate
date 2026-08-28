@@ -109,7 +109,9 @@ const (
 	// pause between them, and two numbers that mean one thing drift.
 	DefaultDebugLease = DefaultStartToCloseTimeout
 
-	// MaxDebugLease is the ceiling no ask can raise, whatever it requests.
+	// MaxDebugLease is the ceiling no ask can raise, whatever it requests —
+	// and, through [DebugHoldDeadline], the ceiling on everything one session
+	// does to a run rather than only on one ask.
 	//
 	// Written as [DefaultScheduleToCloseTimeout] for the reason above: that is
 	// the longest an ordinary step may legitimately take across every attempt,
@@ -122,6 +124,21 @@ const (
 	// budget raises what a debugger may hold for. That is the direction the
 	// derivation intends — the two are the same patience — but it is a
 	// consequence somebody changing one number should know they are choosing.
+	//
+	// # It is one number doing two jobs, deliberately
+	//
+	// A per-ask ceiling alone bounds nothing, because how many asks arrive is
+	// the holder's choice: renewing every nine minutes forever is a wedge with
+	// extra steps, and CLAUDE.md's rule is that bounding one resource does not
+	// bound another the peer controls the ratio to. So the same figure bounds
+	// the whole session through [DebugHoldDeadline], and a second constant for
+	// "the total" is deliberately not written — two numbers meaning one
+	// patience are two numbers that drift.
+	//
+	// What that costs, stated: a holder who asks for the ceiling up front
+	// cannot renew at all, because their first ask already spent the session.
+	// Renewal is for the holder who asked for thirty seconds and needs two
+	// minutes, which is the shape a stepping debugger actually has.
 	MaxDebugLease = DefaultScheduleToCloseTimeout
 
 	// MaxDebugAsksPerBoundary bounds how many buffered debug asks one step
@@ -279,6 +296,61 @@ func BoundDebugLease(requested time.Duration) time.Duration {
 	return min(requested, MaxDebugLease)
 }
 
+// DebugHoldDeadline answers the instant a session granted at grantedAt stops
+// being able to hold a run, whatever it asks for after that.
+//
+// # Why a session needs a deadline as well as a lease
+//
+// [BoundDebugLease] bounds one ask. It does not bound a holder, because how
+// many asks arrive is the holder's own choice: a debugger renewing every nine
+// minutes holds a production workload forever while every individual lease sits
+// politely inside the ceiling. That is CLAUDE.md's rule in its own words —
+// bounding one resource does not bound another the peer controls the ratio to —
+// and the resource the holder controls here is the *number* of asks, so the
+// bound has to be on what they add up to.
+//
+// The deadline is anchored at the grant rather than at each boundary, which is
+// the stronger of the two readings: it bounds everything one session does to a
+// run, not merely what it does at the boundary it is parked on. Combined with
+// the engine's rule that a session which has ended does not hold the same
+// boundary again (`holdForDebugLease`), that yields the property the whole
+// mechanism exists for: **a debugged run advances at least one step per
+// [MaxDebugLease], however many asks arrive from however many callers.**
+//
+// A holder who genuinely needs longer asks again, and their new session holds
+// the *next* boundary — so the price of more time is the run making progress,
+// which is exactly the trade #928 decided when it answered "resume" to the
+// abandoned-session question.
+func DebugHoldDeadline(grantedAt time.Time) time.Time {
+	return grantedAt.Add(MaxDebugLease)
+}
+
+// BoundDebugLeaseExpiry answers when a lease taken or renewed at now, for the
+// duration an ask requested, actually lapses.
+//
+// Two bounds, applied in this order because they answer different questions:
+// [BoundDebugLease] says what one ask may buy, and deadline says what the
+// session has left. Whichever runs out first ends the hold.
+//
+// The clamp is on what the lease *says* rather than only on what the engine
+// does, because [DebugSession.lease_expires_at] is answered to operators: a
+// renewal that recorded an expiry past the session's deadline would be a
+// message promising a hold the run is going to end early, which is worse than
+// a short answer — somebody would plan around it.
+//
+// A renewal arriving after the deadline gets an expiry at or before now, so
+// [DebugLeaseHeld] answers false and the run resumes. That is the fail-closed
+// direction: a session past its deadline cannot buy itself another instant by
+// asking, which is the whole point of there being a deadline.
+func BoundDebugLeaseExpiry(now time.Time, requested time.Duration, deadline time.Time) time.Time {
+	expiry := now.Add(BoundDebugLease(requested))
+	if expiry.After(deadline) {
+		return deadline
+	}
+
+	return expiry
+}
+
 // DebugLeaseRequested reads the duration a pause ask asked for out of its
 // payload, or zero when it asked for none.
 //
@@ -328,8 +400,17 @@ func DebugLeaseRequested(payload *Node_Outputs) time.Duration {
 //
 // sessionID names the lease. Stage 2 has no attach RPC to mint one, so the
 // caller derives it from facts the run already has; see the engine's
-// `debugSessionID` for the derivation and for why it is deterministic.
-func NewDebugLease(sessionID string, run *RunAddress, sender *SignalSender, now time.Time, requested time.Duration) *DebugSession {
+// `debugControl.sessionID` for the derivation and for why it is deterministic.
+//
+// deadline is the session's own, from [DebugHoldDeadline] over this same
+// instant. It is passed in rather than computed here so that the *one* value
+// bounding this session — the one a later [ExtendDebugLease] is held to — is
+// computed once and stored, rather than recomputed from a `now` that has by
+// then moved on.
+func NewDebugLease(
+	sessionID string, run *RunAddress, sender *SignalSender,
+	now time.Time, requested time.Duration, deadline time.Time,
+) *DebugSession {
 	return &DebugSession{
 		SessionId: sessionID,
 		Run:       run,
@@ -347,9 +428,39 @@ func NewDebugLease(sessionID string, run *RunAddress, sender *SignalSender, now 
 		// accepted something it had not yet seen.
 		AttachedAt: sender.GetAcceptedAt(),
 
-		// Local is false and stays false. This message describes a durable run;
-		// [DebugSession.local] marks the other kind, which has no lease at all.
-		LeaseExpiresAt: timestamppb.New(now.Add(BoundDebugLease(requested))),
+		// Local is left false and stays false. This message describes a durable
+		// run; [DebugSession.local] marks the other kind, which has no lease at
+		// all.
+		LeaseExpiresAt: timestamppb.New(BoundDebugLeaseExpiry(now, requested, deadline)),
+	}
+}
+
+// ExtendDebugLease is the holder asking again: the same session, held longer,
+// and never past deadline.
+//
+// # Everything except the expiry is the session's, not this ask's
+//
+// A renewal is not an attach, and [DebugSession.attached_at] is defined as
+// "when the server accepted the attach". Rebuilding the message from the
+// renewing ask would move that timestamp forward every time somebody asked, so
+// a session held for an hour would report having attached a minute ago — the
+// record saying the hold is younger than it is, which is precisely the fact an
+// operator meeting a stopped workload needs to be true. The same argument
+// keeps [DebugSession.attached_by]: the identity is the one attested when the
+// session began, and `DebugLeaseHolder` has already established that this ask
+// comes from that same qualified subject.
+//
+// So a renewal moves exactly one field, and that is the whole of what renewal
+// means.
+func ExtendDebugLease(lease *DebugSession, now time.Time, requested time.Duration, deadline time.Time) *DebugSession {
+	return &DebugSession{
+		SessionId:  lease.GetSessionId(),
+		Run:        lease.GetRun(),
+		AttachedBy: lease.GetAttachedBy(),
+		AttachedAt: lease.GetAttachedAt(),
+		Local:      lease.GetLocal(),
+
+		LeaseExpiresAt: timestamppb.New(BoundDebugLeaseExpiry(now, requested, deadline)),
 	}
 }
 

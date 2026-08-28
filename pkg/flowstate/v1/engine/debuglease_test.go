@@ -348,6 +348,86 @@ func TestTheHolderRenewsByAskingAgain(t *testing.T) {
 		"the holder's second ask should have extended the hold from when it arrived")
 }
 
+// TestRenewingForeverStillEndsTheHold is the wedge with extra steps, driven
+// through the real driver: a holder who asks again every thirty seconds, out to
+// well past the session's deadline, holds the run for [v1.MaxDebugLease] and
+// not one renewal longer.
+//
+// [TestTheHolderRenewsByAskingAgain] above is the positive direction and has to
+// stay beside this one: without it, a driver that ignored renewals entirely
+// would pass this test with the strongest possible answer and the wrong
+// mechanism.
+func TestRenewingForeverStillEndsTheHold(t *testing.T) {
+	t.Parallel()
+
+	// One holder, asking for the ceiling every thirty seconds, out to three
+	// whole leases past the boundary that first takes one.
+	const lastAsk = settleFor + 3*v1.MaxDebugLease
+
+	script := map[time.Duration][]scriptedAsk{}
+	for at := 30 * time.Second; at <= lastAsk; at += 30 * time.Second {
+		script[at] = []scriptedAsk{pauseAt("sre-1@example.com", v1.MaxDebugLease)}
+	}
+	require.Greater(t, len(script), 2,
+		"the script has to renew more than once, or it says nothing about renewal")
+
+	elapsed, outputs := runHeldFor(t, debugSpec("renewed-forever"), script)
+
+	// [debugSpec] has two boundaries a lease can hold — before `first` and
+	// before `second` — and this is the whole of the guarantee: one session's
+	// hold per boundary, so the run advances a step per [v1.MaxDebugLease]
+	// however long the asks keep coming.
+	assert.Equal(t, settleFor+2*v1.MaxDebugLease, elapsed,
+		"a run under a debugger who never stops asking has to advance a step per session, and "+
+			"this one did not")
+	assert.Contains(t, outputs.GetStepValues(), "second",
+		"and it finished rather than failing when a session ran out")
+
+	// What the figure above is being told apart from, said in the test rather
+	// than left to arithmetic: renewal without a session deadline extends the
+	// *first* hold to the last ask plus a full lease, and the run then finishes
+	// twenty minutes later than this. Asserting the smaller number alone would
+	// not say that the larger one is what a defect looks like.
+	assert.Less(t, elapsed, lastAsk+v1.MaxDebugLease,
+		"the hold ran to the last ask plus a lease, which is renewal bounded by nothing")
+}
+
+// TestASecondSessionDoesNotHoldTheSameBoundary is the other half of that bound,
+// and the half a deadline alone cannot close: holders taking turns.
+//
+// Every lease here is inside its own ceiling and nobody renews anything, so the
+// per-session deadline has nothing to say — and yet a run that let each new
+// grant inherit the park it arrived during would sit at one step for as long as
+// asks kept coming. What must happen instead is that the run walks on, and the
+// new session holds the *next* boundary.
+//
+// Read through timing rather than through a position query for the reason
+// [TestAStepTheConditionSkippedIsNeverAPausePoint] is: the claim is about which
+// boundary a hold lands on, and one hold costs the same wherever it lands.
+func TestASecondSessionDoesNotHoldTheSameBoundary(t *testing.T) {
+	t.Parallel()
+
+	// `settle` ends at t=60s, where the first lease is taken and runs to
+	// t=120s. A second caller's ask lands while the first is still holding, so
+	// it is refused (the run is held); a third lands after the first has
+	// lapsed. If that third grant re-held the same boundary, `first` would not
+	// run until t=180s and the run would end there.
+	elapsed, outputs := runHeldFor(t, debugSpec("taking-turns"), map[time.Duration][]scriptedAsk{
+		30 * time.Second:  {pauseAt("sre-1@example.com", time.Minute)},
+		90 * time.Second:  {pauseAt("sre-2@example.com", time.Minute)},
+		120 * time.Second: {pauseAt("sre-3@example.com", time.Minute)},
+	})
+
+	// t=120s the first lapses and the run walks on; sre-3's grant is taken as
+	// the run leaves, and holds the *next* boundary from t=120s to t=180s.
+	assert.Equal(t, 180*time.Second, elapsed,
+		"a session granted while a boundary was parked either inherited that park — holding one "+
+			"step for two leases — or was dropped, and both are wrong")
+	assert.Contains(t, outputs.GetStepValues(), "first",
+		"the step the first lease was holding really ran between the two holds")
+	assert.Contains(t, outputs.GetStepValues(), "second")
+}
+
 // TestNoAskCanHoldARunPastTheCeiling is the "non-negotiable upward" half,
 // asserted where it matters rather than only on the arithmetic: an ask for ten
 // hours holds the run for [v1.MaxDebugLease] and not a moment longer.
