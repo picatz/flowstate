@@ -428,6 +428,78 @@ func TestASecondSessionDoesNotHoldTheSameBoundary(t *testing.T) {
 	assert.Contains(t, outputs.GetStepValues(), "second")
 }
 
+// TestAnAskPutByDuringAHoldSurvivesContinueAsNew is the sharp edge of putting an
+// ask by rather than acting on it: something has to be holding it, and the only
+// place a delivery survives a segment boundary is the run's carried state.
+//
+// The window is narrow and entirely reachable — a pause ask that lands while
+// the run is already held, and a segment that runs out of budget before the
+// next boundary — and getting it wrong is invisible: a `flow signal` that
+// reported success, and a debugger that waits at a prompt for a run that is
+// never going to stop.
+//
+// A budget of two suspends after two steps, which puts the seam between the
+// boundary that holds and the boundary the put-by ask is owed.
+func TestAnAskPutByDuringAHoldSurvivesContinueAsNew(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+
+	// The first lease is taken at t=60s and lapses at t=90s. The second ask
+	// lands at exactly that instant — the one wake where the run is still
+	// inside the hold and nothing holds it — so it is put by for the boundary
+	// after this one, which is on the far side of the Continue-As-New.
+	//
+	// The tie is the point rather than an accident of the fixture: an ask a
+	// moment earlier is refused (somebody holds the run) and one a moment later
+	// is read at the next boundary like any other. It is the same window a
+	// production timer and a signal landing in one workflow task produce.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-1@example.com", 30*time.Second))
+	}, 30*time.Second)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugPauseSignal, debugAsk("sre-2@example.com", time.Minute))
+	}, 90*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: debugSpec("put-by-across-the-seam"), StepsBudget: 2})
+
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continueAsNew)
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried),
+		"could not read the state the suspended run carried")
+
+	var putBy []*v1.PendingSignal
+	for _, pending := range carried.GetPendingSignals() {
+		if pending.GetName() == v1.DebugPauseSignal {
+			putBy = append(putBy, pending)
+		}
+	}
+
+	require.Len(t, putBy, 1,
+		"the ask that arrived during the hold was dropped at the Continue-As-New seam, which is a "+
+			"`flow signal` that reported success and did nothing")
+	assert.Equal(t, "sre-2@example.com", putBy[0].GetSender().GetIdentity().GetSubject(),
+		"and it is the ask that was put by, carried with the sender the server attested")
+
+	// And the segment that receives it acts on it, so the carry is a delivery
+	// rather than a record of one.
+	second := newWaitEnv(t)
+	start := second.Now()
+	second.ExecuteWorkflow(engine.Run, &carried)
+
+	require.True(t, second.IsWorkflowCompleted())
+	assert.GreaterOrEqual(t, second.Now().Sub(start), time.Minute,
+		"the put-by ask should hold the first boundary the next segment reaches")
+}
+
 // TestNoAskCanHoldARunPastTheCeiling is the "non-negotiable upward" half,
 // asserted where it matters rather than only on the arithmetic: an ask for ten
 // hours holds the run for [v1.MaxDebugLease] and not a moment longer.

@@ -52,19 +52,20 @@ func TestRunWorkflowDebuggerBoundaries(t *testing.T) {
 			assert.Equal(t, test.Offered, offers.seen(),
 				"the boundaries offered are not the ones the corpus states")
 
-			// The local half of [conformance.DebuggerCase.Held]: every place a
-			// durable lease says it can hold is a place this driver really
-			// stopped. The durable half asserts the lease takes effect there;
-			// this one asserts the two drivers are talking about the same
-			// boundaries, which is the claim a durable-only assertion could not
-			// make on its own.
+			// The local half of [conformance.DebuggerCase.Held], and the link
+			// that makes the corpus's own invariant mean something about a real
+			// run: `TestEveryHeldBoundaryIsOneTheCorpusOffers` next to the
+			// corpus says every held id is an offered one, in order, and the
+			// assertion above says the offered list is what this driver
+			// actually does. Restating the subsequence rule here would be that
+			// check written twice, in the weaker of the two places — this one
+			// cannot see the other cases and would drift into a subset test,
+			// which is what it was.
 			require.NotEmpty(t, test.Held,
 				"a case with no holdable boundary states nothing about the durable driver")
-			assert.Subset(t, offers.seen(), test.Held,
-				"the durable driver claims it can hold at a boundary this driver never offered, "+
+			assert.Contains(t, offers.seen(), test.Held[0],
+				"the boundary a durable lease holds first is not one this driver ever offered, "+
 					"so the two disagree about which boundaries a run has")
-			assert.LessOrEqual(t, len(test.Held), len(test.Offered),
-				"a lease holds at a subset of the boundaries a session is offered, never a superset")
 		})
 	}
 }

@@ -118,7 +118,7 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 		return
 	}
 
-	e.applyDebugAsks()
+	e.applyDebugAsks(false)
 
 	if !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
 		return
@@ -129,13 +129,21 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 
 // applyDebugAsks consumes the pause and resume asks waiting for this run.
 //
+// parked says whether the run is already held at a boundary, which changes one
+// answer and one only: an ask that would start a *new* session is put by for
+// the next boundary rather than acted on here. See [executor.applyDebugAsk].
+//
 // Carried asks first and buffered ones after, which is arrival order: a carried
 // ask is one an earlier segment drained off the channel before it continued as
 // new, so it necessarily arrived before anything still sitting on the channel
-// now.
-func (e *executor) applyDebugAsks() {
-	for _, name := range v1.DebugSignalNames() {
-		for e.takeCarriedDebugAsk(name) {
+// now. Carried asks are read only at a boundary — never while parked — because
+// putting an ask by is *writing* to that same carry, and a loop that read what
+// it had just written would never end.
+func (e *executor) applyDebugAsks(parked bool) {
+	if !parked {
+		for _, name := range v1.DebugSignalNames() {
+			for e.takeCarriedDebugAsk(name) {
+			}
 		}
 	}
 
@@ -153,7 +161,7 @@ func (e *executor) applyDebugAsks() {
 				break
 			}
 
-			e.applyDebugAsk(name, &delivery)
+			e.applyDebugAsk(name, &delivery, parked)
 		}
 	}
 }
@@ -166,9 +174,34 @@ func (e *executor) takeCarriedDebugAsk(name string) bool {
 		return false
 	}
 
-	e.applyDebugAsk(name, &v1.SignalDelivery{Payload: payload, Sender: sender})
+	e.applyDebugAsk(name, &v1.SignalDelivery{Payload: payload, Sender: sender}, false)
 
 	return true
+}
+
+// deferDebugAsk puts an ask by for the next step boundary, on the same carry an
+// early-arriving approval waits on.
+//
+// This is what makes "one session holds one boundary" a rule about where an ask
+// is *acted on* rather than a rule about a loop: a pause ask that arrives during
+// a hold is neither obeyed here nor thrown away, it waits one step.
+//
+// The carry rather than a field of [debugControl], because the carry is the one
+// place a delivery survives a Continue-As-New — `drainSignals` starts from it
+// (workflow.go) and [v1.CheckRunStateSize] weighs it. An ask held anywhere else
+// would vanish at a seam, which is a `flow signal` that reported success and did
+// nothing: the exact failure `drainSignals` and `drainDebugAsks` both exist to
+// prevent, arriving through the one door neither of them watches.
+func (e *executor) deferDebugAsk(name string, delivery *v1.SignalDelivery) {
+	if e.signals == nil {
+		return
+	}
+
+	e.signals.pending = append(e.signals.pending, &v1.PendingSignal{
+		Name:    name,
+		Payload: delivery.GetPayload(),
+		Sender:  delivery.GetSender(),
+	})
 }
 
 // applyDebugAsk is the whole of what an ask can do to a lease.
@@ -177,7 +210,7 @@ func (e *executor) takeCarriedDebugAsk(name string) bool {
 // what it decided and about whom. The server already refused a caller the
 // workflow's `debug:` policy does not admit — this is the second half, the part
 // only the run knows: whether somebody else is already holding it.
-func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery) {
+func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery, parked bool) {
 	logger := workflow.GetLogger(e.ctx)
 	sender := delivery.GetSender()
 	who := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
@@ -263,6 +296,27 @@ func (e *executor) applyDebugAsk(name string, delivery *v1.SignalDelivery) {
 			return
 		}
 
+		// A new session is never started from inside a hold. Without this, a
+		// queue of holders takes turns at one step — every lease inside its own
+		// ceiling, every session inside its own deadline, and the run still
+		// never moving — which is the wedge [v1.DebugHoldDeadline] cannot see,
+		// because nothing about it is over-long.
+		//
+		// Put by rather than refused: the ask is a legitimate one from a caller
+		// the policy admits, and it gets the boundary after this one. So the
+		// price of a second debugger is that the run runs a step, which is the
+		// same trade #928 made when it answered "resume" to the abandoned
+		// session.
+		if parked {
+			e.deferDebugAsk(name, delivery)
+
+			logger.Info("a debug pause ask arrived while this run was already held; it takes the "+
+				"next step boundary rather than this one, so the run makes progress between holds",
+				"sender", who)
+
+			return
+		}
+
 		e.debug.granted++
 		e.debug.holdUntil = v1.DebugHoldDeadline(now)
 		e.debug.lease = v1.NewDebugLease(
@@ -299,25 +353,22 @@ func (e *executor) releaseDebugLease() {
 //
 // # One session, one boundary
 //
-// The loop ends when *this* session stops holding, and a session granted while
-// it is parked does not inherit the park. That is the second half of the wedge
-// bound, and it is a different half from [v1.DebugHoldDeadline]: the deadline
-// stops one holder renewing forever, and this stops a queue of holders taking
-// turns at the same step — each new grant is inside its own ceiling, so no
-// lease is ever over-long and the run still never moves. What the two together
-// buy is that the run runs a step between any two holds, which is the only
-// version of "expiry resumes the run" that a second ask cannot undo.
+// This loop can only ever be one session's, and that is enforced where the ask
+// is decided rather than here: `applyDebugAsks(true)` puts a would-be new
+// session by for the next boundary instead of starting it
+// ([executor.deferDebugAsk]). So the exit condition is the plain one — is this
+// lease still holding — and there is no second, unreachable check beside it
+// pretending to guard something.
 //
-// A lease granted while parked is not discarded: it holds the *next* boundary,
-// one step later. So an ask is never lost, it is paced — the same word
-// [v1.MaxDebugAsksPerBoundary] earns for the drain.
+// It is the second half of the wedge bound, and a different half from
+// [v1.DebugHoldDeadline]: the deadline stops one holder renewing forever, and
+// this stops a queue of holders taking turns at the same step, where each grant
+// is inside its own ceiling and the run still never moves. Together they buy
+// the run a step between any two holds — the only version of "expiry resumes
+// the run" that a second ask cannot undo.
 func (e *executor) holdForDebugLease(node *v1.Node) {
 	logger := workflow.GetLogger(e.ctx)
 
-	// The session this park belongs to, read once. Every later comparison is
-	// against this rather than against "is anything holding", because those two
-	// questions have different answers exactly when somebody else has taken the
-	// run over — which is the case this is about.
 	session := e.debug.lease.GetSessionId()
 
 	logger.Info("holding the run at a step boundary under a debug lease",
@@ -327,7 +378,7 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 
 	for {
 		now := workflow.Now(e.ctx)
-		if !e.holdsSession(session, now) {
+		if !v1.DebugLeaseHeld(e.debug.lease, now) {
 			break
 		}
 
@@ -402,36 +453,18 @@ func (e *executor) holdForDebugLease(node *v1.Node) {
 		// Nothing is read off the channel by the selector's callback: a
 		// delivery is applied here, through the one function that applies every
 		// ask, so a resume that arrives while parked is decided by the same
-		// holder rules a resume that arrives between boundaries is.
-		e.applyDebugAsks()
+		// holder rules a resume that arrives between boundaries is. `true`
+		// because this is the parked call — the one where a would-be new
+		// session is put by rather than started.
+		e.applyDebugAsks(true)
 
 		// Whatever that changed, the loop's own condition decides what happens
-		// next: this session still holding re-parks, and anything else — it let
-		// go, it lapsed, or somebody else's session now holds the run — leaves.
-		// A grant that arrived just now therefore holds the next boundary
-		// rather than this one, which is what keeps a queue of debuggers from
-		// stopping a run at one step forever.
+		// next: this lease still holding re-parks, and it having been let go or
+		// lapsed leaves.
 	}
 
-	// Nothing is holding this boundary any more, whichever way that happened —
-	// including the way where a lease does still exist, because it belongs to a
-	// session that will hold the *next* boundary. "Held here" is what this line
-	// reports, and it is false the moment this returns.
+	// Nothing is holding this boundary any more, whichever way that happened.
 	e.showDebugLease(nil)
-}
-
-// holdsSession reports whether the lease this run is under is still session's,
-// and still holding at now.
-//
-// The two halves are one question asked of one value, and separating them is
-// what a caller would get wrong: "is anything holding" re-parks on somebody
-// else's lease, and "is this session's lease still here" re-parks on one that
-// has lapsed. Written as a function rather than inline because that is the only
-// shape a fixture can drive — the engine's own state always agrees with itself,
-// so a comparison written where the state is read is one no test can reach
-// (CLAUDE.md, "assert where the answers differ").
-func (e *executor) holdsSession(session string, now time.Time) bool {
-	return e.debug.lease.GetSessionId() == session && v1.DebugLeaseHeld(e.debug.lease, now)
 }
 
 // showDebugLease publishes the lease holding the run *here* — or nil, that
