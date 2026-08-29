@@ -156,7 +156,7 @@ func TestReplacedGuidanceKeepsFieldNotes(t *testing.T) {
 	}
 }
 
-func TestAmpSettingsUsePortableSkillsAndGuardWrites(t *testing.T) {
+func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
 	data := read(t, filepath.Join(repoRoot(t), ".amp", "settings.json"))
 	var settings struct {
 		DisableClaudeSkills bool            `json:"amp.skills.disableClaudeCodeSkills"`
@@ -175,7 +175,6 @@ func TestAmpSettingsUsePortableSkillsAndGuardWrites(t *testing.T) {
 		matchValue  string
 		description string
 	}{
-		{tool: "Bash", matchKey: "cmd", matchValue: "*git*push*", description: "shell-level git push"},
 		{tool: "Bash", matchKey: "cmd", matchValue: "*gh*pr*merge*", description: "GitHub CLI pull-request merge"},
 		{tool: "Bash", matchKey: "cmd", matchValue: "*gh*release*", description: "GitHub CLI release mutation"},
 		{tool: "mcp__github__merge_pull_request", description: "GitHub MCP pull-request merge"},
@@ -187,6 +186,10 @@ func TestAmpSettingsUsePortableSkillsAndGuardWrites(t *testing.T) {
 		if !hasAmpPermission(settings.Permissions, guard.tool, "ask", guard.matchKey, guard.matchValue) {
 			t.Errorf("Amp permissions must ask before %s", guard.description)
 		}
+	}
+
+	if hasAmpPermission(settings.Permissions, "Bash", "ask", "cmd", "*git*push*") {
+		t.Error("routine git push must remain autonomous; reserve approval prompts for high-impact actions")
 	}
 }
 
