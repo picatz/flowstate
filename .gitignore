@@ -66,8 +66,11 @@ go.work
 
 # `make release-artifacts` output. Release archives, checksums, and SBOMs are
 # uploaded by the release workflow; they are products of a tagged commit, not
-# source files to commit back into it.
+# source files to commit back into it. The sibling staging directory is ignored
+# at any output depth so `go build -buildvcs=true` sees the source tree's real
+# status rather than marking every release binary modified by its own output.
 /dist/
+.flowstate-release-*/
 
 # Per-orb portal metadata is runtime state, not repository configuration.
 .amp/portals/*
