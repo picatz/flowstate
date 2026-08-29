@@ -52,6 +52,8 @@ option go_package = "flowstatepluginv1";
 // know, and a plugin ignores requests for capabilities it did not advertise, so
 // an older plugin keeps working against a newer engine and vice versa.
 enum Capability {
+  // Unspecified is not a usable capability. Manifests containing it are rejected
+  // rather than treating an absent capability as permission to use a service.
   CAPABILITY_UNSPECIFIED = 0;
 
   // Resolves secret references. See SecretService.
@@ -161,12 +163,22 @@ message TaskManifest {
   // Summary is one line, shown by `flow tasks` and in editor completion.
   string summary = 2 [(buf.validate.field).string = {max_len: 256}];
 
-  // Inputs and outputs are serialized FileDescriptorProtos plus the full name of
-  // the message within them, so the engine can validate inputs against the
-  // plugin's own schema without compiling the plugin's code.
+  // InputDescriptor is a serialized FileDescriptorSet containing the input
+  // message's schema and any dependencies the host does not already provide.
+  // When input_message is set, empty bytes mean the host already has every
+  // required descriptor.
   bytes input_descriptor = 3;
+
+  // InputMessage is the input message's fully qualified protobuf name. The host
+  // resolves it from input_descriptor and its own descriptor registry.
   string input_message = 4 [(buf.validate.field).string = {max_len: 256}];
+
+  // OutputDescriptor is a serialized FileDescriptorSet for the task's output
+  // schema, with the same dependency and empty-value rules as input_descriptor.
   bytes output_descriptor = 5;
+
+  // OutputMessage is the output message's fully qualified protobuf name. The host
+  // resolves it from output_descriptor and its own descriptor registry.
   string output_message = 6 [(buf.validate.field).string = {max_len: 256}];
 
   // DeferredInputs are inputs whose expressions the task evaluates itself, in a
@@ -300,23 +312,35 @@ service PluginService {
   rpc Health(HealthRequest) returns (HealthResponse) {}
 }
 
+// DescribeRequest carries host facts a plugin may use before advertising its
+// manifest.
 message DescribeRequest {
   // HostVersion tells the plugin what it is talking to, so a plugin can refuse an
   // engine it knows it cannot serve.
   string host_version = 1 [(buf.validate.field).string = {max_len: 64}];
 }
 
+// DescribeResponse carries the plugin's identity and capabilities. The host
+// validates the manifest before making any capability-specific call.
 message DescribeResponse {
+  // Manifest is the plugin's required identity and capability declaration.
   PluginManifest manifest = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
 }
 
+// HealthRequest is empty because health applies to the plugin process and its
+// dependencies, not to one task or tenant.
 message HealthRequest {}
 
+// HealthResponse distinguishes a reachable plugin that can serve from one whose
+// own dependency is unavailable.
 message HealthResponse {
+  // Status is the plugin's current ability to accept capability-specific calls.
   enum Status {
+    // Unspecified fails closed as not serving. A plugin must affirmatively report
+    // serving before the host dispatches work to it.
     STATUS_UNSPECIFIED = 0;
 
     // Serving means requests will be attempted.
@@ -329,6 +353,8 @@ message HealthResponse {
     STATUS_NOT_SERVING = 2;
   }
 
+  // Status determines whether the host considers the plugin available. Any value
+  // other than STATUS_SERVING is treated as not serving.
   Status status = 1;
 
   // Message explains a non-serving status, for the operator. It must not contain
@@ -343,9 +369,13 @@ message HealthResponse {
 // only inside the activity that asked for it. It is never returned as a step
 // output and never enters workflow history.
 service SecretService {
+  // Resolve asks the plugin to resolve one opaque secret reference under the
+  // workload identity and tenant context carried in the request.
   rpc Resolve(ResolveRequest) returns (ResolveResponse) {}
 }
 
+// ResolveRequest identifies the secret and the host-established workload context
+// under which it may be read.
 message ResolveRequest {
   // Ref is the secret to resolve. Its scheme is one the plugin advertised.
   flowstate.v1.SecretRef ref = 1 [
@@ -364,6 +394,8 @@ message ResolveRequest {
   flowstate.v1.WorkloadIdentity identity = 3;
 }
 
+// ResolveResponse returns secret material to the worker activity that requested
+// it, optionally with a plugin-defined validity period.
 message ResolveResponse {
   // Value is the resolved secret. A plugin must not log it, and must not include
   // it in an error message.
@@ -377,6 +409,8 @@ message ResolveResponse {
 
 // TaskService executes tasks, for a plugin advertising CAPABILITY_TASKS.
 service TaskService {
+  // Execute runs one task to completion. On failure, the plugin may attach an
+  // ExecuteResponse error detail to classify retry safety and timing.
   rpc Execute(ExecuteRequest) returns (ExecuteResponse) {}
 
   // ExecuteStream is Execute, plus the phases a plugin passes through while it
@@ -414,12 +448,22 @@ service TaskService {
 // require of a distinct RPC's request type. The fields are identical and mean
 // the same thing; see ExecuteRequest for what each one is.
 message ExecuteStreamRequest {
+  // Task is the task and its host-resolved inputs.
   flowstate.v1.Task task = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
+
+  // Scope is present only when the manifest declares that the task needs the
+  // workflow's expression scope.
   flowstate.v1.Scope scope = 2;
+
+  // Identity is the host-established identity under which the task runs.
   flowstate.v1.WorkloadIdentity identity = 3;
+
+  // Namespace is the host-established tenant boundary for the task call. It is
+  // empty when the host has no tenant namespace, including the default local
+  // rehearsal posture.
   string namespace = 4 [(buf.validate.field).string = {max_len: 256}];
 }
 
@@ -430,6 +474,8 @@ message ExecuteStreamRequest {
 // sending a response is a protocol violation, not a call with an empty
 // result — see [Plugin.taskFunc]'s handling in plugin/task.go.
 message ExecuteStreamResponse {
+  // Message is one stream frame: either a best-effort progress update or the
+  // single terminal response.
   oneof message {
     // Progress is a phase the plugin has reached, sent best-effort at any
     // point before the terminal response.
@@ -455,6 +501,8 @@ message ExecuteStreamResponse {
 // and broadly readable, which is exactly where nothing derived from a task's
 // own inputs may go.
 message TaskProgress {
+  // Phase is the closed, non-sensitive status forwarded to activity heartbeat
+  // history; unspecified values are discarded.
   TaskPhase phase = 1;
 }
 
@@ -471,12 +519,21 @@ message TaskProgress {
 // report, and forwarding one would tell an operator a task said something it
 // did not.
 enum TaskPhase {
+  // Unspecified carries no progress and is dropped by the host.
   TASK_PHASE_UNSPECIFIED = 0;
+
+  // Requesting means the task is sending or awaiting an outbound request.
   TASK_PHASE_REQUESTING = 1;
+
+  // ReadingResponse means the task is consuming a response from its dependency.
   TASK_PHASE_READING_RESPONSE = 2;
+
+  // CallingPlugin means execution is waiting across a plugin process boundary.
   TASK_PHASE_CALLING_PLUGIN = 3;
 }
 
+// ExecuteRequest carries one task invocation and the host-established context the
+// plugin may use to evaluate or authorize it.
 message ExecuteRequest {
   // Task is the step's task, with its inputs already resolved unless the manifest
   // declared them deferred.
@@ -489,12 +546,18 @@ message ExecuteRequest {
   // manifest declared needs_scope.
   flowstate.v1.Scope scope = 2;
 
-  // Identity is who the workload acts as, and namespace the tenant it belongs to,
-  // so a plugin task can authorize what it does on the workload's behalf.
+  // Identity is who the workload acts as, so a plugin task can authorize what it
+  // does on the workload's behalf.
   flowstate.v1.WorkloadIdentity identity = 3;
+
+  // Namespace is the host-established tenant boundary for the task call. It is
+  // empty when the host has no tenant namespace, including the default local
+  // rehearsal posture.
   string namespace = 4 [(buf.validate.field).string = {max_len: 256}];
 }
 
+// ExecuteResponse carries successful task outputs and the plugin's retry advice
+// when execution instead returns an application error.
 message ExecuteResponse {
   // Outputs are the task's results, matching the manifest's output message.
   flowstate.v1.Node.Outputs outputs = 1;

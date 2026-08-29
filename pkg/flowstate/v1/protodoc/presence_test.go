@@ -293,3 +293,70 @@ func TestSchemaProseIsPresent(t *testing.T) {
 		t.Errorf("%s is in the undocumented list but the walk never reached it; delete it (a renamed or removed symbol must not leave its exemption behind)", name)
 	}
 }
+
+// TestPluginProtocolProseIsPresent keeps the plugin boundary useful in generated
+// API docs and Go docs. Unlike the workflow-service walk above, this checks the
+// whole protocol file: plugin authors consume its manifests and task messages
+// directly, not only the types reachable from one service.
+func TestPluginProtocolProseIsPresent(t *testing.T) {
+	reg, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	file, err := reg.FindFileByPath("flowstate/plugin/v1/plugin.proto")
+	if err != nil {
+		t.Fatalf("plugin protocol descriptor: %v", err)
+	}
+
+	checked := 0
+	check := func(descriptor protoreflect.Descriptor) {
+		checked++
+		if _, ok := CommentOf(descriptor); !ok {
+			t.Errorf("%T %s has no leading comment", descriptor, descriptor.FullName())
+		}
+	}
+	var checkEnum func(protoreflect.EnumDescriptor)
+	checkEnum = func(enum protoreflect.EnumDescriptor) {
+		check(enum)
+		for i := 0; i < enum.Values().Len(); i++ {
+			check(enum.Values().Get(i))
+		}
+	}
+	var checkMessage func(protoreflect.MessageDescriptor)
+	checkMessage = func(message protoreflect.MessageDescriptor) {
+		if message.IsMapEntry() {
+			return
+		}
+		check(message)
+		for i := 0; i < message.Fields().Len(); i++ {
+			check(message.Fields().Get(i))
+		}
+		for i := 0; i < message.Oneofs().Len(); i++ {
+			if oneof := message.Oneofs().Get(i); !oneof.IsSynthetic() {
+				check(oneof)
+			}
+		}
+		for i := 0; i < message.Enums().Len(); i++ {
+			checkEnum(message.Enums().Get(i))
+		}
+		for i := 0; i < message.Messages().Len(); i++ {
+			checkMessage(message.Messages().Get(i))
+		}
+	}
+	for i := 0; i < file.Messages().Len(); i++ {
+		checkMessage(file.Messages().Get(i))
+	}
+	for i := 0; i < file.Enums().Len(); i++ {
+		checkEnum(file.Enums().Get(i))
+	}
+	for i := 0; i < file.Services().Len(); i++ {
+		service := file.Services().Get(i)
+		check(service)
+		for j := 0; j < service.Methods().Len(); j++ {
+			check(service.Methods().Get(j))
+		}
+	}
+	if checked < 70 {
+		t.Errorf("walk checked only %d plugin protocol declarations; the traversal is incomplete", checked)
+	}
+}
