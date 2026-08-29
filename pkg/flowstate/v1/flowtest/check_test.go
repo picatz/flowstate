@@ -108,6 +108,32 @@ func TestTableCheckBoundsRunBeforeRowsAreExpanded(t *testing.T) {
 	}
 }
 
+// TestAggregateTableBoundsRunBeforeChecksAreCloned pins the file-wide side of
+// the table bound. Each entry and row is individually legal, but expanding all
+// of them would copy the entry's checks far past the number of cases one file
+// may run.
+func TestAggregateTableBoundsRunBeforeChecksAreCloned(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString("tests:\n")
+	for entry := range 3 {
+		fmt.Fprintf(&b, "  - name: table-%d\n    workflow: ./workflow.yaml\n    expect:\n      check:\n", entry)
+		for range flowtest.MaxChecksPerTest {
+			b.WriteString("        - true\n")
+		}
+		b.WriteString("    cases:\n")
+		for row := range flowtest.MaxTestsPerFile / 2 {
+			fmt.Fprintf(&b, "      - name: row-%d\n", row)
+		}
+	}
+
+	_, err := flowtest.LoadSource([]byte(b.String()))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "750 cases once its `cases:` rows are counted")
+	require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxTestsPerFile))
+}
+
 // `expect.check:` (#1072): CEL claims over the finished run, witnessed on
 // failure — the values a red claim read, printed beside it, redacted through
 // the one spelling every other surface uses.
