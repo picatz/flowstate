@@ -326,9 +326,13 @@ jobs:
       # breaking` closes it for the proto, in the callee author's own CI. The
       # comparison is against origin/main, which the default checkout does not
       # fetch, so it is fetched explicitly here (the proto job takes fetch-depth:
-      # 0 for the same reason). A break fails the same way validate does.
+      # 0 for the same reason). `+main:` matters on a rerun: checkout has already
+      # created origin/main at the run's original commit, and main may have moved
+      # since, so an unforced shallow fetch rejects the update as non-fast-forward
+      # before the breaking check can run. A break fails the same way validate
+      # does.
       - name: Fetch base branch for the breaking check
-        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+        run: git fetch --no-tags --depth=1 origin +main:refs/remotes/origin/main
       - name: Example workflow contracts did not shrink against main
         run: go run ./cmd/flow breaking --against origin/main examples/
 
