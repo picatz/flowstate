@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -169,6 +170,24 @@ func TestJWTInspectWithTheSigningKeyVerifiesTheSignature(t *testing.T) {
 	// question "was this signed by X" has a false answer, not a failure.
 	stdout, _, err = runJWTInspectInto(t, token, "key", otherKeyPath)
 	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, false, result["signatureValid"])
+}
+
+// TestJWTInspectRefusesAnUnsignedAlgorithm pins the verification allowlist to
+// the configured key rather than the untrusted alg header. Passing "none" to
+// the JOSE library as an explicitly allowed algorithm would let the token make
+// the verification policy agree with its own lack of a signature.
+func TestJWTInspectRefusesAnUnsignedAlgorithm(t *testing.T) {
+	keyPath := generateTestKey(t, t.TempDir(), "2026-08")
+	encode := base64.RawURLEncoding.EncodeToString
+	unsigned := encode([]byte(`{"alg":"none","kid":"2026-08"}`)) + "." +
+		encode([]byte(`{"sub":"attacker"}`)) + "."
+
+	stdout, _, err := runJWTInspectInto(t, unsigned, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	require.Equal(t, false, result["signatureValid"])
 }
