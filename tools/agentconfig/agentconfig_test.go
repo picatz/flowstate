@@ -17,6 +17,12 @@ const (
 	maxFieldIndexBytes = 4 << 10
 )
 
+type ampPermission struct {
+	Tool    string         `json:"tool"`
+	Action  string         `json:"action"`
+	Matches map[string]any `json:"matches"`
+}
+
 func TestGuidanceStaysLayered(t *testing.T) {
 	root := repoRoot(t)
 	agents := read(t, filepath.Join(root, "AGENTS.md"))
@@ -112,12 +118,8 @@ func TestReplacedGuidanceKeepsFieldNotes(t *testing.T) {
 func TestAmpSettingsUsePortableSkillsAndGuardWrites(t *testing.T) {
 	data := read(t, filepath.Join(repoRoot(t), ".amp", "settings.json"))
 	var settings struct {
-		DisableClaudeSkills bool `json:"amp.skills.disableClaudeCodeSkills"`
-		Permissions []struct {
-			Tool    string         `json:"tool"`
-			Action  string         `json:"action"`
-			Matches map[string]any `json:"matches"`
-		} `json:"amp.permissions"`
+		DisableClaudeSkills bool            `json:"amp.skills.disableClaudeCodeSkills"`
+		Permissions         []ampPermission `json:"amp.permissions"`
 	}
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatalf("parse .amp/settings.json: %v", err)
@@ -126,15 +128,37 @@ func TestAmpSettingsUsePortableSkillsAndGuardWrites(t *testing.T) {
 		t.Fatal("Amp must use .agents/skills without also loading Claude mirrors")
 	}
 
-	var asksBeforePush bool
-	for _, rule := range settings.Permissions {
-		if rule.Tool == "Bash" && rule.Action == "ask" && strings.Contains(fmt.Sprint(rule.Matches["cmd"]), "git*push") {
-			asksBeforePush = true
+	guards := []struct {
+		tool        string
+		matchKey    string
+		matchValue  string
+		description string
+	}{
+		{tool: "Bash", matchKey: "cmd", matchValue: "*git*push*", description: "shell-level git push"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*gh*pr*merge*", description: "GitHub CLI pull-request merge"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*gh*release*", description: "GitHub CLI release mutation"},
+		{tool: "mcp__github__merge_pull_request", description: "GitHub MCP pull-request merge"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*git*reset*--hard*", description: "hard git reset"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*git*clean*-f*", description: "forced git clean"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*rf*", description: "recursive forced removal"},
+	}
+	for _, guard := range guards {
+		if !hasAmpPermission(settings.Permissions, guard.tool, "ask", guard.matchKey, guard.matchValue) {
+			t.Errorf("Amp permissions must ask before %s", guard.description)
 		}
 	}
-	if !asksBeforePush {
-		t.Fatal("Amp permissions must ask before shell-level git push")
+}
+
+func hasAmpPermission(rules []ampPermission, tool, action, matchKey, matchValue string) bool {
+	for _, rule := range rules {
+		if rule.Tool != tool || rule.Action != action {
+			continue
+		}
+		if matchKey == "" || strings.Contains(fmt.Sprint(rule.Matches[matchKey]), matchValue) {
+			return true
+		}
 	}
+	return false
 }
 
 func repoRoot(t *testing.T) string {
