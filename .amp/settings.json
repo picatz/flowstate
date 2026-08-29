@@ -5,8 +5,11 @@
       "tool": "Bash",
       "matches": {
         "cmd": [
-          "*gh*pr*merge*",
-          "*gh*release*"
+          "*gh pr merge*",
+          "*gh release create*",
+          "*gh release edit*",
+          "*gh release delete*",
+          "*gh release upload*"
         ]
       },
       "action": "ask"
@@ -22,7 +25,9 @@
           "*git*reset*--hard*",
           "*git*clean*-*f*",
           "*rm*-*r*f*",
-          "*rm*-*f*r*"
+          "*rm*-*f*r*",
+          "*rm*-*R*f*",
+          "*rm*-*f*R*"
         ]
       },
       "action": "ask"
