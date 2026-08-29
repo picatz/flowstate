@@ -134,8 +134,8 @@ func rejectNullAllowlists(data []byte, cfg Config) error {
 	}
 
 	fields := []struct {
-		name string
-		nil  bool
+		name  string
+		isNil bool
 	}{
 		{"schemes", cfg.Egress.Schemes == nil},
 		{"allow_networks", cfg.Egress.AllowNetworks == nil},
@@ -143,7 +143,7 @@ func rejectNullAllowlists(data []byte, cfg Config) error {
 		{"allow", cfg.Egress.Allow == nil},
 	}
 	for _, field := range fields {
-		if _, present := raw.Egress[field.name]; present && field.nil {
+		if _, present := raw.Egress[field.name]; present && field.isNil {
 			return fmt.Errorf("%w: %s is null; delete the key to keep the default, or provide a non-empty allowlist",
 				ErrInvalidPolicy, field.name)
 		}
