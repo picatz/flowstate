@@ -202,6 +202,11 @@ const (
 	// declare.
 	MaxSecretsPerTest = 200
 
+	// MaxChecksPerTest bounds how many CEL claims one effective test may
+	// evaluate. It is checked on defaults before they are copied into every
+	// case, and again after defaults are merged with a case's own claims.
+	MaxChecksPerTest = 200
+
 	// MaxAllowUnreachedPerFile bounds how many `coverage.allow_unreached`
 	// entries one file may declare. A workflow has few branches a suite cannot
 	// reach, and a file recording hundreds is a record that has stopped meaning
@@ -1185,6 +1190,10 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			return nil, fmt.Errorf("test %q declares %d secrets, more than the limit of %d",
 				test.Name, len(test.Secrets), MaxSecretsPerTest)
 		}
+		if len(test.Expect.Check) > MaxChecksPerTest {
+			return nil, fmt.Errorf("test %q declares %d checks, more than the limit of %d",
+				test.Name, len(test.Expect.Check), MaxChecksPerTest)
+		}
 		for ref := range test.Secrets {
 			// Checked while the reference is still text, so a malformed
 			// `secrets:` key fails when the file loads rather than the first
@@ -1443,6 +1452,9 @@ func checkDefaults(d *Defaults) error {
 	}
 	if len(d.Stubs) > MaxDefaultStubs {
 		return fmt.Errorf("defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+	}
+	if len(d.Check) > MaxChecksPerTest {
+		return fmt.Errorf("defaults declares %d checks, more than the limit of %d", len(d.Check), MaxChecksPerTest)
 	}
 	if err := checkNoExpressions("defaults.workflow", d.Workflow, 0); err != nil {
 		return err

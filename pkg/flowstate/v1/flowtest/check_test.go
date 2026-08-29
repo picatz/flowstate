@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,51 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
+
+// TestCheckBounds pins both sides of the check amplification bound: defaults
+// are refused before they can be copied into every case, and the effective
+// list is refused when individually valid defaults and case claims combine.
+func TestCheckBounds(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		defaultChecks int
+		caseChecks    int
+		want          string
+	}{
+		{name: "defaults before multiplication", defaultChecks: flowtest.MaxChecksPerTest + 1, want: "defaults"},
+		{name: "effective case after merge", defaultChecks: flowtest.MaxChecksPerTest, caseChecks: 1, want: `test "a case"`},
+		{name: "case claims", caseChecks: flowtest.MaxChecksPerTest + 1, want: `test "a case"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var b strings.Builder
+			if tc.defaultChecks > 0 {
+				b.WriteString("defaults:\n  check:\n")
+				for range tc.defaultChecks {
+					b.WriteString("    - true\n")
+				}
+			}
+			b.WriteString("tests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect:\n")
+			if tc.caseChecks == 0 {
+				b.WriteString("      {}\n")
+			} else {
+				b.WriteString("      check:\n")
+				for range tc.caseChecks {
+					b.WriteString("        - true\n")
+				}
+			}
+
+			_, err := flowtest.LoadSource([]byte(b.String()))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.want)
+			require.Contains(t, err.Error(), fmt.Sprintf("%d checks", flowtest.MaxChecksPerTest+1))
+			require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxChecksPerTest))
+		})
+	}
+}
 
 // `expect.check:` (#1072): CEL claims over the finished run, witnessed on
 // failure — the values a red claim read, printed beside it, redacted through
