@@ -820,24 +820,33 @@ func (w testWriter) Write(p []byte) (int, error) {
 
 // newCapturingLogger logs both to the test's output and into a buffer, so a
 // test can assert on what was logged as well as read it on a failure.
-func newCapturingLogger(t *testing.T, into *strings.Builder) *slog.Logger {
+func newCapturingLogger(t *testing.T, into *capturedLogs) *slog.Logger {
 	t.Helper()
 
-	var mu sync.Mutex
-	capture := writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		into.Write(p)
-		mu.Unlock()
-		return testWriter{t}.Write(p)
-	})
-
-	return slog.New(slog.NewTextHandler(capture, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return slog.New(slog.NewTextHandler(
+		io.MultiWriter(into, testWriter{t}),
+		&slog.HandlerOptions{Level: slog.LevelDebug},
+	))
 }
 
-// writerFunc adapts a function to io.Writer.
-type writerFunc func([]byte) (int, error)
+// capturedLogs synchronizes writes from asynchronous log pumps with test
+// assertions that inspect the captured text.
+type capturedLogs struct {
+	mu      sync.Mutex
+	builder strings.Builder
+}
 
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+func (c *capturedLogs) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.builder.Write(p)
+}
+
+func (c *capturedLogs) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.builder.String()
+}
 
 // fmtSprint formats a value, for the containment checks that have to try every
 // verb rather than assume one.

@@ -432,7 +432,7 @@ func TestSecretIdentityCrossesBoundary(t *testing.T) {
 func TestSecretValueDoesNotEscape(t *testing.T) {
 	t.Parallel()
 
-	var logs strings.Builder
+	var logs capturedLogs
 	cfg := testConfig(t, pluginDir(t, "ok"))
 	cfg.Logger = newCapturingLogger(t, &logs)
 
