@@ -20,8 +20,9 @@
       "matches": {
         "cmd": [
           "*git*reset*--hard*",
-          "*git*clean*-f*",
-          "*rm*rf*"
+          "*git*clean*-*f*",
+          "*rm*-*r*f*",
+          "*rm*-*f*r*"
         ]
       },
       "action": "ask"
