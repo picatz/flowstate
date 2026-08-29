@@ -176,13 +176,18 @@ func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
 		matchValue  string
 		description string
 	}{
-		{tool: "Bash", matchKey: "cmd", matchValue: "*gh*pr*merge*", description: "GitHub CLI pull-request merge"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*gh*release*", description: "GitHub CLI release mutation"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*gh pr merge*", description: "GitHub CLI pull-request merge"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release create*", description: "GitHub CLI release creation"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release edit*", description: "GitHub CLI release edit"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release delete*", description: "GitHub CLI release deletion"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release upload*", description: "GitHub CLI release upload"},
 		{tool: "mcp__github__merge_pull_request", description: "GitHub MCP pull-request merge"},
 		{tool: "Bash", matchKey: "cmd", matchValue: "*git*reset*--hard*", description: "hard git reset"},
 		{tool: "Bash", matchKey: "cmd", matchValue: "*git*clean*-*f*", description: "forced git clean variants"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*r*f*", description: "recursive forced removal with recursive flag first"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*f*r*", description: "recursive forced removal with force flag first"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*r*f*", description: "recursive forced removal with lowercase recursive flag first"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*f*r*", description: "recursive forced removal with lowercase force flag first"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*R*f*", description: "recursive forced removal with uppercase recursive flag first"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*f*R*", description: "recursive forced removal with uppercase force flag first"},
 	}
 	for _, guard := range guards {
 		if !hasAmpPermission(settings.Permissions, guard.tool, "ask", guard.matchKey, guard.matchValue) {
@@ -191,6 +196,11 @@ func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
 	}
 
 	for _, command := range []string{
+		"gh pr merge 1218 --squash",
+		"gh release create v1.2.3",
+		"gh release edit v1.2.3 --draft",
+		"gh release delete v1.2.3",
+		"gh release upload v1.2.3 artifact.tgz",
 		"git clean -f",
 		"git clean -df",
 		"git clean -fd",
@@ -199,16 +209,28 @@ func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
 		"rm -fr scratch",
 		"rm -r -f scratch",
 		"rm -f -r scratch",
+		"rm -Rf scratch",
+		"rm -fR scratch",
+		"rm -R -f scratch",
+		"rm -f -R scratch",
 		"rm --recursive --force scratch",
 		"rm --force --recursive scratch",
 	} {
 		if !ampBashPrompts(settings.Permissions, command) {
-			t.Errorf("Amp permissions do not prompt for destructive equivalent %q", command)
+			t.Errorf("Amp permissions do not prompt for high-impact command %q", command)
 		}
 	}
 
-	if ampBashPrompts(settings.Permissions, "git push origin HEAD") {
-		t.Error("routine git push must remain autonomous; reserve approval prompts for high-impact actions")
+	for _, command := range []string{
+		"git push origin HEAD",
+		"gh release list",
+		"gh release view v1.2.3",
+		"gh release verify v1.2.3",
+		"gh pr view 1218 --json mergeable",
+	} {
+		if ampBashPrompts(settings.Permissions, command) {
+			t.Errorf("routine/read-only command %q must remain autonomous", command)
+		}
 	}
 }
 
