@@ -23,6 +23,12 @@ import (
 
 // TestEnvironForSurfaceAddsNoColorOnlyWhenAsked is the unit-level proof.
 func TestEnvironForSurfaceAddsNoColorOnlyWhenAsked(t *testing.T) {
+	// The assertion below is about what the flag adds, not what the process
+	// running the test inherited. NO_COLOR is commonly set by agent and CI
+	// environments, so pin its baseline before asking whether the false flag
+	// value injected NO_COLOR=1.
+	unsetNoColor(t)
+
 	newCmdWithFlag := func(set bool) *cobra.Command {
 		cmd := &cobra.Command{Use: "x", RunE: func(*cobra.Command, []string) error { return nil }}
 		cmd.Flags().Bool("no-color", set, "")
@@ -79,6 +85,11 @@ func TestEnvironForSurfaceWinsOverAnExportedNoColor(t *testing.T) {
 // a real assertion instead of one that would have passed anyway because a pipe is
 // never coloured.
 func TestNoColorFlagSuppressesColourThroughTheRealBinary(t *testing.T) {
+	// Presence alone activates the NO_COLOR convention, including an empty
+	// value. Remove an inherited setting so TTY_FORCE can establish the colored
+	// baseline this test needs before --no-color turns it back off.
+	unsetNoColor(t)
+
 	bin := buildFlowBinary(t)
 
 	path := filepath.Join(t.TempDir(), "broken.yaml")
@@ -108,4 +119,17 @@ func TestNoColorFlagSuppressesColourThroughTheRealBinary(t *testing.T) {
 	// never information.
 	assert.Contains(t, string(plainOut), path,
 		"--no-color removed content along with colour")
+}
+
+func unsetNoColor(t *testing.T) {
+	t.Helper()
+	value, present := os.LookupEnv("NO_COLOR")
+	require.NoError(t, os.Unsetenv("NO_COLOR"))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv("NO_COLOR", value))
+			return
+		}
+		require.NoError(t, os.Unsetenv("NO_COLOR"))
+	})
 }
