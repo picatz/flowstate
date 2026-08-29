@@ -2,9 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha512"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -209,6 +216,34 @@ func TestJWTInspectAcceptsAnRSAAlgorithmCompatibleWithTheKey(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	require.Equal(t, true, result["signatureValid"],
 		"a PKCS#8 RSA key is compatible with every supported RSA signature algorithm")
+}
+
+func TestJWTInspectAcceptsAP521KeyForES512(t *testing.T) {
+	private, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	require.NoError(t, err)
+	keyPath := filepath.Join(t.TempDir(), "p521.pem")
+	require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
+
+	encode := base64.RawURLEncoding.EncodeToString
+	signingInput := encode([]byte(`{"alg":"ES512","kid":"p521"}`)) + "." + encode([]byte(`{"sub":"worker"}`))
+	digest := sha512.Sum512([]byte(signingInput))
+	r, s, err := ecdsa.Sign(rand.Reader, private, digest[:])
+	require.NoError(t, err)
+	width := (private.Curve.Params().BitSize + 7) / 8
+	signature := make([]byte, 2*width)
+	r.FillBytes(signature[:width])
+	s.FillBytes(signature[width:])
+	token := signingInput + "." + encode(signature)
+
+	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, true, result["signatureValid"],
+		"inspection accepts the verification key families supported by the production verifier")
 }
 
 // TestJWTInspectVerifiesByTheTokensOwnKeyIDNotTheKeyFileName is the regression

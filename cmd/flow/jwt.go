@@ -297,9 +297,6 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := auth.NewSigningKey(keyIDFromPath(keyPath), private); err != nil {
-			return fmt.Errorf("%s: %w", keyPath, err)
-		}
 		public, err := publicKeyOf(private)
 		if err != nil {
 			return err
