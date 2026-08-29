@@ -12,7 +12,7 @@ import "google/protobuf/duration.proto";
 
 option go_package = "flowstatev1";
 
-// Workflows in Flowstate is a collection of steps that can be executed in a
+// Workflow is a collection of steps that can be executed in a
 // specific order. Each step within a workflow can have inputs and outputs,
 // and can be a task that performs some action. The workflow can be run and the
 // outputs of each step are collected in a structured way that allows for subsequent
