@@ -628,7 +628,11 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// is every run written before that field existed: on those, the same
 		// name may be an ordinary signal the specification waits for, and this
 		// drain would take it. See [debugControl.declared].
-		pending = drainDebugAsks(ctx, pending, exec.debug)
+		pending, drainErr := drainDebugAsks(ctx, pending, exec.debug)
+		if drainErr != nil {
+			return v1.PartialTranscript(stepOutputs),
+				compensate(ctx, exec, &ErrRunFailed{Message: drainErr.Error()})
+		}
 
 		next := &v1.RunState{
 			Workflow:    st.Workflow,

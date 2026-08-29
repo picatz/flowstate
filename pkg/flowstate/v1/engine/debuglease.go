@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
@@ -207,12 +208,20 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 	}
 
 	backlogged := e.applyDebugAsks(false)
+	for backlogged && !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
+		// A workflow-only step does not necessarily block before the next
+		// boundary. End this task here rather than relying on the step to do
+		// it, or a long sequence of value-only steps can drain every batch in
+		// one task despite the per-boundary cap.
+		if err := workflow.NewTimerWithOptions(e.ctx, v1.DebugBacklogPace, workflow.TimerOptions{
+			Summary: "pacing a backlog of debug asks",
+		}).Get(e.ctx, nil); err != nil {
+			return
+		}
+		backlogged = e.applyDebugAsks(false)
+	}
 
 	if !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
-		// Nothing holds the run, so the step runs next — and running a step is
-		// an activity, which ends this workflow task on its own. A backlog left
-		// here therefore needs no yield of its own: the next boundary reads the
-		// next batch, on a task the step already forced.
 		return
 	}
 
@@ -229,9 +238,9 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 // Carried asks first and buffered ones after, which is arrival order: a carried
 // ask is one an earlier segment drained off the channel before it continued as
 // new, so it necessarily arrived before anything still sitting on the channel
-// now. Carried asks are read only at a boundary — never while parked — because
-// putting an ask by is *writing* to that same carry, and a loop that read what
-// it had just written would never end.
+// now. A carried ask put by while parked is restored at its original position
+// and ends this drain; reading it again would both reorder later asks and turn
+// bounded processing into repeated work.
 //
 // Within each of those two, order is the one thing this function does not
 // choose: the carry is a list in arrival order and the channel is a FIFO
@@ -243,74 +252,97 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 // ending the workflow task rather than by reading more. See
 // [v1.DebugBacklogPace].
 func (e *executor) applyDebugAsks(parked bool) (backlogged bool) {
-	if !parked {
-		// Bounded for the reason the channel drain below is, and for one more
-		// of its own. How many carried asks there are is the peer's choice —
-		// every ask that reached the server before a seam is on this list — so
-		// a loop over it is one whose progress is measured in units the far
-		// side decides.
-		//
-		// And it is a loop that *writes to the list it is reading*: the put-by
-		// path appends there. Nothing reaches it from here today, because
-		// putting by is the parked answer and this is the unparked call — but
-		// "today's call graph makes it terminate" is a worse guarantee than a
-		// count, and a mutation that made a refusal put by instead turned this
-		// into a loop that never ended rather than a test that failed. A hang
-		// is the one failure a test cannot report.
-		for range v1.MaxDebugAsksPerBoundary {
-			if !e.takeCarriedDebugAsk() {
-				break
+	channel := workflow.GetSignalChannel(e.ctx, v1.DebugSignal)
+
+	// One budget shared by both sources. Carried asks necessarily arrived
+	// before asks still buffered on this segment's channel, so the channel is
+	// not touched until the carry is exhausted. Separate caps let sixty-four
+	// older carried asks consume one cap and sixty-four newer channel asks jump
+	// ahead of the rest of the carry under the other.
+	for range v1.MaxDebugAsksPerBoundary {
+		if e.hasCarriedDebugAsk() {
+			deferred := e.takeCarriedDebugAsk(parked)
+			if deferred {
+				// The ask was put back for the next boundary. Reading it again in
+				// this drain would turn a bounded loop into repeated work and
+				// violate the one-session/one-boundary rule.
+				return true
 			}
+
+			continue
+		}
+
+		var delivery v1.SignalDelivery
+		if !channel.ReceiveAsync(&delivery) {
+			return false
+		}
+
+		if e.applyDebugAsk(&delivery, parked) {
+			return true
 		}
 	}
 
-	{
-		channel := workflow.GetSignalChannel(e.ctx, v1.DebugSignal)
-
-		// Bounded, because how many asks are buffered is the peer's choice —
-		// see [v1.MaxDebugAsksPerBoundary]. What is left stays on the channel
-		// for the next boundary, or is drained into the run's carried state at
-		// a Continue-As-New like any other early-arriving signal, so this paces
-		// rather than discards.
-		//
-		// The count is a **named survivor**, and the reason is the same property
-		// that makes it safe: a message left on the channel wakes the very next
-		// park, so the remainder is applied a wake later and no virtual time
-		// passes in between. Pacing is therefore invisible to anything that
-		// reads the clock, which is everything a test of this can read — the
-		// bound is on how much work *one workflow task* does, and that is not a
-		// quantity the SDK's test environment exposes. What a fixture can see is
-		// that a second buffered ask takes effect at all rather than being
-		// dropped, which is [TestABoundaryDrainsMoreThanOneAskAtATime]'s claim
-		// and the failure this bound must not become.
-		for range v1.MaxDebugAsksPerBoundary {
-			var delivery v1.SignalDelivery
-			if !channel.ReceiveAsync(&delivery) {
-				return false
-			}
-
-			e.applyDebugAsk(&delivery, parked)
-		}
-
-		// Every one of the cap was taken and the channel was not exhausted, so
-		// there is more. Said out loud rather than left for the caller to
-		// notice, because the caller's answer is to stop the workflow task and
-		// nothing else about the loop makes that necessary.
-		return true
-	}
+	// A full shared batch is a backlog only when one of its sources still has
+	// an ask. Len is a deterministic view of the signal FIFO at this point;
+	// carried asks are inspected without consuming them.
+	return e.hasCarriedDebugAsk() || channel.Len() > 0
 }
 
 // takeCarriedDebugAsk applies one debug ask carried across a Continue-As-New,
-// reporting whether there was one.
-func (e *executor) takeCarriedDebugAsk() bool {
-	payload, sender, ok := e.takePendingSignal(v1.DebugSignal)
-	if !ok {
+// reporting whether applying it put it back for the next boundary.
+func (e *executor) takeCarriedDebugAsk(parked bool) (deferred bool) {
+	if e.signals == nil {
 		return false
 	}
 
-	e.applyDebugAsk(&v1.SignalDelivery{Payload: payload, Sender: sender}, false)
+	for i, pending := range e.signals.pending {
+		if pending.GetName() != v1.DebugSignal {
+			continue
+		}
 
-	return true
+		// Consume the carried ask before applying it. If a parked run has just
+		// stopped being held, applyDebugAsk puts this ask back for the next
+		// boundary; restore it at the same position rather than at the end, so
+		// later carried asks cannot overtake it.
+		e.signals.pending = append(e.signals.pending[:i:i], e.signals.pending[i+1:]...)
+		deferred = e.applyDebugAsk(&v1.SignalDelivery{
+			Payload: pending.GetPayload(),
+			Sender:  pending.GetSender(),
+		}, parked)
+		if deferred {
+			putBy := e.signals.pending[len(e.signals.pending)-1]
+			e.signals.pending = e.signals.pending[:len(e.signals.pending)-1]
+			e.signals.pending = append(e.signals.pending, nil)
+			copy(e.signals.pending[i+1:], e.signals.pending[i:])
+			e.signals.pending[i] = putBy
+		}
+
+		return deferred
+	}
+
+	return false
+}
+
+func (e *executor) hasCarriedDebugAsk() bool {
+	if e.signals == nil {
+		return false
+	}
+
+	for _, pending := range e.signals.pending {
+		if pending.GetName() == v1.DebugSignal {
+			return true
+		}
+	}
+
+	return false
+}
+
+// debugAsksWaiting is inspected before a boundary joins outstanding async
+// work. The join makes that boundary a single position before any ask can
+// publish the run as held; it does not consume or reorder either source.
+func (e *executor) debugAsksWaiting() bool {
+	return e.debug.enabled() && (e.hasCarriedDebugAsk() ||
+		workflow.GetSignalChannel(e.ctx, v1.DebugSignal).Len() > 0)
 }
 
 // deferDebugAsk puts an ask by for the next step boundary, on the same carry an
@@ -392,7 +424,7 @@ func dispositionOfPause(parked, held, holder bool) pauseDisposition {
 // what it decided and about whom. The server already refused a caller the
 // workflow's `debug:` policy does not admit — this is the second half, the part
 // only the run knows: whether somebody else is already holding it.
-func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) {
+func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) (deferred bool) {
 	logger := workflow.GetLogger(e.ctx)
 	sender := delivery.GetSender()
 	who := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
@@ -420,13 +452,13 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) {
 			logger.Info("ignoring a debug resume: this run holds no debug lease",
 				"sender", who)
 
-			return
+			return false
 		}
 		if !v1.DebugLeaseHolder(e.debug.lease, sender.GetIdentity()) {
 			logger.Warn("refusing a debug resume: the sender does not hold this run's debug lease",
 				"sender", who, "session", e.debug.lease.GetSessionId())
 
-			return
+			return false
 		}
 
 		logger.Info("debug lease released by its holder",
@@ -505,6 +537,8 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) {
 				"makes progress between holds",
 				"sender", who)
 
+			return true
+
 		case pauseGrants:
 			e.debug.granted++
 			e.debug.holdUntil = v1.DebugHoldDeadline(now)
@@ -525,6 +559,8 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) {
 		logger.Warn("ignoring a debug ask: it names no verb this build understands",
 			"sender", who)
 	}
+
+	return false
 }
 
 // releaseDebugLease ends the session holding this run, whichever way it ended.
@@ -768,10 +804,10 @@ func debugBacklogSummary(lease *v1.DebugSession) string {
 }
 
 // maxSummaryTextBytes bounds one caller-influenced value rendered into a
-// Temporal summary. [SignalPolicyRule.subject]'s own schema bound is 320
-// bytes for a qualified subject, and an attested identity's is the same shape,
-// so this admits every legitimate value and truncates only what no issuer
-// would mint.
+// Temporal summary. [SignalPolicyRule.subject]'s schema bound counts code
+// points rather than bytes and an attested identity has no equivalent byte
+// bound, so a legitimate multibyte value may be truncated. [boundSummaryText]
+// keeps the result valid UTF-8.
 const maxSummaryTextBytes = 320
 
 func boundSummaryText(s string) string {
@@ -779,7 +815,12 @@ func boundSummaryText(s string) string {
 		return s
 	}
 
-	return s[:maxSummaryTextBytes] + "…"
+	end := maxSummaryTextBytes
+	for end > 0 && !utf8.ValidString(s[:end]) {
+		end--
+	}
+
+	return s[:end] + "…"
 }
 
 // drainDebugAsks carries debug asks across a Continue-As-New, for the reason
@@ -796,9 +837,9 @@ func boundSummaryText(s string) string {
 // should have.
 //
 // Returns what to carry; nothing is dropped here, exactly as nothing is dropped
-// there. The bound is [v1.CheckRunStateSize], weighed by the caller over the
-// whole carry.
-func drainDebugAsks(ctx workflow.Context, carried []*v1.PendingSignal, debug *debugControl) []*v1.PendingSignal {
+// there. Each batch checks that the signal carry alone can still fit, and the
+// caller then applies [v1.CheckRunStateSize] to the complete next state.
+func drainDebugAsks(ctx workflow.Context, carried []*v1.PendingSignal, debug *debugControl) ([]*v1.PendingSignal, error) {
 	// The compatibility gate, on the second of the two paths that can read this
 	// channel — see [debugControl.declared]. A run whose specification predates
 	// `debug:` may legitimately hold an unread `flowstate_debug` delivery, and
@@ -806,19 +847,20 @@ func drainDebugAsks(ctx workflow.Context, carried []*v1.PendingSignal, debug *de
 	// writes and take a delivery away from a `wait_for_signal:` that history
 	// says consumed it.
 	if !debug.enabled() {
-		return carried
+		return carried, nil
 	}
 
 	pending := carried
+	channel := workflow.GetSignalChannel(ctx, v1.DebugSignal)
 
-	{
-		channel := workflow.GetSignalChannel(ctx, v1.DebugSignal)
-
-		for {
+	for {
+		drained := 0
+		for drained < v1.MaxDebugAsksPerBoundary {
 			var delivery v1.SignalDelivery
 			if !channel.ReceiveAsync(&delivery) {
-				break
+				return pending, nil
 			}
+			drained++
 
 			workflow.GetLogger(ctx).Info(
 				"carrying a debug ask that arrived before a step boundary was reached",
@@ -837,7 +879,26 @@ func drainDebugAsks(ctx workflow.Context, carried []*v1.PendingSignal, debug *de
 				Sender:  delivery.GetSender(),
 			})
 		}
-	}
 
-	return pending
+		// Check a lower bound on the next run state after every batch, rather
+		// than accumulating an arbitrarily large signal backlog in workflow
+		// memory before the caller's exact whole-state check runs. If the carry
+		// alone cannot fit, adding the workflow and outputs cannot make it fit.
+		if err := v1.CheckRunStateSize(&v1.RunState{PendingSignals: pending}); err != nil {
+			return nil, fmt.Errorf("carrying debug asks across Continue-As-New: %w", err)
+		}
+
+		if channel.Len() == 0 {
+			return pending, nil
+		}
+
+		// A real workflow timer ends this task before the next bounded batch.
+		// Without it the count limits one loop iteration but the surrounding
+		// loop still consumes the peer-controlled backlog in one task.
+		if err := workflow.NewTimerWithOptions(ctx, v1.DebugBacklogPace, workflow.TimerOptions{
+			Summary: "pacing debug asks before Continue-As-New",
+		}).Get(ctx, nil); err != nil {
+			return nil, err
+		}
+	}
 }

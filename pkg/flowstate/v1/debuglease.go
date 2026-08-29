@@ -253,9 +253,12 @@ const DebugBacklogPace = time.Second
 // IsReservedSignalName reports whether name belongs to the engine rather than
 // to a workflow's author.
 //
-// Checked where a workflow is compiled and again where its specification is
-// validated, so a hand-built spec reaching `Run` directly is refused on the
-// same terms a file is. Fail closed: an author who waits for a reserved name
+// Checked where a workflow is compiled and again at server submission, so a
+// hand-built specification submitted without the compiler is refused on the
+// same terms a file is. It is deliberately not introduced as a new check in
+// workflow replay: an in-flight pre-change run may legitimately use this
+// prefix, and [Workflow.debug] being absent keeps the engine machinery inert.
+// Fail closed for new submissions: an author who waits for a reserved name
 // gets a diagnostic, never a gate that a pause ask can answer.
 func IsReservedSignalName(name string) bool {
 	return strings.HasPrefix(name, ReservedSignalPrefix)

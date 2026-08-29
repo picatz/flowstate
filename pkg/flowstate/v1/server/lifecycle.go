@@ -256,7 +256,20 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 	// is about the *sender's shape* and holds whatever the name is: a rehearsal
 	// identity may no more take a debug lease than deliver an approval.
 	if v1.IsReservedSignalName(name) {
-		return s.authorizeReservedSignal(resp, name, sender)
+		current, err := s.usesCurrentSignalProtocol(resp.GetWorkflowExecutionInfo().GetMemo())
+		if err != nil {
+			return connect.NewError(connect.CodePermissionDenied, err)
+		}
+		if !current {
+			// Before the protocol marker existed, the prefix was not reserved.
+			// Preserve that run's routing: the engine's own compatibility gate
+			// likewise leaves the channel untouched when the workflow predates
+			// `debug:`. Fall through to the ordinary signal-policy path as
+			// well — legacy workflows could declare a policy for this name,
+			// and compatibility includes enforcing it.
+		} else {
+			return s.authorizeReservedSignal(resp, name, sender)
+		}
 	}
 
 	policies, hasMemo, err := s.signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
@@ -304,6 +317,29 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 	}
 
 	return nil
+}
+
+// usesCurrentSignalProtocol reports whether the run was submitted with the
+// reserved engine signal surface. An absent marker identifies a legacy run,
+// where `flowstate_*` was an ordinary workflow-owned namespace. A malformed or
+// unknown marker is refused rather than guessed at: routing a reserved name by
+// the wrong protocol can either consume a workflow's delivery or authorize an
+// engine command under the ordinary signal zero case.
+func (s *FlowstateServer) usesCurrentSignalProtocol(memo *common.Memo) (bool, error) {
+	payload, ok := memo.GetFields()[signalProtocolMemoKey]
+	if !ok {
+		return false, nil
+	}
+
+	var version int32
+	if err := s.dataConverter.FromPayload(payload, &version); err != nil {
+		return false, fmt.Errorf("this run's signal protocol marker could not be read, so a reserved signal cannot be routed safely: %w", err)
+	}
+	if version != currentSignalProtocol {
+		return false, fmt.Errorf("this run uses signal protocol version %d, which this server does not understand", version)
+	}
+
+	return true, nil
 }
 
 // authorizeReservedSignal decides a delivery on a channel the engine owns
@@ -596,10 +632,6 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 		return nil, s.auditDeny(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
 	}
 
-	if err := s.auditAllow(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
-		return nil, err
-	}
-
 	// An absent payload is an empty one rather than nil, so a waiting step's
 	// outputs exist and `${approval.timed_out}` resolves whether or not the
 	// sender sent anything. A step whose outputs are missing entirely would fail
@@ -626,6 +658,11 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// wait that quietly never resolves. See [authorizeSignal] for the
 	// zero-case and fail-closed rules this enforces.
 	if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+		return nil, s.auditDeny(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
+	}
+
+	if err := s.auditAllow(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
 		return nil, err
 	}
 

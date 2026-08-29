@@ -338,15 +338,24 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// 2): the same point the local driver offers [v1.Debugger] — after the
 		// condition decided this step runs, before any of its work, an
 		// `async:` step included — and only at `susp == 0`, the run's own
-		// single representable position. See debuglease.go for why a lease
-		// cannot hold where a run is in several places at once, and for the
-		// asymmetry with the local driver that follows from it.
+		// single representable position. If earlier async work is outstanding,
+		// an ask first joins it in written order: publishing the parent as held
+		// while its child continues making progress would not be a hold at all.
+		// See debuglease.go for the asymmetry with the local driver.
 		//
-		// A run nobody is debugging pays two `ReceiveAsync` calls on empty
-		// channels here, which issue no commands and write no history. That is
-		// the whole cost of the feature being off, and it is why the check
-		// lives at the boundary rather than inside a step.
+		// A run nobody is debugging pays one empty-channel inspection here,
+		// which issues no command and writes no history. That is the whole cost
+		// of the feature being off, and why the check lives at the boundary.
 		if susp == 0 {
+			if e.debugAsksWaiting() {
+				for len(started) > 0 {
+					joined := started[0]
+					started = started[1:]
+					if err := e.joinAsync(joined); err != nil {
+						return err
+					}
+				}
+			}
 			e.debugAsksAtBoundary(node)
 		}
 

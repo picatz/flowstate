@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,6 +129,13 @@ func TestTheSummaryBoundsWhatACallerPutInIt(t *testing.T) {
 		"the value was cut somewhere other than at the bound")
 	assert.True(t, strings.HasSuffix(bounded, "…"),
 		"a cut value does not say it was cut, so a reader cannot tell a truncation from a subject")
+
+	// The byte ceiling must not split a multibyte rune. Subjects are bounded
+	// by code points at the policy surface, and attested identities have no
+	// equivalent byte bound, so valid UTF-8 can cross this exact boundary.
+	multibyte := strings.Repeat("a", maxSummaryTextBytes-1) + "界" + strings.Repeat("b", maxSummaryTextBytes)
+	assert.True(t, utf8.ValidString(boundSummaryText(multibyte)),
+		"truncating a valid subject produced invalid UTF-8 in the Temporal timer summary")
 
 	// And through the function that uses it, so the bound is on the path rather
 	// than only on the helper.

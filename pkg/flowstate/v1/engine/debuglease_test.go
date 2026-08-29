@@ -753,6 +753,32 @@ func TestABacklogOfAsksIsPacedAcrossWorkflowTasks(t *testing.T) {
 		"and it still finished rather than wedging")
 }
 
+func TestAnUnheldBacklogIsPacedBeforeTheNextStep(t *testing.T) {
+	t.Parallel()
+
+	pending := make([]*v1.PendingSignal, 0, v1.MaxDebugAsksPerBoundary+1)
+	for range v1.MaxDebugAsksPerBoundary + 1 {
+		ask := debugAsk("unknown", "sre-1@example.com", 0)
+		pending = append(pending, &v1.PendingSignal{
+			Name:    v1.DebugSignal,
+			Payload: ask.GetPayload(),
+			Sender:  ask.GetSender(),
+		})
+	}
+
+	env := newWaitEnv(t)
+	start := env.Now()
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow:       debugSpec("unheld-backlog"),
+		PendingSignals: pending,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	assert.Equal(t, settleFor+v1.DebugBacklogPace, env.Now().Sub(start),
+		"an unheld backlog crossed the cap without ending the workflow task")
+}
+
 // TestABoundaryDrainsMoreThanOneCarriedAsk is the same claim about the other
 // list, and it needs its own test because the two loops are bounded separately:
 // the channel's asks and the ones a Continue-As-New carried are different
@@ -798,6 +824,80 @@ func TestABoundaryDrainsMoreThanOneCarriedAsk(t *testing.T) {
 	// sleeps.
 	assert.Equal(t, 90*time.Second+settleFor, env.Now().Sub(start),
 		"only the first of two carried asks was applied, so the carry paces to nothing")
+}
+
+// TestACarriedBacklogIsPacedWhileTheRunIsHeld: the carry and the channel are
+// both peer-sized inputs, and both must be read in bounded batches while a run
+// is parked. A resume in the second carried batch must release the current
+// lease instead of waiting for expiry and another workload step.
+func TestACarriedBacklogIsPacedWhileTheRunIsHeld(t *testing.T) {
+	t.Parallel()
+
+	pending := make([]*v1.PendingSignal, 0, v1.MaxDebugAsksPerBoundary+1)
+	appendAsk := func(ask *v1.SignalDelivery) {
+		pending = append(pending, &v1.PendingSignal{
+			Name:    v1.DebugSignal,
+			Payload: ask.GetPayload(),
+			Sender:  ask.GetSender(),
+		})
+	}
+
+	appendAsk(debugAsk(v1.DebugVerbPause, "sre-1@example.com", 2*time.Minute))
+	for range v1.MaxDebugAsksPerBoundary - 1 {
+		appendAsk(debugAsk("unknown", "sre-1@example.com", 0))
+	}
+	appendAsk(debugAsk(v1.DebugVerbResume, "sre-1@example.com", 0))
+
+	env := newWaitEnv(t)
+	start := env.Now()
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow:       debugSpec("carried-backlog-while-held"),
+		PendingSignals: pending,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	assert.Equal(t, settleFor+v1.DebugBacklogPace, env.Now().Sub(start),
+		"the resume in the second carried batch was ignored until the lease expired")
+}
+
+// TestCarriedAsksStayAheadOfNewChannelAsks applies one shared budget across
+// both sources. The old carry necessarily predates this segment's channel, so
+// a newer pause may not overtake an older resume merely because the first
+// carried batch exhausted the count.
+func TestCarriedAsksStayAheadOfNewChannelAsks(t *testing.T) {
+	t.Parallel()
+
+	pending := make([]*v1.PendingSignal, 0, v1.MaxDebugAsksPerBoundary+1)
+	appendAsk := func(ask *v1.SignalDelivery) {
+		pending = append(pending, &v1.PendingSignal{
+			Name:    v1.DebugSignal,
+			Payload: ask.GetPayload(),
+			Sender:  ask.GetSender(),
+		})
+	}
+
+	appendAsk(debugAsk(v1.DebugVerbPause, "sre-1@example.com", 2*time.Minute))
+	for range v1.MaxDebugAsksPerBoundary - 1 {
+		appendAsk(debugAsk("unknown", "sre-1@example.com", 0))
+	}
+	appendAsk(debugAsk(v1.DebugVerbResume, "sre-1@example.com", 0))
+
+	env := newWaitEnv(t)
+	start := env.Now()
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugSignal,
+			debugAsk(v1.DebugVerbPause, "sre-2@example.com", 30*time.Second))
+	}, 30*time.Second)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow:       debugSpec("carry-before-channel"),
+		PendingSignals: pending,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	assert.Equal(t, settleFor+v1.DebugBacklogPace+30*time.Second, env.Now().Sub(start),
+		"the newer channel pause overtook the older carried resume")
 }
 
 // TestAHeldRunSaysSoOnTheSurfaceOperatorsRead is the attribution claim end to
@@ -1102,4 +1202,44 @@ func TestAPauseAskSurvivesContinueAsNew(t *testing.T) {
 
 	assert.GreaterOrEqual(t, second.Now().Sub(secondStart), 45*time.Second,
 		"a carried pause ask should hold the segment that receives it")
+}
+
+// TestContinueAsNewPacesTheDebugDrainAcrossTasks: the suspension seam must not
+// consume an authorized peer-controlled backlog in one workflow task before
+// checking whether the carried state can fit. Each full batch with more behind
+// it costs one durable pacing timer, and every accepted ask is still carried.
+func TestContinueAsNewPacesTheDebugDrainAcrossTasks(t *testing.T) {
+	t.Parallel()
+
+	const fullBatches = 2
+	total := v1.MaxDebugAsksPerBoundary*fullBatches + 1
+
+	env := newWaitEnv(t)
+	start := env.Now()
+	env.RegisterDelayedCallback(func() {
+		for range total {
+			env.SignalWorkflow(v1.DebugSignal,
+				debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Minute))
+		}
+	}, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow:    debugSpec("paced-across-the-seam"),
+		StepsBudget: 1,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	err := env.GetWorkflowError()
+	require.Error(t, err, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continueAsNew)
+	assert.Equal(t, settleFor+fullBatches*v1.DebugBacklogPace, env.Now().Sub(start),
+		"the Continue-As-New drain consumed every batch in one workflow task")
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried))
+	require.Len(t, carried.GetPendingSignals(), total,
+		"pacing the drain dropped an ask the server had already accepted")
 }

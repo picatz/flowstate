@@ -533,7 +533,7 @@ type Workflow struct {
 	// Extracted into the run's memo at submit exactly as [signals] is, and read
 	// back by the same `DescribeWorkflowExecution` every verb already makes, so
 	// a pause ask is refused before Temporal sees it rather than by a check the
-	// workflow could skip. See `server/lifecycle.go`'s `authorizeDebug`.
+	// workflow could skip. See `server/lifecycle.go`'s `authorizeReservedSignal`.
 	//
 	// # Bounded
 	//

@@ -863,6 +863,15 @@ func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[stri
 // usual reason: nothing could pause it then either.
 const debugPolicyMemoKey = "flowstate.debugPolicy"
 
+// signalProtocolMemoKey distinguishes runs submitted after the engine reserved
+// its signal prefix from runs whose workflows could legitimately use those
+// names. Its value is the protocol version understood by the submitting
+// server; absence means the legacy, unreserved signal surface.
+const (
+	signalProtocolMemoKey       = "flowstate.signalProtocolVersion"
+	currentSignalProtocol int32 = 1
+)
+
 // debugPolicyMemoEntry encodes a workflow's declared `debug:` stanza into its
 // own memo entry, through the same shape [signalPolicyMemoEntry] uses: a
 // partial [v1.Workflow] marshalled with proto, so the reader needs nothing but
@@ -906,7 +915,7 @@ func debugPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[strin
 // scheduled approval gate already had once: a firing that carried the tenant
 // memo and not the policy, so enforcement silently became the zero case.
 func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
-	entries := map[string]any{}
+	entries := map[string]any{signalProtocolMemoKey: currentSignalProtocol}
 
 	signals, err := signalPolicyMemoEntry(ctx, wf, inputs)
 	if err != nil {

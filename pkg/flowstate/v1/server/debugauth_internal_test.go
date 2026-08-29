@@ -32,11 +32,28 @@ func memoWithDebugPolicy(t *testing.T, policy *v1types.SignalPolicy) *workflowse
 	payload, err := converter.GetDefaultDataConverter().ToPayload(encoded)
 	require.NoError(t, err)
 
+	protocol, err := converter.GetDefaultDataConverter().ToPayload(currentSignalProtocol)
+	require.NoError(t, err)
+
 	return &workflowservice.DescribeWorkflowExecutionResponse{
 		WorkflowExecutionInfo: &workflow.WorkflowExecutionInfo{
 			Memo: &common.Memo{Fields: map[string]*common.Payload{
-				debugPolicyMemoKey: payload,
+				debugPolicyMemoKey:    payload,
+				signalProtocolMemoKey: protocol,
 			}},
+		},
+	}
+}
+
+func memoWithCurrentSignalProtocol(t *testing.T) *workflowservice.DescribeWorkflowExecutionResponse {
+	t.Helper()
+
+	protocol, err := converter.GetDefaultDataConverter().ToPayload(currentSignalProtocol)
+	require.NoError(t, err)
+
+	return &workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflow.WorkflowExecutionInfo{
+			Memo: &common.Memo{Fields: map[string]*common.Payload{signalProtocolMemoKey: protocol}},
 		},
 	}
 }
@@ -65,7 +82,7 @@ func TestOnlyADeclaredDebugPolicyAdmitsAPauseAsk(t *testing.T) {
 	// The negative direction, which is the claim that matters: a run that says
 	// nothing about debugging is not debuggable, and an ordinary signal on the
 	// same run still is.
-	silent := memoWithNoSignalPolicy()
+	silent := memoWithCurrentSignalProtocol(t)
 
 	require.Error(t,
 		mustNew(t, nil).authorizeSignal(silent, v1types.DebugSignal, allowed),
@@ -73,6 +90,52 @@ func TestOnlyADeclaredDebugPolicyAdmitsAPauseAsk(t *testing.T) {
 	require.NoError(t,
 		mustNew(t, nil).authorizeSignal(silent, "deploy-approved", allowed),
 		"an ordinary signal on the same run keeps its own fail-open zero case")
+}
+
+// TestALegacyRunKeepsItsWorkflowOwnedSignalNamespace: before the protocol
+// marker existed, `flowstate_*` was an ordinary signal name. The server must
+// keep routing those deliveries even though newly submitted runs reserve the
+// same prefix for the engine.
+func TestALegacyRunKeepsItsWorkflowOwnedSignalNamespace(t *testing.T) {
+	legacy := memoWithNoSignalPolicy()
+	caller := sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)
+
+	require.NoError(t, mustNew(t, nil).authorizeSignal(legacy, v1types.DebugSignal, caller),
+		"an absent protocol marker identifies a run submitted before the prefix was reserved")
+	require.NoError(t, mustNew(t, nil).authorizeSignal(legacy,
+		v1types.ReservedSignalPrefix+"custom", caller),
+		"the entire prefix belonged to legacy workflows, not only today's debug spelling")
+
+	policed := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
+		v1types.DebugSignal: {Allow: []*v1types.SignalPolicyRule{
+			{Subject: "https://issuer.example.com#somebody-else@example.com"},
+		}},
+	})
+	require.Error(t, mustNew(t, nil).authorizeSignal(policed, v1types.DebugSignal, caller),
+		"legacy routing must not bypass an ordinary signal policy declared for the old workflow-owned name")
+}
+
+func TestAnUnknownOrUnreadableSignalProtocolRefusesReservedNames(t *testing.T) {
+	caller := sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)
+
+	for name, value := range map[string]any{
+		"unknown version": currentSignalProtocol + 1,
+		"wrong type":      "one",
+	} {
+		t.Run(name, func(t *testing.T) {
+			protocol, err := converter.GetDefaultDataConverter().ToPayload(value)
+			require.NoError(t, err)
+
+			memo := &workflowservice.DescribeWorkflowExecutionResponse{
+				WorkflowExecutionInfo: &workflow.WorkflowExecutionInfo{
+					Memo: &common.Memo{Fields: map[string]*common.Payload{signalProtocolMemoKey: protocol}},
+				},
+			}
+
+			require.Error(t, mustNew(t, nil).authorizeSignal(memo, v1types.DebugSignal, caller),
+				"a reserved signal must not be guessed onto an unknown protocol")
+		})
+	}
 }
 
 // TestACallerTheDebugPolicyDoesNotNameCannotPause is the sender direction:
@@ -128,10 +191,15 @@ func TestAReservedNameThisBuildDoesNotKnowIsRefused(t *testing.T) {
 func TestAnUnreadableDebugPolicyRefusesEverybody(t *testing.T) {
 	payload, err := converter.GetDefaultDataConverter().ToPayload([]byte{0xff, 0xff, 0xff, 0xff})
 	require.NoError(t, err)
+	protocol, err := converter.GetDefaultDataConverter().ToPayload(currentSignalProtocol)
+	require.NoError(t, err)
 
 	corrupt := &workflowservice.DescribeWorkflowExecutionResponse{
 		WorkflowExecutionInfo: &workflow.WorkflowExecutionInfo{
-			Memo: &common.Memo{Fields: map[string]*common.Payload{debugPolicyMemoKey: payload}},
+			Memo: &common.Memo{Fields: map[string]*common.Payload{
+				debugPolicyMemoKey:    payload,
+				signalProtocolMemoKey: protocol,
+			}},
 		},
 	}
 
@@ -190,6 +258,8 @@ func TestTheDebugPolicyTravelsOnItsOwnMemoKey(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Contains(t, entries, debugPolicyMemoKey, "the debug policy is recorded")
+	require.Equal(t, currentSignalProtocol, entries[signalProtocolMemoKey],
+		"every newly submitted run records which reserved-signal protocol it uses")
 	require.NotContains(t, entries, signalPolicyMemoKey,
 		"and nothing is written for a `signals:` block the workflow does not have")
 
@@ -206,6 +276,7 @@ func TestTheDebugPolicyTravelsOnItsOwnMemoKey(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Contains(t, entries, signalPolicyMemoKey)
+	require.Equal(t, currentSignalProtocol, entries[signalProtocolMemoKey])
 	require.NotContains(t, entries, debugPolicyMemoKey)
 }
 
