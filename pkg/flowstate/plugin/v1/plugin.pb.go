@@ -179,8 +179,8 @@ func (TaskPhase) EnumDescriptor() ([]byte, []int) {
 type HealthResponse_Status int32
 
 const (
-	// Unspecified fails closed as not serving. A plugin must affirmatively report
-	// serving before the host dispatches work to it.
+	// Unspecified is classified as not serving. A healthy plugin should
+	// affirmatively report serving.
 	HealthResponse_STATUS_UNSPECIFIED HealthResponse_Status = 0
 	// Serving means requests will be attempted.
 	HealthResponse_STATUS_SERVING HealthResponse_Status = 1
@@ -350,16 +350,17 @@ type TaskManifest struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Summary is one line, shown by `flow tasks` and in editor completion.
 	Summary string `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
-	// InputDescriptor is a serialized FileDescriptorSet containing the input
-	// message's schema and any dependencies the host does not already provide.
-	// When input_message is set, empty bytes mean the host already has every
-	// required descriptor.
+	// InputDescriptor is a serialized FileDescriptorProto or FileDescriptorSet
+	// containing the input message's schema and any dependencies the host does
+	// not already provide. When input_message is set, empty bytes mean the host
+	// already has every required descriptor.
 	InputDescriptor []byte `protobuf:"bytes,3,opt,name=input_descriptor,json=inputDescriptor,proto3" json:"input_descriptor,omitempty"`
 	// InputMessage is the input message's fully qualified protobuf name. The host
 	// resolves it from input_descriptor and its own descriptor registry.
 	InputMessage string `protobuf:"bytes,4,opt,name=input_message,json=inputMessage,proto3" json:"input_message,omitempty"`
-	// OutputDescriptor is a serialized FileDescriptorSet for the task's output
-	// schema, with the same dependency and empty-value rules as input_descriptor.
+	// OutputDescriptor is a serialized FileDescriptorProto or FileDescriptorSet
+	// for the task's output schema, with the same dependency and empty-value rules
+	// as input_descriptor.
 	OutputDescriptor []byte `protobuf:"bytes,5,opt,name=output_descriptor,json=outputDescriptor,proto3" json:"output_descriptor,omitempty"`
 	// OutputMessage is the output message's fully qualified protobuf name. The host
 	// resolves it from output_descriptor and its own descriptor registry.
@@ -722,8 +723,9 @@ func (*HealthRequest) Descriptor() ([]byte, []int) {
 // own dependency is unavailable.
 type HealthResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Status determines whether the host considers the plugin available. Any value
-	// other than STATUS_SERVING is treated as not serving.
+	// Status is recorded for diagnostics. Any value other than STATUS_SERVING is
+	// classified as not serving; that classification does not itself gate
+	// capability calls or restart a reachable process.
 	Status HealthResponse_Status `protobuf:"varint,1,opt,name=status,proto3,enum=flowstate.plugin.v1.HealthResponse_Status" json:"status,omitempty"`
 	// Message explains a non-serving status, for the operator. It must not contain
 	// credential material: this is logged.
@@ -909,7 +911,8 @@ func (x *ResolveResponse) GetExpiresIn() *durationpb.Duration {
 // the same thing; see ExecuteRequest for what each one is.
 type ExecuteStreamRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Task is the task and its host-resolved inputs.
+	// Task is the task with host-resolved inputs, except for inputs the manifest
+	// declared deferred for the plugin to evaluate.
 	Task *v1.Task `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
 	// Scope is present only when the manifest declares that the task needs the
 	// workflow's expression scope.

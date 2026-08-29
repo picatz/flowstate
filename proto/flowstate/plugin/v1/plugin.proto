@@ -163,18 +163,19 @@ message TaskManifest {
   // Summary is one line, shown by `flow tasks` and in editor completion.
   string summary = 2 [(buf.validate.field).string = {max_len: 256}];
 
-  // InputDescriptor is a serialized FileDescriptorSet containing the input
-  // message's schema and any dependencies the host does not already provide.
-  // When input_message is set, empty bytes mean the host already has every
-  // required descriptor.
+  // InputDescriptor is a serialized FileDescriptorProto or FileDescriptorSet
+  // containing the input message's schema and any dependencies the host does
+  // not already provide. When input_message is set, empty bytes mean the host
+  // already has every required descriptor.
   bytes input_descriptor = 3;
 
   // InputMessage is the input message's fully qualified protobuf name. The host
   // resolves it from input_descriptor and its own descriptor registry.
   string input_message = 4 [(buf.validate.field).string = {max_len: 256}];
 
-  // OutputDescriptor is a serialized FileDescriptorSet for the task's output
-  // schema, with the same dependency and empty-value rules as input_descriptor.
+  // OutputDescriptor is a serialized FileDescriptorProto or FileDescriptorSet
+  // for the task's output schema, with the same dependency and empty-value rules
+  // as input_descriptor.
   bytes output_descriptor = 5;
 
   // OutputMessage is the output message's fully qualified protobuf name. The host
@@ -339,8 +340,8 @@ message HealthRequest {}
 message HealthResponse {
   // Status is the plugin's current ability to accept capability-specific calls.
   enum Status {
-    // Unspecified fails closed as not serving. A plugin must affirmatively report
-    // serving before the host dispatches work to it.
+    // Unspecified is classified as not serving. A healthy plugin should
+    // affirmatively report serving.
     STATUS_UNSPECIFIED = 0;
 
     // Serving means requests will be attempted.
@@ -353,8 +354,9 @@ message HealthResponse {
     STATUS_NOT_SERVING = 2;
   }
 
-  // Status determines whether the host considers the plugin available. Any value
-  // other than STATUS_SERVING is treated as not serving.
+  // Status is recorded for diagnostics. Any value other than STATUS_SERVING is
+  // classified as not serving; that classification does not itself gate
+  // capability calls or restart a reachable process.
   Status status = 1;
 
   // Message explains a non-serving status, for the operator. It must not contain
@@ -448,7 +450,8 @@ service TaskService {
 // require of a distinct RPC's request type. The fields are identical and mean
 // the same thing; see ExecuteRequest for what each one is.
 message ExecuteStreamRequest {
-  // Task is the task and its host-resolved inputs.
+  // Task is the task with host-resolved inputs, except for inputs the manifest
+  // declared deferred for the plugin to evaluate.
   flowstate.v1.Task task = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED

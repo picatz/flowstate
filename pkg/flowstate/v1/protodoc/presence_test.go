@@ -315,8 +315,7 @@ func TestPluginProtocolProseIsPresent(t *testing.T) {
 			t.Errorf("%T %s has no leading comment", descriptor, descriptor.FullName())
 		}
 	}
-	var checkEnum func(protoreflect.EnumDescriptor)
-	checkEnum = func(enum protoreflect.EnumDescriptor) {
+	checkEnum := func(enum protoreflect.EnumDescriptor) {
 		check(enum)
 		for i := 0; i < enum.Values().Len(); i++ {
 			check(enum.Values().Get(i))
