@@ -64,5 +64,10 @@ go.work
 # every run and never a statement about a specific commit worth committing.
 .coverage/
 
+# `make release-artifacts` output. Release archives, checksums, and SBOMs are
+# uploaded by the release workflow; they are products of a tagged commit, not
+# source files to commit back into it.
+/dist/
+
 # Per-orb portal metadata is runtime state, not repository configuration.
 .amp/portals/*
