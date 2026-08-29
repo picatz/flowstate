@@ -720,6 +720,41 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, err
 	}
+	if workflow.GetConcurrency() != nil {
+		// The workflow on a SignalWithStart request is creation input and is
+		// ignored when the entity already exists. Preserve that contract for an
+		// entity created before concurrency and entity addressing became
+		// mutually exclusive: it must remain signalable after an upgrade or a
+		// trusted-workflow replacement adds concurrency.
+		temporal, resp, _, existingErr := s.authorizeRunDecision(ctx, workflowID, "")
+		if existingErr == nil {
+			if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+				return nil, err
+			}
+			runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+			if err := temporal.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), &v1.SignalDelivery{
+				Payload: payload,
+				Sender:  sender,
+			}); err != nil {
+				return nil, actOnRunError("signalling (with start)", workflowID, runID, err)
+			}
+
+			return connect.NewResponse(&v1.SignalWithStartResponse{
+				WorkflowId:               workflowID,
+				RunId:                    runID,
+				Created:                  false,
+				SpecificationAsSubmitted: proto.Bool(false),
+			}), nil
+		}
+		if connect.CodeOf(existingErr) != connect.CodeNotFound {
+			return nil, existingErr
+		}
+
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(
+			"this workflow declares a `concurrency:` key and SignalWithStart requires an entity_key; "+
+				"both address the run by its workflow id and only one of them can, so use Run or drop "+
+				"the workflow's concurrency block"))
+	}
 
 	// The name has to be one the trusted workflow actually waits for, and this
 	// RPC is the one place that has to say so out loud.
