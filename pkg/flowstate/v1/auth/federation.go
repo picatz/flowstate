@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"crypto"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // FederationPolicy is the outbound half of federation as data: the identity
@@ -50,6 +53,36 @@ type FederationPolicy struct {
 	// stays published.
 	KeyRetention time.Duration `json:"key_retention,omitempty" yaml:"key_retention,omitempty"`
 
+	// SigningTimeout overrides [DefaultSigningTimeout], how long one signature
+	// may take. It is the bound that matters to a deployment signing through a
+	// KMS or an HSM — see [WithSigningTimeout] — and is here rather than only
+	// in the Go API because the deployments with a remote signer are exactly
+	// the ones configured from a policy file.
+	SigningTimeout time.Duration `json:"signing_timeout,omitempty" yaml:"signing_timeout,omitempty"`
+
+	// DeclaredClaims names the extension claims assertions minted here may
+	// carry, beyond the ones every assertion has. The claim set is closed: a
+	// carried claim absent from this list is refused at mint rather than
+	// signed, with [ErrUndeclaredClaim].
+	//
+	//	federation:
+	//	  issuer: https://flowstate.example.com
+	//	  declared_claims: [repository, environment]
+	//
+	// Empty declares none, which is the fail-closed default: a deployment that
+	// has not said which claims are part of its assertions' contract mints
+	// assertions carrying only the claims the issuer sets itself.
+	//
+	// This is where a *deployment* declares a claim. Core claims are declared
+	// in the schema instead, as the [ClaimNamespace] constants and the
+	// reserved set built from them, so `buf breaking` covers them — a tenant
+	// that needs a claim cannot edit our .proto, and a claim the issuer sets
+	// itself is not a tenant's to redefine.
+	//
+	// See [WithDeclaredClaims] for why this is an allowlist and for its
+	// relationship to the server's `--identity-claim`.
+	DeclaredClaims []string `json:"declared_claims,omitempty" yaml:"declared_claims,omitempty"`
+
 	// Allow are CEL rules gating credential assumption. When any are present, a
 	// request must match one of them.
 	//
@@ -74,6 +107,20 @@ type FederationPolicy struct {
 	// Deny are CEL rules refusing credential assumption. A request matching any of
 	// them is refused, whatever Allow says.
 	Deny []string `json:"deny,omitempty" yaml:"deny,omitempty"`
+
+	// Egress governs the outbound HTTP every exchange this policy performs
+	// makes, in netpolicy's own file form and with the same meaning
+	// [Policy.Egress] has: absent means [DefaultEgressPolicy], and the section
+	// only ever loosens.
+	//
+	//	federation:
+	//	  egress:
+	//	    allow: ['host == "sts.amazonaws.com"']
+	//
+	// A relying party is an endpoint an operator wrote down, reached carrying an
+	// assertion, so narrowing where an exchange may go is worth having a place
+	// to write.
+	Egress *netpolicy.EgressConfig `json:"egress,omitempty" yaml:"egress,omitempty"`
 
 	// Targets are the systems workloads may obtain credentials for.
 	Targets []FederationTarget `json:"targets,omitempty" yaml:"targets,omitempty"`
@@ -101,16 +148,22 @@ type FederationTarget struct {
 	// ClientCredentials configures an OAuth 2.0 client credentials grant
 	// authenticated by the Flowstate assertion.
 	ClientCredentials *ClientCredentialsTarget `json:"client_credentials,omitempty" yaml:"client_credentials,omitempty"`
+
+	// Assertion configures presenting the Flowstate assertion itself as the
+	// bearer credential, for a relying party that verifies OIDC and needs no
+	// exchange. See [AssertionConfig] for what that costs.
+	Assertion *AssertionTarget `json:"assertion,omitempty" yaml:"assertion,omitempty"`
 }
 
 // TokenExchangeTarget is the file form of [TokenExchangeConfig].
 type TokenExchangeTarget struct {
-	TokenURL           string   `json:"token_url" yaml:"token_url"`
-	Audience           string   `json:"audience" yaml:"audience"`
-	TargetAudience     string   `json:"target_audience,omitempty" yaml:"target_audience,omitempty"`
-	Resource           string   `json:"resource,omitempty" yaml:"resource,omitempty"`
-	Scopes             []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
-	RequestedTokenType string   `json:"requested_token_type,omitempty" yaml:"requested_token_type,omitempty"`
+	TokenURL              string        `json:"token_url" yaml:"token_url"`
+	Audience              string        `json:"audience" yaml:"audience"`
+	TargetAudience        string        `json:"target_audience,omitempty" yaml:"target_audience,omitempty"`
+	Resource              string        `json:"resource,omitempty" yaml:"resource,omitempty"`
+	Scopes                []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	RequestedTokenType    string        `json:"requested_token_type,omitempty" yaml:"requested_token_type,omitempty"`
+	MaxCredentialLifetime time.Duration `json:"max_credential_lifetime,omitempty" yaml:"max_credential_lifetime,omitempty"`
 }
 
 // AWSTarget is the file form of [AWSConfig].
@@ -138,10 +191,19 @@ type GCPTarget struct {
 // ClientCredentialsTarget is the file form of [ClientCredentialsConfig]. It has no
 // client secret field by design; see [FederationPolicy].
 type ClientCredentialsTarget struct {
-	TokenURL string   `json:"token_url" yaml:"token_url"`
-	ClientID string   `json:"client_id" yaml:"client_id"`
-	Audience string   `json:"audience,omitempty" yaml:"audience,omitempty"`
-	Scopes   []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	TokenURL              string        `json:"token_url" yaml:"token_url"`
+	ClientID              string        `json:"client_id" yaml:"client_id"`
+	Audience              string        `json:"audience,omitempty" yaml:"audience,omitempty"`
+	Scopes                []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	MaxCredentialLifetime time.Duration `json:"max_credential_lifetime,omitempty" yaml:"max_credential_lifetime,omitempty"`
+}
+
+// AssertionTarget is the file form of [AssertionConfig]. It carries only an
+// audience, because there is nothing to exchange with: the credential is the
+// assertion, and its lifetime is the issuer's `assertion_lifetime` above rather
+// than a second one written per target.
+type AssertionTarget struct {
+	Audience string `json:"audience" yaml:"audience"`
 }
 
 // ParseFederationPolicy decodes an outbound federation policy from YAML or JSON.
@@ -168,6 +230,21 @@ func (p FederationPolicy) Validate() error {
 		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
+	// Checked here as well as in [NewIssuer], so that a declaration that can
+	// never apply is a parse error rather than something an operator learns
+	// about the first time a workload asks for a credential.
+	if _, err := validateDeclaredClaims(p.DeclaredClaims); err != nil {
+		return err
+	}
+
+	// Same reason, and it matters more for a bound than for a knob: a
+	// `signing_timeout: -1s` that fell through to the default would leave an
+	// operator believing they had set the safety bound they typed.
+	if p.SigningTimeout < 0 {
+		return fmt.Errorf("%w: federation.signing_timeout must be positive, got %s; omit it to use the %s default",
+			ErrInvalidPolicy, p.SigningTimeout, DefaultSigningTimeout)
+	}
+
 	names := make(map[string]struct{}, len(p.Targets))
 	for i, target := range p.Targets {
 		if target.Name == "" {
@@ -184,6 +261,7 @@ func (p FederationPolicy) Validate() error {
 			target.AWS != nil,
 			target.GCP != nil,
 			target.ClientCredentials != nil,
+			target.Assertion != nil,
 		} {
 			if set {
 				configured++
@@ -192,7 +270,7 @@ func (p FederationPolicy) Validate() error {
 		switch configured {
 		case 1:
 		case 0:
-			return fmt.Errorf("%w: targets[%d] %q: needs one of token_exchange, aws, gcp, or client_credentials",
+			return fmt.Errorf("%w: targets[%d] %q: needs one of token_exchange, aws, gcp, client_credentials, or assertion",
 				ErrInvalidPolicy, i, target.Name)
 		default:
 			return fmt.Errorf("%w: targets[%d] %q: configures %d providers, and a target names exactly one system",
@@ -217,7 +295,40 @@ func (p FederationPolicy) Validate() error {
 // federationConfig collects the options for building from a policy.
 type federationConfig struct {
 	client *http.Client
+	egress *netpolicy.Policy
 	clock  func() time.Time
+
+	// verifyOnly are extra public keys to publish beside the signing key. They
+	// are issuer options rather than a second list of key material here,
+	// because the issuer is the thing that publishes a key set and this type
+	// only has to carry them to it.
+	verifyOnly []IssuerOption
+}
+
+// egressPolicy resolves the egress policy every exchanger this policy builds
+// will use: the one a caller named, else the one the policy file's own egress
+// section describes, else nil for [DefaultEgressPolicy].
+//
+// Naming both is refused rather than resolved by precedence, for the reason
+// [identityHTTPClient] refuses its own pair: a deployment that has written the
+// answer down twice has not said which one it means, and the one that loses
+// would be silently unenforced.
+func (p FederationPolicy) egressPolicy(cfg federationConfig) (*netpolicy.Policy, error) {
+	filePolicy, err := egressPolicyFromConfig(p.Egress)
+	if err != nil {
+		return nil, err
+	}
+
+	if filePolicy != nil && cfg.egress != nil {
+		return nil, fmt.Errorf("%w: WithFederationEgressPolicy and the federation policy's egress section "+
+			"both configure outbound identity HTTP: keep the one the deployment reads", ErrInvalidPolicy)
+	}
+
+	if cfg.egress != nil {
+		return cfg.egress, nil
+	}
+
+	return filePolicy, nil
 }
 
 // A FederationOption configures how a [FederationPolicy] is built into a [Broker].
@@ -233,6 +344,21 @@ func WithFederationHTTPClient(client *http.Client) FederationOption {
 	}
 }
 
+// WithFederationEgressPolicy sets the egress policy applied to every relying
+// party this broker reaches: where it may connect, over what, and how much it
+// may read. Unset means [DefaultEgressPolicy].
+//
+// It is [WithEgressPolicy] for the outbound direction, and the same rule holds:
+// prefer it to [WithFederationHTTPClient], which replaces the boundary instead
+// of configuring it, and which cannot be combined with this.
+func WithFederationEgressPolicy(policy *netpolicy.Policy) FederationOption {
+	return func(c *federationConfig) {
+		if policy != nil {
+			c.egress = policy
+		}
+	}
+}
+
 // WithFederationClock sets the clock used for assertion and credential lifetimes.
 // It exists for tests.
 func WithFederationClock(clock func() time.Time) FederationOption {
@@ -240,6 +366,18 @@ func WithFederationClock(clock func() time.Time) FederationOption {
 		if clock != nil {
 			c.clock = clock
 		}
+	}
+}
+
+// WithFederationVerifyOnlyKey publishes one more public key in the issuer's key
+// set, without a private half, so assertions a previous process signed keep
+// verifying across a restart. It is [WithVerifyOnlyKey] reached from a policy,
+// and takes the same (id, public key) pair for the same reasons; repeat it for
+// each key. See that option for what rotation across a restart needs and why
+// this is not revocation.
+func WithFederationVerifyOnlyKey(id string, public crypto.PublicKey) FederationOption {
+	return func(c *federationConfig) {
+		c.verifyOnly = append(c.verifyOnly, WithVerifyOnlyKey(id, public))
 	}
 }
 
@@ -269,9 +407,23 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	if p.KeyRetention > 0 {
 		issuerOpts = append(issuerOpts, WithKeyRetention(p.KeyRetention))
 	}
+	// Not `> 0`, unlike the two above: a negative bound is a mistake, and
+	// [NewIssuer] refuses one. Passing it on is what makes that refusal the
+	// single rule rather than something this wiring can quietly opt out of.
+	if p.SigningTimeout != 0 {
+		issuerOpts = append(issuerOpts, WithSigningTimeout(p.SigningTimeout))
+	}
+	if len(p.DeclaredClaims) > 0 {
+		issuerOpts = append(issuerOpts, WithDeclaredClaims(p.DeclaredClaims...))
+	}
 	if cfg.clock != nil {
 		issuerOpts = append(issuerOpts, WithIssuerClock(cfg.clock))
 	}
+	// Last, so the retention and clock the policy configured are the ones the
+	// published keys are measured against: [NewIssuer] installs them once every
+	// option has been applied, but ordering them here keeps that from being a
+	// property a reader has to go and check.
+	issuerOpts = append(issuerOpts, cfg.verifyOnly...)
 
 	issuer, err := NewIssuer(p.Issuer, key, issuerOpts...)
 	if err != nil {
@@ -301,6 +453,15 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger, error) {
 	exchangers := make(map[string]Exchanger, len(p.Targets))
 
+	// One policy for every target, built once: relying parties are reached from
+	// one process under one deployment's egress rules, and they share the
+	// connection pool that comes with it. A nil policy here means "the default",
+	// which each exchanger resolves for itself.
+	egress, err := p.egressPolicy(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, target := range p.Targets {
 		var (
 			exchanger Exchanger
@@ -310,15 +471,17 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 		switch {
 		case target.TokenExchange != nil:
 			exchanger, err = NewTokenExchanger(TokenExchangeConfig{
-				Name:               target.Name,
-				TokenURL:           target.TokenExchange.TokenURL,
-				Audience:           target.TokenExchange.Audience,
-				TargetAudience:     target.TokenExchange.TargetAudience,
-				Resource:           target.TokenExchange.Resource,
-				Scopes:             target.TokenExchange.Scopes,
-				RequestedTokenType: target.TokenExchange.RequestedTokenType,
-				HTTPClient:         cfg.client,
-				Clock:              cfg.clock,
+				Name:                  target.Name,
+				TokenURL:              target.TokenExchange.TokenURL,
+				Audience:              target.TokenExchange.Audience,
+				TargetAudience:        target.TokenExchange.TargetAudience,
+				Resource:              target.TokenExchange.Resource,
+				Scopes:                target.TokenExchange.Scopes,
+				RequestedTokenType:    target.TokenExchange.RequestedTokenType,
+				MaxCredentialLifetime: target.TokenExchange.MaxCredentialLifetime,
+				HTTPClient:            cfg.client,
+				EgressPolicy:          egress,
+				Clock:                 cfg.clock,
 			})
 		case target.AWS != nil:
 			exchanger, err = NewAWSExchanger(AWSConfig{
@@ -331,6 +494,7 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				SessionPolicy:     target.AWS.SessionPolicy,
 				SessionPolicyARNs: target.AWS.SessionPolicyARNs,
 				HTTPClient:        cfg.client,
+				EgressPolicy:      egress,
 				Clock:             cfg.clock,
 			})
 		case target.GCP != nil:
@@ -344,17 +508,27 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				Endpoint:            target.GCP.Endpoint,
 				IAMEndpoint:         target.GCP.IAMEndpoint,
 				HTTPClient:          cfg.client,
+				EgressPolicy:        egress,
 				Clock:               cfg.clock,
 			})
 		case target.ClientCredentials != nil:
 			exchanger, err = NewClientCredentialsExchanger(ClientCredentialsConfig{
-				Name:       target.Name,
-				TokenURL:   target.ClientCredentials.TokenURL,
-				ClientID:   target.ClientCredentials.ClientID,
-				Audience:   target.ClientCredentials.Audience,
-				Scopes:     target.ClientCredentials.Scopes,
-				HTTPClient: cfg.client,
-				Clock:      cfg.clock,
+				Name:                  target.Name,
+				TokenURL:              target.ClientCredentials.TokenURL,
+				ClientID:              target.ClientCredentials.ClientID,
+				Audience:              target.ClientCredentials.Audience,
+				Scopes:                target.ClientCredentials.Scopes,
+				MaxCredentialLifetime: target.ClientCredentials.MaxCredentialLifetime,
+				HTTPClient:            cfg.client,
+				EgressPolicy:          egress,
+				Clock:                 cfg.clock,
+			})
+		case target.Assertion != nil:
+			// No HTTP client and no clock: this exchanger reaches nothing and
+			// takes its expiry from the assertion the issuer minted.
+			exchanger, err = NewAssertionExchanger(AssertionConfig{
+				Name:     target.Name,
+				Audience: target.Assertion.Audience,
 			})
 		default:
 			// Validate rejects this, and reaching it would mean a target with no

@@ -3,11 +3,11 @@ package flowstatev1_test
 import (
 	"testing"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestRunWorkflowHasGuardOnToleratedSuccess covers
-// [tests.ToleratedSuccessHasGuardCases] in the local driver — the value
+// [conformance.ToleratedSuccessHasGuardCases] in the local driver — the value
 // `has(steps.<id>.error)` must read once a `continue_on_error` step has actually
 // succeeded. The same cases run against the durable driver in the engine
 // package's TestRunWorkflowHasGuardOnToleratedSuccess, which is what keeps the
@@ -22,7 +22,7 @@ import (
 // need to touch. runWorkflow itself is defined in eval_test.go and reused here
 // unchanged — same package, same test binary, one helper.
 func TestRunWorkflowHasGuardOnToleratedSuccess(t *testing.T) {
-	for _, test := range tests.ToleratedSuccessHasGuardCases() {
+	for _, test := range conformance.ToleratedSuccessHasGuardCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})

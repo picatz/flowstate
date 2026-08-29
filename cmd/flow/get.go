@@ -7,7 +7,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -21,7 +20,7 @@ import (
 // started it has to be askable about afterwards, and an approval gate is the
 // clearest example: it is waiting precisely because nobody is watching.
 func runGet(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
 	}
@@ -70,8 +69,13 @@ func runGet(cmd *cobra.Command, args []string) error {
 	//
 	// The exit status is still the run's outcome, so `flow get x -o json && ...`
 	// behaves the way the shell reader expects either way.
-	if format.Machine() {
-		if err := writeJSON(surface, format, msg); err != nil {
+	//
+	// rendering.WantsDocument() rather than format.Machine() alone, so `flow get
+	// x --raw` with the default text format writes the GetResponse document too
+	// — the same fix writeRun and writeTaskOutputs already have, and without it
+	// this was the one run-answering verb --raw did not work alone on.
+	if rendering.WantsDocument() {
+		if err := writeRunJSON(surface, rendering, msg); err != nil {
 			return err
 		}
 
@@ -107,7 +111,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// The same sentence `flow watch` shows, from the same function: a person who
 	// asks once and a person who watches are reading about one run, and two
 	// renderers for it would eventually describe it two ways.
-	for _, line := range pendingActivityLines(msg.GetPendingActivities(), time.Now()) {
+	for _, line := range pendingActivityLines(msg, time.Now()) {
 		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
 	}
 
@@ -124,12 +128,14 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// asked about.
 	writeRunOutputs(surface, msg)
 
-	if outputs := msg.GetOutputs(); outputs != nil {
-		encoded, err := protojson.Marshal(outputs)
-		if err != nil {
-			return fmt.Errorf("formatting the outputs of %s: %w", workflowID, err)
-		}
-		fmt.Fprintf(surface.Out, "%s\n", encoded)
+	// Through the one function that writes this document, rather than through a
+	// bare protojson.Marshal of its own, which is what stood here. That was the
+	// divergence runlocal.go's own doc comment warns about, live in a third verb:
+	// `flow get x | jq` received a document with unpopulated fields dropped while
+	// `flow run local x | jq` received them, so the same expression answered
+	// differently depending on which verb a script had asked.
+	if err := writeStepOutputs(surface, rendering, msg); err != nil {
+		return fmt.Errorf("formatting the outputs of %s: %w", workflowID, err)
 	}
 
 	// A run that failed is reported as a failure, so `flow get x && ...` behaves
@@ -305,16 +311,34 @@ func pendingWaitLines(progress *v1.RunProgress, now time.Time) []string {
 // *some* moment: `flow get` reads the clock as it prints, and a watch uses the time
 // the answer was observed — which is what makes the line a fact about the poll
 // rather than about when it happened to be rendered.
-func pendingActivityLines(pending []*v1.PendingActivity, now time.Time) []string {
+func pendingActivityLines(msg *v1.GetResponse, now time.Time) []string {
+	pending := msg.GetPendingActivities()
 	if len(pending) == 0 {
 		return nil
 	}
 
 	lines := make([]string, 0, len(pending))
 	for _, activity := range pending {
-		line := fmt.Sprintf("retrying, attempt %d", activity.GetAttempt())
+		// "Retrying" only when it is. A pending activity on its first attempt
+		// has simply not finished, and calling that a retry tells an operator a
+		// step is failing when nothing has failed at all — the first thing they
+		// would do about it is look for an error that is not there.
+		//
+		// [v1.PendingActivity.NextAttemptScheduledTime] is what separates them,
+		// and it says so by presence: Temporal leaves it unset while an attempt
+		// is running. That only became true once the server read the field its
+		// own schema describes rather than one set for every pending activity.
+		line := fmt.Sprintf("running, attempt %d", activity.GetAttempt())
+		if activity.GetNextAttemptScheduledTime() != nil {
+			line = fmt.Sprintf("retrying, attempt %d", activity.GetAttempt())
+		}
+		// The workload's own sentence, escaped for the same reason
+		// `flow timeline` escapes one: it is text this process did not write,
+		// and a newline in it fabricates a line that reads as another retrying
+		// step while an escape restyles the terminal. Found while fixing the
+		// same hole one command over, rather than reported here (Codex, #1119).
 		if failure := activity.GetLastFailure(); failure != "" {
-			line += ": " + failure
+			line += ": " + ui.EscapeControl(failure)
 		}
 		if next := activity.GetNextAttemptScheduledTime(); next != nil {
 			if wait := next.AsTime().Sub(now); wait > 0 {
@@ -337,6 +361,24 @@ func pendingActivityLines(pending []*v1.PendingActivity, now time.Time) []string
 		}
 
 		lines = append(lines, line)
+	}
+
+	// And that these are some of the retrying steps rather than all of them,
+	// said in the same words and for the same reason [pendingWaitLines] says it
+	// about gates: a reader who takes a bounded list for the whole of it
+	// concludes a run is retrying four steps when it is retrying sixty-four,
+	// which is the difference between a slow run and a stuck one.
+	//
+	// The server has reported this since the bound landed and nothing here read
+	// it, so the notice existed on the wire and reached nobody — the shape a
+	// capability takes when it stops one surface short (#1119).
+	//
+	// Taking the whole response rather than the slice is what makes that hard
+	// to repeat: the count and the flag arrive together and are now passed
+	// together, exactly as the gate renderer takes the progress that carries
+	// both of its halves.
+	if msg.GetPendingActivitiesTruncated() {
+		lines = append(lines, "and more retrying steps than this run reports")
 	}
 
 	return lines

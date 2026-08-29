@@ -8,7 +8,7 @@ import (
 	"go.temporal.io/sdk/converter"
 
 	v1types "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // The durable half of #349's shared table. The local half is
@@ -25,7 +25,7 @@ import (
 // and started by starter carries - both memo entries this server writes at
 // submit, in the wire shape [signalPolicyMemoEntry] and [starterMemoEntry] write
 // them.
-func runWithPolicyAndStarter(t *testing.T, c tests.RehearsalSignalCase) *workflowservice.DescribeWorkflowExecutionResponse {
+func runWithPolicyAndStarter(t *testing.T, c conformance.RehearsalSignalCase) *workflowservice.DescribeWorkflowExecutionResponse {
 	t.Helper()
 
 	// The policy half is the same builder every other authorizeSignal case
@@ -51,7 +51,7 @@ func runWithPolicyAndStarter(t *testing.T, c tests.RehearsalSignalCase) *workflo
 func TestRehearsalSignalCasesDurably(t *testing.T) {
 	t.Parallel()
 
-	tests.AssertRehearsalSignalCases(t, func(t testing.TB, c tests.RehearsalSignalCase) error {
+	conformance.AssertRehearsalSignalCases(t, func(t testing.TB, c conformance.RehearsalSignalCase) error {
 		// The sender the server attests: the case's identity, established by
 		// authentication rather than asserted by a command, and never marked
 		// local. An identity-less case is an authenticated caller a deployment
@@ -62,7 +62,7 @@ func TestRehearsalSignalCasesDurably(t *testing.T) {
 			identity = &v1types.WorkloadIdentity{}
 		}
 
-		return New(nil).authorizeSignal(
+		return mustNew(t, nil).authorizeSignal(
 			runWithPolicyAndStarter(t.(*testing.T), c), c.SignalName,
 			&v1types.SignalSender{Identity: identity})
 	})
@@ -82,9 +82,9 @@ func TestRehearsalSignalCasesDurably(t *testing.T) {
 func TestRehearsalSenderIsNeverAuthorizedDurably(t *testing.T) {
 	t.Parallel()
 
-	tests.AssertRehearsalSenderIsNeverAuthorizedDurably(t,
-		func(t testing.TB, c tests.RehearsalSignalCase, sender *v1types.SignalSender) error {
-			return New(nil).authorizeSignal(
+	conformance.AssertRehearsalSenderIsNeverAuthorizedDurably(t,
+		func(t testing.TB, c conformance.RehearsalSignalCase, sender *v1types.SignalSender) error {
+			return mustNew(t, nil).authorizeSignal(
 				runWithPolicyAndStarter(t.(*testing.T), c), c.SignalName, sender)
 		})
 }
@@ -97,7 +97,7 @@ func TestRehearsalSenderIsNeverAuthorizedDurably(t *testing.T) {
 func TestRehearsalSenderIsRefusedEvenWithNoPolicyDeclared(t *testing.T) {
 	t.Parallel()
 
-	err := New(nil).authorizeSignal(memoWithNoSignalPolicy(), "deploy-approved",
+	err := mustNew(t, nil).authorizeSignal(memoWithNoSignalPolicy(), "deploy-approved",
 		v1types.RehearsalSignalSender(&v1types.WorkloadIdentity{
 			Subject: "sre-lead@example.com",
 			Issuer:  "https://issuer.example.com",

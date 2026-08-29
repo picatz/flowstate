@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"connectrpc.com/connect"
 
@@ -26,10 +27,12 @@ import (
 // proto-first invariant exists to prevent.
 //
 // What these return is better than the raw client for the same reason a caller
-// would otherwise have to build it themselves: it is bounded by the host's
-// per-call timeout, it refuses a capability the plugin did not advertise, and it
-// resolves the current process on every call, so it keeps working across a
-// restart instead of holding a connection to a process that has gone.
+// would otherwise have to build it themselves: no call through one is ever
+// unbounded — a caller's own deadline governs, and a caller that brought none
+// gets the host's [Config.CallTimeout] (see [Plugin.callContext]) — it refuses
+// a capability the plugin did not advertise, and it resolves the current
+// process on every call, so it keeps working across a restart instead of
+// holding a connection to a process that has gone.
 
 // SecretService returns this plugin's secret resolution as the generated service.
 //
@@ -101,16 +104,103 @@ func (s taskService) Execute(
 	return inst.clients.task.Execute(ctx, req)
 }
 
+// ExecuteStream implements [pluginv1connect.TaskServiceClient] only.
+//
+// It is the one place the symmetry the package doc comment describes does not
+// hold, and it cannot: a streaming client's method returns a stream for its
+// caller to read from, and a streaming handler's method is instead *handed*
+// one to write into and returns only an error, so the client and handler
+// shapes for one streaming RPC are never the same Go signature — no
+// implementation, however written, satisfies both. taskService is used only
+// as a client (see [Plugin.TaskService]'s own doc comment; nothing in this
+// package ever serves it as a handler), so that is a gap in the pattern
+// rather than in what this type needs to do.
+//
+// This still goes through [Plugin.callContext], but not with Execute's
+// `defer cancel()` — that scopes the cancel to when the *wrapping* call
+// returns, which for Execute is right (it does not return until the whole
+// call is done) and wrong here, because ExecuteStream returns as soon as the
+// stream exists, before its caller has read anything from it. A deferred
+// cancel at that point would tear the stream down before its first Receive.
+// The package's own promise is the other direction: every service this file
+// hands back — including this one — is bounded, so a plugin that opens a
+// stream and then never sends a terminal ExecuteStreamResponse cannot hold
+// the call open indefinitely. Which bound ends it is [Plugin.callContext]'s
+// answer rather than this method's: the caller's own deadline when it brought
+// one, and Config.CallTimeout when it did not — the shape that would
+// otherwise run forever, and the one
+// [TestTaskServiceExecuteStreamIsBoundedByCallTimeout] pins.
+//
+// The bounded context is kept alive for exactly that reason: it is not
+// canceled here, so it lives for the stream's whole read, and it is released
+// once the stream is no longer reachable rather than left to leak — this
+// method has no hook into [connect.ServerStreamForClient.Close] to run cancel
+// eagerly on a normal close (the interface this method fills in returns that
+// concrete type, not a wrapper this package controls), so a
+// [runtime.AddCleanup] backstop releases it once the stream is garbage
+// collected. That is a cleanliness guarantee, not the security one: the
+// timeout itself is what stops an indefinite hold, whether or not anything
+// ever reads to completion or closes explicitly.
+func (s taskService) ExecuteStream(
+	ctx context.Context,
+	req *connect.Request[pluginv1.ExecuteStreamRequest],
+) (*connect.ServerStreamForClient[pluginv1.ExecuteStreamResponse], error) {
+	inst, err := s.plugin.ready()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+
+	ctx, cancel := s.plugin.callContext(ctx)
+
+	// taskStream, not task: this call's response is the same
+	// progress-frames-then-terminal-response shape [Plugin.executeTask]
+	// (task.go) drives, and it needs the identical reserve — see
+	// [DefaultMaxProgressFrames] and [newClients]'s own doc comment on why
+	// only the streaming client carries it. Issue #804 was found and fixed
+	// on the internal dispatch path; this exported one shares the same
+	// shape and the same bug, caught in review before it shipped
+	// (picatz/flowstate#813) rather than by a second issue.
+	//
+	// What this method does *not* do is [Plugin.executeTask]'s other half:
+	// counting progress frames and dropping any past MaxProgressFrames. That
+	// counting exists to bound how much a task's own reporting relays into
+	// the *caller's* [flowstatev1.ReportProgress] reporter — a Go callback
+	// that path installs and this one has no equivalent of, since a caller
+	// of this exported stream reads Receive/Msg itself and decides what to
+	// do with each message. There is nowhere to install a drop: the return
+	// type here is connect's own *connect.ServerStreamForClient, a concrete
+	// struct with unexported fields and no exported constructor a caller of
+	// this package could build one from, so nothing outside connect-go can
+	// wrap or filter its Receive/Msg — the compile-time proof below
+	// (`var _ pluginv1connect.TaskServiceClient = taskService{}`) is exactly
+	// the promise that this method returns what the generated client itself
+	// would, unmodified in shape. The aggregate byte ceiling above is what
+	// still bounds this path: it is the same reserved taskStream client
+	// [Plugin.executeTask] uses, so a plugin reporting within
+	// MaxProgressFrames cannot starve this call's terminal response any more
+	// than it can starve the internal one, and one reporting far beyond it
+	// still hits a finite ceiling and is refused either way.
+	stream, err := inst.clients.taskStream.ExecuteStream(ctx, req)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	runtime.AddCleanup(stream, func(cancel context.CancelFunc) { cancel() }, cancel)
+
+	return stream, nil
+}
+
 // Compile-time proof that one implementation satisfies both sides of the
-// contract, which is the whole basis for the generated service being the
-// extension point. If a future change to the schema broke the symmetry — a
-// streaming method, say, whose client and handler shapes differ — it would fail
-// here rather than wherever someone first tried to substitute one for the other.
+// contract for every method where that is possible, which is the whole basis
+// for the generated service being the extension point. secretService still
+// proves the full symmetry; taskService proves only the client half, because
+// ExecuteStream's client and handler shapes differ by construction — see that
+// method's own doc comment.
 var (
 	_ pluginv1connect.SecretServiceClient  = secretService{}
 	_ pluginv1connect.SecretServiceHandler = secretService{}
 	_ pluginv1connect.TaskServiceClient    = taskService{}
-	_ pluginv1connect.TaskServiceHandler   = taskService{}
 )
 
 // SecretServiceForScheme returns the service resolving a secret scheme, and

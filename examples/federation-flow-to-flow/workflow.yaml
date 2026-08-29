@@ -1,0 +1,34 @@
+# One Flowstate deployment calling another's API with no shared secret between
+# them. The step names a credential target and nothing else; what reaches the
+# peer is the assertion this deployment signed for itself, and the peer's server
+# verifies it against the keys this deployment publishes before any handler runs.
+#
+# The call is a real typed RPC — `WorkflowService/Get`, whose request is one
+# string field — so the body here is a valid GetRequest rather than a shape a
+# real server would reject. The point on show is the identity, not the API: any
+# of the peer's RPCs is reached the same way, and Get is the one with the
+# lightest request to write out.
+edition: v2026.3
+name: federation-flow-to-flow
+steps:
+  # `credential: peer-flowstate` names the deployment's `assertion` target, so
+  # the worker mints an assertion whose audience is the peer and applies it as
+  # the bearer token inside the activity. The body is a proto-JSON GetRequest.
+  - id: check_on_peer
+    http:
+      credential: peer-flowstate
+      expect: ${response.status_code == 200}
+      json:
+        workflowId: flowstate-workflow-reindex-search
+      method: POST
+      url: https://flowstate.peer.example.com/flowstate.v1.WorkflowService/Get
+
+  # The peer answers with a GetResponse, in canonical proto-JSON — so the run's
+  # status is read back under the field name the wire actually carries, `status`.
+  - id: record
+    vars:
+      peer: ${json_parse(steps.check_on_peer.body)}
+    log:
+      fields:
+        peer_status: ${peer["status"]}
+      message: read a run's status from the peer deployment

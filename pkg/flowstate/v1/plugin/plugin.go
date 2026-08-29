@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -157,7 +156,8 @@ type Plugin struct {
 	manifest *pluginv1.PluginManifest
 
 	// distribution is the digest of the executable this plugin was launched
-	// from, taken at the launch rather than read back later from the path.
+	// from, taken from the handle it was launched through rather than read back
+	// later from the path.
 	//
 	// The two are not the same fact. A path is a name, and an atomic replacement
 	// rebinds it: a digest read after the fact identifies whatever is at the name
@@ -165,6 +165,13 @@ type Plugin struct {
 	// has to be the bytes that served it, so it is captured beside the launch and
 	// retained, and a relaunch that produces a different one is refused (see
 	// [ErrDistribution]).
+	//
+	// Beside the launch is not close enough on its own, either: hashing the path
+	// and then executing the path is two opens with a window between them, and an
+	// atomic rename is what an in-place upgrade does. The digest is therefore
+	// taken from the same open descriptor the process is executed through, which
+	// closes the window where the platform permits it — see [execImage] for what
+	// each platform can promise.
 	distribution string
 
 	state     State
@@ -326,12 +333,36 @@ func (p *Plugin) ready() (*instance, error) {
 
 // callContext bounds one call to a plugin.
 //
-// The host's own timeout is applied on top of whatever deadline the caller
-// already carries, so the shorter of the two wins. That is the intended
-// relationship: a step with a five second timeout must not wait thirty for a
-// plugin, and a plugin must not be able to hold a request open past the host's
-// bound just because the caller passed a context with no deadline at all.
+// A caller that already carries a deadline keeps it, unchanged; only a caller
+// with no deadline of its own gets Config.CallTimeout. The host's bound exists
+// to stop the call nobody bounded, not to second-guess the one somebody did.
+//
+// The concern the older rule was defending is real and is still met: a plugin
+// must not be able to hold a request open indefinitely just because the caller
+// passed a context with no deadline at all, and a step with a five second
+// `timeout:` must not wait thirty seconds for a plugin. What that rule got
+// wrong was the other direction, which is the one both drivers actually take
+// (#1130). Every step arrives here with a deadline — the local driver's
+// per-attempt [context.WithTimeout] and the durable driver's activity
+// StartToClose, both from the step's own `timeout:` or from
+// [flowstatev1.DefaultStartToCloseTimeout] — so stacking a thirty second bound
+// beneath them silently capped every plugin task at thirty seconds, whatever
+// the author wrote. A ten minute `timeout:` on a task that legitimately takes
+// two minutes failed, wearing the plugin's own error classification rather than
+// anything naming the host's bound, and no shipped surface could raise it.
+//
+// So the layering is: the step's `timeout:` bounds the attempt, this bounds an
+// attempt that has no such bound, and whatever the plugin enforces internally
+// bounds its own work beneath both. The shorter of two deadlines still wins,
+// because a caller with a short deadline keeps it — there is simply no longer a
+// second deadline invented here to shorten it with.
 func (p *Plugin) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		// WithCancel, not the bare ctx: every caller in this package owns the
+		// returned cancel and the streaming one relies on cancelling to release
+		// the call, so both shapes have to be a context this call can end.
+		return context.WithCancel(ctx)
+	}
 	return context.WithTimeout(ctx, p.cfg.CallTimeout)
 }
 
@@ -390,21 +421,42 @@ func (p *Plugin) recordHealth(h Health) {
 // start launches the process, handshakes, and asks the plugin to describe
 // itself. It is the whole of what has to succeed for a plugin to be usable, and
 // it is the same on the first launch and on every relaunch.
-// The digest is taken beside the launch and returned with the instance, so that
-// the caller records the bytes that this process is running rather than the bytes
-// that answer to its path afterwards.
+//
+// The executable is opened once, hashed, and executed through that same open
+// handle, so the digest returned beside the instance is the digest of the image
+// this process is running rather than of whatever answered to its path a moment
+// earlier or a moment later. See [execImage].
 func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
 	ctx, _, finish := p.telemetry.start(p.procCtx, "start", p.name, "")
 	var startErr error
 	defer func() { finish(startErr) }()
 
-	distribution, err := distributionDigest(p.path)
+	image, err := openExecImage(p.path, p.log)
+	if err != nil {
+		startErr = pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrLaunch, err))
+		return nil, nil, "", startErr
+	}
+	// Held open across the launch and no longer: Start returns after the child's
+	// execve has been attempted, so this cannot race the exec it is holding the
+	// image open for.
+	defer image.close()
+
+	distribution, err := image.digest()
 	if err != nil {
 		startErr = pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrLaunch, err))
 		return nil, nil, "", startErr
 	}
 
-	inst, err := launch(ctx, p.cfg, Found{Name: p.name, Path: p.path})
+	// The seam the time-of-check-to-time-of-use test replaces the binary
+	// through. It is nil in every configuration outside this package's tests —
+	// the field is unexported — and it sits exactly where the old window was, so
+	// a launch that went back to executing the path would fail that test rather
+	// than pass it by timing.
+	if p.cfg.beforeExec != nil {
+		p.cfg.beforeExec(p.path)
+	}
+
+	inst, err := launch(ctx, p.cfg, Found{Name: p.name, Path: p.path}, image)
 	if err != nil {
 		startErr = err
 		return nil, nil, "", err
@@ -422,6 +474,7 @@ func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
 		"version", manifest.GetVersion(),
 		"protocol", inst.protocolVersion,
 		"distribution", distribution,
+		"distribution_pinned", image.pinned,
 		"capabilities", capabilityNames(manifest.GetCapabilities()),
 		"schemes", manifest.GetSchemes(),
 		"tasks", taskNames(manifest.GetTasks()),
@@ -430,22 +483,16 @@ func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
 	return inst, manifest, distribution, nil
 }
 
-// distributionDigest hashes an executable without holding it.
-//
-// Streamed rather than read: the file is chosen by whatever is in the discovery
-// directory, and a worker that allocates a plugin binary in full to hash it can
-// be stopped from starting by one very large file. See [flowstatev1.ContentDigestOf].
-func distributionDigest(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	return flowstatev1.ContentDigestOf(f)
-}
-
 // DistributionDigest is the digest of the executable currently serving.
+//
+// Where the host can execute an already-open descriptor — Linux, through
+// /proc/self/fd — this is the digest of the image the kernel ran: the file is
+// opened once, hashed, and executed through that same handle, so the two cannot
+// name different inodes. Where it cannot, it is the digest of the file that was
+// at the plugin's path immediately before the launch, which a replacement
+// landing between the hash and the exec can still falsify. [openExecImage] logs
+// which of the two a given launch got, so the weaker answer is never handed over
+// as though it were the stronger one.
 func (p *Plugin) DistributionDigest() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -502,7 +549,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 	var known []pluginv1.Capability
 	for _, c := range manifest.GetCapabilities() {
 		switch c {
-		case pluginv1.Capability_CAPABILITY_SECRETS, pluginv1.Capability_CAPABILITY_TASKS:
+		case pluginv1.Capability_CAPABILITY_SECRETS, pluginv1.Capability_CAPABILITY_TASKS, pluginv1.Capability_CAPABILITY_TASK_PROGRESS:
 			if !slices.Contains(known, c) {
 				known = append(known, c)
 			}
@@ -525,6 +572,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 
 	secrets := slices.Contains(known, pluginv1.Capability_CAPABILITY_SECRETS)
 	tasks := slices.Contains(known, pluginv1.Capability_CAPABILITY_TASKS)
+	taskProgress := slices.Contains(known, pluginv1.Capability_CAPABILITY_TASK_PROGRESS)
 
 	switch {
 	case secrets && len(manifest.GetSchemes()) == 0:
@@ -537,6 +585,12 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 	case !tasks && len(manifest.GetTasks()) > 0:
 		p.log.Warn("plugin lists tasks without advertising CAPABILITY_TASKS; they will not be registered",
 			"tasks", taskNames(manifest.GetTasks()))
+	case taskProgress && !tasks:
+		// Harmless rather than refused — nothing dispatches ExecuteStream for a
+		// plugin that has no tasks to run it against either way — but worth a
+		// line, since a manifest built by hand rather than by this package's
+		// own [sdk.Plugin.manifest] could set this without meaning to.
+		p.log.Warn("plugin advertises CAPABILITY_TASK_PROGRESS without CAPABILITY_TASKS, so it will never be asked")
 	}
 
 	if secrets {
@@ -706,7 +760,14 @@ func (p *Plugin) restart() bool {
 	// Counted here, after the budget said yes and the backoff was not cancelled
 	// by shutdown, so the metric reports relaunches actually attempted rather
 	// than intentions: a plugin with MaxRestarts zero records none.
-	p.telemetry.restarts.Add(p.procCtx, 1)
+	//
+	// Labelled with the plugin's name for the same reason the calls and health
+	// counters are: a restart rate summed over every plugin a deployment runs
+	// cannot answer the only question anyone asks of it, which is *which* one
+	// is flapping.
+	p.telemetry.restarts.Add(p.procCtx, 1, metricschema.WithAttributes(
+		attribute.String(metricschema.PluginName, p.name),
+	))
 
 	inst, manifest, distribution, err := p.start()
 	if err != nil {

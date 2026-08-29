@@ -19,6 +19,7 @@ rather than failing opaquely when `--address` was not given.
 | `flowstate_get_catalog` | locally | `flowstate.v1.GetCatalogRequest` |
 | `flowstate_run` | via a server | `flowstate.v1.RunRequest` |
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` |
+| `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` |
 | `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` |
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` |
@@ -33,6 +34,7 @@ rather than failing opaquely when `--address` was not given.
 | `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` |
 | `flowstate_run_local` | locally | — |
 | `flowstate_test` | locally | — |
+| `flowstate_debug` | locally | — |
 
 ## `flowstate_validate`
 
@@ -88,11 +90,25 @@ On this surface that call is flowstate_signal, with this run's workflowId, name 
 
 Over stdio the signal is delivered as this process's own identity, not as the identity of whoever asked for it. Nothing on this transport can attest that a particular human approved anything, and an interactive card rendering this result changes none of that; an attested approver waits on the remote MCP surface.
 
+## `flowstate_get_timeline`
+
+GetTimeline reports what a run did, event by event, read back from its own durable history.
+
+`Get` answers what a run *is* — its status, where it has reached, what is mid-retry, what it is parked on. None of that survives the moment somebody most wants it: a run that has already failed has no now left to describe, and "which step, on which attempt, with what sentence, and what was it waiting for before that" is a question about the past. Locally the debugger answers it. For a run on a worker somewhere else this is the answer, and before it there was none through this service at all — an operator had to leave the tenancy boundary and ask the temporal CLI, exactly as they did for `GetResponse.pending_activities` before that field existed.
+
+Read-only in the strongest sense available: it starts nothing, signals nothing and changes nothing, so it is the one verb about a live workload that an agent can be pointed at unattended, as `Validate` is for a file.
+
+Authorized like every other verb addressing a run, and refused the same way — see `GetRequest`. A history is the whole account of a workload, so a timeline readable by whoever guessed an id would be a larger disclosure than `Get`'s, not a smaller one.
+
+Bounded, and it says when a bound was reached rather than letting a short answer read as a complete one — see `GetTimelineResponse.truncated`.
+
 ## `flowstate_signal`
 
 Signal delivers a signal to a run waiting for one, which is how a human approval reaches a workload.
 
 This addresses a durable run. A local run is a process with nobody to signal it once it has started, so `flow run local` answers its gates from flags instead. What the two drivers share is the payload and everything downstream of it: the same signal name, the same outputs, the same expressions reading them. That is the part that has to match for a local run to tell an author what production will do.
+
+`SignalResponse` is empty: it says the signal was accepted, not what the run did with it. Call `Get` afterward to see whether a waiting step consumed it.
 
 ## `flowstate_signal_with_start`
 
@@ -112,9 +128,13 @@ So the scan is bounded instead, and the bound is on how many executions the serv
 
 Cancel asks a run to stop and lets it clean up on the way out.
 
+`CancelResponse` is empty: it says the stop request was accepted, not that the run has stopped. Call `Get` afterward to see the run's final status.
+
 ## `flowstate_terminate`
 
 Terminate stops a run immediately, running none of its cleanup. Prefer Cancel; see CancelRequest for when this is the right answer anyway.
+
+`TerminateResponse` is empty: the run is already stopped by the time this returns, so a follow-up call to `Get` confirms status rather than awaiting it.
 
 ## `flowstate_create_schedule`
 
@@ -172,6 +192,8 @@ Fail-closed by default: network egress from `http:` steps is denied and no secre
 
 What it does not prove: durability. A local run has no run id, nothing can watch it, it does not survive this process, Continue-As-New compaction never happens, and parallel steps are rehearsed rather than genuinely distributed. Submit the compiled specification with flowstate_run when the rehearsal is right.
 
+Bounded: `sleep: 24h` is a legal Flowfile, and this call holds this turn open for as long as the workflow runs, so the operator's --run-local-timeout (default 2m) stops execution and reports the run as timed out rather than letting an untrusted workflow hold the call forever.
+
 A source declaring `inputs:` is given them in the `inputs` object of this call, keyed by declared name and typed as declared; a required one left out, an undeclared name, or a mistyped value is refused before any step runs. What the source declares under `outputs:` comes back as `runOutputs`.
 
 Answers with {"run": <GetResponse>, "logs": [...]}: the run's status, timing and step outputs, plus whatever `log:` steps emitted. Invalid sources come back as an error carrying positioned diagnostics (line:column) to correct against.
@@ -189,4 +211,18 @@ What it does not prove: that a real task behaves the way a stub's `returns:` or 
 To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` together, `namespace:` and `claims:`, and both checked by the same policy function the server calls, so `distinct_from_starter:` refuses a sender who is the run's own starter here exactly as production would. Neither is attested: a delivery stands in for its sender, which is why a gate's own `sender.local` output reads true, and `starter:` never reaches `run.identity`.
 
 Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a verdict at all (the workflow failed to compile, a stub named a task with no matching invocation, or the run failed in a way the case did not declare with `expect.failed`) reports why in `error` instead of `failures`. `refused` is set instead of any case running at all when the submitted `tests` document itself does not parse.
+
+## `flowstate_debug`
+
+Hold a test case's run at each step and ask the paused run questions: what a step produced, what an expression evaluates to, what is in scope. This is the tool for "why did that fail", after flowstate_test has told you that it did.
+
+One call is one session. `commands` is the script that drives it — the run starts held before its first step, each command answers or advances, and when the script runs out the run continues to the end. Nothing here is interactive and nothing waits for a human: submit the questions you have, read the transcript, submit more.
+
+The answer carries the session transcript (every stop, every step's own outcome, every answer), the script that produced it — re-send it with more commands appended to go further — and the case's ordinary verdict, which this tool cannot change: a debugged run is the run, and its expectations are judged exactly as flowstate_test judges them.
+
+`inspect` evaluates CEL against the paused run's own scope, through the engine's own evaluator: it is cost-bounded like every expression in the file, and it can name whatever the file could name at that point (`steps.<id>.<output>`, `inputs`, `vars`, a loop's binding). It cannot resolve a secret — `secret(...)` is compiled into a reference when a workflow is built and is never a function anything calls, so there is nothing here to call.
+
+A case that fails is held open once more after the verdict, its failures printed and the finished run still questionable — so one script can assert, see the failure, and then ask what the run actually produced.
+
+Runs on stubs, like flowstate_test: no egress, no secret resolved, a virtual clock. Debugging a real, unstubbed local run is not this tool.
 

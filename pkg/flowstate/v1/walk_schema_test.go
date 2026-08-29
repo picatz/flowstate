@@ -282,7 +282,7 @@ func workflowUsingEveryValuePosition() *Workflow {
 					Default: &Switch_Default{Steps: []*Node{{Id: "fallback", Kind: &Node_Value{Value: NewExpr("3")}}}},
 				}},
 			},
-			// A wait's kind is a oneof, so the three spellings need three steps.
+			// A wait's kind is a oneof, so the four spellings need four steps.
 			{
 				Id: "wait_signal",
 				Kind: &Node_Wait{Wait: &Wait{
@@ -292,6 +292,16 @@ func workflowUsingEveryValuePosition() *Workflow {
 						Outputs: map[string]*Value{"decision": NewExpr("'yes'")},
 					}},
 					TimeoutExpr: NewExpr("'1m'"),
+				}},
+			},
+			{
+				Id: "wait_signals",
+				Kind: &Node_Wait{Wait: &Wait{
+					Kind: &Wait_SignalBatch{SignalBatch: &SignalBatch{
+						Name:    "orders",
+						Prompt:  NewExpr("'send orders'"),
+						Outputs: map[string]*Value{"ids": NewExpr("deliveries.map(d, d.payload.id)")},
+					}},
 				}},
 			},
 			{
@@ -311,6 +321,7 @@ func workflowUsingEveryValuePosition() *Workflow {
 			},
 		},
 		DeclaredOutputs: []*OutputDeclaration{{Name: "answer", Value: NewExpr("42")}},
+		Concurrency:     &Concurrency{Key: NewExpr("inputs.who")},
 		Signals: map[string]*SignalPolicy{
 			"approval": {Allow: []*SignalPolicyRule{{SubjectFrom: NewExpr("'a#b'")}}},
 		},

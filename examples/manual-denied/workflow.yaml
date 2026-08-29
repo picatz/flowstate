@@ -1,0 +1,66 @@
+# `manual: denied` — the other thing a `manual:` block can say, and the one
+# `trigger-context` only mentions in passing. Every other field there
+# *narrows* who may start a run by hand; this is the one that removes the
+# door entirely, and the compiler requires some other declared source to
+# start it instead — a refusal with nothing left to start it is a workflow
+# nobody can run, which is refused when the file is validated rather than
+# discovered the day somebody needs it.
+#
+# It reads as one word on one line rather than `manual: {denied: true}` on
+# purpose — `grep -r 'manual: denied'` finds every workload that refuses a
+# hand start, and a reader looking for the lock does not have to know it can
+# also be spelled as a mapping with one key.
+#
+# # Why a workload would want this rather than a narrow allow-list
+#
+# A vendor's dispute resolution is the case: their webhook is the *only*
+# honest way to know a chargeback was decided, because the decision itself
+# lives on their side. Narrowing `allowed_principals:` to a short list of
+# trusted people still leaves every one of them able to type an outcome by
+# hand — whatever they believe happened, the vendor's own system may
+# disagree, and this workload's whole job is to be the side that never
+# disagrees with it. So `manual:` does not narrow who may guess the
+# decision; it says nobody gets to, and the webhook is the only door left.
+#
+# `flow run local` still runs this file exactly as written — the author's
+# own machine is not a deployment, and refusing local development the
+# moment a workload declares a policy is the mistake `manual:`'s own doc
+# comment already warns against. The refusal is enforced by a server,
+# against a caller it authenticated, for a real deployment; nothing here or
+# in `flow test` reaches it, which is why this file runs in CI like any
+# other.
+edition: v2026.3
+name: manual-denied
+inputs:
+  dispute_id:
+    type: string
+    default: dp_local
+    description: the vendor's id for the disputed charge
+  outcome:
+    type: enum
+    values:
+      - won
+      - lost
+    default: won
+    description: which way the vendor decided the dispute
+triggers:
+  - webhook: chargeback-provider
+    # The generic scheme rather than a named one: this is a fictional
+    # provider, and `hmac_sha256` is exactly what "an HMAC over the body
+    # under a shared secret" looks like with nobody's specific construction
+    # assumed — see `examples/webhook-trigger` for the named-scheme case.
+    verify:
+      hmac_sha256: ${secret('env:CHARGEBACK_PROVIDER_SECRET')}
+    idempotency_key: ${event.headers["x-delivery-id"]}
+    with:
+      dispute_id: ${event.body.dispute_id}
+      outcome: ${event.body.outcome}
+  - manual: denied
+steps:
+  - id: record
+    log:
+      message: '${"dispute " + inputs.dispute_id + " resolved: " + inputs.outcome}'
+outputs:
+  outcome:
+    value: ${inputs.outcome}
+    description: how the vendor decided the dispute this run recorded

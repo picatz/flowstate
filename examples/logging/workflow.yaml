@@ -10,12 +10,11 @@ name: logging
 vars:
   service: checkout
   version: v2026.7.3
-
 steps:
   # The whole of it: a message. Everything else is optional.
   - id: announce
     log:
-      message: ${'deploying ' + vars.service + ' ' + vars.version}
+      message: ${"deploying " + vars.service + " " + vars.version}
 
   # `level:` says how much it matters. Three choices — info, warn, error — written the
   # way you would say them rather than the way a protocol stores them. `flow validate`
@@ -26,8 +25,6 @@ steps:
   # stop a run, so a level claiming otherwise would be a lie the engine cannot honour.
   - id: canary
     log:
-      level: warn
-      message: canary is taking 10% of traffic; watch the error rate
       # `fields:` carry structure for a sink that has somewhere to put it, and are
       # ignored by one that does not. String-valued: everything this reaches renders to
       # text in the end, so compose the string here where you can see what it will say.
@@ -35,17 +32,20 @@ steps:
         service: ${vars.service}
         version: ${vars.version}
         stage: canary
-
+      level: warn
+      message: canary is taking 10% of traffic; watch the error rate
   - id: rollout
     for_each:
-      items: [eu-west-1, us-east-1]
+      items:
+        - eu-west-1
+        - us-east-1
       as: region
       steps:
         - id: report
           log:
-            message: ${'rolled out to ' + region}
             fields:
               region: ${region}
+            message: ${"rolled out to " + region}
 
 # A `log:` step has no outputs, and that is the design rather than an omission.
 #

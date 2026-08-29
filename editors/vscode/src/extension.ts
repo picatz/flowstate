@@ -118,6 +118,23 @@ async function runFlowCommand(kind: FlowCommandKind): Promise<void> {
     return;
   }
 
+  // The menus already hide what cannot succeed here (package.json's `when`
+  // clauses), and this is the same decision for the paths that bypass menus —
+  // a keybinding, another extension. A test suite takes only `flow test`, and
+  // the shared fixture file takes nothing directly: `flow validate` on a
+  // suite would refuse it as a workflow, which reads as breakage rather than
+  // guidance.
+  const baseName = editor.document.uri.path.split("/").pop() ?? "";
+  const isSuite = /\.test\.ya?ml$/.test(baseName);
+  if (baseName === "testdefaults.yaml" || (isSuite && kind !== "test")) {
+    void vscode.window.showErrorMessage(
+      baseName === "testdefaults.yaml"
+        ? 'Flowstate: testdefaults.yaml is a directory\'s shared fixture; run "Flowstate: Test Flowfile" on the suites beside it.'
+        : `Flowstate: ${baseName} is a test suite — run "Flowstate: Test Flowfile" (flow test) on it.`,
+    );
+    return;
+  }
+
   const bin = configuredBinary();
   const check = await checkBinaryAvailable(bin);
   if (!check.ok) {

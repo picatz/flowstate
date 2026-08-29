@@ -1,0 +1,7 @@
+$ flow run local workflow.yaml
+running locally
+ INFO  placing 2026.9.0
+ COMPLETED  workflow release
+outputs
+  summary placed 2026.9.0
+$

@@ -17,6 +17,7 @@ import (
 	// with the client is how a sentinel comparison silently stops compiling.
 	sdk "go.temporal.io/sdk/temporal"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -72,6 +73,15 @@ import (
 const schedulePrefix = "flowstate-schedule-"
 
 // scheduleIDFor is the Temporal schedule id a tenant's schedule name maps to.
+//
+// It does not check the namespace, and deliberately does not: the grammar the
+// separator argument above rests on is guaranteed where the namespace is
+// chosen, not re-asked here. Both of the two ways a namespace reaches this
+// function check it — [WithNamespace] for the deployment's own fallback tenant
+// (#823) and `auth.TrustedIssuer.namespaceFrom` for one a caller's token
+// carries — so a value that reaches here has passed [auth.ValidateNamespace]
+// exactly once, which is also why there is no error for a caller to have to
+// turn into a status code.
 func scheduleIDFor(namespace, name string) string {
 	return schedulePrefix + namespace + "_" + name
 }
@@ -111,7 +121,43 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	workflow := req.Msg.GetWorkflow()
+	// Captured before the trusted lookup below, for the same reason [FlowstateServer.Run]
+	// captures it before its own: the lookup needs the caller's own namespace,
+	// or it is a single deployment-wide name rather than a boundary between
+	// tenants. Otherwise captured where it always was — see the later comment
+	// by its second use, just before it is frozen into the schedule.
+	identity := s.identityFor(ctx)
+
+	// The decision, before the schedule exists to be one — the same placement
+	// and the same reasoning as [FlowstateServer.Run]'s, since a schedule is a
+	// run somebody arranged in advance. The resource is the name being claimed.
+	if err := s.auditAllow(ctx, "CreateSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, req.Msg.GetName()); err != nil {
+		return nil, err
+	}
+
+	// Through the trusted lookup, for the identical reason [FlowstateServer.Run]
+	// and [FlowstateServer.SignalWithStart] do: a schedule is a run somebody
+	// arranged in advance, so the trust boundary that keeps `manual:` and
+	// `manual.allowed_principals` policy rather than caller input has to bind
+	// here too. Without it, a caller could take a trusted webhook-only workflow
+	// with `manual: denied`, add a `schedule:` trigger to their own copy, and
+	// have this handler create and later fire *that* copy under the trusted
+	// name.
+	//
+	// The caller's copy is kept as it arrived first, so the attestation below has
+	// something to compare the scheduled specification against — a clone, taken
+	// before the first thing that can change a specification, for the reason
+	// [FlowstateServer.Run] gives at its own capture: the lookup returns the
+	// request's own pointer when nothing is registered under that name, and
+	// [FlowstateServer.validateSpecification] then pins plugin versions onto that
+	// pointer, so holding a reference would be an equality that can only answer
+	// true.
+	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
+
+	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	if err != nil {
+		return nil, err
+	}
 
 	// pinPlugins, credential targets, declared signal policies, spec size and
 	// structure depth — everything `Run` asks about a specification on its own,
@@ -129,7 +175,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			"workflow %q cannot be scheduled: %w", workflow.GetName(), err))
 	}
 
-	if err := v1.CheckScheduleBackfill(req.Msg.GetBackfill()); err != nil {
+	if err := v1.CheckScheduleBackfillForTrigger(trigger, req.Msg.GetBackfill()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -147,13 +193,12 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Captured now, while the authenticated caller is still in scope, and then
-	// frozen: every firing for the life of this schedule acts as whoever created
-	// it. That is the honest reading of what a schedule is — a standing instruction
-	// left by a person — and the alternative has no answer, since at 03:00 there is
-	// no caller to derive an identity from. It is also why deleting a schedule
-	// matters when somebody leaves.
-	identity := s.identityFor(ctx)
+	// identity was captured above, before the trusted lookup, and is used here
+	// unchanged: every firing for the life of this schedule acts as whoever
+	// created it. That is the honest reading of what a schedule is — a
+	// standing instruction left by a person — and the alternative has no
+	// answer, since at 03:00 there is no caller to derive an identity from.
+	// It is also why deleting a schedule matters when somebody leaves.
 	namespace := identity.GetNamespace()
 
 	name := v1.ScheduleNameFor(req.Msg.GetName(), workflow)
@@ -242,6 +287,32 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		actionMemo[k] = v
 	}
 
+	// The workflow's labels, written to both memos for the reason immediately
+	// above: a `labels` filter has to see the same answer whichever of the two
+	// memos it is reading, and [labelsMemoEntry] is the one function that
+	// guarantees a schedule's firings carry what a direct run of the same
+	// workflow carries.
+	for k, v := range labelsMemoEntry(workflow.GetLabels()) {
+		scheduleMemo[k] = v
+		actionMemo[k] = v
+	}
+
+	// Answered last, against the specification about to be frozen into the
+	// schedule's action rather than against the one the trusted lookup returned —
+	// the same place in the same order [FlowstateServer.Run] answers it, and for
+	// the reason its comment gives at length: [FlowstateServer.validateSpecification]
+	// pins the deployment's plugin selection onto this specification above, so a
+	// question asked before that would be answered about a message that had not
+	// finished being assembled. Whole-message equality, so a transformation nobody
+	// has thought of yet costs a caller the precise view rather than costing them
+	// a secret.
+	//
+	// Before the create rather than after it, because the value below is what
+	// `Args` carries into every firing and nothing between here and the response
+	// touches it — computing it after would read the same message and say so less
+	// clearly.
+	asSubmitted := proto.Equal(submitted, workflow)
+
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID:               scheduleIDFor(namespace, name),
 		Spec:             spec,
@@ -257,12 +328,11 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		Memo: scheduleMemo,
 
 		Action: &client.ScheduleWorkflowAction{
-			// A readable id rather than a uuid, because unlike a run this workload
-			// has a name in advance: every firing is `<schedule>`, and Temporal
-			// appends the scheduled time to keep them distinct. An operator reading
-			// `flow list` can then see which schedule a run came from without asking
-			// anything else.
-			ID:        schedulePrefix + name,
+			// Use the schedule object's tenant-scoped id as the readable base for
+			// every firing. Temporal appends the scheduled time to keep firings
+			// distinct; including the tenant keeps same-named schedules in a shared
+			// Temporal namespace distinct too.
+			ID:        scheduleIDFor(namespace, name),
 			Workflow:  engine.Run,
 			TaskQueue: taskQueue,
 
@@ -277,6 +347,20 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			// execution — see the comment above signalEntry.
 			Memo:     actionMemo,
 			Priority: fairnessFor(namespace),
+
+			// Through [runStaticSummary], the exact function
+			// [FlowstateServer.prepareCreate] uses — see that function's doc
+			// for why one function is what keeps a scheduled run's fired
+			// execution and a direct run's execution legible the same way in
+			// the Temporal Web workflow list (#753).
+			StaticSummary: runStaticSummary(namespace, workflow.GetName()),
+
+			// Unlike prepareCreate's call site, a fired schedule execution has
+			// a natural longer-form description on hand: which schedule fired
+			// it. Schedule names share the workflow name's grammar
+			// (`^[A-Za-z0-9-_]+$`, schedule.proto), so this is exactly as safe
+			// to render as [runStaticSummary]'s backticks.
+			StaticDetails: fmt.Sprintf("Fired by schedule `%s`.", name),
 
 			// Through the exact function [FlowstateServer.Run] uses — see
 			// [runSearchAttributes] — for the identical reason signalEntry
@@ -332,12 +416,20 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// times. A cadence meaning something other than what was intended is almost
 	// always visible in the first two of those and almost never visible in the
 	// expression, which is exactly why a caller should not have to ask twice.
-	description, err := s.describeSchedule(ctx, temporal, namespace, name)
+	description, _, err := s.describeSchedule(ctx, temporal, namespace, name)
 	if err != nil {
 		return nil, err
 	}
 
-	return connect.NewResponse(&v1.CreateScheduleResponse{Schedule: description}), nil
+	return connect.NewResponse(&v1.CreateScheduleResponse{
+		Schedule: description,
+
+		// Always set, on both answers, for the reason [FlowstateServer.Run]
+		// always sets it: the field's design rests on silence meaning "this
+		// server does not say", so a server that does say must never let a
+		// deliberate answer be read as an old server's shrug.
+		SpecificationAsSubmitted: proto.Bool(asSubmitted),
+	}), nil
 }
 
 // maxScheduleScan bounds how many schedules one listing may read.
@@ -365,6 +457,12 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 	// never in the listing.
 	temporal, err := s.clientFor(namespace)
 	if err != nil {
+		return nil, s.auditDeny(ctx, "ListSchedules", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, namespace,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err)
+	}
+
+	// A tenant, not a schedule, for [FlowstateServer.List]'s reason.
+	if err := s.auditAllow(ctx, "ListSchedules", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, namespace); err != nil {
 		return nil, err
 	}
 
@@ -428,13 +526,25 @@ func (s *FlowstateServer) DescribeSchedule(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	name := req.Msg.GetName()
+
 	temporal, namespace, err := s.scheduleClientFor(ctx)
 	if err != nil {
-		return nil, err
+		return nil, s.auditDeny(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err)
 	}
 
-	description, err := s.describeSchedule(ctx, temporal, namespace, req.Msg.GetName())
+	// The describe *is* the authorization decision for this verb — it is the
+	// round trip that reads the memo — so the record is written from its
+	// outcome rather than from a second lookup beside it. Nothing has been
+	// disclosed at this point: the description is still here, and the response
+	// is composed below.
+	description, code, err := s.describeSchedule(ctx, temporal, namespace, name)
 	if err != nil {
+		return nil, s.auditDeny(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name, code, err)
+	}
+
+	if err := s.auditAllow(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
 		return nil, err
 	}
 
@@ -447,7 +557,7 @@ func (s *FlowstateServer) DeleteSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "DeleteSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -465,7 +575,7 @@ func (s *FlowstateServer) PauseSchedule(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "PauseSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -483,7 +593,7 @@ func (s *FlowstateServer) ResumeSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "ResumeSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +611,7 @@ func (s *FlowstateServer) TriggerSchedule(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "TriggerSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -541,10 +651,29 @@ func (s *FlowstateServer) scheduleClientFor(ctx context.Context) (client.Client,
 // The refusal is "no such schedule" rather than "denied", the same answer a run in
 // another tenant gets. Denied would confirm that a schedule of that name exists
 // somewhere, which is the one fact a caller in the wrong tenant must not learn.
-func (s *FlowstateServer) authorizeSchedule(ctx context.Context, name string) (client.ScheduleHandle, error) {
+// rpc is the WorkflowService method whose decision this is; the audit record is
+// keyed to an authorization action through it — see audit.go.
+func (s *FlowstateServer) authorizeSchedule(ctx context.Context, rpc, name string) (client.ScheduleHandle, error) {
+	handle, code, err := s.authorizeScheduleDecision(ctx, name)
+	if err != nil {
+		return nil, s.auditDeny(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name, code, err)
+	}
+
+	if err := s.auditAllow(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
+		return nil, err
+	}
+
+	return handle, nil
+}
+
+// authorizeScheduleDecision is the decision itself, carrying the reason it came
+// out the way it did — [FlowstateServer.authorizeRunDecision]'s shape, for its
+// reason: the two refusals below are deliberately one answer to the caller, so
+// the code cannot be recovered from the error afterwards.
+func (s *FlowstateServer) authorizeScheduleDecision(ctx context.Context, name string) (client.ScheduleHandle, v1.AuditDenyCode, error) {
 	temporal, namespace, err := s.scheduleClientFor(ctx)
 	if err != nil {
-		return nil, err
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err
 	}
 
 	handle := temporal.ScheduleClient().GetHandle(ctx, scheduleIDFor(namespace, name))
@@ -553,14 +682,14 @@ func (s *FlowstateServer) authorizeSchedule(ctx context.Context, name string) (c
 	// reads the memo. One round trip answers both "does it exist" and "is it mine".
 	description, err := handle.Describe(ctx)
 	if err != nil {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, noSuchSchedule(name)
 	}
 
 	if !s.ownedBy(namespace, description.Memo) {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, noSuchSchedule(name)
 	}
 
-	return handle, nil
+	return handle, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, nil
 }
 
 // noSuchSchedule is the one answer every absent or unauthorized schedule gets.
@@ -592,21 +721,30 @@ func actOnScheduleError(verb, name string, err error) error {
 // author's own words survive: Temporal rewrites a cron expression into a calendar
 // spec when it stores one, and answering `0 9 * * MON-FRI` with a list of ranges is
 // accurate and unrecognisable.
-func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.Client, namespace, name string) (*v1.ScheduleDescription, error) {
+// It reports the deny code alongside a refusal, for
+// [FlowstateServer.authorizeRunDecision]'s reason: the two refusals below are
+// one answer to the caller by design, so an audit record's code has to come
+// from the branch that chose it rather than from inspecting the error after
+// the fact. [FlowstateServer.CreateSchedule] describes what it has just
+// created and has no use for the code; [FlowstateServer.DescribeSchedule],
+// where the description *is* the authorization decision, does.
+func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.Client, namespace, name string) (*v1.ScheduleDescription, v1.AuditDenyCode, error) {
 	handle := temporal.ScheduleClient().GetHandle(ctx, scheduleIDFor(namespace, name))
 
 	description, err := handle.Describe(ctx)
 	if err != nil {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, noSuchSchedule(name)
 	}
 
 	if !s.ownedBy(namespace, description.Memo) {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, noSuchSchedule(name)
 	}
 
 	reported := &v1.ScheduleDescription{
-		Name:       name,
-		NumActions: int64(description.Info.NumActions),
+		Name:                          name,
+		NumActions:                    int64(description.Info.NumActions),
+		NumActionsMissedCatchupWindow: int64(description.Info.NumActionsMissedCatchupWindow),
+		NumActionsSkippedOverlap:      int64(description.Info.NumActionsSkippedOverlap),
 	}
 
 	// Temporal's own types here are plain structs rather than generated messages,
@@ -656,7 +794,7 @@ func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.
 		reported.Trigger = state.GetWorkflow().GetTriggers().GetSchedule()
 	}
 
-	return reported, nil
+	return reported, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, nil
 }
 
 // redactedInputMarkerFormat and redactedInputValue mirror

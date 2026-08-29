@@ -129,17 +129,19 @@ func TestOutboundValuesNeverLogSecrets(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "super-secret-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "super-secret-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		Name:     "partner",
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		Name:         "partner",
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 	require.Equal(t, "partner", exchanger.Name())
@@ -266,14 +268,16 @@ func TestFederationHTTPClientIsUsed(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "downstream-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
+declared_claims: [repository]
 targets:
   - name: partner
     token_exchange:

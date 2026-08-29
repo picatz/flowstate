@@ -73,6 +73,33 @@ Flowstate is six layers, each with one responsibility and a narrow contract to t
 | **5. Control plane** | Submit, observe, schedule, and govern runs | Connect RPC service, authn (OIDC/WIF), authorization, schedules and triggers |
 | **6. Governance** | Constrain what runs may do | Egress policy, CEL cost limits, secrets, audit trail |
 
+```mermaid
+flowchart TB
+  Authoring["1. Authoring<br/>Flowfile (YAML + CEL) · LSP · validate/fix"]
+  Spec[["2. Specification<br/>Workflow protobuf · protovalidate"]]
+  Capability["3. Capability<br/>task registry: TaskDef descriptors"]
+  Execution["4. Execution<br/>one StepExecutor · local and Temporal drivers"]
+  Control["5. Control plane<br/>Connect RPC · authn · schedules"]
+  Governance["6. Governance<br/>egress policy · cost limits · secrets · audit"]
+
+  Authoring -->|"flow compile"| Spec
+  Spec --> Execution
+  Control -->|"submit, observe, cancel"| Execution
+  Governance -->|"constrains"| Execution
+  Capability -. "completion" .-> Authoring
+  Capability -. "typed inputs" .-> Spec
+  Capability -. "dispatch" .-> Execution
+
+  classDef ir stroke-width:2px;
+  class Spec ir;
+```
+
+The two solid arrows down the middle are the whole pipeline: an author's file becomes
+a specification, and the specification is what runs. Layers 5 and 6 join at execution
+rather than before it — a control plane starts and observes runs, and governance
+constrains what a running step may do; neither rewrites what the author wrote. The
+dashed arrows all leave the same box, which is the property below.
+
 The important structural property is that **layer 3 is the single source of truth for
 capability**. Execution dispatch, spec validation, LSP completion, and the documented task
 table all derive from the same `TaskDef` descriptors. When they are derived from one place
@@ -177,6 +204,61 @@ of these is a bug, even if it passes tests.
    A change to `RunState` that would be fine in a single-version deployment can strand a
    workload that spans a deploy.
 
+### One interpreter, not a workflow type per workload
+
+Temporal's own answer to "one handler, many workloads" is dynamic workflow registration:
+`RegisterDynamicWorkflow` installs a single fallback handler per worker, selected by the
+workflow type name the caller started and handed raw encoded payloads. Flowstate answers
+the same need from the other end — one *static* type that takes the workload as a typed
+argument — and the `RegisterDynamicWorkflow` method on the registry fake in
+`engine/versioning_test.go:382` is empty because that is the decision, not because nothing
+was decided.
+
+`engine.RegisterWorkflows` installs exactly one workflow function, `Run`, with
+`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:191-199`). `Run` takes
+a `*v1.RunState` (`engine/workflow.go:313`), so the compiled specification travels as
+data, and the interpreter dispatches on node kind (`engine/execute.go:692-720`). Which
+workload runs is a value; how any workload runs is the function.
+
+```mermaid
+flowchart LR
+  Files["Flowfiles: nightly-etl, onboard-tenant, incident-runbook"] -->|compile| Spec[["Workflow spec, carried in RunState"]]
+  Spec -->|argument| Run["Run — the one registered workflow type"]
+  Run --> Kind{"node kind"}
+  Kind --> Task["task activity"]
+  Kind --> Wait["durable timer or signal"]
+  Kind --> Fan["for_each, parallel, loop"]
+  Kind --> Branch["switch, value"]
+  Kind --> Call["call: a nested spec"]
+```
+
+The difference from keying on the type name is mechanical rather than stylistic, in three
+places:
+
+- **Determinism is enforced once.** Replay safety is a property of the interpreter, held in
+  one reviewed package (invariant 4) rather than restated by every author. A Flowfile has
+  no spelling for a clock read or a random number, so a workload cannot spend a guarantee
+  that hand-written code behind a dynamic handler can.
+- **The pin has something to pin.** Versioning behaviour is registered per workflow type.
+  One type is one pinned registration covering every run in the fleet; a type per spec
+  would be that registration repeated once per Flowfile anyone has ever written, and a
+  worker cannot register a type for a file it has never seen.
+- **The replay corpus has a stable name.** The gate replays recorded histories through
+  `engine.RegisterWorkflows` itself (`engine/replay_test.go:102`), which works only because
+  the type name in every recorded history is the name a production worker registers.
+
+The cost is Temporal-side and worth stating plainly: every run's WorkflowType is `Run`, so
+anything grouping by workflow type — the Web UI's type filter, `temporal workflow list
+--query 'WorkflowType=...'`, per-type metrics — sees one name for the whole fleet. Run
+metadata carries the grouping instead. A workload's own declared name is written to every
+run's memo unconditionally at submit (`server/server.go:789`, `server/server.go:804`), which
+is what populates `v1.RunSummary.Name` (`proto/flowstate/v1/service.proto:735`,
+`server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
+deployment that has registered search attributes additionally projects it as
+`FlowstateWorkflowName` (`server/server.go:889`), index-only, for tools querying the
+visibility store directly. The grouping exists — it is simply not Temporal's built-in type
+field.
+
 ### Versioning: pinned within a run, upgraded between runs
 
 Invariant 4 says workflow-side code is frozen; this is what "frozen" means when the workflow
@@ -222,9 +304,11 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Query | a run's live position, served through `Get` and rendered by `flow get`/`flow watch` **(done)**; richer state as it earns a place |
 | Update | synchronous request/response against a running workload |
 | Child workflow | `call:` — a callee's whole compiled specification runs nested inside the caller's own execution, isolated from the caller's scope and reachable only through its declared `inputs:`/`outputs:`, resolved at compile time so filesystem access never reaches a worker **(done)**; still in the caller's own history rather than a separate one, which a *literal* Temporal child workflow would give — a call is transparent to Continue-As-New in the meantime (see DSL.md), so a callee's own steps count against the same step budget the caller's do |
-| Continue-As-New | transparent history and payload management **(done)** |
+| Continue-As-New | transparent history and payload management **(done)**; a suspension-opaque block — a `for_each` with `max_parallel:`, or one inside a `parallel:` branch, a loop body or a `switch:` arm — has no seam inside it, so its items × body product is bounded by `MaxAtomicBlockActivities` before dispatch, keeping one atomic stretch under the history-event cap Temporal would otherwise force-terminate (skipping compensation) at |
 | Worker Deployment Versioning | `flow worker --deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
+| Dynamic workflow registration | not used, deliberately: one *static* interpreter type, `Run`, registered pinned by `engine.RegisterWorkflows`, with the workload arriving as a `RunState` argument rather than as a workflow type name **(done)** — which is what gives one pinned version for the whole fleet, one stable type for the replay corpus to register against, and one place determinism is enforced. The cost is that every run's WorkflowType is `Run`, so Temporal-side per-type tooling sees one name, and the workload's declared name rides in the run's memo instead. See [One interpreter, not a workflow type per workload](#one-interpreter-not-a-workflow-type-per-workload) |
 | Schedules | `triggers: { schedule: ... }` declares a cadence — cron expressions or an interval, with a time zone, jitter and an overlap policy — and `flow schedule create\|list\|describe\|delete\|pause\|resume\|trigger` acts on it **(done)**; the declaration starts nothing, because a file that begins running on merge is a surprise, and arguments are bound and type-checked once at creation rather than at each firing. Calendar specs, start/end bounds, catchup window, pause-on-failure and backfill are not surfaced yet — each is additive |
+| Workflow-id exclusion | `concurrency: { key:, on_conflict: }` **(done)** — at most one run of a workflow per key, decided at submit: the key resolves from the run's bound inputs, is digested with the tenant and the workflow name, and becomes the run's own workflow id, so the permit *is* the run and expires with it. `reject`/`join`/`terminate_other` map to `WorkflowIDConflictPolicy` `FAIL`/`FAIL`-and-catch/`TERMINATE_EXISTING`; `join` is a caught refusal rather than `USE_EXISTING` so that a join is a fact the server established. What is **not** surfaced is *buffering*: `buffer_one`/`buffer_all`/`cancel_other` exist only in Temporal's schedule machinery (the Schedules row's `overlap:`), which a manual `Run` never touches, so a workflow id cannot queue and the validator refuses those three words by name rather than accepting one it would not honour. For the same reason `concurrency:` cannot be combined with a webhook or a schedule trigger, whose runs are already addressed by an id of their own |
 | Memo | a run's tenant, recorded when `Run` starts it and authorized against on every later request **(done)**; a memo rather than a search attribute because it needs no cluster-side registration, so a dev server works unconfigured — the cost being that Temporal cannot filter on it, so `List` reads pages and filters them itself under its own scan and request bounds |
 | Search attributes | `flow list --filter` exists and is CEL, evaluated by the server once per execution it reads, beside the tenant check that was already there **(done)** — the vocabulary is a run's own fields and the diagnostics are the compiler's. What is *not* done is projecting labels into visibility so the store can answer part of it. That is a cost change, deliberately not a meaning change: when it lands, the translatable half of a filter becomes a visibility query and the rest stays a residual predicate, so the same filter returns the same runs whether or not a deployment registered anything. An operator turning pushdown on should not have to re-read a single saved query |
 | Cancellation scopes | per-step `undo:` (saga compensation), run in reverse deterministic registration order when a step fails or cancellation stops the run **(done)**. Concurrent children use their structural position as the ordering key: `for_each` item index or `parallel` branch index, followed by registration order within that child. Drivers merge only after the child boundary, never by completion time, including retries and Continue-As-New. `flow terminate` compensates nothing and cannot: it executes no workflow code |
@@ -234,7 +318,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Best-effort steps | per-step `continue_on_error:`, recording the failure as `${steps.<id>.error}` **(done)** |
 | Activity heartbeats | every task activity heartbeats on a ten-second ticker carrying the phase the task has reached **(done)**; periodic rather than per-phase, because a heartbeat *timeout* has to exceed the longest legitimate gap between beats and a per-phase beat would make that the whole request. The phase is a `v1.Phase`, a closed vocabulary with no constructor — heartbeat details are written into history, so invariant 7 applies and the type refuses the leak rather than a reviewer catching it. This is also how a cancellation reaches a running activity at all, which is what makes the cancellation wait in the row above short |
 | Task queues | per-*tenant* routing **(done)**: `flow server --task-queue-prefix` submits a run to `<prefix>_<namespace>`, derived from the authenticated tenant and never from the request, and `flow worker --tenant` polls exactly that queue and refuses a run belonging to anyone else — which is what makes a per-tenant worker fleet addressable rather than merely startable, and what turns a routing mistake into a failure instead of a cross-tenant execution. Unset, every run goes to the one shared queue exactly as before. The composition is unforgeable for the reason an assertion subject's `_default` is: the separator is the one character the namespace grammar forbids, so the boundary is a fact rather than a convention. Per-*step* routing — a step naming a specialized or plugin fleet — is the same mechanism one level down, and is not built |
-| Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant, so one tenant's large workload cannot crowd out another's **(done)**; per-step controls still to come |
+| Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant **(done)**; per-step controls still to come. Setting the key is verified and correctly wired — whether it is *enforced* (one tenant's large workload cannot crowd out another's) is a property of your Temporal server version and configuration, since Temporal marks `Priority`/fairness as an experimental SDK feature. See [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor) |
 | **Nexus** | cross-namespace and cross-team calls — both consuming and *exposing* operations |
 
 ### Nexus
@@ -354,6 +438,27 @@ leaving the activity. Marshaling succeeds redacted rather than failing because a
 invites a caller to fall back to something less careful.
 A revealed value cannot be wiped from memory — Go strings are immutable — so the guarantee is
 about where a value travels, not how long it lives.
+
+Where a reference stops being one is the whole of invariant 7:
+
+```mermaid
+flowchart LR
+  Author["${secret('db:password')} in a Flowfile"] -->|compile| Ref["SecretRef in the spec"]
+  Ref --> History["submitted; persisted in history and RunState"]
+  History --> Activity["task activity, worker-side"]
+  Activity -->|"ResolveSecret: authorize, then the provider"| Value["value, for this call only"]
+  Value -->|scrubber| Outputs["step outputs, logs, errors"]
+  Ref -->|"refused: cannot be read in an expression"| Eval["workflow-side evaluation"]
+```
+
+Every edge is a rule with code behind it: `SecretRef` is a `Value` kind
+(`proto/flowstate/v1/value.proto:25`, `:155`), so a reference is what compilation produces;
+workflow-side evaluation refuses to resolve one (`pkg/flowstate/v1/eval.go:525-534`) and
+`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `varsecret.go:34`);
+`v1.ResolveSecret` authorizes before the store is consulted, on every resolution
+(`taskruntime.go:90-103`); and the http task reveals through a closure registered with a
+scrubber rather than through a field something can print
+(`eval_task_http_run.go:171-181`).
 
 ### Plugins
 
@@ -527,7 +632,10 @@ tenant, so without a fairness key the queue is first-come-first-served and a ten
 large workload away from everybody else's work sitting behind theirs — not deliberately,
 which is what makes it likely, since a five-thousand-iteration loop is an ordinary thing to
 write. A run therefore carries a Temporal fairness key taken from its authenticated tenant,
-which dispatches each tenant a share in proportion to weight rather than to volume.
+which dispatches each tenant a share in proportion to weight rather than to volume — setting
+the key is verified and correctly wired; whether it is *enforced* is a property of your
+Temporal server version and configuration, since Temporal marks `Priority`/fairness as an
+experimental SDK feature (see [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor)).
 Activities inherit it from the run, so it covers every task the run goes on to schedule,
 and Temporal carries it across Continue-As-New — which matters, because the workloads that
 suspend are exactly the ones that crowd a queue.
@@ -664,7 +772,7 @@ every run outside a simulation gets, is precisely what the driver did before.
 `NewSeededScheduler` answers from a PRNG instead, so an interleaving has a name that is
 one number long. `pkg/flowstate/v1/dst` is what does something with that: run one workflow
 once per seed and assert every observable matches the written-order baseline's, over the
-same shared corpus both drivers already run (`pkg/flowstate/v1/tests`). A divergence
+same shared corpus both drivers already run (`pkg/flowstate/v1/internal/conformance`). A divergence
 prints its seed and the command that replays it.
 
 Two things this deliberately is not. It is not a Go scheduler: the engine's own decision
@@ -699,17 +807,25 @@ those forward — both when scheduling a step and when performing Continue-As-Ne
 Payload discipline matters, but the framing is about defaults rather than hard ceilings.
 Temporal's default per-payload and history limits mean an unbounded blob flowing through
 history will fail a run, and carrying only what is needed keeps ordinary workloads well
-inside them. Genuinely large data is a solved problem *on this substrate* — a custom
-payload codec offloads the blob to external storage and carries a reference through
-history, the claim-check pattern — but it is not yet a solved problem *in this tree*:
-every `DataConverter` in the codebase is the default one, and no seam exists for an
-operator to supply a codec (#113 is the design record, #271 tracks the gap). Until that
-seam is built, the honest answer to a payload too large for history is the refusal
-`CheckRunStateSize` already gives, not an offload nothing can configure. The same seam is
-where payload encryption would live, so the confidentiality statement is the same one:
-today, history confidentiality is whatever the cluster's own database and filesystem
-encryption provide — Flowstate keeps secrets *out* of history (invariant 7) and seals
-nothing that legitimately goes in. When the seam lands, the codec is the right place to
+inside them. Payload *encryption* is a solved problem in this tree: `pkg/flowstate/v1/payloadcodec`
+is the seam, wrapping `converter.PayloadCodec` in `converter.NewCodecDataConverter` and
+setting it on both drivers' `client.Options.DataConverter` from one configuration,
+forcing the failure converter's `EncodeCommonAttributes` on whenever a codec is
+configured so error strings can't leak plaintext the codec was meant to hide, and
+validating worst-case ciphertext expansion against Temporal's blob limit at startup.
+History confidentiality, where a codec is configured, is therefore the codec's — not
+merely the cluster's database and filesystem encryption — and Flowstate still keeps
+secrets *out* of history regardless (invariant 7).
+
+Payload *offload* — the claim-check pattern, carrying a reference through history to a
+blob stored externally — is the part not yet solved *in this tree*: the seam a codec
+occupies is general enough to carry one, but no offloading codec ships today, only the
+null codec (`cmd/flow/codec.go` documents this as the deliberate current boundary; #113
+is the design record). Until an offloading codec lands, the honest answer to a payload
+too large for history is the refusal `CheckRunStateSize` already gives. When one lands,
+this is the seam it occupies, not a new one.
+
+The codec is the right place to
 absorb large payloads; per-task byte caps exist to bound worker memory, not to express
 what the system can handle.
 

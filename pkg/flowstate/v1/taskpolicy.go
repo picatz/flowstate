@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -85,11 +87,19 @@ const (
 )
 
 // TaskPolicyDeniedError reports that a task-shape policy refused a dispatch.
-// It wraps [ErrTaskPolicyDenied], names the task and the rule responsible so
-// an operator (or an author reading a denial surfaced to them, per CLAUDE.md's
-// "Diagnostics are a feature" — this is a deployment refusal, not a file
-// diagnostic, and must read as one) can find the policy source and the
+// It wraps [ErrTaskPolicyDenied] and carries the task and the rule responsible
+// so an operator (or an author reading a denial surfaced to them, per
+// CLAUDE.md's "Diagnostics are a feature" — this is a deployment refusal, not a
+// file diagnostic, and must read as one) can find the policy source and the
 // remedy.
+//
+// Names the task in its own sentence, once. It is the authoritative carrier of
+// the name: a denial reaches most surfaces wrapped by [CheckTaskPolicy]'s
+// [TaskError], but a direct caller of [TaskPolicy.Check] receives it bare, and
+// only naming it here reaches that caller too (#899). The wrappers that would
+// otherwise prefix a second `task %q` — [TaskError.Error], [StepErrorText] —
+// defer to this via [selfNamesTask], so the name renders exactly once however
+// deeply the denial is wrapped (#184). See [TaskPolicyDeniedError.Error].
 type TaskPolicyDeniedError struct {
 	// Task is the qualified task name that was denied, e.g. "codex.exec".
 	Task string
@@ -104,16 +114,192 @@ type TaskPolicyDeniedError struct {
 	// Err is the underlying cause when the denial came from a rule failing to
 	// evaluate rather than from a rule matching.
 	Err error
+
+	// Local records whether this dispatch was a local rehearsal
+	// (any of `flow run local`, `flow test`, `flow task run`, or `flow mcp`
+	// serving a local session — anything reaching [Scope.local]) rather than
+	// a production one, purely so [Error] can say so. Set by
+	// [CheckTaskPolicy] after the decision is already made — nothing in this
+	// package, or in [taskPolicyRuleSet.evaluate], ever reads this field,
+	// and it can never change which rule matched or whether the dispatch is
+	// denied. CLAUDE.md's "a value that exists to be informational and then
+	// becomes load-bearing" is the failure this field is deliberately built
+	// to be unable to have: it reaches nothing but this struct's own Error()
+	// string.
+	Local bool
+
+	// Identity describes the identity the policy was evaluated against, in
+	// the terms a rule reads it — the provenance half of #652 item 3, and
+	// the half [Local] alone cannot supply.
+	//
+	// Local says a denial came from a rehearsal. It does not say *what the
+	// rule was matched against*, and that is the distinction an author most
+	// needs: a rehearsal carries no identity at all unless `flow run local
+	// --as-*` named one, and a `flow test` case's `starter:` never reaches
+	// this surface (documented at flowtest's package doc, landed in #877).
+	// So a rule reading `identity.namespace` refuses every dispatch in those
+	// venues, and the denial an author reads is textually identical to one
+	// where the rule genuinely matched *them*. Naming the evaluated identity
+	// is what tells "denied because the rehearsal identity is empty" apart
+	// from "denied because the rule matched".
+	//
+	// Rendered by [describePolicyIdentity] and set by [CheckTaskPolicy]
+	// after the decision is already made, under exactly the constraints
+	// Local documents above: nothing reads it but [Error]. Empty means no
+	// caller recorded one — a denial built by [TaskPolicy.Check] directly,
+	// which every driver's dispatch path goes through [CheckTaskPolicy]
+	// rather than reaching — and [Error] then says nothing about identity
+	// rather than inventing an answer. "No identity at all" is a different
+	// string, never the empty one.
+	//
+	// Claim *values* are deliberately absent from it; see
+	// [describePolicyIdentity].
+	Identity string
+}
+
+// noPolicyIdentity is what [describePolicyIdentity] renders for an identity
+// no rule could match on, and the value [TaskPolicyDeniedError.Error] tests
+// for when deciding whether to explain where a rehearsal's identity comes
+// from. A named constant rather than a string literal in each place, because
+// the two are one decision: change the wording and the explanation would
+// silently stop being attached to the case it explains.
+const noPolicyIdentity = "no identity — every field a rule can read is empty"
+
+// describePolicyIdentity renders the identity a task-shape rule was evaluated
+// against, for [TaskPolicyDeniedError.Error] and nothing else.
+//
+// Two properties it is built for:
+//
+// A wholly empty identity gets prose rather than a row of empty quotes,
+// because that case is the one the message exists to make legible: an author
+// staring at `subject="" issuer="" namespace=""` has to know that is what a
+// rehearsal without `--as-*` looks like, and an author reading "no identity"
+// does not.
+//
+// Claim values never appear — only the sorted claim *keys*. A claim is
+// caller-supplied data of a shape this package does not get to constrain, and
+// this string travels wherever the denial does, which on the durable driver
+// means into Temporal's failure conversion and therefore into workflow
+// history (CLAUDE.md, "secrets never enter workflow history": the rule is
+// about a durable, broadly readable log, and a claim value is exactly the
+// kind of thing nobody audited before it got there). Keys are enough for the
+// provenance question — whether the claim a rule reads was carried at all —
+// and are the half a policy author already knows, since they wrote the rule.
+func describePolicyIdentity(identity *WorkloadIdentity) string {
+	claims := slices.Sorted(maps.Keys(identity.GetClaims()))
+
+	// "every field a rule can read" is exact rather than loose: the
+	// activation [TaskPolicy.Check] builds is subject, issuer, namespace and
+	// claims — `deployment` is on [WorkloadIdentity] and is not exposed to a
+	// task-shape rule — so an identity carrying only a deployment is, to
+	// this policy surface, no identity at all, and saying so is honest.
+	if identity.GetSubject() == "" && identity.GetIssuer() == "" &&
+		identity.GetNamespace() == "" && len(claims) == 0 {
+		return noPolicyIdentity
+	}
+
+	return fmt.Sprintf("identity subject=%q issuer=%q namespace=%q claims=%v",
+		identity.GetSubject(), identity.GetIssuer(), identity.GetNamespace(), claims)
 }
 
 // Error implements the error interface. The message names what to do about
 // it — the task and the policy source — because a denial an author cannot
 // act on is worse than no diagnostic at all.
+//
+// After #651, a local denial and a production denial for the same identity
+// are the same *decision* — correctly so, since a rehearsal exercising a
+// deployment's policy is the whole point. Local exists only to keep an
+// author reading this message from mistaking the two for the same *cause*:
+// a policy file passed to a local invocation and forgotten about reads as a
+// deployment refusal with no hint that the run was ever a rehearsal.
+//
+// Deliberately venue-neutral rather than naming `flow run local`: [Scope.Local]
+// is true for every local-driver entry point — `flow run local`, `flow test`,
+// `flow task run`, `flow mcp` serving a local session — not only the one
+// whose name is easiest to reach for, and this message must read true for
+// all of them.
+//
+// That neutrality is why the rehearsal clause no longer tells the reader to
+// check "the --task-policy passed to this local invocation". Half the venues
+// it speaks to have no such flag: `--task-policy` is declared on `flow
+// worker`, `flow run local`, `flow mcp`, `flow server dev` and `flow task
+// run`, and deliberately not on `flow test` (#652 item 2), which instead
+// inherits whatever policy the process hosting it installed — `flow mcp
+// --task-policy` serving the `flowstate_test` tool, or any caller of
+// [SetDefaultTaskPolicy]. Sending a `flow test` author hunting for a flag
+// their command does not accept is a false diagnostic, which CLAUDE.md rates
+// worse than a missing one, so the clause names the process rather than a
+// flag only some of these commands take.
+//
+// [Identity] is the other half, and the one this message was missing
+// entirely: see that field's own doc for why a denial that does not say what
+// it evaluated leaves an author unable to tell an empty rehearsal identity
+// from a rule that matched them.
+//
+// # Named once, here, whatever wraps it
+//
+// This sentence names the task and does not print the sentinel, and both are
+// deliberate (#184, #899). The sentinel [ErrTaskPolicyDenied] stays matchable
+// through [TaskPolicyDeniedError.Unwrap] but is not spelled into the text,
+// where it only ever restated in longer words what the sentence already says.
+//
+// The task is the correction #899 made to #184's first cut. That cut removed
+// the name from here entirely, reasoning that [CheckTaskPolicy]'s [TaskError]
+// wrapper already renders it — true for every dispatch the drivers make, and
+// false for a direct caller of [TaskPolicy.Check], which docs/DSL.md recommends
+// for exercising denials and which receives this error bare. So the name lives
+// here, and the wrappers defer: [TaskError.Error] and [StepErrorText] both ask
+// [selfNamesTask] and skip their own `task %q` prefix when the wrapped error is
+// this one. The garbling #184 records against —
+//
+//	step "fetch": task "http": denied by task-shape policy: task "http"
+//	refused by deployment task-shape policy …
+//
+// naming the task twice and the policy three times over one hop — stays fixed:
+// one dispatch, one naming of its task, whether this error is read bare or
+// through either wrapper.
 func (e *TaskPolicyDeniedError) Error() string {
-	return fmt.Sprintf("%s: task %q refused by deployment task-shape policy (%s: %s); "+
-		"this is not a mistake in the workflow file — contact the operator who configured "+
-		"the task-shape policy if this dispatch should be permitted",
-		ErrTaskPolicyDenied, e.Task, e.Reason, e.Detail)
+	rehearsal := ""
+	if e.Local {
+		rehearsal = " during a local rehearsal"
+	}
+
+	provenance := ""
+	if e.Identity != "" {
+		provenance = fmt.Sprintf("; evaluated against %s", e.Identity)
+
+		if e.Local && e.Identity == noPolicyIdentity {
+			provenance += "; a rehearsal carries an identity only where one was named — " +
+				"`flow run local --as-subject/--as-issuer/--as-namespace/--as-claim`, and " +
+				"nowhere at all under `flow test`, whose `starter:` reaches the workflow's " +
+				"own `signals:` policy and not this one — so a rule reading identity refused " +
+				"this dispatch for want of an identity to match, not because it matched yours"
+		}
+	}
+
+	remedy := "contact the operator who configured the task-shape policy if this " +
+		"dispatch should be permitted"
+	if e.Local {
+		remedy = "check the task-shape policy this process installed before blaming the " +
+			"deployment's, and " + remedy
+	}
+
+	// The task is named here, once, and this error is where it lives: a direct
+	// caller of [TaskPolicy.Check] (which docs/DSL.md recommends for exercising
+	// denials) receives this error with no [TaskError] wrapper around it, so if
+	// the name were only in the wrapper such a caller's err.Error() would name no
+	// task at all (#899). The wrappers that also render this — [TaskError.Error]
+	// and [StepErrorText] — defer to it via [selfNamesTask] rather than prefixing
+	// a second `task %q`, so one dispatch still names its task exactly once
+	// however deeply it is wrapped (#184).
+	subject := "this dispatch"
+	if e.Task != "" {
+		subject = fmt.Sprintf("task %q", e.Task)
+	}
+
+	return fmt.Sprintf("%s refused by the deployment's task-shape policy%s (%s: %s)%s; "+
+		"this is not a mistake in the workflow file — %s",
+		subject, rehearsal, e.Reason, e.Detail, provenance, remedy)
 }
 
 // Unwrap returns [ErrTaskPolicyDenied], and the underlying cause when there

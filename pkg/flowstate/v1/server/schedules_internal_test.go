@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -149,4 +151,79 @@ func TestAnUnwrittenCatchupWindowTakesTheBoundedDefault(t *testing.T) {
 	assert.Equal(t, 6*time.Hour, scheduleCatchupWindowOf(&v1.ScheduleTrigger{
 		CatchupWindow: durationpb.New(6 * time.Hour),
 	}))
+}
+
+// fakeScheduleHandle answers Describe with a canned response and panics on
+// anything else, so a test that exercises a path this fake was not built for
+// fails loudly instead of quietly returning a zero value.
+type fakeScheduleHandle struct {
+	client.ScheduleHandle
+	description *client.ScheduleDescription
+}
+
+func (h fakeScheduleHandle) Describe(ctx context.Context) (*client.ScheduleDescription, error) {
+	return h.description, nil
+}
+
+// fakeScheduleClient hands out one fixed handle regardless of the id asked for,
+// which is all [describeSchedule] needs from it.
+type fakeScheduleClient struct {
+	client.ScheduleClient
+	handle client.ScheduleHandle
+}
+
+func (c fakeScheduleClient) GetHandle(ctx context.Context, scheduleID string) client.ScheduleHandle {
+	return c.handle
+}
+
+// fakeTemporalClient is [client.Client] with every method but ScheduleClient
+// left to panic through the embedded nil interface — describeSchedule calls
+// nothing else on it.
+type fakeTemporalClient struct {
+	client.Client
+	scheduleClient client.ScheduleClient
+}
+
+func (c fakeTemporalClient) ScheduleClient() client.ScheduleClient {
+	return c.scheduleClient
+}
+
+// TestDescribeScheduleReportsMissedAndSkippedCounts is the unit-level floor
+// #784 asks for: driving a real missed-catchup-window or overlap-skipped firing
+// through the dev server is timing-dependent (it needs a firing to actually come
+// due while the cluster cannot take it, or two firings to actually overlap), so
+// this instead proves the projection itself carries both counters from the SDK's
+// response onto the wire type, the same way
+// TestAnUnwrittenBoundReachesTemporalUnset is the unit-level guard for a sibling
+// projection bug in this same function.
+func TestDescribeScheduleReportsMissedAndSkippedCounts(t *testing.T) {
+	t.Parallel()
+
+	temporal := fakeTemporalClient{
+		scheduleClient: fakeScheduleClient{
+			handle: fakeScheduleHandle{
+				description: &client.ScheduleDescription{
+					Info: client.ScheduleInfo{
+						NumActions:                    12,
+						NumActionsMissedCatchupWindow: 3,
+						NumActionsSkippedOverlap:      2,
+					},
+					// No memo, so ownedBy's errNoTenantRecorded path applies: the
+					// namespace argument below must be "" to be treated as the owner,
+					// same as a pre-tenancy run.
+				},
+			},
+		},
+	}
+
+	s := mustNew(t, temporal)
+
+	described, _, err := s.describeSchedule(t.Context(), temporal, "", "nightly")
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(12), described.GetNumActions())
+	assert.Equal(t, int64(3), described.GetNumActionsMissedCatchupWindow(),
+		"missed-catchup-window firings dropped on the floor between the SDK and the wire type")
+	assert.Equal(t, int64(2), described.GetNumActionsSkippedOverlap(),
+		"overlap-skipped firings dropped on the floor between the SDK and the wire type")
 }

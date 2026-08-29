@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
 )
 
@@ -22,13 +26,30 @@ import (
 // configuration change an operator can review, rather than a change to a
 // provider-specific code path. Load one from a file with [ParsePolicy].
 type Policy struct {
-	// Issuers are the trusted issuer entries, in precedence order.
+	// Issuers are the trusted issuer entries. Their order is not significant.
 	//
 	// Several entries may name the same issuer, which is how one platform
 	// grants different roles to different workloads: a GitHub Actions issuer
 	// can appear twice, once requiring repository "picatz/flowstate" with the
 	// role "deployer" and once requiring another repository with a lesser role.
-	// The first entry whose audience and claim rules a token satisfies wins.
+	//
+	// # Entries for one issuer must be disjoint
+	//
+	// Exactly one entry may admit any given credential. A token or certificate
+	// that satisfies two is refused with [AmbiguousIssuerError] — see
+	// [OIDCVerifier.Verify] and [MTLSVerifier.VerifyPeer] — because each entry
+	// grants its own namespace and role, and picking one of them by position
+	// would make a line's place in a file decide who a caller is.
+	//
+	// Tiering is therefore written as exclusion rather than as order. "The main
+	// branch deploys, every other branch reads" is two entries: one requiring
+	// `ref: any_of [refs/heads/main]` with the deployer role, and one requiring
+	// `ref: none_of [refs/heads/main]` with the reader role. See
+	// [ClaimRule.NoneOf].
+	//
+	// [Policy.UnreachableIssuers] reports, at load, the overlaps provable from
+	// the file alone: an entry another entry completely covers, which can now
+	// never admit anybody at all.
 	Issuers []TrustedIssuer `json:"issuers" yaml:"issuers"`
 
 	// Federation configures the other direction: the identity Flowstate presents
@@ -47,10 +68,131 @@ type Policy struct {
 	// Compile it with [SecretAccessPolicy.Compile].
 	Secrets *SecretAccessPolicy `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 
+	// Egress governs the outbound HTTP this deployment's identity fetches make:
+	// discovery, key sets, and token exchange. Optional, and absent means
+	// [DefaultEgressPolicy] — https to public addresses only, bounded in every
+	// dimension [netpolicy] bounds.
+	//
+	// It is netpolicy's own file form ([netpolicy.EgressConfig]), the same
+	// section `flow worker --egress-policy` reads for the http task, so an
+	// operator writes one language for both directions of egress rather than
+	// two. It is a separate section from that file, not the same one, because
+	// these are different trust domains: what a workflow may reach is not what
+	// this process may fetch its callers' signing keys from.
+	//
+	// The section only ever loosens. It starts from the same safe default, with
+	// schemes narrowed to https unless the section names schemes itself:
+	//
+	//	egress:
+	//	  allow_private_networks: true
+	//
+	// is how an in-cluster issuer becomes reachable while every other bound
+	// stays in force. Every CEL rule in it is compiled by [Policy.Validate], so
+	// a malformed one refuses start-up rather than the first fetch.
+	Egress *netpolicy.EgressConfig `json:"egress,omitempty" yaml:"egress,omitempty"`
+
 	// Tenancy maps Flowstate namespaces onto the Temporal namespaces that isolate
 	// their history and visibility. Optional: a single-team deployment needs none
 	// of it, and a first run needs no configuration at all.
 	Tenancy *Tenancy `json:"tenancy,omitempty" yaml:"tenancy,omitempty"`
+}
+
+// NamespaceMap is the wire type of [TrustedIssuer.NamespaceMap]: an exact
+// claim-value-to-namespace table, decoded from either YAML or JSON.
+//
+// It behaves as map[string]string with one deliberate difference: decoding
+// tracks whether the namespace_map key was written in the source document at
+// all — even as `null` or `{}` — and leaves the field nil only when the key
+// never appeared. A plain map cannot make that distinction, because decoding
+// `null` into one and leaving a missing key alone both produce the identical
+// nil map. That ambiguity is a fail-open hazard here specifically: this
+// package's validation already refuses a NamespaceMap that is present but
+// empty (every claim value would be refused, which defeats the point of
+// enumerating tenants) — but only once it knows the field was present.
+// Without this type, an operator's mistake that emptied a namespace_map — a
+// dropped block under a `namespace_map:` key, a `null` from a broken template
+// — decoded to the same nil value as never having set the field, silently
+// falling back to NamespaceClaim's raw-value grammar check instead of being
+// refused at policy load. That is the exact shape CLAUDE.md's "fail closed"
+// section rules out: "an errored rule denies... rules compile and type-check
+// when configuration loads rather than when a request arrives." A malformed
+// namespace_map now fails to load rather than deferring the failure to the
+// first token that hits it.
+//
+// [TrustedIssuer.validateNamespaceFields] reads that distinction directly:
+// nil means the key was never written, so this entry does not use a map at
+// all; non-nil (even length zero) means the key was written, and every check
+// that applies to a configured namespace_map — including "present but empty"
+// — applies to it.
+type NamespaceMap map[string]string
+
+// UnmarshalYAML implements [yaml.BytesUnmarshaler]. It is invoked only when
+// the namespace_map key is present in the document, which is what lets a
+// present-but-null or present-but-empty value decode to a non-nil (possibly
+// zero-length) map rather than to the nil value a key that was never written
+// also produces — see [NamespaceMap]'s own doc for why that distinction
+// matters here.
+func (m *NamespaceMap) UnmarshalYAML(data []byte) error {
+	var decoded map[string]string
+	if err := yaml.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded == nil {
+		decoded = map[string]string{}
+	}
+	*m = decoded
+	return nil
+}
+
+// UnmarshalJSON implements [encoding/json.Unmarshaler], for the same reason
+// and with the same behavior as [NamespaceMap.UnmarshalYAML]: it runs only
+// when the key is present, including an explicit `null`, and always leaves
+// the field non-nil once it has run.
+func (m *NamespaceMap) UnmarshalJSON(data []byte) error {
+	var decoded map[string]string
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded == nil {
+		decoded = map[string]string{}
+	}
+	*m = decoded
+	return nil
+}
+
+// MarshalYAML implements [yaml.BytesMarshaler] so a NamespaceMap round-trips
+// as a plain mapping rather than through this type's own fields.
+func (m NamespaceMap) MarshalYAML() ([]byte, error) {
+	return yaml.Marshal(map[string]string(m))
+}
+
+// MarshalJSON implements [encoding/json.Marshaler], for the same reason as
+// [NamespaceMap.MarshalYAML].
+func (m NamespaceMap) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string(m))
+}
+
+// IsZero reports whether m is nil — never whether it is empty. Both
+// encoding/json's `omitzero` and goccy/go-yaml's `omitempty` (which treats an
+// [IsZeroer] as authoritative over its own default reflection-based check;
+// see that package's yaml.go doc) call this instead of measuring len(m)
+// before deciding whether to omit the field, which is what lets
+// [TrustedIssuer.NamespaceMap]'s struct tags tell "never configured" (nil)
+// apart from "configured empty, deliberately deny-all" (non-nil, len 0) on
+// the wire.
+//
+// Without this method, both encoders fall back to reflecting on the field's
+// own zero-ness — len(m) == 0 — to decide whether to omit it, and that check
+// runs before [NamespaceMap.MarshalJSON] or [NamespaceMap.MarshalYAML] is
+// ever called. A non-nil empty map satisfies len(m) == 0 exactly as a nil map
+// does, so both encoders omitted it identically: an intentional deny-all
+// marshaled as if the field had never been set. Re-parsing that output then
+// decodes NamespaceMap as absent — unrestricted — silently discarding the
+// deny-all this package's own null-rejection (see [rejectNullNamespaceMap])
+// exists to enforce, in exactly the marshal round trip that rejection cannot
+// see.
+func (m NamespaceMap) IsZero() bool {
+	return m == nil
 }
 
 // TrustedIssuer is one issuer Flowstate trusts, the tokens it will accept from
@@ -146,6 +288,16 @@ type TrustedIssuer struct {
 	//
 	// An issuer with no rules trusts every workload that platform will ever
 	// issue a token for, which is usually far too broad.
+	//
+	// For a small built-in set of public multi-tenant issuers — GitHub
+	// Actions, GitLab.com, HCP Terraform — "usually far too broad" is
+	// "always", because anyone may run a workload there and the audience is
+	// named by whoever requests the token. Such an entry is refused when the
+	// policy loads unless it carries at least one rule here, or a
+	// NamespaceClaim that puts each account in its own tenant instead. That
+	// set is a floor and not a ceiling: an issuer it has not heard of is
+	// still admitted with no rules, because a single-tenant corporate IdP
+	// restricted by audience alone is a legitimate configuration.
 	Require []ClaimRule `json:"require,omitempty" yaml:"require,omitempty"`
 
 	// Role is the Flowstate role granted to callers admitted by this entry,
@@ -180,11 +332,50 @@ type TrustedIssuer struct {
 	// "repository_owner" whose org login has uppercase letters or an underscore,
 	// the answer is not a looser grammar. It is one issuer entry per tenant, each
 	// with a fixed Namespace and a Require rule that pins the claim identifying
-	// that tenant, and those entries must be ordered before any entry of the
-	// same issuer that reads NamespaceClaim: entries are tried in order, and a
-	// namespace an admitting entry cannot map is a rejection, deliberately never
-	// a reason to try the next entry.
+	// that tenant — and the entry that reads NamespaceClaim must then *exclude*
+	// exactly those values with a [ClaimRule.NoneOf] rule on the same claim.
+	// Order will not do it: entries for one issuer have to be disjoint (see
+	// [Policy.Issuers]), so a token satisfying both the pinned entry and the
+	// claim-reading one is refused rather than taken by whichever comes first.
 	NamespaceClaim string `json:"namespace_claim,omitempty" yaml:"namespace_claim,omitempty"`
+
+	// NamespaceMap, when set alongside NamespaceClaim, replaces the grammar
+	// check NamespaceClaim would otherwise apply to the raw claim value with an
+	// exact lookup: the claim's value is looked up as a key in this map, and the
+	// mapped value — which must itself satisfy [ValidateNamespace] — becomes the
+	// namespace. A claim value with no entry is refused with [ErrNoNamespace],
+	// the same way a missing or ungrammatical claim is: there is no fallback to
+	// the raw value and no wildcard entry, because a wildcard here is the same
+	// mistake [ClaimRule.AnyOf] refuses to let a claim rule express.
+	//
+	// This is what NamespaceClaim's own doc points to for a claim whose values
+	// cannot satisfy the namespace grammar at all, such as GitHub Actions'
+	// "repository" claim ("<owner>/<name>", which contains "/"): list every
+	// tenant's exact claim value once, mapped to the namespace it names.
+	// Two different claim values may map to the same namespace on purpose — two
+	// repositories sharing one tenant is a deliberate choice, not a collision —
+	// but every mapped value is validated at policy load, so a typo that would
+	// only surface at verification time is caught before any token is checked
+	// against it.
+	//
+	// Requires NamespaceClaim; refused when Namespace is set instead, and
+	// refused for kind: mtls for the same reason NamespaceClaim is: a client
+	// certificate carries no claim to look up.
+	//
+	// The field's type is [NamespaceMap] rather than a plain
+	// map[string]string so that "the key was written" and "the key was never
+	// written" stay distinguishable through decoding — see its own doc.
+	//
+	// The JSON tag uses `omitzero`, not `omitempty`: encoding/json's
+	// `omitempty` decides by reflecting on len(m) before ever calling
+	// [NamespaceMap.MarshalJSON], so a non-nil empty map — a deliberate
+	// deny-all — would omit exactly like nil, and re-parsing would then
+	// decode it as absent (unrestricted), silently discarding the deny-all.
+	// `omitzero` instead defers to [NamespaceMap.IsZero], which distinguishes
+	// nil from empty; see that method's doc. goccy/go-yaml's `omitempty`
+	// already defers to the same IsZero method when a field implements it
+	// (goccy/go-yaml's yaml.go doc), so the YAML tag needs no change.
+	NamespaceMap NamespaceMap `json:"namespace_map,omitzero" yaml:"namespace_map,omitempty"`
 
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
@@ -212,14 +403,49 @@ type TrustedIssuer struct {
 // When the claim holds a JSON array, such as "groups", the rule matches if any
 // element equals any accepted value. Booleans and numbers are compared by their
 // JSON text, so AnyOf ["true"] matches the claim value true.
+//
+// # The claim must be present, whatever the rule says about its value
+//
+// Every rule on this type is a statement about a claim the issuer asserts, so
+// an absent claim fails the rule — AnyOf and NoneOf alike. See
+// [ClaimRule.check], where that is decided and argued: a NoneOf that held
+// vacuously against a missing claim would let an issuer widen an entry to
+// everybody by dropping a claim from its tokens, which is a fail-open change
+// nobody in this repository would have made or reviewed.
 type ClaimRule struct {
 	// Claim is the name of the claim to check, such as "sub", "repository", or
 	// "email". Required.
 	Claim string `json:"claim" yaml:"claim"`
 
 	// AnyOf are the accepted values. The rule holds when the claim equals one
-	// of them. At least one is required.
-	AnyOf []string `json:"any_of" yaml:"any_of"`
+	// of them.
+	//
+	// At least one of AnyOf and NoneOf is required; a rule with neither says
+	// nothing about the claim it names.
+	AnyOf []string `json:"any_of,omitempty" yaml:"any_of,omitempty"`
+
+	// NoneOf are the refused values. The rule holds only when the claim equals
+	// none of them — and, for a list-valued claim, only when no element does,
+	// so one excluded group in a "groups" array refuses the token however many
+	// other groups it lists.
+	//
+	// This is what makes tiered entries for one issuer writable without
+	// relying on order. Entries are disjoint or they are ambiguous (see
+	// [Policy.Issuers]), so "main branch deploys, every other branch reads" is
+	// two entries: one with `ref: any_of [refs/heads/main]`, and one with
+	// `ref: none_of [refs/heads/main]`. Without this field the second entry
+	// would have to be written as "any branch", which the first entry's token
+	// also satisfies, and the verifier would refuse both.
+	//
+	// It is exclusion, never a wildcard: NoneOf narrows an entry that some
+	// other rule has already narrowed, and it does not on its own say whose
+	// workload is admitted. [ClaimRule.narrowsWho] is where that distinction
+	// is enforced for the public multi-tenant issuers this package refuses to
+	// let a policy leave open.
+	//
+	// A value in both AnyOf and NoneOf is refused when the policy loads: see
+	// [TrustedIssuer.validateRequire].
+	NoneOf []string `json:"none_of,omitempty" yaml:"none_of,omitempty"`
 }
 
 // RequireClaim returns a [ClaimRule] requiring that the named claim equals the
@@ -232,6 +458,14 @@ func RequireClaim(claim, value string) ClaimRule {
 // one of the given values.
 func RequireClaimAnyOf(claim string, values ...string) ClaimRule {
 	return ClaimRule{Claim: claim, AnyOf: values}
+}
+
+// RequireClaimNoneOf returns a [ClaimRule] requiring that the named claim is
+// present and equals none of the given values — the Go spelling of `none_of`,
+// and the way a broad entry is written disjoint from the narrow entries beside
+// it. See [ClaimRule.NoneOf].
+func RequireClaimNoneOf(claim string, values ...string) ClaimRule {
+	return ClaimRule{Claim: claim, NoneOf: values}
 }
 
 // supportedAlgorithms are the signature algorithms this package can verify.
@@ -293,11 +527,60 @@ func ParsePolicy(data []byte) (Policy, error) {
 		return Policy{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
+	if err := rejectNullNamespaceMap(data, policy); err != nil {
+		return Policy{}, err
+	}
+
 	if err := policy.Validate(); err != nil {
 		return Policy{}, err
 	}
 
 	return policy, nil
+}
+
+// rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the
+// library cannot: goccy/go-yaml never invokes a field's custom unmarshaler for
+// an explicit YAML `null`, so `namespace_map: null` (or a bare `namespace_map:`
+// with nothing after the colon) decodes straight to Go's zero value without
+// [NamespaceMap.UnmarshalYAML] ever running — indistinguishable, after decode,
+// from the key never having been written at all. That is exactly the
+// ambiguity NamespaceMap exists to remove, so this re-decodes the document
+// generically (a plain `map[string]any`, which has no such special case: a
+// null value still leaves the key present with a nil value) and refuses any
+// issuer entry whose namespace_map key is present but whose typed field ended
+// up nil, before [Policy.Validate] — which only sees the already-collapsed
+// typed value — ever runs.
+func rejectNullNamespaceMap(data []byte, policy Policy) error {
+	var raw struct {
+		Issuers []map[string]any `yaml:"issuers" json:"issuers"`
+	}
+	// Best-effort: the strict typed decode above already succeeded, so a
+	// failure here would mean this loose, non-strict decode disagrees with it
+	// in some way that does not bear on namespace_map presence. Nothing to
+	// enforce without a raw document to compare against.
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+
+	for i, issuer := range raw.Issuers {
+		if i >= len(policy.Issuers) {
+			break
+		}
+		if _, present := issuer["namespace_map"]; !present {
+			continue
+		}
+		if policy.Issuers[i].NamespaceMap != nil {
+			continue
+		}
+		name := policy.Issuers[i].Name
+		return fmt.Errorf("%w: issuers[%d] (%q): namespace_map is present but null, which this package refuses "+
+			"rather than silently treating as absent: a null or empty namespace_map would fall back to "+
+			"namespace_claim's raw-value grammar check instead of the exact table the entry appears to intend. "+
+			"Remove namespace_map entirely to use namespace_claim alone, or give it at least one entry",
+			ErrInvalidPolicy, i, name)
+	}
+
+	return nil
 }
 
 // Validate reports whether the policy is usable, wrapping [ErrInvalidPolicy]
@@ -358,6 +641,13 @@ func (p Policy) Validate() error {
 		}
 	}
 
+	// Built rather than inspected: building is what compiles and type-checks the
+	// CEL rules and parses the CIDRs, which is the whole reason this is checked
+	// at load rather than at the first fetch.
+	if _, err := egressPolicyFromConfig(p.Egress); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -411,6 +701,23 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is empty", ErrNoNamespace, t.NamespaceClaim, t.Name)
 	}
 
+	// With a namespace_map configured, the raw claim value is never itself the
+	// namespace: it is a key into an exact, operator-authored table, and a claim
+	// value with no entry is refused rather than falling back to the raw value
+	// (which the grammar below would usually refuse anyway) or to any default.
+	// This is the path a claim shaped like "<owner>/<name>" takes, since no
+	// grammar accepts "/" without making it ambiguous with the "/" a namespace
+	// is combined with elsewhere — see ValidateNamespace's and NamespaceMap's own
+	// doc comments.
+	if t.NamespaceMap != nil {
+		mapped, ok := t.NamespaceMap[namespace]
+		if !ok {
+			return "", fmt.Errorf("%w: the %q claim of a token from %q is %q, which has no entry in namespace_map",
+				ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64))
+		}
+		return mapped, nil
+	}
+
 	// A namespace names a tenant, and it reaches an assertion subject and a
 	// secret rule. This is the one grammar both of those places check — see
 	// [ValidateNamespace] — checked here too so a namespace claim that would
@@ -436,6 +743,51 @@ func (t TrustedIssuer) kind() string {
 		return IssuerKindOIDC
 	}
 	return t.Kind
+}
+
+// bearerIssuers returns the entries in policy that admit a caller by bearer
+// token — kind: oidc, and the unset kind that defaults to it.
+//
+// The one place the "not OIDC, rather than is mTLS" filter is written down for
+// the callers that only need to *ask about* the policy, so that a kind added
+// to the schema later is excluded from every one of them at once rather than
+// inheriting bearer semantics from whichever of them forgot. [NewOIDCVerifier]
+// and [NewMTLSVerifier] keep their own loops: each does per-entry work as it
+// walks, and verifier.go states the same reasoning at its own filter.
+//
+// A nil policy trusts nobody and therefore yields nothing, the same
+// fail-closed default [Policy] takes everywhere else.
+func bearerIssuers(policy *Policy) []TrustedIssuer {
+	if policy == nil {
+		return nil
+	}
+
+	var entries []TrustedIssuer
+	for _, entry := range policy.Issuers {
+		if entry.kind() == IssuerKindOIDC {
+			entries = append(entries, entry)
+		}
+	}
+
+	return entries
+}
+
+// AdmitsBearerTokens reports whether policy trusts any issuer that can mint a
+// bearer token — that is, whether this deployment has an "aud" claim to bind
+// anything to at all.
+//
+// A policy of nothing but kind: mtls entries admits callers purely by client
+// certificate, and [TrustedIssuer.validateMTLS] refuses an `audiences` list on
+// one of those outright ("a client certificate carries no audience claim"), so
+// there is no audience such a deployment could name and no token whose "aud"
+// any surface could check. A caller deciding whether to *require* a canonical
+// resource URI (see [ValidateResourceAudience] and [WithExpectedResource])
+// asks this first: requiring one where nothing mints a token refuses a
+// deployment for failing to name something nothing would ever check.
+//
+// False for a nil policy, which trusts nobody.
+func AdmitsBearerTokens(policy *Policy) bool {
+	return len(bearerIssuers(policy)) > 0
 }
 
 // validate reports whether a single trusted issuer entry is usable.
@@ -497,12 +849,16 @@ func (t TrustedIssuer) validateOIDC() error {
 		return err
 	}
 
+	if err := t.validateMultiTenantPinning(); err != nil {
+		return err
+	}
+
 	if t.MaxTokenAge < 0 {
 		return fmt.Errorf("max_token_age must not be negative")
 	}
 
 	if t.JWKSURL != "" {
-		if _, err := validateHTTPSURL(t.JWKSURL, "jwks_url"); err != nil {
+		if _, err := ValidateHTTPSURL(t.JWKSURL, "jwks_url"); err != nil {
 			return err
 		}
 	}
@@ -563,6 +919,10 @@ func (t TrustedIssuer) validateMTLS() error {
 			"besides the subject SAN itself, so it cannot name a tenant. Give this entry a fixed namespace, "+
 			"and use one entry per tenant if several must share a CA", IssuerKindMTLS)
 	}
+	if t.NamespaceMap != nil {
+		return fmt.Errorf("namespace_map is not supported for kind: %s: it maps namespace_claim's value, "+
+			"which this kind never has", IssuerKindMTLS)
+	}
 	if err := t.validateNamespaceFields(); err != nil {
 		return err
 	}
@@ -571,6 +931,12 @@ func (t TrustedIssuer) validateMTLS() error {
 }
 
 // validateRequire checks the claim rules common to every kind.
+//
+// Everything here is decided when the policy loads rather than when a request
+// arrives, per CLAUDE.md's "fail closed": a rule that cannot hold, or that says
+// two things about one value, is a file an operator has to fix, and finding it
+// at start-up costs a restart where finding it at verification time costs
+// however long it takes somebody to notice.
 func (t TrustedIssuer) validateRequire() error {
 	for i, rule := range t.Require {
 		switch {
@@ -580,12 +946,36 @@ func (t TrustedIssuer) validateRequire() error {
 			return fmt.Errorf("require[%d]: the %q claim is already matched exactly against the issuer", i, rule.Claim)
 		case t.kind() == IssuerKindOIDC && slices.Contains(timeClaims, rule.Claim):
 			return fmt.Errorf("require[%d]: the %q claim is a timestamp validated by the verifier, not a value to match", i, rule.Claim)
-		case len(rule.AnyOf) == 0:
-			return fmt.Errorf("require[%d]: any_of needs at least one value", i)
+		case len(rule.AnyOf) == 0 && len(rule.NoneOf) == 0:
+			return fmt.Errorf("require[%d]: a rule on %q needs any_of, none_of, or both: with neither it says "+
+				"nothing about the claim it names", i, rule.Claim)
 		}
 		for j, value := range rule.AnyOf {
 			if value == "" {
 				return fmt.Errorf("require[%d]: any_of[%d] is empty", i, j)
+			}
+		}
+		for j, value := range rule.NoneOf {
+			if value == "" {
+				return fmt.Errorf("require[%d]: none_of[%d] is empty", i, j)
+			}
+		}
+
+		// A value written in both lists is a contradiction, and it is refused
+		// rather than resolved because either resolution is a guess about what
+		// the operator meant. Accepting the value silently drops a refusal
+		// somebody wrote down; refusing it silently drops an acceptance. And
+		// the value can never be the one that satisfies the rule either way —
+		// AnyOf holds only if some claim value is accepted, NoneOf fails if
+		// any claim value is refused — so listing it twice is dead text at
+		// best and a misread policy at worst. Same posture as
+		// [NewOIDCVerifier] refusing WithEgressPolicy alongside an egress
+		// section: a contradiction is not a precedence question.
+		for _, value := range rule.AnyOf {
+			if slices.Contains(rule.NoneOf, value) {
+				return fmt.Errorf("require[%d]: %q is in both any_of and none_of for claim %q, so the rule "+
+					"says the claim must and must not be that value. Remove it from whichever list did not "+
+					"mean it", i, value, rule.Claim)
 			}
 		}
 	}
@@ -604,7 +994,242 @@ func (t TrustedIssuer) validateNamespaceFields() error {
 			return fmt.Errorf("namespace: %w", err)
 		}
 	}
+
+	if t.NamespaceMap != nil {
+		if t.NamespaceClaim == "" {
+			return fmt.Errorf("namespace_map requires namespace_claim: it maps that claim's value to a namespace, so there is nothing to look up without it")
+		}
+		if len(t.NamespaceMap) == 0 {
+			return fmt.Errorf("namespace_map is present but empty: every claim value would be refused, which is the same as not admitting this issuer at all")
+		}
+		for claimValue, namespace := range t.NamespaceMap {
+			if claimValue == "" {
+				return fmt.Errorf("namespace_map: the empty string is not a claim value a verified token can carry (namespaceFor already refuses an empty claim)")
+			}
+			if namespace == "" {
+				return fmt.Errorf("namespace_map: claim value %q maps to an empty namespace", claimValue)
+			}
+			if err := ValidateNamespace(namespace); err != nil {
+				return fmt.Errorf("namespace_map: claim value %q maps to namespace %q: %w", claimValue, namespace, err)
+			}
+		}
+	}
+
 	return nil
+}
+
+// multiTenantIssuer describes a public workload-identity issuer that mints
+// tokens for anybody: its human name, and the claim an operator almost
+// certainly meant to pin, used to write the diagnostic in that platform's own
+// vocabulary rather than in GitHub's.
+type multiTenantIssuer struct {
+	// platform is how the diagnostic names the issuer, such as "GitHub
+	// Actions".
+	platform string
+
+	// claim is a claim every token from that platform carries which names the
+	// account the workload belongs to, and example is a value of it. Both
+	// appear in the diagnostic's example YAML, so the remedy an operator is
+	// shown is one they can paste.
+	claim   string
+	example string
+}
+
+// multiTenantIssuerHosts are the hosts of issuers where *anyone* may run a
+// workload and ask for a token, keyed by the host of the issuer URL each
+// platform documents.
+//
+// Trusting one of these with no claim rule and no namespace claim admits every
+// workload on that platform as one caller, because the only other thing the
+// entry checks — the audience — is a value the *token requester* names rather
+// than one the platform assigns per customer. The package doc has always said
+// so; per CLAUDE.md's fail-closed rule, documentation is the wrong enforcement
+// layer for it, so [TrustedIssuer.validateMultiTenantPinning] refuses such an
+// entry when the policy loads.
+//
+// This list is a floor, not a ceiling. It cannot be complete — a public issuer
+// this table has never heard of is admitted unpinned, and so is a self-hosted
+// GitLab or a vendor whose host is not written here — and it deliberately does
+// not try to be, because the alternative (refusing every issuer that carries no
+// require rule) would refuse the legitimate single-tenant case a corporate IdP
+// with one audience is. What it buys is that the three platforms whose OIDC
+// providers this repository's own docs, examples and tests reach for cannot be
+// trusted wide open by accident.
+//
+// Matching is on the issuer URL's host, exactly and case-insensitively: a
+// deployment's own GitLab at gitlab.example.com is a different, single-tenant
+// issuer and is not caught, which is the intent. Nothing here is derived from a
+// token — this reads operator configuration at load time.
+var multiTenantIssuerHosts = map[string]multiTenantIssuer{
+	// GitHub Actions: issuer https://token.actions.githubusercontent.com,
+	// carrying "repository" ("<owner>/<name>") and "repository_owner", per
+	// https://docs.github.com/en/actions/concepts/security/openid-connect.
+	// A workflow names its own audience when it requests the token, so an
+	// audience alone restricts nothing about who minted it.
+	"token.actions.githubusercontent.com": {
+		platform: "GitHub Actions",
+		claim:    "repository_owner",
+		example:  "picatz",
+	},
+
+	// GitLab.com CI/CD ID tokens: the "iss" claim is the GitLab instance's own
+	// domain, so https://gitlab.com for the hosted service, carrying
+	// "namespace_path" and "project_path" among others, per
+	// https://docs.gitlab.com/ci/secrets/id_token_authentication/. The
+	// audience is written in the job's `id_tokens:` block, by the job.
+	"gitlab.com": {
+		platform: "GitLab.com CI/CD",
+		claim:    "namespace_path",
+		example:  "my-group",
+	},
+
+	// HCP Terraform workload identity tokens: issuer https://app.terraform.io,
+	// carrying "terraform_organization_name", "terraform_workspace_name" and
+	// the rest, per
+	// https://developer.hashicorp.com/terraform/cloud-docs/workspaces/dynamic-provider-credentials/workload-identity-tokens.
+	// The audience is a workspace variable the workspace's own operator sets.
+	"app.terraform.io": {
+		platform: "HCP Terraform",
+		claim:    "terraform_organization_name",
+		example:  "my-org",
+	},
+}
+
+// multiTenantIssuerFor reports whether an issuer URL names a known public
+// multi-tenant issuer.
+func multiTenantIssuerFor(issuer string) (multiTenantIssuer, bool) {
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		// An unparseable issuer is refused by validateIssuerURL, which runs
+		// first; there is nothing to say about it here.
+		return multiTenantIssuer{}, false
+	}
+
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	known, ok := multiTenantIssuerHosts[host]
+	return known, ok
+}
+
+// validateMultiTenantPinning refuses an entry that trusts a known public
+// multi-tenant issuer without narrowing who it admits.
+//
+// Either spelling counts as narrowing, and they answer different questions.
+// A Require rule decides *who is admitted at all*, and is what an operator
+// running one organization's workloads means. A NamespaceClaim instead admits
+// everyone but lands each account in its own tenant, read off a claim the
+// issuer signed — a deliberate multi-tenant posture, and the shape
+// examples/operations/tenant-routing/trust.yaml demonstrates.
+//
+// A fixed Namespace is deliberately *not* enough. It says which tenant the
+// callers this entry admits belong to; it says nothing about which callers
+// those are, so with it alone every workload on the platform lands in one
+// tenant together.
+//
+// A rule only counts when it narrows *who* is admitted, per
+// [ClaimRule.narrowsWho]. A rule on a claim the token's requester chooses does
+// not: `require: [{claim: aud, any_of: [flowstate]}]` re-states the audience
+// check [TrustedIssuer.admits] has already run and says nothing about whose
+// workload presented the token, so counting it would have let the exposure this
+// whole check exists to refuse through wearing the check's blessing.
+//
+// What this still cannot do is judge whether a rule that does narrow who
+// narrows anything *useful* — a rule pinning a claim every token from the
+// platform carries identically admits the world again. That is deliberately
+// left alone: it is a sentence in a reviewed file saying what was meant, which
+// is the thing a policy is for, where the cases refused above are a file that
+// says nothing at all and a file that says only what the platform's own
+// requester wrote.
+func (t TrustedIssuer) validateMultiTenantPinning() error {
+	known, ok := multiTenantIssuerFor(t.Issuer)
+	if !ok {
+		return nil
+	}
+
+	// A namespace_claim naming a requester-chosen claim is a worse failure
+	// than one that narrows nothing, and it is checked first because no
+	// require rule redeems it: it makes the *tenant* a value the workload
+	// writes down for itself, which is the one thing the tenancy rule in this
+	// package's doc forbids ("a workload's namespace comes from the
+	// authenticated caller, never from the workload"). Two workflows on the
+	// same platform could then land in each other's namespace by asking to.
+	if slices.Contains(requesterChosenClaims, t.NamespaceClaim) {
+		return fmt.Errorf("issuer %q belongs to %s, where the %q claim is chosen by whoever requests the "+
+			"token — so namespace_claim: %s would let a workload name its own tenant, and any workload on "+
+			"that platform could ask for another tenant's. Read the tenant off a claim %s assigns from the "+
+			"account the workload belongs to instead:\n\n"+
+			"    namespace_claim: %s",
+			t.Issuer, known.platform, t.NamespaceClaim, t.NamespaceClaim, known.platform, known.claim)
+	}
+
+	if t.NamespaceClaim != "" || slices.ContainsFunc(t.Require, ClaimRule.narrowsWho) {
+		return nil
+	}
+
+	// Both shapes get the same remedy; only the sentence naming what is wrong
+	// with the entry as written differs, because an operator who wrote an
+	// aud-only rule has been told "add a require rule" once already and needs
+	// to hear why the one they wrote does not count.
+	wrong := fmt.Sprintf("this entry names no require rules and no namespace_claim — so it admits every "+
+		"workload on that platform as the same caller. The audience does not narrow it: the audience is "+
+		"chosen by whoever requests the token, not assigned by %s.", known.platform)
+	if len(t.Require) > 0 {
+		wrong = fmt.Sprintf("every require rule on this entry is on a claim whoever requests the token "+
+			"chooses (%s), which audiences: already checks against this entry's own list — so none of them "+
+			"says whose workloads are admitted, and every workload on that platform is still admitted as "+
+			"the same caller. Such a rule is allowed, it just cannot be the only one.",
+			strings.Join(requesterChosenClaims, ", "))
+	}
+
+	return fmt.Errorf("issuer %q belongs to %s, where anyone may run a workload and request a token, and "+
+		"%s Pin this entry one of two ways. Narrow who is admitted at all:\n\n"+
+		"    require:\n"+
+		"      - claim: %s\n"+
+		"        any_of: [%s]\n\n"+
+		"or, to admit several accounts and keep each in its own tenant, read the tenant off a signed claim:\n\n"+
+		"    namespace_claim: %s\n\n"+
+		"(a fixed namespace: is not enough on its own: it names the tenant admitted callers land in, "+
+		"not which callers are admitted)",
+		t.Issuer, known.platform, wrong, known.claim, known.example, known.claim)
+}
+
+// requesterChosenClaims name claims whose value the party asking for the token
+// writes down, rather than the platform assigning it from the account the
+// workload belongs to. On the issuers in [multiTenantIssuerHosts] that makes
+// such a claim useless as a statement about *who* a caller is: anyone with an
+// account can ask for a token carrying the value the policy wants.
+//
+// "aud" is the whole list. A require rule on it is not merely weak, it is
+// already redundant — [TrustedIssuer.admits] checks the token's audience
+// against this entry's own Audiences before it reaches the rules at all — so a
+// rule on "aud" adds a second copy of a check that has already run, and nothing
+// about identity.
+//
+// Note what is deliberately *not* here. [TrustedIssuer.validateRequire] already
+// refuses a rule on "iss" (the entry matches the issuer exactly already) and on
+// "exp", "nbf" and "iat" (timestamps the verifier validates) for an OIDC entry,
+// so naming them here would be a second copy of a rule fifty lines away rather
+// than a second rule. And a claim the platform assigns per account —
+// "repository", "namespace_path", "terraform_organization_name" — is precisely
+// what does count.
+var requesterChosenClaims = []string{"aud"}
+
+// narrowsWho reports whether this rule says something about which party's
+// workload a token belongs to, which is what [TrustedIssuer.validateMultiTenantPinning]
+// requires an entry trusting a public multi-tenant issuer to say.
+//
+// A rule that does not narrow who is still perfectly legal — an operator may
+// layer one for defence in depth, or to accept one of several audiences — it
+// simply cannot be the only thing an entry says.
+//
+// An exclusion narrows nobody, which is why a non-empty AnyOf is required here
+// and not merely a rule on a claim the platform assigns. `repository: none_of
+// [picatz/other]` admits every repository on GitHub except one, so an entry
+// carrying only that is the same unrestricted entry
+// [TrustedIssuer.validateMultiTenantPinning] exists to refuse, wearing a rule.
+// [ClaimRule.NoneOf] is for making two entries disjoint from each other, never
+// for pinning one of them to an account.
+func (r ClaimRule) narrowsWho() bool {
+	return len(r.AnyOf) > 0 && !slices.Contains(requesterChosenClaims, r.Claim)
 }
 
 // validateIssuerURL checks that an issuer identifier is the kind of URL
@@ -614,7 +1239,7 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("issuer is required")
 	}
 
-	parsed, err := validateHTTPSURL(issuer, "issuer")
+	parsed, err := ValidateHTTPSURL(issuer, "issuer")
 	if err != nil {
 		return err
 	}
@@ -626,18 +1251,27 @@ func validateIssuerURL(issuer string) error {
 	return nil
 }
 
-// validateHTTPSURL checks that a configured URL is absolute and transport
+// ValidateHTTPSURL checks that a configured URL is absolute and transport
 // protected. Plain http is permitted only against loopback addresses, which
 // keeps a local development issuer usable without leaving a way to configure a
 // production issuer whose tokens and keys cross the network in the clear.
-func validateHTTPSURL(rawURL, field string) (*url.URL, error) {
+//
+// Exported so that `credentialsource` holds every credential-bearing URL in this
+// repository to one rule rather than to a second implementation of it. field
+// names the setting in the caller's own vocabulary, so a refusal says what the
+// operator has to change rather than what this function is called.
+func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, rawURL, err)
 	}
 
-	if parsed.Host == "" {
-		return nil, fmt.Errorf("%s %q must include a host", field, rawURL)
+	// Hostname, not Host: Host keeps a bare port (url.Parse("https://:443/x")
+	// yields Host == ":443", Hostname() == ""), so testing Host here would
+	// accept a URL that names no host and disagree with the isLoopbackHost
+	// check below, which already uses Hostname().
+	if parsed.Hostname() == "" {
+		return nil, fmt.Errorf("%s %q must name a host, such as %q", field, rawURL, "https://example.com")
 	}
 
 	// Credentials in an issuer or key set URL would be sent on every fetch and
@@ -680,8 +1314,20 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 	clone.Algorithms = slices.Clone(t.Algorithms)
 	clone.Require = slices.Clone(t.Require)
 	for i, rule := range clone.Require {
+		// Every slice inside a rule, not only the accepting one. A NoneOf left
+		// aliased is the fail-open direction of this bug: a caller that emptied
+		// or rewrote its own copy after building a verifier would be removing
+		// exclusions the running verifier is still reading, so an entry written
+		// to keep callers out would start letting them in — and the write would
+		// race concurrent verification besides.
+		//
+		// TestCloneSharesNoClaimRuleSliceWithItsSource walks these fields by
+		// reflection rather than by name, so a third list added to [ClaimRule]
+		// later fails there rather than being quietly left aliased here.
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
+		clone.Require[i].NoneOf = slices.Clone(rule.NoneOf)
 	}
+	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
 
 	return clone
 }
@@ -729,6 +1375,33 @@ func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window life
 }
 
 // check reports whether a verified claims set satisfies this rule.
+//
+// # An absent claim fails the rule, whatever the rule says
+//
+// This is the decision [ClaimRule]'s own doc points at, made here because here
+// is where it is observable, and it is the one place in this type where a
+// plausible reading is fail-open.
+//
+// [ClaimRule.AnyOf] has always required the claim to be present: there is no
+// value to compare, so the rule cannot hold. [ClaimRule.NoneOf] read as a bare
+// "the value is not in this set" would hold *vacuously* against a claim the
+// token never carried — and the entry that field exists to write is the broad
+// one ("every branch except main"), so the vacuous reading admits, through the
+// widest entry in the policy, exactly the tokens whose issuer stopped asserting
+// the claim. That change comes from the issuer, not from the reviewed file, and
+// it produces no diagnostic anywhere: the policy still reads correctly.
+//
+// So presence is the rule's precondition and the value test is what differs
+// between the two fields. It costs the operator a rule they may not have
+// wanted — an issuer that mints "ref" only on some tokens needs a second entry
+// for the ones without it, spelled out — which is the direction this package
+// pays in everywhere else (a namespace it cannot determine rejects; a claim
+// shape it cannot compare rejects).
+//
+// The same reasoning decides the list-valued case one line down: NoneOf fails
+// if *any* element is excluded, rather than holding because some other element
+// is not, so a "groups" array carrying one refused group is refused however
+// many permitted groups it also carries.
 func (r ClaimRule) check(claims map[string]any) error {
 	value, ok := claims[r.Claim]
 	if !ok {
@@ -738,6 +1411,27 @@ func (r ClaimRule) check(claims map[string]any) error {
 	found := claimStrings(value)
 	if len(found) == 0 {
 		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf, Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
+	}
+
+	// Exclusion is checked before acceptance so that a rule carrying both
+	// answers with the refusal an operator wrote rather than with the generic
+	// "not one of any_of" — and so that a claim carrying an excluded value
+	// alongside an accepted one cannot pass on the accepted one.
+	for _, candidate := range found {
+		if slices.Contains(r.NoneOf, candidate) {
+			return &ClaimMismatchError{
+				Claim:        r.Claim,
+				Want:         r.AnyOf,
+				Got:          truncate(strings.Join(found, ", "), maxClaimValueLength),
+				RefusedValue: truncate(candidate, maxClaimValueLength),
+			}
+		}
+	}
+
+	// A rule that only excludes has nothing left to check: the claim is
+	// present and carries none of the refused values.
+	if len(r.AnyOf) == 0 {
+		return nil
 	}
 
 	for _, candidate := range found {

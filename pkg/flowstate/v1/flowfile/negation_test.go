@@ -62,14 +62,23 @@ func TestNegationDrift(t *testing.T) {
 			),
 		},
 		{
-			name: "drifted: one clause edited on the negated side",
+			// With only one clause on each side there is no shared structure that
+			// distinguishes a drifted negation from two unrelated conditions.
+			name: "single-clause conditions are not enough evidence of drift",
 			src: gateSteps(
 				`${steps.gate.sender.subject == "alice"}`,
 				`${!(steps.gate.sender.subject == "bob")}`,
 			),
-			want: []string{
-				`exact negations`, `"alice"`, `"bob"`,
-			},
+		},
+		{
+			// Regression: these are separate wait outcomes, not two copies of one
+			// gate condition. Treating any `x`/`!y` pair as drift can prevent an
+			// otherwise valid Flowfile from compiling.
+			name: "unrelated single-clause condition and negation",
+			src: gateSteps(
+				`${steps.gate.timed_out}`,
+				`${!steps.gate.value}`,
+			),
 		},
 		{
 			// The same drift, but behind the shared guard the healthy case
@@ -199,11 +208,11 @@ steps:
       as: item
       steps:
         - id: yes_branch
-          if: ${steps.gate.sender.subject == "alice"}
+          if: ${steps.gate.sender.subject == "alice" && steps.gate.sender.issuer == "idp"}
           log:
             message: hi
         - id: no_branch
-          if: ${!(steps.gate.sender.subject == "bob")}
+          if: ${!(steps.gate.sender.subject == "bob" && steps.gate.sender.issuer == "idp")}
           log:
             message: hi
 `,
@@ -290,11 +299,11 @@ steps:
       name: go
       timeout: 1h
   - id: a
-    if: ${steps.gate.sender.subject == "alice"}
+    if: ${steps.gate.sender.subject == "alice" && steps.gate.sender.issuer == "idp"}
     log:
       message: yes
   - id: b
-    if: ${!(steps.gate.sender.subject == "bob")}
+    if: ${!(steps.gate.sender.subject == "bob" && steps.gate.sender.issuer == "idp")}
     log:
       message: no
 `

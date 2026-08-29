@@ -1,0 +1,94 @@
+# Three facts, one run each, and the first of them is the one this example
+# exists for: a burst larger than `max_batch:` is taken up to the bound, and
+# what did not fit is still there for the next drain.
+#
+# The `at:` values matter and are not decoration. `scriptSignals` guarantees
+# order only *across* distinct virtual moments — signals scripted for the same
+# instant race to enqueue with no defined order among themselves — so the five
+# orders below are staggered two hundred milliseconds apart. That is what makes
+# "ord-1 through ord-3, then ord-4 and ord-5" the sequence these cases prove
+# rather than one of a hundred and twenty equally likely orderings, and it is
+# the same reasoning `examples/entity-order`'s own test file records.
+#
+# They are staggered *inside* the workflow's own two-second `settle` window, and
+# that is the second thing the `at:` values are doing. A burst that straddled the
+# window would be drained across two steps for a reason that has nothing to do
+# with `max_batch:`, and the case would then pass or fail on where the window
+# happened to fall rather than on the bound it is about.
+#
+# The burst lands entirely inside the workflow's own 10s `settle` window, which
+# is what puts all five in the queue before the first drain looks. That is the
+# whole shape being demonstrated: a drain takes what has arrived, so something
+# has to decide how long "arrived" means, and here that something is an
+# ordinary `sleep:`.
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a burst larger than max_batch fills the first drain and leaves the rest
+    workflow: ./workflow.yaml
+    signals:
+      - name: order-placed
+        at: 200ms
+        payload: {id: ord-1, cents: 1999}
+      - name: order-placed
+        at: 400ms
+        payload: {id: ord-2, cents: 500}
+      - name: order-placed
+        at: 600ms
+        payload: {id: ord-3, cents: 250}
+      - name: order-placed
+        at: 800ms
+        payload: {id: ord-4, cents: 100}
+      - name: order-placed
+        at: 1s
+        payload: {id: ord-5, cents: 75}
+    expect:
+      ran: [settle, batch, remainder, nothing_left, report]
+      outputs:
+        # Oldest first, across both drains, with nothing lost at the seam
+        # between them — the ordering claim a per-page assertion could not
+        # make. The bound was reached rather than merely not exceeded, which is
+        # `first_drain_filled` below.
+        order_ids: [ord-1, ord-2, ord-3, ord-4, ord-5]
+        order_cents: [1999, 500, 250]
+        first_drain_filled: true
+        # The third drain found nothing and said so, rather than failing.
+        drained_dry: true
+
+  - name: a burst smaller than max_batch is taken whole and leaves nothing
+    workflow: ./workflow.yaml
+    signals:
+      - name: order-placed
+        at: 200ms
+        payload: {id: ord-9, cents: 4200}
+      - name: order-placed
+        at: 400ms
+        payload: {id: ord-10, cents: 88}
+    expect:
+      ran: [settle, batch, remainder, nothing_left, report]
+      outputs:
+        order_ids: [ord-9, ord-10]
+        order_cents: [4200, 88]
+        # Two of a possible three, so the bound was not reached here — stated
+        # as its own case because "took everything" and "took as much as it was
+        # allowed" are the two sides of the bound and a file that only ever
+        # showed one of them would not have tested it.
+        first_drain_filled: false
+        drained_dry: true
+
+  - name: a drain nobody sends anything to lapses with an empty batch
+    workflow: ./workflow.yaml
+    # No signals at all. Every drain lapses on its own `timeout:`, which is an
+    # ordinary outcome: `count` is 0, `timed_out` is true, and the run finishes
+    # down the same steps rather than failing. That is the property that makes
+    # a lapsed gate branchable with an `if:` instead of a `continue_on_error:`.
+    expect:
+      ran: [settle, batch, remainder, nothing_left, report]
+      outputs:
+        order_ids: []
+        order_cents: []
+        first_drain_filled: false
+        drained_dry: true

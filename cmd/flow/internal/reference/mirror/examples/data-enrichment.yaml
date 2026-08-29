@@ -1,9 +1,6 @@
 edition: v2026.3
 name: data-enrichment
-description: >-
-  Fans out over a worklist with bounded concurrency, retries the records
-  worth retrying, and reports exactly which ones it could not enrich.
-
+description: Fans out over a worklist with bounded concurrency, retries the records worth retrying, and reports exactly which ones it could not enrich.
 # The worklist here is short so the example finishes; the shape does not
 # change at four records or four million. Each record goes through the same
 # lookup, `max_parallel` bounds how many are in flight at once so this cannot
@@ -40,7 +37,6 @@ description: >-
 # Change the worklist to see the ordinary path with nothing to report:
 #
 #   flow run local examples/data-enrichment/workflow.yaml --input records='["alpha","beta"]'
-
 inputs:
   # A worklist is a batch, the same shape as an expense report's requester:
   # there is no sensible absent value for "which records", only a
@@ -49,10 +45,13 @@ inputs:
   records:
     type: list
     required: true
-    example: [alpha, beta, gamma, flagged]
-    min_items: 1
     description: identifiers to enrich
-
+    example:
+      - alpha
+      - beta
+      - gamma
+      - flagged
+    min_items: 1
 steps:
   - id: enrich
     for_each:
@@ -65,22 +64,15 @@ steps:
       max_parallel: 2
       steps:
         - id: lookup
-          description: >-
-            Enrich one record. "flagged" simulates one the service
-            permanently rejects, retried the same as everything else and
-            failing every attempt, on purpose.
-          continue_on_error: true
+          description: Enrich one record. "flagged" simulates one the service permanently rejects, retried the same as everything else and failing every attempt, on purpose.
+          timeout: 10s
           retry:
             attempts: 3
             interval: 200ms
             backoff: 2.0
             max_interval: 2s
-          timeout: 10s
+          continue_on_error: true
           http:
-            method: GET
-            url: https://httpbin.org/get
-            query:
-              record: ${record}
             # `expect` decides success the same way the enrichment service
             # would: this request answers 200 regardless of which record was
             # asked for, so "flagged" is rejected here, by the workflow,
@@ -88,9 +80,13 @@ steps:
             # marked bad. The failure this produces is permanent — the
             # request was never wrong to make — so `retry` above `never
             # rescues it, the same way a 4xx does not get retried by default.
-            expect: ${record != 'flagged' && response.status_code == 200}
+            expect: ${record != "flagged" && response.status_code == 200}
+            method: GET
             outputs:
               id: ${record}
+            query:
+              record: ${record}
+            url: https://httpbin.org/get
 
   # A vendor lookup this run also depends on, hit once rather than per
   # record — which is what lets it point at an address of its own instead of
@@ -99,28 +95,20 @@ steps:
   # genuinely gets to run — three real attempts, with the same backoff — before
   # the outage outlasts the policy and this step is tolerated the same way.
   - id: vendor_status
-    description: >-
-      A transient vendor outage, unlike "flagged": retried for real, up to
-      three times, rather than rejected on the first attempt.
-    continue_on_error: true
+    description: 'A transient vendor outage, unlike "flagged": retried for real, up to three times, rather than rejected on the first attempt.'
+    timeout: 10s
     retry:
       attempts: 3
       interval: 200ms
       backoff: 2.0
       max_interval: 2s
-    timeout: 10s
+    continue_on_error: true
     http:
       method: GET
       url: https://httpbin.org/status/503
-
   - id: report
     log:
-      message: >-
-        ${"enrichment finished for %d of %d record(s), vendor status %s".format([
-          size(steps.enrich.results.filter(r, has(r.lookup.id))),
-          size(inputs.records),
-          has(steps.vendor_status.error) ? "unavailable after retries" : string(steps.vendor_status.status_code)])}
-
+      message: '${"enrichment finished for %d of %d record(s), vendor status %s".format([size(steps.enrich.results.filter(r, has(r.lookup.id))), size(inputs.records), has(steps.vendor_status.error) ? "unavailable after retries" : string(steps.vendor_status.status_code)])}'
 outputs:
   # A step that failed carries no `id` — it never reached the `outputs`
   # expression above, because `expect` decided before that point was reached

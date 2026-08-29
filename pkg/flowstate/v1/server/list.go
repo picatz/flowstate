@@ -93,6 +93,14 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	// they were never in the listing.
 	temporal, err := s.clientFor(caller)
 	if err != nil {
+		return nil, s.auditDeny(ctx, "List", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, caller,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err)
+	}
+
+	// A listing addresses a tenant rather than a run: what is decided here is
+	// that this caller may read their own namespace, which is the decision
+	// every run the listing goes on to filter is already inside.
+	if err := s.auditAllow(ctx, "List", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, caller); err != nil {
 		return nil, err
 	}
 
@@ -260,7 +268,105 @@ func (s *FlowstateServer) summarize(execution *workflow.WorkflowExecutionInfo) *
 		StartTime:  start,
 		CloseTime:  close,
 		Name:       s.workflowNameOf(execution),
+
+		// All three read off what the listing already has in hand: the memo it
+		// fetched for the tenant check, and the versioning info Temporal returns
+		// with every execution. No second call per run — which is the property
+		// that makes selecting on them at ten thousand runs cost the listing and
+		// nothing more.
+		Labels:        s.labelsOf(execution),
+		Starter:       s.starterOf(execution),
+		WorkerVersion: workerVersionOf(execution),
 	}
+}
+
+// labelsOf reads the workflow's declared labels off a run's memo, and reports
+// nothing when there are none to read.
+//
+// [workflowNameOf]'s reasoning throughout, including what absence means: a run
+// of a workflow that declared no labels and a run started before
+// [labelsMemoKey] existed both read as carrying none, which is the same answer
+// to the only question a `labels` filter asks. A payload under this key that
+// does not decode as a string map is not this deployment's doing either, and
+// gets that same answer rather than failing a listing.
+//
+// Read through the server's configured data converter, matching
+// [labelsMemoEntry]'s encoding side exactly — see [workflowNameOf] for why
+// naming the SDK default here instead would break precisely the deployments
+// that configure a payload codec.
+func (s *FlowstateServer) labelsOf(execution *workflow.WorkflowExecutionInfo) map[string]string {
+	payload, ok := execution.GetMemo().GetFields()[labelsMemoKey]
+	if !ok {
+		return nil
+	}
+
+	var labels map[string]string
+	if err := s.dataConverter.FromPayload(payload, &labels); err != nil {
+		return nil
+	}
+
+	return labels
+}
+
+// starterOf reads who started a run off its memo, for a listing.
+//
+// Answers exactly what [FlowstateServer.reportedStarter] answers a Get with, by
+// calling the same [FlowstateServer.memoStarter] and applying the same two
+// rules — unreadable or absent is empty, and the qualified form of two empty
+// strings (an unauthenticated submission, only possible in development) is
+// empty as well, because handing a reader a bare separator invites a comparison
+// that can only ever be wrong. Two readers of one memo field are what would
+// eventually disagree; this is the second call site of the one reader, not a
+// second reader.
+func (s *FlowstateServer) starterOf(execution *workflow.WorkflowExecutionInfo) string {
+	starter, ok, err := s.memoStarter(execution.GetMemo())
+	if err != nil || !ok {
+		return ""
+	}
+
+	if starter == v1.QualifiedSubject("", "") {
+		return ""
+	}
+
+	return starter
+}
+
+// workerVersionOf reports the Worker Deployment version a run is pinned to, as
+// `deployment-name.build-id`, and the empty string when it is pinned to none.
+//
+// Not a memo, unlike everything else a summary carries, and [v1.RunSummary]'s
+// own field doc says why: this is a fact about where the run is executing rather
+// than about its submission, and it legitimately changes at Continue-As-New.
+// Temporal already answers it on every execution a listing reads, so reading it
+// here costs nothing.
+//
+// Prefers the structured `deployment_version` and falls back to the deprecated
+// `version` string, which is the same `name.build-id` spelling — a server too
+// old to send the structured form still sends that one, and dropping to empty
+// there would report "not versioned" about a run that is.
+func workerVersionOf(execution *workflow.WorkflowExecutionInfo) string {
+	versioning := execution.GetVersioningInfo()
+
+	if v := versioning.GetDeploymentVersion(); v != nil {
+		if v.GetDeploymentName() == "" || v.GetBuildId() == "" {
+			// Half a version names nothing that can be selected on — the same
+			// judgement [engine.DeploymentOptions] makes on the writing side,
+			// where a worker configured with half of one is refused rather than
+			// dropped quietly to unversioned.
+			return ""
+		}
+
+		return v.GetDeploymentName() + "." + v.GetBuildId()
+	}
+
+	// The deprecated field, read on purpose: it is what a server too old to send
+	// the structured form above sends instead, in the identical
+	// `name.build-id` spelling, and dropping it would report a run that *is*
+	// pinned as pinned to nothing. Deprecated is not absent — the day Temporal
+	// removes the field this stops compiling, which is the right moment to
+	// decide the fallback is no longer worth carrying.
+	//lint:ignore SA1019 the deprecated form is the fallback for a server that sends no structured version
+	return versioning.GetVersion()
 }
 
 // workflowNameOf reads the workflow's own declared name off a run's memo,

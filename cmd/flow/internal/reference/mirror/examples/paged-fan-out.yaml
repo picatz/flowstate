@@ -44,7 +44,7 @@
 #
 # CI additionally runs this exact file, unstubbed, against a stand-in that
 # serves a real two-page cursor API (`NewExamplesHTTPServer` in
-# pkg/flowstate/v1/tests/examples.go) — on both execution drivers. Point the two
+# pkg/flowstate/v1/internal/conformance/examples.go) — on both execution drivers. Point the two
 # URLs at a service of your own and it runs as written.
 #
 # Run durably and the walk survives losing the worker: the cursor is state on
@@ -58,10 +58,7 @@
 # Quickstart)
 edition: v2026.3
 name: paged-fan-out
-description: >-
-  Walks a cursor API to exhaustion and fans out over each page with bounded
-  concurrency — the loop pages, the for_each does the work.
-
+description: Walks a cursor API to exhaustion and fans out over each page with bounded concurrency — the loop pages, the for_each does the work.
 steps:
   - id: pages
     description: One page per iteration, until the catalogue says there is no next cursor.
@@ -73,13 +70,13 @@ steps:
       as: cursor
       # The first request asks for no cursor at all, which is how a cursor API
       # spells "from the beginning".
-      init: ${''}
+      init: ${""}
       update: ${steps.fetch.next_cursor}
       # The stop signal the *body* produced. A `while`-style check before the
       # body could not see this, because on the first iteration no page has
       # been fetched — see docs/DSL.md's "Do-while, and why the condition is
       # checked after the body".
-      until: ${steps.fetch.next_cursor == ''}
+      until: ${steps.fetch.next_cursor == ""}
       # Bounded because the trip count belongs to the far side: a catalogue
       # that never stops reporting a next cursor is exactly the runaway this
       # ceiling exists to catch, and reaching it fails the run rather than
@@ -90,18 +87,17 @@ steps:
           description: One page of the catalogue, from wherever the last page said to carry on.
           http:
             method: GET
-            url: https://catalog.internal.example.com/records
-            query:
-              cursor: ${cursor}
-            parse_json: true
             # Both halves of the page are named here: the records to work on,
             # and where to carry on from. `next_cursor` is what `until:` and
             # `update:` read, so it has to be an output of this step rather
             # than something re-derived later.
             outputs:
-              records: ${response.json.records}
               next_cursor: ${response.json.next_cursor}
-
+              records: ${response.json.records}
+            parse_json: true
+            query:
+              cursor: ${cursor}
+            url: https://catalog.internal.example.com/records
         - id: index
           description: Fan out over this page's records, three at a time.
           for_each:
@@ -115,15 +111,14 @@ steps:
             steps:
               - id: send
                 http:
-                  method: POST
-                  url: https://search.internal.example.com/index
                   json:
                     id: ${record.id}
                     title: ${record.title}
-                  parse_json: true
+                  method: POST
                   outputs:
                     id: ${record.id}
-
+                  parse_json: true
+                  url: https://search.internal.example.com/index
 outputs:
   pages_walked:
     value: ${steps.pages.results.size()}

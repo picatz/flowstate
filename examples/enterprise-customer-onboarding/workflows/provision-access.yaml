@@ -2,33 +2,32 @@
 # property provision-database.yaml documents.
 edition: v2026.3
 name: provision-access
-
 inputs:
   tenant:
     type: string
     required: true
+    description: which tenant this access grant belongs to
     example: acme
     must: this.matches(r'^[a-z][a-z0-9-]*$')
-    description: which tenant this access grant belongs to
-
 steps:
   # `undo:` on this callee's own task - see provision-database.yaml's comment
   # for why the id is `provision_access` rather than a generic `provision`,
   # and the parent workflow's header for the composed shape this is part of.
   - id: provision_access
     http:
+      json:
+        tenant: ${inputs.tenant}
       method: POST
-      url: https://provisioning.internal.example.com/access-grants
-      json: '${ {"tenant": inputs.tenant} }'
-      parse_json: true
       outputs:
         resource_id: ${response.json.resource_id}
+      parse_json: true
+      url: https://provisioning.internal.example.com/access-grants
     undo:
       http:
+        json:
+          resource_id: ${steps.provision_access.resource_id}
         method: DELETE
         url: https://provisioning.internal.example.com/access-grants
-        json: '${ {"resource_id": steps.provision_access.resource_id} }'
-
 outputs:
   resource_id:
     value: ${steps.provision_access.resource_id}

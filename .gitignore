@@ -26,6 +26,24 @@ go.work
 # The compiled CLI, when built in place with `go build ./cmd/flow`.
 /flow
 
+# The compiled gate, for the same reason: `go build ./tools/gate` writes it
+# here, and `git add -A` after a gate run then commits five megabytes of
+# machine-specific binary. Which is exactly what happened on the branch that
+# added this line.
+/gate
+
+# `go build ./tools/vacuity` writes the binary here, and a `git add -A` after it
+# committed 3.3 MB of x86-64 ELF to this repository (#1125, caught by Codex
+# after it had already merged). Nothing consumes it — `make vacuity` runs
+# `go run ./tools/vacuity` — so the entry is the whole fix, beside the ones
+# above for exactly the same reason.
+/vacuity
+
+# The embedding example's binary, for the same reason: `go build
+# ./examples/embedding` from the repo root writes it here. A 46 MB copy was
+# committed exactly this way in ff6131b and removed by #922.
+/embedding
+
 # Plugin binaries, when built in place per a plugin's own README
 # (`go build -o .../flowstate-plugin-<name> ./plugins/<name>`) rather than
 # into a directory already outside the tree.
@@ -40,3 +58,11 @@ go.work
 .claude/worktrees/
 
 .worktrees/
+
+# `make coverage`'s output (#519): raw GOCOVERDIR counters, the merged
+# profile, the HTML report and the per-package summary. Generated fresh by
+# every run and never a statement about a specific commit worth committing.
+.coverage/
+
+# Per-orb portal metadata is runtime state, not repository configuration.
+.amp/portals/*

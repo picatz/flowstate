@@ -17,15 +17,17 @@ steps:
   - id: search
     http:
       method: GET
-      url: https://httpbin.org/get?source=flowstate
-      query:
-        q: hello world & goodbye
-        page: 2
-        tag: [alpha, beta]
       # Asking for the body to be parsed is opt-in. Parsing a response an outside
       # party controls is work an attacker chooses, so it happens when a workflow
       # says so rather than because a header claimed the body was JSON.
       parse_json: true
+      query:
+        q: hello world & goodbye
+        page: 2
+        tag:
+          - alpha
+          - beta
+      url: https://httpbin.org/get?source=flowstate
 
   # `json` sends a structured body and sets Content-Type: application/json. No
   # hand-built JSON, and no header to remember. It is mutually exclusive with `body`
@@ -33,15 +35,15 @@ steps:
   # depend on which field the engine happened to read first.
   - id: submit
     http:
-      method: POST
-      url: https://httpbin.org/post
       # Values can reference earlier steps, like any other input.
       json:
         echoed_query: ${steps.search.json.args}
         nested:
           works: true
           count: 3
+      method: POST
       parse_json: true
+      url: https://httpbin.org/post
 
   # `fields:` are string-valued, so each one has to end up a string. `string()`
   # will not do it for a map or a list — there is no such overload, and asking for
@@ -55,11 +57,11 @@ steps:
   # value survived escaping, and which name arrived twice.
   - id: report
     log:
-      message: the server echoed the request back
       # `q` went out containing a space and an ampersand and came back exactly as
       # written, which is what escaping it once, here, is worth; and `tags` arrived
       # as two values under one name rather than one value with a comma in it.
       fields:
-        q: ${steps.search.json.args['q']}
-        tags: ${steps.search.json.args['tag'].join(", ")}
-        sent: ${string(steps.submit.json.json['nested']['count'])}
+        q: ${steps.search.json.args["q"]}
+        tags: ${steps.search.json.args["tag"].join(", ")}
+        sent: ${string(steps.submit.json.json["nested"]["count"])}
+      message: the server echoed the request back

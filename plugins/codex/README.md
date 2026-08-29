@@ -106,26 +106,21 @@ description: Runs one bounded OpenAI Codex agentic turn with the "codex" plugin 
 # - see codex.proto's own doc comment on the enum for why an author should
 # still write it: a Flowfile that names its own sandbox is legible without
 # reading this plugin's source to know what "unset" means today.
-
 vars:
-  prompt: "In one sentence, what does the term \"idempotent\" mean in the context of a retried HTTP request?"
-
+  prompt: In one sentence, what does the term "idempotent" mean in the context of a retried HTTP request?
 steps:
   - id: ask
     codex.exec:
+      api_key: ${secret('env:OPENAI_API_KEY')}
       prompt: ${vars.prompt}
       sandbox_mode: SANDBOX_MODE_READ_ONLY
-      api_key: ${secret('env:OPENAI_API_KEY')}
-
   - id: announce
     log:
-      message: "${'codex answered in %d output token(s): %s'.format([steps.ask.output_tokens, steps.ask.final_message])}"
-
+      message: '${"codex answered in %d output token(s): %s".format([steps.ask.output_tokens, steps.ask.final_message])}'
 outputs:
   final_message:
     value: ${steps.ask.final_message}
     description: the agent's own answer to the prompt
-
   output_tokens:
     value: ${steps.ask.output_tokens}
     description: tokens the model spent producing that answer
@@ -168,6 +163,37 @@ plugin's design:
   `patch` input (`CommitPushInputs.patch`) - the #162 agentic-loop contract:
   `codex.exec.patch` flows straight into a `git.commit_push` step with
   nothing in between reading or writing a shared checkout.
+- **Those `git` invocations run over a repository the task controls**, so
+  they are hardened on both sides (`githarden.go`). The environment is built
+  from an explicit allowlist rather than inherited, which is what keeps
+  `GIT_DIR`, `GIT_EXTERNAL_DIFF`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*` and a
+  `~/.gitconfig` a `DANGER_FULL_ACCESS` run just wrote out of the picture;
+  the repository's own config is judged by an allowlist, so a key that names
+  a program and is *not* recognized costs the run its patch rather than
+  running the program. The cost is stated where it is paid: an unusual but
+  harmless config key, a linked worktree, a submodule checkout, or a
+  `working_context` that is a subdirectory of a larger repository all get no
+  patch, and `files_changed` still reports what the run touched.
+- **`reset_working_context` closes #967.** Without it, only a loop's first
+  agentic turn can ever produce a patch: `computePatch` fails closed on a
+  dirty baseline, and a previous turn's own edits are still sitting in
+  `working_context` since nothing - not this task, not
+  [`plugins/git`](../git)'s `git.commit_push`, which builds its commit in an
+  in-memory clone - ever touches that directory again once a patch has been
+  read out of it. Setting this input discards those edits (tracked and
+  untracked alike) before this run's own baseline is read, restoring
+  `working_context` to the commit it is already checked out at - not a
+  different one; there is no ref or sha to name here. It reuses the same
+  hardened git invocation and the same `gitWorktreeIsPlain` containment
+  check `computePatch` and `observeWorkspace` already run, so a
+  `working_context` that fails that check (a subdirectory of a larger
+  repository, a linked worktree, ...) refuses the request outright rather
+  than silently doing nothing - unlike the patch computation's own
+  best-effort fallback, a reset an author explicitly asked for and did not
+  get has to be reported. See codex.proto's own doc comment on
+  `ExecInputs.reset_working_context`, and `examples/plugins/agentic-fix`'s
+  "What is still missing" for what advancing `working_context` to a
+  *different* commit between turns would additionally take.
 - **The library's own subprocess launch (`Exec.Run`) is not what this plugin
   calls.** `process.go` builds the same argv shape but constructs the
   child's environment from an explicit allowlist rather than a copy of this
@@ -274,6 +300,20 @@ needs live testing" for the specifics, in short:
   `errors.go`'s `classifyRunError`, against real stderr wording.
 - Real token usage numbers, given the Usage fields upstream added that this
   plugin does not yet surface.
+- **`reset_working_context`'s own git operations run against a real `git`
+  binary in every test (`resetWorkingContext`'s tests use `realGitBinary`,
+  the same fixture `diff_test.go`'s own patch tests do) - what has not run
+  live is the *agentic loop this input exists for*, end to end against a
+  real `codex` binary.** `TestCodexExecResetWorkingContextEnablesARetriedPatch`
+  proves the mechanism - a dirty baseline blocks a patch, a reset clears it,
+  a second patch comes back - by having `fakecodex` write the file edit
+  itself (`FAKECODEX_WRITE_FILE`/`FAKECODEX_WRITE_CONTENT`) rather than a
+  real agent doing it. Whether a real `codex` binary, mid-turn, ever leaves
+  `working_context` in a state this input's two commands
+  (`git checkout HEAD -- .` then `git clean -fd -- .`) cannot fully restore
+  - a submodule the agent initialized, a `.git/index.lock` from a turn
+    killed mid-write, a permission bit changed on a file `codex` created -
+  is untested against the real binary.
 
 ## What proves this plugin's task is reachable
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -166,12 +167,19 @@ type multiRootCommitIter struct {
 	emitted map[plumbing.Hash]bool // already returned in an earlier page
 	seen    map[plumbing.Hash]bool // visited already during this call
 	stack   []plumbing.Hash        // DFS stack; last element pops next
+	since   *time.Time             // exclude from results, without pruning traversal
 }
 
 // newMultiRootCommitIter builds the iterator, pushing roots so the FIRST
 // entry of roots is the FIRST one explored - a plain slice-as-stack pops
 // its last element first, so roots are pushed in reverse order.
-func newMultiRootCommitIter(repo *git.Repository, roots []plumbing.Hash, emitted map[plumbing.Hash]bool) *multiRootCommitIter {
+//
+// since, when non-nil, is the same cutoff LogInputs.since produces
+// (logParams.since). It is carried here rather than in an outer iterator so
+// filtering and traversal share the same resumable frontier. Next still
+// expands an excluded commit because repository-controlled timestamps are
+// not a safe traversal boundary.
+func newMultiRootCommitIter(repo *git.Repository, roots []plumbing.Hash, emitted map[plumbing.Hash]bool, since *time.Time) *multiRootCommitIter {
 	stack := make([]plumbing.Hash, 0, len(roots))
 	for i := len(roots) - 1; i >= 0; i-- {
 		stack = append(stack, roots[i])
@@ -181,6 +189,7 @@ func newMultiRootCommitIter(repo *git.Repository, roots []plumbing.Hash, emitted
 		emitted: emitted,
 		seen:    make(map[plumbing.Hash]bool),
 		stack:   stack,
+		since:   since,
 	}
 }
 
@@ -218,6 +227,24 @@ func (it *multiRootCommitIter) Next() (*object.Commit, error) {
 		}
 		it.seen[h] = true
 
+		// The parent bound is enforced here, before the list below expands
+		// it, because expanding it *is* the allocation the bound exists to
+		// refuse: every parent is appended to it.stack, and a later
+		// Frontier() copies the whole stack again. Checked downstream, in
+		// collectLogCommits, it reads a list the walk has already paid for
+		// - and with a path filter in front it never reads it at all,
+		// since a commit the filter discards is one collectLogCommits
+		// never sees while its parents went onto the stack regardless.
+		//
+		// Refused rather than truncated, for the reason
+		// [errCommitMetadataTooLarge] gives: this is a property of the
+		// history, identical on every retry, so no resumable page could
+		// hand back a cursor that makes progress past it.
+		if len(c.ParentHashes) > maxLogParents {
+			return nil, fmt.Errorf("%w: commit %s has %d parents, and at most %d are read",
+				errCommitMetadataTooLarge, h, len(c.ParentHashes), maxLogParents)
+		}
+
 		// Parents pushed in reverse so the first parent is popped (and
 		// thus visited) first - matching the same "first parent explored
 		// before second" convention object.NewCommitPreorderIter's own
@@ -228,6 +255,15 @@ func (it *multiRootCommitIter) Next() (*object.Commit, error) {
 			if !it.emitted[p] && !it.seen[p] {
 				it.stack = append(it.stack, p)
 			}
+		}
+
+		// Commit timestamps are repository-controlled and need not decrease
+		// along parent links. Filter this commit only after expanding its
+		// parents so an in-range ancestor behind an old commit remains
+		// reachable. An oversized old commit is therefore still refused:
+		// silently pruning all of its parents would make the result incomplete.
+		if it.since != nil && c.Committer.When.Before(*it.since) {
+			continue
 		}
 
 		return c, nil

@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/authorization.proto";
+import "flowstate/v1/identity.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// The audit record: what an authorization decision was, written where an
+// authorization decision is made.
+//
+// This is picatz/flowstate#1018's ratified answer, and each of its four parts
+// is a decision that would have to be undone rather than extended if it were
+// wrong. They are recorded here because the schema is the only place a reader
+// of the record can reach.
+//
+// # What is audited
+//
+// Authorization decisions, allow and deny alike, keyed by AuthorizationAction
+// — the vocabulary this deployment already has (authorization.proto), rather
+// than a second list of verbs. The audited surface is therefore *derived*: it
+// is every action that authorization.go's bindings attach to an RPC, and
+// TestEveryRPCHasExactlyOneAuthorizationAction — which already walks the
+// service descriptor in both directions — fails when an RPC arrives that no
+// action names. A new RPC cannot become an unaudited one silently. The three
+// MCP-only actions (mcp.run_local, mcp.test, mcp.debug) are bound to no RPC
+// and are exempt for v1, written down as an exemption a test asserts rather
+// than as a silence.
+//
+// # When it is written
+//
+// Write-ahead, synchronously, at the decision — before the mutation the
+// decision permits. The subject of the record is the *decision*, not the
+// effect: "this attested caller was authorized for workload.signal on run X
+// at server time T" is complete and permanently true the instant the check
+// returns, whether or not the signal then fails to deliver. #993 recorded the
+// effect ("accepted") before the effect existed, which is how an audit log
+// comes to hold a sentence that is false.
+//
+// The cost, stated: this record cannot answer "did the signal actually
+// deliver". It was never the artifact for that — the run's own timeline and
+// Temporal's history are — and conflating the two is what produced the wrong
+// record. A crash between the record and the mutation leaves a true record of
+// an authorization that was granted, which is the safe direction; the unsafe
+// direction, a mutation with no record, is the one write-ahead closes.
+//
+// # What redacts it
+//
+// Nothing, because there is nothing here to redact. The redaction is
+// structural rather than scrubbed: every field below is either chosen by the
+// server (the action, the decision, the clock, the deny code) or is an
+// identity this deployment itself attested. There is no field a payload, an
+// error message, a signal body or a workflow specification could be placed
+// in, so the two leak classes CLAUDE.md names — reflection through unexported
+// fields, and unwrapping into persisted failures — have nothing to reach.
+//
+// The grounds for preferring that to a scrubber are in the tree. A
+// secrets.Scrubber is "best effort by construction and not a substitute for
+// keeping a revealed value close to its use" (secrets/scrub.go), and
+// SensitiveValues explicitly disclaims the job: "It is not containment"
+// (sensitivevalues.go). A scrubber on the way into a durable audit sink is a
+// last line of defense being used as a first one. metricschema made this same
+// call for metrics — it records the policy surface "and not the *reason*: a
+// reason can quote what was refused, and a refusal's own words are
+// peer-influenced text" (metricschema/metricschema.go) — and this makes it
+// again rather than re-litigating it per field: a denial carries a code from
+// a closed set, and the prose stays on the error the caller receives, which
+// is not durable.
+//
+// # Why this is in the schema at all
+//
+// CLAUDE.md's proto-first exception is for "a type defined by a boundary it
+// refuses to cross", and #993 claimed it: audit data must never enter a
+// workflow payload or history. That rule is about where a value may be *put*,
+// not about whether it may be *described*. An audit record's whole purpose is
+// to travel — to a sink somebody else reads — and a hand-written Go struct
+// with JSON tags is a wire format either way, one that would additionally be
+// a third spelling of AuthorizationAction and WorkloadIdentity. So it is
+// described here, and the boundary is enforced where it lives: nothing writes
+// an AuditRecord into a memo, a search attribute, a signal payload or a
+// workflow argument. If you are about to be the first, that is the bug.
+
+// AuditRecord is one authorization decision, as the server made it.
+//
+// Every field is set by the server. The only value here a caller influences at
+// all is resource_key, which is the identifier they addressed — bounded below,
+// and an identifier is not a payload: without it the record cannot say which
+// run was reached, which is the question an audit trail exists to answer.
+message AuditRecord {
+  // The action authorized, from the deployment's one closed vocabulary.
+  //
+  // Never UNSPECIFIED: a decision about no action is not a decision.
+  AuthorizationAction action = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+
+  // Allow or deny. Never UNSPECIFIED, for the same reason.
+  AuditDecision decision = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+
+  // The WorkflowService method the decision was made for, by its schema name.
+  //
+  // Recorded alongside the action rather than derived from it because the
+  // mapping runs the other way: one action covers several RPCs (workload.read
+  // is Get, GetTimeline and List), so the action cannot say which operation
+  // was asked for. The bound is AuthorizationActionBinding.rpcs's own, so a
+  // reader comparing a record against the bindings is comparing like with
+  // like.
+  string rpc = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Z][A-Za-z0-9]*$"
+  }];
+
+  // Who asked, as this deployment attested them — not as they described
+  // themselves.
+  //
+  // The same WorkloadIdentity a run is started with, from the same call, and
+  // already bounded for a durable sink by its own schema: only the claims an
+  // operator configured are copied, and nothing secret may appear in it. That
+  // bound is not a coincidence to rely on quietly — it is the reason this
+  // field can be an identity rather than a subject string.
+  //
+  // Absent for a decision made about an unauthenticated caller, which a
+  // deployment started with --insecure-no-auth can have.
+  WorkloadIdentity identity = 4;
+
+  // What kind of thing was addressed, so a reader can tell an empty
+  // resource_key that means "no resource" from one that means "the empty
+  // namespace".
+  AuditResourceKind resource_kind = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // The resource addressed: a workflow id, a schedule name, or a namespace.
+  //
+  // Caller-chosen, and therefore bounded here rather than trusted — a
+  // decision is audited before the request has necessarily been validated,
+  // because whether the caller may act does not depend on whether their
+  // arguments parse. The emitter truncates on a rune boundary rather than
+  // mid-sequence, so a bounded record is still a readable one.
+  string resource_key = 6 [(buf.validate.field).string.max_len = 256];
+
+  // When the decision was made, by the server's clock and never a caller's —
+  // the rule SignalSender.accepted_at already states.
+  google.protobuf.Timestamp decided_at = 7 [(buf.validate.field).required = true];
+
+  // Why a denial was a denial, from a closed set. UNSPECIFIED on an allow.
+  //
+  // A code and not a message: see the redaction note on this file. The
+  // caller's own error keeps the prose, and that error is not durable.
+  AuditDenyCode deny_code = 8 [(buf.validate.field).enum.defined_only = true];
+}
+
+// AuditDecision is the answer itself.
+enum AuditDecision {
+  AUDIT_DECISION_UNSPECIFIED = 0;
+
+  // The caller was authorized. The mutation this permits has not happened yet
+  // when the record is written — see the write-ahead note on this file.
+  AUDIT_DECISION_ALLOW = 1;
+
+  // The caller was refused, and nothing was done.
+  AUDIT_DECISION_DENY = 2;
+}
+
+// AuditResourceKind names what resource_key addresses.
+enum AuditResourceKind {
+  // No resource was reached at all. Validate, Compile and GetCatalog are the
+  // whole of this case: they touch no run and no tenant, which is what
+  // AUTHORIZATION_ACTION_WORKLOAD_VALIDATE's own comment says.
+  AUDIT_RESOURCE_KIND_UNSPECIFIED = 0;
+
+  // A run, addressed by its workflow id.
+  AUDIT_RESOURCE_KIND_RUN = 1;
+
+  // A schedule, addressed by the name its author gave it.
+  AUDIT_RESOURCE_KIND_SCHEDULE = 2;
+
+  // A whole tenant, which is what a listing addresses.
+  AUDIT_RESOURCE_KIND_NAMESPACE = 3;
+}
+
+// AuditDenyCode is the closed set of reasons a decision was a denial.
+//
+// Closed, and deliberately small: every value here is emitted by a named seam
+// in the server today. A code nothing sets is a spelling nobody reads, which
+// is the thing authorization.proto's own comment refuses to accumulate.
+//
+// These are finer than what the caller is told. A run in another tenant and a
+// run that does not exist both answer "no such run", because confirming that
+// a run exists elsewhere is the fact a caller in the wrong tenant must not
+// learn — but the audit sink is not the caller, and an operator reading their
+// own deployment's records is exactly who should be able to tell a
+// cross-tenant probe from a typo.
+enum AuditDenyCode {
+  AUDIT_DENY_CODE_UNSPECIFIED = 0;
+
+  // The caller's namespace maps to no Temporal namespace this server can
+  // reach, so nothing could be authorized in it. FlowstateServer.clientFor's
+  // refusal.
+  AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE = 1;
+
+  // The addressed run or schedule could not be read at all.
+  AUDIT_DENY_CODE_RESOURCE_NOT_FOUND = 2;
+
+  // The resource exists and belongs to another tenant, or records no tenant
+  // that this caller could be. FlowstateServer.ownedBy answering false.
+  AUDIT_DENY_CODE_TENANT_MISMATCH = 3;
+}

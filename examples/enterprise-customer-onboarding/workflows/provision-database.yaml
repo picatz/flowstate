@@ -4,15 +4,13 @@
 # does, the same property call-a-workflow's own callee demonstrates.
 edition: v2026.3
 name: provision-database
-
 inputs:
   tenant:
     type: string
     required: true
+    description: which tenant this database belongs to
     example: acme
     must: this.matches(r'^[a-z][a-z0-9-]*$')
-    description: which tenant this database belongs to
-
 steps:
   # `undo:` on a callee's own task step - the shape docs/DSL.md's "Compensation
   # composes through a call" section landed with #225: this registration joins
@@ -31,12 +29,13 @@ steps:
   # unambiguous read next to its `outputs:`.
   - id: provision_database
     http:
+      json:
+        tenant: ${inputs.tenant}
       method: POST
-      url: https://provisioning.internal.example.com/databases
-      json: '${ {"tenant": inputs.tenant} }'
-      parse_json: true
       outputs:
         resource_id: ${response.json.resource_id}
+      parse_json: true
+      url: https://provisioning.internal.example.com/databases
     undo:
       # A literal URL with the resource id in the body, not spliced into the
       # path - see the parent workflow's own `undo:` comment and
@@ -44,10 +43,10 @@ steps:
       # URL built by concatenating a step's own output is not a literal
       # `PointAtStandIn` can rewrite.
       http:
+        json:
+          resource_id: ${steps.provision_database.resource_id}
         method: DELETE
         url: https://provisioning.internal.example.com/databases
-        json: '${ {"resource_id": steps.provision_database.resource_id} }'
-
 outputs:
   resource_id:
     value: ${steps.provision_database.resource_id}

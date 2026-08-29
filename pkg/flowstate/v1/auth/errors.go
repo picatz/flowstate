@@ -68,13 +68,30 @@ var (
 	// by an [Authenticator] with no verifier at all.
 	ErrInvalidPolicy = errors.New("auth: invalid authentication configuration")
 
-	// ErrAmbiguousIdentity is returned when a request carries both a verified
-	// client certificate and a bearer token, and they name different
-	// principals. Per CLAUDE.md's "fail closed", this is a refusal rather than
-	// a precedence rule: neither "the token wins" nor "the certificate wins"
-	// is a safe default on a control plane that mints workload assertions from
-	// whichever identity it decides to trust.
-	ErrAmbiguousIdentity = errors.New("auth: client certificate and bearer token name different principals")
+	// ErrDelegatedToken is returned when a token carries an RFC 8693 delegation
+	// claim — "act" or "may_act" — that this deployment has nowhere to map and
+	// therefore refuses rather than ignores. See [DelegationClaimError] for the
+	// claim key, and delegation.go for why the refusal is the verifier's and
+	// not one surface's.
+	ErrDelegatedToken = errors.New("auth: token carries an unsupported delegation claim")
+
+	// ErrAmbiguousIdentity is returned when a caller cannot be attributed to
+	// exactly one authority. Per CLAUDE.md's "fail closed", every shape of it
+	// is a refusal rather than a precedence rule: a control plane that mints
+	// workload assertions from whichever identity it decides to trust has no
+	// safe default for "two answers, pick one".
+	//
+	// Two shapes reach it, and they are the same refusal at two depths:
+	//
+	//   - A request carrying both a verified client certificate and a bearer
+	//     token that name different principals — see [connect.go], where
+	//     neither "the token wins" nor "the certificate wins" is safe.
+	//   - A credential more than one trust policy entry admits — see
+	//     [AmbiguousIssuerError], [OIDCVerifier.Verify] and
+	//     [MTLSVerifier.VerifyPeer]. Each entry carries its own namespace and
+	//     role, so admitting under one of them is a silent choice between two
+	//     identities an operator wrote down as different.
+	ErrAmbiguousIdentity = errors.New("auth: the caller cannot be attributed to exactly one identity")
 )
 
 // Errors returned when Flowstate acts as an identity of its own, minting
@@ -83,6 +100,12 @@ var (
 	// ErrInvalidIdentity is returned when a [WorkloadIdentity] or [StepRef] does
 	// not describe a workload well enough to mint an assertion for it.
 	ErrInvalidIdentity = errors.New("auth: invalid workload identity")
+
+	// ErrUndeclaredClaim is returned when a mint is asked to carry a claim the
+	// issuer does not declare. The claim set an assertion may carry is a closed
+	// set, and a name absent from it is refused rather than signed: see
+	// [Issuer.mintFor] and [WithDeclaredClaims].
+	ErrUndeclaredClaim = errors.New("auth: claim is not declared by this issuer")
 
 	// ErrNoSigningKey is returned when an [Issuer] has no key able to sign, which
 	// is the fail-closed outcome of a rotation that left none active.
@@ -284,20 +307,104 @@ type ClaimMismatchError struct {
 	// Got is the value the token asserted, truncated if unreasonably long. It
 	// is empty when the token omitted the claim entirely.
 	Got string
+
+	// RefusedValue is the one value that matched the rule's
+	// [ClaimRule.NoneOf], and is empty unless that exclusion is why the rule
+	// failed. It names the value rather than the whole refused list because
+	// the operator's question is which of their exclusions fired.
+	RefusedValue string
 }
 
 // Error implements the error interface.
 func (e *ClaimMismatchError) Error() string {
-	if e.Got == "" {
+	switch {
+	case e.RefusedValue != "":
+		return fmt.Sprintf("auth: token claim %q is %q, which this entry refuses", e.Claim, e.RefusedValue)
+	case e.Got == "" && len(e.Want) == 0:
+		// A none_of-only rule still requires its claim: see ClaimRule.check,
+		// where the absent-claim reading is decided. Saying "one of []" here
+		// would print an empty list as though the entry accepted nothing.
+		return fmt.Sprintf("auth: token is missing claim %q, which this entry requires it to assert", e.Claim)
+	case e.Got == "":
 		return fmt.Sprintf("auth: token is missing claim %q required to be one of [%s]", e.Claim, strings.Join(e.Want, ", "))
+	default:
+		return fmt.Sprintf("auth: token claim %q is %q, want one of [%s]", e.Claim, e.Got, strings.Join(e.Want, ", "))
 	}
-	return fmt.Sprintf("auth: token claim %q is %q, want one of [%s]", e.Claim, e.Got, strings.Join(e.Want, ", "))
 }
 
 // Unwrap returns [ErrClaimMismatch] so callers can match this error with
 // [errors.Is].
 func (e *ClaimMismatchError) Unwrap() error {
 	return ErrClaimMismatch
+}
+
+// AmbiguousIssuerError reports a credential that more than one trust policy
+// entry admits. It wraps [ErrAmbiguousIdentity].
+//
+// Each entry carries its own [TrustedIssuer.Role] and its own tenant, so there
+// is no such thing as admitting under "either" of them: the caller would run as
+// one of two identities the operator wrote down as different. Both
+// [OIDCVerifier.Verify] and [MTLSVerifier.VerifyPeer] refuse instead, and this
+// is what they refuse with.
+//
+// # What it names, and what it does not
+//
+// It names the entries, by [TrustedIssuer.Name] and by position, because that
+// is the operator's own vocabulary for the thing they have to change — the same
+// pair [UnreachableIssuer] reports, so the load-time lint and the verification
+// refusal point at a policy the same way.
+//
+// It carries nothing from the credential: no claim value, no subject, no
+// certificate field, and obviously no token. A mismatch is a statement about
+// one entry's expectations and reports what it saw ([ClaimMismatchError]);
+// this is a statement about the *policy*, and the values that reached it add
+// nothing an operator needs while widening what a log holds. See
+// [PublicReason], which narrows it further for anything shipped off the box.
+type AmbiguousIssuerError struct {
+	// Issuer is the issuer identifier every matched entry names: an "iss"
+	// claim for kind: oidc, and the operator's own label for the CA for
+	// kind: mtls.
+	//
+	// Empty when they do not all name the same one, which only kind: mtls can
+	// produce — see sharedIssuer. The message then says nothing about the
+	// issuer rather than picking one of the labels.
+	Issuer string
+
+	// Entries are the names of every entry that admitted the credential, in
+	// policy order. There are always at least two — one is not ambiguous.
+	Entries []string
+
+	// Indexes are those entries' positions in [Policy.Issuers], paired with
+	// Entries by position. Names are unique within a policy, and the index is
+	// still reported because it is what a file's reader counts down to.
+	Indexes []int
+}
+
+// Error implements the error interface.
+func (e *AmbiguousIssuerError) Error() string {
+	named := make([]string, 0, len(e.Entries))
+	for i, name := range e.Entries {
+		if i < len(e.Indexes) {
+			named = append(named, fmt.Sprintf("issuers[%d] (%q)", e.Indexes[i], name))
+			continue
+		}
+		named = append(named, fmt.Sprintf("%q", name))
+	}
+	subject := fmt.Sprintf("%d trust policy entries", len(e.Entries))
+	if e.Issuer != "" {
+		subject = fmt.Sprintf("%d trust policy entries for issuer %q", len(e.Entries), e.Issuer)
+	}
+	return fmt.Sprintf("auth: %s admit this caller — %s — and each grants its own namespace and role, so "+
+		"admitting under one of them would be a silent choice between them. Make the entries disjoint: narrow "+
+		"one, or exclude the other's callers from it with a require rule using none_of",
+		subject, strings.Join(named, ", "))
+}
+
+// Unwrap returns [ErrAmbiguousIdentity] so callers can match this error with
+// [errors.Is], alongside the certificate-versus-token shape of the same
+// refusal.
+func (e *AmbiguousIssuerError) Unwrap() error {
+	return ErrAmbiguousIdentity
 }
 
 // PublicReason returns the short, fixed description of an authentication
@@ -318,7 +425,17 @@ func PublicReason(err error) string {
 // return to an unauthenticated caller.
 //
 // It names no configured value: never an expected audience, a claim name, a
-// claim value, an issuer, or a key id. Nor does it distinguish "signed by the
+// claim value, an issuer, or a key id.
+//
+// The one claim key it does name is a delegation claim the caller's own token
+// carried ("act" or "may_act", and never the object either one holds). That is
+// not a configured value: it is one of two constants, chosen by the token in
+// the caller's hand, and it tells a client which claim to stop sending rather
+// than anything about this deployment. Without it a delegated token and a
+// wrong-audience token refuse identically, which is a client that cannot fix
+// either — see [ErrDelegatedToken].
+//
+// Nor does it distinguish "signed by the
 // wrong key" from "names a key I do not know", which would let a caller map an
 // issuer's key set.
 //
@@ -351,6 +468,14 @@ func publicReason(err error) string {
 		return "token is missing a required claim"
 	case errors.Is(err, ErrInvalidAudience):
 		return "token audience is not accepted"
+	case errors.Is(err, ErrDelegatedToken):
+		// Placed before the claim cases below because a delegation refusal is
+		// not "your issuer forgot something": the claim is present and this
+		// deployment will not act on it.
+		if claim := delegationClaimOf(err); claim != "" {
+			return fmt.Sprintf("token carries an unsupported %q delegation claim", claim)
+		}
+		return "token carries an unsupported delegation claim"
 	case errors.Is(err, ErrClaimMismatch):
 		return "token is not accepted by the trust policy"
 	case errors.Is(err, ErrIssuerUnavailable):
@@ -360,6 +485,15 @@ func publicReason(err error) string {
 		errors.Is(err, ErrDisallowedAlgorithm):
 		return "invalid token signature"
 	case errors.Is(err, ErrAmbiguousIdentity):
+		// Two shapes, told apart by type rather than by sentinel, because
+		// [ErrAmbiguousIdentity] covers both and a caller reading "certificate
+		// and token disagree" about a policy misconfiguration would go looking
+		// at their own credentials for a problem that is not there. Neither
+		// answer names an entry: entry names are configured values, and this
+		// string is the one that leaves the box.
+		if _, ok := errors.AsType[*AmbiguousIssuerError](err); ok {
+			return "more than one trust policy entry admits this caller"
+		}
 		return "client certificate and bearer token identify different callers"
 	default:
 		return "unauthenticated"

@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+	printf '\n==> %s\n' "$1"
+}
+
+ci_pin() {
+	local name="$1" value
+	value="$(awk -v key="$name:" '$1 == key { print $2; exit }' .github/workflows/ci.yml)"
+	if [[ -z "$value" ]]; then
+		echo "missing $name in .github/workflows/ci.yml" >&2
+		exit 1
+	fi
+	printf '%s\n' "$value"
+}
+
+step "Installing system dependencies"
+packages=()
+command -v ffmpeg >/dev/null 2>&1 || packages+=(ffmpeg)
+if ! docker compose version >/dev/null 2>&1; then
+	packages+=(docker-compose-plugin)
+fi
+if ((${#packages[@]})); then
+	sudo apt-get update
+	sudo apt-get install -y "${packages[@]}"
+else
+	echo "System dependencies are already installed"
+fi
+
+step "Installing the Go toolchain pinned by go.mod"
+go_version="$(awk '$1 == "go" { print $2; exit }' go.mod)"
+if [[ "$(uname -m)" != x86_64 ]]; then
+	echo "unsupported orb architecture: $(uname -m)" >&2
+	exit 1
+fi
+go_arch=amd64
+case "$go_version" in
+	1.27.0) go_sha256=675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685 ;;
+	*)
+		echo "no linux-amd64 archive checksum is pinned for go$go_version" >&2
+		echo "update .agents/setup alongside the go directive" >&2
+		exit 1
+		;;
+esac
+
+toolchain_home="$HOME/.local/share/flowstate"
+versioned_go="$toolchain_home/go-$go_version"
+expected_go_version="go version go${go_version} linux/${go_arch}"
+installed_go_version="$({ GOTOOLCHAIN=local "$versioned_go/bin/go" version; } 2>/dev/null || true)"
+if [[ "$installed_go_version" != "$expected_go_version" ]]; then
+	(
+		tmpdir="$(mktemp -d)"
+		trap 'rm -rf "$tmpdir"' EXIT
+		archive="go${go_version}.linux-${go_arch}.tar.gz"
+		curl -fsSL "https://go.dev/dl/$archive" -o "$tmpdir/$archive"
+		printf '%s  %s\n' "$go_sha256" "$tmpdir/$archive" | sha256sum -c -
+		mkdir -p "$toolchain_home"
+		tar -C "$tmpdir" -xzf "$tmpdir/$archive"
+		rm -rf "$versioned_go"
+		mv "$tmpdir/go" "$versioned_go"
+	)
+fi
+if [[ -e "$toolchain_home/go" && ! -L "$toolchain_home/go" ]]; then
+	rm -rf "$toolchain_home/go"
+fi
+ln -sfn "go-$go_version" "$toolchain_home/go"
+
+profile_marker="# Flowstate orb toolchain"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+	cat >> "$HOME/.bash_profile" <<'EOF'
+
+# Flowstate orb toolchain
+export PATH="$HOME/.local/share/flowstate/go/bin:$HOME/go/bin:$PATH"
+EOF
+fi
+export PATH="$toolchain_home/go/bin:$HOME/go/bin:$PATH"
+GOTOOLCHAIN=local go version
+
+step "Caching project dependencies and pinned tools"
+buf_version="$(ci_pin BUF_VERSION)"
+govulncheck_version="$(ci_pin GOVULNCHECK_VERSION)"
+staticcheck_version="$(ci_pin STATICCHECK_VERSION)"
+vhs_version="$(ci_pin VHS_VERSION)"
+ttyd_version="$(ci_pin TTYD_VERSION)"
+ttyd_sha256="$(ci_pin TTYD_SHA256)"
+mkdir -p "$HOME/go/bin"
+
+job_names=()
+job_pids=()
+
+echo "  Go module dependencies"
+(
+	while IFS= read -r module; do
+		echo "    $module"
+		(cd "$(dirname "$module")" && go mod download)
+	done < <(find . -name go.mod -not -path './.git/*' -print | sort)
+) &
+job_names+=("Go module dependencies")
+job_pids+=("$!")
+
+gate_tools=(
+	"github.com/bufbuild/buf/cmd/buf@$buf_version"
+	"golang.org/x/vuln/cmd/govulncheck@$govulncheck_version"
+	"honnef.co/go/tools/cmd/staticcheck@$staticcheck_version"
+)
+for tool in "${gate_tools[@]}"; do
+	echo "  $tool"
+	(GOBIN="$HOME/go/bin" GOTOOLCHAIN="go$go_version" go install "$tool") &
+	job_names+=("$tool")
+	job_pids+=("$!")
+done
+
+echo "  VS Code extension dependencies"
+(cd editors/vscode && npm ci) &
+job_names+=("VS Code extension dependencies")
+job_pids+=("$!")
+
+if [[ "$(vhs --version 2>/dev/null || true)" != "vhs version $vhs_version" ]]; then
+	echo "  github.com/charmbracelet/vhs@$vhs_version"
+	(GOBIN="$HOME/go/bin" go install "github.com/charmbracelet/vhs@$vhs_version") &
+	job_names+=("github.com/charmbracelet/vhs@$vhs_version")
+	job_pids+=("$!")
+fi
+
+installed_ttyd_sha256="$(sha256sum "$HOME/go/bin/ttyd" 2>/dev/null | awk '{ print $1 }' || true)"
+if [[ "$installed_ttyd_sha256" != "$ttyd_sha256" ]]; then
+	echo "  ttyd $ttyd_version"
+	(
+		tmp_ttyd="$(mktemp)"
+		trap 'rm -f "$tmp_ttyd"' EXIT
+		curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/$ttyd_version/ttyd.x86_64" -o "$tmp_ttyd"
+		printf '%s  %s\n' "$ttyd_sha256" "$tmp_ttyd" | sha256sum -c -
+		install -m 0755 "$tmp_ttyd" "$HOME/go/bin/ttyd"
+	) &
+	job_names+=("ttyd $ttyd_version")
+	job_pids+=("$!")
+fi
+
+job_failed=0
+for i in "${!job_pids[@]}"; do
+	if ! wait "${job_pids[$i]}"; then
+		echo "dependency setup failed: ${job_names[$i]}" >&2
+		job_failed=1
+	fi
+done
+if ((job_failed)); then
+	exit 1
+fi
+
+step "Orb setup complete"

@@ -10,8 +10,8 @@ steps:
       url: https://httpbin.org/json
   - id: title
     vars:
-      slideshow: ${json_parse(steps.web.body)['slideshow']}
+      slideshow: ${json_parse(steps.web.body)["slideshow"]}
     log:
-      message: ${slideshow['title']}
       fields:
-        author: ${slideshow['author']}
+        author: ${slideshow["author"]}
+      message: ${slideshow["title"]}

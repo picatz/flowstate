@@ -11,28 +11,29 @@ name: workflow-vars
 #
 # `vars:` is a step key too, where it means the lexical opposite — see ../step-vars.
 vars:
-  # A literal. Note there is no fence: `${...}` marks an expression, and everything
-  # else is the value as written.
-  region: eu-west-1
-
-  # A list, which is worth showing because static data used to need a step to hold it.
-  targets: [alpha, beta, gamma]
 
   # An expression, evaluated once before the first step runs. It can reach the
   # profile's functions but no step outputs — nothing has run yet — and not another
   # var, because a mapping has no order and "the one above" is not a thing this file
   # can mean.
-  banner: ${'deploying to ' + 'eu-west-1'}
+  banner: ${"deploying to " + "eu-west-1"}
 
   # The fence is required even here, so this stays the literal eleven characters and
   # not a reference to a step. A var is exactly the place that ambiguity would bite.
   doc_hint: steps.greet.result
+  # A literal. Note there is no fence: `${...}` marks an expression, and everything
+  # else is the value as written.
+  region: eu-west-1
 
+  # A list, which is worth showing because static data used to need a step to hold it.
+  targets:
+    - alpha
+    - beta
+    - gamma
 steps:
   - id: announce
     log:
       message: ${vars.banner}
-
   - id: fan_out
     description: A var reaches inside a loop, alongside the iterator bound by the loop itself.
     for_each:
@@ -43,4 +44,4 @@ steps:
           log:
             # `vars.region` is ambient and rooted; `target` is bound by the line above
             # and stays bare. Both are in scope here, and they cannot be confused.
-            message: ${target + '.' + vars.region}
+            message: ${target + "." + vars.region}

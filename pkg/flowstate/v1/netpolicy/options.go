@@ -100,6 +100,16 @@ type config struct {
 	// identity.
 	selfAdministration bool
 
+	// hostRates holds the per-host, per-process request rates, keyed by
+	// [rateLimitKey]. Empty means no host is rate limited by this process.
+	hostRates map[string]float64
+
+	// now is the clock the rate buckets read, replaced only by tests. Nil means
+	// [time.Now], which is what every policy outside this package's own tests
+	// gets: there is deliberately no option for it, because a policy whose
+	// notion of time a caller can set is a bound a caller can remove.
+	now func() time.Time
+
 	proxy func(*http.Request) (*url.URL, error)
 }
 
@@ -386,6 +396,55 @@ func WithMaxResponseBytes(n int64) Option {
 	}
 }
 
+// WithMaxRequestsPerSecondPerProcess bounds how fast this process makes requests
+// to one host, as a token bucket holding one second's worth of requests. A
+// request that finds it empty fails with a [*RateLimitedError] carrying the delay
+// until a token exists — it is never waited out here, and it is never a denial.
+//
+// The name is long because the scope is the thing most easily got wrong. The
+// bucket belongs to this [Policy], one policy is bound into the http task once
+// per worker process, and so a fleet of N workers sends up to N times the number
+// given. Dividing by the worker count is the operator's to do, and the honest
+// fleet-wide bound remains the upstream's own 429, which is retried with its
+// Retry-After honored.
+//
+// The host is normalized the way rules normalize `host`, plus IP-literal
+// canonicalization, and carries no port: see [rateLimitKey] for the exact key and
+// what it deliberately merges. Calling this twice for one host is an error rather
+// than a silent overwrite, since two numbers for one bound means one of them is
+// not in force and an operator cannot see which.
+//
+// A non-positive or non-finite rate is an error: a rate of zero permits nothing
+// ever, which is a denial written as a bound, and the way to stop reaching a host
+// is a rule that says so.
+func WithMaxRequestsPerSecondPerProcess(host string, requestsPerSecond float64) Option {
+	return func(c *config) error {
+		key := rateLimitKey(host)
+		if key == "" {
+			return fmt.Errorf("a per-process rate limit must name a host")
+		}
+		if !(requestsPerSecond > 0) || math.IsInf(requestsPerSecond, 0) {
+			return fmt.Errorf(
+				"per-process rate limit for %q must be a positive number of requests per second, got %v; "+
+					"a host that should not be reached at all is a deny rule, not a rate of zero",
+				host, requestsPerSecond)
+		}
+
+		if c.hostRates == nil {
+			c.hostRates = map[string]float64{}
+		}
+		if existing, ok := c.hostRates[key]; ok {
+			return fmt.Errorf(
+				"per-process rate limit for %q was already set to %v requests per second; "+
+					"two limits for one host means one of them is not in force",
+				key, existing)
+		}
+		c.hostRates[key] = requestsPerSecond
+
+		return nil
+	}
+}
+
 // WithRootCAs sets the certificate authorities used to verify TLS servers, for
 // reaching internal services that present a certificate from a private CA. A nil
 // pool means the host's trust store, which is the default.
@@ -452,8 +511,9 @@ func WithRuleCostLimit(limit uint64) Option {
 // WithProxyFromEnvironment routes requests through the proxy named by the
 // HTTP_PROXY, HTTPS_PROXY, and NO_PROXY environment variables. Proxies are
 // disabled by default because the address policy can only see the address that
-// is actually dialed: with a proxy in front, that is the proxy, and the real
-// target is enforced only by the scheme, port, and request-scoped rules.
+// is actually dialed: with a proxy in front, that is the proxy. The real target
+// is resolved and checked before it is sent to the proxy, but the proxy may
+// resolve it differently or observe a later DNS answer.
 func WithProxyFromEnvironment() Option {
 	return func(c *config) error {
 		c.proxy = http.ProxyFromEnvironment

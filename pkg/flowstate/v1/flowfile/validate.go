@@ -57,6 +57,7 @@ var celReservedIdentifiers = []string{
 var stepProperties = map[string]bool{
 	"if":                true,
 	"timeout":           true,
+	"total_timeout":     true,
 	"retry":             true,
 	"continue_on_error": true,
 	"undo":              true,
@@ -365,6 +366,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	ds = append(ds, validateDeclaredInputs(wf)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
+	ds = append(ds, validateConcurrency(wf)...)
 	ds = append(ds, validateWorkflowVars(wf)...)
 
 	// What is wrong with an expression regardless of what the file means — a
@@ -415,6 +417,10 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 		// [validateAtDepth]'s doc.
 		ds = append(ds, validateUndo(id, node, inner, i, wf, placement)...)
 		ds = append(ds, validateAsync(id, node, placement)...)
+
+		// Against `scope` and not `inner`, and before the kind is known — see
+		// [validateCondition] for both.
+		ds = append(ds, validateCondition(id, node, scope, i, wf)...)
 
 		if task == nil {
 			// A step may be a loop or a parallel block rather than a task. Its
@@ -682,18 +688,10 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 		})
 	}
 
-	// Some inputs are evaluated by the task itself, in a scope this validator does
-	// not model — the http task's `outputs` expression references the response, not
-	// earlier steps. Checking references in those would report every correct use as
-	// an unknown step, and a false diagnostic is worse than a missing one: it trains
-	// authors to ignore the tool. The registry declares which inputs those are.
+	// The step's `if:` is not checked here. It is a property of the *node* and not
+	// of the task — every kind of step may carry one — so it is checked once, by
+	// [validateCondition], from the walk that visits every kind (#869).
 	//
-	// A condition is an expression like any other and resolves against the same
-	// names, so it is checked the same way — but *before* the step's own vars are in
-	// scope, because it decides whether the step runs at all, so a var this step
-	// declares does not exist yet when the question is asked.
-	ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)...)
-
 	// What the task declares its inputs to be is checked separately from what they
 	// reference, because the two fail differently: a reference that cannot resolve is
 	// a mistake about the workflow, and an input the task does not have is a mistake
@@ -706,12 +704,48 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	// declaration from (#158). A computed expression stays unchecked, deliberately.
 	ds = append(ds, checkExpressionInputTypes(id, task, wf)...)
 
+	// Some inputs are evaluated by the task itself, in a scope this validator does
+	// not model — the http task's `outputs` expression references the response, not
+	// earlier steps. Checking references in those would report every correct use as
+	// an unknown step, and a false diagnostic is worse than a missing one: it trains
+	// authors to ignore the tool. The registry declares which inputs those are.
 	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 	for _, name := range sortedInputNames(checkable) {
 		ds = append(ds, validateInputRefs(id, name, checkable[name], inner, index, wf)...)
 	}
 
 	return ds
+}
+
+// validateCondition reports references in one step's `if:` that cannot resolve,
+// whatever kind of step it is.
+//
+// It lives here, on the node, rather than on any one kind, because `if:` is a field
+// of [v1.Node] and every kind may carry one — task, for_each, loop, parallel, wait,
+// call, value and switch. Until #869 it was checked on the task path only, so the
+// identical typo was a positioned diagnostic on a task step and silence on a
+// `wait_for_signal:` or a `sleep:`; a condition is an expression like any other and
+// resolves against the same names, so it is checked the same way.
+//
+// Two things about the scope, both taken from where the engine evaluates the
+// expression ([v1.EvalConditionInScope], called from `runNodes` in eval.go and from
+// the durable driver's execute.go) rather than from where it is written:
+//
+//   - The step's own `vars:` are *not* in scope. The condition decides whether the
+//     step runs at all, and both drivers evaluate it before binding the node's vars,
+//     so a var this step declares does not exist yet when the question is asked. This
+//     is why the walk passes `scope` and not `inner`.
+//   - `now` is *not* in scope, even on a wait. The engine binds it inside the wait's
+//     own expressions ([v1.NowIdentifier], bound by evalWaitExpr) and the condition is
+//     evaluated a level above that, in the same place a task step's condition is — so
+//     `${now}` in a wait's `if:` is a run-time failure, and saying so here is the
+//     whole point. [validateWait] adds it for the fields that do have a clock.
+//
+// A name an enclosing binding supplies — a loop's `as:` or the `item` it binds when
+// it writes no `as:` — stays legal, because the scope handed in already carries it:
+// the body's conditions are evaluated inside the body, where the engine has bound it.
+func validateCondition(id string, node *v1.Node, scope refScope, index int, wf *v1.Workflow) Diagnostics {
+	return validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)
 }
 
 // branchStepNodes returns every step across a parallel block's branches,
@@ -1044,21 +1078,26 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	// author de-facto semantics the project will not stand behind; refusing is
 	// additive to lift once that slice lands.
 	//
-	// Same-scope only: the walk descends `for_each` bodies and `parallel` branches
-	// (a loop reached through those shares the outer loop's suspend scope) but not a
-	// `call:` — a callee is an isolated unit with its own frame handling, validated
-	// and executed as its own workflow, so a loop there is top-level within the
-	// callee. That is exactly why the remedy below points at `call:`: wrapping the
-	// inner loop in a called workflow is the supported way to nest one today, proven
-	// on both drivers by the "a loop may call a workflow that itself loops" case in
-	// tests.CallCases.
-	if bodyHasNestedLoop(loop.GetBody()) {
+	// The walk includes callees as well as same-scope containers. Although a callee
+	// has its own frame, it runs atomically at the outer loop's deeper suspend level.
+	// Allowing a loop there would multiply the two iteration ceilings without giving
+	// the durable driver an opportunity to Continue-As-New between inner iterations.
+	if nested, through := bodyHasNestedLoop(loop.GetBody()); nested {
+		message := "a loop inside a loop is not supported in this edition: the Continue-As-New " +
+			"interaction across two carried-state frames is not exercised yet; flatten the two into one"
+		if through != "" {
+			// The inner loop is in a file this author may not have written, and a
+			// position there would name a line they cannot see from here. So the
+			// diagnostic stays on the call site — a place in *this* file — and names
+			// the callee it descended into, which is the pair an author needs to act:
+			// which step of theirs reaches it, and which file to look in.
+			message += fmt.Sprintf("; the inner loop is inside %s, which cannot hold one while it is "+
+				"called from a loop body", through)
+		}
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "loop",
-			Message: "a loop inside a loop is not supported in this edition: the Continue-As-New " +
-				"interaction across two carried-state frames is not exercised yet; hoist the inner " +
-				"loop into a called workflow (`call:`) and loop over that, or flatten the two into one",
-			Code: v1.DiagnosticCodePlacementRefusal,
+			Message: message,
+			Code:    v1.DiagnosticCodePlacementRefusal,
 		})
 	}
 
@@ -1072,34 +1111,67 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 }
 
 // bodyHasNestedLoop reports whether a loop body directly or transitively contains
-// another `loop:` in the *same* suspend scope — through a `for_each` body or a
-// `parallel` branch, but not through a `call:`, whose callee is an isolated unit.
-func bodyHasNestedLoop(nodes []*v1.Node) bool {
+// another `loop:`, including through a call boundary. When the loop was reached
+// through one or more `call:` steps, the second result describes the outermost
+// call crossed — the call site in *this* file and the callee it names — for the
+// diagnostic to quote; it is empty when the inner loop is in this file.
+//
+// A `call:` is transparent here for the reason docs/DSL.md gives: the callee's
+// specification is resolved at compile time and carried whole, so what is walked
+// is the specification that will actually run. Isolation is a runtime scoping
+// property, not an analysis boundary.
+//
+// This recursion carries no depth bound of its own, unlike [v1.CheckPolicyPlacement],
+// which walks a hand-built Workflow arriving over the RPC path and must therefore
+// bound both its depth ([v1.CheckCallDepth]) and its node count. The difference is
+// where the tree came from: this walk only ever runs over a Workflow that
+// [Unmarshal] has already built, and the call expansion that produced these
+// embedded callees is itself bounded — by depth at expansion and by
+// `maxCallExpansionNodes` in total — so the tree is finite and shallow before this
+// function sees it. The bound is real but inherited; if this walk ever gains a
+// caller that did not come through [Unmarshal], it needs its own.
+func bodyHasNestedLoop(nodes []*v1.Node) (bool, string) {
 	for _, node := range nodes {
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Loop:
-			return true
+			return true, ""
 		case *v1.Node_ForEach:
-			if bodyHasNestedLoop(kind.ForEach.GetBody()) {
-				return true
+			if nested, through := bodyHasNestedLoop(kind.ForEach.GetBody()); nested {
+				return true, through
 			}
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
-				if bodyHasNestedLoop(branch.GetSteps()) {
-					return true
+				if nested, through := bodyHasNestedLoop(branch.GetSteps()); nested {
+					return true, through
 				}
 			}
 		case *v1.Node_Switch:
 			// A switch body shares its enclosing suspend scope — a `loop:` in a
 			// case body inside a loop body is the same unexercised nesting.
 			for _, body := range v1.SwitchBodies(kind.Switch) {
-				if bodyHasNestedLoop(body) {
-					return true
+				if nested, through := bodyHasNestedLoop(body); nested {
+					return true, through
 				}
+			}
+		case *v1.Node_Call:
+			if nested, _ := bodyHasNestedLoop(kind.Call.GetWorkflow().GetSteps()); nested {
+				// The outermost call crossed is the one an author can act on: it is
+				// the step in the file they are editing. A deeper call's site is in
+				// the callee, so it is dropped in favour of this one.
+				return true, describeCallSite(node, kind.Call)
 			}
 		}
 	}
-	return false
+	return false, ""
+}
+
+// describeCallSite names a `call:` step and the callee it names, for a diagnostic
+// reporting something found on the other side of it.
+func describeCallSite(node *v1.Node, call *v1.Call) string {
+	if source := call.GetSource(); source != "" {
+		return fmt.Sprintf("%q, called by step %q", source, node.GetId())
+	}
+	return fmt.Sprintf("the workflow called by step %q", node.GetId())
 }
 
 // validateLoopStateName refuses a loop's carried-state name that could not be read
@@ -1245,6 +1317,11 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		// which placements are allowed.
 		ds = append(ds, validateUndo(id, node, inner, index, wf, placement)...)
 		ds = append(ds, validateAsync(id, node, placement)...)
+
+		// The same check the top-level walk makes, in the same place and against
+		// the same scope: a nested step's `if:` is one expression evaluated by one
+		// [v1.EvalConditionInScope], wherever the step is written.
+		ds = append(ds, validateCondition(id, node, scope, index, wf)...)
 
 		task := node.GetTask()
 		if task == nil {
@@ -1642,13 +1719,29 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// "unknown step" sends them looking for a step they never wrote. The
 			// answer they need is that it is bound where a clock exists and not
 			// here, and what to do instead.
+			//
+			// Why it is not bound here differs between an `if:` and everything
+			// else, and the difference is the whole of what an author has to
+			// understand. A condition on a *wait* is the case that reads like a
+			// contradiction — the step is a wait, and `now` is still not in scope —
+			// because both drivers evaluate the condition before entering the node
+			// (`runNodes` in eval.go, the durable driver's execute.go), so at that
+			// moment the wait has not started and there is no moment to bind. An
+			// input is the older story: it is resolved inside an activity, which has
+			// no clock that survives a retry.
+			rest := "a task input is resolved inside an activity, which has no clock that " +
+				"survives a retry, so compute the moment or the length in the wait itself, or " +
+				"pass the time in as an input"
+			if inputName == "if" {
+				rest = "a step's `if:` is evaluated before the step is entered, so even on a wait " +
+					"there is no moment to bind yet; move the comparison into the wait's own " +
+					"expression, or gate the step on an input or an earlier step's output"
+			}
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
 				Message: "`now` is only available inside a wait (`sleep:`, `wait_until:`, and a " +
 					"signal's `timeout:`) where the engine binds it to the moment the wait is " +
-					"evaluated; a task input is resolved inside an activity, which has no clock that " +
-					"survives a retry, so compute the moment or the length in the wait itself, or pass " +
-					"the time in as an input",
+					"evaluated; " + rest,
 			})
 			continue
 		}
@@ -2252,7 +2345,17 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		// is legal beside a signal's, and a bare field made Locate find the
 		// step-level span first, pointing the diagnostic at the valid outer
 		// timeout while the faulty expression sat one level down (#318 review).
-		ds = append(ds, validateInputRefs(id, "wait_for_signal.timeout", computed, waiting, index, wf)...)
+		field := "wait_for_signal.timeout"
+		if wait.GetSignalBatch() != nil {
+			// The key the author wrote, so [Locate] finds the span in their file
+			// rather than falling back to the whole step — the same reason this
+			// path is spelled out rather than bare.
+			field = "wait_for_signals.timeout"
+		}
+		ds = append(ds, validateInputRefs(id, field, computed, waiting, index, wf)...)
+	}
+	if prompt := wait.GetSignalBatch().GetPrompt(); prompt != nil {
+		ds = append(ds, validateInputRefs(id, "wait_for_signals.prompt", prompt, waiting, index, wf)...)
 	}
 	if prompt := wait.GetSignal().GetPrompt(); prompt != nil {
 		// Named with its full path for the reason `timeout:` is: a step may carry
@@ -2278,6 +2381,28 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		shaping := waiting.
 			withLocal(v1.PayloadOutput).
 			withLocal(v1.SenderOutput).
+			withLocal(v1.TimedOutOutput)
+
+		for _, name := range slices.Sorted(maps.Keys(shaped)) {
+			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
+		}
+	}
+
+	// A `wait_for_signals:`'s own `outputs:` sees its *own* result, which is a
+	// different set of names: `deliveries` and `count` rather than `payload` and
+	// `sender`, plus the `timed_out` both arms produce.
+	//
+	// Per arm rather than a union of the two, and this is the direction that
+	// matters: a union would make `${payload.x}` resolve inside a batch's
+	// shaping, where [v1.ShapeSignalBatchOutputs] binds no such name — so the
+	// file would validate and then fail at run time on the one driver the author
+	// was not looking at. Widening a scope is how a validator goes quiet about a
+	// real mistake; the rewriter in `fix.go` takes the union for the opposite
+	// reason, spelled out at [waitShapingNames].
+	if shaped := wait.GetSignalBatch().GetOutputs(); len(shaped) > 0 {
+		shaping := waiting.
+			withLocal(v1.DeliveriesOutput).
+			withLocal(v1.CountOutput).
 			withLocal(v1.TimedOutOutput)
 
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
@@ -2702,7 +2827,14 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// `for_each`'s `results` gets below, and neither loop kind's certainty reaches past
 	// its own top-level name.
 	if loop := node.GetLoop(); loop != nil {
-		if state := loop.GetState(); state != "" && ref.Output == state {
+		// A loop whose carried state happens to be named `error` collides, by
+		// spelling alone, with the tolerated-error output a `continue_on_error:`
+		// loop also carries. Where the policy is set, `error` is not a mistaken
+		// reach for the loop's `as:` name — it is the real output the policy
+		// grants — so that reading has to win before the state-name message
+		// below claims the whole name for itself.
+		if state := loop.GetState(); state != "" && ref.Output == state &&
+			!(ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError()) {
 			return Diagnostic{
 				Step: stepID, Field: inputName, Value: ref.Output,
 				Message: fmt.Sprintf(
@@ -2808,7 +2940,16 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// [PayloadOutput]'s rooting?), so this stays exactly as narrow as it was before
 	// this file started reading [v1.OutputNames] — silence here is inherited, not
 	// re-decided.
-	if shaped := node.GetWait().GetSignal().GetOutputs(); len(shaped) > 0 {
+	shapedWait := node.GetWait().GetSignal().GetOutputs()
+	if len(shapedWait) == 0 {
+		// The batch spelling shapes under exactly the same rule — replace, not
+		// extend — so a reference to a name its `outputs:` dropped has to be
+		// reported here too. Reading only the single-wait arm would leave the
+		// newer spelling silently accepting every unresolved reference, which is
+		// the diagnostic-rot shape `hasTimeout` above already records.
+		shapedWait = node.GetWait().GetSignalBatch().GetOutputs()
+	}
+	if shaped := shapedWait; len(shaped) > 0 {
 		if _, produced := shaped[ref.Output]; produced {
 			return Diagnostic{}, false
 		}
@@ -2819,7 +2960,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		if suggestion, ok := nearest.Name(ref.Output, names); ok {
 			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces; did you mean %q?",
 				ref.ID, ref.Output, suggestion)
-		} else if ref.Output == v1.PayloadOutput || ref.Output == v1.SenderOutput || ref.Output == v1.TimedOutOutput {
+		} else if waitOwnOutput(node, ref.Output) {
 			message += fmt.Sprintf("; `%s` is one of the wait's own outputs, which shaping dropped; re-expose it with `%s: ${%s}`",
 				ref.Output, ref.Output, ref.Output)
 		}
@@ -2930,11 +3071,17 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 // [TestACertainKindsAreExactlyWhatOutputNamesAnswersWithCertainty] pins.
 func certainNames(node *v1.Node) []string {
 	entries, _ := v1.OutputNames(node, nil)
-	names := make([]string, 0, len(entries))
+	names := make([]string, 0, len(entries)+1)
 	for _, e := range entries {
 		if e.Name != "" {
 			names = append(names, e.Name)
 		}
+	}
+	// This output belongs to the step policy rather than its kind. Include it in
+	// every fixed set so the early compound-step checks agree with the generic
+	// task path below.
+	if node.GetPolicy().GetContinueOnError() {
+		names = append(names, toleratedErrorOutput)
 	}
 	return names
 }
@@ -3177,4 +3324,31 @@ func (ds Diagnostics) Report(file string) *v1.DiagnosticReport {
 	}
 
 	return report
+}
+
+// waitOwnOutput reports whether name is one of the outputs the *waiting step
+// itself* produces before shaping replaced them, so the diagnostic above can
+// tell an author their reference was dropped rather than misspelled.
+//
+// Per arm rather than one union of both, and that is the point: `payload` and
+// `sender` are a single wait's names and `deliveries` and `count` are a batch's,
+// so a union would advise an author of a `wait_for_signals:` to "re-expose"
+// `payload`, which that spelling never produced. Advice for a name the step
+// could not have had is worse than no advice — it sends the reader looking for
+// a value that never existed.
+func waitOwnOutput(node *v1.Node, name string) bool {
+	if name == v1.TimedOutOutput {
+		// The one name both arms produce, which is why it is checked before
+		// either of them.
+		return node.GetWait() != nil
+	}
+
+	if node.GetWait().GetSignal() != nil {
+		return name == v1.PayloadOutput || name == v1.SenderOutput
+	}
+	if node.GetWait().GetSignalBatch() != nil {
+		return name == v1.DeliveriesOutput || name == v1.CountOutput
+	}
+
+	return false
 }

@@ -7,7 +7,7 @@
 // specification in-process with no Temporal at all. Both dispatch through the
 // same step executor, and anything observable that differs between them is a
 // defect, because local runs exist to tell an author what production will do.
-// Shared behavior cases live in pkg/flowstate/v1/tests and both drivers run
+// Shared behavior cases live in pkg/flowstate/v1/internal/conformance and both drivers run
 // them; add a case there rather than in one driver's own tests, and check that
 // both drivers actually call the set it joins. A value with one meaning
 // belongs in the parent package, which both drivers import, so one constant

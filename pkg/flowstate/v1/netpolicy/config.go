@@ -3,7 +3,11 @@ package netpolicy
 import (
 	"crypto/tls"
 	"fmt"
+	"maps"
+	"math"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -86,6 +90,35 @@ type EgressConfig struct {
 	// [WithTimeout].
 	Timeout *time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
+	// MaxRequestsPerSecondPerProcess bounds how fast this process makes requests
+	// to each named host, written as a map of host to requests per second:
+	//
+	//	max_requests_per_second_per_process:
+	//	  api.example.com: 100
+	//
+	// The number is per worker process, not per deployment. The bucket lives in
+	// the policy this file builds, and one policy is bound into the http task
+	// once per `flow worker` (or `flow run local`) process — so a fleet of N
+	// workers sends up to N times what is written here, and dividing by the
+	// worker count is the operator's job. The key says "per_process" rather than
+	// leaving that to be discovered from a dashboard.
+	//
+	// The bound that *is* deployment-wide is the upstream's own 429: a
+	// rate-limited response is now retried with its Retry-After honored on both
+	// drivers. This field caps what one process contributes before the upstream
+	// has to say no; it does not replace the upstream saying no.
+	//
+	// Exceeding it is not a denial — the request is tried again after the
+	// bucket's own wait, and nothing blocks meanwhile. A host not named here is
+	// not rate limited at all, and an absent or empty map limits nothing, the
+	// same way an absent deny list denies nothing.
+	//
+	// Hosts are matched exactly, after the normalization that already applies to
+	// the `host` rule attribute — case, the trailing root dot, Punycode — with no
+	// port and no wildcards. Each rate must be positive. See
+	// [WithMaxRequestsPerSecondPerProcess].
+	MaxRequestsPerSecondPerProcess map[string]float64 `json:"max_requests_per_second_per_process,omitempty" yaml:"max_requests_per_second_per_process,omitempty"`
+
 	// MinTLSVersion is the lowest TLS version accepted, written as "1.2" or
 	// "1.3". Unset means 1.2, and nothing lower exists to ask for. See
 	// [WithMinTLSVersion].
@@ -113,8 +146,43 @@ func ParseConfig(data []byte) (Config, error) {
 	if err := yaml.UnmarshalWithOptions(data, &cfg, yaml.Strict()); err != nil {
 		return Config{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
+	if err := rejectNullAllowlists(data, cfg); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
+}
+
+// rejectNullAllowlists preserves the distinction the typed decode cannot:
+// goccy/go-yaml decodes both an absent list and an explicitly null list to a
+// nil slice. For allow-shaped fields that ambiguity would fail open, because a
+// nil slice means "keep the unrestricted default". Re-decoding into a map
+// retains key presence, allowing null to be refused just like an empty list.
+func rejectNullAllowlists(data []byte, cfg Config) error {
+	var raw struct {
+		Egress map[string]any `yaml:"egress" json:"egress"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+	}
+
+	fields := []struct {
+		name  string
+		isNil bool
+	}{
+		{"schemes", cfg.Egress.Schemes == nil},
+		{"allow_networks", cfg.Egress.AllowNetworks == nil},
+		{"allow_ports", cfg.Egress.AllowPorts == nil},
+		{"allow", cfg.Egress.Allow == nil},
+	}
+	for _, field := range fields {
+		if _, present := raw.Egress[field.name]; present && field.isNil {
+			return fmt.Errorf("%w: %s is null; delete the key to keep the default, or provide a non-empty allowlist",
+				ErrInvalidPolicy, field.name)
+		}
+	}
+
+	return nil
 }
 
 // Policy builds the policy the file describes, by way of [Options] and [New].
@@ -239,6 +307,25 @@ func (c Config) Options() ([]Option, error) {
 					"only raised", ErrInvalidPolicy, *e.Timeout)
 		}
 		opts = append(opts, WithTimeout(*e.Timeout))
+	}
+
+	// Sorted, so that a file naming two hosts that normalize to one key reports
+	// the same one of them every time. A map's iteration order would make the
+	// error a coin flip between two lines of the operator's file.
+	for _, host := range slices.Sorted(maps.Keys(e.MaxRequestsPerSecondPerProcess)) {
+		rate := e.MaxRequestsPerSecondPerProcess[host]
+		if strings.TrimSpace(host) == "" {
+			return nil, fmt.Errorf(
+				"%w: max_requests_per_second_per_process has an entry with no host; each key is the host the "+
+					"rate applies to", ErrInvalidPolicy)
+		}
+		if !(rate > 0) || math.IsInf(rate, 0) {
+			return nil, fmt.Errorf(
+				"%w: max_requests_per_second_per_process: %s: %v is not a positive number of requests per "+
+					"second; a host that should not be reached at all is a deny rule, not a rate of zero",
+				ErrInvalidPolicy, host, rate)
+		}
+		opts = append(opts, WithMaxRequestsPerSecondPerProcess(host, rate))
 	}
 
 	switch e.MinTLSVersion {

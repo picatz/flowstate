@@ -1,0 +1,356 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// `flow test --debug` (#928 slice 1): the step debugger, reachable from the
+// command line — which is where a capability stops being scaffolding
+// (CLAUDE.md). The session's own verbs are tested in flowdebug; these are the
+// wiring and the refusals, which are this command's to get right.
+
+// writeDebugFixture is a two-step, two-case suite: enough steps to step
+// between and enough cases for `--run` to have something to narrow.
+func writeDebugFixture(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: debugged
+steps:
+  - id: first
+    log:
+      message: one
+  - id: second
+    log:
+      message: two
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the debugged case
+    expect:
+      ran: [first, second]
+  - name: the other case
+    expect:
+      ran: [first, second]
+`), 0o600))
+
+	return dir
+}
+
+// TestDebugStepsThroughTheSelectedCase is the whole wiring in one run: the
+// session holds the run at each boundary, the account of each step reaches
+// the same console, and the ordinary report still prints when the run ends.
+func TestDebugStepsThroughTheSelectedCase(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "step\nstep\n", "test", "--debug", "--run", "the debugged case", dir)
+	require.NoError(t, res.Err)
+
+	assert.Contains(t, res.Stdout, `debugging "the debugged case"`)
+	assert.Contains(t, res.Stdout, `break at first (task "log")`)
+	assert.Contains(t, res.Stdout, `break at second (task "log")`)
+	assert.Contains(t, res.Stdout, "first completed", "the run's own account reaches the session")
+	assert.Contains(t, res.Stdout, "PASS", "and the report still prints after the session ends")
+}
+
+// TestDebugInspectsTheRunsScope: the reason to stop at all.
+func TestDebugInspectsTheRunsScope(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "step\nscope\ninspect 6 * 7\ncontinue\n",
+		"test", "--debug", "--run", "the debugged case", dir)
+	require.NoError(t, res.Err)
+
+	assert.Contains(t, res.Stdout, "steps: first")
+	assert.Contains(t, res.Stdout, "42")
+}
+
+// TestDebugQuitEndsTheRunAndFailsTheCase: quitting is abandoning the run, and
+// a case whose run was abandoned did not pass. Saying otherwise would make
+// `--debug` a way to turn a red suite green.
+func TestDebugQuitEndsTheRunAndFailsTheCase(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "quit\n", "test", "--debug", "--run", "the debugged case", dir)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Stdout, "debug session ended")
+}
+
+// TestDebugRefusesMachineOutput: a prompt and a JSON document cannot share
+// one stream.
+func TestDebugRefusesMachineOutput(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "", "test", "--debug", "--output", "json", "--run", "the debugged case", dir)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Stdout+res.Stderr, "run one or the other")
+}
+
+// TestDebugRefusesSeededExploration: stepping through "the" run of a case
+// about to be run under many schedules is a question with no answer.
+func TestDebugRefusesSeededExploration(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "", "test", "--debug", "--seeds", "4", "--run", "the debugged case", dir)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Stdout+res.Stderr, "seeded exploration runs each case many times")
+}
+
+// TestDebugRefusesMoreThanOneCase names the number it found, and the flag
+// that narrows it — the diagnostics standard this repo holds itself to.
+func TestDebugRefusesMoreThanOneCase(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "", "test", "--debug", dir)
+	require.Error(t, res.Err)
+
+	// Unwrapped before matching: the surface wraps a diagnostic to the
+	// terminal width, so a case name in the middle of one arrives split
+	// across a line break. The claim under test is that the names are listed,
+	// not where the wrapping happened to fall.
+	out := unwrapped(res.Stdout + res.Stderr)
+	assert.Contains(t, out, "2 of this file's cases were selected")
+	assert.Contains(t, out, `"the debugged case", "the other case"`)
+	assert.Contains(t, out, "Name one with --run")
+}
+
+// TestDebugRefusesMoreThanOneFile: one console cannot drive two suites.
+func TestDebugRefusesMoreThanOneFile(t *testing.T) {
+	first, second := writeDebugFixture(t), writeDebugFixture(t)
+
+	res := runFlowStdin(t, "", "test", "--debug",
+		filepath.Join(first, "workflow.test.yaml"), filepath.Join(second, "workflow.test.yaml"))
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Stdout+res.Stderr, "2 test files matched")
+}
+
+// TestWithoutDebugNothingChanges is the shape of the cost: no flag, no
+// session, and the run is the run it always was.
+func TestWithoutDebugNothingChanges(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "", "test", dir)
+	require.NoError(t, res.Err)
+
+	assert.NotContains(t, res.Stdout, "debug>")
+	assert.NotContains(t, res.Stdout, "break at")
+	assert.Contains(t, res.Stdout, "2 passed")
+}
+
+// unwrapped collapses the line breaks a wrapped diagnostic carries, so a test
+// can assert what a message says without asserting where it wrapped.
+func unwrapped(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// TestDebugAutopsyOnAFailingCase (#1072): the session stops once more after
+// the verdict, the failure prints, inspect answers from the finished run —
+// and the case is exactly as red as it was, because the autopsy cannot touch
+// the verdict.
+func TestDebugAutopsyOnAFailingCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: debugged
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+vars:
+  flavor: carrot-cake
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: claims the wrong thing
+    expect:
+      ran: [first]
+      check:
+        - "'first' in steps"
+        - 1 == 2
+`), 0o600))
+
+	res := runFlowStdin(t,
+		"continue\ninspect 1 + 1\ninspect vars.flavor\ninspect run.failed ? 'red-run' : 'green-run'\nquit\n",
+		"test", "--debug", "--run", "claims the wrong", dir)
+	require.Error(t, res.Err, "the autopsy must not turn a red case green")
+
+	assert.Contains(t, res.Stdout, "autopsy: the case failed 1 expectation(s)")
+	assert.Contains(t, res.Stdout, "check failed: 1 == 2")
+	assert.Contains(t, res.Stdout, "2", "the autopsy's inspect answers")
+	assert.Contains(t, res.Stdout, "carrot-cake",
+		"the file's vars bind at the autopsy exactly as the check read them")
+	assert.Contains(t, res.Stdout, "green-run",
+		"the run root answers too — the run passed; the check is what failed")
+	assert.Contains(t, res.Stdout, "FAIL", "and the report still says what it said")
+}
+
+// TestDebugAutopsyWithholdsSecretBackedVars: a file var substituted into a
+// case's `secrets:` is a secret's plaintext, and the witnesses of a failing
+// check already withhold it — so the autopsy, which prints to the same
+// console, withholds it too rather than being a second door around the one
+// shared set (Codex, #1109).
+func TestDebugAutopsyWithholdsSecretBackedVars(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: debugged
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+vars:
+  token: hunter2-swordfish
+  # The secret embedded in a nested string of a structured var — the shape the
+  # per-leaf tree redaction alone cannot catch, and the substring backstop
+  # must reach recursively (Codex, #1109).
+  request:
+    header: Bearer hunter2-swordfish
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: fails with a secret-backed var in scope
+    secrets:
+      "env:TOKEN": ${vars.token}
+    expect:
+      ran: [first]
+      check:
+        - 1 == 2
+`), 0o600))
+
+	res := runFlowStdin(t,
+		"continue\ninspect vars.token\ninspect vars.request\ninspect vars.token == 'hunter2-swordfish'\nscope\nquit\n",
+		"test", "--debug", "--run", "fails with", dir)
+	require.Error(t, res.Err, "the case is red")
+
+	assert.NotContains(t, res.Stdout+res.Stderr, "hunter2-swordfish",
+		"the secret's plaintext reached the console through the autopsy")
+	assert.Contains(t, res.Stdout, "[redacted]",
+		"the inspected var should render as the shared redaction marker")
+	assert.Contains(t, res.Stdout, "bound: run, vars",
+		"the autopsy scope listing should still name the bindings")
+
+	// The disagreement is stated rather than left to be discovered (Codex,
+	// #1109). The binding is withheld, so a comparison against the real value
+	// is false here while the same expression in `expect.check` saw the real
+	// one — which is worth knowing before an author concludes their check is
+	// wrong. Handing CEL the raw value instead would agree, and would answer
+	// `startsWith`, `size()` and a slice truthfully about a secret one call
+	// at a time.
+	out := unwrapped(res.Stdout)
+	assert.Contains(t, out, "this case withholds sensitive values")
+	assert.Contains(t, out, "answers false here even where the same check was true")
+}
+
+// TestDebugWithholdsASensitiveInput is the CLI half of the same leak (Codex,
+// #1109, found on the MCP adapter and true here too): `flow test --debug`
+// installs the same session against the same run, so a declared-sensitive
+// input must not reach the terminal through `inspect` while the transcript
+// beside it withholds the same value.
+func TestDebugWithholdsASensitiveInput(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: secretive
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: echo
+    value: ${inputs.token}
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+tests:
+  - name: it runs
+    inputs:
+      token: hunter2-swordfish
+    expect:
+      ran: [echo]
+`), 0o600))
+
+	res := runFlowStdin(t, "inspect inputs.token\ncontinue\n", "test", "--debug", "--run", "it runs", dir)
+	require.NoError(t, res.Err)
+
+	all := res.Stdout + res.Stderr
+	require.Contains(t, all, "break at echo", "the session did not run at all")
+	assert.NotContains(t, all, "hunter2-swordfish",
+		"a declared-sensitive input reached the terminal through the debug session")
+	assert.Contains(t, all, "[redacted]")
+}
+
+// TestDebugWithholdsAShortDescendantOfASensitiveInput (Codex, #1109): the
+// substring backstop cannot catch what does not look like anything.
+//
+// A declared-sensitive input's descendants are all in the redaction set, but
+// the *substring* half of that set deliberately omits short ones — replacing
+// every "7" in every line would make a transcript unreadable. So a structured
+// secret with a small leaf had nothing in the substring set to catch it, and
+// `inspect` printed the leaf while the ordinary transcript redacted the whole
+// container. Values are matched by equality now, before rendering, which is
+// exactly what a short descendant needs.
+func TestDebugWithholdsAShortDescendantOfASensitiveInput(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: secretive
+inputs:
+  credentials:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: it runs
+    inputs:
+      credentials: [7]
+    expect:
+      ran: [first]
+`), 0o600))
+
+	res := runFlowStdin(t, "inspect inputs.credentials\ncontinue\n",
+		"test", "--debug", "--run", "it runs", dir)
+	require.NoError(t, res.Err)
+
+	all := res.Stdout + res.Stderr
+	require.Contains(t, all, "break at first", "the session did not run at all")
+	assert.NotContains(t, all, "[7]",
+		"a sensitive input's short descendant reached the terminal through `inspect`")
+	assert.Contains(t, all, "[redacted]",
+		"and what it should read as is the marker every other rendering uses")
+}

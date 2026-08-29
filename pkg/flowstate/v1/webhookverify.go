@@ -2,11 +2,10 @@ package flowstatev1
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"maps"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +106,26 @@ const maxSignaturesPerHeader = 8
 //
 // The error is for the operator's log. It names which scheme failed and why,
 // which is exactly what must not reach the sender.
+//
+// # Constant work, regardless of what is declared
+//
+// This spends exactly one verification of every scheme this build knows —
+// [webhookVerificationSchemes], currently two — on every call, whatever the
+// trigger declares and whatever keys resolved. A trigger naming one scheme, a
+// trigger naming both, and a trigger whose one scheme resolved no key all cost
+// the same: an outside party timing a known route could otherwise count how
+// many schemes it requires, or notice that a misconfigured route (no key
+// resolved) answers *faster* than a working one, from the delivery it sends
+// itself (#973). A scheme not declared, or declared with no key, is still
+// verified — against [webhookDecoyKeys], a key nobody holds — and the result
+// discarded; only a declared, resolved scheme's outcome decides the return.
+// [SpendWebhookVerificationWork] is the same work with nothing to decide,
+// which is what an unrouted delivery spends so routed and unrouted cost alike.
+//
+// The loop never returns before every scheme has been tried, for the same
+// reason: stopping at the first declared scheme that fails would make a
+// two-scheme trigger cost one HMAC when its first scheme is wrong and two when
+// its first scheme is right — the identical leak in a different shape.
 func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
 	// The declaration's own rules first, because a malformed trigger cannot be a
 	// basis for accepting anything — the same order [BindWebhookTriggerInputs]
@@ -116,32 +135,111 @@ func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secr
 		return err
 	}
 
-	for _, scheme := range slices.Sorted(maps.Keys(trigger.GetVerify())) {
+	verify := trigger.GetVerify()
+
+	var (
+		failed     error
+		unresolved string
+	)
+
+	for _, scheme := range webhookVerificationSchemes {
+		_, declared := verify[scheme]
 		key, held := keys[scheme]
-		if !held || key.IsZero() {
-			return fmt.Errorf("webhook %q verifies with %q and this deployment resolved no key for it, "+
-				"so the delivery cannot be checked and is refused", trigger.GetName(), scheme)
+		usable := held && !key.IsZero()
+
+		effectiveKey := key
+		if !declared || !usable {
+			// Not this delivery's business either way: a scheme it never named,
+			// or one it named that this deployment cannot check. Verified anyway,
+			// against a key nobody has, so the work spent does not depend on
+			// which case this is.
+			effectiveKey = webhookDecoyKeys[scheme]
 		}
 
-		var err error
-		switch scheme {
-		case WebhookSchemeHMACSHA256:
-			err = verifyHMACSHA256(key, headers, body)
-		case WebhookSchemeStripe:
-			err = verifyStripe(key, headers, body, now)
-		default:
-			// Unreachable through CheckWebhookTrigger, which refuses an unknown
-			// scheme with a line and a column. Kept because the alternative to an
-			// arm here is a switch that falls through to acceptance, which is the
-			// one way this function must never be wrong.
-			err = fmt.Errorf("scheme %q is not one this build can verify", scheme)
+		err := verifyScheme(scheme, effectiveKey, headers, body, now)
+
+		if !declared {
+			continue
 		}
-		if err != nil {
-			return fmt.Errorf("webhook %q: %w", trigger.GetName(), err)
+		if !usable {
+			if unresolved == "" {
+				unresolved = scheme
+			}
+			continue
+		}
+		if err != nil && failed == nil {
+			failed = fmt.Errorf("webhook %q: %w", trigger.GetName(), err)
 		}
 	}
 
-	return nil
+	if unresolved != "" {
+		return fmt.Errorf("webhook %q verifies with %q and this deployment resolved no key for it, "+
+			"so the delivery cannot be checked and is refused", trigger.GetName(), unresolved)
+	}
+
+	return failed
+}
+
+// verifyScheme dispatches one scheme's arithmetic. Shared by
+// [VerifyWebhookDelivery], which uses the result, and
+// [SpendWebhookVerificationWork], which spends the same work and discards it.
+func verifyScheme(scheme string, key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
+	switch scheme {
+	case WebhookSchemeHMACSHA256:
+		return verifyHMACSHA256(key, headers, body)
+	case WebhookSchemeStripe:
+		return verifyStripe(key, headers, body, now)
+	default:
+		// Unreachable: both callers range over [webhookVerificationSchemes],
+		// which this switch covers exhaustively. Kept because the alternative to
+		// an arm here is a switch that falls through to acceptance, which is the
+		// one way this function must never be wrong.
+		return fmt.Errorf("scheme %q is not one this build can verify", scheme)
+	}
+}
+
+// webhookDecoyKeys are keys nobody holds, one per scheme this build knows,
+// generated once per process.
+//
+// [VerifyWebhookDelivery] verifies against one of these whenever a scheme is
+// not this delivery's to answer for — not declared, or declared with no key
+// resolved — so that the work spent does not reveal which case it was.
+// [SpendWebhookVerificationWork] uses the same keys for the same reason, for a
+// delivery that matched no route at all.
+//
+// Generated per process rather than fixed, for the reason
+// [WebhookReceiver]'s own decoy was: a constant would be a value an attacker
+// could compute against, and a zero key would skip the work this exists to
+// spend.
+var webhookDecoyKeys = func() map[string]secrets.Secret {
+	keys := make(map[string]secrets.Secret, len(webhookVerificationSchemes))
+	for _, scheme := range webhookVerificationSchemes {
+		buf := make([]byte, sha256.Size)
+		if _, err := rand.Read(buf); err != nil {
+			// rand.Read only fails when the system's entropy source is broken,
+			// which nothing downstream can recover from either.
+			panic("webhookverify: generating a decoy key: " + err.Error())
+		}
+		keys[scheme] = secrets.NewSecret(secrets.NewRef("internal", "webhook-verify-decoy-"+scheme),
+			hex.EncodeToString(buf))
+	}
+
+	return keys
+}()
+
+// SpendWebhookVerificationWork performs the same total hashing
+// [VerifyWebhookDelivery] spends on any delivery whose route exists, against
+// keys nobody holds, and reports nothing.
+//
+// It is what a receiver calls for a delivery that matched no route at all, so
+// that an unrouted delivery costs what a routed one costs regardless of how
+// many schemes that route would have declared — [VerifyWebhookDelivery] spends
+// a constant amount of work per call (#973), and this is that same amount with
+// no trigger to decide against.
+func SpendWebhookVerificationWork(headers map[string]string, body []byte, now time.Time) {
+	for _, scheme := range webhookVerificationSchemes {
+		_ = verifyScheme(scheme, webhookDecoyKeys[scheme], headers, body, now)
+	}
 }
 
 // verifyHMACSHA256 checks the generic scheme: an HMAC-SHA256 of the raw body.
@@ -153,11 +251,14 @@ func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secr
 // from the signed one for reasons nobody can see.
 func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte) error {
 	supplied := webhookHeader(headers, WebhookSignatureHeader)
+	// Compute the digest before inspecting the attacker-controlled header. An
+	// unrouted request spends this same body-sized work under a decoy key; an
+	// early return here would therefore reveal that this route exists.
+	expected := signWebhookPayload(key, body)
 	if supplied == "" {
 		return fmt.Errorf("the delivery carried no %s header", WebhookSignatureHeader)
 	}
 
-	expected := signHMACSHA256(key, body)
 	for _, candidate := range splitSignatures(strings.TrimPrefix(supplied, hmacPrefix)) {
 		digest, err := hex.DecodeString(candidate)
 		if err != nil {
@@ -180,9 +281,6 @@ func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte
 // hash — which is why this is written down once here rather than configured.
 func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
 	supplied := webhookHeader(headers, StripeSignatureHeader)
-	if supplied == "" {
-		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
-	}
 
 	var (
 		timestamp  string
@@ -203,12 +301,39 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 		}
 	}
 
+	seconds, secondsErr := strconv.ParseInt(timestamp, 10, 64)
+	// The signed payload is built from the *parsed* seconds, so a padded or
+	// oddly-spelled timestamp cannot make the payload something other than what
+	// the window was checked against. When it does not parse there is no such
+	// number, and the header's own text must not stand in for one: `t=` carries
+	// whatever a sender wrote, bounded only by MaxHeaderBytes, so hashing it
+	// would make this route's work scale with a value the sender chooses — a
+	// larger and more precise oracle than the one this ordering removes.
+	var signingTimestamp string
+	if secondsErr == nil {
+		signingTimestamp = strconv.FormatInt(seconds, 10)
+	}
+
+	// Spend the body-sized authentication work before any header-shape refusal.
+	// Unknown routes do the same under a decoy key, so a missing or malformed
+	// header must not turn a configured Stripe route into a timing oracle.
+	//
+	// Written into the hash in pieces rather than joined first. Joining copied
+	// the whole body to hash bytes it already had, which cost a second
+	// body-sized pass on every delivery — small beside a full HMAC of the same
+	// bytes, but the same *shape* of signal as the one this ordering removes,
+	// and measurable against the decoy, which signs the body alone (#973).
+	expected := signWebhookPayload(key, []byte(signingTimestamp), stripeSignedSeparator, body)
+
+	if supplied == "" {
+		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
+	}
+
 	if timestamp == "" || len(signatures) == 0 {
 		return fmt.Errorf("the %s header is not `t=<unix seconds>,v1=<hex>`", StripeSignatureHeader)
 	}
 
-	seconds, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil {
+	if secondsErr != nil {
 		return fmt.Errorf("the %s header's timestamp is not a whole number of seconds", StripeSignatureHeader)
 	}
 
@@ -226,16 +351,9 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 			StripeSignatureHeader, skew.Round(time.Second), WebhookReplayWindow)
 	}
 
-	// The signed payload Stripe documents: the timestamp, a period, then the raw
-	// body. Built from the *parsed* seconds rather than from the header's text so
-	// that a padded or oddly-spelled timestamp cannot make the payload something
-	// other than what the window was checked against.
-	signed := make([]byte, 0, len(timestamp)+1+len(body))
-	signed = append(signed, strconv.FormatInt(seconds, 10)...)
-	signed = append(signed, '.')
-	signed = append(signed, body...)
-
-	expected := signHMACSHA256(key, signed)
+	// signingTimestamp was built from the parsed seconds rather than from the
+	// header's text so that a padded or oddly-spelled timestamp cannot make the
+	// payload something other than what the window was checked against.
 	for _, candidate := range signatures {
 		digest, err := hex.DecodeString(candidate)
 		if err != nil {
@@ -250,6 +368,23 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 		StripeSignatureHeader)
 }
 
+// signWebhookPayload is [signHMACSHA256], reached through a variable so that
+// one internal test can count what a verification hashes.
+//
+// The ordering in [verifyHMACSHA256] and [verifyStripe] is load-bearing rather
+// than incidental: every refusal spends the same body-sized work an unrouted
+// delivery spends under the receiver's decoy key, so that "no such webhook" and
+// "wrong signature" cost the same. That is a claim about *work*, and a claim
+// about work that nothing measures is one the next tidy-up silently repeals by
+// restoring an early return. This is the same instrument, and the same reason,
+// as pathChecker.ownerOf in cmd/flow.
+// stripeSignedSeparator is the byte between Stripe's timestamp and the body in
+// the payload it signs. A package-level slice so that hashing it allocates
+// nothing per delivery.
+var stripeSignedSeparator = []byte{'.'}
+
+var signWebhookPayload = signHMACSHA256
+
 // signHMACSHA256 is the one place a key is revealed, and it reveals it into an
 // HMAC and nothing else.
 //
@@ -257,9 +392,11 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 // [hmac.New] within one statement, so there is no variable holding it for a later
 // log line or error to reach. What comes back is a digest, which is safe to
 // compare, print and return.
-func signHMACSHA256(key secrets.Secret, payload []byte) []byte {
+func signHMACSHA256(key secrets.Secret, parts ...[]byte) []byte {
 	mac := hmac.New(sha256.New, []byte(key.Reveal()))
-	mac.Write(payload)
+	for _, part := range parts {
+		mac.Write(part)
+	}
 
 	return mac.Sum(nil)
 }

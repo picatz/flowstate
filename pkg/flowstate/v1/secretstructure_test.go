@@ -12,7 +12,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // A secret reference nested in a task input — `headers: {Authorization:
@@ -97,8 +97,8 @@ func TestNestedSecretStaysAReferenceInTheActivityPayload(t *testing.T) {
 func TestNestedSecretIsNotInAnyRenderingOfTheInputs(t *testing.T) {
 	const material = "material-that-must-not-appear-in-any-rendering-inputs"
 
-	baseURL := tests.NewHTTPServer(t)
-	authority := tests.Authority{
+	baseURL := conformance.NewHTTPServer(t)
+	authority := conformance.Authority{
 		Scheme: "fixture-secret", FixtureValue: material,
 		Allow: []string{"true"},
 		Identity: auth.WorkloadIdentity{
@@ -123,7 +123,7 @@ func TestNestedSecretIsNotInAnyRenderingOfTheInputs(t *testing.T) {
 	// which the containment below would be asserting nothing.
 	require.Equal(t, "[REDACTED]",
 		out.GetStepValues()["call"].GetNamedValues()["reflected"].GetLiteral().GetStringValue())
-	tests.AssertNoLeak(t, out, material)
+	conformance.AssertNoLeak(t, out, material)
 
 	// A struct holding the inputs through an unexported field: the arrangement
 	// `fmt` cannot call a method on and therefore reflects into, which is how a

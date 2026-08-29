@@ -73,6 +73,14 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, err
 	}
 
+	// See codex.proto's own doc comment on reset_working_context: requested
+	// without a working_context to reset is an authoring mistake, refused
+	// here rather than silently ignored.
+	resetRequested := in.GetResetWorkingContext()
+	if resetRequested && workDir == "" {
+		return nil, sdk.InvalidInput("reset_working_context requires working_context: there is nothing to reset")
+	}
+
 	// A writable run must say where it may write. Without a working_context
 	// there is no --cd and no cmd.Dir, so the child would inherit this plugin
 	// process's own current directory - which the host sets to the private
@@ -131,10 +139,52 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	argv := buildArgs(model, sandboxArg, workDir, allowNetwork, mutatingSandbox)
 	env := childEnv(apiKey, codexHome)
 
+	mutating := workDir != "" && sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY
+
+	// Hardening is computed before the *first* Git command touches the
+	// repository - including the baseline read immediately below. See
+	// prepareHardenedGit's doc comment for why a version that computed it
+	// only later left the baseline read exposed to whatever the later
+	// hardening was built to stop. computePatch receives this pre-run
+	// result only as its gate: it re-enumerates the filter overrides
+	// against the config as the run left it, because a WORKSPACE_WRITE run
+	// can install new filter keys this list has never heard of - see
+	// computePatch's doc comment.
+	var gitBin string
+	var hardened *gitHardening
+	if mutating || resetRequested {
+		var cleanup func()
+		var ok bool
+		gitBin, hardened, cleanup, ok = prepareHardenedGit(runCtx, workDir)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		// resetRequested is the one caller of prepareHardenedGit that must
+		// not treat !ok as "best effort, carry on" - an author who asked for
+		// a reset and did not get one has to be told, not left to discover
+		// it from a baseline that observeWorkspace then reports dirty with
+		// no explanation. See resetWorkingContext's own doc comment.
+		if resetRequested && !ok {
+			return nil, sdk.Failed(
+				"reset_working_context was requested but cannot be honored: %s is not configured, "+
+					"or working_context does not resolve to a plain git checkout", gitBinaryEnv)
+		}
+	}
+
+	// Run before the baseline is read, deliberately: this is what lets a
+	// retried agentic turn's baseline come back clean instead of dirty from
+	// the previous turn's own edits. See resetWorkingContext's own doc
+	// comment and codex.proto's on ExecInputs.reset_working_context.
+	if resetRequested {
+		if err := resetWorkingContext(runCtx, gitBin, hardened, workDir); err != nil {
+			return nil, sdk.Failed("reset_working_context: %v", err)
+		}
+	}
+
 	// Recorded before the subprocess runs: afterwards, an edit that was
 	// already there and an edit this run made are indistinguishable. See
 	// workspaceBaseline.
-	baseline := observeWorkspace(runCtx, workDir, sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY)
+	baseline := observeWorkspace(runCtx, gitBin, hardened, workDir, mutating)
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
@@ -152,8 +202,6 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		err = waitErr
 	}
 
-	mutating := workDir != "" && sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY
-
 	if run.turnFailed != "" {
 		return nil, sdk.Failed("codex run failed: %s", scrubber.Scrub(run.turnFailed))
 	}
@@ -161,7 +209,7 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, classifyRunError(err, run.sawSideEffect, mutating, scrubber)
 	}
 
-	patch, filesChanged, patchTruncated := computePatch(runCtx, workDir, mutating, baseline, run.filesChanged)
+	patch, filesChanged, patchTruncated := computePatch(runCtx, gitBin, hardened, workDir, mutating, baseline, run.filesChanged)
 
 	// max_output_bytes bounds everything this task returns, not each field
 	// separately: the per-field caps below it are ceilings a single field may

@@ -28,6 +28,14 @@ tests:
       outputs:
         observed: opened
         handled: true
+      # The claims the named fields cannot say (#1072): the record's value
+      # relates back to the input that produced it — a relation that survives
+      # a new action being added, where the literals above would each need
+      # editing — and the run root reads green.
+      check:
+        - steps.on_event.case == inputs.action
+        - that: "!run.failed && run.local"
+          because: a green rehearsal says both
 
   - name: a list case matches any member, and the record names the member
     workflow: ./workflow.yaml

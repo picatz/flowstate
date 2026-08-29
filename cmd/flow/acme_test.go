@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -165,7 +166,7 @@ func TestResolveACMESettingsAcceptsAValidConfiguration(t *testing.T) {
 	t.Parallel()
 
 	flags := validACMEFlags(t)
-	settings, err := resolveACMESettings(flags, tlsFlags{}, "", "")
+	settings, err := resolveACMESettings(flags, tlsFlags{minVersion: "1.3"}, "", "")
 	require.NoError(t, err)
 	require.NotNil(t, settings)
 	require.Equal(t, []string{"flowstate.example.com"}, settings.hosts)
@@ -181,6 +182,16 @@ func TestResolveACMESettingsAcceptsAValidConfiguration(t *testing.T) {
 	cfg := settings.tlsConfig()
 	require.NotNil(t, cfg.GetCertificate)
 	require.Contains(t, cfg.NextProtos, "acme-tls/1", "TLS-ALPN-01 needs this ALPN protocol advertised")
+	require.Equal(t, uint16(tls.VersionTLS13), cfg.MinVersion,
+		"an ACME listener must preserve the configured TLS protocol floor")
+}
+
+func TestResolveACMESettingsRejectsInvalidTLSMinVersion(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveACMESettings(validACMEFlags(t), tlsFlags{minVersion: "1.1"}, "", "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--tls-min-version")
 }
 
 // TestResolveACMESettingsFederationCrossCheck is the join #581 asks for: a

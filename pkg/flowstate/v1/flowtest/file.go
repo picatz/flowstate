@@ -10,7 +10,7 @@
 // workflow's own control flow — conditions, retries, loops, `undo:` — runs for
 // real through the ordinary local driver. That is the registry-swap pattern
 // the repo's own tests already use (`allowLoopback`, `NewUndoServer` in
-// pkg/flowstate/v1/tests) productized for an author's own workflow.
+// pkg/flowstate/v1/internal/conformance) productized for an author's own workflow.
 //
 // # Secrets are stubbed at the reference boundary, the same way tasks are
 // stubbed at the task boundary
@@ -46,6 +46,106 @@
 // for every local run, because a local run must never look like an attested
 // production one.
 //
+// # What a green case proves about identity, and what it does not
+//
+// The sentence to read first, because it is the one an author is most likely
+// to assume the other way round: **a green case says nothing about whether the
+// identity it names would be allowed to do any of this in production.**
+// Nothing attested a `starter:` or a `sender:` - they are what the file says
+// they are - and every policy a *deployment* installs is either absent from
+// this process or evaluated against somebody else entirely.
+//
+// What reads a [Test.Starter], exhaustively: the workflow's own `signals:`
+// policy, through [v1.SignalPolicyCheck] - the function `FlowstateServer.Signal`
+// itself calls - reached from [v1.NewPolicedLocalSignals] in runCase. That is
+// a rule's `subject:`, `issuer:`, `namespace:` and `claims:` matching a
+// scripted [SignalScript.Sender], and `distinct_from_starter:` comparing that
+// sender's [v1.QualifiedSubject] against the starter's. Nothing else in this
+// package passes the value anywhere.
+//
+// What does not read it, each for a reason worth stating separately:
+//
+//   - **`run.identity`.** Empty for every case, whatever `starter:` says, with
+//     `run.local` true - see [Test.Starter]. An `if:` keyed on
+//     `run.identity.namespace` therefore takes the empty branch here and may
+//     take another one in production.
+//
+//   - **Task-shape policy** ([v1.TaskPolicy]). Every dispatch does reach
+//     [v1.CheckTaskPolicy] - eval.go calls it at the seam both drivers share -
+//     and it is handed `scope.GetIdentity()`, which is that same empty
+//     identity. It is never handed a `starter:`.
+//
+//     Which policy it consults is a property of the *process*, not of the
+//     case, and the distinction is worth stating precisely because the
+//     convenient version of it is false. The `flow test` **command** installs
+//     none: `--task-policy` is declared on `flow worker`, `flow run local`,
+//     `flow mcp`, `flow serverdev` and `flow task run`, and deliberately not
+//     on `flow test`, so under that command [v1.TaskPolicyIn] finds nothing
+//     and every dispatch is allowed. But a policy is installed process-wide
+//     by [v1.SetDefaultTaskPolicy], runCase does not clear it with
+//     [v1.NewContextWithTaskPolicy], and `flow test`'s machinery is reachable
+//     from other hosts: the `flowstate_test` MCP tool runs
+//     [RunSourceContext] in whatever process serves it, so under
+//     `flow mcp --task-policy` a case's dispatches *are* governed by that
+//     deployment's policy. A rehearsal inherits whatever the hosting process
+//     installed.
+//
+//     Which is its own trap, and the reason the identity clause above is not
+//     a footnote: a rule that reads `identity.namespace` or
+//     `identity.subject` is matched against the empty identity there, not
+//     against `starter:`, however the case names one. So a policy admitting
+//     only a named namespace refuses every stubbed dispatch in that host, and
+//     an author reading the denial has no `starter:` to change that would
+//     make any difference. [v1.TaskPolicyDeniedError] says exactly that in
+//     its own message (#652 item 3): a denial from this venue names the
+//     identity the rule was evaluated against, and where that identity is
+//     empty it says so and says why — that a rehearsal has one only where
+//     `flow run local --as-*` named one, and never under `flow test`. Which
+//     is the difference between "the rule matched me" and "the rule had
+//     nothing to match", and it is not one an author can otherwise derive
+//     from a denial. The remedy it names is the policy *this process*
+//     installed rather than a `--task-policy` flag, precisely because this
+//     command does not have one.
+//
+//   - **Egress policy** (`netpolicy`). Never consulted, because no request is
+//     made: a step that would reach the network is answered by its stub, so
+//     there is no URL for a policy to refuse. `--egress-policy` is likewise
+//     not offered on `flow test`.
+//
+//   - **Secret access policy** (`auth.SecretAccessPolicy`). Consulted, and this
+//     is the surface where the gap is easiest to miss, because the mechanism is
+//     real and the answer is fixed: [secretRuntime] compiles `allow: ["true"]`
+//     and runs it under the constant identity `flow-test#flow-test`, not under
+//     `starter:`. So every `${secret(...)}` a case binds resolves, and a
+//     deployment rule keyed on `identity.namespace` is neither loaded nor
+//     matched.
+//
+// The line all four sit on is CLAUDE.md's: report what is a property of the
+// file, and stay silent about what a deployment decides. `signals:` is written
+// in the Flowfile, so `flow test` owns it; task-shape, egress and secret
+// access rules are installed by whoever runs the worker, and a case whose
+// verdict turned on which policy file happened to be passed on the command
+// line would be a test of that machine rather than of the workflow — which is
+// exactly what a case gets when the hosting process installed one, so a suite
+// meant to be portable should be run by a command that takes no such flag.
+// A case
+// that wants to exercise one of those *denials* writes it against the policy's
+// own package - [v1.TaskPolicy.Check] and `auth.SecretPolicy` are pure
+// functions of (thing, identity), tested that way today, and need no workflow
+// at all - which is the same answer [secretRuntime]'s own doc has been giving
+// for secrets since it was written. See #652 item 2, where this was decided
+// and deliberately not built.
+//
+// That decision is now enforced rather than only recorded. `cmd/flow`'s
+// TestFlowTestTakesNoDeploymentPolicyFlags asserts `flow test` declares
+// neither `--task-policy` nor `--egress-policy` — while every verb that runs a
+// real dispatch still declares the first, so the assertion means "deliberately
+// absent here" rather than "absent everywhere" — and
+// [TestACaseCannotDeclareADeploymentPolicy] asserts a case file cannot smuggle
+// one in through a key of its own. A paragraph of prose beside a one-line flag
+// registration is the same value written down twice, and only one of the two
+// is what the program does.
+//
 // # Why this runs the local driver only
 //
 // `flow test` is not a second execution engine. It is [v1.RunWithInputs] with
@@ -68,7 +168,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/parser"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -139,6 +239,28 @@ type File struct {
 	// is not itself a bug — see #203's discussion of `examples/call-a-workflow/workflow.test.yaml`.
 	Edition string `yaml:"edition"`
 
+	// Vars are the values this file states once and references everywhere
+	// (#1072): a whole-value `${vars.x}` in a fixture position is substituted
+	// at load, and `expect.check:` reads `vars.x` at evaluation.
+	//
+	// A value that is itself a whole-value `${...}` fence is an expression over
+	// the block's other vars, evaluated once at load in dependency order; every
+	// other value is a literal, and a fence nested inside a structure is
+	// refused. See vars.go for the ordering, the cycle diagnostic, the bounds,
+	// and the one deliberate asymmetry (a stub's `vars.` stays the workflow's).
+	Vars map[string]any `yaml:"vars"`
+
+	// varsWithheld is which of those vars a value surface may never print, and
+	// the strings it must clear from one — the taint a var inherits from a
+	// secret it was computed from ([withheldFrom]).
+	//
+	// Written by the loader rather than by an author, so it carries no yaml tag
+	// and the strict decode never offers a key for it — the same bookkeeping
+	// [Stub.fromDefaults] and [CheckClaim.fromDefaults] are. A [File] built in
+	// Go carries none, exactly as it carries no substitution: those doors
+	// evaluate nothing, so there is nothing for a taint to travel through.
+	varsWithheld withheldVars
+
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
 	// inherits them and may override them, by the boring, stated rules
@@ -169,10 +291,22 @@ type File struct {
 // the second is a fact about the workflow that belongs written down beside it,
 // not silently tolerated.
 type CoverageStanza struct {
-	// AllowUnreached maps a step id to the reason no case reaches it. A step
-	// named here is reported as an accepted residual rather than a gap, and
-	// does not fail `--coverage-required`. The reason is required, because an
-	// entry with none is the silent gap this record exists to refuse.
+	// AllowUnreached maps a step id — or, since issue #801, a switch arm's key —
+	// to the reason no case reaches it. An entry named here is reported as an
+	// accepted residual rather than a gap, and does not fail
+	// `--coverage-required`. The reason is required, because an entry with none
+	// is the silent gap this record exists to refuse.
+	//
+	// A switch arm's key is [SwitchArm.Key]: `<step>:case[<i>]` for a case
+	// holding one literal, `<step>:case[<i>][<j>]` for member j of a case listing
+	// several, and `<step>:default`. `flow test` prints the key to record beside
+	// the diagnostic for every arm it reports, so nobody has to derive one.
+	//
+	// One map for both, rather than a second stanza: an entry here answers one
+	// question — "no case reaches this, and here is why" — and the answer does
+	// not change with what kind of thing is unreached. An entry naming neither a
+	// step nor an arm of any workflow the file targets is stale, and fails the
+	// same way an unrecorded gap does.
 	AllowUnreached map[string]string `yaml:"allow_unreached"`
 }
 
@@ -257,7 +391,32 @@ type Test struct {
 	// production one (eval.go's own eval, invariant 3). A case asserting on
 	// `run.identity.subject` therefore sees "" here whatever this field says,
 	// the same value `flow run local` shows it.
+	//
+	// One policy surface reads it, and the others a deployment installs read
+	// nothing of it at all — see the package doc's "What a green case proves
+	// about identity". The short version: `signals:` is a control the
+	// *workflow file* declares, so `flow test` exercises it; task-shape
+	// policy, egress policy and secret access policy are controls a
+	// *deployment* installs, and `flow test` neither takes them nor evaluates
+	// them under this identity.
 	Starter *ScriptedIdentity `yaml:"starter"`
+
+	// Cases are the rows of a table entry (#924 slice 2): one run each, with
+	// the enclosing entry standing to a row exactly as `defaults:` stands to
+	// a case. An entry that declares rows does not itself run — it is the
+	// template they are merged over — and a row's own value always beats the
+	// entry's, the one direction every merge in this file takes.
+	//
+	// The house Go convention this mirrors is the charter's: "slice-of-struct
+	// tables with a `name` field, one `t.Run` per case" (#405). Report
+	// identity is `<entry name>/<row name>`, the two-level naming `t.Run`
+	// gives a Go table, carried in the existing [v1.TestCase] name so nothing
+	// reading a report needs a schema change to see it.
+	//
+	// One level only. A row that declares its own `cases:` is refused rather
+	// than flattened, because a table of tables is a shape whose merge order
+	// nobody wrote down and whose report identity has no obvious spelling.
+	Cases []Test `yaml:"cases"`
 
 	// Expect is what the run must have done to pass.
 	Expect Expectation `yaml:"expect"`
@@ -278,13 +437,18 @@ type Test struct {
 // through the same [v1.BindRunInputs] a submit uses. A case that maps a field the
 // payload does not carry fails here exactly as it would in production.
 //
-// The verification *outcome* is declared rather than computed, because there is no
-// receiver yet and therefore no signature arithmetic anywhere in this repository.
-// `signature: invalid` does not forge a bad signature; it says "this delivery did
-// not verify" and asserts what Flowstate then does about it, which is the half that
-// is a property of the file. When the receiver lands it supplies that same boolean
-// from real material, and nothing about this shape changes — which is precisely why
-// the refusal lives in the shared function rather than in the receiver.
+// The verification *outcome* is computed when the case supplies the material, and
+// declared when it does not (#935). A case whose `secrets:` binds every key the
+// trigger's `verify:` names gets the outcome from [v1.VerifyWebhookDelivery] — the
+// same arithmetic the served receiver runs (server/webhook.go), over the fixture's
+// exact `body` bytes, at the virtual clock's epoch — so a fixture with a wrong
+// signature fails here exactly as a live delivery would be refused. With no keys
+// bound, `signature: valid|invalid` declares the boolean instead: it does not
+// forge a bad signature, it says "this delivery did not verify" and asserts what
+// Flowstate then does about it, which is the keyless rehearsal this stanza always
+// supported. Binding the keys *and* declaring `signature:` is refused, naming
+// both, because a declaration that could contradict the arithmetic is the
+// two-spellings bug as a test fixture.
 type TriggerDelivery struct {
 	// Webhook is the name one of the workflow's `- webhook:` entries declares.
 	// An unknown name is refused when the file loads, naming what the workflow
@@ -354,6 +518,12 @@ type TriggerDelivery struct {
 	// flipped — and because there is deliberately no third value. A delivery
 	// that could not be checked is refused exactly as one that failed a check
 	// is; see [v1.BindWebhookTriggerInputs].
+	//
+	// Legal only while the case binds none of the keys the trigger's `verify:`
+	// names. A case whose `secrets:` binds them all has the outcome *computed*
+	// from that material instead ([v1.VerifyWebhookDelivery], the receiver's
+	// own function), and declaring this beside the arithmetic is refused —
+	// see the type's doc.
 	Signature string `yaml:"signature"`
 }
 
@@ -412,6 +582,14 @@ func (d *TriggerDelivery) Context() *v1.TriggerContext {
 //   - Sender fills in only where a case's signal omits its own `sender:`.
 //     Explicit beats inherited, so a signal that names a sender keeps it.
 type Defaults struct {
+	// Workflow is the Flowfile every case runs against unless it names its
+	// own (#924 slice 1) — resolved exactly as a case's own `workflow:` is,
+	// relative to the test file's directory, because it becomes the case's
+	// value before anything resolves. The one fact 151 of the corpus's 151
+	// cases restated identically, now stated once; a case that does name a
+	// workflow keeps it, per the merge rules' one direction.
+	Workflow string `yaml:"workflow"`
+
 	// Inputs are the base bindings every case starts from, before its own
 	// `inputs:` are merged over them one key at a time.
 	Inputs map[string]any `yaml:"inputs"`
@@ -425,6 +603,13 @@ type Defaults struct {
 	// omit their own. It is the one place a whole file's signals share an
 	// approver identity rather than restating the five-line stanza per signal.
 	Sender *ScriptedIdentity `yaml:"sender"`
+
+	// Check holds claims every case in the file must satisfy (#1072),
+	// prepended to each case's own `expect.check:` by [mergeDefaults]. Bare
+	// CEL carries no `${` fence, so the #416 fixture rule — a default may
+	// hold no expression *value* — is untouched: a claim is a predicate the
+	// file states, not a value a case inherits.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // Stub replaces one task's real behavior with a canned answer.
@@ -434,6 +619,14 @@ type Defaults struct {
 // run for real through the actual local driver, and only the effect —
 // whatever the task would have done outside the process — is replaced.
 type Stub struct {
+	// fromDefaults records that this stub reached the case through the file's
+	// `defaults:` rather than being written on the case itself — set by
+	// [mergeDefaults], invisible to the YAML form, and read by the
+	// unused-stub report (#926): a file-level catch-all is *expected* to go
+	// unanswered by cases that never invoke its task, so it is exempt from
+	// the warning a case's own idle stub earns.
+	fromDefaults bool
+
 	// Task is the task name this replaces, exactly as a step's own task key
 	// names it: `http`, `log`, a plugin task's name. Mutually exclusive with
 	// Step; a stub names one or the other, never both and never neither.
@@ -508,6 +701,57 @@ type Stub struct {
 	// succeeding, so a case can exercise `continue_on_error:`, `retry:`, and
 	// `undo:` without a real dependency ever having to be down on purpose.
 	Fails *StubFailure `yaml:"fails"`
+
+	// Times bounds how many invocations this stub answers before it retires
+	// and the list falls through to the next matcher (#927). Absent means
+	// unbounded — every stub before this field existed answers forever, and
+	// still does. It is what makes a stub list a *script* rather than only a
+	// switch: the canonical retry test, fail once and then succeed, is two
+	// stubs for one step, the first carrying `times: 1` and `fails:`, the
+	// second answering the recovery — inexpressible before this existed,
+	// because the first match answered every attempt and `retry:` was
+	// testable only to exhaustion.
+	//
+	// Consumption is counted per answer, `returns:` and `fails:` alike, and
+	// the budget is per case: every case (and every seeded schedule of one)
+	// starts the count over. A drained stub shows up in an unmatched-stub
+	// failure with its spent budget, so an invocation that fell past it is
+	// explained rather than mysterious.
+	//
+	// One caution, and the schedule explorer enforces it rather than this
+	// package hiding it: two `parallel:` branches invoking one task drain a
+	// shared `times:` budget in whichever order the schedule runs them, which
+	// is a real observable `--seeds` will legitimately flag. Scope such a
+	// stub with `step:`, which already tells steps sharing a task apart.
+	//
+	// A pointer so an explicit `times: 0` is told apart from the field being
+	// absent, and refused when the file loads: a stub that can answer nothing
+	// asserts nothing.
+	Times *int `yaml:"times"`
+
+	// Response answers the invocation with a raw *response* instead of shaped
+	// outputs, and the task then evaluates its own deferred inputs over it —
+	// for `http`, the step's `outputs:` and `expect:` run for real against
+	// `status_code`, `headers`, `body` (and `response.json` under
+	// `parse_json: true`) exactly as they would against a live response
+	// (#925). That is the difference from Returns, which supplies the
+	// post-shaping outputs and leaves the mapping — the exact expression a
+	// path typo lives in — unexercised by every green case.
+	//
+	// The fields and their meanings are the task's own: `http` takes
+	// `status_code` (200 when omitted), `body` (a string verbatim, or a map
+	// or list encoded as its JSON), and `headers` (name to string value), and
+	// refuses a name it does not define. A task that defines no raw-response
+	// semantics — `log`, or a plugin task this harness knows only by name —
+	// refuses the stanza when the case binds, naming `returns:` as the
+	// spelling that exists. Values follow the Flowfile fence rule at any
+	// depth, exactly as Returns documents, so one stub can answer a loop's
+	// iterations differently.
+	//
+	// Mutually exclusive with Returns and with Fails: a stub answers with a
+	// response the task interprets, with outputs already shaped, or with a
+	// failure — one of the three, said once.
+	Response map[string]any `yaml:"response"`
 }
 
 // StubFailure is a canned failure a [Stub] reports instead of outputs.
@@ -621,12 +865,19 @@ type ScriptedIdentity struct {
 // checkScriptedIdentity refuses an identity no policy could ever read the way
 // its author meant it, when the file loads rather than when a case runs.
 //
-// where names the position in the file a reader has to look at - `test "x"
-// starter:`, `test "x" signal 2 sender:` - because a `*.test.yaml` is
-// identified by case name throughout this loader (see [parseSource]) rather
-// than by line and column: every diagnostic here names the case, what is
-// wrong, and what to do instead, which is the shape CLAUDE.md's "diagnostics
-// are a feature" asks for and the shape the rest of this file already has.
+// where names the case and the stanza a reader has to look at - `test "x"
+// starter:`, `test "x" signal 2 sender:` - and r carries where that stanza was
+// written, so the diagnostic names the case *and* the line. Both halves matter
+// and neither replaces the other: the name is the identity a reader matches
+// back to a report, and the position is what an editor underlines. This
+// function used to argue that the name alone was enough, which was a doc
+// comment defending `line: 0, column: 0` against the schema's own promise that
+// a failure is "positioned to the test file" ([v1.TestCase]); #923 settled it
+// the other way.
+//
+// An identity a case inherited - a signal sender folded in from `defaults:` -
+// is refused with the same words and no position, because this document did not
+// write it. See [document.positionOf].
 //
 // Both rules are fail-closed readings of a policy that would otherwise refuse
 // silently, at a gate, a whole virtual day later:
@@ -638,21 +889,21 @@ type ScriptedIdentity struct {
 //   - A claim with an empty name or an empty value cannot be what an author
 //     meant, and is matched literally rather than ignored - the mistake
 //     `--signal-as-claim`'s own NAME=VALUE check refuses.
-func checkScriptedIdentity(where string, identity *ScriptedIdentity) error {
+func checkScriptedIdentity(p *problems, r site, where string, identity *ScriptedIdentity) {
 	if identity == nil {
-		return nil
+		return
 	}
 
 	if (identity.Subject == "") != (identity.Issuer == "") {
-		return fmt.Errorf(
+		p.report(r,
 			"%s names a subject or an issuer without the other; give both, because a rule matches %q "+
 				"and never a bare subject - a subject is only unique within its issuer",
 			where, v1.QualifiedSubject("<issuer>", "<subject>"))
 	}
 
-	// Sorted, so a file with two bad claims reports the same one every time:
-	// a diagnostic that changes between runs of the same input is one nobody
-	// can write a test against, this package's own included.
+	// Sorted, so a file with two bad claims reports them in the same order
+	// every time: a diagnostic that changes between runs of the same input is
+	// one nobody can write a test against, this package's own included.
 	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
 		value := identity.Claims[name]
 
@@ -661,14 +912,12 @@ func checkScriptedIdentity(where string, identity *ScriptedIdentity) error {
 			empty = "name"
 		}
 		if name == "" || value == "" {
-			return fmt.Errorf(
+			p.reportKey(r.in(r.at.field("claims").field(name)),
 				"%s declares a claim with an empty %s; a claim is matched literally, so write it as "+
 					"`name: value` with both present, or drop it",
 				where, empty)
 		}
 	}
-
-	return nil
 }
 
 // Expectation is what a case's run must have produced to pass.
@@ -684,8 +933,10 @@ type Expectation struct {
 	// Outputs, when set, must equal the workflow's declared `outputs:`
 	// exactly — every named output present with the expected value, and no
 	// unexpected one. Ignored when Failed is true, on the same reasoning
-	// [tests.Case.ExpectedOutputs] already documents: a run that fails
+	// [conformance.Case.ExpectedOutputs] already documents: a run that fails
 	// outright has no outputs to compare.
+	//
+	// [conformance.Case.ExpectedOutputs]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#Case
 	Outputs map[string]any `yaml:"outputs"`
 
 	// Inputs, when set, must equal the inputs a replayed delivery produced,
@@ -731,7 +982,7 @@ type Expectation struct {
 	// Compensated names the steps that must have been undone, in any order —
 	// this checks the *set* the undo log reports, not the reverse-registration
 	// order [v1.RunUndoLog] itself already guarantees and which
-	// pkg/flowstate/v1/tests/undo.go already pins for both drivers.
+	// pkg/flowstate/v1/internal/conformance/undo.go already pins for both drivers.
 	Compensated []string `yaml:"compensated"`
 
 	// Ran names steps that must have executed — present in the run's step
@@ -769,6 +1020,18 @@ type Expectation struct {
 	// results, never at the top level) is not miscounted as a step that should
 	// have been skipped.
 	Others string `yaml:"others"`
+
+	// Check holds CEL claims over the finished run (#1072) — for everything
+	// the named fields above cannot say. Each entry is a bare CEL predicate,
+	// or `{that:, because:}` to add the sentence a failure prints. Evaluated
+	// against `steps.*`, `inputs.*`, and a `run` root (`failed`, `error`,
+	// `local`), whether or not the run failed — an error claim exists
+	// precisely for failed runs. See [CheckClaim].
+	//
+	// Across defaults → entry → row the lists accumulate — every level's
+	// claims all hold — where the named fields above merge by override.
+	// Predicates union naturally; values cannot.
+	Check []CheckClaim `yaml:"check"`
 }
 
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
@@ -789,9 +1052,38 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	file, err := parseSource(data, true)
+	return LoadSourceAt(data, path)
+}
+
+// LoadSourceAt is [Load] on bytes the caller already holds, with the semantics
+// the path decides — the directory's `testdefaults.yaml` folded in, the
+// workflow requirement enforced — kept exactly as [Load] applies them.
+//
+// It exists for a caller whose bytes are *newer* than the file at path: the
+// language server checks an editor's live buffer, and an unsaved edit is
+// precisely what its diagnostics have to reflect (#1110). [Load] is this
+// function behind a bounded read, so the two cannot drift.
+func LoadSourceAt(data []byte, path string) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%s: %d bytes exceeds the %d byte limit for a test file",
+			path, len(data), MaxTestFileBytes)
+	}
+
+	// The directory's shared fixture, if the suite's own directory states
+	// one — see dirdefaults.go for the chain and its boundaries.
+	dd, err := loadDirDefaults(filepath.Dir(path))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
+	}
+
+	file, refused := parseSourceWith(data, dd, true)
+	if refused != nil {
+		// The path is stamped on every problem rather than prefixed onto the
+		// rendered text once, so a report of several problems names the file on
+		// each line — a line that travels on its own has to say which file it
+		// is about. One unpositioned problem renders exactly as it did when
+		// this was a `%s: %w` wrap.
+		return nil, refused.inFile(path)
 	}
 
 	return file, nil
@@ -814,7 +1106,14 @@ func LoadSource(data []byte) (*File, error) {
 		return nil, fmt.Errorf("%d bytes exceeds the %d byte limit for a test file", len(data), MaxTestFileBytes)
 	}
 
-	return parseSource(data, false)
+	file, refused := parseSource(data, false)
+	if refused != nil {
+		// No path to attribute these to: bytes are all this door was given,
+		// and a file name it invented would be a fact about nothing.
+		return nil, refused
+	}
+
+	return file, nil
 }
 
 // parseSource is the byte-parsing seam both [Load] and [LoadSource] share:
@@ -823,46 +1122,147 @@ func LoadSource(data []byte) (*File, error) {
 // did after reading the file off disk, factored out so a caller with bytes
 // and no path runs the identical checks rather than a second copy of them.
 // requireWorkflow is false only for [LoadSource]; see its doc for why.
-func parseSource(data []byte, requireWorkflow bool) (*File, error) {
-	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
-	// do anything: Unmarshal resolves every alias into the destination value
-	// as it decodes, which means a billion-laughs document is already fully
-	// expanded in memory by the time any bound written against the decoded
-	// value could run. See [checkExpansionBounds].
-	if err := checkExpansionBounds(data); err != nil {
-		return nil, err
+func parseSource(data []byte, requireWorkflow bool) (*File, *Diagnostics) {
+	return parseSourceWith(data, nil, requireWorkflow)
+}
+
+// parseSourceWith is [parseSource] with a directory's contribution folded in
+// before anything resolves or validates, so the combined suite is what every
+// rule below checks.
+//
+// Every refusal below is collected rather than returned, and positioned where
+// the document wrote the value it is about — see [problems] for why a loader
+// that stopped at the first one was making an author fix a suite one run at a
+// time, and [document.positionOf] for the one rule that keeps a position
+// honest. The document tree is parsed once here and read twice: by the
+// expansion bound, which must see it before anything resolves an alias, and by
+// every diagnostic that needs a line. It is held for the length of one load
+// rather than discarded after the bound, which is the one cost this adds to a
+// suite that loads cleanly: a tree and the value decoded from it, both bounded
+// by [MaxTestFileBytes], live at once instead of one after the other.
+func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, *Diagnostics) {
+	// Parsed to the AST and no further. Unmarshal resolves every alias into
+	// the destination value as it decodes, which means a billion-laughs
+	// document is already fully expanded in memory by the time any bound
+	// written against the decoded value could run.
+	//
+	// A parse failure is not reported here: the decode below meets the same
+	// malformed document and reports it in the shape a caller already expects,
+	// and reporting it twice, once from each of two parsers, would be the same
+	// fact said two different ways depending on which noticed first.
+	parsed, parseErr := parser.ParseBytes(data, 0)
+	if parseErr == nil {
+		if err := checkExpansionBoundsIn(parsed); err != nil {
+			// Unpositioned on purpose: this is a property of the document as a
+			// whole, and the walk that could name a node is the very walk
+			// refusing to run over it.
+			refused := newProblems(nil)
+			refused.report(site{}, "%s", err)
+
+			return nil, refused.err()
+		}
 	}
 
 	var file File
-	if err := yaml.UnmarshalWithOptions(data, &file, yaml.Strict()); err != nil {
-		return nil, err
+	if err := decodeStrict(data, &file); err != nil {
+		return nil, yamlProblem(err)
 	}
 
+	p := newProblems(newDocument(parsed))
+	tests := at("tests")
+
 	if len(file.Tests) == 0 {
-		return nil, fmt.Errorf("declares no tests")
+		p.report(site{at: tests}, "declares no tests")
 	}
 	if len(file.Tests) > MaxTestsPerFile {
-		return nil, fmt.Errorf("declares %d tests, more than the limit of %d",
+		// Reported and returned, not reported and carried on with. Collecting
+		// every problem is about a file whose *size* is legal: a count bound
+		// exists to stop the work it bounds, and everything below here is that
+		// work — vars resolved per case, a source recorded per case, defaults
+		// merged into each, then every per-case check. A file of tens of
+		// thousands of entries fits well inside [MaxTestFileBytes], so a bound
+		// that only annotated it would have moved the spend rather than
+		// refused it (Codex, #1179). Same rule at every count bound below.
+		p.report(site{at: tests}, "declares %d tests, more than the limit of %d",
 			len(file.Tests), MaxTestsPerFile)
+
+		return nil, p.err()
 	}
 	if stanza := file.Coverage; stanza != nil {
+		allowed := at("coverage").field("allow_unreached")
 		if len(stanza.AllowUnreached) > MaxAllowUnreachedPerFile {
-			return nil, fmt.Errorf("coverage.allow_unreached declares %d entries, more than the limit of %d",
+			p.report(site{at: allowed}, "coverage.allow_unreached declares %d entries, more than the limit of %d",
 				len(stanza.AllowUnreached), MaxAllowUnreachedPerFile)
+
+			return nil, p.err()
 		}
-		for step, reason := range stanza.AllowUnreached {
+		// Sorted, so a file with two bad entries reports them in the same
+		// order every time: a map's iteration order is not a thing anyone can
+		// write a test against, this package's own included. Every entry is
+		// judged now rather than only the first, which is the whole of the
+		// change here.
+		for _, step := range slices.Sorted(maps.Keys(stanza.AllowUnreached)) {
 			if step == "" {
-				return nil, fmt.Errorf("coverage.allow_unreached has an entry with no step id")
+				p.reportKey(site{at: allowed.field(step)}, "coverage.allow_unreached has an entry with no step id")
+
+				continue
 			}
 			// A reason is required, because an entry with none is exactly the
 			// silent gap this record exists to refuse: "a decision with a
 			// reason, never a gap." Name the offending step so the fix is
 			// obvious.
-			if strings.TrimSpace(reason) == "" {
-				return nil, fmt.Errorf("coverage.allow_unreached[%q] has no reason; "+
+			if strings.TrimSpace(stanza.AllowUnreached[step]) == "" {
+				p.reportKey(site{at: allowed.field(step)}, "coverage.allow_unreached[%q] has no reason; "+
 					"record why no case reaches this step, or remove the entry and let it be a gap", step)
 			}
 		}
+	}
+
+	// What the fold brought in from the sibling file, so a diagnostic about one
+	// of those values names the document that holds the text rather than the
+	// suite that inherited it. The counts it carries are taken before it folds,
+	// because both of the collections it merges renumber: `check:` prepends and
+	// `stubs:` appends, so afterwards an index alone no longer says which
+	// document wrote the entry it addresses.
+	moved := dd.combineInto(&file)
+	p.wrote(moved.file, moved.paths)
+
+	// Vars validate, evaluate and substitute first, before tables expand and
+	// before `defaults:` is checked: a computed var is evaluated exactly once
+	// here (#1072 slice 4), an inherited `${vars.x}` resolves to its literal
+	// exactly once, and the fixture rule below then checks what the run will
+	// actually see. That ordering is the reason evaluation is at load rather
+	// than per case — the substitution contract this comment states would
+	// otherwise have nothing to substitute.
+	if !checkVars(p, file.Vars) {
+		return nil, p.err()
+	}
+	file.evaluateVars(p)
+	file.resolveVars(p)
+
+	// Rows are expanded before defaults are merged, which is what makes the
+	// precedence chain read the way an author expects it to: a row beats its
+	// entry, and an entry beats `defaults:`. Expanding afterward would let a
+	// file-level default win over an entry's own value for a row that stated
+	// neither — one fact written down twice, disagreeing with itself.
+	//
+	// Done here rather than at run time so everything downstream — the
+	// per-test checks below, coverage, `--run`, the Go subtests — keeps
+	// reading one flat list of effective cases and needs no notion of a table.
+	expanded, sources := expandTableEntries(p, file.Tests)
+	file.Tests = expanded
+
+	// The bound is on the runs, not on the written entries: a row is a whole
+	// case, so an entry with four hundred rows costs what four hundred cases
+	// cost. Checked after expansion for that reason, and the diagnostic says
+	// "once its rows are counted" because the limit is otherwise confusing to
+	// read in a file whose `tests:` list is three items long.
+	if len(file.Tests) > MaxTestsPerFile {
+		p.report(site{at: tests},
+			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
+			len(file.Tests), MaxTestsPerFile)
+
+		return nil, p.err()
 	}
 
 	// Validated then merged before anything below bounds or checks a case, so
@@ -870,8 +1270,12 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 	// runs, not the sparse one the author wrote (issue #416). A default is a
 	// fixture, so it may hold no expression; that is refused here, by position,
 	// rather than carried into a case.
-	if err := checkDefaults(file.Defaults); err != nil {
-		return nil, err
+	//
+	// The stub count is the bound that has to stop the pass rather than be
+	// noted: a default is copied into every case below, so an over-limit block
+	// multiplies by the case count before anything checks it.
+	if !checkDefaults(p, file.Defaults, moved) {
+		return nil, p.err()
 	}
 	if file.Defaults != nil {
 		for i := range file.Tests {
@@ -879,75 +1283,237 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 		}
 	}
 
-	for i, test := range file.Tests {
+	for i := range file.Tests {
+		// The entry in file.Tests, not a loop copy: the check-claim validation
+		// below strips a tolerated whole-value fence in place, and stripping a
+		// copy would leave the fence on the claim the run reads.
+		test := &file.Tests[i]
+		source := sources[i]
+		r := site{test: test.Name, at: source.path}
+
 		if test.Name == "" {
-			return nil, fmt.Errorf("test %d has no name", i+1)
+			p.report(r, "test %d has no name", i+1)
 		}
 		if requireWorkflow && test.Workflow == "" {
-			return nil, fmt.Errorf("test %q names no workflow", test.Name)
+			p.report(r, "test %q names no workflow", test.Name)
 		}
+		// Each of these three stops this case rather than annotating it, for
+		// the reason the file-level counts return: the work each bounds — a
+		// reference parsed per secret, an identity checked per signal, five
+		// shape checks per stub — is what runs immediately below, and a case
+		// can hold tens of thousands of any of them inside a legal file. The
+		// loop itself is bounded, because a file over [MaxTestsPerFile] never
+		// reaches it.
 		if len(test.Stubs) > MaxStubsPerTest {
-			return nil, fmt.Errorf("test %q declares %d stubs, more than the limit of %d",
+			p.report(r.in(source.path.field("stubs")), "test %q declares %d stubs, more than the limit of %d",
 				test.Name, len(test.Stubs), MaxStubsPerTest)
+
+			continue
 		}
 		if len(test.Signals) > MaxSignalsPerTest {
-			return nil, fmt.Errorf("test %q declares %d signals, more than the limit of %d",
+			p.report(r.in(source.path.field("signals")), "test %q declares %d signals, more than the limit of %d",
 				test.Name, len(test.Signals), MaxSignalsPerTest)
+
+			continue
 		}
 		if len(test.Secrets) > MaxSecretsPerTest {
-			return nil, fmt.Errorf("test %q declares %d secrets, more than the limit of %d",
+			p.report(r.in(source.path.field("secrets")), "test %q declares %d secrets, more than the limit of %d",
 				test.Name, len(test.Secrets), MaxSecretsPerTest)
+
+			continue
 		}
-		for ref := range test.Secrets {
+		for _, reference := range slices.Sorted(maps.Keys(test.Secrets)) {
 			// Checked while the reference is still text, so a malformed
 			// `secrets:` key fails when the file loads rather than the first
 			// time a case happens to invoke a task naming it — the same
 			// timing [secrets.ParseRef]'s own doc gives for a Flowfile.
-			if _, err := secrets.ParseRef(ref); err != nil {
-				return nil, fmt.Errorf("test %q secrets: %w", test.Name, err)
+			if _, err := secrets.ParseRef(reference); err != nil {
+				p.reportKey(r.in(source.path.field("secrets").field(reference)),
+					"test %q secrets: %s", test.Name, err)
 			}
 		}
-		if err := checkScriptedIdentity(fmt.Sprintf("test %q starter:", test.Name), test.Starter); err != nil {
-			return nil, err
-		}
-		for j, signal := range test.Signals {
+		checkScriptedIdentity(p, r.in(source.path.field("starter")),
+			fmt.Sprintf("test %q starter:", test.Name), test.Starter)
+		checkCheckClaims(p, r.in(source.path.field("expect").field("check")),
+			// A case's inherited claims came from a block or an entry this
+			// path does not reach, so there is no document to name for them.
+			fmt.Sprintf("test %q expect", test.Name), test.Expect.Check, source.ownChecks, "")
+		for j := range test.Signals {
+			signal := &test.Signals[j]
+			// The identity [mergeDefaults] installed on a signal that wrote no
+			// `sender:` is the `defaults:` block's own, judged there a moment
+			// ago — where it is addressable and where the file that wrote it is
+			// known. Judging the same identity again here would report one
+			// mistake once per inheriting signal, against a path no document
+			// holds. Compared by pointer because that is exactly what the merge
+			// installed: a signal's own sender is its own value, and is judged.
+			if file.Defaults != nil && signal.Sender != nil && signal.Sender == file.Defaults.Sender {
+				continue
+			}
 			// Checked at load, alongside every other shape check in this
 			// loop, rather than when the scripted goroutine delivers: a
 			// delivery refused there disappears the way a production
 			// PermissionDenied does (see [v1.LocalSignals.DeliverFrom]), so
 			// the case would report a gate that timed out and never the
 			// mistake in the file that caused it.
-			if err := checkScriptedIdentity(
+			checkScriptedIdentity(p,
+				r.in(source.path.field("signals").item(j).field("sender")),
 				fmt.Sprintf("test %q signal %d (%q) sender:", test.Name, j+1, signal.Name),
 				signal.Sender,
-			); err != nil {
-				return nil, err
+			)
+		}
+		for j := range test.Stubs {
+			stub := &test.Stubs[j]
+			// A stub [mergeDefaults] copied in from the `defaults:` block was
+			// judged there a moment ago, where it is addressable and where the
+			// file that wrote it is known. Judging the copy again would report
+			// one mistake once per case, against a merged index that for a
+			// directory-written stub addresses neither document — the same two
+			// failures the block's claims and its sender were fixed for
+			// (Codex, #1185). A stub inherited from a table entry is nobody
+			// else's to judge and is judged here.
+			where, judgedAtTheBlock := source.stubOrigin(j, stub, file.Defaults)
+			if judgedAtTheBlock {
+				continue
 			}
+			checkStubShape(p, r.in(where), fmt.Sprintf("test %q stub %d", test.Name, j+1), stub)
 		}
-		for j, stub := range test.Stubs {
-			switch {
-			case stub.Task == "" && stub.Step == "":
-				return nil, fmt.Errorf("test %q stub %d names neither a task nor a step; "+
-					"give one, either `task: <name>` or `step: <id>`", test.Name, j+1)
-			case stub.Task != "" && stub.Step != "":
-				return nil, fmt.Errorf("test %q stub %d names both a task (%q) and a step (%q); "+
-					"a stub targets one or the other, never both", test.Name, j+1, stub.Task, stub.Step)
-			}
-			if stub.Returns != nil && stub.Fails != nil {
-				return nil, fmt.Errorf(
-					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
-					test.Name, j+1, stubTarget(&stub))
-			}
-		}
-		if err := checkOthers(&test); err != nil {
-			return nil, err
-		}
-		if err := checkTrigger(&test, requireWorkflow); err != nil {
-			return nil, err
-		}
+		checkOthers(p, r, test)
+		checkTrigger(p, r, test, requireWorkflow)
+	}
+
+	if refused := p.err(); refused != nil {
+		return nil, refused
 	}
 
 	return &file, nil
+}
+
+// A caseSource is where one effective case was written, and how much of it the
+// case wrote for itself.
+//
+// The path is not `tests[i]` for every case: a table's rows expand into the
+// flat list every check below reads, so case i may have been written at
+// `tests[3].cases[2]`. Recomputing that from the index afterward is impossible,
+// which is why it travels from the expansion that knows it.
+//
+// The two counts exist because merging shifts indices. A case's own stubs come
+// first in the merged list and its own check claims come last, so a merged
+// index inside those runs addresses something the case wrote, and one outside
+// them addresses something it inherited — which has no position in this
+// document, and must not borrow the case's.
+type caseSource struct {
+	// path addresses the case in the source.
+	path loc
+
+	// ownStubs is how many of the merged `stubs:` the case wrote itself,
+	// counted before any `defaults:` were folded in.
+	ownStubs int
+
+	// ownChecks is how many of the merged `expect.check:` claims the case
+	// wrote itself, counted the same way.
+	ownChecks int
+}
+
+// stubOrigin says where stub j of a merged case was written: the path this
+// document addresses it at, and whether the `defaults:` block already answered
+// for it.
+//
+// A case's own stub has a path here. An inherited one has none — a position on
+// the case would underline a stub the case did not write — and the question that
+// remains is which document owes the diagnostic. A stub the `defaults:` block
+// holds was judged by [checkDefaults] a moment ago, where it is addressable and
+// where the file that wrote it is known, so judging the copy again would report
+// one mistake once per case; a stub that matches nothing there came from the
+// case's table entry, which nothing else judges, and is judged in the case.
+//
+// The block is searched by value, and accepting a match only when the two stubs
+// are the same value is the whole of the rule: a case can inherit an identical
+// stub from its table entry while a file default of the same target sits unused
+// beside it, and the two say the same thing about the same shape, so answering
+// once at the block is the report an author can act on.
+//
+// The mark [Stub.fromDefaults] cannot answer that question, and finding out
+// nearly cost a fail-open regression the tests now pin: [mergeRow] folds a table
+// entry through [mergeDefaults] with the entry standing in as the block, so an
+// entry's stubs carry the mark too — and skipping on it left an entry's
+// malformed stub judged by nobody at all.
+func (c caseSource) stubOrigin(j int, stub *Stub, defaults *Defaults) (loc, bool) {
+	if j < c.ownStubs {
+		return c.path.field("stubs").item(j), false
+	}
+	if defaults == nil {
+		return nil, false
+	}
+	for k := range defaults.Stubs {
+		// Compared with the provenance mark set aside, since it is what the
+		// merge stamped on the copy and never something a document wrote.
+		candidate := defaults.Stubs[k]
+		candidate.fromDefaults = stub.fromDefaults
+		if reflect.DeepEqual(candidate, *stub) {
+			return nil, true
+		}
+	}
+
+	return nil, false
+}
+
+// checkStubShape refuses a stub whose fields contradict each other, naming it as
+// where — `test "the rollback" stub 2`, or `defaults.stubs[0]`.
+//
+// One list, two callers: a case's own stubs and the `defaults:` block's. Written
+// out twice they would drift, and a drift here means a mistake refused in a case
+// and accepted in the block every case inherits from.
+//
+// Answers whether the stub was found coherent enough to keep judging. The target
+// decides what a stub *is*, so a stub that names none or names two is not judged
+// further: every check below quotes [stubTarget], which for a targetless stub
+// reads `task ""` — a second diagnostic about a stub the first one already said
+// does not identify anything, spending the report's bound on a cascade (Codex,
+// #1179). Same rule as the trigger stanza that names both a webhook and a kind.
+func checkStubShape(p *problems, spot site, where string, stub *Stub) bool {
+	switch {
+	case stub.Task == "" && stub.Step == "":
+		p.report(spot, "%s names neither a task nor a step; "+
+			"give one, either `task: <name>` or `step: <id>`", where)
+
+		return false
+	case stub.Task != "" && stub.Step != "":
+		p.report(spot, "%s names both a task (%q) and a step (%q); "+
+			"a stub targets one or the other, never both", where, stub.Task, stub.Step)
+
+		return false
+	}
+	if stub.Returns != nil && stub.Fails != nil {
+		p.report(spot,
+			"%s for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
+			where, stubTarget(stub))
+	}
+	if stub.Response != nil && stub.Returns != nil {
+		p.report(spot,
+			"%s for %s declares both response and returns; a stub answers with a raw "+
+				"response the task interprets, or with outputs already shaped, not both",
+			where, stubTarget(stub))
+	}
+	if stub.Response != nil && stub.Fails != nil {
+		p.report(spot,
+			"%s for %s declares both response and fails; a failing response is a "+
+				"response — write the status the failure would carry, and let the step's own "+
+				"expect: decide",
+			where, stubTarget(stub))
+	}
+	// `times: 0` is refused rather than read as "never answers": a stub that can
+	// answer nothing asserts nothing, and an author who wrote 0 meant something —
+	// most likely deleting the stub, or the unbounded default they get by writing
+	// no `times:` at all. Negative is the same mistake with less ambiguity.
+	if stub.Times != nil && *stub.Times <= 0 {
+		p.report(spot,
+			"%s for %s declares times: %d, which is a stub that never answers; "+
+				"delete the stub, or drop `times:` for the unbounded default",
+			where, stubTarget(stub), *stub.Times)
+	}
+
+	return true
 }
 
 // stubTarget names a stub by what it targets, for a diagnostic: `task "http"`
@@ -984,13 +1550,14 @@ func stubTargetKey(s *Stub) string {
 // checkOthers refuses an `expect.others:` value that is not the one thing the
 // field is allowed to say, named by its position (CLAUDE.md, "diagnostics are a
 // feature"). Empty is fine: it means the `ran:` claim stays open.
-func checkOthers(test *Test) error {
+func checkOthers(p *problems, r site, test *Test) {
 	switch test.Expect.Others {
 	case "", OthersSkipped:
-		return nil
+		return
 	default:
-		return fmt.Errorf("test %q expect.others: %q is not a value it accepts; the only value is %q, "+
-			"which asserts every step not named in `ran:` was skipped",
+		p.report(r.in(r.at.field("expect").field("others")),
+			"test %q expect.others: %q is not a value it accepts; the only value is %q, "+
+				"which asserts every step not named in `ran:` was skipped",
 			test.Name, test.Expect.Others, OthersSkipped)
 	}
 }
@@ -1003,56 +1570,70 @@ func checkOthers(test *Test) error {
 // exists. requireWorkflow is false for [LoadSource], which has no directory to
 // resolve a payload path against — the same reason a case's `workflow:` is not
 // required there.
-func checkTrigger(test *Test, requireWorkflow bool) error {
+//
+// The one place this stops rather than collecting is the stanza that names both
+// a webhook and a kind: it is two stanzas written as one, and every rule below
+// reads it as whichever of the two it happens to look like. Judging its inside
+// would report problems with a shape the author never wrote (see [problems]).
+func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
+	stanza := r.in(r.at.field("trigger"))
+
 	trigger := test.Trigger
 	if trigger == nil {
 		if test.Expect.Refused != nil {
-			return fmt.Errorf("test %q expects a refusal but replays no delivery; a refusal is what a "+
-				"`trigger:` produces, so give the case one", test.Name)
+			p.report(r.in(r.at.field("expect").field("refused")),
+				"test %q expects a refusal but replays no delivery; a refusal is what a "+
+					"`trigger:` produces, so give the case one", test.Name)
 		}
 		if test.Expect.Inputs != nil {
-			return fmt.Errorf("test %q expects mapped inputs but replays no delivery; `expect.inputs:` "+
-				"asserts what a `trigger:` produced, and a case that states its own `inputs:` already "+
-				"knows them", test.Name)
+			p.report(r.in(r.at.field("expect").field("inputs")),
+				"test %q expects mapped inputs but replays no delivery; `expect.inputs:` "+
+					"asserts what a `trigger:` produced, and a case that states its own `inputs:` already "+
+					"knows them", test.Name)
 		}
-		return nil
+
+		return
 	}
 
 	if trigger.Webhook != "" && trigger.Kind != "" {
-		return fmt.Errorf("test %q trigger: names both a webhook (%q) and a kind (%q); a stanza either "+
+		p.report(stanza, "test %q trigger: names both a webhook (%q) and a kind (%q); a stanza either "+
 			"replays a delivery, which decides the context, or states the context outright, which "+
 			"needs no delivery — never both, because the two could disagree about the same run",
 			test.Name, trigger.Webhook, trigger.Kind)
+
+		return
 	}
 
 	if !trigger.Replays() {
-		return checkTriggerContext(test, trigger)
+		checkTriggerContext(p, r, test, trigger)
+
+		return
 	}
 
 	if trigger.Payload == "" {
-		return fmt.Errorf("test %q trigger %q: names no payload; write `payload: ./testdata/<file>.json`, "+
+		p.report(stanza, "test %q trigger %q: names no payload; write `payload: ./testdata/<file>.json`, "+
 			"a stored delivery with `headers` and `body`", test.Name, trigger.Webhook)
 	}
 	if !requireWorkflow {
-		return fmt.Errorf("test %q trigger %q: a delivery is read relative to the test file's own "+
+		p.report(stanza, "test %q trigger %q: a delivery is read relative to the test file's own "+
 			"directory, and these cases were given as bytes with no directory to resolve it against",
 			test.Name, trigger.Webhook)
 	}
 	switch trigger.Signature {
 	case "", SignatureValid, SignatureInvalid:
 	default:
-		return fmt.Errorf("test %q trigger %q: signature: %q is not a value it accepts; write %q or %q, "+
-			"which say whether this delivery verified — there is no third answer, because a delivery "+
-			"that could not be checked is refused exactly as one that failed a check",
+		p.report(stanza.in(stanza.at.field("signature")),
+			"test %q trigger %q: signature: %q is not a value it accepts; write %q or %q, "+
+				"which say whether this delivery verified — there is no third answer, because a delivery "+
+				"that could not be checked is refused exactly as one that failed a check",
 			test.Name, trigger.Webhook, trigger.Signature, SignatureValid, SignatureInvalid)
 	}
 	if len(test.Inputs) > 0 {
-		return fmt.Errorf("test %q trigger %q: the case also states `inputs:`; a trigger case's inputs "+
-			"come from the delivery, so stating them here would override the mapping the case exists "+
-			"to check", test.Name, trigger.Webhook)
+		p.report(r.in(r.at.field("inputs")),
+			"test %q trigger %q: the case also states `inputs:`; a trigger case's inputs "+
+				"come from the delivery, so stating them here would override the mapping the case exists "+
+				"to check", test.Name, trigger.Webhook)
 	}
-
-	return nil
 }
 
 // checkTriggerContext refuses a directly-stated trigger context that cannot mean
@@ -1068,17 +1649,24 @@ func checkTrigger(test *Test, requireWorkflow bool) error {
 //
 // The other three fields are free strings, because they are: a name, a subject
 // and a delivery id are whatever the trigger that produced them said.
-func checkTriggerContext(test *Test, trigger *TriggerDelivery) error {
+func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelivery) {
+	stanza := r.in(r.at.field("trigger"))
+
 	if trigger.Kind == "" {
-		return fmt.Errorf("test %q trigger: says neither how the run started nor what delivery started "+
+		// Nothing below can be judged: every remaining rule here is about what
+		// a stated context may sit beside, and this stanza states none.
+		p.report(stanza, "test %q trigger: says neither how the run started nor what delivery started "+
 			"it; write `kind: <%s>` to state the context a run reads as `${%s.kind}`, or `webhook: "+
 			"<name>` with a `payload:` to replay a stored delivery",
 			test.Name, strings.Join(v1.TriggerKinds(), "|"), v1.TriggerRoot)
+
+		return
 	}
 
 	if !v1.KnownTriggerKind(trigger.Kind) {
-		return fmt.Errorf("test %q trigger: kind: %q is not a kind Flowstate starts runs with; the kinds "+
-			"are %s. A case stating one that cannot occur asserts a branch is never taken, and passes",
+		p.report(stanza.in(stanza.at.field("kind")),
+			"test %q trigger: kind: %q is not a kind Flowstate starts runs with; the kinds "+
+				"are %s. A case stating one that cannot occur asserts a branch is never taken, and passes",
 			test.Name, trigger.Kind, strings.Join(v1.TriggerKinds(), ", "))
 	}
 
@@ -1088,24 +1676,24 @@ func checkTriggerContext(test *Test, trigger *TriggerDelivery) error {
 		// than ignored, because an assertion nothing evaluates is a test that
 		// reports success for a claim it never checked — the one outcome a harness
 		// must not have.
-		return fmt.Errorf("test %q trigger: states a context and expects mapped inputs; `expect.inputs:` "+
-			"asserts what replaying a delivery produced, and a case that states its own `inputs:` "+
-			"already knows them", test.Name)
+		p.report(r.in(r.at.field("expect").field("inputs")),
+			"test %q trigger: states a context and expects mapped inputs; `expect.inputs:` "+
+				"asserts what replaying a delivery produced, and a case that states its own `inputs:` "+
+				"already knows them", test.Name)
 	}
 
 	if trigger.Payload != "" || trigger.Signature != "" {
-		return fmt.Errorf("test %q trigger: states a context (`kind: %s`) and also a delivery; a payload "+
+		p.report(stanza, "test %q trigger: states a context (`kind: %s`) and also a delivery; a payload "+
 			"and a signature belong to a replay, which is written `webhook: <name>` and derives its own "+
 			"context", test.Name, trigger.Kind)
 	}
 
 	if test.Expect.Refused != nil {
-		return fmt.Errorf("test %q trigger: states a context and expects a refusal; a refusal is what "+
-			"replaying an unverifiable *delivery* produces, and a stated context starts the run it "+
-			"describes", test.Name)
+		p.report(r.in(r.at.field("expect").field("refused")),
+			"test %q trigger: states a context and expects a refusal; a refusal is what "+
+				"replaying an unverifiable *delivery* produces, and a stated context starts the run it "+
+				"describes", test.Name)
 	}
-
-	return nil
 }
 
 // checkDefaults refuses a `defaults:` block that holds an expression anywhere,
@@ -1115,64 +1703,134 @@ func checkTriggerContext(test *Test, trigger *TriggerDelivery) error {
 // block's stub list, since a default is copied into every case and so its size
 // multiplies.
 //
-// Positioned the way the rest of this loader positions a diagnostic: by naming
-// the field a reader has to look at (`defaults.inputs.version`,
-// `defaults.stubs[0].returns.reference`, `defaults.sender.claims`), a
-// *.test.yaml being identified throughout here by name rather than by line and
-// column (see [checkScriptedIdentity]).
-func checkDefaults(d *Defaults) error {
+// Named the way the rest of this loader names a diagnostic — the field a
+// reader has to look at (`defaults.inputs.version`,
+// `defaults.stubs[0].returns.reference`, `defaults.sender.claims`) — and
+// positioned at it as well, where this document is the one that wrote it. A
+// default folded in from a directory's `testdefaults.yaml` has no position in
+// this file, and reports none rather than borrowing the suite's.
+// Reports false when the stub count stopped it, which the loader takes as a
+// refusal of the whole document rather than one more diagnostic: an
+// over-limit block is copied into every case a moment later, so this is the
+// one bound here whose overrun multiplies.
+//
+// from is what the directory's fold moved in, which is how the two collections
+// it renumbers are named after the file that wrote them: see [contribution].
+func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 	if d == nil {
-		return nil
+		return true
 	}
+
+	base := at("defaults")
 	if len(d.Stubs) > MaxDefaultStubs {
-		return fmt.Errorf("defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+		p.report(site{at: base.field("stubs")},
+			"defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+
+		return false
 	}
-	for name, v := range d.Inputs {
-		if err := checkNoExpressions("defaults.inputs."+name, v, 0); err != nil {
-			return err
-		}
+	checkNoExpressions(p, site{at: base.field("workflow")}, "defaults.workflow", defaultsAreFixtures, d.Workflow, 0)
+	for _, name := range slices.Sorted(maps.Keys(d.Inputs)) {
+		checkNoExpressions(p, site{at: base.field("inputs").field(name)},
+			"defaults.inputs."+name, defaultsAreFixtures, d.Inputs[name], 0)
 	}
 	for i := range d.Stubs {
-		s := d.Stubs[i]
-		where := fmt.Sprintf("defaults.stubs[%d]", i)
-		if err := checkNoExpressions(where+".where", s.Where, 0); err != nil {
-			return err
+		s := &d.Stubs[i]
+		index, elsewhere := from.stubWrittenElsewhere(i)
+		// Numbered the way the document that wrote it numbers it, and named
+		// after that document: a stub the fold appended sits at an index the
+		// directory's file does not use, so both the path and the prose have to
+		// count from *its* list or a reader is sent to an entry that is not
+		// there (Codex, #1185).
+		spot := site{at: base.field("stubs").item(index)}
+		if elsewhere {
+			spot.file = from.file
 		}
-		if err := checkNoExpressions(where+".returns", s.Returns, 0); err != nil {
-			return err
+		where := fmt.Sprintf("defaults.stubs[%d]", index)
+		// Judged here, once, rather than once per case that inherits it. The
+		// same rule the block's claims and its sender already follow, and the
+		// last field of a `defaults:` block that did not: [mergeDefaults] copies
+		// a stub into every case, so judging the copies reported one mistake
+		// once per case — against a merged index, which for a directory-written
+		// stub addressed neither document.
+		if !checkStubShape(p, spot, where, s) {
+			continue
 		}
+		checkNoExpressions(p, spot.in(spot.at.field("where")), where+".where", defaultsAreFixtures, s.Where, 0)
+		checkNoExpressions(p, spot.in(spot.at.field("returns")), where+".returns", defaultsAreFixtures, s.Returns, 0)
 	}
 	if d.Sender != nil {
-		if err := checkNoExpressions("defaults.sender", d.Sender, 0); err != nil {
-			return err
-		}
+		checkNoExpressions(p, site{at: base.field("sender")}, "defaults.sender", defaultsAreFixtures, d.Sender, 0)
+		// Judged here, where it is written, rather than only on the signals
+		// that inherit it. [mergeDefaults] installs this one identity on every
+		// signal that omits its own, so checking it there alone reported one
+		// mistake once per inheriting signal — and reported it against a path
+		// no document holds, which cost the sibling file its name (Codex,
+		// #1185). This is the rule the block's own expression check has always
+		// followed: a default is refused where an author can see it, whether or
+		// not a case happens to reach it.
+		checkScriptedIdentity(p, site{at: base.field("sender")}, "defaults.sender:", d.Sender)
 	}
-	return nil
+	// The inherited claims here are the directory file's own, prepended — named
+	// after that file rather than addressed by an index the two documents share.
+	checkCheckClaims(p, site{at: base.field("check")}, "defaults", d.Check, from.ownChecks, from.file)
+
+	return true
 }
 
-// checkNoExpressions descends a default value and refuses the first string that
-// carries a `${` fence, naming its position. The bound on depth is the
-// fail-closed answer to a pathological fixture rather than a constraint on an
-// ordinary one (CLAUDE.md, "bound anything that consumes untrusted input"): the
-// walk is recursive, so recursion gets its own bound.
-func checkNoExpressions(where string, v any, depth int) error {
+// A fixtureRule is the second sentence a `${...}` refusal carries: which block
+// the value sits in, and what to write instead.
+//
+// Passed rather than derived from the field path, because the path is prose:
+// a rule that read its own noun back out of a string would be one textual
+// search away from the mistake this type was added to fix, where every var
+// refused for holding an expression was told that "a test file's `defaults:`
+// is a fixture" (#1072, repair 5).
+type fixtureRule string
+
+const (
+	// defaultsAreFixtures is #416's rule, in the block it was written for.
+	defaultsAreFixtures fixtureRule = "a test file's `defaults:` is a fixture, so it may not hold an " +
+		"expression. Write the literal value, or move it into the case that needs it"
+
+	// varsFenceWholeValues is the same refusal where an expression *is* legal —
+	// as the whole value, never inside a structure, which is the rule every
+	// reference position in a test file already follows.
+	varsFenceWholeValues fixtureRule = "a var holds a literal, or one whole-value `${...}` expression; " +
+		"a fence inside a structure is not evaluated. State it literally, or build the structure in " +
+		"one expression: `${{'region': vars.base.region}}`"
+)
+
+// checkNoExpressions descends a value and refuses every string that carries a
+// `${` fence, naming and positioning each and closing with rule's sentence.
+// The bound on depth is the fail-closed answer to a pathological fixture
+// rather than a constraint on an ordinary one (CLAUDE.md, "bound anything that
+// consumes untrusted input"): the walk is recursive, so recursion gets its own
+// bound.
+//
+// The prose path and the source path descend together, one line apart at every
+// step, so the name a reader is given and the line they are sent to cannot come
+// to disagree.
+func checkNoExpressions(p *problems, r site, where string, rule fixtureRule, v any, depth int) {
 	if depth > maxDefaultsDepth {
-		return fmt.Errorf("%s: nests more than %d levels deep, deeper than a default is meant to go",
+		// Reported once and not descended into: every level below this one
+		// would report the same fact about the same value.
+		p.report(r, "%s: nests more than %d levels deep, deeper than a default is meant to go",
 			where, maxDefaultsDepth)
+
+		return
 	}
 	switch value := v.(type) {
 	case nil:
-		return nil
+		return
 	case string:
 		if strings.Contains(value, "${") {
-			return fmt.Errorf("%s holds the expression %q; a test file's `defaults:` is a fixture, "+
-				"so it may not hold an expression. Write the literal value, or move it into the case that needs it",
-				where, value)
+			p.report(r, "%s holds the expression %q; %s", where, value, rule)
 		}
-		return nil
+
+		return
 	case *ScriptedIdentity:
 		if value == nil {
-			return nil
+			return
 		}
 		for _, field := range []struct {
 			name  string
@@ -1182,23 +1840,20 @@ func checkNoExpressions(where string, v any, depth int) error {
 			{"issuer", value.Issuer},
 			{"namespace", value.Namespace},
 		} {
-			if err := checkNoExpressions(where+"."+field.name, field.value, depth+1); err != nil {
-				return err
-			}
+			checkNoExpressions(p, r.in(r.at.field(field.name)), where+"."+field.name, rule, field.value, depth+1)
 		}
 		for _, name := range slices.Sorted(maps.Keys(value.Claims)) {
-			if err := checkNoExpressions(where+".claims."+name, value.Claims[name], depth+1); err != nil {
-				return err
-			}
+			checkNoExpressions(p, r.in(r.at.field("claims").field(name)),
+				where+".claims."+name, rule, value.Claims[name], depth+1)
 		}
-		return nil
+
+		return
 	case []any:
 		for i, element := range value {
-			if err := checkNoExpressions(fmt.Sprintf("%s[%d]", where, i), element, depth+1); err != nil {
-				return err
-			}
+			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i), rule, element, depth+1)
 		}
-		return nil
+
+		return
 	}
 
 	// A nested mapping a YAML decoder hands back is its own choice of type, so
@@ -1207,23 +1862,28 @@ func checkNoExpressions(where string, v any, depth int) error {
 	// nothing "diagnostics are a feature" forbids. Mirrors [compileReturnValue].
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		// Sorted for the reason every map walk here is sorted: the order a
+		// file's problems are found in must be a property of the file.
+		keys := make([]string, 0, rv.Len())
 		for _, key := range rv.MapKeys() {
-			if err := checkNoExpressions(where+"."+key.String(), rv.MapIndex(key).Interface(), depth+1); err != nil {
-				return err
-			}
+			keys = append(keys, key.String())
 		}
-		return nil
+		slices.Sort(keys)
+		for _, key := range keys {
+			checkNoExpressions(p, r.in(r.at.field(key)), where+"."+key, rule,
+				rv.MapIndex(reflect.ValueOf(key).Convert(rv.Type().Key())).Interface(), depth+1)
+		}
+
+		return
 	}
 	if rv.Kind() == reflect.Slice {
-		for i := 0; i < rv.Len(); i++ {
-			if err := checkNoExpressions(fmt.Sprintf("%s[%d]", where, i), rv.Index(i).Interface(), depth+1); err != nil {
-				return err
-			}
+		for i := range rv.Len() {
+			checkNoExpressions(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i), rule,
+				rv.Index(i).Interface(), depth+1)
 		}
-		return nil
-	}
 
-	return nil
+		return
+	}
 }
 
 // mergeDefaults folds a file's `defaults:` into one case, producing the
@@ -1236,6 +1896,15 @@ func checkNoExpressions(where string, v any, depth int) error {
 // slices are the author's, and a second case merging the same defaults must see
 // them untouched.
 func mergeDefaults(d *Defaults, test Test) Test {
+	// Workflow: explicit beats inherited, the same one direction Sender
+	// takes. Merged before anything resolves, so the inherited path is
+	// resolved relative to the test file exactly as a stated one would be —
+	// and idempotently, since a merged case carries the value and never
+	// takes it again.
+	if d.Workflow != "" && test.Workflow == "" {
+		test.Workflow = d.Workflow
+	}
+
 	// Inputs: one level. Start from the defaults, then let the case replace
 	// whole keys. A nested map under a key is replaced wholesale by the case's,
 	// not deep-merged, which is the "one level" the rules promise.
@@ -1271,7 +1940,12 @@ func mergeDefaults(d *Defaults, test Test) Test {
 			if replaced[stubTargetKey(&d.Stubs[i])] {
 				continue
 			}
-			merged = append(merged, d.Stubs[i])
+			inherited := d.Stubs[i]
+			// Marked on the appended copy, never on the file's own entry: a
+			// second case merging the same defaults must see them untouched,
+			// per this function's contract above.
+			inherited.fromDefaults = true
+			merged = append(merged, inherited)
 		}
 		test.Stubs = merged
 	}
@@ -1279,6 +1953,21 @@ func mergeDefaults(d *Defaults, test Test) Test {
 	// Sender: explicit beats inherited. A signal that named its own sender
 	// keeps it; only one that omitted `sender:` inherits the default (the
 	// resolved open question in #416).
+	// Check accumulates rather than overriding: the file's claims and the
+	// case's all hold, inherited first so a failure lists them in the order
+	// a reader meets them in the file. A fresh slice — a second case merging
+	// the same defaults must see them untouched — and marked, because this
+	// fold runs twice on the Go door and a prepend is the one merge here
+	// that is not idempotent by shape (see [CheckClaim].fromDefaults).
+	if len(d.Check) > 0 && !slices.ContainsFunc(test.Expect.Check, func(c CheckClaim) bool { return c.fromDefaults }) {
+		inherited := make([]CheckClaim, 0, len(d.Check)+len(test.Expect.Check))
+		for _, claim := range d.Check {
+			claim.fromDefaults = true
+			inherited = append(inherited, claim)
+		}
+		test.Expect.Check = append(inherited, test.Expect.Check...)
+	}
+
 	if d.Sender != nil && len(test.Signals) > 0 {
 		signals := make([]SignalScript, len(test.Signals))
 		copy(signals, test.Signals)
@@ -1296,10 +1985,7 @@ func mergeDefaults(d *Defaults, test Test) Test {
 // WorkflowPath resolves a test's `workflow:` relative to the *.test.yaml file
 // that declared it.
 func WorkflowPath(testFile string, test *Test) string {
-	if filepath.IsAbs(test.Workflow) {
-		return test.Workflow
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Workflow)
+	return workflowPathIn(filepath.Dir(testFile), test)
 }
 
 // DeliveryPath resolves a trigger case's `payload:` the same way [WorkflowPath]
@@ -1308,11 +1994,5 @@ func WorkflowPath(testFile string, test *Test) string {
 //
 // Empty for a case that replays nothing.
 func DeliveryPath(testFile string, test *Test) string {
-	if test.Trigger == nil || test.Trigger.Payload == "" {
-		return ""
-	}
-	if filepath.IsAbs(test.Trigger.Payload) {
-		return test.Trigger.Payload
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Trigger.Payload)
+	return deliveryPathIn(filepath.Dir(testFile), test)
 }

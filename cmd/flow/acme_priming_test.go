@@ -2,17 +2,29 @@ package main
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math/big"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -150,6 +162,196 @@ func TestACMEPrimingNamesEveryHostItCouldNotObtain(t *testing.T) {
 			"the joined error should name every host that failed, so a partial failure is "+
 				"legible; missing %s", host)
 	}
+}
+
+// TestACMEPrimingRequestsBothCertKeyVariants is #966's core property, made
+// concrete against autocert's own cache-key derivation.
+//
+// [autocert.Manager.GetCertificate] keys the certificate it looks up (and, on
+// a miss, the one it issues) on
+// certKey{domain, isRSA: !supportsECDSA(hello)}, and certKey.String() renders
+// that as the bare domain for the default-ECDSA slot and "domain+rsa" for the
+// legacy-RSA slot (golang.org/x/crypto/acme/autocert@v0.55.0, autocert.go:
+// 210-224, 296-298). Priming that calls GetCertificate with only one shape of
+// hello therefore warms only one of those two cache entries — which is
+// exactly #966's defect, since a real ClientHello can select either one.
+//
+// This drives primeACMECertificates against a Cache that records every key
+// [autocert.Cache.Get] is asked for and always reports a miss, so neither
+// lookup can accidentally succeed and short-circuit the other. The real ACME
+// client points at loopback on a port nothing listens on, so any attempt to
+// actually issue fails immediately with a local connection error rather than
+// hanging on a network this sandbox may not have — the assertion that
+// matters runs before that error path is even reached.
+func TestACMEPrimingRequestsBothCertKeyVariants(t *testing.T) {
+	t.Parallel()
+
+	cache := &keyRecordingCache{}
+	manager := &autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		HostPolicy: autocert.HostWhitelist("both-keys.example.com"),
+		Cache:      cache,
+		Client:     &acme.Client{DirectoryURL: "http://127.0.0.1:1/"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// An error is expected and irrelevant here: nothing at 127.0.0.1:1
+	// answers, so both variants fail issuance. What this test asserts is
+	// which cache keys were asked for on the way there.
+	_ = primeACMECertificates(ctx, manager, []string{"both-keys.example.com"})
+
+	assert.Contains(t, cache.keysRead(), "both-keys.example.com",
+		"priming never asked the cache for the default-ECDSA certKey (the bare domain); "+
+			"a client whose hello selects that slot would still pay for lazy issuance")
+	assert.Contains(t, cache.keysRead(), "both-keys.example.com+rsa",
+		"priming never asked the cache for the legacy-RSA certKey (domain+\"+rsa\"); "+
+			"a client whose hello selects that slot would still pay for lazy issuance")
+}
+
+// TestACMEPrimingServesEitherCertKeyVariantWithoutIssuance is the negative
+// direction #946 lacked, stated the way #966 asks for it: once priming has
+// run — modeled here by a cache that already holds a valid certificate under
+// both certKey shapes, the state priming is meant to leave behind — a
+// handshake selecting *either* certKey must be served from that cache, not
+// send the connection down autocert's lazy issuance path.
+//
+// The ACME client points at loopback on a port nothing listens on, so if
+// GetCertificate reached createCert for either variant this would return an
+// error (a local connection refusal, not a hang) instead of the certificate
+// this test asserts it gets back — that failure mode is what makes the
+// "no issuance" claim checkable without a real CA.
+func TestACMEPrimingServesEitherCertKeyVariantWithoutIssuance(t *testing.T) {
+	t.Parallel()
+
+	const host = "primed.example.com"
+	cache := autocert.DirCache(t.TempDir())
+	manager := &autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		HostPolicy: autocert.HostWhitelist(host),
+		Cache:      cache,
+		Client:     &acme.Client{DirectoryURL: "http://127.0.0.1:1/"},
+	}
+
+	ctx := context.Background()
+	require.NoError(t, cache.Put(ctx, host, selfSignedCertPEM(t, host, false)),
+		"seeding the default-ECDSA certKey's cache entry")
+	require.NoError(t, cache.Put(ctx, host+"+rsa", selfSignedCertPEM(t, host, true)),
+		"seeding the legacy-RSA certKey's cache entry")
+
+	for _, tc := range []struct {
+		name  string
+		ecdsa bool
+	}{
+		{"default-ECDSA hello", true},
+		{"legacy-RSA hello", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hello := &tls.ClientHelloInfo{ServerName: host}
+			if tc.ecdsa {
+				hello.CipherSuites = []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256}
+			}
+
+			done := make(chan struct {
+				cert *tls.Certificate
+				err  error
+			}, 1)
+			go func() {
+				cert, err := manager.GetCertificate(hello)
+				done <- struct {
+					cert *tls.Certificate
+					err  error
+				}{cert, err}
+			}()
+
+			select {
+			case result := <-done:
+				require.NoError(t, result.err,
+					"a hello selecting the %s certKey should be served from the primed cache, "+
+						"not fall through to issuance against an unreachable CA", tc.name)
+				assert.NotNil(t, result.cert)
+			case <-time.After(5 * time.Second):
+				t.Fatalf("GetCertificate for the %s did not return within 5s; it should have hit "+
+					"the primed cache entry rather than blocking on issuance", tc.name)
+			}
+		})
+	}
+}
+
+// keyRecordingCache is an [autocert.Cache] that always reports a miss but
+// remembers every key it was asked for, so a test can assert *which* certKey
+// strings priming queried without needing a Cache that can actually serve a
+// certificate.
+type keyRecordingCache struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+func (c *keyRecordingCache) Get(_ context.Context, key string) ([]byte, error) {
+	c.mu.Lock()
+	c.keys = append(c.keys, key)
+	c.mu.Unlock()
+	return nil, autocert.ErrCacheMiss
+}
+
+func (c *keyRecordingCache) Put(context.Context, string, []byte) error { return nil }
+
+func (c *keyRecordingCache) Delete(context.Context, string) error { return nil }
+
+func (c *keyRecordingCache) keysRead() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.keys...)
+}
+
+var _ autocert.Cache = (*keyRecordingCache)(nil)
+
+// selfSignedCertPEM builds the PEM autocert's own DirCache stores for host —
+// a private key block (PKCS#8, which [autocert]'s parsePrivateKey accepts for
+// both key types) followed by a certificate block — with a DNSNames entry for
+// host, which autocert's validCert requires via [x509.Certificate.VerifyHostname],
+// and a key type chosen to match the certKey slot the caller is seeding:
+// RSA for isRSA's "+rsa" cache entry, ECDSA for the default one.
+func selfSignedCertPEM(t *testing.T, host string, rsaKey bool) []byte {
+	t.Helper()
+
+	var (
+		signer crypto.Signer
+		keyDER []byte
+		derErr error
+	)
+	if rsaKey {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		signer = key
+		keyDER, derErr = x509.MarshalPKCS8PrivateKey(key)
+	} else {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		require.NoError(t, err)
+		signer = key
+		keyDER, derErr = x509.MarshalPKCS8PrivateKey(key)
+	}
+	require.NoError(t, derErr)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: host},
+		DNSNames:     []string{host},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, signer.Public(), signer)
+	require.NoError(t, err)
+
+	// PKCS#8 encodes either key type, and autocert's parsePrivateKey tries
+	// PKCS#8 regardless of the PEM block's label (autocert.go:1077-1086), so
+	// "PRIVATE KEY" is accurate for both — the label only has to contain
+	// "PRIVATE" for cacheGet to attempt to parse it at all (autocert.go:481).
+	var out []byte
+	out = append(out, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
+	out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	return out
 }
 
 // blockingCache never settles a read, which is how a provider that has stopped

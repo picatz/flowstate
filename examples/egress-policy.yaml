@@ -49,5 +49,21 @@ egress:
   max_response_bytes: 1MiB
   timeout: 30s
 
+  # How fast this process may call one host. Keyed by host — no port, no
+  # wildcards — matched after the same normalization the `host` rule attribute
+  # gets, so "API.GitHub.com." names this same bucket.
+  #
+  # Read the key literally: it is per worker *process*. A fleet of ten workers
+  # running this file sends up to ten times these numbers, and dividing by the
+  # worker count is yours to do. The bound that is deployment-wide is the API's
+  # own 429, which Flowstate honors end to end — a rate-limited response is
+  # retried after its Retry-After. This caps what one process contributes before
+  # the API has to say no; it does not replace the API saying no.
+  #
+  # Going over is not a denial. The step is told to come back after the wait the
+  # bucket names, and nothing holds a worker slot while it waits.
+  max_requests_per_second_per_process:
+    api.github.com: 10
+
   # TLS 1.2 is the floor by default; a deployment that can say 1.3 should.
   min_tls_version: "1.3"

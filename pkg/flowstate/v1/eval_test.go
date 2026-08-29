@@ -14,7 +14,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -38,8 +38,8 @@ func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOut
 }
 
 func TestRunWorkflow(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.Workflows(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.Workflows(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			b, err := flowfile.Marshal(test.Workflow)
 			require.NoError(t, err)
@@ -52,8 +52,8 @@ func TestRunWorkflow(t *testing.T) {
 // TestRunWorkflowZeroValues pins that legitimately empty values survive a round
 // trip through the task input and output conversion layer.
 func TestRunWorkflowZeroValues(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.ZeroValueCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.ZeroValueCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
@@ -63,8 +63,8 @@ func TestRunWorkflowZeroValues(t *testing.T) {
 // TestRunWorkflowControlFlow covers loops and parallel branches in the local
 // driver. The engine package runs the same cases against the durable driver.
 func TestRunWorkflowControlFlow(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.ControlFlowCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.ControlFlowCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
@@ -73,13 +73,13 @@ func TestRunWorkflowControlFlow(t *testing.T) {
 
 // TestRunWorkflowLoop covers the `loop:` primitive in the local driver.
 //
-// The engine package runs the identical [tests.LoopCases] against the durable
+// The engine package runs the identical [conformance.LoopCases] against the durable
 // driver, which is what holds the two to one answer about how many iterations a
 // loop runs, what state it carries out, and that it fails at its ceiling rather than
 // stopping silently — the disagreements invariant 3 exists to catch, and the reason
 // the ceiling and the exhaustion error live in one place each (loop.go).
 func TestRunWorkflowLoop(t *testing.T) {
-	for _, test := range tests.LoopCases() {
+	for _, test := range conformance.LoopCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
@@ -108,7 +108,7 @@ func TestRunWorkflowLoop(t *testing.T) {
 // start. The engine package runs the identical cases against the durable
 // driver, which is the only thing that can say the two agree.
 func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
-	for _, test := range tests.LoopExhaustionTranscriptCases() {
+	for _, test := range conformance.LoopExhaustionTranscriptCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.Error(t, err, "these loops exhaust their budget on purpose")
@@ -131,8 +131,8 @@ func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
 // shape untouched. The engine package runs the identical cases against the
 // durable driver.
 func TestRunWorkflowToleratedIterationIdentity(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.ToleratedIterationIdentityCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.ToleratedIterationIdentityCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
@@ -143,9 +143,9 @@ func TestRunWorkflowToleratedIterationIdentity(t *testing.T) {
 // driver. The same cases run against the durable driver in the engine package,
 // which is what keeps the two from diverging.
 func TestRunWorkflowPolicy(t *testing.T) {
-	failedSteps := tests.PolicyCaseFailedSteps()
+	failedSteps := conformance.PolicyCaseFailedSteps()
 
-	for _, test := range tests.PolicyCases() {
+	for _, test := range conformance.PolicyCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			if test.ExpectedOutputs == nil {
 				// Cases whose failure text is engine-specific: assert the shape
@@ -166,15 +166,35 @@ func TestRunWorkflowPolicy(t *testing.T) {
 }
 
 // TestRunWorkflowErrorKind pins that a run failing outright in the local
-// driver is classified the way [tests.ErrorKindCases] says it must be. The
+// driver is classified the way [conformance.ErrorKindCases] says it must be. The
 // same cases run against the durable driver in
 // engine.TestRunWorkflowErrorKind — invariant 3's "shared cases, two verified
 // callers" for the classification #241's P2 puts on the wire.
 func TestRunWorkflowErrorKind(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, tc := range tests.ErrorKindCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+
+	// The timeout case's fixture (#915), in a registry derived from the build's
+	// rather than added to it.
+	//
+	// The other cases need the tasks this build ships — including the
+	// loopback-permitting `http` [conformance.NewHTTPServer] has just installed
+	// on the default registry — and the fixture must not join them there:
+	// TestEveryTaskDescribesItself walks [v1.DefaultRegistry] in parallel with
+	// this and holds every task in it to describing its inputs, which a fixture
+	// taking none cannot do. Registering and unregistering around this test
+	// would leave exactly that window open. Copying is what
+	// [v1.NewContextWithRegistry] is for, and the durable caller reaches the
+	// same task the only way it can (see engine.TestRunWorkflowErrorKind's own
+	// note: an activity cannot see a registry on the workflow's context).
+	registry := v1.NewRegistry()
+	for _, def := range v1.DefaultRegistry().All() {
+		require.NoError(t, registry.Register(def))
+	}
+	require.NoError(t, registry.Register(conformance.ErrorKindTimeoutTaskDef()))
+
+	for _, tc := range conformance.ErrorKindCases(baseURL) {
 		t.Run(tc.Name, func(t *testing.T) {
-			_, err := v1.Run(t.Context(), tc.Workflow)
+			_, err := v1.Run(v1.NewContextWithRegistry(t.Context(), registry), tc.Workflow)
 			require.Error(t, err, "the case must fail the run outright")
 			require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
 		})
@@ -185,16 +205,16 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 // local driver. The same cases run against the durable driver in the engine
 // package (TestRunWorkflowTaskPolicyDurable) — verified callers on both,
 // which is what invariant 3 asks a shared case set to have, per CLAUDE.md's
-// account of [tests.ZeroValueCases] sitting unreached by one driver for
+// account of [conformance.ZeroValueCases] sitting unreached by one driver for
 // months.
 //
 // Each case installs its own policy as the process-wide default
 // ([v1.SetDefaultTaskPolicy]) for the duration of its subtest and restores
 // nil afterward — global state, guarded by running one case at a time
-// (no t.Parallel here), the same posture [allowLoopback] in tests.go takes
+// (no t.Parallel here), the same posture [allowLoopback] in conformance.go takes
 // for the egress registry swap.
 func TestRunWorkflowTaskPolicy(t *testing.T) {
-	for _, tc := range tests.TaskPolicyCases() {
+	for _, tc := range conformance.TaskPolicyCases() {
 		t.Run(tc.Name, func(t *testing.T) {
 			policy, err := tc.Policy.Policy()
 			require.NoError(t, err, "every case's policy must itself compile")
@@ -218,6 +238,22 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 					"the failure must be a *v1.TaskPolicyDeniedError, got: %v", err)
 				require.Equal(t, tc.DeniedTask, denied.Task)
 				require.Equal(t, tc.DeniedReason, denied.Reason)
+
+				// #652 item 3: the denial names the identity it evaluated,
+				// in the same words the durable driver's own copy of this
+				// loop asserts. Asserted on the message rather than on
+				// [v1.TaskPolicyDeniedError.Identity] because the message is
+				// what an author reads, and because it is the only form the
+				// durable side can compare — the struct does not survive
+				// Temporal's failure conversion.
+				require.Contains(t, denied.Error(), tc.DeniedIdentity,
+					"the denial must name the identity the rule was evaluated against")
+
+				// A local run *is* a rehearsal, so the message must say so
+				// here and must not say so durably. This is the one clause
+				// the two drivers are meant to differ on.
+				require.True(t, denied.Local,
+					"a dispatch denied under the local driver is a rehearsal denial")
 				return
 			}
 
@@ -234,7 +270,7 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 // a process, and there it is state on a server — so it is where holding them to
 // one set of expectations matters most.
 func TestRunWorkflowWait(t *testing.T) {
-	for _, test := range tests.WaitCases() {
+	for _, test := range conformance.WaitCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			// Inputs and ExpectFailure are read here rather than delegated to
 			// runWorkflow, which does neither. Both arrived with computed
@@ -248,7 +284,7 @@ func TestRunWorkflowWait(t *testing.T) {
 			// signal channel; locally one has to be installed, and without it a
 			// gate bounded by a computed timeout fails on "no signal waiter"
 			// instead of lapsing — a difference in the driver, not in the case.
-			// Delivering a signal is still driver-specific (see [tests.WaitCases]);
+			// Delivering a signal is still driver-specific (see [conformance.WaitCases]);
 			// timing one out is not.
 			ctx := v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals())
 
@@ -313,8 +349,8 @@ func TestNestedValueIsReachableByIndex(t *testing.T) {
 // durably they are evaluated in an activity and then carried across Continue-As-New.
 // Two routes to one observable is the shape that drifts.
 func TestRunWorkflowVars(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.VarsCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.VarsCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)
@@ -333,7 +369,7 @@ func TestRunWorkflowVars(t *testing.T) {
 // see it — every case there asserts a var *does* reach the scope a step reads, which
 // is exactly what makes a secret in one a leak (#169).
 func TestRunWorkflowVarsSecretRefused(t *testing.T) {
-	for _, test := range tests.VarsSecretRefusalCases() {
+	for _, test := range conformance.VarsSecretRefusalCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			require.Error(t, err, "the submission was accepted")
@@ -351,13 +387,43 @@ func TestRunWorkflowVarsSecretRefused(t *testing.T) {
 // function every task's call funnels through, [v1.Task.EvalInScope], which is
 // what invariant 3 asks a shared case to hold the two drivers to.
 func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.TaskOutputElementBoundCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.TaskOutputElementBoundCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
 				require.Error(t, err, "a task result past the element bound must be refused")
 				require.Contains(t, err.Error(), "10000",
+					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
+// TestRunWorkflowTaskOutputSizeBound covers the local driver's half of #787:
+// a single task's result weighing more than Temporal will store as an
+// activity result. The local driver has no server to refuse an oversized
+// result, so without the shared check it admits silently what the durable
+// driver wedges on — the rehearsal disagreeing with production in the worst
+// direction.
+//
+// The same cases run against the durable driver in the engine package — see
+// the identically-named test there. Both reach the bound through
+// [v1.Task.EvalInScope], the same choke point the element bound uses, which
+// is what invariant 3 asks a shared case to hold the two drivers to.
+func TestRunWorkflowTaskOutputSizeBound(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.TaskOutputSizeBoundCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a task result past the output byte bound must be refused")
+				require.Contains(t, err.Error(), `step "fetch"`,
+					"the refusal must name the step")
+				require.Contains(t, err.Error(), strconv.Itoa(v1.MaxTaskOutputBytes),
 					"the refusal must name the bound it reached")
 				return
 			}
@@ -380,8 +446,8 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 // accumulation; the durable driver's concurrent path is what the engine half
 // covers.
 func TestRunWorkflowForEachResultsBound(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.ForEachResultsBoundCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.ForEachResultsBoundCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
@@ -406,7 +472,7 @@ func TestRunWorkflowForEachResultsBound(t *testing.T) {
 // each driver calls right after resolving `items:`, [v1.CheckForEachItems],
 // which is what invariant 3 asks a shared case to hold the two drivers to.
 func TestRunWorkflowForEachTripCount(t *testing.T) {
-	for _, test := range tests.ForEachTripCountCases() {
+	for _, test := range conformance.ForEachTripCountCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
@@ -427,6 +493,41 @@ func TestRunWorkflowForEachTripCount(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowAtomicBlockBound covers the local driver's half of the
+// suspension-opaque fan-out ceiling, [v1.MaxAtomicBlockActivities]: the bound
+// on the items × body-activities product of a `for_each` the durable driver
+// runs with no Continue-As-New seam — one declaring `max_parallel:` above
+// one, or one written inside a `parallel:` branch.
+//
+// This driver runs iterations sequentially and has no history to protect; it
+// refuses anyway, at the identical pre-dispatch point with the identical
+// sentence, because a fan-out the rehearsal admits and production refuses is
+// the drivers disagreeing about what the file means. The same cases run
+// against the durable driver in the engine package, see the
+// identically-named test there.
+func TestRunWorkflowAtomicBlockBound(t *testing.T) {
+	for _, test := range conformance.ForEachAtomicBlockCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a for_each past the atomic-activity ceiling must be refused")
+				// The same pieces the durable half asserts, in the same
+				// sentence: the step, the item count, the per-iteration count
+				// and the ceiling must not depend on where the workload ran.
+				require.Contains(t, err.Error(), `step "fan"`,
+					"the refusal must name the step")
+				for _, want := range conformance.AtomicBlockRefusalSubstrings() {
+					require.Contains(t, err.Error(), want,
+						"the refusal must name the counts and the ceiling")
+				}
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowCall covers `call:` in the local driver.
 //
 // The same cases run against the durable driver in the engine package — see
@@ -435,7 +536,7 @@ func TestRunWorkflowForEachTripCount(t *testing.T) {
 // so a case that only exercised one driver would not tell the two apart from
 // one that reaches a divergent path only the other driver walks.
 func TestRunWorkflowCall(t *testing.T) {
-	for _, test := range tests.CallCases() {
+	for _, test := range conformance.CallCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
@@ -462,8 +563,8 @@ func TestRunWorkflowCall(t *testing.T) {
 // one function, and a driver that skipped it would accept a submission the other
 // refuses.
 func TestRunWorkflowInputsAndOutputs(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.InputOutputCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.InputOutputCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			require.NoError(t, err)
@@ -474,7 +575,7 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 
 // TestRunWorkflowValue covers `value:` in the local driver.
 //
-// The engine package runs the identical [tests.ValueCases] against the durable
+// The engine package runs the identical [conformance.ValueCases] against the durable
 // driver. That pairing is the point of the set rather than a habit: a value's
 // whole observable behaviour is the answer it computed and the name it computed
 // it under, so a driver evaluating it in a different scope, at a different
@@ -482,7 +583,7 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 // rehearsal quietly wrong about production. One shared [v1.EvalValueNode] is what
 // keeps them together; these are what prove it is what both of them reach.
 func TestRunWorkflowValue(t *testing.T) {
-	for _, test := range tests.ValueCases() {
+	for _, test := range conformance.ValueCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			if test.ExpectFailure {
@@ -498,14 +599,14 @@ func TestRunWorkflowValue(t *testing.T) {
 // TestRunWorkflowInterpolation covers a scalar mixing text with ${...} in the
 // local driver.
 //
-// The engine package runs the identical [tests.InterpolationCases] against the
+// The engine package runs the identical [conformance.InterpolationCases] against the
 // durable driver. Interpolation itself is compiled away before either driver
 // sees a workflow, which is the design; what the pairing holds is the part that
 // is not compiled away, the `string()` each driver's own evaluator runs over
 // every fence. See the set's doc for why a rendering that differed between them
 // is invariant 3 broken in the direction an author would notice last.
 func TestRunWorkflowInterpolation(t *testing.T) {
-	for _, test := range tests.InterpolationCases() {
+	for _, test := range conformance.InterpolationCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			require.NoError(t, err)
@@ -517,12 +618,12 @@ func TestRunWorkflowInterpolation(t *testing.T) {
 // TestRunWorkflowWebhookTrigger covers a declared `triggers:` webhook in the
 // local driver.
 //
-// The engine package runs the identical [tests.WebhookTriggerCases] against the
+// The engine package runs the identical [conformance.WebhookTriggerCases] against the
 // durable driver, and the pairing is the whole point of the set: what a trigger
 // declaration does to a run is *nothing*, on both drivers, and a rehearsal that
 // disagreed with production about that would be a rehearsal of a different file.
 func TestRunWorkflowWebhookTrigger(t *testing.T) {
-	for _, test := range tests.WebhookTriggerCases() {
+	for _, test := range conformance.WebhookTriggerCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			if test.ExpectFailure {
@@ -537,13 +638,13 @@ func TestRunWorkflowWebhookTrigger(t *testing.T) {
 
 // TestRunWorkflowTriggerContext covers reading `trigger` in the local driver.
 //
-// The engine package runs the identical [tests.TriggerContextCases] against the
+// The engine package runs the identical [conformance.TriggerContextCases] against the
 // durable driver, and the pairing is the substance of this feature rather than a
 // formality: here the context arrives on a context value and there it arrives in
 // [v1.RunState], crosses the wire and survives Continue-As-New. Two routes, one
 // answer, or `flow run local` is rehearsing a different file.
 func TestRunWorkflowTriggerContext(t *testing.T) {
-	for _, test := range tests.TriggerContextCases() {
+	for _, test := range conformance.TriggerContextCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			ctx := t.Context()
 			if test.Trigger != nil {
@@ -564,13 +665,13 @@ func TestRunWorkflowTriggerContext(t *testing.T) {
 // TestRunWorkflowWebhookDelivery covers a run started by a delivery in the local
 // driver.
 //
-// The engine package runs the identical [tests.WebhookDeliveryCases] against the
+// The engine package runs the identical [conformance.WebhookDeliveryCases] against the
 // durable driver. What the pairing is for is the *values*: a delivery's inputs
 // come out of a JSON payload rather than off a command line, so they are the one
 // set of inputs whose Go types nobody wrote down, and a driver that read a
 // payload's number differently would refuse a run its rehearsal accepted.
 func TestRunWorkflowWebhookDelivery(t *testing.T) {
-	for _, test := range tests.WebhookDeliveryCases() {
+	for _, test := range conformance.WebhookDeliveryCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			require.NotNil(t, test.Inputs, "the delivery did not bind, so there is nothing to run")
 
@@ -587,13 +688,13 @@ func TestRunWorkflowWebhookDelivery(t *testing.T) {
 
 // TestRunWorkflowSwitch covers `switch:` in the local driver.
 //
-// The engine package runs the identical [tests.SwitchCases] against the durable
+// The engine package runs the identical [conformance.SwitchCases] against the durable
 // driver. The pairing is the point: which branch a value takes, what the record
 // says, and that an unresolvable discriminant fails rather than defaulting are
 // the whole observable surface of a dispatch, and every one is decided by the
 // one [v1.SelectSwitchCase] both drivers call.
 func TestRunWorkflowSwitch(t *testing.T) {
-	for _, test := range tests.SwitchCases() {
+	for _, test := range conformance.SwitchCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			if test.ExpectFailure {
@@ -612,15 +713,15 @@ func TestRunWorkflowSwitch(t *testing.T) {
 
 // TestRunWorkflowAsync covers `async:` in the local driver.
 //
-// The engine package runs the identical [tests.AsyncCases] against the durable
+// The engine package runs the identical [conformance.AsyncCases] against the durable
 // driver, and the pairing is the point rather than a convention: this driver
 // runs an async step's work where it is written and holds the result until the
 // join, where the durable one genuinely overlaps it — so every observable a
 // case names (which output appears where, which failure is heard where, what a
 // mention joins) is exactly what could drift between the two.
 func TestRunWorkflowAsync(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.AsyncCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.AsyncCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			if test.ExpectFailure {
@@ -647,7 +748,7 @@ func TestRunWorkflowAsync(t *testing.T) {
 // have rejected is a rehearsal that says yes where production says no — and nothing
 // about the happy-path cases above could detect it.
 func TestRunWorkflowInputsRefused(t *testing.T) {
-	for _, test := range tests.InputRefusalCases() {
+	for _, test := range conformance.InputRefusalCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			require.Error(t, err, "the submission was accepted")
@@ -665,8 +766,8 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 // claim about execution, and it has to be made on both drivers or it is a claim
 // about whichever one happened to be run.
 func TestRunWorkflowOutputShaping(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.OutputShapingCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.OutputShapingCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)
@@ -684,8 +785,8 @@ func TestRunWorkflowOutputShaping(t *testing.T) {
 // and both drivers reach both positions through the same task. A set that ran here
 // only would let the durable driver rebuild that activation by hand unobserved.
 func TestRunWorkflowResponseScope(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.ResponseScopeCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.ResponseScopeCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			ctx := t.Context()
 			if test.Trigger != nil {
@@ -705,7 +806,7 @@ func TestRunWorkflowResponseScope(t *testing.T) {
 // which is the claim these pin. Where the message went is decided elsewhere and tested
 // against a captured logger there.
 func TestRunWorkflowLog(t *testing.T) {
-	for _, test := range tests.LogCases() {
+	for _, test := range conformance.LogCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)
@@ -718,8 +819,8 @@ func TestRunWorkflowLog(t *testing.T) {
 // driver. The durable driver runs the same cases in the engine package, and the
 // pairing is the whole point: this value used to be a different sentence in each.
 func TestRunWorkflowErrorText(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.ErrorTextCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.ErrorTextCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)
@@ -737,7 +838,7 @@ func TestRunWorkflowErrorText(t *testing.T) {
 // The engine package runs the identical cases against the durable driver, which
 // is the only thing that can say the two now agree.
 func TestRunWorkflowToleratedStepFailure(t *testing.T) {
-	for _, test := range tests.ToleratedStepFailureCases() {
+	for _, test := range conformance.ToleratedStepFailureCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)
@@ -754,7 +855,7 @@ func TestRunWorkflowToleratedStepFailure(t *testing.T) {
 // purpose. The engine package runs the identical cases against the durable
 // driver, which is the only thing that can say the two agree.
 func TestRunWorkflowPartialTranscript(t *testing.T) {
-	for _, test := range tests.PartialTranscriptCases() {
+	for _, test := range conformance.PartialTranscriptCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.Error(t, err, "these cases fail on purpose")
@@ -776,7 +877,7 @@ func TestRunWorkflowPartialTranscript(t *testing.T) {
 }
 
 func TestRunWorkflowNestedErrorText(t *testing.T) {
-	for _, test := range tests.NestedErrorTextCases() {
+	for _, test := range conformance.NestedErrorTextCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)
@@ -789,11 +890,11 @@ func TestRunWorkflowNestedErrorText(t *testing.T) {
 // does it in production — [v1.ContextWithTaskRuntime] on the context a run is
 // started with — and runs the case through [v1.Run].
 //
-// engine/authority_test.go's runAuthorityCase runs the identical [tests.AuthorityCase]
+// engine/authority_test.go's runAuthorityCase runs the identical [conformance.AuthorityCase]
 // through worker registration instead. That pairing is #116: before it, secret
 // denial and containment were each proven once, by whichever driver's test file
 // happened to add them, and nothing compared the two.
-func runAuthorityCase(t *testing.T, test tests.AuthorityCase) {
+func runAuthorityCase(t *testing.T, test conformance.AuthorityCase) {
 	t.Helper()
 
 	ctx := t.Context()
@@ -811,7 +912,7 @@ func runAuthorityCase(t *testing.T, test tests.AuthorityCase) {
 	require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 
 	if test.ContainmentValue != "" {
-		tests.AssertNoLeak(t, out, test.ContainmentValue)
+		conformance.AssertNoLeak(t, out, test.ContainmentValue)
 	}
 }
 
@@ -819,7 +920,7 @@ func runAuthorityCase(t *testing.T, test tests.AuthorityCase) {
 // against the local driver. The durable driver runs the same cases in
 // engine/authority_test.go.
 func TestAuthorityDenial(t *testing.T) {
-	for _, test := range tests.AuthorityDenialCases() {
+	for _, test := range conformance.AuthorityDenialCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
 			if test.Authority.ProviderCalls != nil {
@@ -834,17 +935,41 @@ func TestAuthorityDenial(t *testing.T) {
 // containment cases against the local driver. The durable driver runs the
 // same cases in engine/authority_test.go.
 func TestAuthorityContainment(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.AuthorityContainmentCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.AuthorityContainmentCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
 		})
 	}
 }
 
+// TestCleartextCredential runs #963 half one's shared cases — the http task
+// refusing a bearer secret or a JIT federation credential sent to a
+// non-loopback http:// destination, and the same credential succeeding over
+// https — against the local driver. The durable driver runs the same cases
+// in engine/authority_test.go.
+func TestCleartextCredential(t *testing.T) {
+	tlsServer := conformance.NewTLSCredentialServer(t)
+	tlsServer.InstallTrustingHTTPTask(t)
+
+	for _, test := range conformance.CleartextCredentialCases(tlsServer.URL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runAuthorityCase(t, test)
+			if test.Authority.ProviderCalls != nil {
+				require.Zero(t, test.Authority.ProviderCalls.Load(),
+					"the fixture secret provider was consulted for a request the cleartext refusal should have stopped first")
+			}
+			if test.Authority.Federation != nil && test.Authority.Federation.ExchangeCalls != nil {
+				require.Zero(t, test.Authority.Federation.ExchangeCalls.Load(),
+					"the fixture broker exchanged a credential for a request the cleartext refusal should have stopped first")
+			}
+		})
+	}
+}
+
 // TestRunWorkflowUndo is the local half of the saga cases.
 //
-// The engine package runs the identical [tests.UndoCases] against the durable
+// The engine package runs the identical [conformance.UndoCases] against the durable
 // driver. That pairing is the whole point: compensation is where the two drivers
 // have the most reason to be implemented separately — a function call here, an
 // activity scheduled by a failing workflow there — and the order compensations run
@@ -855,10 +980,10 @@ func TestAuthorityContainment(t *testing.T) {
 // expectation depend on which cases ran before it. The case list is built twice for
 // that reason — once to enumerate, once against the server the subtest started.
 func TestRunWorkflowUndo(t *testing.T) {
-	for index, outline := range tests.UndoCases(undoPlaceholderBase) {
+	for index, outline := range conformance.UndoCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.UndoCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.UndoCases(base)[index]
 
 			_, err := v1.Run(t.Context(), test.Workflow)
 			if !test.Fails {
@@ -869,7 +994,7 @@ func TestRunWorkflowUndo(t *testing.T) {
 					"the failure does not carry the account of what was compensated")
 			}
 
-			tests.AssertRecorded(t, test, recorded())
+			conformance.AssertRecorded(t, test, recorded())
 		})
 	}
 }
@@ -878,12 +1003,12 @@ func TestRunWorkflowUndo(t *testing.T) {
 // callee's compensations must register onto the caller's own undo stack and run
 // in reverse across the `call:` boundary exactly as [TestRunWorkflowUndo]'s
 // top-level cases do within one level. The engine package runs the identical
-// [tests.UndoCallCases] against the durable driver.
+// [conformance.UndoCallCases] against the durable driver.
 func TestRunWorkflowUndoCall(t *testing.T) {
-	for index, outline := range tests.UndoCallCases(undoPlaceholderBase) {
+	for index, outline := range conformance.UndoCallCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.UndoCallCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.UndoCallCases(base)[index]
 
 			_, err := v1.Run(t.Context(), test.Workflow)
 			if !test.Fails {
@@ -907,12 +1032,12 @@ func TestRunWorkflowUndoCall(t *testing.T) {
 // What makes it worth running locally as well as durably is what the whole shared
 // package is for: an author rehearsing a progressive rollout on a laptop has to be
 // told the order production will unwind in. The engine package runs the identical
-// [tests.UndoLoopCases] against the durable driver.
+// [conformance.UndoLoopCases] against the durable driver.
 func TestRunWorkflowUndoLoop(t *testing.T) {
-	for index, outline := range tests.UndoLoopCases(undoPlaceholderBase) {
+	for index, outline := range conformance.UndoLoopCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.UndoLoopCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.UndoLoopCases(base)[index]
 
 			_, err := v1.Run(t.Context(), test.Workflow)
 			if !test.Fails {
@@ -931,7 +1056,7 @@ func TestRunWorkflowUndoLoop(t *testing.T) {
 
 // TestRunWorkflowUndoOnCancellation is the local half of the cancellation cases.
 //
-// The engine package runs the identical [tests.UndoCancellationCases]. This is the
+// The engine package runs the identical [conformance.UndoCancellationCases]. This is the
 // pairing invariant 3 most needs on this path, because the two drivers do not
 // merely implement it differently — they implement it against different
 // cancellation *mechanisms*. Locally the scope a compensation must escape is a
@@ -944,10 +1069,10 @@ func TestRunWorkflowUndoLoop(t *testing.T) {
 // this deterministic rather than timed — see `reaches` in the shared cases for why
 // the last compensated step's own token is the wrong signal to use.
 func TestRunWorkflowUndoOnCancellation(t *testing.T) {
-	for index, outline := range tests.UndoCancellationCases(undoPlaceholderBase) {
+	for index, outline := range conformance.UndoCancellationCases(undoPlaceholderBase) {
 		t.Run(outline.Name, func(t *testing.T) {
-			base, recorded := tests.NewUndoServer(t)
-			test := tests.UndoCancellationCases(base)[index]
+			base, recorded := conformance.NewUndoServer(t)
+			test := conformance.UndoCancellationCases(base)[index]
 
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -990,7 +1115,7 @@ func TestRunWorkflowUndoOnCancellation(t *testing.T) {
 					"the cancellation does not carry the account of what was compensated")
 			}
 
-			tests.AssertCancellationRecorded(t, test, recorded())
+			conformance.AssertCancellationRecorded(t, test, recorded())
 		})
 	}
 }
@@ -1007,8 +1132,8 @@ func TestRunWorkflowCancellationCauseIsDistinguishable(t *testing.T) {
 	runCancelledWithCause := func(t *testing.T, cause error) error {
 		t.Helper()
 
-		base, recorded := tests.NewUndoServer(t)
-		workflow := tests.UndoCancellationCases(base)[0].Workflow
+		base, recorded := conformance.NewUndoServer(t)
+		workflow := conformance.UndoCancellationCases(base)[0].Workflow
 
 		ctx, cancel := context.WithCancelCause(t.Context())
 		defer cancel(nil)
@@ -1145,9 +1270,9 @@ const undoPlaceholderBase = "http://undo.invalid"
 // refusal that held here and not durably would be a rehearsal passing a workload
 // production rejects, which is invariant 3 in the other direction.
 func TestRunWorkflowUndoPlacement(t *testing.T) {
-	base, _ := tests.NewUndoServer(t)
+	base, _ := conformance.NewUndoServer(t)
 
-	for _, test := range tests.UndoPlacementCases(base) {
+	for _, test := range conformance.UndoPlacementCases(base) {
 		t.Run(test.Name, func(t *testing.T) {
 			_, err := v1.Run(t.Context(), test.Workflow)
 			require.Error(t, err, "a compensation the engine cannot honour was accepted")

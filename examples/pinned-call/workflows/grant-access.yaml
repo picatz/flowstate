@@ -9,7 +9,6 @@
 # whole of it.
 edition: v2026.3
 name: grant-access
-
 inputs:
   user:
     type: string
@@ -19,16 +18,14 @@ inputs:
     type: string
     required: true
     description: which role they are being granted
-
 steps:
   - id: record
     log:
-      message: ${'granting ' + inputs.role + ' to ' + inputs.user}
       fields:
         user: ${inputs.user}
         role: ${inputs.role}
-
+      message: ${"granting " + inputs.role + " to " + inputs.user}
 outputs:
   grant_id:
-    value: ${inputs.user + ':' + inputs.role}
+    value: ${inputs.user + ":" + inputs.role}
     description: the grant this run recorded

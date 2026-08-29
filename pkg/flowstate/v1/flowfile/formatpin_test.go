@@ -43,14 +43,20 @@ func TestFormatKeepsADigestPinBesideCall(t *testing.T) {
 name: caller
 description: pins what it calls
 steps:
-- id: provision
-  call: ./callee.yaml
-  digest: ` + pin + `
-  with:
-    tenant: acme
+  - id: provision
+    call: ./callee.yaml
+    digest: ` + pin + `
+    with:
+      tenant: acme
 `
 	assert.Equal(t, want, string(got))
 }
+
+// A digest pin written through a scalar alias, and the accounting an anchor's
+// depth needed, once had tests here. The grammar is now a strict subset of YAML
+// that refuses anchors and aliases (#653), so a pin can no longer arrive through
+// either — the compiler refuses the caller before the formatter sees it. Both
+// tests were removed with the spellings they exercised.
 
 // TestFormatPinIsIdempotent is [TestFormatIsIdempotent] for a pin: formatting
 // the output of formatting a pinned caller must not move the pin, drop it, or
@@ -140,12 +146,12 @@ steps:
 	want := `edition: v2026.3
 name: caller
 steps:
-- id: provision
-  call: ./callee.yaml
-  # reviewed 2026-01-01
-  digest: ` + pin + `
-  with:
-    tenant: acme
+  - id: provision
+    call: ./callee.yaml
+    # reviewed 2026-01-01
+    digest: ` + pin + `
+    with:
+      tenant: acme
 `
 	assert.Equal(t, want, string(got))
 }
@@ -228,3 +234,8 @@ steps:
 	_, _, err = flowfile.ParseFile(caller)
 	require.NoError(t, err, "the formatted file's pin no longer compiles")
 }
+
+// TestFormatAnchorIsNotALevelOfNesting was removed with the anchor it depended
+// on: the grammar no longer accepts anchors, so a document carrying one is
+// refused by the compiler rather than formatted, and there is no anchored-versus-
+// plain depth comparison left to draw. See #653.

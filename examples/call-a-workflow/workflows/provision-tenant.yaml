@@ -6,7 +6,6 @@
 # same functions, which is what makes a workflow's answer identical either way.
 edition: v2026.3
 name: provision-tenant
-
 inputs:
   tenant:
     type: string
@@ -23,22 +22,20 @@ inputs:
 steps:
   - id: regions
     for_each:
-      items: ${['eu-west-1', 'us-east-1']}
+      items: ${["eu-west-1", "us-east-1"]}
       as: region
       steps:
         - id: checked
           log:
-            message: "${'region available: ' + region}"
-
+            message: '${"region available: " + region}'
   - id: provision
     log:
-      message: ${'provisioning ' + inputs.tenant + ' across ' + string(size(steps.regions.results)) + ' regions'}
       fields:
         tenant: ${inputs.tenant}
-
+      message: ${"provisioning " + inputs.tenant + " across " + string(size(steps.regions.results)) + " regions"}
 outputs:
   url:
-    value: ${'https://' + inputs.tenant + '.internal.example.com'}
+    value: ${"https://" + inputs.tenant + ".internal.example.com"}
     description: where the provisioned tenant can be reached
   region_count:
     value: ${size(steps.regions.results)}

@@ -9,7 +9,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
@@ -18,7 +18,7 @@ import (
 // The latency claim, which is the whole point of `async:` and the one thing the
 // shared corpus deliberately does not carry.
 //
-// Every case in `tests.AsyncCases` is about what an author can *see* — where an
+// Every case in `conformance.AsyncCases` is about what an author can *see* — where an
 // output appears, where a failure is heard — and both drivers must agree about
 // all of it. Whether the work actually overlaps is a claim about this driver's
 // scheduler and nothing else: the local driver runs an async step where it is
@@ -82,7 +82,7 @@ func TestRunWorkflowAsyncOverlapsLaterWork(t *testing.T) {
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	allowLoopbackForAsync(t)
+	conformance.AllowLoopback(t)
 
 	get := func(id, path string, async bool) *v1.Node {
 		return &v1.Node{
@@ -111,8 +111,8 @@ func TestRunWorkflowAsyncOverlapsLaterWork(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := atABound(testSuite.NewTestWorkflowEnvironment())
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
-	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: workflowSpec})
@@ -124,23 +124,4 @@ func TestRunWorkflowAsyncOverlapsLaterWork(t *testing.T) {
 	require.True(t, overlapped,
 		"the step written after an async one did not reach the server while it was still in flight, "+
 			"so nothing was overlapped and `async:` bought no latency at all")
-}
-
-// allowLoopbackForAsync registers an http task permitting loopback for the
-// duration of the test, restoring the original afterwards — the same exemption
-// the shared corpus states for itself rather than weakening the shipped default.
-func allowLoopbackForAsync(tb testing.TB) {
-	tb.Helper()
-
-	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
-	require.NoError(tb, err, "building loopback egress policy")
-
-	registry := v1.DefaultRegistry()
-	original, existed := registry.Lookup("http")
-	require.NoError(tb, registry.Register(v1.HTTPTaskDef(policy)))
-	tb.Cleanup(func() {
-		if existed {
-			_ = registry.Register(original)
-		}
-	})
 }

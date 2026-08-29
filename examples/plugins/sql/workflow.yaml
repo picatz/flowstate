@@ -15,14 +15,11 @@ description: Reads bounded, typed rows from a sqlite database using the "sql" pl
 # Requires configuration - a real database and a resolvable dsn secret - so
 # it never runs by accident. See plugins/sql/README.md, "Trying this
 # example."
-
 vars:
   min_balance_cents: 0
-
 steps:
   - id: accounts
     sql.query:
-      engine: ENGINE_SQLITE
       # A secret reference, resolved inside the task, never a literal
       # connection string - see plugins/sql/README.md, "Secrets," for what
       # SQL_SECRET_DSN (or whatever this deployment's provider names it)
@@ -30,18 +27,18 @@ steps:
       # same call at postgres instead: engine: ENGINE_POSTGRES and a dsn
       # secret naming a postgres connection string.
       dsn: ${secret('env:SQL_DSN')}
-      query: "SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id"
-      # The only way a value from vars reaches the database: bound as a
-      # parameter, never spliced into query text above - see
-      # plugins/sql/doc.go, "Parameterized only, structurally."
-      params:
-        - ${vars.min_balance_cents}
+      engine: ENGINE_SQLITE
       # Required: there is no default. A result with more rows than this
       # is refused outright, naming the bound, rather than returned as a
       # silently truncated prefix - see plugins/sql/doc.go, "Bounded
       # results."
       max_rows: 1000
-
+      # The only way a value from vars reaches the database: bound as a
+      # parameter, never spliced into query text above - see
+      # plugins/sql/doc.go, "Parameterized only, structurally."
+      params:
+        - ${vars.min_balance_cents}
+      query: SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id
   - id: announce
     log:
       # rows is a list of maps CEL can filter and index by column name,
@@ -49,13 +46,11 @@ steps:
       # plugins/sql/doc.go calls out as this plugin's headline property.
       # filter() here is the same expression style QueryOutputs.rows's own
       # doc comment in sql.proto uses as its worked example.
-      message: "${'%d account(s) at or above %d cents; %d of them are exactly at zero'.format([steps.accounts.row_count, vars.min_balance_cents, steps.accounts.rows.filter(r, r.balance_cents == 0).size()])}"
-
+      message: ${"%d account(s) at or above %d cents; %d of them are exactly at zero".format([steps.accounts.row_count, vars.min_balance_cents, steps.accounts.rows.filter(r, r.balance_cents == 0).size()])}
 outputs:
   accounts:
     value: ${steps.accounts.rows}
     description: every account row at or above min_balance_cents, typed for a later step's own CEL expression
-
   row_count:
     value: ${steps.accounts.row_count}
     description: how many rows came back - never more than max_rows, and never a truncated prefix of more that did

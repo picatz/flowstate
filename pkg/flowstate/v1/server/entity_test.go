@@ -1,12 +1,15 @@
 package server_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -337,14 +340,15 @@ func entityWorkflowCarryingVar(name string, value *v1.Value) *v1.Workflow {
 //
 // Of the two documented state bounds, only [engine.entityStateMaxBytes]
 // (256 KiB) is reachable end-to-end. [engine.entityStateMaxLoopEntries] (64)
-// counts *concurrently active* loops, and the only shape that runs more than
-// one loop at once is a `parallel:` block — whose branches the engine runs with
-// a nil `progress` (execute.go's runParallel: "no one branch is the run's
-// position"), so a loop inside a branch records no loop state at all. A
-// sequential top-level loop that parks at a `wait_for_signal:` blocks every
-// later step, so at most one top-level loop is ever active. The count bound is
-// therefore real and unit-tested but has no end-to-end path today; the byte
-// bound does, so it is the one driven here.
+// counts *concurrently active* loops, and no submittable spec produces more
+// than one: concurrent constructs run their loops with nil progress and record
+// nothing, and the one shape that would put a second loop live beside a first —
+// a loop reached from inside a loop body, including through a `call:` — is
+// refused by [v1.CheckLoopNesting] before it runs. So the count bound sits far
+// above its reachable maximum of one and has no end-to-end path, while the byte
+// bound does — which is why the byte bound is the one driven here. The engine's
+// loop_state_reach_internal_test.go drives that maximum and the refusal; see
+// [engine.entityStateMaxLoopEntries]'s comment and #289.
 //
 // # How the bound is driven, and to both sides
 //
@@ -428,4 +432,146 @@ func TestEntityStateTruncationReachesTheClientThroughGet(t *testing.T) {
 		return blob != nil && len(blob.GetLiteral().GetStringValue()) == 64*1024
 	}, 30*time.Second, 100*time.Millisecond,
 		"an entity whose carried state fits under entityStateMaxBytes never returned its untruncated vars through Get")
+}
+
+// TestSignalWithStartRefusesANameNothingWaitsFor is the shape this RPC can
+// create and then never resolve, and it is a property of moving the initiating
+// delivery into `RunState.PendingSignals` rather than sending it as a signal.
+//
+// A signal for a name nothing waits for is, through [FlowstateServer.Signal],
+// wasteful and self-clearing: it lands on a Temporal channel nobody reads and
+// is dropped at the run's next Continue-As-New. Carried in RunState it is
+// neither. `drainSignals` carries everything already pending forward
+// unconditionally and only *adds* from the channels the specification declares,
+// so nothing ever removes an entry no `wait_for_signal:` will consume: it holds
+// its share of the state budget [v1.CheckRunStateSize] weighs for the entity's
+// whole life.
+//
+// The far more common cause is a misspelling, and the run created by one would
+// look exactly like a working entity — running, addressable, accumulating
+// nothing. So the refusal is synchronous and names the alternatives, and no
+// entity is created at all.
+func TestSignalWithStartRefusesANameNothingWaitsFor(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	_, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-43",
+		Workflow:  entityWorkflow(nil),
+		Name:      "updat", // misspelled, on purpose
+		Payload:   updatePayload(5, false),
+	}))
+	require.Error(t, err, "a mutation no step waits for was accepted, and would be carried forever")
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	require.Contains(t, err.Error(), "no `wait_for_signal:` in this workflow waits for")
+	require.Contains(t, err.Error(), "update", "the diagnostic must name what was meant, not only what was wrong")
+
+	// And nothing was created: the refusal happens before the entity key is
+	// claimed, so a misspelling does not leave a parked run behind for the
+	// corrected call to collide with.
+	workflowID, err := v1.EntityWorkflowID("team-a", "order-43")
+	require.NoError(t, err)
+	_, err = fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+	require.Error(t, err, "a refused SignalWithStart must not have created an entity")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// TestSignalWithStartDeliversTheCreatingMutationAtomicallyWithCreation is
+// #692: a caller's first mutation must be persisted with the entity's
+// creation, not as a follow-up call that a crash, a cancelled context, or a
+// closed run can leave undelivered.
+//
+// Before [FlowstateServer.SignalWithStart] carried the initiating delivery in
+// `RunState.PendingSignals` (see [FlowstateServer.SignalWithStart]'s "Claim
+// the entity key" comment), the create path was a Describe-then-
+// ExecuteWorkflow-then-SignalWorkflow sequence — Temporal's own
+// SignalWithStartWorkflow no longer covered it, and nothing else made the two
+// calls indivisible. Between the accepted create and the accepted signal sat
+// a window in which the server could crash, the context could be cancelled,
+// or the just-created run could close, leaving an entity that exists but
+// never received the mutation that was supposed to have started it.
+//
+// That shape is checkable without injecting a crash: an entity created *with*
+// its initiating delivery has no [enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED]
+// event in its history at all — the delivery travelled as part of the
+// [enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED] event's own input, consumed by
+// the engine exactly as a signal that arrived before its wait is (see
+// [drainSignals] and [executor.takePendingSignal] in package engine). A
+// version that signals after starting always writes a Signaled event — with
+// or without a crash in between — so this assertion catches the defect
+// structurally, without needing to race a real failure.
+//
+// Verified against the defect this guards: temporarily dropping
+// `PendingSignals` from the created-path `RunState` and issuing an
+// unconditional follow-up `SignalWorkflow` call (mirroring the sequence #692
+// describes) makes this test fail, because that call always appends a
+// Signaled event.
+func TestSignalWithStartDeliversTheCreatingMutationAtomicallyWithCreation(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	created, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-atomic",
+		Workflow:  entityWorkflow(nil),
+		Name:      "update",
+		Payload:   updatePayload(5, false),
+	}))
+	require.NoError(t, err)
+	require.True(t, created.Msg.GetCreated())
+
+	events, err := historyOf(t.Context(), fixture.temporal, created.Msg.GetWorkflowId())
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+
+	require.False(t,
+		slices.ContainsFunc(events, func(event *historypb.HistoryEvent) bool {
+			return event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED
+		}),
+		"the creating call's own mutation reached this run as a signal event rather than as "+
+			"part of its start input, which is exactly the window #692 was filed for: an accepted "+
+			"create that can lose the mutation that initiated it")
+
+	require.True(t,
+		slices.ContainsFunc(events, func(event *historypb.HistoryEvent) bool {
+			return event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED
+		}),
+		"a created entity must have actually started")
+
+	// The mutation was not merely present in the start input — it was
+	// consumed. A second call under the same key delivers a second mutation,
+	// and the entity's accumulated total must reflect both: 5 from the
+	// creating call above, 7 from this one. (Mirrors
+	// TestEntityStateReportsCarriedVarsAndLoopState's read pattern.)
+	second, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-atomic",
+		Workflow:  entityWorkflow(nil),
+		Name:      "update",
+		Payload:   updatePayload(7, false),
+	}))
+	require.NoError(t, err)
+	require.False(t, second.Msg.GetCreated())
+
+	require.Eventually(t, func() bool {
+		got, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: created.Msg.GetWorkflowId(),
+		}))
+		if err != nil || got.Msg.GetStatus() != v1.RunResponse_STATUS_RUNNING {
+			return false
+		}
+
+		state := got.Msg.GetEntityState()
+		if state == nil || state.GetTruncated() {
+			return false
+		}
+
+		total := state.GetLoopState()["lifecycle"]
+		return total != nil && total.GetLiteral().GetInt64Value() == 5+7
+	}, 30*time.Second, 100*time.Millisecond,
+		"the entity's accumulated total never reflected both the creating call's own "+
+			"mutation (5) and the second call's (7) — the creating call's mutation must "+
+			"have been consumed exactly once, not lost and not duplicated")
 }

@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -57,10 +58,54 @@ const (
 	// worth retrying.
 	ErrorKindUpstream ErrorKind = "Upstream"
 
+	// ErrorKindTimeout indicates the substrate ended the attempt because a time
+	// budget expired — a step's `timeout:`, the default that stands in for one
+	// when a step declares none, or the schedule-to-close budget covering every
+	// attempt at a step together.
+	//
+	// Its own kind because neither neighbour is true of it. [ErrorKindUpstream]
+	// says a dependency failed, and here nothing answered at all;
+	// [ErrorKindInternal] says Flowstate is defective, and here a bound the
+	// deployment set was reached, which is the bound working. Reporting the
+	// latter was the whole of #915: an operator triaging a slow dependency was
+	// told to suspect the engine, and a task classifying its own timeout
+	// (`kindForCode` in the plugin host) said something else again for the same
+	// fact.
+	//
+	// Retryable, which is the answer both drivers already gave it and the
+	// reason this is a relabelling rather than a change of behaviour. Temporal
+	// retries an activity that exceeded its StartToClose under the step's retry
+	// policy whatever a kind says, and [ErrorKind.Retryable] is what the local
+	// driver's retry loop consults — so a timeout that stopped being retryable
+	// here would go on being retried in production and stop being retried in
+	// the rehearsal that exists to predict it.
+	ErrorKindTimeout ErrorKind = "Timeout"
+
 	// ErrorKindInternal indicates a defect in Flowstate itself. These are
 	// retried, on the assumption that a genuine defect is better surfaced by
 	// exhausting attempts than by being silently swallowed.
 	ErrorKindInternal ErrorKind = "Internal"
+
+	// ErrorKindRateLimited indicates a dependency refused the request because
+	// this caller is going too fast, not because the request is wrong — a 429
+	// with or without a Retry-After header telling us when to come back.
+	//
+	// Its own kind because neither neighbour is true of it.
+	// [ErrorKindLimitExceeded] says "the same request would produce the same
+	// result", which a rate limit contradicts by construction: the same
+	// request, sent again after the window resets, succeeds.
+	// [ErrorKindUpstream] says a dependency failed in a way that may be
+	// transient, and here nothing failed — the dependency answered exactly as
+	// designed, refusing on purpose rather than erroring by accident. Filing a
+	// deliberate, correctly-functioning refusal under "the dependency broke"
+	// is the same category mistake [ErrorKindTimeout]'s doc comment argues
+	// against for a bound that worked as configured.
+	//
+	// Retryable, so the [TaskError.RetryAfter] a 429's Retry-After header
+	// attaches (see eval_task_http.go) is not inert: both drivers gate the
+	// delay on [ErrorKind.Retryable], so a permanent kind here would make the
+	// header parsed and carried but never consulted.
+	ErrorKindRateLimited ErrorKind = "RateLimited"
 )
 
 // Retryable reports whether a failure of this kind could succeed if attempted
@@ -72,7 +117,7 @@ const (
 // surfacing a failure that might have resolved on its own.
 func (k ErrorKind) Retryable() bool {
 	switch k {
-	case ErrorKindUpstream, ErrorKindInternal:
+	case ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
 		return true
 	default:
 		return false
@@ -84,7 +129,7 @@ func (k ErrorKind) String() string { return string(k) }
 
 // RetryableErrorKinds returns the kinds that are worth retrying.
 func RetryableErrorKinds() []ErrorKind {
-	return []ErrorKind{ErrorKindUpstream, ErrorKindInternal}
+	return []ErrorKind{ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited}
 }
 
 // PermanentErrorKinds returns the kinds that cannot succeed on a retry.
@@ -128,7 +173,19 @@ type TaskError struct {
 }
 
 // Error implements the error interface.
+//
+// When the wrapped cause already names the task it concerns — a task-shape
+// policy denial does, so that a direct caller of [TaskPolicy.Check] reads the
+// name without this wrapper (#899) — this renders only the step position and
+// defers the naming to the cause, rather than prefixing a second `task %q` and
+// producing the double-naming #184 records against. See [selfNamesTask].
 func (e *TaskError) Error() string {
+	if selfNamesTask(e.Err) {
+		if e.Step != "" {
+			return fmt.Sprintf("step %q: %v", e.Step, e.Err)
+		}
+		return e.Err.Error()
+	}
 	switch {
 	case e.Step != "" && e.Task != "":
 		return fmt.Sprintf("step %q: task %q: %v", e.Step, e.Task, e.Err)
@@ -137,6 +194,17 @@ func (e *TaskError) Error() string {
 	default:
 		return e.Err.Error()
 	}
+}
+
+// selfNamesTask reports whether err, or an error it wraps, already names in its
+// own text the task it concerns — so a wrapper ([TaskError.Error],
+// [StepErrorText]) defers to it rather than prefixing a second `task %q`. A
+// task-shape policy denial ([TaskPolicyDeniedError]) is the one such error
+// today: it names the task itself so a bare [TaskPolicy.Check] caller sees it,
+// which would otherwise double under a wrapper that also named it (#184, #899).
+func selfNamesTask(err error) bool {
+	_, ok := errors.AsType[*TaskPolicyDeniedError](err)
+	return ok
 }
 
 // Unwrap returns the underlying cause, so callers can use [errors.Is] and
@@ -178,7 +246,7 @@ func ParseErrorKind(s string) (ErrorKind, bool) {
 	switch ErrorKind(s) {
 	case ErrorKindInvalidInput, ErrorKindUnknownTask, ErrorKindExpression,
 		ErrorKindPolicyDenied, ErrorKindLimitExceeded, ErrorKindUpstreamUnknown,
-		ErrorKindUpstream, ErrorKindInternal:
+		ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
 		return ErrorKind(s), true
 	default:
 		return "", false
@@ -195,13 +263,38 @@ func NewTaskError(task string, kind ErrorKind, err error) *TaskError {
 // A failure that is not explicitly classified is reported as
 // [ErrorKindInternal], since an unclassified error is a gap in Flowstate rather
 // than a statement about the workload.
+//
+// A [TaskError] is checked first and an [ExpressionError] second, which is the
+// order the two can actually nest: a task that evaluates an expression of its
+// own classifies the result itself (the http task's `expect:` returns
+// [ErrorKindExpression] under its own name), and that outer judgement is the one
+// to keep. An [ExpressionError] reaching here unwrapped is an expression the
+// *engine* evaluated — a step's input, a `vars:`, an `if:`, a loop's `items:` —
+// which belongs to no task at all.
+//
+// [context.DeadlineExceeded] is checked last of the three, and that position is
+// the claim: it is how the *local* driver's step bound arrives (runStepAttempt's
+// per-attempt [context.WithTimeout], and runStepWithPolicy's schedule-to-close
+// budget above it), so a step cut off by its own `timeout:` is
+// [ErrorKindTimeout] rather than the Internal it fell through to (#915). Behind
+// a [TaskError] on purpose: a task that observed the deadline itself and
+// classified the result has said something this cannot improve on, and the same
+// precedence the [ExpressionError] paragraph above describes applies unchanged.
+// The durable driver's half of this is engine.recordedStepKind, which reads
+// Temporal's own *TimeoutError — the shape this package cannot import and must
+// not learn about.
 func ClassifyError(err error) ErrorKind {
 	if err == nil {
 		return ""
 	}
-	var taskErr *TaskError
-	if errors.As(err, &taskErr) {
+	if taskErr, ok := errors.AsType[*TaskError](err); ok {
 		return taskErr.Kind
+	}
+	if _, ok := errors.AsType[*ExpressionError](err); ok {
+		return ErrorKindExpression
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrorKindTimeout
 	}
 	return ErrorKindInternal
 }

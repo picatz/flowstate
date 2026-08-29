@@ -33,8 +33,12 @@
 // The one place the address policy cannot reach is a proxy: with a proxy
 // configured, the dialer connects to the proxy and never sees the target. The
 // policy then resolves the target itself and checks it before the request goes
-// out, which is a weaker check because the proxy resolves the name again. This is
-// why proxies are off unless [WithProxy] or [WithProxyFromEnvironment] is given.
+// out — the address checks and the connection-scoped rules both, so a rule an
+// operator wrote against ip means the same thing with a proxy in the path as
+// without one. It is still the weaker check, because the proxy resolves the name
+// again and may get a different answer, and because the number of addresses it
+// will check is bounded (maxProxyTargetAddrs). This is why proxies are off
+// unless [WithProxy] or [WithProxyFromEnvironment] is given.
 //
 // # Rules
 //
@@ -69,6 +73,14 @@
 //     not match, so an identity-scoped allowlist denies it. The value is supplied
 //     by the task making the request; a request not made through a Flowstate task
 //     sees the empty identity.
+//   - credentials bool, request-scoped only: whether this request carries a
+//     worker-resolved credential — a bearer secret or a JIT federation target
+//     (#963). It composes with identity, so "this tenant's credentials may reach
+//     only this host" is expressible as one rule; host stays the same normalized
+//     attribute a rule without credentials already uses, so there is no second
+//     host form to get wrong. Unset — a request not made through a task that sets
+//     it — reads as false, which is also what an old rule predating this
+//     attribute already meant, so adding it changes no existing rule's answer.
 //
 // Attributes are normalized to the form the request will actually take, so that a
 // rule cannot be evaded by spelling the same target differently. host is
@@ -77,7 +89,9 @@
 // transport dials. path is cleaned of the "." and ".." segments and repeated
 // slashes a server would collapse anyway, so "/x/../admin" is seen as "/admin".
 //
-// A rule that references ip is evaluated in the dialer, once per address, and may
+// A rule that references ip is evaluated once per resolved address — in the
+// dialer, or, when a proxy is configured and the dialer would only ever see the
+// proxy, against the addresses the policy resolves itself. It may
 // only combine ip with the attributes that identify a connection: scheme, host,
 // port, and identity. Those are exactly the attributes that stay true for every
 // request sharing a connection, so a connection-scoped rule cannot be bypassed by
@@ -104,11 +118,55 @@
 // enforced at each scope that defines them, request-scoped and connection-scoped
 // allow rules combine with AND.
 //
+// # Per-host rate limits
+//
+// Beside the rules — not among them — a policy may bound how fast this process
+// makes requests to a named host:
+//
+//	p, err := netpolicy.New(
+//		netpolicy.WithMaxRequestsPerSecondPerProcess("api.example.com", 100),
+//	)
+//
+// The name is the honest one. The bucket lives in the policy, one policy is
+// bound into the http task per worker process, and so a fleet of N workers sends
+// up to N times the number written. The deployment-wide answer is the upstream's
+// own 429, which is honored end to end: a rate-limited response is retryable and
+// its Retry-After is scheduled by both drivers. This bound caps one process's
+// contribution before the upstream has to refuse; it does not replace the
+// upstream refusing.
+//
+// Exceeding it is a [*RateLimitedError], not a [*DenyError]: the request was
+// permitted and is merely early, so it carries the delay until a token exists
+// and the http task retries after it. Nothing blocks — waiting inside the
+// request would hold the worker's activity slot for the wait. ratelimit.go
+// carries the rest of the reasoning, including why an internal limiter failure
+// allows the request rather than refusing it, which is the one place in this
+// package that does not fail closed.
+//
 // # Errors
 //
 // Every denial is a [*DenyError] wrapping [ErrDenied], and names both what was
 // denied and which rule or category denied it. Callers report a policy decision
 // distinctly from a network failure with errors.Is(err, [ErrDenied]).
+//
+// # Tracing
+//
+// The client a policy hands out opens one CLIENT span per request — covering
+// the whole exchange, up to the response body being read or closed, since a
+// response is not over when its headers arrive — and injects W3C trace context
+// onto the request, so a call a workflow makes is correlatable from
+// both sides: this process's trace shows the hop, and the service on the other
+// end can parent its own span under it. Nothing is configured for this — the
+// tracer comes from the globally installed provider, and with none installed
+// nothing is recorded and no header is written: the no-op tracer's span context
+// is invalid, and an invalid span context injects nothing.
+//
+// A span says the shape of the call and never its content: the method, the
+// scheme, the port dialed, and the status returned. The URL is not recorded in
+// any form, because every part of one can carry a credential — a token in the
+// hostname or query, a secret path segment in a webhook URL, a password in
+// userinfo — and a span is exported to a collector that is not tenant-scoped.
+// [tracingRoundTripper] has the whole rule and the reasoning behind it.
 package netpolicy
 
 import (
@@ -125,8 +183,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/net/idna"
 )
 
 // Policy is an egress policy and the http.Client that enforces it. A Policy is
@@ -143,6 +199,12 @@ type Policy struct {
 
 	// client is built once so that all callers share one connection pool.
 	client *http.Client
+
+	// rateLimits holds the per-host token buckets, or is nil when the policy
+	// configures none. Unlike everything above it, this is state that changes
+	// as requests are made — see ratelimit.go for why it is a bound beside the
+	// rules rather than a rule, and why the number it enforces is per process.
+	rateLimits *hostRateLimiter
 }
 
 // New builds a policy from the given options. With no options it returns the safe
@@ -178,16 +240,18 @@ func New(opts ...Option) (*Policy, error) {
 		return nil, err
 	}
 
+	p.rateLimits = newHostRateLimiter(cfg.hostRates, cfg.now)
+
 	p.client = p.newClient()
 
 	return p, nil
 }
 
 // Client returns an http.Client that enforces p. Every returned client shares one
-// transport, and so one connection pool, but each is a distinct value: a caller
-// that reassigns Transport or CheckRedirect on the client it was handed disables
-// the policy only for itself, and cannot disable it for other tasks holding the
-// same [Policy].
+// transport (and its connection pool when reuse is safe), but each is a distinct
+// value: a caller that reassigns Transport or CheckRedirect on the client it was
+// handed disables the policy only for itself, and cannot disable it for other
+// tasks holding the same [Policy].
 //
 // Requests made with it are checked before they are sent, again in the dialer for
 // every address connected to, and again for every redirect hop. Response bodies
@@ -232,13 +296,35 @@ func (p *Policy) newClient() *http.Client {
 	transport.MaxIdleConnsPerHost = 8
 	transport.MaxConnsPerHost = 32
 	transport.MaxResponseHeaderBytes = DefaultMaxResponseHeaderBytes
+	// Connection-scoped rules are evaluated by the dialer. Do not let a later
+	// request bypass that evaluation by reusing a connection established for a
+	// different request (and potentially a different workload identity).
+	//
+	// Self-administration is the same hazard wearing different clothes and has to
+	// be named separately, because it is decided at dial time too without being a
+	// CEL rule: [Policy.checkControlPlane] reads the run identity off the
+	// *request's* context, so a request carrying one could open a connection to
+	// the control plane that a later request carrying none then reuses — never
+	// entering controlDial, and so never meeting the denial that exists precisely
+	// to stop a workflow acting with the worker's authority.
+	//
+	// Without self-administration the control-plane answer is a flat refusal that
+	// does not read the request at all, so no connection to one can exist to be
+	// reused, and reuse stays safe.
+	transport.DisableKeepAlives = !p.connRules.empty() || p.cfg.selfAdministration
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: p.cfg.minTLSVersion,
 		RootCAs:    p.cfg.rootCAs,
 	}
 
 	return &http.Client{
-		Transport:     &roundTripper{policy: p, next: transport},
+		// Tracing wraps the policy rather than the other way around, so the span
+		// covers the policy's answer as well as the peer's — a denial is an
+		// outcome of the request, and a refused request that produced no span at
+		// all would be the one an operator most wants to find. See
+		// [tracingRoundTripper] for what a span may say, which is much less than
+		// it knows.
+		Transport:     &tracingRoundTripper{next: &roundTripper{policy: p, next: transport}},
 		CheckRedirect: p.checkRedirect,
 		Timeout:       p.cfg.timeout,
 	}
@@ -278,6 +364,15 @@ type roundTripper struct {
 // RoundTrip implements [http.RoundTripper].
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err := rt.policy.checkRequest(req); err != nil {
+		return nil, err
+	}
+
+	// After every check that decides whether the request is permitted, and
+	// before anything is sent: a refused request must not spend one of the
+	// host's tokens. Every redirect hop re-enters here, so a hop counts against
+	// the host it is actually made to, which is the host the limit belongs to.
+	// See [Policy.checkRate], which is where the whole argument lives.
+	if err := rt.policy.checkRate(req.Context(), req.URL, req.URL.Redacted()); err != nil {
 		return nil, err
 	}
 
@@ -350,13 +445,14 @@ func (p *Policy) checkRequest(req *http.Request) error {
 	}
 
 	return p.requestRules.evaluate(req.Context(), target, map[string]any{
-		"url":      target,
-		"scheme":   scheme,
-		"host":     ruleHost(req.URL),
-		"port":     int64(port),
-		"method":   req.Method,
-		"path":     rulePath(req.URL),
-		"identity": identityFromContext(req.Context()),
+		"url":         target,
+		"scheme":      scheme,
+		"host":        ruleHost(req.URL),
+		"port":        int64(port),
+		"method":      req.Method,
+		"path":        rulePath(req.URL),
+		"identity":    identityFromContext(req.Context()),
+		"credentials": credentialsFromContext(req.Context()),
 	})
 }
 
@@ -368,14 +464,11 @@ func (p *Policy) checkRequest(req *http.Request) error {
 // written, "EXAMPLE.com", "example.com." and "example.com" would be three
 // different strings to a rule, and a deny rule naming one of them would not
 // match the others.
+// The normalization itself is [normalizeHost] (ratelimit.go), because the
+// per-host rate bound keys on the same rules and a second copy of them would be
+// a bucket configured under a spelling that no request ever matches.
 func ruleHost(u *url.URL) string {
-	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-
-	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
-		host = ascii
-	}
-
-	return host
+	return normalizeHost(u.Hostname())
 }
 
 // rulePath returns the path as rules see it, cleaned of the "." and ".." segments
@@ -417,7 +510,7 @@ func (p *Policy) checkProxiedTarget(req *http.Request, target string) error {
 		return &DenyError{Reason: ReasonPort, Target: target, Detail: err.Error()}
 	}
 
-	addrs, err := net.DefaultResolver.LookupNetIP(req.Context(), "ip", req.URL.Hostname())
+	addrs, err := lookupTargetAddrs(req.Context(), "ip", req.URL.Hostname())
 	if err != nil {
 		return &DenyError{
 			Reason: ReasonAddress,
@@ -426,13 +519,87 @@ func (p *Policy) checkProxiedTarget(req *http.Request, target string) error {
 		}
 	}
 
+	// WithRuleCostLimit bounds one rule against one address; nothing bounded the
+	// number of addresses, and that number comes from resolving a name the
+	// workflow chose. So the peer sets the multiplier on the aggregate CEL cost
+	// this check spends, which is the shape CLAUDE.md's own rule names: bounding
+	// one resource does not bound another the peer controls the ratio to.
+	//
+	// It denies rather than checking a prefix. Taking the first N would skip
+	// addresses, and an address this never looked at is an address the policy
+	// did not refuse — a bound that fails open is worse than no bound, because
+	// it reads like one.
+	if len(addrs) > maxProxyTargetAddrs {
+		return &DenyError{
+			Reason: ReasonAddress,
+			Target: target,
+			Detail: fmt.Sprintf("the host resolved to %d addresses, more than the %d this policy will check before proxying",
+				len(addrs), maxProxyTargetAddrs),
+		}
+	}
+
+	scheme, host := strings.ToLower(req.URL.Scheme), ruleHost(req.URL)
+	rules := !p.connRules.empty()
+
 	for _, addr := range addrs {
-		if err := p.CheckAddr(netip.AddrPortFrom(addr, port)); err != nil {
+		addrPort := netip.AddrPortFrom(addr, port)
+		// checkResolvedAddr, not CheckAddr: the control-plane reservation is
+		// decided here too, or a proxy would be a way around it. CheckAddr
+		// answers about an address category and knows nothing about
+		// p.cfg.controlPlane, so a policy permitting loopback for local
+		// development would let a workflow reach the reserved control plane
+		// through the proxy with no identity check at all.
+		if err := p.checkResolvedAddr(req.Context(), addrPort); err != nil {
+			return err
+		}
+		if !rules {
+			continue
+		}
+		// target rather than the dialed address, unlike [Policy.controlDial]:
+		// here the URL is what the operator wrote the rule against and the
+		// address is one of several the name resolved to, so the URL is the more
+		// useful thing to name in a refusal. Deliberate, not an oversight.
+		if err := p.evalConnRules(req.Context(), target, scheme, host, addrPort); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// lookupTargetAddrs resolves a proxied request's target host.
+//
+// A variable rather than a direct call to [net.DefaultResolver] so that one test
+// can pose a name resolving to more addresses than maxProxyTargetAddrs — which
+// is not something a test can arrange through the real resolver, and a bound
+// nothing reaches is a bound nothing tests.
+var lookupTargetAddrs = net.DefaultResolver.LookupNetIP
+
+// maxProxyTargetAddrs bounds how many resolved addresses [Policy.checkProxiedTarget]
+// will check for one request.
+//
+// A name the workflow chose can be made to resolve to as many addresses as the
+// operator of that name likes, and every one of them costs a full pass of the
+// connection-scoped rules. Fifteen is far above what a real service publishes
+// and far below where the check costs more than the request it is guarding.
+const maxProxyTargetAddrs = 15
+
+// evalConnRules evaluates the connection-scoped rules for one resolved address.
+//
+// One function with two callers rather than two activations built side by side:
+// [Policy.controlDial] reads scheme and host from the attributes the round
+// tripper attached, and [Policy.checkProxiedTarget] takes them from the request
+// URL, but what the rules are handed has to be identical or a rule means two
+// different things depending on whether a proxy is configured. Adding an
+// attribute to connEnv (rules.go) must be a change in one place.
+func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string, addrPort netip.AddrPort) error {
+	return p.connRules.evaluate(ctx, target, map[string]any{
+		"scheme":   scheme,
+		"host":     host,
+		"port":     int64(addrPort.Port()),
+		"ip":       normalize(addrPort.Addr()).String(),
+		"identity": identityFromContext(ctx),
+	})
 }
 
 // controlDial is the dialer's control hook. It runs after the address has been
@@ -450,20 +617,7 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		}
 	}
 
-	// The control plane is decided before the ordinary address policy: it is
-	// reserved when undeclared, and when permitted it is permitted on the
-	// operator's word rather than on its address category.
-	handled, err := p.checkControlPlane(ctx, addrPort)
-	if err != nil {
-		return err
-	}
-	if !handled {
-		if err := p.CheckAddr(addrPort); err != nil {
-			return err
-		}
-	} else if err := p.checkDeniedNetworks(addrPort); err != nil {
-		// A denied network still wins, so an operator can carve a control-plane
-		// address back out without withdrawing the capability.
+	if err := p.checkResolvedAddr(ctx, addrPort); err != nil {
 		return err
 	}
 
@@ -483,13 +637,28 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		}
 	}
 
-	return p.connRules.evaluate(ctx, address, map[string]any{
-		"scheme":   a.scheme,
-		"host":     a.host,
-		"port":     int64(addrPort.Port()),
-		"ip":       normalize(addrPort.Addr()).String(),
-		"identity": identityFromContext(ctx),
-	})
+	return p.evalConnRules(ctx, address, a.scheme, a.host, addrPort)
+}
+
+// checkResolvedAddr applies the control-plane reservation before the ordinary
+// address policy. Proxied targets and direct dials use the same decision so
+// neither path can accidentally grant control-plane reachability.
+func (p *Policy) checkResolvedAddr(ctx context.Context, addrPort netip.AddrPort) error {
+	handled, err := p.checkControlPlane(ctx, addrPort)
+	if err != nil {
+		return err
+	}
+	if !handled {
+		if err := p.CheckAddr(addrPort); err != nil {
+			return err
+		}
+	} else if err := p.checkDeniedNetworks(addrPort); err != nil {
+		// A denied network still wins, so an operator can carve a control-plane
+		// address back out without withdrawing the capability.
+		return err
+	}
+
+	return nil
 }
 
 // checkRedirect is the client's redirect hook. It bounds the number of hops and
@@ -538,6 +707,14 @@ func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
 // port, and the request-scoped rules. It is meant for validating a workflow
 // definition before it runs, so that an endpoint the policy would refuse is
 // reported while it can still be corrected.
+//
+// With a proxy configured it does more than that, and the caveat is already
+// written down where it matters: [Policy.checkProxiedTarget] resolves the host
+// and evaluates the connection-scoped rules, so this is neither I/O-free nor
+// address-free on that path. eval_task_http_check.go says the same thing, and is
+// why the validator does not call this — a diagnostic drawn from a deployment's
+// proxy configuration would be telling an author their file is wrong on the
+// strength of something the machine they are typing on may not share.
 //
 // A URL that passes may still be denied when it is requested, because the address
 // it resolves to is only checked then. Use [Policy.CheckAddr] to check a resolved

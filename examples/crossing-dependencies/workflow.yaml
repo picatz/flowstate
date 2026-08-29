@@ -34,12 +34,6 @@
 #   flow run local examples/crossing-dependencies/workflow.yaml
 edition: v2026.3
 name: crossing-dependencies
-
-outputs:
-  released:
-    value: ${steps.build.tag} on ${steps.provision.host}
-    description: what was built and where it went
-
 steps:
   # Two independent pieces of work, both started here rather than waited for.
   # Neither reads the other, which is what makes marking them safe: an async step
@@ -47,18 +41,17 @@ steps:
   - id: build
     async: true
     http:
-      url: https://ci.example.com/build
       method: POST
       outputs:
         tag: ${json_parse(response.body).tag}
-
+      url: https://ci.example.com/build
   - id: provision
     async: true
     http:
-      url: https://infra.example.com/machines
       method: POST
       outputs:
         host: ${json_parse(response.body).host}
+      url: https://infra.example.com/machines
 
   # The crossing dependency, in both directions. `test` names `build` and so waits
   # for the build here — while `provision` is still in flight. `deploy` names
@@ -67,15 +60,14 @@ steps:
   # except by reading what it actually needs.
   - id: test
     http:
-      url: https://ci.example.com/test-runs
-      method: POST
       body: ${steps.build.tag}
-
+      method: POST
+      url: https://ci.example.com/test-runs
   - id: deploy
     http:
-      url: https://infra.example.com/deployments
-      method: POST
       body: ${steps.provision.host}
+      method: POST
+      url: https://infra.example.com/deployments
 
   # Started and never read. The scope's end joins it before the run finishes, so a
   # failure here still fails the run and its `undo:` — had it carried one — would
@@ -83,12 +75,16 @@ steps:
   - id: notify
     async: true
     http:
-      url: https://chat.example.com/announce
-      method: POST
       body: rollout started
+      method: POST
+      url: https://chat.example.com/announce
 
   # Ordinary, unmarked, and therefore exactly where it is written: after
   # everything above, because it reads two of them.
   - id: summary
     log:
-      message: ${steps.build.tag} deployed to ${steps.provision.host}
+      message: ${string(steps.build.tag) + " deployed to " + string(steps.provision.host)}
+outputs:
+  released:
+    value: ${string(steps.build.tag) + " on " + string(steps.provision.host)}
+    description: what was built and where it went

@@ -405,7 +405,7 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 		if _, ok := known[name]; !ok {
 			ds = append(ds, Diagnostic{
 				Field: field,
-				Message: "declares a policy for a signal no `wait_for_signal:` in this workflow waits for; " +
+				Message: "declares a policy for a signal no `wait_for_signal:` or `wait_for_signals:` in this workflow waits for; " +
 					"this is almost always a misspelling of the name a wait actually uses",
 			})
 			continue
@@ -430,21 +430,27 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 			}
 
 			// The narrowing check. A rule whose subject: is an expression lets
-			// the caller decide what it resolves to, by choosing what they
-			// submit for the input the expression reads — so a rule that
-			// interpolates and sets nothing else lets the caller author their
-			// own authorization. Requiring a co-resident literal constraint
-			// (namespace: or claims:, neither of which a caller can influence)
-			// means an interpolated subject can only narrow a grant the
-			// workflow's author already wrote, never invent one.
-			if interpolated && rule.GetNamespace() == "" && len(rule.GetClaims()) == 0 {
+			// whoever starts the run decide what it resolves to, by choosing
+			// what they submit for the input the expression reads — so a rule
+			// that interpolates and sets nothing else lets them name
+			// themselves as their own approver. It must be accompanied by
+			// something the run's inputs cannot reach.
+			//
+			// Asked of [v1.SubjectFromIsNarrowed] rather than restated here,
+			// because the server refuses the same shape at submit and a
+			// validator that disagreed with it would report a file as fine and
+			// then have it refused — see that function on why `namespace:` is
+			// not one of the constraints that counts, however much it looks
+			// like one.
+			if interpolated && !v1.SubjectFromIsNarrowed(declared[name], rule) {
 				ds = append(ds, Diagnostic{
 					Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
-					Message: "is an expression resolved from this run's own inputs, but the rule sets no " +
-						"`namespace:` or `claims:` alongside it; an interpolated subject must be narrowed " +
-						"by a constraint the caller cannot choose, or the caller would be choosing their " +
-						"own authorization; add a `namespace:` or `claims:` entry, or write the subject " +
-						"as a literal",
+					Message: "is an expression resolved from this run's own inputs, but nothing alongside " +
+						"it narrows who that may name; whoever starts the run chooses that input, so as " +
+						"written they may name themselves as their own approver; add a `claims:` entry to " +
+						"the rule, or `distinct_from_starter: true` to the policy, or write the subject " +
+						"as a literal. A `namespace:` does not narrow this — every sender that reaches " +
+						"the check is already in the run's own namespace",
 				})
 			}
 		}

@@ -2,8 +2,18 @@
 #
 #   if:                 an expression deciding whether the step runs at all
 #   timeout:            how long one attempt may take
+#   total_timeout:      how long the whole step may take, across every attempt
 #   retry:              how a failed attempt is retried
 #   continue_on_error:  let the run proceed when this step fails
+#
+# `timeout:` and `total_timeout:` are two different promises and both are worth
+# writing down. The first bounds one try; the second is the deadline, and it is
+# the one an SLA is actually about — "two minutes, however many tries that is"
+# rather than an attempt count computed backwards from a backoff curve. A step
+# declaring neither is still bounded across its attempts by the engine's
+# default; `total_timeout:` is how an author says by how much, and a value
+# written here is honoured exactly rather than widened to fit the attempts
+# `timeout:` would allow.
 #
 # Only failures that could plausibly succeed on another attempt are retried, so a
 # step that failed because its inputs were invalid fails once regardless of retry.
@@ -15,8 +25,9 @@ steps:
 
   # Runs, because the condition holds.
   - id: deploy
-    if: ${vars.check == 'ready'}
+    if: ${vars.check == "ready"}
     timeout: 30s
+    total_timeout: 2m
     retry:
       attempts: 3
       interval: 1s
@@ -28,7 +39,7 @@ steps:
   # Skipped, because the condition is false. A skipped step produces no outputs,
   # so nothing later may reference it.
   - id: rollback
-    if: ${vars.check == 'failed'}
+    if: ${vars.check == "failed"}
     log:
       message: rolling back
 
@@ -49,7 +60,7 @@ steps:
   # like any other, so it can be carried into whatever comes next.
   - id: carry_on
     log:
-      message: notification failed, continuing anyway
-      level: warn
       fields:
         why: ${steps.notify.error}
+      level: warn
+      message: notification failed, continuing anyway

@@ -64,7 +64,9 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 		return nil, err
 	}
 
-	client, err := newClient(token, in.GetBaseUrl())
+	// apiBase, not in.GetBaseUrl(): see issueList's own call to newClient,
+	// and effectiveAPIBase's doc comment (#694).
+	client, apiBase, err := newClient(token, in.GetBaseUrl())
 	if err != nil {
 		return nil, err
 	}
@@ -79,14 +81,14 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 		direction:  direction,
 		maxResults: maxResults,
 		cursor:     cursorRaw,
-		baseURL:    in.GetBaseUrl(),
+		apiBase:    apiBase,
 	})
 	if err != nil {
 		return nil, classifyReadError(err)
 	}
 
 	return sdk.EncodeOutputs(&githubv1.PullRequestListOutputs{
-		PullRequests: prs,
+		PullRequests: pullRequestSummaryValues(prs),
 		Truncated:    truncated,
 		NextCursor:   nextCursor,
 	})
@@ -105,13 +107,14 @@ type pullRequestListParams struct {
 	direction  string
 	maxResults int
 	cursor     string // opaque, already structurally validated - see cursor.go
-	baseURL    string // GitHub Enterprise Server API base, "" meaning github.com
+	apiBase    string // the API base this call actually reaches - newClient's own second return, see effectiveAPIBase
 }
 
 // pullRequestListFingerprint hashes the filters a github.pull_request_list
 // walk runs under - see issueListFingerprint's own doc comment for why,
-// including why base_url is part of this even though it is not a "filter"
-// in the same sense state/base/head are.
+// including why the effective API base is part of this even though it is
+// not a "filter" in the same sense state/base/head are, and why it is the
+// base this call actually reaches rather than the base_url input (#694).
 func pullRequestListFingerprint(owner, repo string, p pullRequestListParams) fingerprint {
 	return filterFingerprint(
 		"owner="+owner,
@@ -122,7 +125,7 @@ func pullRequestListFingerprint(owner, repo string, p pullRequestListParams) fin
 		"sort="+p.sort,
 		"direction="+p.direction,
 		"max_results="+strconv.Itoa(p.maxResults),
-		"base_url="+normalizeBaseURL(p.baseURL),
+		"api_base="+canonicalAPIBase(p.apiBase),
 	)
 }
 

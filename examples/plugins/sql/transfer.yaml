@@ -57,7 +57,6 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 # (workflow.yaml) uses, so a query written for one engine's placeholder
 # syntax is not portable to the other unchanged (see plugins/sql/README.md,
 # "Drivers," for the placeholder note this file's own review corrected).
-
 inputs:
   from_account_id:
     type: int
@@ -75,26 +74,31 @@ inputs:
     type: string
     required: true
     description: a value unique to this transfer request, so a retried call converges rather than moving the money twice
-
 steps:
   - id: transfer
     sql.exec:
-      engine: ENGINE_POSTGRES
       dsn: ${secret('env:SQL_DSN')}
+      engine: ENGINE_POSTGRES
       statements:
-        - sql: "INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING"
-          params: ${[inputs.idempotency_key]}
-        - sql: "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
-          params: ${[inputs.amount_cents, inputs.from_account_id, inputs.idempotency_key]}
-        - sql: "UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
-          params: ${[inputs.amount_cents, inputs.to_account_id, inputs.idempotency_key]}
-        - sql: "UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1"
-          params: ${[inputs.idempotency_key]}
-
+        - sql: INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING
+          params:
+            - ${inputs.idempotency_key}
+        - sql: UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)
+          params:
+            - ${inputs.amount_cents}
+            - ${inputs.from_account_id}
+            - ${inputs.idempotency_key}
+        - sql: UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)
+          params:
+            - ${inputs.amount_cents}
+            - ${inputs.to_account_id}
+            - ${inputs.idempotency_key}
+        - sql: UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1
+          params:
+            - ${inputs.idempotency_key}
   - id: announce
     log:
-      message: "${'moved %d cents from account %d to account %d across %d statement(s), one transaction'.format([inputs.amount_cents, inputs.from_account_id, inputs.to_account_id, steps.transfer.statement_count])}"
-
+      message: ${"moved %d cents from account %d to account %d across %d statement(s), one transaction".format([inputs.amount_cents, inputs.from_account_id, inputs.to_account_id, steps.transfer.statement_count])}
 outputs:
   rows_affected:
     value: ${steps.transfer.total_rows_affected}

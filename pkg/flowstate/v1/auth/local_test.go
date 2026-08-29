@@ -70,7 +70,7 @@ func TestLocalComponentCannotBeForgedFromNamespace(t *testing.T) {
 // carried claim of that name is refused by [WorkloadIdentity.Validate], which
 // is the same check that already stops --as-claim from setting "namespace" or
 // "sub". There is no second check to write for "run_mode" — it goes on the
-// existing reservedClaims list [Issuer.mintFor] and [WorkloadIdentity.Validate]
+// existing builtInClaimNames list [Issuer.mintFor] and [WorkloadIdentity.Validate]
 // both already consult.
 func TestRunModeClaimCannotBeCarried(t *testing.T) {
 	identity := auth.NewLocalWorkloadIdentity(
@@ -136,16 +136,18 @@ func TestLocalRunAssumptionPolicyIsUnchanged(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "downstream-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:     party.url + "/token",
+		Audience:     "https://as.example.com",
+		Clock:        clock.Now,
+		EgressPolicy: authtest.EgressPolicy(),
 	})
 	require.NoError(t, err)
 

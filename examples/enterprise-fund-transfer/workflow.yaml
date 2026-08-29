@@ -1,10 +1,6 @@
 edition: v2026.3
 name: enterprise-fund-transfer
-description: >-
-  Moves money between two ledger accounts, requiring a role-authorized human
-  approval above a threshold, and reversing what already happened if a later
-  step in the settlement fails.
-
+description: Moves money between two ledger accounts, requiring a role-authorized human approval above a threshold, and reversing what already happened if a later step in the settlement fails.
 # Three primitives composed for one reason: money that moves has to move
 # exactly once, has to be stoppable by the right person and nobody else, and
 # has to come back if the transfer cannot be completed once part of it has
@@ -57,47 +53,37 @@ description: >-
 # `flow fix`-safe way to stop its own author from deleting `signals:` or
 # loosening a step's `if:` - see approval-gate's header, gap 3, #187. That
 # gap is identical here.
-
 inputs:
   from_account_id:
     type: string
     required: true
+    description: the account debited
     example: acct-treasury-001
     must: this.matches(r'^acct-[a-z0-9-]+$')
-    description: the account debited
-
   to_account_id:
     type: string
     required: true
+    description: the account credited
     example: acct-supplier-042
     must: this.matches(r'^acct-[a-z0-9-]+$')
-    description: the account credited
-
   amount_cents:
     type: int
     required: true
+    description: how much moves, in cents
     example: 250000
     must: this >= 1
-    description: how much moves, in cents
-
   approval_threshold_cents:
     type: int
     required: true
+    description: transfers at or above this amount require a treasury-approver signal before they move; below it, they settle immediately
     example: 1000000
     must: this >= 0
-    description: >-
-      transfers at or above this amount require a treasury-approver signal
-      before they move; below it, they settle immediately
-
   idempotency_key:
     type: string
     required: true
+    description: unique to this transfer request, sent as the ledger's Idempotency-Key header so a retried step converges instead of moving money twice
     example: transfer-2026-08-06-0001
     min_len: 8
-    description: >-
-      unique to this transfer request, sent as the ledger's Idempotency-Key
-      header so a retried step converges instead of moving money twice
-
 # Who may deliver `transfer-approved` at all - a claim, not a named
 # individual, because a treasury desk is a team rather than one person. A
 # sender satisfying this claim is authorized to approve any transfer this
@@ -111,14 +97,10 @@ signals:
       - claims:
           role: treasury-approver
     distinct_from_starter: true
-
 steps:
   - id: request
     log:
-      message: >-
-        ${"%s requests moving %d cents from %s to %s".format(
-            [run.identity.subject == "" ? "an unattested caller" : run.identity.subject,
-             inputs.amount_cents, inputs.from_account_id, inputs.to_account_id])}
+      message: '${"%s requests moving %d cents from %s to %s".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.amount_cents, inputs.from_account_id, inputs.to_account_id])}'
 
   # Does this transfer need a human at all? Pure arithmetic over two inputs,
   # with no step in it, which is exactly why no wait's `outputs:` shaping can
@@ -150,20 +132,33 @@ steps:
         # `outputs:` spelled the whole ladder again. Every reader now compares
         # this one recorded name.
         #
-        # Four states, and the order is the point: only `timed_out` produces
+        # Three states, because these are the three things a *payload* can
+        # say. The fourth ending, the lapse, is `timed_out` below and belongs
+        # to the delivery rather than to the payload: folding it in here would
+        # be a conditional inside a conditional, which `flow lint` reports
+        # (docs/STYLE.md R5), and `approval_outcome` is where the two are
+        # combined instead - once, in a step whose whole job is that.
+        #
+        # The separation is also what keeps the bug `refused_malformed_payload`
+        # exists to not repeat unrepeatable: only `timed_out` can ever produce
         # `expired`, so a signal that answered with no usable `approved` field
-        # is `malformed`, never mistaken for a timeout - the exact bug
-        # `refused_malformed_payload` exists to not repeat.
+        # is `malformed` here and cannot be mistaken for a timeout anywhere.
         #
         # `payload.?approved` is the optional select approval-gate reads the
         # same way: present-and-true or present-and-false when the desk sent
         # the field, absent when whatever they sent could not be made sense
         # of. `.optMap` only ever sees an actual boolean; `.orValue` supplies
         # the case nothing usable was sent.
-        outcome: >-
-          ${timed_out
-            ? "expired"
-            : payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("malformed")}
+        decision: '${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("malformed")}'
+        timed_out: ${timed_out}
+
+  # The gate's two facts joined into the one name every reader below compares:
+  # `approved`, `rejected`, `malformed`, or `expired` when nobody answered.
+  # Guarded the same way the gate is, because a transfer under the threshold
+  # never asked anyone anything and so has no outcome to name.
+  - id: approval_outcome
+    if: ${steps.over_threshold.value}
+    value: '${steps.approval.timed_out ? "expired" : steps.approval.decision}'
 
   # Cleared to move: either the amount never needed a gate, or the gate was
   # answered yes. `signals:` above is what makes that a real check - an
@@ -179,20 +174,20 @@ steps:
   # The short-circuit is load-bearing: under the threshold `approval` never
   # ran, so the left disjunct has to be the one that answers.
   - id: cleared_to_move
-    value: >-
-      ${!steps.over_threshold.value || steps.approval.outcome == "approved"}
-
+    value: ${!steps.over_threshold.value || steps.approval_outcome.value == "approved"}
   - id: debit
     if: ${steps.cleared_to_move.value}
     http:
-      method: POST
-      url: https://ledger.internal.example.com/debit
       headers:
         Idempotency-Key: ${inputs.idempotency_key}
-      json: '${ {"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents} }'
-      parse_json: true
+      json:
+        account_id: ${inputs.from_account_id}
+        amount_cents: ${inputs.amount_cents}
+      method: POST
       outputs:
         reference: ${response.json.reference}
+      parse_json: true
+      url: https://ledger.internal.example.com/debit
     undo:
       # The reversal carries its own key, derived from the original, so a
       # compensation that itself gets retried is exactly as idempotent as the
@@ -200,30 +195,35 @@ steps:
       # debited account back - rather than a third "reverse" endpoint, the
       # same account-in-the-body shape as the ordinary steps above.
       http:
-        method: POST
-        url: https://ledger.internal.example.com/credit
         headers:
           Idempotency-Key: ${inputs.idempotency_key + "-undo-debit"}
-        json: '${ {"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents} }'
-
+        json:
+          account_id: ${inputs.from_account_id}
+          amount_cents: ${inputs.amount_cents}
+        method: POST
+        url: https://ledger.internal.example.com/credit
   - id: credit
     if: ${steps.cleared_to_move.value}
     http:
-      method: POST
-      url: https://ledger.internal.example.com/credit
       headers:
         Idempotency-Key: ${inputs.idempotency_key}
-      json: '${ {"account_id": inputs.to_account_id, "amount_cents": inputs.amount_cents} }'
-      parse_json: true
+      json:
+        account_id: ${inputs.to_account_id}
+        amount_cents: ${inputs.amount_cents}
+      method: POST
       outputs:
         reference: ${response.json.reference}
+      parse_json: true
+      url: https://ledger.internal.example.com/credit
     undo:
       http:
-        method: POST
-        url: https://ledger.internal.example.com/debit
         headers:
           Idempotency-Key: ${inputs.idempotency_key + "-undo-credit"}
-        json: '${ {"account_id": inputs.to_account_id, "amount_cents": inputs.amount_cents} }'
+        json:
+          account_id: ${inputs.to_account_id}
+          amount_cents: ${inputs.amount_cents}
+        method: POST
+        url: https://ledger.internal.example.com/debit
 
   # The step that can still fail after money has moved on both sides - the
   # settlement record a downstream reconciliation job reads. When it does,
@@ -234,26 +234,26 @@ steps:
   - id: notify_settlement
     if: ${steps.cleared_to_move.value}
     http:
+      json:
+        idempotency_key: ${inputs.idempotency_key}
+        debit_reference: ${steps.debit.reference}
+        credit_reference: ${steps.credit.reference}
       method: POST
       url: https://settlements.internal.example.com/notify
-      json: >-
-        ${ {"idempotency_key": inputs.idempotency_key,
-            "debit_reference": steps.debit.reference,
-            "credit_reference": steps.credit.reference} }
-
   - id: rejected
-    if: >-
-      ${steps.over_threshold.value && steps.approval.outcome == "rejected"}
+    if: ${steps.over_threshold.value && steps.approval_outcome.value == "rejected"}
     log:
       level: warn
-      message: ${"transfer of %d cents was rejected".format([inputs.amount_cents])}
-
+      # Interpolation rather than `format()`: splicing an int into a sentence is
+      # the plain case R3 gives interpolation, and it is also what keeps the
+      # three warnings here from sharing one `[inputs.amount_cents]` argument
+      # list three times over (docs/STYLE.md R5, `flow lint`).
+      message: ${"transfer of " + string(inputs.amount_cents) + " cents was rejected"}
   - id: expired
-    if: >-
-      ${steps.over_threshold.value && steps.approval.outcome == "expired"}
+    if: ${steps.over_threshold.value && steps.approval_outcome.value == "expired"}
     log:
       level: warn
-      message: ${"approval for %d cents lapsed; the transfer did not happen".format([inputs.amount_cents])}
+      message: ${"approval for " + string(inputs.amount_cents) + " cents lapsed; the transfer did not happen"}
 
   # The gate was answered - it did not time out - but the payload carried
   # neither an explicit `approved: true` nor an explicit `approved: false`:
@@ -267,13 +267,23 @@ steps:
   # as every other non-approving path: money never moves on a signal this
   # file cannot make sense of.
   - id: refused_malformed_payload
-    if: >-
-      ${steps.over_threshold.value && steps.approval.outcome == "malformed"}
+    if: ${steps.over_threshold.value && steps.approval_outcome.value == "malformed"}
     log:
       level: warn
-      message: >-
-        ${"refusing to move %d cents: the approval signal answered with no usable approved field".format([inputs.amount_cents])}
-
+      message: '${"refusing to move " + string(inputs.amount_cents) + " cents: the approval signal answered with no usable approved field"}'
+  # Why the money did not move, named once for the `decision` output below.
+  # Three of `approval_outcome`'s four values pass straight through; only
+  # `malformed` is renamed, because the output's vocabulary is a caller's
+  # rather than the gate's.
+  #
+  # Guarded by the threshold rather than by `!steps.cleared_to_move.value`,
+  # which is what it is actually read on: the gate is what it describes, so
+  # this runs wherever the gate did - and on the cleared path `decision` never
+  # reads it, because the ternary below answers "transferred" first. Below the
+  # threshold that short circuit is load-bearing, since this step was skipped.
+  - id: refusal
+    if: ${steps.over_threshold.value}
+    value: '${(steps.approval_outcome.value == "malformed") ? "refused_malformed_payload" : steps.approval_outcome.value}'
 outputs:
   # `refused_unauthorized` is gone (#207): a payload can no longer arrive
   # here approved-but-wrong-sender, because `signals:`
@@ -283,24 +293,11 @@ outputs:
   # never who said it.
   #
   # "transferred" is exactly `cleared_to_move`, so it reads that name rather
-  # than restating the two facts under it. The three remaining arms are the
-  # ways a gate above the threshold said no, which is the one thing this
-  # output has left to distinguish.
+  # than restating the two facts under it, and the ways a gate said no are
+  # named once by `refusal` above rather than laddered here.
   decision:
-    value: >-
-      ${steps.cleared_to_move.value
-        ? "transferred"
-        : (steps.approval.outcome == "expired"
-            ? "expired"
-            : (steps.approval.outcome == "rejected"
-                ? "rejected"
-                : "refused_malformed_payload"))}
-    description: >-
-      what this run decided, and why - only `timed_out` ever produces
-      "expired"; a malformed answered payload is its own
-      "refused_malformed_payload", never mistaken for a timeout
-
+    value: '${steps.cleared_to_move.value ? "transferred" : steps.refusal.value}'
+    description: what this run decided, and why - only `timed_out` ever produces "expired"; a malformed answered payload is its own "refused_malformed_payload", never mistaken for a timeout
   debit_reference:
-    value: >-
-      ${steps.cleared_to_move.value ? steps.debit.reference : ""}
+    value: '${steps.cleared_to_move.value ? steps.debit.reference : ""}'
     description: the ledger's debit reference, empty unless the transfer actually cleared

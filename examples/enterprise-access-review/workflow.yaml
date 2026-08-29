@@ -1,11 +1,6 @@
 edition: v2026.3
 name: enterprise-access-review
-description: >-
-  Fans out over a list of access grants, pulls last-used evidence for each,
-  and closes the review only once a compliance-role signal attests to it -
-  producing an audit record with the grantee PII flagged for display, not
-  hidden from it.
-
+description: Fans out over a list of access grants, pulls last-used evidence for each, and closes the review only once a compliance-role signal attests to it - producing an audit record with the grantee PII flagged for display, not hidden from it.
 # Access reviews are the recurring compliance workload every audited company
 # runs on a cadence, and they are three primitives most workflow engines make
 # an author stitch together by hand:
@@ -52,13 +47,11 @@ description: >-
 # read-tier plugin tasks (#214) against real infrastructure state; this file
 # stays on `http` so it runs, and its test passes, without a plugin process -
 # see docs/USE_CASES.md for the honest note on why.
-
 inputs:
   access_grants:
     type: list
     required: true
-    min_items: 1
-    max_items: 200
+    description: the grants in scope for this review - each an object with grantee, resource, and role
     example:
       - grantee: alice@example.com
         resource: prod-database
@@ -66,10 +59,8 @@ inputs:
       - grantee: bob@example.com
         resource: billing-console
         role: read-only
-    description: >-
-      the grants in scope for this review - each an object with grantee,
-      resource, and role
-
+    min_items: 1
+    max_items: 200
   # Caller-supplied, checked against the attested sender the same way
   # approval-gate's own `expected_approver` is - a real check (the review
   # closes unattested unless the attested subject matches what this run
@@ -80,12 +71,9 @@ inputs:
   expected_reviewer:
     type: string
     required: true
+    description: who this run expects to attest the review - checked against the attested sender at the gate, not a control on its own
     example: compliance-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
-    description: >-
-      who this run expects to attest the review - checked against the
-      attested sender at the gate, not a control on its own
-
 # Who may deliver `attestation-recorded` at all, checked by
 # `FlowstateServer.Signal` against the attested sender's claims before
 # Temporal ever sees the signal - the same shape enterprise-fund-transfer
@@ -96,7 +84,6 @@ signals:
     allow:
       - claims:
           role: compliance-reviewer
-
 steps:
   # One lookup per grant, bounded concurrency, each failure tolerated so a
   # single flaky grant does not stop the review of the rest of the batch -
@@ -109,15 +96,10 @@ steps:
       max_parallel: 5
       steps:
         - id: last_used
-          continue_on_error: true
           timeout: 10s
+          continue_on_error: true
           http:
             method: GET
-            url: https://iam.internal.example.com/access-grants/last-used
-            query:
-              grantee: ${grant.grantee}
-              resource: ${grant.resource}
-            parse_json: true
             # The record shape both declared outputs below read, stated ONCE
             # here on the step that produced it, the way a wait's `outputs:`
             # shapes its own result. `reviewed_grants` used to rebuild this
@@ -125,9 +107,14 @@ steps:
             # fallback a second time; now it reads the shaped record as-is.
             outputs:
               grantee: ${grant.grantee}
+              last_used_days_ago: ${response.json.?last_used_days_ago.orValue(-1)}
               resource: ${grant.resource}
               role: ${grant.role}
-              last_used_days_ago: '${response.json.?last_used_days_ago.orValue(-1)}'
+            parse_json: true
+            query:
+              grantee: ${grant.grantee}
+              resource: ${grant.resource}
+            url: https://iam.internal.example.com/access-grants/last-used
 
   # The gate. A compliance review that auto-closes itself is not a review -
   # this is where a person has to have actually looked. Three days is a real
@@ -155,17 +142,32 @@ steps:
         # was attested to be, so a defaulted read answers the presence-and-truth
         # half exactly as the guarded read did, false whether the field was
         # missing or explicitly false.
-        outcome: >-
-          ${(payload.?attested.orValue(false) &&
-              !sender.local && !run.local &&
-              sender.identity.subject != "" &&
-              sender.identity.subject == inputs.expected_reviewer)
-            ? "attested"
-            : (timed_out ? "expired" : "unattested")}
-        # Re-exposed because `outputs:` replaces what the wait produced:
-        # `recorded`'s log line and the `attested_by` output below still name
-        # the attested sender.
+        # `payload`, `sender`, `run` and `timed_out` are all in scope exactly
+        # here, which is why the *test* is shaped here. What it is not asked to
+        # do here is name the three endings: "attested, or else why not" is a
+        # conditional inside a conditional, which `flow lint` reports
+        # (docs/STYLE.md R5), and the two `value:` steps below take it apart
+        # into the two questions it actually is.
+        attested: |-
+          ${payload.?attested.orValue(false) && !sender.local && !run.local && sender.identity.subject != "" &&
+          sender.identity.subject == inputs.expected_reviewer}
+        # Re-exposed because `recorded`'s log line and the `attested_by` output
+        # below still name the attested sender.
         sender: ${sender}
+        # Re-exposed because `outputs:` replaces what the wait produced: only a
+        # timeout ever produces `expired`, and `no_attestation` below is what
+        # asks.
+        timed_out: ${timed_out}
+
+  # Why there is no attestation, in the case where there is not one. Two
+  # states, because `attested` above already answered the third.
+  - id: no_attestation
+    value: '${steps.attestation.timed_out ? "expired" : "unattested"}'
+
+  # The three endings, joined once. Every reader below compares this name, or
+  # `steps.attestation.attested` where the question really is the boolean.
+  - id: attestation_outcome
+    value: '${steps.attestation.attested ? "attested" : steps.no_attestation.value}'
 
   # Attested, and by someone real: the sender was actually authenticated (not
   # a local run), said yes, and is the reviewer this run declared it expects.
@@ -177,11 +179,9 @@ steps:
   # access review is not the same conflict of interest a self-approved
   # deploy is.
   - id: recorded
-    if: ${steps.attestation.outcome == "attested"}
+    if: ${steps.attestation.attested}
     log:
-      message: >-
-        ${"access review attested by %s for %d grant(s)".format(
-            [steps.attestation.sender.identity.subject, size(inputs.access_grants)])}
+      message: ${"access review attested by %s for %d grant(s)".format([steps.attestation.sender.identity.subject, size(inputs.access_grants)])}
 
   # Covers three different reasons under one branch - no attestation at all,
   # an attested sender who is not the expected reviewer, or an explicit
@@ -191,34 +191,21 @@ steps:
   # so "attested sender who is not the expected reviewer" still has to be
   # checked here rather than delegated to `signals:` entirely.
   - id: unattested
-    if: ${steps.attestation.outcome != "attested"}
+    if: ${!steps.attestation.attested}
     log:
       level: warn
       message: access review closed without a valid attestation
-
 outputs:
   outcome:
-    value: ${steps.attestation.outcome}
+    value: ${steps.attestation_outcome.value}
     description: whether a real attestation closed this review, and why not if it did not
-
   attested_by:
-    value: >-
-      ${steps.attestation.outcome == "attested"
-        ? steps.attestation.sender.identity.subject
-        : ""}
-    description: >-
-      who the server attests attested this review, empty unless a real
-      attestation happened - the audit trail itself, so not `sensitive:`
-      the way approval-gate's own `approver_subject` is not
-
+    value: '${steps.attestation.attested ? steps.attestation.sender.identity.subject : ""}'
+    description: who the server attests attested this review, empty unless a real attestation happened - the audit trail itself, so not `sensitive:` the way approval-gate's own `approver_subject` is not
   reviewed_grants:
-    value: '${steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).map(r, r.last_used)}'
+    value: ${steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).map(r, r.last_used)}
+    description: every grant this run gathered evidence for, with what it found - display-redacted by default (see the header comment for what that does and does not buy)
     sensitive: true
-    description: >-
-      every grant this run gathered evidence for, with what it found -
-      display-redacted by default (see the header comment for what that
-      does and does not buy)
-
   # Matched on the full grant identity - grantee AND resource - not grantee
   # alone. `access_grants` allows the same grantee to appear more than once
   # with a different resource (alice@example.com holding both prod-database
@@ -239,13 +226,7 @@ outputs:
   # a second occurrence of the identical guard would be the exact repetition
   # this sweep exists to remove.
   unreachable:
-    value: >-
-      ${inputs.access_grants.filter(g,
-        !steps.gather_evidence.results.exists(r,
-          has(r.last_used.resource) &&
-          r.last_used.grantee == g.grantee && r.last_used.resource == g.resource))
-        .map(g, g.grantee + ':' + g.resource)}
-    description: >-
-      "grantee:resource" pairs whose evidence lookup did not complete,
-      needing manual follow-up - not grantee alone, since one grantee may
-      hold several grants and only some may have failed
+    value: |-
+      ${inputs.access_grants.filter(g, !steps.gather_evidence.results.exists(r, has(r.last_used.resource) &&
+      r.last_used.grantee == g.grantee && r.last_used.resource == g.resource)).map(g, g.grantee + ":" + g.resource)}
+    description: '"grantee:resource" pairs whose evidence lookup did not complete, needing manual follow-up - not grantee alone, since one grantee may hold several grants and only some may have failed'

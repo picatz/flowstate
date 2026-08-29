@@ -1,0 +1,394 @@
+# An agent gets one bounded try at a broken build, and then a person does.
+#
+# This is #179's fourth showcase file, and the reason it is worth having as an
+# example rather than as a blog post is that every hard part of it is a property
+# of the *run* rather than of the agent:
+#
+#   * every attempt is durable. A worker dying between the patch and the test run
+#     does not lose the patch — it is a commit, and the commit is in history;
+#   * the patch is a value. `codex.exec` edits a workspace and emits a unified
+#     diff of what it changed; `git.commit_push` applies that diff. Neither plugin
+#     knows the other exists — the whole inter-plugin contract is a typed output
+#     read by a typed input, checked before either process runs. (`codex.exec`
+#     only populates `patch` when it is given a `working_context` and a
+#     write-permitting `sandbox_mode`; a read-only turn has nothing to diff. See
+#     `propose` below, and the README on the workspace an operator must provide.)
+#   * the credential is never in the agent's context. `${secret('env:OPENAI_API_KEY')}`
+#     and `${secret('git:token')}` are references resolved inside the task that
+#     needs them; the prompt this file builds carries a test log and nothing else;
+#   * verification binds to content. `verify` is called with the sha the push
+#     produced, never with a branch name, so what was tested is what was written;
+#   * the budget is real, and running out of it is an outcome rather than a
+#     crash. One attempt, then a human — as a step, not as a bolt-on.
+#
+# The shape of the loop is the part to copy. `until: ${steps.verify.passed}` is
+# checked after the body, so an attempt always happens before anything decides
+# whether another one is needed, and `max_iterations:` is what makes "an agent
+# tries until it works" a promise the engine can keep. A loop that spends its
+# whole budget without its `until:` holding *fails* — that is the language's rule,
+# not this file's — so `continue_on_error:` on the loop step is what turns
+# exhaustion from a failed run into the branch where a person is asked. See
+# docs/DSL.md, "Bounded, because the author does not control the trip count",
+# for what a tolerated exhaustion leaves in scope: `results` for every attempt
+# that ran, and `error` for the budget having been spent.
+#
+# **The budget is one, and that is a limit of the tooling rather than a taste.**
+# An earlier version of this file gave the agent five tries, and it could not have
+# worked: `codex.exec` computes its `patch` by diffing `working_context` against
+# the state it observed *before* the turn, and it fails closed when that workspace
+# starts dirty (`plugins/codex/diff.go`, `computePatch`: `!baseline.observed ||
+# baseline.dirty` means no patch). Attempt one leaves its own edits in the
+# workspace — nothing here reverts them, and `git.commit_push` works on its own
+# in-memory clone rather than on that directory — so attempt two would start
+# dirty, receive an empty `patch`, and be refused by `git.commit_push`, which
+# requires files or a patch. #967 added `reset_working_context` to `codex.exec`,
+# which discards a previous turn's own edits before the *next* turn's baseline
+# is read — but only back to the commit working_context already has checked
+# out, never to a different one. This loop's own `base` advances to each
+# successful push's sha (see `update.base` below), and nothing here brings
+# working_context forward to match it, so a second attempt is still not fully
+# expressible: see the README's "What is still missing" for what closing that
+# still needs.
+#
+# What is kept is the loop and its carried state — the failure text and the commit
+# to compute the next patch against — because that is the shape that generalizes
+# the day working_context can be advanced to a named commit, and because with a
+# budget of one it still does real work: it is what makes "the attempt did not
+# fix it" an *exhaustion* the file turns into a human handoff rather than a
+# crash. The number is the only thing that has to change when the gap closes.
+#
+# This directory sits under `examples/plugins/` because it names tasks two
+# plugins provide, and a `flow` that has not loaded them is *supposed* to refuse
+# it — see examples/README.md on why those files sit a directory deeper. It is
+# not under `plugins/codex/` or `plugins/git/` because it belongs to neither: the
+# interesting claim is what happens when a value crosses between them.
+# `workflow.test.yaml` beside this file proves every path of it in CI with no
+# plugin, no model, no forge and no network, by stubbing at the task boundary.
+edition: v2026.3
+name: agentic-fix
+description: Gives an agent one bounded, durable attempt at making a failing test suite pass — a real commit, verified at the sha it produced — and hands the work to a person when that attempt does not fix it.
+# The floor each plugin has to meet, resolved against what the deployment
+# actually has before a run is accepted, so a mismatch is refused at submit with
+# a sentence naming what is installed rather than discovered as a missing task
+# three steps in. A major version is a different contract, so a v1 does not
+# satisfy either of these.
+plugins:
+  codex: v0.1.0
+  git: v0.1.0
+inputs:
+  repo:
+    type: string
+    required: true
+    description: the repository whose build is broken
+    example: https://github.com/your-org/your-repo.git
+  branch:
+    type: string
+    required: true
+    # Required, and it must already exist on the remote, pointing at the commit
+    # whose build is broken. `git.commit_push` compare-and-swaps the destination
+    # against `base_ref` (RequireRemoteRefs in the git plugin's push path), so it
+    # cannot create an absent branch implicitly: a `branch` that does not resolve
+    # makes `tip` below return no ref and the run fails before the first attempt.
+    # Create it once from the broken commit (see the README), and never a shared
+    # trunk.
+    description: an existing branch each attempt commits to — never a shared trunk, and never created implicitly
+    example: agent/fix
+  workspace:
+    type: string
+    required: true
+    # The directory `codex.exec` is given as its working directory, where the
+    # agent edits files and from which its `patch` is diffed. It must resolve
+    # inside the root an operator configured with FLOWSTATE_CODEX_WORKDIR_ROOT
+    # (see the codex plugin), and it must be a *clean* checkout of `repo` at the
+    # commit being fixed: `codex.exec` diffs the workspace against the state it
+    # observed before the turn and fails closed — no patch at all — when that
+    # baseline is dirty. That requirement is also why the attempt budget is one;
+    # see the header and the README's "What is still missing".
+    description: the checkout the agent edits; codex.exec's working_context, operator-rooted
+    example: repo
+steps:
+  - id: tip
+    description: The commit the first attempt is computed against, read before anything is written.
+    # `token:` even though a read *can* be anonymous: this repo is one the run
+    # will also push to, so it is private in practice, and a private repository's
+    # ls_remote sends authentication only when its own `token` is set — omitting
+    # it here would fail the run before the loop on exactly the repositories this
+    # workflow is for. The same reference the commit-and-push step uses below.
+    git.ls_remote:
+      prefix: ${"refs/heads/" + string(inputs.branch)}
+      token: ${secret('git:token')}
+      url: ${inputs.repo}
+  - id: base_sha
+    description: The tip of the agent branch, named once — the first attempt's base, and the fix when the build was already green.
+    # An *exact* ref match, not `refs[0]`. `git.ls_remote`'s `prefix:` is a
+    # string prefix (the plugin filters with HasPrefix), so asking for
+    # `refs/heads/agent/fix` also returns `refs/heads/agent/fix-old` and
+    # `refs/heads/agent/fix-2`. Taking the first of those would compute this
+    # run's patch against a different branch's tip, push it compare-and-swapped
+    # against that sha, and — if the suite happened to pass — report
+    # `fixed: true` naming a commit on a branch nobody asked about. Filtering by
+    # full name is what makes `inputs.branch` mean the branch it names; an absent
+    # branch yields an empty list and fails here, which is the honest outcome
+    # (see that input's own comment: this workflow cannot create a branch).
+    value: ${steps.tip.refs.filter(r, r.name == "refs/heads/" + inputs.branch)[0].sha}
+  - id: failing
+    description: The failure this run is trying to fix, at the tree it currently fails on.
+    call: ./workflows/run-tests.yaml
+    with:
+      ref: ${steps.base_sha.value}
+  - id: attempt
+    description: One try - a prompt built from the failure, a commit, and a test run at that commit - and its budget being spent is what asks a person.
+    # Only when the build is *known* to be broken, which is a stronger condition
+    # than "not passing" and the difference is the whole of this gate.
+    #
+    # The verification can end three ways, not two: passing, failing, or nobody
+    # could tell us - a CI timeout, a 401, an exhausted 5xx, a proxy's error page
+    # with a 200 on it. `run-tests.yaml` reports that third state as `unknown:`
+    # rather than folding it into `passed: false`, because folding it here would
+    # send an agent to rewrite a branch whose tests may be perfectly green, on
+    # the strength of an outage. A run that cannot find out what the suite does
+    # writes nothing and asks a person instead.
+    #
+    # That is the same rule the reconciler states from the other side: a
+    # defaulted value is safe until something *writes* on the strength of it, and
+    # then it is a refusal rather than a default. This step is where that rule
+    # binds in this file, because this `if:` is what stands between an unknown
+    # answer and a commit.
+    #
+    # Inside the loop the fail-closed default is still the right one: an
+    # unintelligible `verify` reading spends the attempt rather than claiming a
+    # pass, and with a budget of one there is no second attempt for it to
+    # authorise. Were the budget larger, this same rule would apply to `until:`.
+    #
+    # A stale trigger, or a flaky failure
+    # that cleared on its own, leaves `failing.passed` true — and asking an agent
+    # to patch a green branch would mutate a repository that needed nothing. So
+    # the whole loop is skipped there, and the outputs below read "fixed, zero
+    # attempts": the build is good and this run wrote nothing.
+    if: ${!steps.failing.unknown && !steps.failing.passed}
+    # The budget being spent is a branch of this workflow, not the end of it.
+    # Without this, an agent that failed five times would produce a FAILED run
+    # and the `handoff` gate below would never be reached — the person who has to
+    # pick the work up would find out from a dashboard.
+    continue_on_error: true
+    loop:
+      # Two things travel between attempts: what went wrong last time, and what
+      # to compute the next patch against.
+      as: prior
+      init:
+        failure: ${steps.failing.output}
+        base: ${steps.base_sha.value}
+        # How many attempts came before this one — zero on the first. It is
+        # carried rather than derived because a loop's own `results` are not
+        # readable from inside its body, and an attempt that wants to say which
+        # try it is (this one puts it in the commit message) has nowhere else to
+        # get the number.
+        "n": 0
+      # Guarded because an attempt whose patch came back truncated skips both
+      # `apply` and `verify` (see `usable` in the body), and a skipped step has
+      # no outputs to read — an unguarded `steps.apply.sha` would fail evaluating
+      # a name that is not there. Such a pass carries the previous values
+      # forward: nothing was written, so nothing about the base changed.
+      update:
+        failure: '${has(steps.verify) ? steps.verify.output : prior.failure}'
+        base: '${has(steps.apply) ? steps.apply.sha : prior.base}'
+        "n": ${prior.n + 1}
+      # Checked after the body, which is what makes an attempt always happen and
+      # lets the condition read the verification that attempt produced. An
+      # attempt that produced no verification has not passed, which is what
+      # spends the budget and reaches the human handoff.
+      until: ${has(steps.verify) && steps.verify.passed}
+      # One try. A ceiling rather than a hope — `until:` is a promise this loop
+      # cannot keep on its own, since nothing here can make a model eventually
+      # succeed — and one rather than five because a second attempt still is
+      # not fully expressible: `codex.exec`'s `reset_working_context` (#967)
+      # can clean a dirty workspace, but this loop's own `base` advances past
+      # what working_context has checked out, and nothing here can bring
+      # working_context forward to a different commit. See the header for the
+      # full account. Raising this number is the entire change the day that
+      # gap closes.
+      max_iterations: 1
+      steps:
+        - id: propose
+          description: One bounded agentic turn that edits the workspace and emits a patch of what it changed.
+          vars:
+            # Private to this step, which is the right scope for a prompt
+            # nothing else reads. The failure text is the carried state: on the
+            # first attempt it is the failure this run started from, and on
+            # every later one it is what the previous attempt's own test run
+            # printed.
+            fix_prompt: ${"The test suite fails with:\n\n%s\n\nProduce a minimal patch that makes it pass.".format([prior.failure])}
+          timeout: 10m
+          # Not retried, and this is the decision most worth copying from
+          # `examples/agentic-loop`, which argues it at length: a retried
+          # agentic turn is a *new* turn — new cost, new nondeterminism — so a
+          # second attempt belongs to the loop, where it gets a fresh prompt
+          # carrying what actually happened, rather than to a retry policy
+          # repeating a prompt that has already been answered.
+          retry:
+            attempts: 1
+            # Written because the compiled specification requires a coefficient
+            # of at least 1, not because there is a second attempt to space out.
+            backoff: 1.0
+          codex.exec:
+            # A reference, resolved inside the task. The prompt above is built
+            # from a test log; no credential is ever in the agent's context, and
+            # nothing about this key reaches workflow history.
+            api_key: ${secret('env:OPENAI_API_KEY')}
+            prompt: ${fix_prompt}
+            # The workspace the agent edits, and the reason it may edit at all.
+            # `codex.exec` emits a `patch` only when it is given a working
+            # directory AND a sandbox that permits writes (see the ExecOutputs.patch
+            # doc in the codex plugin's proto): a read-only turn has nothing to
+            # diff, so `steps.propose.patch` would be empty and the commit-and-push
+            # step below would reject a commit with neither files nor patch.
+            # WORKSPACE_WRITE lets the agent write to `working_context` and nothing
+            # outside it; network access for the agent's own shell stays off
+            # (allow_network's default), so the only thing that reaches the network
+            # is the model call itself.
+            #
+            # This is a request within an operator's ceiling, not a grant: the
+            # plugin's default policy is READ_ONLY and a task may only narrow
+            # within what the worker's own FLOWSTATE_CODEX_BASE_CONFIG permits,
+            # so a worker that has not been configured to allow workspace writes
+            # refuses this step by name rather than silently downgrading it. The
+            # README's worker environment section says what to export.
+            sandbox_mode: SANDBOX_MODE_WORKSPACE_WRITE
+            working_context: ${inputs.workspace}
+        # Whether what the turn produced is safe to commit at all. `codex.exec`
+        # spends one output budget across the final message, the patch and the
+        # events, in that order, and truncates what does not fit — reporting
+        # `truncated: true` rather than failing. A truncated patch is a *prefix*
+        # of a unified diff, and a prefix is not a smaller change: it is some
+        # hunks of one. Committing it would apply part of the agent's work and
+        # then hand the result to CI as though it were the whole of it — a wrong
+        # answer, not a degraded one. So this pass produces nothing to land, and
+        # the attempt ends without a verification, which spends the budget and
+        # asks a person. Raising `max_output_bytes` is the fix for a repository
+        # whose real patches are large; ignoring the flag is not.
+        - id: usable
+          value: ${!steps.propose.truncated}
+        - id: apply
+          description: The patch as a commit on the agent branch, compare-and-swapped against the tree it was computed on.
+          # Skipped when the patch came back truncated: see `usable` above.
+          if: ${steps.usable.value}
+          # `base_ref:` is the carried `base`, never the branch's current tip.
+          # The task compare-and-swaps the push against exactly this value, so a
+          # concurrent write to the same branch is refused rather than silently
+          # forced — an agent loop is precisely where two writers is a thing
+          # that happens.
+          git.commit_push:
+            base_ref: ${prior.base}
+            branch: ${inputs.branch}
+            # Quoted because of YAML rather than because of the expression: a
+            # plain scalar cannot contain a colon followed by a space.
+            message: '${"agentic-fix: attempt %d".format([prior.n + 1])}'
+            patch: ${steps.propose.patch}
+            token: ${secret('git:token')}
+            url: ${inputs.repo}
+        - id: verify
+          description: Run the suite at the sha this attempt actually wrote.
+          # Nothing was written when the patch was unusable, so there is nothing
+          # to verify — and a `verify` reading `steps.apply.sha` on a skipped
+          # `apply` would fail evaluating a name that is not there.
+          if: ${steps.usable.value}
+          # Bound to content rather than to a movable name. Calling this with
+          # `${inputs.branch}` would verify whatever the branch points at when
+          # CI gets around to it, which on the sixth attempt is not necessarily
+          # the fifth attempt's tree.
+          call: ./workflows/run-tests.yaml
+          with:
+            ref: ${steps.apply.sha}
+
+  # Whether the loop ended without a passing test run, named once. A tolerated
+  # failure leaves its account in scope, so the presence of an error on the loop
+  # step is the question — asked here and read by the gate, the report and the
+  # outputs, rather than re-derived from an attempt count three times.
+  #
+  # It is deliberately the broader question rather than "did the budget run
+  # out". The budget being spent is the expected way to get here, but an
+  # attempt that fails outright — the forge refusing a push, the model gateway
+  # down — lands here too, and it should: what the gate below is for is a person
+  # picking the work up, and the reason this run stopped trying matters to that
+  # person, not to whether they are asked. The reason is not lost, either; it is
+  # `${steps.attempt.error}`, in the transcript and in scope.
+  # Whether the attempt loop ran at all. A skipped `attempt` (the build was
+  # already green) leaves no `steps.attempt` key, and `has(steps.attempt.results)`
+  # on an absent step is an error rather than a false — so this outer presence
+  # check is named once here and guards every later read of the loop's outputs.
+  - id: attempted
+    value: ${has(steps.attempt)}
+  - id: unresolved
+    # Unresolved when the attempts ran out *or* when nobody could say what the
+    # suite does: both end with a person being asked, and neither may report the
+    # build as fixed. Without the `unknown` term a CI outage would skip the loop
+    # and then read as success, which is the worst of the three answers.
+    value: ${steps.failing.unknown || steps.attempted.value && has(steps.attempt.error)}
+
+  # How many attempts actually ran, named once for the three places that ask.
+  # A loop reports one `results` entry per iteration, so its size is the attempt
+  # count — and writing that phrase four times is four copies free to drift, which
+  # is what `flow lint` says as R5/repeated-expression.
+  #
+  # The guard is not defensive habit, it covers three genuinely different
+  # states. A loop that spends its whole budget is the one failure entitled to
+  # publish its iterations, because every one of them finished: `results` is
+  # there, with five entries. A loop that fails *mid*-body — the forge refusing a
+  # push, the gateway down — has an unfinished iteration and publishes no
+  # `results` at all (docs/DSL.md, "And the failure carries its account"). And a
+  # loop that was *skipped* — the build was already green, so `attempt` never ran
+  # — leaves no `steps.attempt` key at all, which is why the outer `has(steps.attempt)`
+  # comes first: `has(steps.attempt.results)` on an absent step is an error, not a
+  # false. All three reach this step; only the first has a count above zero.
+  - id: spent
+    value: "${(steps.attempted.value && has(steps.attempt.results)) ? steps.attempt.results.size() : 0}"
+
+  # The commit a successful run points at: the last attempt's when one fixed the
+  # build, and the tip itself when the build was already green (`attempt` skipped,
+  # so there is no attempt result to read). Named here so `fix_ref` below is a
+  # single conditional rather than one nested inside another.
+  - id: fixed_sha
+    value: "${(steps.attempted.value && has(steps.attempt.results) && has(steps.attempt.results[steps.spent.value - 1].apply)) ? steps.attempt.results[steps.spent.value - 1].apply.sha : steps.base_sha.value}"
+
+  # The human in the loop, as a step. Reached only when the attempts did not
+  # produce a passing suite, and fail-closed: a gate nobody answers within a day
+  # reports `timed_out` and this run says plainly that nobody took the work,
+  # rather than reading a payload nobody sent.
+  - id: handoff
+    if: ${steps.unresolved.value}
+    wait_for_signal:
+      name: human-review
+      timeout: 24h
+      outputs:
+        # Type-guarded for the reason `retiring` is in `deployment-reconciler`:
+        # a signal payload is an untrusted input, and `payload.?taken_over.orValue(false)`
+        # answers with whatever was sent — so a sender that puts the *string*
+        # `"false"` where a bool belongs would make the `&&` fail on a non-bool
+        # operand, failing the run while it was reporting a handoff. `has(...)`
+        # and the `type(...) == type(true)` gate run before the value is used as
+        # a bool, and `&&` short-circuits, so a wrong type reads as "did not take
+        # it over" — which is the fail-closed answer this gate already gives to
+        # silence.
+        taken_over: |-
+          ${!timed_out && has(payload.taken_over) && type(payload.taken_over) == type(true) &&
+          payload.taken_over}
+  - id: report
+    log:
+      level: '${steps.unresolved.value ? "warn" : "info"}'
+      message: '${steps.unresolved.value ? "%d attempts did not fix the build on %s".format([steps.spent.value, inputs.branch]) : "build fixed on %s after %d attempt(s)".format([inputs.branch, steps.spent.value])}'
+outputs:
+  attempts:
+    value: ${steps.spent.value}
+    description: how many agentic turns this run actually spent — zero when an attempt failed outright rather than producing a verdict, since a loop that failed part way through an iteration publishes no account of them
+  fixed:
+    value: ${!steps.unresolved.value}
+    description: whether an attempt reached a verified passing suite
+  fix_ref:
+    value: '${steps.unresolved.value ? "" : steps.fixed_sha.value}'
+    description: the commit whose test run passed — the last attempt's when one fixed it, the tip itself when the build was already green, empty when nothing did
+  handed_off:
+    value: ${has(steps.handoff)}
+    description: true when the attempts ended without a fix and a person was asked — the gate happening, not its answer
+  taken_over:
+    value: ${has(steps.handoff) && steps.handoff.taken_over}
+    description: true when a person answered that gate and took the work, false when they declined or never answered

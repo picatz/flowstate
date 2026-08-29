@@ -230,7 +230,7 @@ func (p *Positions) Locate(step, field string) (Span, bool) {
 // away (#318). A step does one kind of work, so at most one of these candidates
 // can exist in the map and adding it cannot make the search ambiguous.
 func fieldCandidates(base, field string) []string {
-	candidates := make([]string, 0, len(v1.TaskNames())+3)
+	candidates := make([]string, 0, len(v1.TaskNames())+4)
 	for _, task := range v1.TaskNames() {
 		candidates = append(candidates, base+"."+task+"."+field)
 	}
@@ -239,6 +239,7 @@ func fieldCandidates(base, field string) []string {
 		base+"."+field,
 		base+".for_each."+field,
 		base+".wait_for_signal."+field,
+		base+".wait_for_signals."+field,
 
 		// A `switch:` mapping's own fields — its `value:`, each `cases[N].case`
 		// and the `default:` — are recorded one level below the step exactly as

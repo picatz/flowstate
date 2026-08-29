@@ -1,0 +1,385 @@
+# The whole of this workflow, in CI, with no plugin process, no model, no forge
+# and no network — because a stub replaces a task at the task boundary and
+# nothing below it. Every loop trip, every `if:`, the carried state, the budget
+# running out and the gate that follows it all run for real here through the
+# actual local driver; only the four effects are canned.
+#
+# That is the property worth pointing at: `codex.exec` and `git.commit_push` are
+# tasks *plugins* provide, and this file never loads either plugin. A stub names
+# a task the way a step does, so a workflow that depends on two separate
+# processes is still a workflow a laptop with no credentials can hold to its
+# behavior.
+#
+# What a stub here may *not* do is answer with a shape the real task could not
+# produce. The workflow's budget is one attempt because `codex.exec` fails closed
+# on a workspace that starts dirty, and this loop's own `base` can advance past
+# what working_context has checked out with nothing here to bring it forward to
+# match (see the workflow header) — so these cases script exactly one turn per
+# run, a case that stubbed a second attempt's patch would be asserting behavior
+# the installed plugin cannot deliver, which is the failure this file exists not
+# to hide.
+#
+# The scripted forge is still keyed on the loop's carried state — `prior.base`
+# and `prior.n`, which a stub's `where:` and `returns:` can both read, because
+# they are evaluated in the scope of the step being replaced — and the scripted
+# CI is keyed on the sha it is asked about. With one attempt the keying proves a
+# narrower thing than it used to, but the thing it proves is the one that
+# matters: `verify` asks about the sha `apply` actually returned, not about a
+# branch name.
+edition: v2026.3
+
+defaults:
+  inputs:
+    repo: https://github.com/example/broken.git
+    branch: agent/fix
+    workspace: repo
+  stubs:
+    - task: log
+      returns: {}
+
+tests:
+  - name: the one attempt fixes the build, and nobody is asked anything
+    workflow: ./workflow.yaml
+    # Bound at the reference boundary, exactly as tasks are bound at the task
+    # boundary: no `env:` or `git:` provider is configured in this process, and
+    # neither needs to be. A reference with no entry here is refused the moment a
+    # stubbed task is invoked with it, so a test cannot quietly resolve a real
+    # credential.
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n"
+          final_message: narrowed the failure to one assertion
+          output_tokens: 812
+          # The real task always reports this - it is a plain bool in its
+          # outputs - so a stub that omitted it would be answering with a
+          # shape codex.exec cannot produce, and the step reading it would
+          # fail on a missing key rather than on anything real.
+          truncated: false
+      # The push, answering with the sha this attempt produced. The `where:`
+      # reads the base the attempt was computed against, so an `apply` that
+      # ignored the carried state and pushed against something else would not
+      # match at all.
+      - task: git.commit_push
+        where: "prior.base == 'sha-0'"
+        returns:
+          sha: sha-1
+      # The scripted CI, keyed on the commit it was asked about — which is the
+      # point of `verify` being called with `${steps.apply.sha}`. The initial run
+      # at the tip fails; the run at the commit the agent pushed passes.
+      - task: http
+        where: "inputs.json.ref == 'sha-0'"
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+      - task: http
+        where: "inputs.json.ref == 'sha-1'"
+        returns:
+          passed: true
+          output: ""
+    expect:
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, report]
+      # The gate is not reached at all, which is the difference between "a person
+      # approved this" and "nobody had to be asked".
+      skipped: [handoff]
+      outputs:
+        attempts: 1
+        fixed: true
+        fix_ref: sha-1
+        handed_off: false
+        taken_over: false
+
+  - name: the one attempt does not fix it and a person takes the work
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      # Two hours into a gate with a day on it. The run is asleep until this
+      # arrives; the virtual clock is why the whole case takes milliseconds.
+      - name: human-review
+        at: 2h
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n"
+          final_message: another guess
+          output_tokens: 640
+          truncated: false
+      - task: git.commit_push
+        returns:
+          sha: '${"sha-%d".format([prior.n + 1])}'
+      # CI never passes, whatever it is asked about, which is what spends the
+      # budget.
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      # `attempt` ran and *failed*, tolerated: the loop spent its whole budget
+      # without `until:` holding, which the language treats as a distinct failure
+      # rather than a quiet stop. `continue_on_error:` is what turns it into the
+      # branch below rather than into a FAILED run with nobody asked.
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
+      outputs:
+        attempts: 1
+        fixed: false
+        # Empty rather than the sha that was pushed: nothing here was verified as
+        # fixing anything, and reporting that commit as the fix would be a claim
+        # about a test run that failed.
+        fix_ref: ""
+        handed_off: true
+        taken_over: true
+
+  - name: the attempt does not fix it and nobody answers the gate either
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    # No signals at all: the day passes, the wait reports timed_out, and the
+    # shaped output turns that into `taken_over: false` rather than into a
+    # payload nobody sent. Fail-closed, on the branch where a human is the
+    # fallback.
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n"
+          final_message: another guess
+          output_tokens: 640
+          truncated: false
+      - task: git.commit_push
+        returns:
+          sha: '${"sha-%d".format([prior.n + 1])}'
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
+      outputs:
+        attempts: 1
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: false
+
+  - name: an attempt that fails outright still reaches a person
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      - name: human-review
+        at: 30m
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # The gateway is down. The turn is not retried (`attempts: 1`), so the
+      # attempt fails part way through the body rather than producing a verdict —
+      # a different failure from spending the budget, and the one that publishes
+      # no `results` for the loop at all.
+      - task: codex.exec
+        fails:
+          kind: Upstream
+          message: model gateway unavailable
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
+      # `apply` and `verify` never happen: the attempt died before either.
+      outputs:
+        # Zero, and truthfully so: no attempt finished, so the loop has no
+        # account of any to publish. A file that read `results` unguarded would
+        # fail evaluating this rather than answering it.
+        attempts: 0
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: true
+
+  - name: a build that is already green is left untouched and nobody is asked
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # The initial run at the tip already passes — a stale trigger, or a flaky
+      # failure that cleared. The whole attempt loop is skipped: no codex turn is
+      # asked for, no commit is pushed, nothing is verified again. Their stubs are
+      # deliberately absent, so a regression that ran the loop anyway would fail
+      # loudly on a missing stub rather than quietly mutate a green branch.
+      # No `output` key at all, which is what a CI that has nothing to report
+      # plausibly answers with. `type(x)` evaluates x, so a missing key is an
+      # error rather than a type - without the `has()` guard in run-tests.yaml
+      # this case would fail permanently on the very first call, before the loop
+      # or the handoff could run.
+      - task: http
+        where: "inputs.json.ref == 'sha-0'"
+        returns:
+          passed: true
+    expect:
+      ran: [tip, base_sha, failing, attempted, unresolved, spent, fixed_sha, report]
+      # `attempt` never runs (the build is good), so neither does the gate.
+      skipped: [attempt, handoff]
+      outputs:
+        # Zero attempts, and fixed: the build was already good, and this run
+        # wrote nothing. `fix_ref` is the tip that already passed, not empty.
+        attempts: 0
+        fixed: true
+        fix_ref: sha-0
+        handed_off: false
+        taken_over: false
+
+  - name: a patch truncated by the output budget is never committed
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      - name: human-review
+        at: 1h
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # The turn produced more than its output budget allowed, so what came back
+      # is a prefix of a unified diff and the task says so. Committing it would
+      # apply some hunks of the agent's change and call it the whole thing.
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n"
+          final_message: the change is larger than the budget
+          output_tokens: 4096
+          truncated: true
+      # Deliberately no git.commit_push stub: reaching it would be the bug, and
+      # with no stub a run that got there fails loudly on the missing stub rather
+      # than quietly pushing a partial patch.
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
+      # Nothing was written and nothing was verified: the attempt ended at the
+      # truncation check, spent the budget, and asked a person.
+      outputs:
+        attempts: 1
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: true
+
+  - name: a CI nobody can read hands over without touching the branch
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      - name: human-review
+        at: 1h
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # A `response:` stub, so the callee's real parse_json and outputs shaping
+      # run against this body (#925). A 200 carrying a proxy's error page is
+      # rejected by parse_json before any guarded expression is evaluated, and
+      # permanently - so the read is tolerated and reports no verdict at all.
+      - task: http
+        response:
+          status_code: 200
+          body: "<html>502 Bad Gateway</html>"
+      # No `codex.exec` and no `git.commit_push` stub, and that is the assertion
+      # this case exists to make: an unreadable verdict must not put an agent to
+      # work on a branch whose tests may be perfectly green. If the repair loop
+      # ran, it would reach a task with no stub and fail loudly, naming it.
+    expect:
+      ran: [tip, base_sha, failing, attempted, unresolved, spent, fixed_sha, handoff, report]
+      # The loop never starts: "nobody could tell me" is not "the suite failed".
+      skipped: [attempt]
+      outputs:
+        # Nothing was attempted and nothing was written; a person was asked
+        # instead, and the run does not claim the build is fixed.
+        attempts: 0
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: true

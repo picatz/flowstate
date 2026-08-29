@@ -57,20 +57,22 @@ func pullRequestFiles(ctx context.Context, inputs map[string]*flowstatev1.Value,
 		return nil, err
 	}
 
-	client, err := newClient(token, in.GetBaseUrl())
+	// apiBase, not in.GetBaseUrl(): see issueList's own call to newClient,
+	// and effectiveAPIBase's doc comment (#694).
+	client, apiBase, err := newClient(token, in.GetBaseUrl())
 	if err != nil {
 		return nil, err
 	}
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	files, truncated, nextCursor, err := doPullRequestFiles(ctx, client, in.GetOwner(), in.GetRepo(), int(in.GetNumber()), maxResults, cursorRaw, in.GetBaseUrl())
+	files, truncated, nextCursor, err := doPullRequestFiles(ctx, client, in.GetOwner(), in.GetRepo(), int(in.GetNumber()), maxResults, cursorRaw, apiBase)
 	if err != nil {
 		return nil, classifyReadError(err)
 	}
 
 	return sdk.EncodeOutputs(&githubv1.PullRequestFilesOutputs{
-		Files:      files,
+		Files:      pullRequestFileValues(files),
 		Truncated:  truncated,
 		NextCursor: nextCursor,
 	})
@@ -78,26 +80,29 @@ func pullRequestFiles(ctx context.Context, inputs map[string]*flowstatev1.Value,
 
 // pullRequestFilesFingerprint hashes the filters a github.pull_request_files
 // walk runs under - see issueListFingerprint's own doc comment for why,
-// including why base_url is included. Deliberately does not include a
-// sort/direction pair the way the other two list tasks' fingerprints do:
+// including why the effective API base is included, and why it is the base
+// this call actually reaches rather than the base_url input (#694).
+//
+// Deliberately does not include a sort/direction pair the way the other
+// two list tasks' fingerprints do:
 // GitHub's ListFiles endpoint has none - see PullRequestFilesInputs.cursor's
 // own doc comment for the weaker contract that follows from that absence.
-func pullRequestFilesFingerprint(owner, repo string, number, maxResults int, baseURL string) fingerprint {
+func pullRequestFilesFingerprint(owner, repo string, number, maxResults int, apiBase string) fingerprint {
 	return filterFingerprint(
 		"owner="+owner,
 		"repo="+repo,
 		"number="+strconv.Itoa(number),
 		"max_results="+strconv.Itoa(maxResults),
-		"base_url="+normalizeBaseURL(baseURL),
+		"api_base="+canonicalAPIBase(apiBase),
 	)
 }
 
 // doPullRequestFiles is pullRequestFiles's already-validated network step -
 // see doPullRequestList's own doc comment for why this split exists.
-func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo string, number, maxResults int, cursor, baseURL string) ([]*githubv1.PullRequestFile, bool, string, error) {
+func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo string, number, maxResults int, cursor, apiBase string) ([]*githubv1.PullRequestFile, bool, string, error) {
 	perPage := min(maxPerPage, maxResults+1)
 
-	fingerprint := pullRequestFilesFingerprint(owner, repo, number, maxResults, baseURL)
+	fingerprint := pullRequestFilesFingerprint(owner, repo, number, maxResults, apiBase)
 
 	startPage, startSkip := 1, 0
 	if cursor != "" {

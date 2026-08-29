@@ -198,9 +198,34 @@ specific they are:
 - a file literally named `Flowfile` or `Flowfile.yaml`
 - `workflow.yaml` or `workflow.yml`
 - anything under a `workflows/` directory
+- `*.test.yaml` and `testdefaults.yaml` — `flow test`'s suite format and its
+  shared directory fixture, which the server recognizes by name and checks with
+  the test loader rather than the workflow grammar, so a test file never draws a
+  workflow's diagnostics
 
 Adjust these to your layout. Pointing the server at every `*.yaml` in a repository
 works, but you will get Flowfile diagnostics on your Kubernetes manifests.
+
+### What the server provides for a test file
+
+A `*.test.yaml` and a `testdefaults.yaml` speak their own, narrower language, and
+the table above does not apply to them — a step's `for_each:` or a task's own
+inputs would be wrong answers with confidence in a document that has no `steps:`
+at all. What they get instead:
+
+| Feature | What you get |
+| --- | --- |
+| **Diagnostics** | Everything the flowtest loader — the same one `flow test` runs — checks: a misspelled key, an unknown stub task, a malformed `starter:`/`sender:`, an over-limit `check:` list, and the rest. A syntax mistake and an unknown key are positioned at goccy's own line and column; a semantic refusal (an unknown stub task, say) anchors at the named case's `name:` line where the message names exactly one case, and at the document start otherwise. |
+| **Completion** | The document's own keys at every level — a suite's `edition`/`vars`/`defaults`/`tests`/`coverage`, a case's `name`/`workflow`/`inputs`/`stubs`/`expect`/…, `expect:`'s own keys (`outputs`, `failed`, `ran`, `check`, …), and the rest of the shape (`defaults:`, a stub's `fails:`, a `signals:` entry, `starter:`/`sender:`, a `check:` claim, a `cases:` row) — plus a stub's `task:` value, completed from the same task registry a workflow step's task name is. `testdefaults.yaml`'s own top level is narrower, since `tests:` and `coverage:` are not legal there. |
+| **Document symbols** | An outline naming every runnable case: an entry with no `cases:` rows by its own `name:`, and an entry that declares rows by `<entry name>/<row name>` for each row — the same identity `flow test`'s own report uses, since an entry with rows is a template the rows are merged over and does not itself run. |
+| **Hover** | A stub's `task:` value, showing the same registry-derived documentation a workflow step's task name shows. Nothing else yet: `expect:`'s keys have no generated, per-field prose to read the way a task's schema does, and hand-writing one here would be a second copy of the struct's own doc comment, free to drift from it. |
+| **Go to definition, formatting, code actions** | Not yet answered for a test file — there is no flowtest analogue of `flowfile.Marshal` for formatting to render against, no suggested-edit machinery for code actions to read, and go-to-definition's one candidate (a case's `workflow:` naming a sibling Flowfile) is unbuilt. |
+
+Everything in that table is derived the same way the workflow table's is: the
+document-shape keys are read by reflection off the `flowtest` package's own
+`yaml:` struct tags — the identical tags the loader's strict decoder consults to
+decide "known" from "unknown field" — so a field added to that package is a key
+completion offers with no change here required to notice.
 
 ## Plugin tasks: `flow lsp --plugin-dir`
 
@@ -259,10 +284,14 @@ as the `lsp` argument, not in a project file:
 | Zed | `"arguments": ["lsp", "--plugin-dir", "/path/to/plugins"]` in the `binary` block |
 | Emacs | `'(flowfile-mode . ("flow" "lsp" "--plugin-dir" "/path/to/plugins"))` |
 
-`$FLOWSTATE_PLUGIN_DIR` is read when no `--plugin-dir` is given, the same as for a
-worker — which is a convenience for a machine where every Flowstate command should
-see the same plugins, and still an operator's decision about their own environment
-rather than a repository's about yours.
+`$FLOWSTATE_PLUGIN_DIR` is **not** read by `flow lsp`, and the path it is given must
+be **absolute**. A worker reads the variable, because a worker's environment is one
+an operator arranged; an editor starts the language server with the opened workspace
+as its working directory, so a relative `--plugin-dir` would name a directory inside
+whatever repository you happen to have open, and an inherited variable is one more
+way for something other than this command line to choose what your editor executes.
+The command line in the table above is the whole of the opt-in, which is why there
+is no configuration path to the same effect.
 
 ## Neovim
 
@@ -287,9 +316,11 @@ vim.filetype.add({
     ['Flowfile.yaml'] = 'flowfile',
     ['workflow.yaml'] = 'flowfile',
     ['workflow.yml'] = 'flowfile',
+    ['testdefaults.yaml'] = 'flowfile',
   },
   pattern = {
     ['.*/workflows/.*%.ya?ml'] = 'flowfile',
+    ['.*%.test%.ya?ml'] = 'flowfile',
   },
 })
 
@@ -377,7 +408,7 @@ $ code --extensionDevelopmentPath="$PWD" /path/to/a/repo/with/flowfiles
 ```
 
 `flow` must be on your `PATH`, or point `flowstate.path` at it in your *user*
-settings. That setting and `flowstate.lsp.args` are `machine-overridable`, so a
+settings. That setting and `flowstate.lsp.args` are `machine`, so a
 workspace's own `.vscode/settings.json` cannot choose what your editor executes —
 the same argument this page makes about Neovim's `--plugin-dir` above.
 
@@ -515,6 +546,104 @@ driving eglot to that point under `emacs --batch` depends on idle timers and
 `post-command-hook` and proves more about batch mode than about anybody's editor.
 Take the connection as confirmed and the squiggles as expected.
 
+## Stepping a run: `flow dap`
+
+Everything above is `flow lsp`, which answers questions about a *file*. `flow dap`
+is the other half: it speaks the Debug Adapter Protocol, so an editor's step and
+continue buttons drive a real local run of the workflow you are looking at.
+
+```console
+$ flow dap
+```
+
+Run by hand it prints a banner saying so and waits — like `flow lsp`, it is meant
+to be launched by an editor rather than typed. For a terminal debugger, use
+`flow run local --debug`, which is the same session behind the same commands.
+
+**Breakpoints are step ids, not source lines.** The debugger is handed steps and
+not files — the engine calls it with a node, and a node carries an `id` and no
+position — so there is nothing to hang a gutter dot on. Set them as *function*
+breakpoints named after a step. A line breakpoint is answered rather than
+ignored, unverified and carrying that reason, so an editor shows a hollow marker
+instead of a filled one you would wait at forever.
+
+Two more consequences of the same seam, so nothing here is discovered: a stack
+frame names the step and cannot be navigated to, and a run is one thread even
+where a `parallel:` block is running several steps at once — the debugger
+deliberately does not stop inside one.
+
+### Visual Studio Code
+
+Add to `.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "flowstate",
+      "request": "launch",
+      "name": "Debug this Flowfile",
+      "program": "${workspaceFolder}/examples/hello-world/workflow.yaml"
+    }
+  ]
+}
+```
+
+`program` is the workflow to run, and it is read from the launch configuration
+rather than from the adapter's own arguments — one `flow dap` serves whatever you
+point it at. Registering the `flowstate` debug type needs an extension
+contribution; `editors/vscode/` does not ship one yet.
+
+Function breakpoints go in the Breakpoints view's own section — the **+** beside
+*Function Breakpoints* — typed as a step's `id`.
+
+### Helix
+
+Add a `[language.debugger]` stanza to the `[[language]]` block from
+[Helix](#helix) above:
+
+```toml
+[language.debugger]
+name = "flowstate"
+transport = "stdio"
+command = "flow"
+args = ["dap"]
+
+[[language.debugger.templates]]
+name = "workflow"
+request = "launch"
+completion = [{ name = "workflow", completion = "filename" }]
+args = { program = "{0}" }
+```
+
+`hx --health flowfile` then reports the adapter where it used to say
+`Configured debug adapter: None`, and Helix's debug menu (`<space>g` by default)
+has something to open.
+
+### What the debug console can do
+
+The `evaluate` request is wired to the same CEL evaluator the terminal debugger's
+`inspect` uses, against the scope the run is actually paused in — so the debug
+console is a REPL over the paused run:
+
+```
+> steps.build.value
+"web.tar.gz"
+> steps.build.value.endsWith('.tar.gz')
+true
+```
+
+The variables pane is the same scope, grouped as `scope` groups it: `steps`,
+`vars`, `inputs`, the workflow's declared vars, `run` and `trigger`. A very large
+scope is rendered up to a bound and then says how many it did not render, rather
+than stopping silently.
+
+Secrets are withheld here exactly as they are at the terminal prompt. The
+redaction is a property of the session rather than of the front end, so a value a
+`flow test` run would not print is not one an editor's variables pane can read
+out of it either.
+
 ## Checking it works
 
 Open a Flowfile and try each of these:
@@ -626,6 +755,16 @@ $ nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/pro
 **Verified by hand, not by CI:** Helix 25.07.1 (`hx --health flowfile`, including
 the missing-queries finding above) and GNU Emacs 29.3 (eglot connects). Both are
 recorded in their own sections with the part that was *not* reached.
+
+**`flow dap` is exercised end to end, and not inside an editor.**
+`cmd/flow/dap_test.go` runs the real binary as a subprocess and speaks the
+protocol to it over real `Content-Length` framing — initialize, launch, a
+function breakpoint on a step id, `configurationDone`, continue, the stopped
+event, a stack frame naming the step, an `evaluate` reading an earlier step's
+output, and the variables pane — so the conversation is checked on every pull
+request the way the Neovim job checks `flow lsp`. What is *not* checked is the
+half above that is a settings key: neither the `launch.json` nor the Helix
+`[language.debugger]` stanza has been loaded by the editor it is written for.
 
 **Not verified inside a real editor:** Visual Studio Code and Zed. Both are GUI
 applications with no headless mode worth scripting. The VS Code extension under

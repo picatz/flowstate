@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // Nothing counted attempts. That is the whole of why a step with no `retry:` ran
@@ -34,7 +34,7 @@ import (
 // be idempotent, appear only in production.
 func TestAStepWithNoRetryBlockUsesTheSharedDefault(t *testing.T) {
 	// Not parallel: reaching a test server means swapping the http task in the
-	// default registry, which is process-wide. `tests.NewHTTPServer` does the same
+	// default registry, which is process-wide. `conformance.NewHTTPServer` does the same
 	// and for the same reason — the shipped default denies loopback, correctly, so
 	// a test that needs it says so rather than weakening it for everyone.
 	allowLoopback(t)
@@ -290,6 +290,38 @@ func TestStepTimeoutsFollowTheDurableDriversPrecedence(t *testing.T) {
 			},
 			want: v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: base.ScheduleToClose},
 		},
+		{
+			name:   "a declared total_timeout replaces the overall bound alone",
+			policy: &v1.StepPolicy{TotalTimeout: durationpb.New(2 * time.Minute)},
+			want:   v1.StepTimeouts{StartToClose: base.StartToClose, ScheduleToClose: 2 * time.Minute},
+		},
+		{
+			// The one behavioral decision `total_timeout:` carries (#920).
+			// Without the key this is the widening case above: 5m over the
+			// default five attempts would push the overall bound to 25m. An
+			// author who wrote the bound down gets the bound they wrote —
+			// a budget the engine silently extends is not a budget.
+			name: "an explicit total_timeout wins outright over the widening",
+			policy: &v1.StepPolicy{
+				Timeout:      durationpb.New(5 * time.Minute),
+				TotalTimeout: durationpb.New(6 * time.Minute),
+			},
+			want: v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: 6 * time.Minute},
+		},
+		{
+			// And it wins downwards too, which is the direction that matters:
+			// a total smaller than one attempt's own bound is a step that gets
+			// less than one full attempt. The flowfile compiler refuses to
+			// *write* that (see policy() in flowfile/parse.go), but a
+			// specification built by hand can carry it, and the precedence
+			// must not quietly repair it into something else.
+			name: "a total shorter than one attempt is still honoured exactly",
+			policy: &v1.StepPolicy{
+				Timeout:      durationpb.New(5 * time.Minute),
+				TotalTimeout: durationpb.New(time.Minute),
+			},
+			want: v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: time.Minute},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -302,25 +334,19 @@ func TestStepTimeoutsFollowTheDurableDriversPrecedence(t *testing.T) {
 // allowLoopback registers an http task permitting loopback for the duration of
 // the test, restoring the original afterwards.
 //
-// The same exemption `tests.allowLoopback` makes, stated here because that one is
-// unexported. The default denying loopback is what makes
+// allowLoopback is the shared exemption, under the name this package's tests
+// already call. The default denying loopback is what makes
 // `examples/conditional-and-retry` demonstrate anything, so it is not weakened —
 // the test that needs it says so.
+//
+// It used to be a copy, which is how it came to be a copy of the defect as well:
+// saving and restoring a process-global registry entry per holder is wrong for
+// two overlapping tests, and the correction lives in one place now. See
+// `conformance`'s loopbackExemption for the whole account.
 func allowLoopback(t *testing.T) {
 	t.Helper()
 
-	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
-	require.NoError(t, err)
-
-	registry := v1.DefaultRegistry()
-	original, existed := registry.Lookup("http")
-	require.NoError(t, registry.Register(v1.HTTPTaskDef(policy)))
-
-	t.Cleanup(func() {
-		if existed {
-			_ = registry.Register(original)
-		}
-	})
+	conformance.AllowLoopback(t)
 }
 
 // TestALocalRetryHonoursWhatTheServerAsked is the other value the durable driver

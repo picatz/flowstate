@@ -210,14 +210,6 @@ func mcpMergeTarget(in *hook.Input) (owner, repo string, number int, ok bool) {
 	return owner, repo, int(n), true
 }
 
-// ghPRMerge matches a `gh pr merge` invocation and captures everything
-// after it, up to the next control operator or the end of the string.
-var ghPRMerge = regexp.MustCompile(`\bgh\s+pr\s+merge\b(.*)`)
-
-// ghPRMergeTrigger is the same trigger with no capture group, applied to a
-// quote-stripped copy of the command: see isGHPRMergeInvocation.
-var ghPRMergeTrigger = regexp.MustCompile(`\bgh\s+pr\s+merge\b`)
-
 // prURL matches a full pull-request URL, which is self-identifying.
 var prURL = regexp.MustCompile(`^https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)$`)
 
@@ -243,47 +235,11 @@ var ghMergeValueFlags = map[string]bool{
 // isGHPRMergeInvocation reports whether cmd actually invokes `gh pr merge`,
 // as opposed to merely mentioning the words — a commit message or a grep
 // pattern quoting them must never trigger this guard, the same false-alarm
-// concern pidguard's package doc names. stripQuoted drops the *contents* of
-// quoted regions entirely (not just the quote characters), so a trigger
-// found in the stripped copy is one that appears outside any quoting in the
-// original and is safe to act on there too.
+// concern pidguard's package doc names. ghPRMergeArgs preserves shell-word
+// boundaries, so a trigger can only be formed by three unquoted words.
 func isGHPRMergeInvocation(cmd string) bool {
-	return ghPRMergeTrigger.MatchString(stripQuoted(cmd))
-}
-
-// stripQuoted removes single- and double-quoted regions (contents and all)
-// and backslash-escaped characters, so `git commit -m "docs: gh pr merge
-// 42"` never looks like an invocation. Ported from pidguard's guard of the
-// same name and for the same reason.
-func stripQuoted(s string) string {
-	var b strings.Builder
-	var inSingle, inDouble, escaped bool
-	for _, r := range s {
-		switch {
-		case escaped:
-			escaped = false
-		case inSingle:
-			if r == '\'' {
-				inSingle = false
-			}
-		case inDouble:
-			switch r {
-			case '\\':
-				escaped = true
-			case '"':
-				inDouble = false
-			}
-		case r == '\\':
-			escaped = true
-		case r == '\'':
-			inSingle = true
-		case r == '"':
-			inDouble = true
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	_, ok := ghPRMergeArgs(cmd)
+	return ok
 }
 
 // ghCLIMergeTarget recognizes `gh pr merge` only when the command names the
@@ -296,17 +252,12 @@ func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
 	if !isGHPRMergeInvocation(cmd) {
 		return "", "", 0, false
 	}
-	m := ghPRMerge.FindStringSubmatch(cmd)
-	if m == nil {
+	fields, ok := ghPRMergeArgs(cmd)
+	if !ok {
 		return "", "", 0, false
-	}
-	rest := m[1]
-	if i := strings.IndexAny(rest, ";&|\n`"); i >= 0 {
-		rest = rest[:i]
 	}
 
 	var flagOwner, flagRepo, target string
-	fields := strings.Fields(unquote(rest))
 	skipNext := false
 	skipIsRepo := false
 	for _, f := range fields {
@@ -354,12 +305,76 @@ func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
 	return "", "", 0, false
 }
 
-// unquote strips single and double quote characters. It is not a shell
-// parser; it exists only so `gh pr merge "42"` and `-R 'owner/repo'` still
-// match the plain forms above. Anything it mishandles simply fails to
-// identify the PR (ok=false), which is the safe direction for this guard.
-func unquote(s string) string {
-	return strings.NewReplacer(`"`, "", `'`, "").Replace(s)
+// ghPRMergeArgs finds the first unquoted `gh pr merge` command and returns
+// its arguments as shell words. Quoted whitespace stays within one word,
+// and quoted mentions of the command stay ordinary words, so neither can
+// redirect the guard to a different pull request. Control operators bound
+// each simple command; this intentionally remains a small recognizer, not a
+// shell evaluator.
+func ghPRMergeArgs(s string) ([]string, bool) {
+	var commands [][]string
+	var words []string
+	var word strings.Builder
+	var inSingle, inDouble, escaped, started bool
+	flushWord := func() {
+		if started {
+			words = append(words, word.String())
+			word.Reset()
+			started = false
+		}
+	}
+	flushCommand := func() {
+		flushWord()
+		if len(words) > 0 {
+			commands = append(commands, words)
+			words = nil
+		}
+	}
+	for _, r := range s {
+		switch {
+		case escaped:
+			word.WriteRune(r)
+			started, escaped = true, false
+		case inSingle:
+			if r == '\'' {
+				inSingle = false
+			} else {
+				word.WriteRune(r)
+			}
+		case inDouble:
+			switch r {
+			case '\\':
+				escaped = true
+			case '"':
+				inDouble = false
+			default:
+				word.WriteRune(r)
+			}
+		case r == '\\':
+			escaped, started = true, true
+		case r == '\'':
+			inSingle, started = true, true
+		case r == '"':
+			inDouble, started = true, true
+		case r == ' ' || r == '\t' || r == '\r':
+			flushWord()
+		case strings.ContainsRune(";&|\n`", r):
+			flushCommand()
+		default:
+			word.WriteRune(r)
+			started = true
+		}
+	}
+	flushCommand()
+
+	for _, command := range commands {
+		for i := 0; i+2 < len(command); i++ {
+			if command[i] == "gh" && command[i+1] == "pr" && command[i+2] == "merge" {
+				return command[i+3:], true
+			}
+		}
+	}
+	return nil, false
 }
 
 // thread is the part of an unresolved review thread this guard names in its

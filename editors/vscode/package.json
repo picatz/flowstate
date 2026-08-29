@@ -31,7 +31,10 @@
         "filenamePatterns": [
           "**/workflow.yaml",
           "**/workflow.yml",
-          "**/workflows/*.yaml"
+          "**/workflows/*.yaml",
+          "**/*.test.yaml",
+          "**/*.test.yml",
+          "**/testdefaults.yaml"
         ],
         "configuration": "./language-configuration.json"
       }
@@ -51,7 +54,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Extra arguments for `flow lsp`, e.g. [\"--plugin-dir\", \"./plugins\"]. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
+          "description": "Extra arguments for `flow lsp`, e.g. [\"--plugin-dir\", \"/path/to/plugins\"]. A plugin directory must be an absolute path: the language server starts in the opened workspace, so a relative one would name a directory inside whatever repository you have open. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
           "scope": "machine"
         }
       }
@@ -87,40 +90,40 @@
       "commandPalette": [
         {
           "command": "flowstate.validate",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)"
         },
         {
           "command": "flowstate.test",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml"
         },
         {
           "command": "flowstate.fix",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)"
         },
         {
           "command": "flowstate.runLocal",
-          "when": "resourceLangId == flowfile"
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)"
         }
       ],
       "editor/context": [
         {
           "command": "flowstate.validate",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)",
           "group": "flowstate@1"
         },
         {
           "command": "flowstate.test",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml",
           "group": "flowstate@2"
         },
         {
           "command": "flowstate.fix",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)",
           "group": "flowstate@3"
         },
         {
           "command": "flowstate.runLocal",
-          "when": "resourceLangId == flowfile",
+          "when": "resourceLangId == flowfile && resourceFilename != testdefaults.yaml && !(resourceFilename =~ /\\.test\\.ya?ml$/)",
           "group": "flowstate@4"
         }
       ]

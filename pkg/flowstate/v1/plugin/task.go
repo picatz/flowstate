@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -69,6 +70,13 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// outputs its descriptor promises, which is what its executor actually
 		// returns.
 		ShapesOutputs: manifest.GetShapesOutputs(),
+
+		// The whole-value list the manifest declared, carried onto the def so a
+		// description of this task (DescribeTask, the catalog, `flow plugins`)
+		// can say so. Enforcement itself still reads the manifest directly,
+		// closed over below in taskFunc — this copy is for visibility, not for
+		// the resolve-or-refuse decision.
+		SecretInputs: manifest.GetSecretInputs(),
 
 		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
 		// .CredentialInputs for a plugin task's secret inputs — see the
@@ -143,7 +151,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		// decided by code this repository did not write.
 		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
 
-		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+		resp, err := p.executeTask(ctx, callCtx, inst, request)
 		if err != nil {
 			// Classified before it is scrubbed — see [taskError] for why the
 			// order is load-bearing — and scrubbed before it is wrapped, so
@@ -159,13 +167,154 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 			return nil, scrubbed
 		}
 
-		outputs := resp.Msg.GetOutputs()
+		outputs := resp.GetOutputs()
 		if err := scrubPluginOutputs(scrubber, outputs); err != nil {
 			callErr = err
 			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, err)
 		}
 
 		return outputs, nil
+	}
+}
+
+// executeTask asks the plugin to run one task, relaying any progress it
+// reports along the way to ctx's own reporter (see [flowstatev1.ReportProgress]),
+// and returns the terminal ExecuteResponse.
+//
+// Whether to attempt ExecuteStream at all is decided once, from the manifest
+// this plugin already described itself with — CAPABILITY_TASK_PROGRESS — never
+// by dialing the RPC and reading whatever error comes back.
+//
+// That is deliberate rather than an optimization avoiding a wasted round
+// trip. An unregistered route and a task's own application-level failure
+// that happens to classify as CodeUnimplemented are indistinguishable on the
+// wire: [sdk.asConnectError] passes an author's own *connect.Error straight
+// through, so a task can legitimately fail with that exact code after doing
+// real work — the same way [sdk.NotFound] fails with CodeNotFound. A host
+// that treated any CodeUnimplemented from ExecuteStream as "this plugin
+// predates the method" and retried on Execute, unary, would rerun such a
+// task's Fn a second time on the strength of an error the task deliberately
+// chose to return — corruption for a plugin whose task has side effects, and
+// exactly the shape of bug CLAUDE.md's rewriter section warns rewriting the
+// wrong scope always turns into. Reading the manifest is unambiguous: it is
+// what the plugin said before this or any other call happened, not something
+// inferred from how one call's failure happens to be coded.
+func (p *Plugin) executeTask(
+	ctx, callCtx context.Context,
+	inst *instance,
+	request *pluginv1.ExecuteRequest,
+) (*pluginv1.ExecuteResponse, error) {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_TASK_PROGRESS) {
+		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+		if err != nil {
+			return nil, err
+		}
+		return resp.Msg, nil
+	}
+
+	streamReq := &pluginv1.ExecuteStreamRequest{
+		Task:      request.GetTask(),
+		Scope:     request.GetScope(),
+		Identity:  request.GetIdentity(),
+		Namespace: request.GetNamespace(),
+	}
+
+	stream, err := inst.clients.taskStream.ExecuteStream(callCtx, connect.NewRequest(streamReq))
+	if err != nil {
+		return nil, err
+	}
+
+	// progressFrames counts every progress message this call has received,
+	// relayed or not. Once it passes p.cfg.MaxProgressFrames, further
+	// progress frames in this same call are received (so the stream keeps
+	// moving toward its terminal response) but not forwarded — see
+	// DefaultMaxProgressFrames for why dropping, not failing the call, is the
+	// answer to a task that is behaving exactly as documented, and
+	// [newClients]'s streaming transport for the separate byte headroom that
+	// makes this bound something other than cosmetic: without it, a task
+	// under the cap could still exhaust the shared response budget one
+	// legitimate tiny frame at a time before its own terminal response
+	// arrived (#804).
+	maxProgressFrames := p.cfg.MaxProgressFrames
+	var progressFrames int
+
+	for stream.Receive() {
+		msg := stream.Msg()
+
+		if progress := msg.GetProgress(); progress != nil {
+			// The reserve's arithmetic (progressReserve, transport.go) is
+			// per-frame: it holds only while no single frame exceeds
+			// maxProgressFrameWireBytes. That has to be enforced here, not
+			// assumed — a frame carrying protobuf unknown fields (a schema
+			// this build has never seen, or a hostile peer padding one) can
+			// be arbitrarily large up to the transport ceiling, and enough of
+			// them would spend the terminal response's own share, recreating
+			// the starvation the reserve exists to prevent. An oversized
+			// frame is a protocol violation, refused rather than dropped:
+			// dropping would leave its bytes already spent against the
+			// ceiling while this loop reported nothing wrong.
+			if err := checkProgressFrameSize(msg); err != nil {
+				return nil, fmt.Errorf("plugin %q: task %q: %w",
+					p.name, request.GetTask().GetName(), err)
+			}
+			progressFrames++
+			if progressFrames > maxProgressFrames {
+				continue
+			}
+			reportWirePhase(ctx, progress.GetPhase())
+			continue
+		}
+
+		if resp := msg.GetResponse(); resp != nil {
+			// The terminal message has arrived; nothing about the call's
+			// outcome depends on how the stream itself ends from here, so a
+			// close error is a diagnostic and never this call's error.
+			if closeErr := stream.Close(); closeErr != nil {
+				p.log.Debug("closing plugin progress stream after its terminal response",
+					"task", request.GetTask().GetName(), "error", closeErr)
+			}
+			return resp, nil
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+
+	// The stream ended without a terminal response and without an error,
+	// which ExecuteStream's contract does not allow a well-behaved plugin to
+	// produce — see the message's own doc comment in plugin.proto.
+	return nil, fmt.Errorf("plugin %q: task %q: ExecuteStream ended without a response",
+		p.name, request.GetTask().GetName())
+}
+
+// reportWirePhase forwards a plugin's TaskPhase to ctx's own reporter, if it
+// names one of the closed vocabulary [flowstatev1.ReportProgress] accepts.
+// TASK_PHASE_UNSPECIFIED and any value newer than this build knows about are
+// dropped rather than forwarded — the fail-closed direction for a value on
+// its way into an activity heartbeat and, from there, workflow history. See
+// progress.go's own doc comment for why that vocabulary is closed, and
+// plugin.proto's TaskPhase for why the two must keep naming the same set.
+//
+// Each branch below calls ReportProgress with a declared phase named
+// directly, rather than through a variable computed from the switch: that is
+// not a style choice, it is what
+// [flowstatev1.TestEveryPhaseReportedIsOneOfTheDeclaredOnes] in progress_test.go
+// requires of every call site in the tree, on purpose — a variable holding a
+// phase reads identically at that AST walk whether it can only ever hold one
+// of the three constants below, as this one can, or whether it holds
+// something built from a task's own inputs, which is exactly the mistake the
+// walk exists to catch. Spelling each branch as a literal call is what keeps
+// this call site indistinguishable, to that check, from every other one that
+// was always written by hand.
+func reportWirePhase(ctx context.Context, phase pluginv1.TaskPhase) {
+	switch phase {
+	case pluginv1.TaskPhase_TASK_PHASE_REQUESTING:
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
+	case pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE:
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
+	case pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN:
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
 	}
 }
 
@@ -293,43 +442,159 @@ func scrubPluginOutputs(scrubber *secrets.Scrubber, outputs *flowstatev1.Node_Ou
 				"output %q holds a secret reference, which a task output must never be: "+
 					"step outputs are written to workflow history", name)
 		}
-		scrubLiteral(scrubber, v.GetLiteral())
+		if v == nil {
+			continue
+		}
+		if err := scrubMessage(scrubber, v.ProtoReflect()); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-// scrubLiteral redacts every string a CEL literal holds, recursively through a
-// list or a mapping.
-func scrubLiteral(scrubber *secrets.Scrubber, lit *expr.Value) {
-	if lit == nil {
-		return
+// scrubMessage redacts every string and byte field in a protobuf message,
+// including map keys and values and fields nested in lists or messages. Plugin
+// outputs use flowstate.v1.Value, whose non-literal variants can also carry
+// strings: notably Error.message, Structure entries, and ParsedExpr nodes. A
+// walk limited to Value.literal therefore leaves valid response shapes able to
+// carry a resolved secret into workflow history.
+func scrubMessage(scrubber *secrets.Scrubber, msg protoreflect.Message) error {
+	// Collected before anything is written back, rather than mutated inside
+	// Range: protoreflect leaves the effect of mutating a message mid-range
+	// unspecified, and a scrub that depends on that is a scrub that can be
+	// changed by a dependency bump.
+	type populated struct {
+		field protoreflect.FieldDescriptor
+		value protoreflect.Value
+	}
+	fields := make([]populated, 0, 8)
+	msg.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		fields = append(fields, populated{field, value})
+
+		return true
+	})
+
+	for _, f := range fields {
+		switch {
+		case f.field.IsMap():
+			if err := scrubMap(scrubber, f.value.Map(), f.field); err != nil {
+				return err
+			}
+		case f.field.IsList():
+			list := f.value.List()
+			for i := 0; i < list.Len(); i++ {
+				scrubbed, err := scrubFieldValue(scrubber, f.field, list.Get(i))
+				if err != nil {
+					return err
+				}
+				list.Set(i, scrubbed)
+			}
+		default:
+			scrubbed, err := scrubFieldValue(scrubber, f.field, f.value)
+			if err != nil {
+				return err
+			}
+			// A nested message was scrubbed in place and is the same value;
+			// setting it back would be a mutation with nothing to change.
+			if kind := f.field.Kind(); kind != protoreflect.MessageKind && kind != protoreflect.GroupKind {
+				msg.Set(f.field, scrubbed)
+			}
+		}
 	}
 
-	switch kind := lit.GetKind().(type) {
-	case *expr.Value_StringValue:
-		kind.StringValue = scrubber.Scrub(kind.StringValue)
-	case *expr.Value_BytesValue:
-		// A plugin that decodes a secret input into bytes and returns it in a
-		// bytes output ships the credential to history unredacted unless this
-		// case exists — bytes are not a string, so the case above never
-		// matches, and there is otherwise nothing here that looks at them at
-		// all. [secrets.Scrubber]'s registered forms already include base64
-		// and hex, so a value transported as bytes and one transported as text
-		// are matched the same way; only the field kind holding it differs.
-		if scrubbed := scrubber.Scrub(string(kind.BytesValue)); scrubbed != string(kind.BytesValue) {
-			kind.BytesValue = []byte(scrubbed)
+	return nil
+}
+
+// scrubMap scrubs a map's keys and values, and refuses a map whose keys collide
+// once scrubbed.
+//
+// Two distinct keys can redact to the same text — the resolved secret itself
+// and a literal "[REDACTED]" is the easy case — and writing both back would
+// silently drop one. Which one survives depends on protobuf map iteration
+// order, which is deliberately unspecified, so the same plugin response could
+// produce one output locally and a different one durably: the drivers
+// disagreeing about a value neither of them is wrong to compute.
+//
+// Refusing is the fail-closed answer and costs a plugin nothing it should have
+// been doing: a map key is a name, and a resolved secret is not one.
+func scrubMap(scrubber *secrets.Scrubber, m protoreflect.Map, field protoreflect.FieldDescriptor) error {
+	keyField, valueField := field.MapKey(), field.MapValue()
+
+	type entry struct {
+		key   protoreflect.MapKey
+		value protoreflect.Value
+	}
+	entries := make([]entry, 0, m.Len())
+	originalKeys := make([]protoreflect.MapKey, 0, m.Len())
+
+	var rangeErr error
+	m.Range(func(key protoreflect.MapKey, value protoreflect.Value) bool {
+		originalKeys = append(originalKeys, key)
+
+		scrubbedKey, err := scrubFieldValue(scrubber, keyField, key.Value())
+		if err != nil {
+			rangeErr = err
+
+			return false
 		}
-	case *expr.Value_ListValue:
-		for _, element := range kind.ListValue.GetValues() {
-			scrubLiteral(scrubber, element)
+		scrubbedValue, err := scrubFieldValue(scrubber, valueField, value)
+		if err != nil {
+			rangeErr = err
+
+			return false
 		}
-	case *expr.Value_MapValue:
-		for _, entry := range kind.MapValue.GetEntries() {
-			scrubLiteral(scrubber, entry.GetKey())
-			scrubLiteral(scrubber, entry.GetValue())
+		entries = append(entries, entry{scrubbedKey.MapKey(), scrubbedValue})
+
+		return true
+	})
+	if rangeErr != nil {
+		return rangeErr
+	}
+
+	seen := make(map[any]struct{}, len(entries))
+	for _, item := range entries {
+		if _, collides := seen[item.key.Interface()]; collides {
+			return fmt.Errorf(
+				"two keys of output field %q redact to the same key %v, so one would silently "+
+					"replace the other: a map key is a name, and a resolved secret must not be used as one",
+				field.Name(), item.key.Interface())
+		}
+		seen[item.key.Interface()] = struct{}{}
+	}
+
+	// Clear the original keys first: a scrubbed key is not necessarily equal to
+	// the key that arrived from the plugin.
+	for _, key := range originalKeys {
+		m.Clear(key)
+	}
+	for _, item := range entries {
+		m.Set(item.key, item.value)
+	}
+
+	return nil
+}
+
+func scrubFieldValue(
+	scrubber *secrets.Scrubber,
+	field protoreflect.FieldDescriptor,
+	value protoreflect.Value,
+) (protoreflect.Value, error) {
+	switch field.Kind() {
+	case protoreflect.StringKind:
+		return protoreflect.ValueOfString(scrubber.Scrub(value.String())), nil
+	case protoreflect.BytesKind:
+		original := string(value.Bytes())
+		if scrubbed := scrubber.Scrub(original); scrubbed != original {
+			return protoreflect.ValueOfBytes([]byte(scrubbed)), nil
+		}
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		if err := scrubMessage(scrubber, value.Message()); err != nil {
+			return value, err
 		}
 	}
+
+	return value, nil
 }
 
 // taskError classifies a plugin's task failure into the engine's own error
@@ -441,7 +706,23 @@ func taskError(task, plugin string, err error, scrubber *secrets.Scrubber) error
 func kindForCode(err error) flowstatev1.ErrorKind {
 	// A cancelled or expired caller context is not the plugin's failure, and
 	// classifying it as one would blame the plugin in the step's error.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	//
+	// The two are told apart because since #1147 the deadline on a plugin call
+	// *is* the step's `timeout:` — so an expired one is the engine's own bound
+	// being reached, which is exactly [flowstatev1.ErrorKindTimeout] and is what
+	// the drivers answer when they end the attempt themselves rather than
+	// letting the call return (#915). Reporting Upstream for it made one fact
+	// have two names depending on which side of a race won: locally the plugin
+	// call returns first and this classifies it, durably Temporal's
+	// StartToClose fires and engine.recordedStepKind classifies it, and the two
+	// drivers must not disagree about a value that travels on
+	// RunResponse.Error.kind. A cancellation is not a timeout and keeps its own
+	// answer; both remain retryable, so this changes what an operator is told
+	// and nothing about what is attempted.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return flowstatev1.ErrorKindTimeout
+	}
+	if errors.Is(err, context.Canceled) {
 		return flowstatev1.ErrorKindUpstream
 	}
 

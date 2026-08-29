@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
 )
@@ -135,6 +136,13 @@ var dslKeys = map[string][]dslKey{
 		{name: "wait_for_signal", detail: "string or map", docs: "Wait for a named signal, which is how a human approval reaches a workload. " +
 			"Write `wait_for_signal: deploy-approved`, or a mapping with `name:` and `timeout:`. " +
 			"What the sender sent becomes this step's outputs. " + oneStepKind},
+		{name: "wait_for_signals", detail: "string or map", docs: "Wait for a named signal and then take every other delivery already buffered for it, in one step. " +
+			"Write `wait_for_signals: order-placed`, or a mapping with `name:`, `max_batch:` and `timeout:`. " +
+			"Reports `" + v1.DeliveriesOutput + "` (a list of `{" + v1.PayloadOutput + ", " + v1.SenderOutput + "}`, oldest first), `" +
+			v1.CountOutput + "`, and `" + v1.TimedOutOutput + "`. " + oneStepKind + "\n\n" +
+			"This is the event-accumulator spelling: the alternative is `loop:` around `wait_for_signal:`, which pays a loop iteration — " +
+			"a workflow task, and one `results` entry against the loop's bound — for every single event. " +
+			"It does not reduce the number of signal *events* in history; nothing can, since one is written when the sender's call is accepted."},
 		{name: "call", detail: "string", docs: "Run another Flowfile as a step, resolved relative to *this file's* own directory at compile time. " + oneStepKind + "\n\n" +
 			"The callee runs isolated: its steps see only its bound arguments (`with:`) and the profile, not this file's steps or `vars:`. " +
 			"What it declares in its own `outputs:` comes back under this step's id, the way a task's would."},
@@ -160,8 +168,18 @@ var dslKeys = map[string][]dslKey{
 			"A name already bound by an enclosing loop or step is refused rather than shadowed, and a var may not read its siblings: `vars:` is a mapping, so there is no order that would make one available to another. " +
 			"Everything else in scope is fair: `" + v1.VarsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding.\n\n" +
 			"A `${secret(...)}` reference may not be stored here either, for the same reason it may not go in the workflow's own `vars:`. Write it on the task input that consumes the secret."},
-		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
-		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
+		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`.\n\n" +
+			"Only a task step schedules the one activity this bounds. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
+			"`wait_until:`, `wait_for_signal:` and `value:` are refused: each either schedules zero or more of something else, or nothing " +
+			"at all, so put `timeout:` on the steps inside the body that need it instead."},
+		{name: "total_timeout", detail: "duration", docs: "Bounds the step across *every* attempt and every wait between them, written as `30s`, `5m`, or `1h`: the wall-clock budget for the whole retried step, where `timeout:` bounds one attempt inside it.\n\n" +
+			"Write it when the deadline is what matters — an SLA is ten minutes however many tries that is, not an attempt count computed backwards from a backoff curve. A step declaring none takes the engine's default overall budget, so a step is bounded across its attempts either way; this key is how an author says by how much.\n\n" +
+			"A declared value is honoured exactly. The engine widens its default overall budget to fit `timeout:` multiplied by the attempts allowed, and writing this key suppresses that widening — a budget the engine silently extends is not a budget. It may not be shorter than `timeout:`, since one that expires inside the first attempt allows none.\n\n" +
+			"Refused on the same step kinds `timeout:` is refused on, for the same reason: they schedule no single activity for either clock to bound."},
+		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults.\n\n" +
+			"Only a task step schedules the one activity this re-runs. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
+			"`wait_until:`, `wait_for_signal:` and `value:` are refused for the same reason `timeout:` is: put `retry:` on the steps inside " +
+			"the body that need it instead."},
 		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},
 		{name: "undo", detail: "map", docs: "How this step is taken back when a *later* step fails and the run cannot continue: the saga compensation for what it did.\n\n" +
 			"Written as the task that undoes it, with its inputs beneath: the same shape as the step's own work, because it is the same kind of thing. " +
@@ -200,6 +218,24 @@ var dslKeys = map[string][]dslKey{
 			v1.PayloadOutput + "` and `" + v1.SenderOutput + "` are gone unless a line re-exposes them, and reading one that was dropped is a `flow validate` error rather than an empty value.\n\n" +
 			"The point is to state a gate once: later `if:`s and the workflow's `outputs:` read `${" + v1.StepsRoot +
 			".approval.approved}` instead of each re-deriving the condition, so the report cannot disagree with the branch that ran."},
+	},
+	"wait_for_signals": {
+		{name: "name", detail: "string", docs: "The signal this step drains, and what a sender addresses with `flow signal <workflow-id> <name>`."},
+		{name: "max_batch", detail: "int", docs: "How many deliveries one drain takes. Omitted or `0` takes as many as a run may carry across a suspend.\n\n" +
+			"What is left past the bound stays buffered for the next drain, so reaching it costs another iteration rather than an event. " +
+			"Worth writing when the step's body is expensive per delivery."},
+		{name: "timeout", detail: "duration", docs: "Bounds how long this waits for the *first* delivery. A drain that lapses is not a failure: it produces `" +
+			v1.CountOutput + ": 0` and `" + v1.TimedOutOutput + ": true`, and the run carries on. Omit it to wait indefinitely."},
+		{name: "prompt", detail: "string or expression", docs: "What this gate is asking for, carried to whoever is being asked - under exactly `wait_for_signal:`'s own rules.\n\n" +
+			"Evaluated once, the moment the wait *parks*, with `" + v1.NowIdentifier + "` bound over the ordinary scope. " +
+			"Not the wait's result: the result does not exist yet when the question is asked. " +
+			"A drain that found deliveries already buffered never parks, so it asks nothing.\n\n" +
+			"It may not reach an input declared `sensitive:`, by any spelling, and may not hold a `${secret(...)}` reference."},
+		{name: "outputs", detail: "map", docs: "Shapes what this step produces, the way `wait_for_signal:`'s own `outputs:` does - same evaluator, same single moment, and it **replaces** rather than extends.\n\n" +
+			"What differs is the names bound bare: `" + v1.DeliveriesOutput + "`, `" + v1.CountOutput + "`, `" + v1.TimedOutOutput +
+			"`, and `" + v1.NowIdentifier + "`. There is no `" + v1.PayloadOutput + "` and no `" + v1.SenderOutput +
+			"`, because a batch has many of each.\n\n" +
+			"```yaml\noutputs:\n  ids: ${" + v1.DeliveriesOutput + ".map(d, d." + v1.PayloadOutput + ".id)}\n  processed: ${" + v1.CountOutput + "}\n```"},
 	},
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
@@ -262,6 +298,21 @@ func lookupDSLKey(level, name string) (dslKey, bool) {
 // document is usually mid-edit and therefore invalid at exactly the moment
 // completion is requested.
 func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
+	if doc.isTestDocument() {
+		// The test language's own completion, over its own document shape —
+		// see testcompletion.go. Not the workflow grammar's candidates,
+		// deliberately: a step's `for_each:` or a task's own inputs would be
+		// wrong answers with confidence in a document that has neither.
+		return completeTestDocument(doc, clampPosition(pos))
+	}
+	if !doc.speaksFlowfile() {
+		return &lsp.CompletionList{Items: []lsp.CompletionItem{}} // see [document.speaksFlowfile]
+	}
+	// See [clampPosition]: a coordinate the protocol cannot express is brought
+	// to the origin here, so that every range this answer carries is one the
+	// client can apply.
+	pos = clampPosition(pos)
+
 	empty := &lsp.CompletionList{IsIncomplete: false, Items: []lsp.CompletionItem{}}
 	if doc.tooLarge {
 		return empty
@@ -322,12 +373,20 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		return list(dslCandidates("switch", word, replace))
 	case endsWith(path, "wait_for_signal"):
 		return list(dslCandidates("wait_for_signal", word, replace))
+	case endsWith(path, "wait_for_signals"):
+		return list(dslCandidates("wait_for_signals", word, replace))
 	case endsWith(path, "steps"):
 		// A step key is a property or a task name, and from where the cursor is
 		// they are the same kind of thing: both are ways to finish this line. The
 		// registry supplies one half and the table the other, which is why a task
 		// added to the registry becomes completable with no change here.
-		return list(append(dslCandidates("steps", word, replace), taskCandidates(word, replace, doc.tasks)...))
+		//
+		// stepOwningKeyAt rather than current: current is stepScope's innermost
+		// containing step, which on a sibling line after a for_each/loop/parallel/
+		// switch body is the last nested step inside that body — not the
+		// composite this key actually belongs to. See that function's doc.
+		owner := stepOwningKeyAt(doc.index, steps, pos.Line)
+		return list(append(stepKeyCandidates(owner, word, replace), taskCandidates(word, replace, doc.tasks)...))
 	case len(path) == 0:
 		return list(dslCandidates("", word, replace))
 	}
@@ -385,36 +444,6 @@ func openExpression(before string) (string, bool) {
 	return flowfile.OpenFence(before)
 }
 
-// A refCandidate is one name an expression at the cursor may reference, together
-// with what it exposes after a dot.
-type refCandidate struct {
-	name string
-
-	// detail and docs describe the candidate in the popup.
-	detail string
-	docs   string
-
-	// outputs are the names reachable after a dot, with their rendered types.
-	// A candidate with none — a loop iterator, whose element type is not known
-	// statically — offers nothing after the dot rather than guessing.
-	outputs []refOutput
-
-	// insert is the text an editor writes when the candidate is accepted, when
-	// that differs from the name. The root is the only one that does: it is never
-	// the whole of a reference, so the dot that continues it comes with it.
-	insert string
-
-	// kind distinguishes a step from a bound variable, for the popup's icon.
-	kind lsp.CompletionItemKind
-}
-
-// A refOutput is one name reachable after a dot.
-type refOutput struct {
-	name   string
-	detail string
-	docs   string
-}
-
 // A refScope is what an expression at the cursor may name, in the two namespaces
 // the grammar keeps apart.
 //
@@ -422,15 +451,22 @@ type refOutput struct {
 // offering a name the compiler would refuse is the one failure this package must
 // not have, and a scope shaped like the compiler's cannot drift into one that
 // merges them again.
+//
+// The three lists become a [celcomplete.Scope] on the way out ([refScope.shared]),
+// which is where the rules about them live: a candidate is that package's type
+// already, so this is a builder for one scope rather than a second model of a
+// name. What stays here is the *document's* half — which names a parsed Flowfile
+// puts in each list, and which roots an editor offers — because those are answers
+// about a file being typed rather than about the language.
 type refScope struct {
 	// steps are the steps whose outputs exist at this point, offered after
 	// `steps.` and never bare.
-	steps []refCandidate
+	steps []celcomplete.Candidate
 
 	// locals are the names bound bare where the cursor is: a loop's iterator, a
 	// step's own `vars:` keys, and `now` where a wait binds it. Offered bare and
 	// never after the root.
-	locals []refCandidate
+	locals []celcomplete.Candidate
 
 	// vars are the workflow's declared variables, offered after `vars.` and never
 	// bare — the crossing [v1.Scope.Activation] describes, met from the editor's
@@ -441,7 +477,7 @@ type refScope struct {
 	// two namespaces: a step called `region` and a var called `region` are different
 	// things and completing one as the other is the mistake this package exists to
 	// avoid.
-	vars []refCandidate
+	vars []celcomplete.Candidate
 }
 
 // referenceScope returns the names an expression at pos may reference.
@@ -483,14 +519,14 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 		// why it is added here rather than living in the scope every expression gets. A task
 		// input has no clock that survives a retry, and the validator says so with
 		// a diagnostic; offering the name there would be walking an author into it.
-		scope.locals = append(scope.locals, refCandidate{
-			name:   v1.NowIdentifier,
-			kind:   lsp.CIKVariable,
-			detail: "timestamp",
+		scope.locals = append(scope.locals, celcomplete.Candidate{
+			Name:   v1.NowIdentifier,
+			Kind:   celcomplete.KindValue,
+			Detail: "timestamp",
 			// The same text hover shows, for the same reason a CEL library's is
 			// shared: accepting a candidate and then hovering what was accepted
 			// must not produce two accounts of one name.
-			docs: nowDoc(),
+			Docs: nowDoc(),
 		})
 	}
 	return scope
@@ -536,7 +572,7 @@ func bindsClock(key string, path []string) bool {
 	switch {
 	case endsWith(path, "steps"):
 		return key == waitUntilKey || key == sleepKey
-	case endsWith(path, "wait_for_signal"):
+	case endsWith(path, "wait_for_signal"), endsWith(path, "wait_for_signals"):
 		return key == signalTimeoutKey
 	case withinWaitOutputsShaping(path):
 		return true
@@ -564,7 +600,7 @@ func bindsClock(key string, path []string) bool {
 // left alone.
 func withinWaitOutputsShaping(path []string) bool {
 	for i := 0; i+1 < len(path); i++ {
-		if path[i] != "wait_for_signal" || path[i+1] != taskShapingKey {
+		if (path[i] != "wait_for_signal" && path[i] != "wait_for_signals") || path[i+1] != taskShapingKey {
 			continue
 		}
 		if i == 0 || path[i-1] != "steps" {
@@ -586,7 +622,35 @@ func withinWaitOutputsShaping(path []string) bool {
 // `outputs:` alone is not enough to decide it — the workflow's own declared
 // outputs and the http task's shaping use the same word, and neither binds these
 // — so the path must show the wait above it.
-func waitResultCandidates(path []string) []refCandidate {
+func waitResultCandidates(path []string) []celcomplete.Candidate {
+	if endsWith(path, "wait_for_signals", "outputs") {
+		// The batch spelling's own result, which is a different set of names —
+		// see [v1.SignalBatchOutputs]. Offered per arm rather than as a union of
+		// the two, for the reason the validator scopes per arm: offering
+		// `payload` here would teach a reference nothing binds, and the author
+		// would find out at run time on whichever driver they were not watching.
+		return []celcomplete.Candidate{
+			{
+				Name:   v1.DeliveriesOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "list",
+				Docs:   waitResultDoc(v1.DeliveriesOutput),
+			},
+			{
+				Name:   v1.CountOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "int",
+				Docs:   waitResultDoc(v1.CountOutput),
+			},
+			{
+				Name:   v1.TimedOutOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "bool",
+				Docs:   waitResultDoc(v1.TimedOutOutput),
+			},
+		}
+	}
+
 	if !endsWith(path, "wait_for_signal", "outputs") {
 		return nil
 	}
@@ -597,24 +661,24 @@ func waitResultCandidates(path []string) []refCandidate {
 	// menu, and the hover over what the menu inserted. Now the schema's sentence
 	// about `payload` and `sender` reaches both, and there is one place left to
 	// edit when any of it changes.
-	return []refCandidate{
+	return []celcomplete.Candidate{
 		{
-			name:   v1.PayloadOutput,
-			kind:   lsp.CIKVariable,
-			detail: "map",
-			docs:   waitResultDoc(v1.PayloadOutput),
+			Name:   v1.PayloadOutput,
+			Kind:   celcomplete.KindValue,
+			Detail: "map",
+			Docs:   waitResultDoc(v1.PayloadOutput),
 		},
 		{
-			name:   v1.SenderOutput,
-			kind:   lsp.CIKVariable,
-			detail: "map",
-			docs:   waitResultDoc(v1.SenderOutput),
+			Name:   v1.SenderOutput,
+			Kind:   celcomplete.KindValue,
+			Detail: "map",
+			Docs:   waitResultDoc(v1.SenderOutput),
 		},
 		{
-			name:   v1.TimedOutOutput,
-			kind:   lsp.CIKVariable,
-			detail: "bool",
-			docs:   waitResultDoc(v1.TimedOutOutput),
+			Name:   v1.TimedOutOutput,
+			Kind:   celcomplete.KindValue,
+			Detail: "bool",
+			Docs:   waitResultDoc(v1.TimedOutOutput),
 		},
 	}
 }
@@ -654,11 +718,11 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	// binds nothing, which iteratorName answering "" already says.
 	if ls == loopScopeAfterBody && from.loopEntry != nil {
 		if name := from.iteratorName(); name != "" {
-			scope.locals = append(scope.locals, refCandidate{
-				name:   name,
-				kind:   lsp.CIKVariable,
-				detail: "carried value",
-				docs: fmt.Sprintf(
+			scope.locals = append(scope.locals, celcomplete.Candidate{
+				Name:   name,
+				Kind:   celcomplete.KindValue,
+				Detail: "carried value",
+				Docs: fmt.Sprintf(
 					"The value the %s loop carries between iterations: init sets it, the body reads it, update computes the next one.",
 					from.id),
 			})
@@ -683,11 +747,11 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 				"The value the %s loop carries between iterations: init sets it, the body reads it, update computes the next one.",
 				loop.id)
 		}
-		scope.locals = append(scope.locals, refCandidate{
-			name:   name,
-			kind:   lsp.CIKVariable,
-			detail: detail,
-			docs:   docs,
+		scope.locals = append(scope.locals, celcomplete.Candidate{
+			Name:   name,
+			Kind:   celcomplete.KindValue,
+			Detail: detail,
+			Docs:   docs,
 		})
 	}
 
@@ -733,21 +797,21 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 // One function for both positions, because the block is one grammar rule written at
 // several sites — the same reason the compiler compiles it in one place. What
 // differs is only what to call it, which is what detail says.
-func varsCandidates(vars *entry, detail string) []refCandidate {
+func varsCandidates(vars *entry, detail string) []celcomplete.Candidate {
 	if vars == nil || vars.value == nil {
 		return nil
 	}
 
-	var out []refCandidate
+	var out []celcomplete.Candidate
 	for _, e := range vars.value.entries {
 		if e.key == "" {
 			continue
 		}
-		out = append(out, refCandidate{
-			name:   e.key,
-			kind:   lsp.CIKVariable,
-			detail: detail,
-			docs:   varDoc(e),
+		out = append(out, celcomplete.Candidate{
+			Name:   e.key,
+			Kind:   celcomplete.KindValue,
+			Detail: detail,
+			Docs:   varDoc(e),
 		})
 	}
 
@@ -792,16 +856,16 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 		}
 	}
 
-	scope := refScope{steps: make([]refCandidate, 0, len(earlier))}
+	scope := refScope{steps: make([]celcomplete.Candidate, 0, len(earlier))}
 	for i := len(earlier) - 1; i >= 0; i-- {
 		s := earlier[i]
 		if s.id == "" || s.indent > currentIndent || ancestors[s] {
 			continue
 		}
-		c := refCandidate{name: s.id, kind: lsp.CIKVariable, detail: "step"}
+		c := celcomplete.Candidate{Name: s.id, Kind: celcomplete.KindValue, Detail: "step"}
 		if def, ok := tasks.Lookup(s.taskName); ok {
-			c.detail = def.Name
-			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
+			c.Detail = def.Name
+			c.Docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			// The line scan sees input keys but not their values, so a step
 			// that shapes — the same rule the validator and the model use, now
 			// a declared capability rather than a name — gets no output
@@ -809,7 +873,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 			// removed. Offering too little is the scan's stated posture;
 			// offering a name nothing produces is the failure.
 			if !s.shapes(tasks) {
-				c.outputs = taskOutputs(def)
+				c.Members = taskOutputs(def)
 			}
 		}
 		scope.steps = append(scope.steps, c)
@@ -818,26 +882,27 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 }
 
 // stepCandidate describes one step as a reference candidate.
-func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
-	c := refCandidate{name: s.id, kind: lsp.CIKVariable, detail: s.kind()}
+func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
+	c := celcomplete.Candidate{Name: s.id, Kind: celcomplete.KindValue, Detail: s.kind()}
 
 	switch {
 	case s.forEachEntry != nil:
 		// A loop reports every iteration through one output; its body's outputs
 		// are not reachable from outside it.
-		c.detail = "for_each"
-		c.docs = fmt.Sprintf(
+		c.Detail = "for_each"
+		c.Docs = fmt.Sprintf(
 			"A loop. Reports one entry per iteration in %s, each a map of body step id to that step's outputs. Body outputs do not escape the loop.",
 			rootedRef(s.id, loopResultsOutput))
-		c.outputs = []refOutput{{
-			name:   loopResultsOutput,
-			detail: "list",
-			docs:   "One entry per iteration, each a map of body step id to that step's named outputs.",
+		c.Members = []celcomplete.Candidate{{
+			Name:   loopResultsOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "list",
+			Docs:   "One entry per iteration, each a map of body step id to that step's named outputs.",
 		}}
 
 	case s.parallelEntry != nil:
-		c.detail = "parallel"
-		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
+		c.Detail = "parallel"
+		c.Docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
 
 	case s.loopEntry != nil, s.waitUntilEntry != nil, s.sleepEntry != nil,
 		s.waitForSignalEntry != nil, s.hasKey(waitUntilKey), s.hasKey(sleepKey), s.hasKey("wait_for_signal"):
@@ -849,18 +914,19 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		// reads, so accepting a candidate here and then hovering it cannot
 		// describe two different things.
 		if node := constructOutputNode(s); node != nil {
-			c.detail = s.kind()
-			if c.detail == "" {
-				c.detail = "wait"
+			c.Detail = s.kind()
+			if c.Detail == "" {
+				c.Detail = "wait"
 			}
 			names, _ := v1.OutputNames(node, tasks)
 			for _, n := range names {
 				if n.Name == "" {
 					continue
 				}
-				c.outputs = append(c.outputs, refOutput{
-					name: n.Name,
-					docs: n.Description,
+				c.Members = append(c.Members, celcomplete.Candidate{
+					Name: n.Name,
+					Kind: celcomplete.KindField,
+					Docs: n.Description,
 				})
 			}
 		}
@@ -871,14 +937,15 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		// So it is the one menu that can be complete with nothing consulted, and
 		// the one that has exactly one honest answer after the dot, which is the
 		// ergonomic half of the argument the `.value` spelling was chosen on.
-		c.detail = "value"
-		c.docs = fmt.Sprintf(
+		c.Detail = "value"
+		c.Docs = fmt.Sprintf(
 			"A computed value, evaluated in the workflow where it is written. Read the whole of it as %s.",
 			rootedRef(s.id, v1.ValueOutput))
-		c.outputs = []refOutput{{
-			name:   v1.ValueOutput,
-			detail: "the computed value",
-			docs: "What the step's expression evaluated to. A `value:` step produces exactly this one output, " +
+		c.Members = []celcomplete.Candidate{{
+			Name:   v1.ValueOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "the computed value",
+			Docs: "What the step's expression evaluated to. A `value:` step produces exactly this one output, " +
 				"so this is the whole of what it contributes.",
 		}}
 
@@ -886,34 +953,36 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		// Like a `value:`, the output set is the grammar's own: the observed
 		// discriminant and the case that took it. Body step outputs are read
 		// under their own ids, not this one.
-		c.detail = "switch"
-		c.docs = fmt.Sprintf(
+		c.Detail = "switch"
+		c.Docs = fmt.Sprintf(
 			"A dispatch on one value. Records what it observed as %s and which case took it as %s; the taken body's step outputs merge into this scope under their own ids.",
 			rootedRef(s.id, v1.SwitchValueOutput), rootedRef(s.id, v1.SwitchCaseOutput))
-		c.outputs = []refOutput{{
-			name:   v1.SwitchValueOutput,
-			detail: "the observed value",
-			docs:   "What the switch's `value:` evaluated to, recorded whether or not any case matched.",
+		c.Members = []celcomplete.Candidate{{
+			Name:   v1.SwitchValueOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "the observed value",
+			Docs:   "What the switch's `value:` evaluated to, recorded whether or not any case matched.",
 		}, {
-			name:   v1.SwitchCaseOutput,
-			detail: "the matching case literal, or null",
-			docs:   "The case literal that took the value, and `null` when none did — whether the `default:` body ran or nothing did.",
+			Name:   v1.SwitchCaseOutput,
+			Kind:   celcomplete.KindField,
+			Detail: "the matching case literal, or null",
+			Docs:   "The case literal that took the value, and `null` when none did — whether the `default:` body ran or nothing did.",
 		}}
 
 	default:
 		if def, ok := tasks.Lookup(s.taskName); ok {
-			c.detail = def.Name
-			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
+			c.Detail = def.Name
+			c.Docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			if shaping := s.shapingEntry(tasks); shaping != nil {
 				// The declared outputs are exactly what shaping removed, so they
 				// are not candidates: accepting one would write a reference
 				// nothing produces. The shaping's own names are offered when
 				// they are statically knowable, and nothing is offered when they
 				// are not — a fabricated name is worse than an empty menu.
-				c.docs = fmt.Sprintf("Runs the %s task. Its %s: replaces the task's declared outputs with names of its own.", def.Name, taskShapingKey)
-				c.outputs = shapedOutputCandidates(s, def, tasks)
+				c.Docs = fmt.Sprintf("Runs the %s task. Its %s: replaces the task's declared outputs with names of its own.", def.Name, taskShapingKey)
+				c.Members = shapedOutputCandidates(s, def, tasks)
 			} else {
-				c.outputs = taskOutputs(def)
+				c.Members = taskOutputs(def)
 			}
 		}
 	}
@@ -922,19 +991,20 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 
 // shapedOutputCandidates renders a shaped step's own output names, or nothing
 // when the shaping expression keeps them to itself.
-func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) []refOutput {
+func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) []celcomplete.Candidate {
 	names, ok := shapedOutputNames(s.shapingEntry(tasks))
 	if !ok {
 		return nil
 	}
-	out := make([]refOutput, 0, len(names))
+	out := make([]celcomplete.Candidate, 0, len(names))
 	for _, name := range names {
-		out = append(out, refOutput{
-			name: name,
+		out = append(out, celcomplete.Candidate{
+			Name: name,
+			Kind: celcomplete.KindField,
 			// The type is whatever the shaping expression yields for this key,
 			// which is not statically known, so none is claimed.
-			detail: "shaped output",
-			docs: fmt.Sprintf("Shaped output of step %s: its %s: names this output itself, replacing what the %s task declares.",
+			Detail: "shaped output",
+			Docs: fmt.Sprintf("Shaped output of step %s: its %s: names this output itself, replacing what the %s task declares.",
 				s.id, taskShapingKey, def.Name),
 		})
 	}
@@ -942,197 +1012,96 @@ func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) [
 }
 
 // taskOutputs renders a task's declared outputs as reference candidates.
-func taskOutputs(def v1.TaskDef) []refOutput {
+func taskOutputs(def v1.TaskDef) []celcomplete.Candidate {
 	if def.Outputs == nil {
 		return nil
 	}
 	fields := def.Outputs.Fields()
-	out := make([]refOutput, 0, fields.Len())
+	out := make([]celcomplete.Candidate, 0, fields.Len())
 	for i := range fields.Len() {
 		fd := fields.Get(i)
-		out = append(out, refOutput{
-			name:   string(fd.Name()),
-			detail: typeName(fd),
-			docs: fmt.Sprintf("%s output of the %s task, of type %s.",
+		out = append(out, celcomplete.Candidate{
+			Name:   string(fd.Name()),
+			Kind:   celcomplete.KindField,
+			Detail: typeName(fd),
+			Docs: fmt.Sprintf("%s output of the %s task, of type %s.",
 				fd.Name(), def.Name, typeName(fd)),
 		})
 	}
 	return out
 }
 
+// shared renders this scope as the one [celcomplete] answers over.
+//
+// The two judgements an editor makes about roots are made here, and nowhere
+// else, because they are answers about a document rather than about the
+// language. The steps root is offered unconditionally, because the first step of
+// a file is written before there is anything to reference and the name is still
+// what an author needs to learn. The vars root is offered only where the file
+// declares one, because a root that resolves to an empty map is a name nobody
+// should be taught. There is no inputs root, and that is a gap rather than a
+// decision: a Flowfile's `inputs:` are declared in the file and an editor could
+// offer them — see the note on [refScope.vars].
+func (s refScope) shared() celcomplete.Scope {
+	shared := celcomplete.Scope{
+		// The editor completes against the vocabulary this build compiles
+		// with, which is the one a file being typed will be compiled by.
+		Profile: v1.CurrentProfile,
+		Locals:  s.locals,
+		Roots:   []celcomplete.Candidate{celcomplete.StepsRoot(s.steps)},
+	}
+	if len(s.vars) > 0 {
+		shared.Roots = append(shared.Roots, celcomplete.VarsRoot(s.vars))
+	}
+
+	return shared
+}
+
 // completeInExpression offers what an expression may name at the cursor.
 //
-// Three positions, because the root has depth: bare at the start of an
-// expression, step ids after `steps.`, and one step's outputs after
-// `steps.<id>.`. Splitting on the *last* dot is what makes the middle one
-// reachable — the qualifier there is two segments, `steps.<id>`, where before
-// rooting every qualifier was one.
+// The rules are [celcomplete.Complete]'s — which names a scope holds where, in
+// what order, and what a dot reaches — and what is left here is the protocol:
+// turning each candidate into an item with the range it replaces.
 func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.CompletionList {
-	word := trailingWord(inner, func(c byte) bool {
-		return c == '_' || c == '.' ||
-			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-	})
+	result := celcomplete.Complete(inner, scope.shared())
+	replace := rangeBack(pos, result.Prefix)
 
-	dot := strings.LastIndex(word, ".")
-	if dot < 0 {
-		return list(bareCandidates(word, rangeBack(pos, word), scope))
-	}
-
-	qualifier, member := word[:dot], word[dot+1:]
-	replace := rangeBack(pos, member)
-	switch {
-	case qualifier == v1.StepsRoot:
-		return list(offer(scope.steps, member, replace))
-	case qualifier == v1.VarsRoot:
-		// The other root, which was reachable by typing it and by nothing else:
-		// `vars` was not offered bare and `vars.` fell through to the arm below,
-		// which treats an unknown qualifier as a binding and offers nothing. One
-		// root answered and one silent, for two names the grammar treats alike.
-		return list(offer(scope.vars, member, replace))
-	case functionsAfter(qualifier) != nil:
-		// A namespace the profile declares — `math.`, `regex.`, `json.`. Checked
-		// after the root and before the bare-qualifier fallthrough below, which
-		// treats an unknown qualifier as a binding and offers nothing.
-		return list(offer(functionsAfter(qualifier), member, replace))
-	case strings.HasPrefix(qualifier, v1.StepsRoot+"."):
-		id := strings.TrimPrefix(qualifier, v1.StepsRoot+".")
-		if strings.Contains(id, ".") {
-			// Past the output: selecting into a value whose shape the schema does
-			// not describe. There is nothing to offer that would not be a guess.
-			return list(nil)
-		}
-		return list(outputCandidates(id, member, replace, scope.steps))
-	}
-	// A bare qualifier. Either a binding, whose element type is not known
-	// statically, or the retired spelling of a step reference — and offering that
-	// one's outputs would keep an author writing a form `flow validate` refuses.
-	return list(nil)
-}
-
-// bareCandidates offers what may be written bare at the start of an expression:
-// the names bound where the cursor is, the root every step hangs from, and then the
-// profile's functions.
-//
-// Bindings come first because they are the nearer thing — bound by the block the
-// cursor stands in, where the root spans the whole document — and because inside a
-// loop body the item is usually what is wanted.
-//
-// Functions come last, and there are a lot of them. That ordering is the whole of
-// the design decision: an author who knows the name they want types it and the
-// prefix filter does the work, while one who does not gets the names in scope first
-// rather than having to scroll past sixty functions to find the loop variable they
-// bound two lines up.
-func bareCandidates(prefix string, replace lsp.Range, scope refScope) []lsp.CompletionItem {
-	candidates := slices.Clone(scope.locals)
-	candidates = append(candidates, stepsRootCandidate(scope))
-
-	// Both roots, and `vars` only where the file has one. The steps root is offered
-	// unconditionally because the first step is written before there is anything to
-	// reference and the name is still what an author needs to learn; a `vars:` block
-	// that does not exist is a different case — offering the root would be teaching
-	// a name that resolves to an empty map.
-	if len(scope.vars) > 0 {
-		candidates = append(candidates, varsRootCandidate(scope))
-	}
-
-	return offer(append(candidates, functionCandidates()...), prefix, replace)
-}
-
-// varsRootCandidate describes the workflow's variables root.
-func varsRootCandidate(scope refScope) refCandidate {
-	return refCandidate{
-		name: v1.VarsRoot,
-		// A value with named members, the same shape as the steps root.
-		kind:   lsp.CIKStruct,
-		detail: "workflow variables",
-		docs: "The workflow's declared variables, keyed by name: write " + v1.VarsRoot +
-			".<name>. They are evaluated once before the first step runs, so every step " +
-			"sees the same values. A step's own `vars:` are written bare instead.",
-		// The dot comes with it, as the steps root's does.
-		insert: v1.VarsRoot + ".",
-	}
-}
-
-// stepsRootCandidate describes the root itself.
-//
-// It is offered even when no step is in scope yet, because the first step of a
-// file is written before there is anything to reference and the name is still the
-// one an author needs to learn.
-func stepsRootCandidate(scope refScope) refCandidate {
-	docs := "Every step's outputs, keyed by step id: write " + v1.StepsRoot + ".<id>.<output>. " +
-		"Only steps that have already run are in scope here."
-	if len(scope.steps) == 0 {
-		docs = "Every step's outputs, keyed by step id. No step has run at this point, so there " +
-			"is nothing to select yet."
-	}
-	return refCandidate{
-		name: v1.StepsRoot,
-		// A value with named members, which is what the root is: a map from step
-		// id to that step's outputs.
-		kind:   lsp.CIKStruct,
-		detail: "step outputs",
-		docs:   docs,
-		// The root is never the whole of a reference, so the dot that continues it
-		// is inserted too — the same reason a key is offered with its colon.
-		insert: v1.StepsRoot + ".",
-	}
-}
-
-// offer renders candidates as completion items, keeping the order they arrive in.
-func offer(candidates []refCandidate, prefix string, replace lsp.Range) []lsp.CompletionItem {
-	var items []lsp.CompletionItem
-	for i, c := range candidates {
-		if !strings.HasPrefix(c.name, prefix) {
-			continue
-		}
-		text := c.insert
-		if text == "" {
-			text = c.name
-		}
+	items := make([]lsp.CompletionItem, 0, len(result.Candidates))
+	for i, c := range result.Candidates {
 		items = append(items, lsp.CompletionItem{
-			Label:         c.name,
-			Kind:          c.kind,
-			Detail:        c.detail,
-			Documentation: plainText(c.docs),
+			Label:         c.Name,
+			Kind:          itemKind(c.Kind),
+			Detail:        c.Detail,
+			Documentation: plainText(c.Docs),
 			// The list is already nearest-first, and the nearest name is usually
 			// the one being referenced.
-			SortText: fmt.Sprintf("%04d", i),
-			TextEdit: &lsp.TextEdit{Range: replace, NewText: text},
+			SortText: fmt.Sprintf("%04d%s", i, c.Name),
+			TextEdit: &lsp.TextEdit{Range: replace, NewText: c.Text()},
 		})
 	}
-	return items
+
+	// An answer that reached [celcomplete.MaxCandidates] is a prefix of what
+	// matched, and `isIncomplete` is the protocol's word for exactly that: the
+	// client re-asks as more is typed rather than filtering a list it was told
+	// is whole.
+	return &lsp.CompletionList{IsIncomplete: result.Truncated, Items: items}
 }
 
-// outputCandidates offers what one step exposes after `steps.<id>.`.
-func outputCandidates(id, prefix string, replace lsp.Range, steps []refCandidate) []lsp.CompletionItem {
-	var target *refCandidate
-	for i := range steps {
-		if steps[i].name == id {
-			target = &steps[i]
-			break
-		}
+// itemKind maps the completer's small vocabulary onto the protocol's icons.
+func itemKind(kind celcomplete.Kind) lsp.CompletionItemKind {
+	switch kind {
+	case celcomplete.KindRoot:
+		// A value with named members, which is what a root is.
+		return lsp.CIKStruct
+	case celcomplete.KindField:
+		return lsp.CIKField
+	case celcomplete.KindFunction:
+		return lsp.CIKFunction
+	case celcomplete.KindNamespace:
+		return lsp.CIKModule
+	default:
+		return lsp.CIKVariable
 	}
-	if target == nil {
-		// Not a step whose outputs exist here. Offering them would suggest a
-		// reference the engine rejects.
-		return nil
-	}
-
-	var items []lsp.CompletionItem
-	for i, o := range target.outputs {
-		if !strings.HasPrefix(o.name, prefix) {
-			continue
-		}
-		items = append(items, lsp.CompletionItem{
-			Label:         o.name,
-			Kind:          lsp.CIKField,
-			Detail:        o.detail,
-			Documentation: plainText(o.docs),
-			SortText:      fmt.Sprintf("%04d%s", i, o.name),
-			TextEdit:      &lsp.TextEdit{Range: replace, NewText: o.name},
-		})
-	}
-	return items
 }
 
 // A completion list is ordered by the order an author writes a step in, not
@@ -1232,6 +1201,35 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks 
 			// without one, and typing it again is friction.
 			TextEdit: &lsp.TextEdit{Range: replace, NewText: name + ": "},
 		})
+	}
+	return items
+}
+
+// stepKeyCandidates is dslCandidates("steps", ...), minus timeout,
+// total_timeout and retry once the step at the cursor has already committed to
+// a kind that refuses all three.
+//
+// checkPolicyPlacement (flowfile/parse_wait.go) refuses
+// timeout:/total_timeout:/retry: on
+// every step kind but a task, because only a task's arm ever reads a
+// StepPolicy — so once current.kindKey names one of those kinds,
+// recommending any of them is completeAt actively suggesting syntax its own
+// diagnostic then refuses. current is nil (no kind chosen yet, or not inside
+// a step at all) and current.kindKey == "" (a task, or a kind not decided
+// yet) both still offer the full menu: both are exactly the cases where
+// all three are legal or might become so.
+func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) []lsp.CompletionItem {
+	if current == nil || current.kindKey == "" {
+		return dslCandidates("steps", prefix, replace)
+	}
+
+	all := dslCandidates("steps", prefix, replace)
+	items := make([]lsp.CompletionItem, 0, len(all))
+	for _, item := range all {
+		if item.Label == "timeout" || item.Label == "total_timeout" || item.Label == "retry" {
+			continue
+		}
+		items = append(items, item)
 	}
 	return items
 }

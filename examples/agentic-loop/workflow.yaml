@@ -1,0 +1,182 @@
+# The workflow half of the authoring loop an agent performs over `flow mcp`.
+# The README beside this file is the other half — which tool answers which
+# question, in what order, and what each one cannot tell you.
+#
+# What it does: one bounded agentic turn against a model gateway, a cost ceiling
+# read off what that turn actually spent, a human gate crossed only when the
+# ceiling was, and the write that lands the result.
+#
+# Three decisions here are the ones worth copying, and each is a claim
+# `workflow.test.yaml` beside this file checks rather than asserts in prose:
+#
+#   * the read is retried, and neither the turn nor the write is — three steps,
+#     three postures, each with its own reason: see `brief`, `turn` and `land`
+#     below. A step that says nothing takes the http task's default of five
+#     attempts, which is right for a read and wrong for both of the others;
+#   * the budget is written down once, as the gate's own `if:`, and every later
+#     step asks whether the gate happened rather than re-deriving why;
+#   * a gate nobody answers denies. The deadline lapsing is not approval.
+#
+# Answer that gate from a durable run with:
+#
+#   flow signal <workflow-id> turn-approved --data '{"approved": true}'
+#
+# and from a local rehearsal with:
+#
+#   flow run local examples/agentic-loop/workflow.yaml \
+#     --signal turn-approved='{"approved": true}'
+edition: v2026.3
+name: agentic-loop
+description: One bounded agentic turn, gated on what it spent and on a human when it spent too much, then landed — the workflow an agent authors while walking validate → test → run_local over `flow mcp`.
+vars:
+  # The ceiling this file gates on. A number in a `vars:` block rather than a
+  # `budget:` keyword, deliberately: usage comes back as an ordinary output, so
+  # summing it and comparing it is something the language already does, and a
+  # keyword would be a second way to say a thing that is already sayable.
+  token_budget: 20000
+steps:
+
+  # A read, and therefore retried. Nothing on the far side changes because this
+  # ran twice, so the only thing an attempt costs is a moment — which is what
+  # makes three of them the right answer to a gateway having a bad second.
+  - id: brief
+    timeout: 30s
+    retry:
+      attempts: 3
+      interval: 1s
+      backoff: 2.0
+      max_interval: 10s
+    http:
+      method: GET
+      outputs:
+        body: ${response.json.body}
+        title: ${response.json.title}
+      parse_json: true
+      # A literal, not composed from a var: neither host below resolves, which
+      # is what the test file beside this one is for — every effectful step here
+      # is stubbed, so the branches, the ceiling and the gate are all checked
+      # with no network and no gateway.
+      url: https://tracker.internal.example.com/issues/241
+
+  # The turn, and therefore *not* retried. A retried agentic turn is a new turn:
+  # new cost, new nondeterminism, and — for a turn permitted to write — possibly
+  # new writes. `attempts: 1` is how a file says that today; nothing in a task's
+  # manifest can yet declare "attempts are not free" on the author's behalf,
+  # which is the one gap #241 leaves open after this example lands.
+  #
+  # `retry_on_unknown_outcome:` is left alone for the same reason. A POST whose
+  # outcome is unknown is classified permanent rather than retried, because
+  # "unknown" here means the gateway may well have run the turn and charged for
+  # it; turning that on would be asking for a second one on exactly the occasion
+  # the first may have already happened.
+  - id: turn
+    vars:
+      # A step's own `vars:` are private to it, which is the right scope for a
+      # prompt nothing else reads.
+      brief_prompt: ${"%s\n\n%s".format([steps.brief.title, steps.brief.body])}
+    timeout: 5m
+    retry:
+      attempts: 1
+      # Nothing to space out when there is only ever one attempt. It is written
+      # anyway because the compiled specification's schema requires a
+      # coefficient of at least 1, and a file that compiles but the schema
+      # refuses is a file `flow run` fails on.
+      backoff: 1.0
+    http:
+      json:
+        instructions: ${brief_prompt}
+        max_output_tokens: ${vars.token_budget * 2}
+      method: POST
+      # Shaped rather than defaulted, so what travels on through this run is
+      # three named values instead of a whole gateway response — and so
+      # `${steps.turn.tokens}` is a name `flow validate` checks wherever a later
+      # step's input reads it: `tokenz` is a positioned diagnostic naming the
+      # three this step declares, not an empty value discovered in production.
+      outputs:
+        patch: ${response.json.patch}
+        summary: ${response.json.summary}
+        tokens: ${response.json.usage.total_tokens}
+      parse_json: true
+      url: https://models.internal.example.com/v1/turns
+
+  # The ceiling, written down exactly once. A turn inside its budget lands
+  # unattended; one that went over is a person's decision, because the cost is
+  # the signal that the change was not what anybody expected.
+  #
+  # `timeout:` and the shaping below are the fail-closed half: a lapsed wait
+  # reports `timed_out` rather than failing the step, so without the `!timed_out`
+  # this gate would read a payload nobody sent and land on silence.
+  - id: review
+    if: ${steps.turn.tokens > vars.token_budget}
+    wait_for_signal:
+      name: turn-approved
+      timeout: 24h
+      outputs:
+        approved: ${!timed_out && payload.?approved.orValue(false)}
+
+  # The write. Its condition is the reason the budget appears once above and
+  # nowhere here: `has(steps.review)` asks whether the gate *happened*,
+  # not why it would have. A skipped step produces no outputs at all, so the
+  # absence is readable, and re-deriving `tokens > budget` here would be the same
+  # value written down twice — free to disagree with itself the day the ceiling
+  # moves.
+  #
+  # And it is not retried, for a reason distinct from the turn's. A turn is not
+  # repeated because a second one is a *different* turn; this write is not
+  # repeated because a second one may be the *same* write, applied twice. The
+  # http task's default policy is five attempts and it retries a 5xx whatever
+  # the method, so a tracker that created the patch and then answered 500 —
+  # which is an ordinary way for a write to fail after succeeding — would get
+  # the identical body posted again, and this endpoint offers no idempotency key
+  # to make the second one a no-op. `attempts: 1` is the whole of the fix that
+  # is available in the file: the run fails, and a person or a later run decides
+  # what to do about a write whose outcome nobody knows.
+  #
+  # Three postures across three steps, then, and they are three different
+  # questions: `brief` is retried because repeating a read costs a moment,
+  # `turn` is not because repeating it costs money and determinism, and `land`
+  # is not because repeating it costs a duplicate nobody asked for.
+  - id: land
+    if: ${!has(steps.review) || steps.review.approved}
+    retry:
+      attempts: 1
+      # Written for the reason `turn`'s is: the compiled specification's schema
+      # requires a coefficient of at least 1, whether or not there is a second
+      # attempt to space out.
+      backoff: 1.0
+    http:
+      json:
+        summary: ${steps.turn.summary}
+        patch: ${steps.turn.patch}
+      method: POST
+      outputs:
+        url: ${response.json.url}
+      parse_json: true
+      url: https://tracker.internal.example.com/issues/241/patches
+
+  # Whether the write happened, named once. Four later reads of
+  # `has(steps.land)` would be four copies free to drift apart the day the
+  # condition changes — `flow lint` says so as R5/repeated-expression, and this
+  # file's own second decision above says the same thing about the budget.
+  - id: landed
+    value: ${has(steps.land)}
+  - id: report
+    log:
+      # A tolerated absence, said out loud: this run either has a landing URL
+      # or has a reason it does not, and the field says which.
+      fields:
+        outcome: '${steps.landed.value ? "landed" : "declined at the gate"}'
+      message: '${"turn spent %d of %d tokens; %s".format([steps.turn.tokens, vars.token_budget, steps.landed.value ? ("landed at " + steps.land.url) : "not landed"])}'
+outputs:
+  tokens:
+    value: ${steps.turn.tokens}
+    description: what the turn actually spent, which is what the gate below reads
+  gated:
+    value: ${has(steps.review)}
+    description: true when the turn went over budget and a person was asked — the gate happening, not its answer
+  landed:
+    value: ${steps.landed.value}
+    description: true when the write ran; false when the gate denied it or nobody answered before the deadline
+  patch_url:
+    value: '${steps.landed.value ? steps.land.url : ""}'
+    description: where the landed patch went, empty when nothing landed

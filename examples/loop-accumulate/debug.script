@@ -1,0 +1,26 @@
+# A recorded debugging session, kept so anyone can re-run it:
+#
+#   flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
+#
+# The question it answers is the one this loop's `final_sum` output ends by
+# admitting: the fold adds `acc.n` *before* `update:` advances the counter, so
+# the last term never lands. Watching one iteration is what makes that concrete
+# rather than a sentence.
+#
+# A line starting with `#` is a comment and every other line is a command, in
+# the order a session accepted them. There are no blank lines here on purpose —
+# at a prompt an empty line means `step`, so `flow debug replay` refuses one in
+# a file rather than walking the loop somebody meant to leave a gap in.
+#
+# Stop inside the body on the third pass rather than on every one. A breakpoint
+# condition is the step's own `if:`, evaluated against the run's own scope.
+break term if acc.n == 3
+# Run there.
+continue
+# The carried value at that moment: the counter is 3 and the sum is 1+2, so the
+# term for this pass has not been folded in yet.
+inspect acc
+# The same fact stated as the arithmetic the output's description names.
+inspect acc.sum == 1 + 2
+# Let the rest of the run finish.
+continue

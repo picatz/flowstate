@@ -1,0 +1,28 @@
+# `buffer_all` — see `../workflow.yaml`'s decision guide for where this sits
+# among the other five policies.
+#
+# `meter` reports one interval's usage to billing, every five minutes. `skip`
+# would drop an interval a caller is charged for; `buffer_one` would let a
+# second backlogged firing silently replace a queued one, which is the same
+# loss with fewer words. Neither is acceptable when correctness is measured in
+# line items: every interval must eventually be reported exactly once, however
+# far behind the queue falls while it catches up.
+edition: v2026.3
+name: schedule-overlap-buffer-all
+inputs:
+  meter:
+    type: string
+    default: api-requests
+    description: which usage meter this firing reports
+triggers:
+  schedule:
+    every: 5m
+    overlap: buffer_all
+steps:
+  - id: meter
+    log:
+      message: ${"reporting usage for meter " + inputs.meter}
+outputs:
+  meter:
+    value: ${inputs.meter}
+    description: the meter this run reported

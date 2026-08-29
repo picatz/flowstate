@@ -1,11 +1,14 @@
 package engine_test
 
 import (
+	"fmt"
+
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/converter"
@@ -18,7 +21,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // newWaitEnv returns a test environment with the engine's workflow and
@@ -30,9 +33,9 @@ func newWaitEnv(t *testing.T) *testsuite.TestWorkflowEnvironment {
 	env := suite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
-	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 	// A workflow's own `vars:` are evaluated in an activity, so a wait whose
 	// expression reads one - a gate whose `prompt:` names `vars.target` - needs
@@ -99,7 +102,7 @@ func signalStep(id, name string, timeout time.Duration) *v1.Node {
 func TestRunWorkflowWait(t *testing.T) {
 	t.Parallel()
 
-	for _, test := range tests.WaitCases() {
+	for _, test := range conformance.WaitCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			t.Parallel()
 
@@ -363,9 +366,9 @@ func TestWaitForSignal(t *testing.T) {
 		"the attested sender disagreed with what the engine was actually told")
 
 	// The shared half of the #194 fix: an attested delivery must report itself
-	// as attested, with the shape [tests.AssertSignalSenderShape] checks. The
+	// as attested, with the shape [conformance.AssertSignalSenderShape] checks. The
 	// local half of this same assertion lives in wait_local_test.go.
-	tests.AssertSignalSenderShape(t, approval, false)
+	conformance.AssertSignalSenderShape(t, approval, false)
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"], "the gated step did not run after approval")
 }
@@ -403,6 +406,86 @@ func TestWaitForSignalTimeout(t *testing.T) {
 
 	require.Nil(t, outputs.GetStepValues()["deploy"],
 		"the gated step ran even though its approval lapsed")
+}
+
+// TestWaitForSignalCancelsItsTimeoutTimer is the #770 regression: a bounded
+// wait_for_signal a signal answers must not leave its timeout timer running.
+//
+// The existing tests for this outcome (TestWaitForSignal,
+// TestWaitForSignalTimeout) stay green whether or not the timer is ever
+// cancelled — both only assert the *outputs* the wait produced, and an
+// abandoned timer changes neither. Per CLAUDE.md's "test that A cannot reach
+// B, not that A can reach A", this asks the negative question instead: does
+// anything outlive the wait that created it.
+//
+// The workflow deliberately does not end at the answered gate. A run that
+// completes immediately after would let the SDK's own end-of-execution
+// cleanup cancel every outstanding future, including a leaked one, and the
+// bug (and this test) would both disappear along with it — which is exactly
+// what the issue says makes a one-shot approval gate the case that is *not*
+// where this costs anything. So a second, never-answered gate follows,
+// keeping the run open past the first gate's own one-hour bound: the shape
+// the issue names as the one that pays, `wait_for_signal:` inside something
+// that keeps running (`examples/entity-order`'s loop is the real-world
+// instance; this is its minimal shape).
+func TestWaitForSignalCancelsItsTimeoutTimer(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+
+	type scheduledTimer struct {
+		id       string
+		duration time.Duration
+	}
+	var (
+		scheduled []scheduledTimer
+		canceled  = map[string]bool{}
+		fired     = map[string]bool{}
+	)
+
+	env.SetOnTimerScheduledListener(func(timerID string, duration time.Duration) {
+		scheduled = append(scheduled, scheduledTimer{id: timerID, duration: duration})
+	})
+	env.SetOnTimerCanceledListener(func(timerID string) { canceled[timerID] = true })
+	env.SetOnTimerFiredListener(func(timerID string) { fired[timerID] = true })
+
+	// Answered a minute in, far inside its own hour-long bound, so the signal
+	// — not the timer — is what resolves this gate.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
+	}, time.Minute)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "answered-gate-stays-open",
+		Steps: []*v1.Node{
+			signalStep("approval", "deploy-approved", time.Hour),
+			// Nothing ever signals this one, so its own two-hour bound is what
+			// carries the test environment's virtual clock past the first
+			// gate's one-hour mark — the window an abandoned timer would fire
+			// in, and the reason this step is here at all.
+			signalStep("hold", "never-arrives", 2*time.Hour),
+		},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	require.Len(t, scheduled, 2, "expected one durable timer per bounded gate")
+	approvalTimer, holdTimer := scheduled[0], scheduled[1]
+
+	assert.True(t, canceled[approvalTimer.id],
+		"the answered gate's timeout timer was never cancelled — see #770")
+	assert.False(t, fired[approvalTimer.id],
+		"the answered gate's abandoned timer fired into a run that had already moved past it — see #770")
+
+	// The path #770 says was already right, for contrast: a gate nothing
+	// answers keeps timing out on its own timer.
+	assert.True(t, fired[holdTimer.id],
+		"a lapsed gate's own timer stopped firing — that path must not change")
+	assert.False(t, canceled[holdTimer.id],
+		"a lapsed gate's timer was cancelled instead of left to fire")
 }
 
 // TestWaitTimeoutLeavesPayloadKeysAbsent is the durable half of a parity check.
@@ -557,6 +640,118 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"],
 		"the resumed run never got past the gate it had already been approved through")
+}
+
+// TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound is #1013's
+// regression test.
+//
+// `FlowstateServer.Signal` returns success once Temporal has accepted a
+// delivery — the sender's promise that the run will see it is made at that
+// instant, not later. Before this fix, [drainSignals] stopped carrying once
+// [v1.MaxPendingSignals] were already pending and silently discarded the rest
+// at the Continue-As-New that followed, so a sender holding that success
+// response had no way to learn their delivery never reached the workflow. The
+// carry bound was right; making its overflow invisible was the bug.
+//
+// This sends more than [v1.MaxPendingSignals] deliveries for one name before
+// the run ever reaches a step that could consume any of them — forcing
+// exactly the shape #1013 named: a Continue-As-New at the carry bound, with
+// every delivery already acknowledged. It checks the negative direction twice:
+// first that every one of them is still present, in order, with its own
+// payload and attested sender, in the state the suspending run carries — the
+// exact list [drainSignals] used to truncate — and second that a resumed run
+// actually consumes every one of them, so "carried" is not merely "present in
+// a struct nothing reads."
+func TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound(t *testing.T) {
+	t.Parallel()
+
+	const (
+		signalName = "deploy-approved"
+		overflow   = 10
+	)
+	total := v1.MaxPendingSignals + overflow
+
+	items := make([]any, total)
+	for i := range items {
+		items[i] = fmt.Sprintf("item-%d", i)
+	}
+
+	spec := &v1.Workflow{
+		Name: "many-acknowledged-signals",
+		Steps: []*v1.Node{
+			logStep("one", "1"),
+			{
+				Id: "each",
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:    v1.NewLiteralList(items...),
+					Iterator: "item",
+					Body:     []*v1.Node{signalStep("approval", signalName, 0)},
+				}},
+			},
+		},
+	}
+
+	// One step of budget suspends the run after `one` and before the loop ever
+	// reads the channel, so every delivery below is acknowledged and buffered,
+	// none of them consumed, by the time Continue-As-New's own drain runs.
+	first := newWaitEnv(t)
+	first.RegisterDelayedCallback(func() {
+		for i := 0; i < total; i++ {
+			first.SignalWorkflow(signalName, testSignalDelivery(
+				fmt.Sprintf("approver-%d@example.com", i),
+				map[string]*v1.Value{"approved": v1.NewLiteral(true), "seq": v1.NewLiteral(int64(i))}))
+		}
+	}, 0)
+
+	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
+	require.True(t, first.IsWorkflowCompleted())
+
+	err := first.GetWorkflowError()
+	require.Error(t, err, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continueAsNew)
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried),
+		"could not read the state the suspended run carried")
+
+	// The direct regression check: every acknowledged delivery is in the carry,
+	// in the order it arrived, none silently kept as "the oldest" at the
+	// expense of the rest.
+	require.Len(t, carried.GetPendingSignals(), total,
+		"an acknowledged delivery beyond the old carry bound was silently dropped rather than carried")
+	for i, pending := range carried.GetPendingSignals() {
+		require.Equal(t, signalName, pending.GetName())
+		require.Equal(t, fmt.Sprintf("approver-%d@example.com", i), pending.GetSender().GetIdentity().GetSubject(),
+			"delivery %d's attested sender did not survive the carry, or the carry reordered deliveries", i)
+	}
+
+	// StepsBudget is carried forward unchanged by default, and this run needs
+	// only two more steps of budget than [v1.MaxPendingSignals] left one for —
+	// zero asks the interpreter for its own default (200), comfortably more
+	// than this loop's iterations plus the step before it.
+	carried.StepsBudget = 0
+
+	outputs, _ := resumeToCompletion(t, &carried)
+
+	loop := outputs.GetStepValues()["each"]
+	require.NotNil(t, loop, "the loop never produced results, so consuming the carry was not tested")
+
+	results := loop.GetNamedValues()["results"].GetLiteral().GetListValue().GetValues()
+	require.Len(t, results, total,
+		"the resumed run did not consume every delivery it was carrying — some were acknowledged and never observed")
+
+	for i, result := range results {
+		var reached bool
+		for _, entry := range result.GetMapValue().GetEntries() {
+			if entry.GetKey().GetStringValue() == "approval" {
+				reached = true
+			}
+		}
+		require.True(t, reached, "iteration %d never saw its carried approval", i)
+	}
 }
 
 // TestPendingSignalWithoutSenderResumesAsUnattested is the old-writer,
@@ -787,11 +982,17 @@ func TestSignalNames(t *testing.T) {
 					},
 				}},
 			},
+			{
+				Id: "called",
+				Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+					Steps: []*v1.Node{signalStep("in-call", "callee-signal", 0)},
+				}}},
+			},
 		},
 	}
 
 	require.Equal(t,
-		[]string{"top-level", "per-item", "branch-signal"},
+		[]string{"top-level", "per-item", "branch-signal", "callee-signal"},
 		v1.SignalNames(spec))
 }
 

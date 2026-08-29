@@ -350,6 +350,137 @@ tests:
 	require.True(t, found, "expected an expect.failed diagnostic redacting the nested sensitive value; got %v", c.GetFailures())
 }
 
+// TestUnmatchedStubRedactsALeafSelectedFromASensitiveDeclaration runs the
+// *opposite* direction from the two tests above it, which is why the name is
+// this long: there, a sensitive scalar sits inside a structured *task input*;
+// here the sensitive *declaration itself* is structured and the task selects
+// one leaf out of it.
+//
+// That direction is the one a set of whole values cannot catch. `creds:` is
+// what the workflow marked `sensitive:`, and `${inputs.creds.token}` puts a
+// bare string on the invocation that is DeepEqual to nothing in the run scope
+// — the scope holds the map. The substring backstop does not save it either,
+// because the sensitive value there is a map rather than a string. Only a
+// walk of the declaration's descendants sees it.
+func TestUnmatchedStubRedactsALeafSelectedFromASensitiveDeclaration(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: structured-credentials
+inputs:
+  creds:
+    type: struct
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+      headers:
+        Authorization: ${inputs.creds.token}
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: a selected credential field never reaches the failure text
+    workflow: ./workflow.yaml
+    inputs:
+      creds:
+        token: shh-structured-secret
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	for _, f := range c.GetFailures() {
+		if f.GetField() == "expect.failed" {
+			require.NotContains(t, f.GetMessage(), "shh-structured-secret")
+			require.Contains(t, f.GetMessage(), "[redacted]")
+			return
+		}
+	}
+	require.Fail(t, "expected an expect.failed diagnostic", "%v", c.GetFailures())
+}
+
+// TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerate
+// is the bound's behaviour seen from a Flowfile, which is the only place it
+// matters: a sensitive input with more descendants than
+// maxSensitiveDescendants cannot be enumerated, so the diagnostic withholds
+// every input rather than printing the part of the input the walk never
+// reached. The url below is an ordinary, non-sensitive value that would print
+// in the clear on any other unmatched invocation; here it does not.
+func TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerate(t *testing.T) {
+	t.Parallel()
+
+	// Comfortably past the 1024-descendant bound, and still far below the
+	// 10,000 elements a workflow input is allowed to carry — the point being
+	// that a legal input can reach this.
+	var bulk strings.Builder
+	for i := range 1100 {
+		fmt.Fprintf(&bulk, "\n        - element-%d", i)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: bulk-credentials
+inputs:
+  bulk:
+    type: list
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: an unenumerable sensitive input withholds the whole invocation
+    workflow: ./workflow.yaml
+    inputs:
+      bulk:`+bulk.String()+`
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+		require.NotContains(t, msg, "element-7", "no part of the sensitive input may print")
+		require.NotContains(t, msg, "https://example.invalid/probe",
+			"an unrelated input is withheld too: nothing here can be shown to be safe")
+		require.Contains(t, msg, "[redacted: url]")
+		require.Contains(t, msg, "could not be enumerated", "the refusal says why the invocation is blank")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic withholding every input; got %v", c.GetFailures())
+}
+
 // TestUnmatchedStubRedactsASensitiveValueInsideAList is the same nested-leaf
 // case for the other structured shape a native input can hold: an element of
 // a list, not only a value of a map.
@@ -521,6 +652,143 @@ tests:
 		found = true
 	}
 	require.True(t, found, "expected an expect.failed diagnostic showing both stub verdicts; got %v", c.GetFailures())
+}
+
+// TestUnmatchedStubRedactsAWhereEvaluationErrorThatQuotesASensitiveValue is
+// the #977 regression: a `where:` clause can fail in a way that quotes the
+// operand's actual value in the CEL runtime error text rather than just its
+// type — `timestamp()` on a string that is not RFC 3339 reports
+// `invalid RFC 3339 timestamp "<the string>"` — so a sensitive input reaches
+// the diagnostic through `-> error: …` even though [formatUnmatchedStubValue]
+// withholds that same input from the "invocation carried" block a few lines
+// above it. The fix must redact the error text on the same terms without
+// erasing what a reader needs: which stub, which where:, and that it errored.
+func TestUnmatchedStubRedactsAWhereEvaluationErrorThatQuotesASensitiveValue(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: where-error-probe
+inputs:
+  token:
+    type: string
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+      headers:
+        Authorization: ${inputs.token}
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: a where clause whose evaluation error would quote the sensitive token
+    workflow: ./workflow.yaml
+    inputs:
+      token: not-a-timestamp-shh-secret
+    stubs:
+      - task: http
+        where: timestamp(inputs.token) > timestamp('2020-01-01T00:00:00Z')
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+
+		// The sensitive value must not appear anywhere in the message, not
+		// just inside the "invocation carried" block.
+		require.NotContains(t, msg, "not-a-timestamp-shh-secret")
+
+		// The diagnostic must still say what failed: the stub's own where:
+		// text (the author's, never sensitive), that it was tried and
+		// errored, and the input it carried was withheld — not silence.
+		require.Contains(t, msg, "timestamp(inputs.token) > timestamp('2020-01-01T00:00:00Z')")
+		require.Contains(t, msg, "-> error:")
+		require.Contains(t, msg, "[redacted]")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic redacting the where: error; got %v", c.GetFailures())
+}
+
+// TestUnmatchedStubWithholdsAWhereEvaluationErrorWhenSensitiveInputsCannotBeEnumerated
+// pairs with TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerate:
+// when the redaction set could not be built at all
+// ([sensitiveInputs.WithholdAll()]), [redactSensitiveSubstrings] has nothing to
+// check a where: error's text against, so the fail-closed answer withholds
+// the error text outright rather than printing something nothing has cleared
+// as safe.
+func TestUnmatchedStubWithholdsAWhereEvaluationErrorWhenSensitiveInputsCannotBeEnumerated(t *testing.T) {
+	t.Parallel()
+
+	var bulk strings.Builder
+	for i := range 1100 {
+		fmt.Fprintf(&bulk, "\n        - element-%d", i)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: bulk-where-error
+inputs:
+  bulk:
+    type: list
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: "an unenumerable sensitive input also withholds a where clause's error text"
+    workflow: ./workflow.yaml
+    inputs:
+      bulk:`+bulk.String()+`
+    stubs:
+      - task: http
+        where: 1 / (1 - 1) == 1
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+		require.NotContains(t, msg, "division by zero",
+			"the error text itself is withheld when nothing can be shown safe, not just the invocation's inputs")
+		require.Contains(t, msg, "1 / (1 - 1) == 1", "the where: source is the author's own text and still prints")
+		require.Contains(t, msg, "-> error:")
+		require.Contains(t, msg, "[redacted: where: evaluation error]")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic withholding the where: error text; got %v", c.GetFailures())
 }
 
 // TestUnmatchedStubValueTruncatesOnARuneBoundary is the Codex-review

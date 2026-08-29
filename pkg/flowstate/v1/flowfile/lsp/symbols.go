@@ -39,6 +39,15 @@ import (
 // documentSymbols returns the outline of a Flowfile: one symbol per step, named by
 // its id and attributed to the task it runs.
 func documentSymbols(doc *document) []lsp.SymbolInformation {
+	if doc.kind == docTestFile {
+		// The test language's own outline — see testsymbols.go. A
+		// testdefaults.yaml falls through to the empty answer below: it
+		// declares no `tests:` of its own to name a case from.
+		return testDocumentSymbols(doc)
+	}
+	if !doc.speaksFlowfile() {
+		return []lsp.SymbolInformation{} // see [document.speaksFlowfile]
+	}
 	out := []lsp.SymbolInformation{}
 	if doc.parsed == nil {
 		return out
@@ -79,6 +88,17 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 // Only a reference to an earlier step resolves. A forward reference is a mistake
 // the diagnostics already report, and jumping to it would suggest it works.
 func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
+	if !doc.speaksFlowfile() {
+		// Deliberately still nil for a test document (#1110 item 8), and not
+		// yet an accidental fallthrough left uncommented: a case's
+		// `workflow:` naming a sibling Flowfile is the one position this
+		// language has that reads like [callDefinition]'s target, and giving
+		// it a jump belongs with the rest of go-to-definition rather than
+		// riding in on the outline change beside it.
+		return nil // see [document.speaksFlowfile]
+	}
+	pos = clampPosition(pos) // see [clampPosition]
+
 	if doc.parsed == nil {
 		return nil
 	}
@@ -188,8 +208,11 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 		return nil
 	}
 
-	target := from.callEntry.valueText()
-	if target == "" {
+	target, err := flowfile.LiteralText(from.callEntry.valueText())
+	if target == "" || err != nil {
+		// The compiler reads a call target as literal text and refuses any
+		// expression or interpolation. Navigating to a literal filename matching
+		// rejected source would claim that an invalid call works.
 		return nil
 	}
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -124,13 +125,22 @@ func runningAt(stepID string, path ...string) pollAnswer {
 // retryingAt is a running run whose current activity keeps failing.
 //
 // The attempt count and the message are what Temporal reports and what the server
-// projects; a next-attempt time is added by [scheduledIn] where a test is about the
-// countdown rather than about the retry.
+// projects. The next-attempt time is what makes this a *retry* rather than a
+// running attempt — Temporal leaves it unset while an attempt is running, and the
+// renderer reads its presence to choose the word. A fixture without one used to
+// render as "retrying" anyway, because the server filled the field for every
+// pending activity; it no longer does (Codex, #1142).
+//
+// Due already, rather than in the future: a retry whose backoff has expired and
+// whose worker has not picked it up yet is still a retry, and it renders without a
+// countdown — so a test about the *word* is not also a test about the clock.
+// [scheduledIn] moves it where a test is about the countdown.
 func retryingAt(stepID string, attempt int32, failure string) pollAnswer {
 	answer := runningAt(stepID)
 	answer.response.PendingActivities = []*v1.PendingActivity{{
-		Attempt:     attempt,
-		LastFailure: failure,
+		Attempt:                  attempt,
+		LastFailure:              failure,
+		NextAttemptScheduledTime: timestamppb.New(observed),
 	}}
 
 	return answer
@@ -214,7 +224,7 @@ func TestWatchReportsOnlyChanges(t *testing.T) {
 	}}
 	surface, _, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(errOut.String())
@@ -259,11 +269,11 @@ func TestWatchReportsTheFirstAnswerAsAChange(t *testing.T) {
 	state := newWatchState("flowstate-workflow-3f7c", nil)
 
 	bare := &v1.GetResponse{Status: v1.RunResponse_STATUS_RUNNING}
-	require.True(t, state.absorb(observed, bare, nil).Changed,
+	require.True(t, state.Absorb(observed, bare, nil).Changed,
 		"the first answer went unreported, so a reader was told nothing until a step finished")
 
 	// And the same answer again is not news.
-	require.False(t, state.absorb(observed, bare, nil).Changed)
+	require.False(t, state.Absorb(observed, bare, nil).Changed)
 }
 
 // TestWatchCountsAPositionChangeAsAChange is the regression direction for the whole
@@ -277,21 +287,21 @@ func TestWatchReportsTheFirstAnswerAsAChange(t *testing.T) {
 func TestWatchCountsAPositionChangeAsAChange(t *testing.T) {
 	state := newWatchState("flowstate-workflow-3f7c", nil)
 
-	require.True(t, state.absorb(observed, runningAt("checkout").response, nil).Changed,
+	require.True(t, state.Absorb(observed, runningAt("checkout").response, nil).Changed,
 		"the first answer went unreported")
 
 	// The same answer again is not news, which is what makes the assertion below a
 	// claim about the position rather than about every poll.
-	require.False(t, state.absorb(observed, runningAt("checkout").response, nil).Changed)
+	require.False(t, state.Absorb(observed, runningAt("checkout").response, nil).Changed)
 
-	require.True(t, state.absorb(observed, runningAt("build").response, nil).Changed,
+	require.True(t, state.Absorb(observed, runningAt("build").response, nil).Changed,
 		"a run that moved to another step was reported as unchanged, so a live view "+
 			"showed the step it had left")
-	require.Equal(t, "build", state.position)
+	require.Equal(t, "build", state.Position())
 
 	// And into a step, which is where a run spends the interesting part of a loop.
-	require.True(t, state.absorb(observed, runningAt("deploy", "each", "upload").response, nil).Changed)
-	require.Equal(t, "deploy > each > upload", state.position,
+	require.True(t, state.Absorb(observed, runningAt("deploy", "each", "upload").response, nil).Changed)
+	require.Equal(t, "deploy > each > upload", state.Position(),
 		"the path into the step was dropped, so every iteration of a loop reads the same")
 }
 
@@ -305,29 +315,29 @@ func TestWatchCountsAPositionChangeAsAChange(t *testing.T) {
 func TestWatchCountsARetryAsAChangeButNotItsCountdown(t *testing.T) {
 	state := newWatchState("flowstate-workflow-3f7c", nil)
 
-	state.absorb(observed, runningAt("deploy").response, nil)
+	state.Absorb(observed, runningAt("deploy").response, nil)
 
-	require.True(t, state.absorb(observed, retryingAt("deploy", 2, "connection refused").response, nil).Changed,
+	require.True(t, state.Absorb(observed, retryingAt("deploy", 2, "connection refused").response, nil).Changed,
 		"a step that started failing was reported as unchanged")
-	require.True(t, state.absorb(observed, retryingAt("deploy", 3, "connection refused").response, nil).Changed,
+	require.True(t, state.Absorb(observed, retryingAt("deploy", 3, "connection refused").response, nil).Changed,
 		"an attempt count climbing under an unchanging status went unreported, which is "+
 			"the signature of a stuck run")
-	require.True(t, state.absorb(observed, retryingAt("deploy", 3, "no route to host").response, nil).Changed,
+	require.True(t, state.Absorb(observed, retryingAt("deploy", 3, "no route to host").response, nil).Changed,
 		"the failure changed and the reader was not told")
 
 	// The countdown alone, twice, at two different values.
 	same := scheduledIn(retryingAt("deploy", 3, "no route to host"), 30*time.Second)
-	require.False(t, state.absorb(observed, same.response, nil).Changed,
+	require.False(t, state.Absorb(observed, same.response, nil).Changed,
 		"a countdown ticking was reported as the run having changed")
 
 	sooner := scheduledIn(retryingAt("deploy", 3, "no route to host"), 5*time.Second)
-	require.False(t, state.absorb(observed, sooner.response, nil).Changed,
+	require.False(t, state.Absorb(observed, sooner.response, nil).Changed,
 		"a countdown ticking was reported as the run having changed")
 
 	// It is still rendered, measured against the moment the answer was observed
 	// rather than whenever this happens to be drawn.
 	require.Equal(t, []string{"retrying, attempt 3: no route to host (next attempt in 5s)"},
-		state.pending)
+		state.Pending())
 }
 
 // TestWatchPlainLinesSayWhereTheRunIsAndWhatFailed is requirement three's half of the
@@ -347,7 +357,7 @@ func TestWatchPlainLinesSayWhereTheRunIsAndWhatFailed(t *testing.T) {
 	}}
 	surface, out, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(errOut.String())
@@ -390,7 +400,7 @@ func TestWatchStopsOnEveryTerminalStatusAndKeepsGoingOtherwise(t *testing.T) {
 
 		t.Run(statusLabel(status), func(t *testing.T) {
 			state := newWatchState("flowstate-workflow-3f7c", nil)
-			progress := state.absorb(observed, response(status), nil)
+			progress := state.Absorb(observed, response(status), nil)
 
 			switch {
 			case status == v1.RunResponse_STATUS_UNSPECIFIED:
@@ -398,7 +408,7 @@ func TestWatchStopsOnEveryTerminalStatusAndKeepsGoingOtherwise(t *testing.T) {
 				// has not answered the question, and waiting on it waits forever.
 				require.True(t, progress.Done, "a watch waited on a status the schema forbids")
 				require.Error(t, progress.Err)
-				require.True(t, state.gaveUp)
+				require.True(t, state.GaveUp())
 
 			case terminal[status]:
 				require.True(t, progress.Done, "a watch kept polling a run that had finished")
@@ -452,7 +462,7 @@ func TestWatchOutcomeCarriesTheFailureMessage(t *testing.T) {
 	}}
 	surface, out, _ := plainSurface()
 
-	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	err := followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil)
 
 	require.ErrorContains(t, err, "failed")
@@ -472,7 +482,7 @@ func TestWatchSurvivesAnOutageAndSaysSo(t *testing.T) {
 	}}
 	surface, _, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil),
 		"a watch died on a transient refusal it should have survived")
 
@@ -502,7 +512,7 @@ func TestWatchGivesUpAfterTheOutageAllowance(t *testing.T) {
 	var progress watchProgress
 	var elapsed time.Duration
 	for step := time.Duration(0); !progress.Done; step += time.Second {
-		progress = state.absorb(observed.Add(step), nil, transientRefusal())
+		progress = state.Absorb(observed.Add(step), nil, transientRefusal())
 		elapsed = step
 
 		require.LessOrEqual(t, step, outageAllowance,
@@ -514,7 +524,7 @@ func TestWatchGivesUpAfterTheOutageAllowance(t *testing.T) {
 	require.ErrorContains(t, progress.Err, "gave up")
 	require.ErrorContains(t, progress.Err, outageAllowance.String(),
 		"the elapsed time reported is not the time actually spent")
-	require.True(t, state.gaveUp)
+	require.True(t, state.GaveUp())
 }
 
 // TestWatchAllowanceIsTheSameSpanAtEveryInterval is the regression test for a bound
@@ -536,11 +546,11 @@ func TestWatchAllowanceIsTheSameSpanAtEveryInterval(t *testing.T) {
 			// One failure short of the allowance must not end the watch, whatever the
 			// interval and however few attempts that took.
 			for step := time.Duration(0); step < outageAllowance; step += interval {
-				require.False(t, state.absorb(observed.Add(step), nil, transientRefusal()).Done,
+				require.False(t, state.Absorb(observed.Add(step), nil, transientRefusal()).Done,
 					"gave up %s into a %s allowance", step, outageAllowance)
 			}
 
-			require.True(t, state.absorb(observed.Add(outageAllowance), nil, transientRefusal()).Done,
+			require.True(t, state.Absorb(observed.Add(outageAllowance), nil, transientRefusal()).Done,
 				"did not give up after the whole allowance had passed")
 		})
 	}
@@ -558,11 +568,11 @@ func TestWatchReportsTheTimeItActuallySpent(t *testing.T) {
 
 	for _, second := range []int{0, 7, 14, 21, 28} {
 		require.False(t,
-			state.absorb(observed.Add(time.Duration(second)*time.Second), nil, transientRefusal()).Done,
+			state.Absorb(observed.Add(time.Duration(second)*time.Second), nil, transientRefusal()).Done,
 			"gave up %ds into a %s allowance", second, outageAllowance)
 	}
 
-	progress := state.absorb(observed.Add(35*time.Second), nil, transientRefusal())
+	progress := state.Absorb(observed.Add(35*time.Second), nil, transientRefusal())
 	require.True(t, progress.Done)
 	require.ErrorContains(t, progress.Err, "35s",
 		"the message did not report the span actually spent unreachable")
@@ -578,10 +588,10 @@ func TestWatchReportsTheTimeItActuallySpent(t *testing.T) {
 func TestWatchNeverGivesUpOnOneFailure(t *testing.T) {
 	state := newWatchState("w", nil)
 
-	progress := state.absorb(observed, nil, transientRefusal())
+	progress := state.Absorb(observed, nil, transientRefusal())
 	require.False(t, progress.Done, "a single transient refusal ended a watch")
 	require.True(t, progress.Changed, "the reader was not told the server had gone quiet")
-	require.False(t, state.gaveUp)
+	require.False(t, state.GaveUp())
 }
 
 // TestWatchDoesNotRetryAPermanentRefusal writes the negative direction of the
@@ -595,7 +605,7 @@ func TestWatchDoesNotRetryAPermanentRefusal(t *testing.T) {
 	poller := &scriptedPoller{answers: []pollAnswer{{err: permanentRefusal()}}}
 	surface, _, _ := plainSurface()
 
-	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	err := followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil)
 
 	require.ErrorContains(t, err, "check the id")
@@ -609,19 +619,19 @@ func TestWatchOutageClockRestartsOnRecovery(t *testing.T) {
 	state := newWatchState("w", nil)
 
 	// Most of an allowance spent, then an answer.
-	require.False(t, state.absorb(observed, nil, transientRefusal()).Done)
-	require.False(t, state.absorb(observed.Add(outageAllowance-time.Second), nil, transientRefusal()).Done)
+	require.False(t, state.Absorb(observed, nil, transientRefusal()).Done)
+	require.False(t, state.Absorb(observed.Add(outageAllowance-time.Second), nil, transientRefusal()).Done)
 
-	recovery := state.absorb(observed.Add(outageAllowance), response(v1.RunResponse_STATUS_RUNNING), nil)
+	recovery := state.Absorb(observed.Add(outageAllowance), response(v1.RunResponse_STATUS_RUNNING), nil)
 	require.True(t, recovery.Changed, "the recovery was not reported")
-	require.Zero(t, state.outageSince, "the outage clock kept running after the server answered")
+	require.Zero(t, state.OutageSince(), "the outage clock kept running after the server answered")
 
 	// A later failure starts over, so it does not immediately exceed an allowance
 	// measured from an outage that ended.
 	later := observed.Add(time.Hour)
-	require.False(t, state.absorb(later, nil, transientRefusal()).Done,
+	require.False(t, state.Absorb(later, nil, transientRefusal()).Done,
 		"a fresh outage inherited a spent allowance")
-	require.False(t, state.absorb(later.Add(time.Second), nil, transientRefusal()).Done)
+	require.False(t, state.Absorb(later.Add(time.Second), nil, transientRefusal()).Done)
 }
 
 // TestWatchSeparatesOutputsFromProgress is the property that makes
@@ -630,14 +640,14 @@ func TestWatchSeparatesOutputsFromProgress(t *testing.T) {
 	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
 	surface, out, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	// Everything on stdout has to parse, or a pipe into jq breaks.
 	var outputs map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out.String()), &outputs),
 		"stdout was not one JSON document: %q", out.String())
-	require.Contains(t, outputs, "stepValues")
+	require.Contains(t, outputs, "steps")
 
 	require.NotContains(t, out.String(), "COMPLETED",
 		"the progress account was written to stdout, which corrupts anything piping the outputs")
@@ -655,7 +665,7 @@ func TestWatchJSONLIsOneDocumentPerChange(t *testing.T) {
 	}}
 	surface, out, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatJSONL, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatJSONL), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(out.String())
@@ -674,6 +684,39 @@ func TestWatchJSONLIsOneDocumentPerChange(t *testing.T) {
 		"prose was written alongside a machine format, which a reader would have to parse")
 }
 
+// TestWatchJSONLDoesNotResendStaleDataOnAnOutage is the regression test for a
+// review finding on this PR: reportChange used to read state.Response() for the
+// document it writes, which is the last response the server actually gave — and a
+// transient refusal is a change too (see [watch.State.Absorb]), reported with no
+// fresh response of its own. Reading the retained one there would resend the
+// previous poll's document a second time, indistinguishable to a reader from the
+// server repeating itself, on the one shape whose whole promise is one document
+// per change in the change's own words.
+func TestWatchJSONLDoesNotResendStaleDataOnAnOutage(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningPoll("checkout"),
+		{err: transientRefusal()},
+		finishedPoll("checkout", "build"),
+	}}
+	surface, out, _ := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatJSONL), poller, time.Millisecond,
+		"flowstate-workflow-3f7c", nil))
+
+	lines := reportedLines(out.String())
+	require.Len(t, lines, 3, "one document per change:\n%s", out.String())
+
+	var outage map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &outage), "not a document: %q", lines[1])
+	// The zero-value document a nil response marshals as, not the previous poll's
+	// answer repeated: an empty workflow id and an unspecified status say "nothing
+	// new arrived" rather than claiming the server just said this again.
+	require.Equal(t, "", outage["workflowId"],
+		"the outage's document repeated the previous poll's workflow id instead of reporting that nothing new arrived")
+	require.Equal(t, "STATUS_UNSPECIFIED", outage["status"],
+		"the outage's document repeated the previous poll's status instead of reporting that nothing new arrived")
+}
+
 // TestWatchJSONIsOneDocumentAtTheEnd checks that the single-document form writes
 // nothing until the last change is known.
 func TestWatchJSONIsOneDocumentAtTheEnd(t *testing.T) {
@@ -684,7 +727,7 @@ func TestWatchJSONIsOneDocumentAtTheEnd(t *testing.T) {
 	}}
 	surface, out, _ := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatJSON, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatJSON), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	var document map[string]any
@@ -703,14 +746,17 @@ func TestWatchWritesNothingFinalWhenItGaveUp(t *testing.T) {
 	// One attempt's worth of allowance is impossible to ask for, so the state is
 	// driven directly and the shape's ending is what is under test.
 	state := newWatchState("flowstate-workflow-3f7c", nil)
-	state.absorb(observed, response(v1.RunResponse_STATUS_RUNNING), nil)
-	state.stop(errors.New("the server stopped answering"))
+	state.Absorb(observed, response(v1.RunResponse_STATUS_RUNNING), nil)
+	// A plain, non-transient error drives absorb's own give-up path — see
+	// [watch.State.Absorb] — rather than poking an unexported field that now
+	// lives in another package.
+	state.Absorb(observed, nil, errors.New("the server stopped answering"))
 
 	for _, format := range []OutputFormat{FormatText, FormatJSON, FormatJSONL} {
 		t.Run(string(format), func(t *testing.T) {
 			surface, out, _ := plainSurface()
 
-			require.ErrorContains(t, finishWatch(surface, format, state), "stopped answering")
+			require.ErrorContains(t, finishWatch(surface, renderingOf(format), state), "stopped answering")
 			require.Empty(t, out.String(),
 				"a watch that lost the server wrote %q as though it were the answer", out.String())
 		})
@@ -769,7 +815,7 @@ func TestWatchInterruptedStillNamesTheRunForAMachine(t *testing.T) {
 		cancel()
 
 		started := response(v1.RunResponse_STATUS_RUNNING)
-		require.NoError(t, followPlainly(ctx, surface, FormatJSON,
+		require.NoError(t, followPlainly(ctx, surface, renderingOf(FormatJSON),
 			&scriptedPoller{answers: []pollAnswer{{err: transientRefusal()}}},
 			time.Millisecond, "flowstate-workflow-3f7c", started))
 
@@ -788,11 +834,34 @@ func TestWatchInterruptedStillNamesTheRunForAMachine(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		require.NoError(t, followPlainly(ctx, surface, FormatText,
+		require.NoError(t, followPlainly(ctx, surface, renderingOf(FormatText),
 			&scriptedPoller{answers: []pollAnswer{runningPoll()}},
 			time.Millisecond, "flowstate-workflow-3f7c", response(v1.RunResponse_STATUS_RUNNING)))
 
 		require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
+	})
+
+	t.Run("--raw asked for a document explicitly, even on the text format", func(t *testing.T) {
+		// The regression for a Codex follow-on on #666: interrupted used to gate
+		// on a bare `format == FormatJSON`, so a --raw watch on the default text
+		// format was silently treated as the "nothing was asked for" case above
+		// rather than the "a document was asked for" case this whole function
+		// exists for.
+		surface, out, _ := plainSurface()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		started := response(v1.RunResponse_STATUS_RUNNING)
+		rendering := runRendering{format: FormatText, raw: true}
+		require.NoError(t, followPlainly(ctx, surface, rendering,
+			&scriptedPoller{answers: []pollAnswer{{err: transientRefusal()}}},
+			time.Millisecond, "flowstate-workflow-3f7c", started))
+
+		var document map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out.String()), &document),
+			"--raw interrupted on the text format wrote %q, not the last-known document", out.String())
+		require.Equal(t, "flowstate-workflow-3f7c", document["workflowId"])
 	})
 }
 
@@ -874,7 +943,7 @@ func TestWatchStopsWhenTheWatcherDoesRatherThanWhenTheRunDoes(t *testing.T) {
 			defer cancel()
 			poller := &interruptedPoller{cancel: cancel, refuse: refuse}
 
-			require.NoError(t, followPlainly(ctx, surface, FormatText, poller, time.Millisecond,
+			require.NoError(t, followPlainly(ctx, surface, renderingOf(FormatText), poller, time.Millisecond,
 				"flowstate-workflow-3f7c", nil),
 				"an interrupted watch was reported as a failed run")
 			require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
@@ -896,10 +965,10 @@ func TestWatchDrawsNoViewWhenAFormatWasAskedFor(t *testing.T) {
 			surface, out, _ := plainSurface()
 			surface.ErrCaps.TTY = true
 
-			require.NoError(t, watchRun(t.Context(), surface, format, poller, time.Millisecond, false,
+			require.NoError(t, watchRun(t.Context(), surface, renderingOf(format), poller, time.Millisecond, false,
 				"flowstate-workflow-3f7c", nil))
 
-			require.Contains(t, out.String(), "stepValues")
+			require.Contains(t, out.String(), `"steps"`)
 			require.NotContains(t, out.String(), "\x1b",
 				"a live view was drawn over a requested document")
 		})
@@ -931,14 +1000,14 @@ func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
 	surface, out, errOut := plainSurface()
 	surface.ErrCaps.TTY = true
 
-	require.NoError(t, watchRun(t.Context(), surface, FormatText, poller, time.Millisecond, true,
+	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, true,
 		"flowstate-workflow-3f7c", nil))
 
 	require.Len(t, reportedLines(errOut.String()), 2,
 		"--plain did not produce one line per change:\n%s", errOut.String())
 	require.NotContains(t, errOut.String(), "q stops watching",
 		"a live view was drawn despite --plain")
-	require.Contains(t, out.String(), "stepValues")
+	require.Contains(t, out.String(), `"steps"`)
 }
 
 // TestRunFollowsToAnyTerminalStatus is a regression test for a loop that could not
@@ -1277,16 +1346,16 @@ func TestWatchCountsAGateChangeAsAChange(t *testing.T) {
 
 	deadline := timestamppb.New(observed.Add(45 * time.Second))
 
-	require.True(t, state.absorb(observed, parked(deadline, "left"), nil).Changed,
+	require.True(t, state.Absorb(observed, parked(deadline, "left"), nil).Changed,
 		"the first answer went unreported")
-	require.False(t, state.absorb(observed.Add(10*time.Second), parked(deadline, "left"), nil).Changed,
+	require.False(t, state.Absorb(observed.Add(10*time.Second), parked(deadline, "left"), nil).Changed,
 		"the same gate closer to its deadline was reported as news, so a bounded wait makes every poll a change")
 
-	require.True(t, state.absorb(observed, parked(deadline, "left", "right"), nil).Changed,
+	require.True(t, state.Absorb(observed, parked(deadline, "left", "right"), nil).Changed,
 		"a second gate opened inside concurrent work and the poll swallowed it")
-	require.True(t, state.absorb(observed, parked(deadline, "right"), nil).Changed,
+	require.True(t, state.Absorb(observed, parked(deadline, "right"), nil).Changed,
 		"a gate was released and the poll swallowed it, leaving the view naming a gate nobody holds")
-	require.False(t, state.absorb(observed, parked(deadline, "right"), nil).Changed)
+	require.False(t, state.Absorb(observed, parked(deadline, "right"), nil).Changed)
 }
 
 // stubGitHubActionsRunner stands up a fake runner OIDC endpoint, counting how many
@@ -1411,4 +1480,110 @@ func TestFollowRefusesAMisconfiguredCredentialSourceImmediately(t *testing.T) {
 	require.False(t, errors.As(err, &transient),
 		"a configuration error was classified as transient and would be retried for the outage allowance: %v", err)
 	require.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+}
+
+// TestAWatchReportsEveryChangeItWouldRender is the invariant behind the bug
+// rather than the bug, so a field added to a renderer and not to the identity
+// fails here instead of being found by the next reviewer.
+//
+// A watch decides whether to say anything from a reduced *identity* of the
+// answer, and separately renders lines from the answer itself. Those are two
+// readings of one message, and when the identity is short a field the renderer
+// reads, the loop computes a new line and never prints it. That is what
+// happened when the retry list gained a truncation notice: the reported prefix
+// can be identical attempt for attempt while the answer stops being the whole
+// of it, so nothing in the identity moved (Codex, #1121).
+//
+// The claim is one-directional on purpose. A poll may be reported as changed
+// for reasons that do not alter these lines — a status moving, a step
+// completing — and that is not a defect. What must never happen is the
+// rendering changing and the reader not being told.
+func TestAWatchReportsEveryChangeItWouldRender(t *testing.T) {
+	t.Parallel()
+
+	running := func(mutate func(*v1.GetResponse)) *v1.GetResponse {
+		response := &v1.GetResponse{
+			WorkflowId: "wf",
+			RunId:      "run",
+			Status:     v1.RunResponse_STATUS_RUNNING,
+			PendingActivities: []*v1.PendingActivity{
+				{Attempt: 2, LastFailure: "connection refused"},
+			},
+			Progress: &v1.RunProgress{
+				StepId: "deploy",
+				PendingWaits: []*v1.PendingWait{
+					{StepId: "approve", SignalName: "approval"},
+				},
+			},
+		}
+		mutate(response)
+
+		return response
+	}
+
+	for _, testCase := range []struct {
+		name   string
+		before *v1.GetResponse
+		after  *v1.GetResponse
+	}{
+		{
+			// The reported retries are identical; only the fact that there are
+			// more of them than this reports has changed.
+			name:   "retries become partial",
+			before: running(func(*v1.GetResponse) {}),
+			after:  running(func(r *v1.GetResponse) { r.PendingActivitiesTruncated = true }),
+		},
+		{
+			// The worse direction: a watch that goes on saying there are hidden
+			// retries after the list becomes complete.
+			name:   "retries stop being partial",
+			before: running(func(r *v1.GetResponse) { r.PendingActivitiesTruncated = true }),
+			after:  running(func(*v1.GetResponse) {}),
+		},
+		{
+			// The same hole one field over, which predates the retries' one.
+			name:   "gates become partial",
+			before: running(func(*v1.GetResponse) {}),
+			after:  running(func(r *v1.GetResponse) { r.Progress.PendingWaitsTruncated = true }),
+		},
+		{
+			name:   "gates stop being partial",
+			before: running(func(r *v1.GetResponse) { r.Progress.PendingWaitsTruncated = true }),
+			after:  running(func(*v1.GetResponse) {}),
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newWatchState("wf", nil)
+			state.Absorb(observed, testCase.before, nil)
+
+			was := append(slices.Clone(state.Pending()), state.Waits()...)
+			progress := state.Absorb(observed, testCase.after, nil)
+			now := append(slices.Clone(state.Pending()), state.Waits()...)
+
+			require.False(t, slices.Equal(was, now),
+				"this case renders identically before and after, so it cannot detect "+
+					"an identity that is short a field:\n%v", now)
+
+			require.True(t, progress.Changed,
+				"the watch computed different lines and reported nothing, so a reader "+
+					"watching this run is shown:\n  %v\nwhile the answer says:\n  %v",
+				was, now)
+		})
+	}
+
+	// And the other side of it, so "report everything" is not satisfied by
+	// reporting every poll: an answer that has not moved is not news.
+	t.Run("nothing moved", func(t *testing.T) {
+		t.Parallel()
+
+		state := newWatchState("wf", nil)
+		state.Absorb(observed, running(func(*v1.GetResponse) {}), nil)
+
+		progress := state.Absorb(observed, running(func(*v1.GetResponse) {}), nil)
+		require.False(t, progress.Changed,
+			"an unchanged answer was reported as news, so a watch would repeat itself "+
+				"on every poll")
+	})
 }

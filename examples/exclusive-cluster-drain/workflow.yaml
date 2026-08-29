@@ -1,0 +1,94 @@
+# `concurrency:` — at most one run of this workflow per key, at a time.
+#
+# Draining a Kubernetes cluster is the shape of workload that cannot tolerate a
+# second copy of itself: two drains of `prod-eu` running at once cordon the same
+# nodes, evict the same pods, and race each other's idea of how much capacity is
+# left. Two drains of *different* clusters are fine and should not wait for each
+# other, which is why the exclusion is keyed rather than global:
+#
+#     concurrency:
+#       key: ${inputs.cluster}
+#
+# The key is composed with this run's tenant and this workflow's name, digested,
+# and used as the run's own workflow id — so the permit *is* the run, and there is
+# no lease to expire, no lock to leak, and no fencing token to check. Two things
+# follow that are worth naming, because a lock built any other way has to work for
+# them: a drain that crashes releases the key when the run ends, and a caller never
+# waits to find out — all three `on_conflict:` answers come back at submit.
+#
+# # The three answers
+#
+# `reject` (this file): the second submission is refused, naming the run that holds
+# the key. Right when the two callers want the same thing done once and the second
+# one should be told it is already happening rather than quietly attached to it.
+#
+# `join`: the second caller gets the run already going, with the response's
+# `joined` flag set — for a caller whose request is "make sure this is happening".
+#
+# `terminate_other`: the incumbent is stopped, immediately and without running its
+# `undo:` compensations, and the new run starts. For a workload where the newest
+# request is the true one — a redeploy superseding the deploy it interrupts — and
+# never for one whose half-finished state matters. A drain is exactly the second
+# kind, which is why this file does not use it.
+#
+# # What it does not do, and where the other thing lives
+#
+# It does not queue. There is no `buffer_one` here, because a workflow id is either
+# free or taken and cannot hold a waiting list; `flow validate` refuses the word
+# rather than accepting one it would not honour, and points at
+# `triggers.schedule.overlap:`, which is where buffering genuinely exists (see
+# `examples/schedule-overlap-policies`).
+#
+# It also cannot be combined with `triggers.webhooks:` or `triggers.schedule:`:
+# both of those already address their runs by an id of their own — a delivery's
+# idempotency key, a firing's timestamp — and a concurrency key would take that
+# address over, or silently fail to hold. Both combinations are validation errors.
+#
+# # Runnable as written
+#
+#     flow run local examples/exclusive-cluster-drain/workflow.yaml
+#
+# runs the drain once. `concurrency:` is inert to a run, exactly as `triggers:` is:
+# it is read by the server composing the id at submit, and by nothing inside the
+# run on either driver. A local rehearsal is therefore not a rehearsal of
+# contention, and does not pretend to be one — what it rehearses is the workload.
+edition: v2026.3
+name: exclusive-cluster-drain
+description: cordon and drain one cluster, never two drains of the same cluster at once
+inputs:
+  cluster:
+    type: string
+    required: true
+    description: which cluster this run drains
+  reason:
+    type: string
+    default: routine maintenance
+    description: why it is being drained, recorded in the log line
+concurrency:
+  # One drain per cluster. Written as an expression over this run's own arguments,
+  # which is the only thing a key may read: it is resolved at submit, before a step
+  # has run, before `vars:` are evaluated, and before there is a run to have an id.
+  key: ${inputs.cluster}
+
+  # Refuse the second one rather than joining it or killing the first. A drain
+  # stopped halfway leaves cordoned nodes nobody uncordons, so `terminate_other` is
+  # wrong here; and the caller of a second drain wants to hear that one is already
+  # running, not to be silently attached to a drain started with somebody else's
+  # arguments, so `join` is wrong too.
+  on_conflict: reject
+steps:
+  - id: cordon
+    log:
+      fields:
+        cluster: ${inputs.cluster}
+      message: ${"cordoning " + inputs.cluster}
+  - id: drain
+    log:
+      fields:
+        cluster: ${inputs.cluster}
+        reason: ${inputs.reason}
+      message: ${"draining " + inputs.cluster + " (" + inputs.reason + ")"}
+outputs:
+  cluster:
+    value: ${inputs.cluster}
+    description: the cluster this run drained

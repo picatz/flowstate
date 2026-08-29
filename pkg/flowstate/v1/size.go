@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -133,6 +134,34 @@ const (
 	// less.
 	MaxRunStateBytes = TemporalDefaultBlobLimitBytes - RunStateReserveBytes
 
+	// MaxTaskOutputBytes bounds one step's outputs — the payload a task's
+	// result becomes, which on the durable driver is an activity result
+	// Temporal weighs against the same blob limit as everything else here.
+	//
+	// This closes the one payload seam the other bounds miss (#787). A task's
+	// result is produced by a party the caller does not control — a remote
+	// endpoint, a plugin — and the admission bounds upstream of it admit more
+	// than Temporal will store: a plugin response may be
+	// [plugin.DefaultMaxResponseBytes] (4 MiB) on the wire, and the http
+	// task's default outputs carry a parsed JSON body twice (Body and Json).
+	// Without this bound an oversized result is refused by the server at
+	// activity completion, the activity retries against the same refusal, and
+	// the step dies ten minutes later as a ScheduleToClose *timeout* — a
+	// misdiagnosis, because the step finished repeatedly and its answer was
+	// too big to write down. The local driver, with no server to refuse,
+	// admitted it silently, which is the two drivers disagreeing in the worst
+	// direction: the rehearsal passing what production wedges on.
+	//
+	// Cut from [TemporalDefaultBlobLimitBytes] by the same reserve as
+	// [MaxRunStateBytes] rather than pinned to that constant, because the two
+	// answer different questions that happen to share their arithmetic today:
+	// an activity result travels in the same payload envelope, under the same
+	// codec, with the same framing as a carried run state, so the same
+	// claimants spend the same reserve. A result that fits here can still push
+	// the *carry* over [MaxRunStateBytes] once it sits beside every other
+	// step's outputs — [CheckRunStateSize] remains the backstop for the sum.
+	MaxTaskOutputBytes = TemporalDefaultBlobLimitBytes - RunStateReserveBytes
+
 	// MaxSignalPayloadBytes bounds one signal's payload, at the server's door.
 	//
 	// The payload is the one part of a run's carried state a party *other than
@@ -146,14 +175,16 @@ const (
 	// payload where it is chosen puts the refusal on the party who can act on
 	// it, at the moment they act.
 	//
-	// The arithmetic this buys, stated rather than implied: [MaxPendingSignals]
-	// alone caps a hostile carry at 128 payloads of whatever Temporal's blob
-	// limit admits — hundreds of mebibytes attempted against a two-mebibyte
-	// budget. With this bound the worst-case product is 128 × 64 KiB = 8 MiB,
-	// still more than a run can carry, so [CheckRunStateSize] remains the
-	// backstop for a carry that is pathological in *count* — but a realistic
-	// carry of a handful of maximal payloads now fits, and no single sender's
-	// single send can be the surprise.
+	// The arithmetic this buys, stated rather than implied: an acknowledged
+	// signal is carried unconditionally, however many accumulate (see
+	// [MaxPendingSignals]), so nothing here caps the *count* — only
+	// [CheckRunStateSize] does, by failing the run once the carry no longer
+	// fits. What this bound caps is the other factor in that product: without
+	// it, a sender's payload could be whatever Temporal's own blob limit
+	// admits, and one oversized delivery — not a flood, a single send — could
+	// be most of a two-mebibyte budget by itself. At 64 KiB a carry has to
+	// genuinely grow in count before it is pathological, and a realistic
+	// backlog of ordinary payloads fits with room to spare.
 	//
 	// 64 KiB is generous for what a payload is: a signal's payload becomes the
 	// waiting step's outputs — an approval, an entity mutation, a callback's
@@ -231,14 +262,117 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 		size, MaxSignalPayloadBytes)
 }
 
+// encodedPayloadSize reports a ProtoJSON byte length for m — deliberately not
+// proto.Size's binary estimate, and, since #911, deliberately not the encoding
+// flowstate now writes either.
+//
+// # Why ProtoJSON is what is measured
+//
+// It is what flowstate used to write, and what this bound was calibrated
+// against. The SDK's default DataConverter is a composite whose own comment
+// says the order is deliberate: ProtoJSONPayloadConverter is checked before the
+// binary one and wins the match for every proto.Message handed to it, so every
+// RunState and every completed run's Workflow_StepOutputs was serialized as
+// ProtoJSON, never as binary protobuf. proto.Size measured a payload nothing
+// here ever wrote (#716).
+//
+// The gap is not academic. Field names are spelled out per occurrence instead
+// of a one-or-two-byte tag, map entries carry a key and a value name each, and
+// every number and bytes value becomes text — bytes as base64, one third
+// larger before the framing around it. A transcript with many small values or
+// many map entries, the exact shape a run with many steps produces, can
+// measure comfortably under the binary bound and exceed it as JSON. Measured
+// against real transcripts, ProtoJSON output ran 1.03x-1.32x of proto.Size's
+// estimate — against a bound that reserved 3.1% over the blob limit, so at the
+// low end of that range the reserve was already roughly half spent by the
+// measurement error alone.
+//
+// # Why the measurement no longer matches the write encoding
+//
+// #911 flipped the *write* side: payloadcodec registers the binary
+// ProtoPayloadConverter ahead of the ProtoJSON one, so new payloads go to
+// history as `binary/protobuf`. The two deliberately differ, and the asymmetry
+// is the point of the decision rather than an oversight.
+//
+// [CheckRunStateSize] is called from workflow code — engine/workflow.go, on the
+// Continue-As-New path — so this arithmetic is a determinism input in exactly
+// the sense [MaxRunStateBytes] already argues for itself above: it decides a
+// branch that every replay of every already-suspended run must reproduce.
+// Flipping what is measured is a one-way door and #911 explicitly declined to
+// open it; flipping what is written is a two-way door, because Temporal selects
+// a decoder per payload from that payload's own `encoding` metadata.
+//
+// The consequence is that the bound now over-counts, by whatever the ProtoJSON
+// expansion of that particular message happens to be. That is the safe
+// direction — the check refuses early, and the reclaimed bytes become margin
+// under a blob limit rather than capacity anyone may spend. Loosening the
+// measurement to match is its own later decision, and needs the monotonicity
+// argument (a run that passed the larger measure still passes the smaller one)
+// written down here and tested before anyone relies on it.
+//
+// This calls protojson.Marshal directly with zero-value MarshalOptions rather
+// than going through go.temporal.io/sdk/converter: that is byte-for-byte what
+// ProtoJSONPayloadConverter.ToPayload does for a standard proto.Message (see
+// its source — `c.protoMarshalOptions.Marshal(valueProto)` with
+// protojson.MarshalOptions{}), so the measurement stays pinned to that encoding
+// whatever the write side does next, without this determinism-sensitive
+// package taking on a dependency
+// on the Temporal SDK or on whatever payload codec a deployment has
+// configured. A codec's own expansion is a separate, already-reserved budget —
+// see [MaxCodecExpansionBytes] — because this function measures the payload a
+// codec would be handed, not what the codec does to it.
+//
+// A marshal failure is treated as over the bound rather than propagated or
+// ignored: fail closed, per the invariant every other bound in this package
+// follows. proto.Size cannot fail, which is why every caller below still
+// checks it for context even when protojson does the enforcing.
+func encodedPayloadSize(m proto.Message) int {
+	// Refuse to materialize an encoding the answer cannot need. Marshaling
+	// allocates the whole output before any caller compares it to a bound, and
+	// the party who shaped the message controls how big that is: an `outputs:`
+	// map of thousands of fields referencing one 1 MiB response body holds its
+	// copies as shared Go strings — cheap in memory — while the encoding spells
+	// every copy out, so measuring an attacker-shaped result by marshaling it
+	// is itself the memory explosion the bound exists to prevent. proto.Size
+	// walks the message without allocating its encoding, and ProtoJSON output
+	// is never smaller than the binary encoding for these message shapes —
+	// field names versus one-or-two-byte tags, base64 versus raw bytes; #716
+	// measured 1.03x-1.32x — so a message already past the blob limit in
+	// binary is past every bound this package cuts under it, and can be
+	// refused on the cheap walk alone. Anything that passes the walk encodes
+	// to at most ~1.32x the blob limit, which bounds the marshal below.
+	//
+	// The binary size is returned rather than a sentinel so the diagnosis
+	// still reports a real measurement; it understates what ProtoJSON would
+	// produce, which only makes the sentence conservative, never wrong.
+	if binary := proto.Size(m); binary > TemporalDefaultBlobLimitBytes {
+		return binary
+	}
+
+	b, err := protojson.Marshal(m)
+	if err != nil {
+		// Past the blob limit itself, which every bound in this package is
+		// cut under — so the fail-closed reading holds for every caller
+		// ([MaxRunStateBytes] and [MaxTaskOutputBytes] alike), not only the
+		// one whose constant happened to be named here first.
+		return TemporalDefaultBlobLimitBytes + 1
+	}
+	return len(b)
+}
+
 // CheckRunStateSize reports whether a run's state can be carried forward.
 //
 // Called where a run suspends, which is the one place the answer is a fact rather
 // than an estimate. A run that cannot be carried forward has to fail here: the
 // alternative is not "carry on", it is Temporal refusing the Continue-As-New and
 // retrying the workflow task until somebody notices.
+//
+// Measured by [encodedPayloadSize], not proto.Size — see its doc comment. This
+// is also the Continue-As-New path #716 asked whether the fix covered:
+// [CheckRunStateSize] is the only check on that path, so fixing it here is the
+// whole of that answer.
 func CheckRunStateSize(st *RunState) error {
-	size := proto.Size(st)
+	size := encodedPayloadSize(st)
 	if size <= MaxRunStateBytes {
 		return nil
 	}
@@ -249,6 +383,61 @@ func CheckRunStateSize(st *RunState) error {
 			"A step whose output is large should write it somewhere and pass a reference, "+
 			"since every output a later step can still reach is carried across every suspension",
 		size, MaxRunStateBytes, proto.Size(st.GetWorkflow()))
+}
+
+// CheckRunResultSize reports whether a completed run's transcript is small
+// enough for Temporal to record as the workflow result.
+//
+// Completion needs its own check: a short run never reaches the
+// Continue-As-New check above, and repeated outputs can make its transcript
+// larger than the inputs from which they were computed. Letting Temporal find
+// that out would fail and retry the workflow task instead of closing the run.
+//
+// Measured by [encodedPayloadSize], not proto.Size — see its doc comment. A
+// completed run's result is a Workflow_StepOutputs handed to the same
+// DataConverter as a suspended run's RunState, so it is serialized the same
+// way and has to be measured the same way.
+func CheckRunResultSize(outputs *Workflow_StepOutputs) error {
+	size := encodedPayloadSize(outputs)
+	if size <= MaxRunStateBytes {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"the completed run produced %d bytes of outputs, over the %d byte limit; "+
+			"write large results somewhere and return references to them instead",
+		size, MaxRunStateBytes)
+}
+
+// CheckTaskOutputSize reports whether one step's outputs fit in what Temporal
+// will store as an activity result.
+//
+// Called from [Task.EvalInScope], where the outputs become a fact — the same
+// choke point [checkTaskOutputElementBound] polices the element count at, and
+// for the same reason: every task's result, built-in or plugin, returns
+// through that one place on both drivers, so both refuse identically by
+// construction. That placement is activity-side on the durable driver, which
+// is what the rule at [TemporalDefaultBlobLimitBytes] requires: nothing in
+// workflow code may read the blob limit, and an activity has no determinism
+// exposure.
+//
+// Measured by [encodedPayloadSize], not proto.Size — the #716 lesson; an
+// activity result is handed to the same DataConverter as everything else and
+// is serialized as ProtoJSON, so a check measuring the binary encoding would
+// measure a payload nothing writes. A refusal is classified
+// [ErrorKindLimitExceeded] by the caller, so it is non-retryable: a too-large
+// output is the same output on attempt two.
+func CheckTaskOutputSize(out *Node_Outputs) error {
+	size := encodedPayloadSize(out)
+	if size <= MaxTaskOutputBytes {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"the step produced %d bytes of outputs, over the %d byte limit; "+
+			"write large results somewhere and return a reference, or select "+
+			"fields with the task's outputs: input rather than carrying the whole response",
+		size, MaxTaskOutputBytes)
 }
 
 // WorkerDeadlockDetectionTimeout is the workflow-task deadlock budget every
@@ -264,3 +453,19 @@ func CheckRunStateSize(st *RunState) error {
 // bound fits with margin on a busy host, small enough that a genuinely
 // wedged workflow goroutine is still caught quickly (#431).
 const WorkerDeadlockDetectionTimeout = 5 * time.Second
+
+// DefaultWorkerStopTimeout is how long `flow worker` gives the Temporal SDK to
+// drain in-flight activities and workflow tasks after a shutdown signal before
+// it returns from Stop, overridden by `--worker-stop-timeout`/
+// FLOWSTATE_WORKER_STOP_TIMEOUT.
+//
+// The SDK's own zero value is 0s: Stop's internal wait races a timer against
+// the in-flight WaitGroup, and a zero timer fires immediately, so an unset
+// value does not mean "wait forever" — it means "don't wait at all," which is
+// silent data loss dressed up as a default. Two minutes is generous rather
+// than tight because this repository's activities are documented as
+// legitimately long-running (see the heartbeat discussion in CLAUDE.md); an
+// operator whose deployment's own grace period is shorter than this (Docker's
+// default stop grace is 10s) has to raise it or the container's SIGKILL will
+// still land before the drain finishes — see docs/DEPLOYMENT.md.
+const DefaultWorkerStopTimeout = 2 * time.Minute

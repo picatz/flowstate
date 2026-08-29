@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -40,10 +43,12 @@ import (
 // because it is the only verb that both narrates a run and produces its result, in
 // one process, at the same time.
 func runLocalWorkflow(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
 	}
+
+	format := rendering.format
 
 	// Before the policies load and before any plugin process starts, because
 	// those are work, and the venue is announced before a run does any. The
@@ -51,6 +56,37 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// because there is none to name, which is the whole difference between the
 	// two venues said in one word. See venue.go.
 	announceVenue(cmd, localVenue())
+
+	// Telemetry, which this command reached for and never started.
+	//
+	// [startTelemetry] had exactly two callers — [temporalConfig] and the RPC
+	// client's constructor — and a local run touches neither: it dials no
+	// Temporal cluster and makes no RPC. So every span this driver opens, and
+	// every `log:` record [telemetryLogHandler] bridges below, went to the
+	// global no-op provider in the one invocation that had asked for telemetry
+	// by pointing OTEL_EXPORTER_OTLP_* somewhere. That is CLAUDE.md's "a
+	// capability is not done until it is reachable" in its exact shape: the
+	// spans existed, the tests that recorded them installed their own provider,
+	// and the command a person actually types installed none.
+	//
+	// Before [telemetryLogHandler] is built further down, which is the ordering
+	// the other two call sites already state for their own reason: an instrument
+	// built ahead of this captures the no-op globals and keeps them for the life
+	// of the process.
+	//
+	// Off unless the operator configured an endpoint — no exporter, no provider,
+	// no spans — and a warning rather than a refusal when it is configured and
+	// cannot start, for the reason the client states best: the command a person
+	// asked for is `flow run local`, not `flow run local with tracing`, and a
+	// mistyped endpoint should cost them the trace rather than the rehearsal.
+	//
+	// Nothing is flushed here. [main] calls [flushTelemetry] after every command
+	// returns, precisely because a command that lives for a second is shorter
+	// than a batch exporter's window — which is this command exactly.
+	if _, err := startTelemetry(cmd.Context()); err != nil {
+		log.Printf("WARNING: telemetry is configured but could not be started, "+
+			"so this run emits no trace: %v", err)
+	}
 
 	// The same flag the worker takes, because a rehearsal under a different egress
 	// policy rehearses a different production. A file that does not load refuses
@@ -97,7 +133,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// plugin providing it is loaded. This is the same [startPlugins] the worker,
 	// the server, `flow task run`, `flow plugins`, `flow mcp` and `flow lsp` all
 	// call, with the same discovery hardening, the same handshake and the same
-	// refusal of a world-writable directory. A local run that discovered plugins
+	// refusal of a directory other users can write to. A local run that discovered plugins
 	// its own way would be rehearsing a different deployment.
 	catalog, closePlugins, err := startPlugins(cmd, providers.registry)
 	if err != nil {
@@ -159,11 +195,101 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	//
 	// And to a collector when one is configured, so that the two drivers agree about
 	// where a `log:` line ends up: the durable driver exports the same records from
-	// the worker. What differs is the trace id, and unavoidably — a local run makes
-	// no RPC and opens no span, so its records have no trace to belong to.
+	// the worker. The trace id agrees too, since #523's gap 3 — the local driver
+	// opens the same `flowstate.task/<name>` span around the step, so the record
+	// carries the trace of the step that emitted it here as well.
 	surface := newSurface(cmd)
+
+	// `--debug` at a terminal takes the line, so everything this command
+	// narrates while the run is in flight has to go through the console rather
+	// than around it. Raw mode means a bare "\n" moves down without returning
+	// to column one, and a `log:` step printed straight at stderr while a
+	// prompt is drawn is a staircase down the screen with the half-typed
+	// command lost somewhere in it. Attached before the logger for exactly that
+	// reason; `narrate` is stderr itself everywhere else.
+	debugging, _ := cmd.Flags().GetBool("debug")
+	reveal := revealSensitiveRequested(cmd)
+
+	var (
+		console *debugConsole
+		narrate io.Writer = surface.Err
+		restore           = func() {}
+	)
+	if debugging {
+		// A debugger is a reveal: the session narrates each step's values as
+		// they complete and `inspect` reaches anything in scope, so on a
+		// workflow whose declarations make the final render withhold its
+		// transcript, attaching one quietly opens exactly the side channel
+		// redaction closes (Codex, #1109) — and #928's own rule is that debug
+		// output sits behind the same redaction, never a parallel copy. There
+		// is no parallel redactor here on purpose: the honest shapes are this
+		// refusal, or the explicit flag every other surface already shares.
+		//
+		// Refused before the terminal is touched, so a refusal cannot leave one
+		// in raw mode.
+		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
+			return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+				"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
+				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
+				workflow.GetName())
+		}
+
+		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
+		defer restore()
+	}
+
 	ctx = v1.ContextWithLogger(ctx,
-		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))
+		slog.New(telemetryLogHandler(newRunLogHandler(narrate, surface.ErrTheme))))
+
+	// The same session `flow test --debug` runs, attached to a real run: the
+	// engine holds at each step boundary, and `inspect` answers through the
+	// run's own evaluator and activation, so it is cost-bounded and refuses a
+	// `${secret(...)}` exactly as the file's own expressions would be.
+	//
+	// The console joins the run's account on stderr — where `log:` steps and
+	// the status pill already print — rather than taking stdout the way the
+	// test verb's does. Each verb keeps the console beside its own narration,
+	// and this one's narration was never on stdout: the answer is, and it
+	// stays a document a pipe can read under every --output, which is why
+	// none of the test verb's refusals apply here. The session observes as
+	// well as gates, so each step's own account arrives at the prompt that
+	// paused it.
+	if debugging {
+		// The panes, on the console and nowhere else — see debugpanes.go. The
+		// stderr theme and capabilities, because that is the stream this
+		// command's console owns: `flow run local -o json --debug` has a piped
+		// stdout and the panes belong to the terminal beside it.
+		emit, panes := debugPanesFor(ctx, console, narrate, surface.ErrTheme, surface.ErrCaps,
+			debugEmitter(narrate, surface.ErrTheme))
+
+		session, err := flowdebug.New(flowdebug.Options{
+			In:      cmd.InOrStdin(),
+			Console: consoleOrNil(console),
+			Out:     narrate,
+			Emit:    emit,
+			// This command holds the specification, so `break` and `until`
+			// complete over every step the run may reach rather than only the
+			// ones it has been to.
+			Steps: stepList(workflow),
+		})
+		if err != nil {
+			return err
+		}
+		if console != nil {
+			console.SetCompleter(session.Complete)
+		}
+		panes.setSession(session)
+		// This process is about to exit either way, so the reader parking
+		// costs nothing here — closed anyway because a session's owner closes
+		// it, and a habit that holds only where it is load-bearing is one that
+		// will be missing where it is.
+		defer func() { _ = session.Close() }()
+
+		fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
+			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+		ctx = v1.NewContextWithDebugger(ctx, session)
+		ctx = v1.NewContextWithRunObserver(ctx, session)
+	}
 
 	started := time.Now()
 
@@ -171,16 +297,31 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// the declared defaults exactly as the server does before a durable run starts.
 	// The check above is for the message; this is the one that decides.
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+
+	// The console owned the line for as long as the run did, and no longer:
+	// everything below prints an answer and an account onto what should be an
+	// ordinary terminal again. The deferred call above is the safety net for
+	// the paths that do not reach here, and it is idempotent for that reason.
+	restore()
+
 	response := localRun(outputs, runErr, cmd.Context().Err(), started, time.Now())
 
 	// This process just parsed workflow itself, so redaction here is precise
 	// against its own `sensitive:` declarations rather than the fail-closed case
 	// a renderer with no specification falls back to — see sensitive.go.
-	reveal := revealSensitiveRequested(cmd)
 	if reveal {
 		noteRevealedSensitiveValues(surface)
 	}
 	response = redactGetResponse(response, workflow, reveal)
+
+	// And the failure sentence, which [redactGetResponse] deliberately leaves
+	// alone because most of its callers hold no arguments to redact against.
+	// This one does: it bound them a few lines up. See sensitive.go's "The
+	// failure sentence" section for why this surface is redacted rather than
+	// withheld, and #974 for the loop that put a `sensitive:` input's element
+	// into a sentence nothing else here was looking at.
+	sensitive := runSensitiveValues(workflow, inputs, reveal)
+	response = redactFailureText(response, sensitive)
 
 	if runErr != nil {
 		// A machine caller is owed a document about the failure, which is the half
@@ -193,13 +334,22 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// The text shape still writes nothing, and that is not an inconsistency: an
 		// empty stdout is a meaningful value there, because the answer is the outputs
 		// and a failed run has none. `{}` would claim it produced none *successfully*.
-		if format.Machine() {
-			if err := writeJSON(surface, format, response); err != nil {
+		//
+		// rendering.WantsDocument() rather than format.Machine() alone, so --raw with
+		// the default text format is honoured on a failed local run the same way the
+		// success and task-failure paths already honour it.
+		if rendering.WantsDocument() {
+			if err := writeRunJSON(surface, rendering, response); err != nil {
 				return err
 			}
 		}
 
-		return wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr))
+		// Redacted after the wrap, not before it, so the whole sentence a
+		// person reads is covered — the wrapper's own frame included — and so
+		// the loopback remedy is resolved off the original chain before that
+		// chain is dropped. See [redactFailureError].
+		return redactFailureError(
+			wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr)), sensitive)
 	}
 
 	// The same word `flow get` uses for the same outcome, through the same pill, on
@@ -218,7 +368,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			workflow.GetName())
 	}
 
-	if err := writeRun(surface, format, response); err != nil {
+	if err := writeRun(surface, rendering, response); err != nil {
 		return fmt.Errorf("writing the outputs of %s: %w", workflow.GetName(), err)
 	}
 
