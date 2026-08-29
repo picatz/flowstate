@@ -1,9 +1,9 @@
 package agentconfig
 
 import (
-	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,8 +16,11 @@ func TestStyleSkillIndexMatchesTheCharter(t *testing.T) {
 	skill := read(t, filepath.Join(root, ".agents", "skills", "flowfile-style", "SKILL.md"))
 
 	want := styleRuleHeadings(string(charter))
+	if len(want) == 0 {
+		t.Fatal("docs/STYLE.md has no R<n> rule headings")
+	}
 	got := styleSkillRules(t, string(skill))
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("flowfile-style rule index differs from docs/STYLE.md:\n got: %q\nwant: %q", got, want)
 	}
 }
