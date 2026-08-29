@@ -78,11 +78,15 @@ The complete rationale lives in
 - Make routine implementation decisions yourself. Ask when plausible choices
   would materially change product semantics, compatibility, risk, scope, or the
   authority to act.
-- Draft external communication by default. Create or update issues, comments,
-  pull requests, releases, or other remote state only when the user has asked for
-  that action. Merge, publish, delete, or deploy only with explicit authority.
-  Host-specific hooks and permissions are additional controls, never inferred
-  authority.
+- Work autonomously on routine repository operations. Creating or updating
+  branches, commits, pull requests, issues, review comments, and other ordinary
+  collaboration state is expected when it advances the assigned task; do not
+  stop merely to ask permission for those reversible actions. Ask before actions
+  that are materially destructive, irreversible, externally consequential, or
+  outside the task's implied authority, such as merging, publishing a release,
+  deleting important state, deploying, or changing production/security controls.
+  Host-specific hooks and permissions are additional safety controls, not a
+  substitute for judgment.
 - Preserve accurate provenance without inventing it. Do not hard-code a model
   name or duplicate attribution the active host adds automatically.
 
