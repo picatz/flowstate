@@ -221,21 +221,8 @@ func TestJWTInspectAcceptsAnRSAAlgorithmCompatibleWithTheKey(t *testing.T) {
 func TestJWTInspectAcceptsAP521KeyForES512(t *testing.T) {
 	private, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	require.NoError(t, err)
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	require.NoError(t, err)
-	keyPath := filepath.Join(t.TempDir(), "p521.pem")
-	require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
-
-	encode := base64.RawURLEncoding.EncodeToString
-	signingInput := encode([]byte(`{"alg":"ES512","kid":"p521"}`)) + "." + encode([]byte(`{"sub":"worker"}`))
-	digest := sha512.Sum512([]byte(signingInput))
-	r, s, err := ecdsa.Sign(rand.Reader, private, digest[:])
-	require.NoError(t, err)
-	width := (private.Curve.Params().BitSize + 7) / 8
-	signature := make([]byte, 2*width)
-	r.FillBytes(signature[:width])
-	s.FillBytes(signature[width:])
-	token := signingInput + "." + encode(signature)
+	keyPath := writeECDSATestKey(t, private, "p521.pem")
+	token := signES512TestToken(t, private, "p521")
 
 	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
 	require.NoError(t, err)
@@ -244,6 +231,50 @@ func TestJWTInspectAcceptsAP521KeyForES512(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	require.Equal(t, true, result["signatureValid"],
 		"inspection accepts the verification key families supported by the production verifier")
+}
+
+func TestJWTInspectRejectsES512WithAP256Key(t *testing.T) {
+	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	keyPath := writeECDSATestKey(t, private, "p256.pem")
+	token := signES512TestToken(t, private, "p256")
+	parsed, err := jwt.ParseString(token)
+	require.NoError(t, err)
+	require.NoError(t, parsed.VerifySignature([]jwa.Algorithm{jwa.ES512}, map[string]any{"p256": &private.PublicKey}),
+		"the JOSE verifier accepts the cryptographic signature, so inspection must enforce the JWA curve contract")
+
+	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, false, result["signatureValid"],
+		"inspection must reject a curve and algorithm combination the production verifier refuses")
+}
+
+func writeECDSATestKey(t *testing.T, private *ecdsa.PrivateKey, name string) string {
+	t.Helper()
+
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
+	return path
+}
+
+func signES512TestToken(t *testing.T, private *ecdsa.PrivateKey, kid string) string {
+	t.Helper()
+
+	encode := base64.RawURLEncoding.EncodeToString
+	signingInput := encode(fmt.Appendf(nil, `{"alg":"ES512","kid":%q}`, kid)) + "." + encode([]byte(`{"sub":"worker"}`))
+	digest := sha512.Sum512([]byte(signingInput))
+	r, s, err := ecdsa.Sign(rand.Reader, private, digest[:])
+	require.NoError(t, err)
+	const width = 66 // ES512's fixed-width P-521 coordinates, including zero padding.
+	signature := make([]byte, 2*width)
+	r.FillBytes(signature[:width])
+	s.FillBytes(signature[width:])
+	return signingInput + "." + encode(signature)
 }
 
 // TestJWTInspectVerifiesByTheTokensOwnKeyIDNotTheKeyFileName is the regression
