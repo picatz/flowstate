@@ -1039,14 +1039,21 @@ tenant's namespace (`FlowstateServer`'s `Priority{FairnessKey: namespace}` —
 so it covers every task a run goes on to schedule and survives
 Continue-As-New. That part is verified and correctly wired.
 
-What it is **not** is a verified enforcement guarantee. Temporal marks
-`Priority`/fairness as an experimental SDK feature, and whether the key
-actually changes scheduling order — versus being carried and ignored — is a
-property of your Temporal server version and configuration, not of anything
-Flowstate controls. The honest claim is: **the key is set correctly; whether
-it is enforced is a property of your Temporal deployment.** Don't take "we set
-a fairness key" as "one tenant cannot crowd out another" without checking
-your Temporal version's fairness support.
+Temporal made Task Queue Priority and Fairness GA in Server 1.31. Priority is
+enabled by default there; Fairness is not. A self-hosted deployment enables it
+with `matching.enableFairness: true` at task-queue, namespace, or cluster scope.
+Temporal Cloud enables it per namespace, where it is a paid feature. Flowstate
+does not change either setting.
+
+This is still **not** an isolation guarantee. Fairness is weighted and
+approximate within each Task Queue partition, does not account for tasks already
+dispatched to workers, and is not guaranteed across Worker Deployment versions.
+Flowstate supplies the authenticated tenant as the key and leaves its weight at
+Temporal's default; deployment-side weight overrides and per-key rate limits
+remain operator controls. The honest claim is: **the key is set correctly;
+whether and how it is enforced is a property of your Temporal deployment.**
+Don't take "we set a fairness key" as "one tenant cannot crowd out another"
+without Server 1.31+ and Fairness enabled.
 
 For the volume dimension — one tenant submitting so many runs that Temporal
 itself falls over, as opposed to one tenant's runs sitting ahead of another's
