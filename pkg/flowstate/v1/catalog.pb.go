@@ -21,7 +21,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Task represents a specific operation that can be performed within a workflow as a node step.
 // TaskCatalog is what this build can execute, described so that something other
 // than a person can read it.
 //
