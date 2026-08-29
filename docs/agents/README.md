@@ -14,7 +14,7 @@ software rather than prose for checks that can be deterministic.
 | `.agents/skills/*/SKILL.md` | Portable task workflows for Amp and Codex | Name and description are advertised; the body loads when selected |
 | `.claude/skills/*/SKILL.md` | Claude Code mirrors of the portable skills | The body loads when selected |
 | `.claude/settings.json` | Claude-specific hooks and permission-time controls | Enforced by Claude Code |
-| `.amp/settings.json` | Amp workspace permissions for risky shell actions | Applied by Amp in this repository |
+| `.amp/settings.json` | Amp workspace permissions for high-impact or destructive actions | Applied by Amp in this repository |
 | `.agents/setup` / `.agents/resume` | Amp Orb provisioning and wake behavior | Run by the Orb lifecycle |
 | `AGENT_FIELD_NOTES.md` | Small index of historical guidance | Never imported; used to locate one relevant archive |
 | `AGENT_FIELD_NOTES_LEGACY.md` and `.agent-history/` | Byte-preserved legacy guidance and skill bodies | Historical reference, loaded only for a concrete question |
@@ -86,10 +86,15 @@ and whether a deterministic mechanism can prevent it more reliably.
 - `.agents/setup` provisions the pinned toolchain and dependencies for a fresh
   Orb. `.agents/resume` stays fast because Flowstate has no persistent backing
   service or authentication state to repair on wake.
-- `.amp/settings.json` adds explicit approval prompts before shell commands that
-  push, merge, release, or destructively rewrite local state.
-  It does not make Claude hooks portable; an Amp-specific control must be added
-  when a Claude hook protects behavior that Amp also needs to enforce.
+- Flowstate intentionally lets Amp perform routine reversible repository work
+  autonomously, including pushing branches and creating or updating pull
+  requests, issues, and review comments. `.amp/settings.json` reserves approval
+  prompts for high-impact actions such as merging, publishing releases, or
+  destructively rewriting local state. Broader permission examples can be kept
+  in documentation if a future project needs a stricter posture; they are not
+  the default here.
+- Amp-specific controls do not make Claude hooks portable; add an Amp control
+  only when a behavior genuinely needs enforcement on that host.
 
 ### Claude Code
 
