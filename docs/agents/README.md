@@ -18,7 +18,7 @@ software rather than prose for checks that can be deterministic.
 | `.agents/setup` / `.agents/resume` | Amp Orb provisioning and wake behavior | Run by the Orb lifecycle |
 | `AGENT_FIELD_NOTES.md` | Small index of historical guidance | Never imported; used to locate one relevant archive |
 | `AGENT_FIELD_NOTES_LEGACY.md` and `.agent-history/` | Byte-preserved legacy guidance and skill bodies | Historical reference, loaded only for a concrete question |
-| `tools/agentconfig` | Structural tests for this configuration | Run by the Go test suite and repository gate |
+| `tools/agentconfig` | Structural tests for this configuration | Run by the full Go test suite; diff-scoped coverage for all agent-config-only paths is tracked in #1222 |
 
 This follows each host's current discovery contract:
 
@@ -52,6 +52,10 @@ and run:
 ```sh
 go test ./tools/agentconfig
 ```
+
+Until #1222 lands, run that command explicitly for agent-configuration-only
+changes; the diff-scoped gate does not yet map every `.agents/`, `.claude/`,
+`.amp/`, archive, and adapter path to this structural package.
 
 The test is the mechanism that prevents the two copies from becoming competing
 sources of truth.
