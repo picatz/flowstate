@@ -1,20 +1,21 @@
-# Release publication is deliberately manual. A dry run builds the complete
-# payload without granting a write token, minting attestations, creating a tag,
-# or creating a release. Publication additionally requires the repository
-# variable RELEASES_ENABLED=true and the protected `release` environment. The
-# owner should set that variable only after immutable releases and an environment
-# with a required reviewer (self-review disabled) are configured.
-name: Release
+# Flowstate is intentionally super-alpha. This manual workflow is an internal
+# reproducibility and portability rehearsal, not a supported distribution or a
+# release schedule. Its enabled path only builds an ephemeral payload: it grants
+# no write token, mints no attestations, and creates neither a tag nor a release.
+# The reserved publication job is hard-disabled with a literal false condition;
+# enabling it requires a future reviewed code change after the project has made
+# its versioning, compatibility, migration, support, and readiness decisions.
+name: Distribution rehearsal
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to stamp (vX.Y.Z or a SemVer prerelease)
+        description: Ephemeral SemVer-shaped build label; not a versioning decision
         required: true
         type: string
       publish:
-        description: Publish the existing version tag after building it
+        description: Reserved for a future owner-authorized release decision; keep false
         required: true
         default: false
         type: boolean
@@ -104,18 +105,20 @@ jobs:
           retention-days: 14
 
   publication-disabled:
-    if: inputs.publish && vars.RELEASES_ENABLED != 'true'
+    if: inputs.publish
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Explain the publication interlock
         run: |
-          echo "::error::publication is disabled; configure immutable releases and the protected release environment, then set RELEASES_ENABLED=true"
+          echo "::error::publication is intentionally disabled during super-alpha; a future owner-authorized code change must enable it"
           exit 1
 
   publish:
-    if: inputs.publish && vars.RELEASES_ENABLED == 'true'
+    # Literal false is load-bearing: a repository variable or environment
+    # change alone cannot turn this rehearsal into a release mechanism.
+    if: false && inputs.publish && vars.RELEASES_ENABLED == 'true'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15

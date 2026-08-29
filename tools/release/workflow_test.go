@@ -36,7 +36,7 @@ func TestReleaseWorkflowKeepsPublicationBehindBothInterlocks(t *testing.T) {
 	if !ok {
 		t.Fatal("release workflow has no publish job")
 	}
-	if publish.If != "inputs.publish && vars.RELEASES_ENABLED == 'true'" {
+	if publish.If != "false && inputs.publish && vars.RELEASES_ENABLED == 'true'" {
 		t.Fatalf("publish condition = %q", publish.If)
 	}
 	if publish.Environment != "release" {
@@ -59,7 +59,7 @@ func TestReleaseWorkflowKeepsPublicationBehindBothInterlocks(t *testing.T) {
 	if !ok {
 		t.Fatal("a disabled publication request would silently succeed")
 	}
-	if disabled.If != "inputs.publish && vars.RELEASES_ENABLED != 'true'" {
+	if disabled.If != "inputs.publish" {
 		t.Fatalf("publication-disabled condition = %q", disabled.If)
 	}
 }
