@@ -44,6 +44,37 @@ func TestParseTargets(t *testing.T) {
 	}
 }
 
+func TestReleaseBuildEnvironmentPinsGoInputs(t *testing.T) {
+	t.Setenv("GOENV", "/tmp/host-goenv")
+	t.Setenv("GOFLAGS", "-tags=host")
+	t.Setenv("GOWORK", "/tmp/host.work")
+	t.Setenv("GOAMD64", "v4")
+	t.Setenv("GOARM64", "v9.0")
+
+	environment := releaseBuildEnvironment(target{OS: "linux", Arch: "amd64"})
+	values := make(map[string][]string)
+	for _, entry := range environment {
+		name, value, _ := strings.Cut(entry, "=")
+		values[name] = append(values[name], value)
+	}
+	for name, want := range map[string]string{
+		"CGO_ENABLED": "0",
+		"GOARCH":      "amd64",
+		"GOAMD64":     "v1",
+		"GOENV":       "off",
+		"GOFLAGS":     "",
+		"GOOS":        "linux",
+		"GOWORK":      "off",
+	} {
+		if got := values[name]; len(got) != 1 || got[0] != want {
+			t.Errorf("%s values = %q, want [%q]", name, got, want)
+		}
+	}
+	if got := values["GOARM64"]; len(got) != 0 {
+		t.Errorf("GOARM64 values = %q, want none for amd64 target", got)
+	}
+}
+
 func TestArchivesAreDeterministicAndCarryTheReleaseFiles(t *testing.T) {
 	directory := t.TempDir()
 	files := []archiveFile{

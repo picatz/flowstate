@@ -73,6 +73,7 @@ func run(cfg config) error {
 	if len(cfg.targets) == 0 {
 		return errors.New("at least one target is required")
 	}
+	cfg.output = filepath.Clean(cfg.output)
 	if _, err := os.Stat("go.mod"); err != nil {
 		return fmt.Errorf("run from the repository root: %w", err)
 	}
@@ -128,7 +129,7 @@ func buildTarget(staging, version string, target target, license []byte) error {
 
 	cmd := exec.Command("go", "build", "-buildvcs=true", "-trimpath", "-mod=readonly",
 		"-ldflags=-s -w -X main.version="+version, "-o", binaryPath, "./cmd/flow")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+target.OS, "GOARCH="+target.Arch)
+	cmd.Env = releaseBuildEnvironment(target)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -151,6 +152,41 @@ func buildTarget(staging, version string, target target, license []byte) error {
 		return writeZIP(archivePath, files)
 	}
 	return writeTarGz(archivePath, files)
+}
+
+func releaseBuildEnvironment(target target) []string {
+	overridden := map[string]bool{
+		"CGO_ENABLED": true,
+		"GOARCH":      true,
+		"GOARM64":     true,
+		"GOAMD64":     true,
+		"GOENV":       true,
+		"GOFLAGS":     true,
+		"GOOS":        true,
+		"GOWORK":      true,
+	}
+	environment := make([]string, 0, len(os.Environ())+6)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !overridden[name] {
+			environment = append(environment, entry)
+		}
+	}
+	environment = append(environment,
+		"CGO_ENABLED=0",
+		"GOARCH="+target.Arch,
+		"GOENV=off",
+		"GOFLAGS=",
+		"GOOS="+target.OS,
+		"GOWORK=off",
+	)
+	switch target.Arch {
+	case "amd64":
+		environment = append(environment, "GOAMD64=v1")
+	case "arm64":
+		environment = append(environment, "GOARM64=v8.0")
+	}
+	return environment
 }
 
 func parseTargets(value string) ([]target, error) {
