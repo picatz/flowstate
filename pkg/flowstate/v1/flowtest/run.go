@@ -225,8 +225,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		l, identity := loaderFor(&test)
+		caseCtx := ctx
+		cancel := func() {}
+		if opts.Debugger == nil {
+			caseCtx, cancel = caseContextWithin(ctx, maxCaseWallTime)
+		}
 
-		result, spec, transcript, account := schedules.run(ctx,
+		result, spec, transcript, account := schedules.run(caseCtx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
 				// The account is recorded only for runs whose account is
 				// kept. Under an exploring budget, [scheduleAccumulator.run]
@@ -241,13 +246,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// invocations (Codex, #1052, twice).
 				record := !opts.skipTranscript &&
 					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
-				if opts.Debugger == nil {
-					return runCaseWithin(ctx, &test, l.deliveryPath, l.load, record,
-						fileVars{values: file.Vars, withheld: file.varsWithheld}, maxCaseWallTime)
-				}
 				return runCase(ctx, &test, l.deliveryPath, l.load, record,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
+		cancel()
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
@@ -515,13 +517,11 @@ func RunSourceWith(ctx context.Context, label string, workflowSource, testSource
 	})
 }
 
-// runCaseWithin gives one non-interactive case its own real-time backstop.
-func runCaseWithin(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars, wallTime time.Duration) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
-	ctx, cancel := context.WithTimeoutCause(base, wallTime,
+// caseContextWithin gives every schedule explored for one non-interactive case
+// a shared real-time backstop.
+func caseContextWithin(base context.Context, wallTime time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(base, wallTime,
 		fmt.Errorf("%w after %s", errCaseWallTime, wallTime))
-	defer cancel()
-
-	return runCase(ctx, test, deliveryPath, load, record, vars)
 }
 
 // runCase runs one test and reports its verdict. load resolves the workflow
