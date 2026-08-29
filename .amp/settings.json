@@ -5,7 +5,6 @@
       "tool": "Bash",
       "matches": {
         "cmd": [
-          "*git*push*",
           "*gh*pr*merge*",
           "*gh*release*"
         ]
