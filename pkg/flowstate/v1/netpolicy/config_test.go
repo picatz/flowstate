@@ -272,3 +272,24 @@ func TestConfigRefusesAnEmptyAllowlist(t *testing.T) {
 		t.Fatalf("an empty deny list was refused, though absent and empty deny the same nothing: %v", err)
 	}
 }
+
+func TestParseConfigRefusesANullAllowlist(t *testing.T) {
+	t.Parallel()
+
+	for name, doc := range map[string]string{
+		"schemes":          "egress:\n  schemes: null\n",
+		"allow_networks":   "egress:\n  allow_networks:\n",
+		"allow_ports":      "egress:\n  allow_ports: null\n",
+		"allow":            "egress:\n  allow:\n",
+		"allow_json":       `{"egress":{"allow":null}}`,
+		"allow_ports_json": `{"egress":{"allow_ports":null}}`,
+	} {
+		_, err := ParseConfig([]byte(doc))
+		if err == nil {
+			t.Fatalf("%s: a null allowlist was read as absent, silently widening the policy", name)
+		}
+		if !strings.Contains(err.Error(), strings.TrimSuffix(name, "_json")) {
+			t.Fatalf("%s: the error does not name the null field: %v", name, err)
+		}
+	}
+}
