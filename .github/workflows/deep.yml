@@ -712,7 +712,7 @@ jobs:
         run: |
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
-          if grep -q 'a coroutine started by engine.startAsync was never joined' goroutineleak.log; then
+          if grep -qF 'a coroutine started by engine.startAsync was never joined' goroutineleak.log; then
             title="deep-tier: async coroutine leak detected"
             finding="The weekly deep tier's goroutine leak check found a coroutine started by \`engine.startAsync\` (pkg/flowstate/v1/engine/async.go) that the runtime can prove will never run again."
           else
@@ -743,7 +743,7 @@ jobs:
           } > "$body"
           gh issue create --title "$title" --label deep-tier --body-file "$body"
 
-      - name: A leak fails the job
+      - name: A failed leak check fails the job
         if: steps.leakcheck.outcome == 'failure'
         run: |
           echo "::error::the goroutine leak check failed; its issue distinguishes a reported leak from a harness or toolchain failure"
