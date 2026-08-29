@@ -755,6 +755,13 @@ type sensitiveInputs struct {
 // shape the backstop exists for.
 const minSensitiveSubstringRunes = 2
 
+// maxSensitiveSubstringRedactionWork bounds the bytes inspected while
+// redacting one rendered value. The strings being searched and the text being
+// searched are both controlled by a submitted test, so bounding either one
+// alone does not bound their product. When the estimate exceeds this limit,
+// [redactSensitiveSubstrings] withholds the complete value instead.
+const maxSensitiveSubstringRedactionWork = 1 << 20
+
 // maxSensitiveDescendants bounds how many values one invocation's redaction
 // set may hold, counting both what the walk below has collected and what it
 // still has queued. The queue is counted because it is memory the same input
@@ -993,50 +1000,62 @@ func redactSensitiveSubstrings(rendered string, substrings []string) string {
 	// both partial leaks, the second one whatever you sort by (Codex, #1052).
 	// A union of matches has no order to get wrong. One site, so the stub
 	// diagnostics and the transcript share the answer.
-	type span struct{ start, end int }
-	var spans []span
+	// Deduplicate before accounting for work. Structured sensitive inputs may
+	// contain the same leaf hundreds of times; searching once has exactly the
+	// same redaction result and prevents duplicates multiplying the cost.
+	unique := make(map[string]struct{}, len(substrings))
 	for _, s := range substrings {
-		if s == "" {
+		if s == "" || len(s) > len(rendered) {
 			continue
 		}
+		unique[s] = struct{}{}
+	}
+	if len(rendered) != 0 && len(unique) > maxSensitiveSubstringRedactionWork/len(rendered) {
+		return sensitiveMarker
+	}
+
+	// A byte mask is bounded by the rendered value itself. Recording a span
+	// for every overlapping match is not: a short repeated secret in a long
+	// string can otherwise materialize one allocation per byte per secret.
+	redacted := make([]bool, len(rendered))
+	found := false
+	for s := range unique {
+		coveredEnd := 0
 		for from := 0; from <= len(rendered)-len(s); {
 			i := strings.Index(rendered[from:], s)
 			if i < 0 {
 				break
 			}
 			start := from + i
-			spans = append(spans, span{start: start, end: start + len(s)})
+			// Matches for one substring arrive in start order. Only mark the
+			// suffix this match adds, so a long self-overlapping substring
+			// cannot turn the marking pass into quadratic work.
+			for i := max(start, coveredEnd); i < start+len(s); i++ {
+				redacted[i] = true
+			}
+			coveredEnd = max(coveredEnd, start+len(s))
+			found = true
 			// Advance one byte, not one match length: self-overlapping
 			// matches ("aa" across "aaa") must all enter the union.
 			from = start + 1
 		}
 	}
-	if len(spans) == 0 {
+	if !found {
 		return rendered
 	}
 
-	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
-
 	var b strings.Builder
-	prev := 0
-	current := spans[0]
-	flush := func() {
-		b.WriteString(rendered[prev:current.start])
-		b.WriteString(sensitiveMarker)
-		prev = current.end
-	}
-	for _, sp := range spans[1:] {
-		if sp.start <= current.end {
-			if sp.end > current.end {
-				current.end = sp.end
-			}
+	for i := 0; i < len(rendered); {
+		if !redacted[i] {
+			b.WriteByte(rendered[i])
+			i++
 			continue
 		}
-		flush()
-		current = sp
+		b.WriteString(sensitiveMarker)
+		for i < len(rendered) && redacted[i] {
+			i++
+		}
 	}
-	flush()
-	b.WriteString(rendered[prev:])
 	return b.String()
 }
 

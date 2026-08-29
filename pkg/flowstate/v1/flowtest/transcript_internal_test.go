@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +176,29 @@ func TestIntersectingSensitiveSubstringsRedactWhole(t *testing.T) {
 
 	require.Equal(t, "[redacted]", redactSensitiveSubstrings("aaa", []string{"aa"}),
 		"self-overlapping matches all enter the union")
+}
+
+// TestSensitiveSubstringRedactionBoundsAttackerShapedWork pins the MCP
+// denial-of-service regression: duplicate short descendants used to create
+// one span per overlapping match, per duplicate, before any spans were
+// merged. Duplicate values now cost one search, while too many distinct
+// searches fail closed before scanning attacker-controlled text repeatedly.
+func TestSensitiveSubstringRedactionBoundsAttackerShapedWork(t *testing.T) {
+	t.Parallel()
+
+	rendered := strings.Repeat("a", 100_000)
+	duplicates := make([]string, 1024)
+	for i := range duplicates {
+		duplicates[i] = "aa"
+	}
+	require.Equal(t, sensitiveMarker, redactSensitiveSubstrings(rendered, duplicates))
+
+	distinct := make([]string, 11)
+	for i := range distinct {
+		distinct[i] = fmt.Sprintf("secret-%d", i)
+	}
+	require.Equal(t, sensitiveMarker, redactSensitiveSubstrings(rendered, distinct),
+		"work above the bound must withhold the complete value")
 }
 
 // TestSuiteTranscriptBudgetDropsWithASentence pins round thirteen's P1:
