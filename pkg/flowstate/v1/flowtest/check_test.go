@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,128 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
+
+// TestCheckBounds pins both sides of the check amplification bound: defaults
+// are refused before they can be copied into every case, and the effective
+// list is refused when individually valid defaults and case claims combine.
+func TestCheckBounds(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		defaultChecks int
+		caseChecks    int
+		want          string
+	}{
+		{name: "defaults before multiplication", defaultChecks: flowtest.MaxChecksPerTest + 1, want: "defaults"},
+		{name: "effective case after merge", defaultChecks: flowtest.MaxChecksPerTest, caseChecks: 1, want: `test "a case"`},
+		{name: "case claims", caseChecks: flowtest.MaxChecksPerTest + 1, want: `test "a case"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var b strings.Builder
+			if tc.defaultChecks > 0 {
+				b.WriteString("defaults:\n  check:\n")
+				for range tc.defaultChecks {
+					b.WriteString("    - true\n")
+				}
+			}
+			b.WriteString("tests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect:\n")
+			if tc.caseChecks == 0 {
+				b.WriteString("      {}\n")
+			} else {
+				b.WriteString("      check:\n")
+				for range tc.caseChecks {
+					b.WriteString("        - true\n")
+				}
+			}
+
+			_, err := flowtest.LoadSource([]byte(b.String()))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.want)
+			require.Contains(t, err.Error(), fmt.Sprintf("%d checks", flowtest.MaxChecksPerTest+1))
+			require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxChecksPerTest))
+		})
+	}
+}
+
+func TestTableCheckBoundsRunBeforeRowsAreExpanded(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		entryChecks int
+		rowChecks   int
+		rows        int
+		want        string
+	}{
+		{
+			name:        "entry before row multiplication",
+			entryChecks: flowtest.MaxChecksPerTest + 1,
+			rows:        flowtest.MaxTestsPerFile,
+			want:        "table entry",
+		},
+		{
+			name:        "effective row after entry merge",
+			entryChecks: flowtest.MaxChecksPerTest,
+			rowChecks:   1,
+			rows:        1,
+			want:        "after its table entry is applied",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var b strings.Builder
+			b.WriteString("tests:\n  - name: a table\n    workflow: ./workflow.yaml\n    expect:\n      check:\n")
+			for range tc.entryChecks {
+				b.WriteString("        - true\n")
+			}
+			b.WriteString("    cases:\n")
+			for i := range tc.rows {
+				fmt.Fprintf(&b, "      - name: row-%d\n", i)
+				if tc.rowChecks > 0 {
+					b.WriteString("        expect:\n          check:\n")
+					for range tc.rowChecks {
+						b.WriteString("            - true\n")
+					}
+				}
+			}
+
+			_, err := flowtest.LoadSource([]byte(b.String()))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.want)
+			require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxChecksPerTest))
+		})
+	}
+}
+
+// TestAggregateTableBoundsRunBeforeChecksAreCloned pins the file-wide side of
+// the table bound. Each entry and row is individually legal, but expanding all
+// of them would copy the entry's checks far past the number of cases one file
+// may run.
+func TestAggregateTableBoundsRunBeforeChecksAreCloned(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString("tests:\n")
+	for entry := range 3 {
+		fmt.Fprintf(&b, "  - name: table-%d\n    workflow: ./workflow.yaml\n    expect:\n      check:\n", entry)
+		for range flowtest.MaxChecksPerTest {
+			b.WriteString("        - true\n")
+		}
+		b.WriteString("    cases:\n")
+		for row := range flowtest.MaxTestsPerFile / 2 {
+			fmt.Fprintf(&b, "      - name: row-%d\n", row)
+		}
+	}
+
+	_, err := flowtest.LoadSource([]byte(b.String()))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "750 cases once its `cases:` rows are counted")
+	require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxTestsPerFile))
+}
 
 // `expect.check:` (#1072): CEL claims over the finished run, witnessed on
 // failure — the values a red claim read, printed beside it, redacted through
