@@ -1,21 +1,35 @@
 # Flowstate
 
-**Declare reliable workloads in YAML + CEL, rehearse them locally, then run the
-same typed specification durably on Temporal.**
+**Author, validate, and rehearse reliable workflows on your machine—then submit
+the same workflow for governed, durable execution on Temporal.**
 
-Flowstate turns a readable `Flowfile` into a validated Protobuf specification.
-Use it for one local task, a parallel data pipeline, an operational runbook, or a
-long-running process with retries, timers, signals, compensation, policy, and
-an audit trail.
+Flowstate is for developers whose automation has outgrown a script, and for the
+teams responsible for running that automation safely. Model data pipelines,
+infrastructure changes, operational runbooks, approval gates, and long-running
+integrations with retries, timers, signals, and compensation. Authors get a fast
+local loop; platform, operations, and security teams get typed contracts,
+identity, policy, secrets, and audit at the shared execution boundary.
 
-- **Fast authoring loop.** Validate, inspect, test, and run in one process before
-  starting infrastructure.
-- **One execution model.** Local and Temporal drivers share step execution and
-  return the same result shape; Temporal adds persistence, recovery, and durable
-  timers.
-- **Governed extension.** Typed plugins, workload identity, secret references,
-  and CEL policy extend capability without moving trust decisions into each
-  workflow.
+Flowstate complements CI systems, services, and orchestrators rather than asking
+one tool to replace them. CI can build and test; services and typed tasks perform
+domain work; Temporal supplies durable execution. Flowstate owns the declarative
+coordination between them, so work can start as one developer's local automation
+and move to a team-operated durable run without a second workflow definition.
+
+The mechanism is a readable `Flowfile`: YAML for structure and cost-bounded CEL
+for data flow and policy. Flowstate validates and compiles it into a typed,
+versioned Protobuf contract. The local and Temporal drivers execute that same
+contract through the same step executor; Temporal adds persistence, recovery,
+durable waits, and signals.
+
+**Start here:** [try the local quickstart](#quickstart), browse
+[validated examples](examples/README.md), or read the [architecture](docs/ARCHITECTURE.md)
+and [deployment guide](docs/DEPLOYMENT.md) before operating a shared service.
+
+> [!WARNING]
+> Flowstate is super-alpha software. Expect breaking changes and evaluate it
+> accordingly; the capabilities described below are shipped today, but the
+> interfaces are not yet stable.
 
 [YAML]: https://yaml.org/
 [CEL]: https://cel.dev/
@@ -25,7 +39,9 @@ an audit trail.
 ## A Flowfile
 
 This complete workflow accepts typed inputs, uses CEL to shape data, processes a
-bounded worklist concurrently, and publishes typed outputs:
+bounded worklist, and publishes typed outputs. A durable run uses `max_parallel`
+to process up to three items concurrently; the local driver runs those same
+iterations sequentially for deterministic rehearsal:
 
 ```yaml
 edition: v2026.3
@@ -126,8 +142,8 @@ flowchart TB
   Check --> Spec["Workflow protobuf<br/>typed and frozen"]
   Spec --> Local["local driver<br/>in process"]
   Spec --> API["ConnectRPC API"]
-  API --> Temporal[("Temporal")]
-  Temporal --> Worker["Flowstate worker"]
+  API <--> Temporal[("Temporal")]
+  Temporal <--> Worker["Flowstate worker"]
   Registry["task registry<br/>built-ins + plugins"] --> Local
   Registry --> Worker
   Policy["identity · policy · secrets"] -. constrains .-> API
@@ -140,8 +156,10 @@ flowchart TB
 The Flowfile is authoring syntax; the compiled `flowstate.v1.Workflow` is the
 execution contract. Both drivers interpret that contract through the same step
 executor. Local execution is intentionally ephemeral. A Temporal run adds durable
-history, retry and timer recovery, signals, Continue-As-New, and interpreter
-version pinning. See [Architecture](docs/ARCHITECTURE.md) for the invariants and
+history, retry and timer recovery, signals, and Continue-As-New; a versioned
+production worker also pins the interpreter used by an in-flight run. The API
+starts and observes runs through Temporal, while workers poll and complete their
+work through it. See [Architecture](docs/ARCHITECTURE.md) for the invariants and
 the precise parity boundary.
 
 ## Quickstart
@@ -152,8 +170,9 @@ Install the current CLI with Go:
 $ go install github.com/picatz/flowstate/cmd/flow@latest
 ```
 
-This installs `flow` in `$(go env GOPATH)/bin`. From a repository checkout, each
-command below may instead be written as `go run ./cmd/flow ...`.
+This installs `flow` in `$(go env GOBIN)` when `GOBIN` is set, otherwise in
+`$(go env GOPATH)/bin`. From a repository checkout, each command below may
+instead be written as `go run ./cmd/flow ...`.
 
 ### 1. Scaffold and inspect
 
