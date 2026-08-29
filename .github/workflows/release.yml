@@ -151,8 +151,14 @@ jobs:
             exit 1
           fi
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
-            echo "::error::release $RELEASE_VERSION already exists"
-            exit 1
+            read -r is_draft author < <(gh release view "$RELEASE_VERSION" --json isDraft,author --jq '[.isDraft, .author.login] | @tsv')
+            if [[ "$is_draft" != "true" || "$author" != "github-actions[bot]" ]]; then
+              echo "::error::release $RELEASE_VERSION already exists and is not a draft created by this workflow"
+              exit 1
+            fi
+            echo "RESUME_DRAFT=true" >> "$GITHUB_ENV"
+          else
+            echo "RESUME_DRAFT=false" >> "$GITHUB_ENV"
           fi
 
       - name: Download the exact same-run payload
@@ -185,13 +191,24 @@ jobs:
           if [[ "$RELEASE_VERSION" == *-* ]]; then
             prerelease=(--prerelease)
           fi
-          gh release create "$RELEASE_VERSION" \
-            --verify-tag \
-            --draft \
-            --title "$RELEASE_VERSION" \
-            --generate-notes \
-            "${prerelease[@]}" \
-            dist/*
+          if [[ "$RESUME_DRAFT" == "true" ]]; then
+            unexpected=$(comm -23 \
+              <(gh release view "$RELEASE_VERSION" --json assets --jq '.assets[].name' | sort) \
+              <(find dist -maxdepth 1 -type f -printf '%f\n' | sort))
+            if [[ -n "$unexpected" ]]; then
+              echo "::error::workflow draft contains unexpected assets and will not be modified: $unexpected"
+              exit 1
+            fi
+            gh release upload "$RELEASE_VERSION" --clobber dist/*
+          else
+            gh release create "$RELEASE_VERSION" \
+              --verify-tag \
+              --draft \
+              --title "$RELEASE_VERSION" \
+              --generate-notes \
+              "${prerelease[@]}" \
+              dist/*
+          fi
 
           # A draft does not lock its tag. Fetch it once more after every asset
           # is attached and fail rather than publishing if it moved meanwhile.
