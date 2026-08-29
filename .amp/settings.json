@@ -1,0 +1,31 @@
+{
+  "amp.skills.disableClaudeCodeSkills": true,
+  "amp.permissions": [
+    {
+      "tool": "Bash",
+      "matches": {
+        "cmd": [
+          "*git*push*",
+          "*gh*pr*merge*",
+          "*gh*release*"
+        ]
+      },
+      "action": "ask"
+    },
+    {
+      "tool": "mcp__github__merge_pull_request",
+      "action": "ask"
+    },
+    {
+      "tool": "Bash",
+      "matches": {
+        "cmd": [
+          "*git*reset*--hard*",
+          "*git*clean*-f*",
+          "*rm*rf*"
+        ]
+      },
+      "action": "ask"
+    }
+  ]
+}
