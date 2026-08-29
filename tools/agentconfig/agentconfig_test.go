@@ -2,6 +2,7 @@ package agentconfig
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,6 +17,26 @@ const (
 	maxClaudeBytes     = 2 << 10
 	maxFieldIndexBytes = 4 << 10
 )
+
+// preservedGuidanceBlobs pins the exact bytes migrated from the base tree.
+// These are Git blob object IDs: SHA-1("blob <size>\x00" + file bytes). They are
+// provenance fingerprints, not a cryptographic security mechanism.
+var preservedGuidanceBlobs = []struct {
+	path   string
+	blobID string
+}{
+	{path: "AGENT_FIELD_NOTES_LEGACY.md", blobID: "1c89ae496958a04fdf5a863e97c07a183f7f4eb2"},
+	{path: ".agent-history/commands/both-drivers.md", blobID: "9e6c4035e3fcf6fdc3b5882b18e7c97c0b13b7eb"},
+	{path: ".agent-history/commands/ci-check.md", blobID: "0caf1ef08cf2ec870116d4fc1ff8357a25a4f6f7"},
+	{path: ".agent-history/commands/test-fast.md", blobID: "6313525eb392a4893459c2cf5c18dad3b703ea80"},
+	{path: ".agent-history/skills/comms-commit/SKILL.md", blobID: "1d0dcaf8ddf66d055c1bb18c1b3464a5be7e71ff"},
+	{path: ".agent-history/skills/comms-issue/SKILL.md", blobID: "7a62615da7475184b4094033ec30c5f6798cdda8"},
+	{path: ".agent-history/skills/comms-pr/SKILL.md", blobID: "ab0c5cae5fd9d3a7a09572b65d8a83177e6214c3"},
+	{path: ".agent-history/skills/comms-review/SKILL.md", blobID: "15e47d71407da1391fccac53771557179986a04a"},
+	{path: ".agent-history/skills/comms-session/SKILL.md", blobID: "4743327c120ecdca22439df06de97b20315e438a"},
+	{path: ".agent-history/skills/flowfile-style/SKILL.md", blobID: "fbc8e68093120fe3c1905a4af9e38be91a42df67"},
+	{path: ".agent-history/skills/pre-pr-review/SKILL.md", blobID: "1bd12a66c9f0831a7075837a8c7c14b2f4094a48"},
+}
 
 type ampPermission struct {
 	Tool    string         `json:"tool"`
@@ -76,6 +97,18 @@ func TestPortableSkillsMirrorClaude(t *testing.T) {
 			}
 			if strings.TrimSpace(meta["description"]) == "" {
 				t.Fatal("skill description is empty")
+			}
+		})
+	}
+}
+
+func TestArchivedGuidancePreservesMigratedBytes(t *testing.T) {
+	root := repoRoot(t)
+	for _, archived := range preservedGuidanceBlobs {
+		t.Run(archived.path, func(t *testing.T) {
+			data := read(t, filepath.Join(root, filepath.FromSlash(archived.path)))
+			if got := gitBlobID(data); got != archived.blobID {
+				t.Fatalf("archived guidance changed bytes: got Git blob %s, want %s", got, archived.blobID)
 			}
 		})
 	}
@@ -159,6 +192,13 @@ func hasAmpPermission(rules []ampPermission, tool, action, matchKey, matchValue 
 		}
 	}
 	return false
+}
+
+func gitBlobID(data []byte) string {
+	h := sha1.New()
+	_, _ = h.Write([]byte(fmt.Sprintf("blob %d\x00", len(data))))
+	_, _ = h.Write(data)
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func repoRoot(t *testing.T) string {
