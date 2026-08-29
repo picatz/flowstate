@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -25,6 +26,12 @@ import (
 // forgets this rule and asserts against `now == 0` fails immediately rather
 // than by accident continuing to pass.
 var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// maxCaseWallTime is a real-time backstop for a case that cannot make
+// progress on the virtual clock. In particular, an untimed signal wait with
+// no matching script has no virtual deadline to advance to and would
+// otherwise keep flow test blocked forever.
+const maxCaseWallTime = 30 * time.Second
 
 // RunFile runs every test in a `*.test.yaml`, returning one [v1.TestReport].
 //
@@ -150,6 +157,13 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // resolved against the test file's own directory ([DeliveryPath]); empty for every
 // other case and for [RunSource], which has no directory at all.
 func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
+	return runCaseWithin(test, deliveryPath, load, maxCaseWallTime)
+}
+
+// runCaseWithin is runCase with an explicit wall-clock backstop. Keeping the
+// duration at this seam lets the regression test prove the cancellation path
+// promptly without weakening the production limit.
+func runCaseWithin(test *Test, deliveryPath string, load func() (*v1.Workflow, error), wallTime time.Duration) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -208,7 +222,9 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 	}
 
 	clock := v1.NewVirtualClock(epoch)
-	ctx := v1.NewContextWithClock(context.Background(), clock)
+	ctx, cancel := context.WithTimeout(context.Background(), wallTime)
+	defer cancel()
+	ctx = v1.NewContextWithClock(ctx, clock)
 	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
 
 	// The run executes against its own registry, not the process-wide one:
@@ -337,6 +353,11 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
+	if errors.Is(runErr, context.DeadlineExceeded) {
+		transcript = outputs
+		result.Error = fmt.Sprintf("case exceeded the %s wall-clock limit", wallTime)
+		return
+	}
 
 	// The transcript coverage reads is the same one the verdict does. A failed
 	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
