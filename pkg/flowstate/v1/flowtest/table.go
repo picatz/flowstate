@@ -87,6 +87,13 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 
 			continue
 		}
+		if len(entry.Expect.Check) > MaxChecksPerTest {
+			p.report(site{test: entry.Name, at: where.field("expect").field("check")},
+				"test %q table entry declares %d checks, more than the limit of %d",
+				entry.Name, len(entry.Expect.Check), MaxChecksPerTest)
+
+			continue
+		}
 
 		for i, row := range entry.Cases {
 			rowWhere := where.field("cases").item(i)
@@ -99,6 +106,20 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 				p.report(site{test: entry.Name, at: rowWhere.field("cases")},
 					"test %q case %q declares its own `cases:`, and a table is one "+
 						"level deep; move the rows up, or split the entry in two", entry.Name, row.Name)
+
+				continue
+			}
+			if len(row.Expect.Check) > MaxChecksPerTest {
+				p.report(site{test: entry.Name + "/" + row.Name, at: rowWhere.field("expect").field("check")},
+					"test %q case %q declares %d checks, more than the limit of %d",
+					entry.Name, row.Name, len(row.Expect.Check), MaxChecksPerTest)
+
+				continue
+			}
+			if checks := len(entry.Expect.Check) + len(row.Expect.Check); checks > MaxChecksPerTest {
+				p.report(site{test: entry.Name + "/" + row.Name, at: rowWhere.field("expect").field("check")},
+					"test %q case %q declares %d checks after its table entry is applied, more than the limit of %d",
+					entry.Name, row.Name, checks, MaxChecksPerTest)
 
 				continue
 			}

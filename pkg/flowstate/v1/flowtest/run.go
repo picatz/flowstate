@@ -33,6 +33,12 @@ import (
 // than by accident continuing to pass.
 var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// maxCaseWallTime is the real-time backstop for a case whose virtual clock
+// cannot make progress, such as an untimed signal wait with no matching script.
+const maxCaseWallTime = 30 * time.Second
+
+var errCaseWallTime = errors.New("case wall-clock limit exceeded")
+
 // RunOptions is what a caller may vary about a suite run. The zero value is
 // the run every door has always performed: every case, written order only,
 // report labelled by whatever the door knows.
@@ -219,8 +225,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		l, identity := loaderFor(&test)
+		caseCtx := ctx
+		cancel := func() {}
+		if opts.Debugger == nil {
+			caseCtx, cancel = caseContextWithin(ctx, maxCaseWallTime)
+		}
 
-		result, spec, transcript, account := schedules.run(ctx,
+		result, spec, transcript, account := schedules.run(caseCtx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
 				// The account is recorded only for runs whose account is
 				// kept. Under an exploring budget, [scheduleAccumulator.run]
@@ -238,6 +249,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				return runCase(ctx, &test, l.deliveryPath, l.load, record,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
+		cancel()
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
@@ -503,6 +515,13 @@ func RunSourceWith(ctx context.Context, label string, workflowSource, testSource
 			deliveryPath: "",
 		}, label
 	})
+}
+
+// caseContextWithin gives every schedule explored for one non-interactive case
+// a shared real-time backstop.
+func caseContextWithin(base context.Context, wallTime time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(base, wallTime,
+		fmt.Errorf("%w after %s", errCaseWallTime, wallTime))
 }
 
 // runCase runs one test and reports its verdict. load resolves the workflow
@@ -911,6 +930,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// them (issue #453), and `expect.ran`/`expect.skipped` read the same record,
 	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
+	if errors.Is(context.Cause(ctx), errCaseWallTime) {
+		caseError("%s", context.Cause(ctx))
+		result.Passed = false
+
+		return
+	}
 
 	// An abandoned run is not a verdict about the workflow, whatever the case
 	// expected. `quit` ends the run wherever it stands, so a case declaring
