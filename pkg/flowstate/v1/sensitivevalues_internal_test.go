@@ -423,8 +423,13 @@ func TestSensitiveSubstringMatcherIsReusedAcrossATranscriptSizedRendering(t *tes
 	require.False(t, sensitive.WithholdAll())
 
 	line := strings.Repeat("x", 800)
-	for range 10_000 {
-		require.Equal(t, line, sensitive.RedactSubstrings(line))
+	for worker := range 8 {
+		t.Run(fmt.Sprintf("worker-%d", worker), func(t *testing.T) {
+			t.Parallel()
+			for range 1_250 {
+				require.Equal(t, line, sensitive.RedactSubstrings(line))
+			}
+		})
 	}
 }
 
