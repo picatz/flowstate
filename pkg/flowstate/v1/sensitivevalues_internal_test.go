@@ -317,6 +317,71 @@ func TestIntersectingSensitiveSubstringsRedactWhole(t *testing.T) {
 		"self-overlapping matches all enter the union")
 }
 
+func TestSensitiveSubstringMatcherPreservesTheUnionOfEveryMatch(t *testing.T) {
+	t.Parallel()
+
+	patternSets := [][]string{
+		{"ab", "bc"},
+		{"aa"},
+		{"ab", "abc"},
+		{"aba", "bab", "bc"},
+		{"", "ab", "ab"},
+	}
+	for _, patterns := range patternSets {
+		for length := range 7 {
+			count := 1
+			for range length {
+				count *= 3
+			}
+			for encoded := range count {
+				text := make([]byte, length)
+				value := encoded
+				for i := range text {
+					text[i] = "abc"[value%3]
+					value /= 3
+				}
+				want := referenceSensitiveSubstringRedaction(string(text), patterns)
+				require.Equal(t, want, redactSensitiveSubstrings(string(text), patterns),
+					"patterns %q over text %q", patterns, text)
+			}
+		}
+	}
+}
+
+func referenceSensitiveSubstringRedaction(text string, patterns []string) string {
+	redacted := make([]bool, len(text))
+	for _, pattern := range patterns {
+		if pattern == "" || len(pattern) > len(text) {
+			continue
+		}
+		for from := 0; from <= len(text)-len(pattern); {
+			offset := strings.Index(text[from:], pattern)
+			if offset < 0 {
+				break
+			}
+			start := from + offset
+			for i := start; i < start+len(pattern); i++ {
+				redacted[i] = true
+			}
+			from = start + 1
+		}
+	}
+
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		if !redacted[i] {
+			b.WriteByte(text[i])
+			i++
+			continue
+		}
+		b.WriteString(SensitiveMarker)
+		for i < len(text) && redacted[i] {
+			i++
+		}
+	}
+	return b.String()
+}
+
 func TestSensitiveSubstringRedactionBoundsAttackerShapedWork(t *testing.T) {
 	t.Parallel()
 
@@ -337,11 +402,30 @@ func TestSensitiveSubstringRedactionBoundsAttackerShapedWork(t *testing.T) {
 	for i := range distinct {
 		distinct[i] = fmt.Sprintf("secret-%d", i)
 	}
-	require.Equal(t, SensitiveMarker,
+	require.Equal(t, strings.Repeat("a", 100_000),
 		redactSensitiveSubstrings(strings.Repeat("a", 100_000), distinct),
-		"work beyond the bound must withhold the complete value")
+		"a multi-pattern matcher must scan the rendered value once")
+	require.Equal(t, SensitiveMarker,
+		redactSensitiveSubstrings(strings.Repeat("a", maxSensitiveSubstringRedactionWork+1), distinct),
+		"a rendered value past the absolute bound must be withheld")
 	require.Equal(t, "unchanged", redactSensitiveSubstrings("unchanged", nil),
 		"the common empty-set path must not allocate a redaction mask")
+}
+
+func TestSensitiveSubstringMatcherIsReusedAcrossATranscriptSizedRendering(t *testing.T) {
+	t.Parallel()
+
+	patterns := make([]string, maxSensitiveDescendants)
+	for i := range patterns {
+		patterns[i] = fmt.Sprintf("secret-%04d", i)
+	}
+	sensitive := SensitiveValues{}.WithValues(patterns...)
+	require.False(t, sensitive.WithholdAll())
+
+	line := strings.Repeat("x", 800)
+	for range 10_000 {
+		require.Equal(t, line, sensitive.RedactSubstrings(line))
+	}
 }
 
 // redactSensitiveTree redacted values at every depth but preserved map keys,
