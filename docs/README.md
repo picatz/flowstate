@@ -44,6 +44,7 @@ it.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The six layers, the invariants a change is checked against, and the tenancy, secret and plugin models. Read the invariants before a structural change. |
 | [VISION.md](VISION.md) | Intent that is *not built yet*, recorded so it survives the sessions that had it. |
 | [CI.md](CI.md) | What the three verification tiers run, what decides it, and the repository settings the design depends on. |
+| [agents/README.md](agents/README.md) | The shared Claude Code, Codex, and Amp configuration layers, where guidance lives, and the structural checks that keep them aligned. |
 
 ## Internal
 

@@ -1,0 +1,179 @@
+---
+name: comms-pr
+description: Write a PR body that explains what the diff cannot (why, decisions, testing, risks, omissions)
+---
+
+Audience: the owner deciding whether to merge, the reviewer (human or bot)
+deciding where to look, and the future reader who reaches this text through
+the merged PR.
+
+Purpose: the diff shows what changed. The body carries what the diff cannot
+show: why, the non-obvious decision, tradeoffs, testing, risks, and
+intentional omissions. Never narrate files.
+
+The governing rule: minimum receiver effort at the required fidelity; think
+as much as the task deserves, publish what the recipient needs.
+
+## What must survive
+
+- The decision this PR implements, with the issue and decision comment
+  named in the first sentence.
+- Any claim about the tree the diff cannot show: what was already true on
+  main, what is unreachable, what is deferred and why.
+- Proof of the tests' teeth: which mutation fails which case.
+- Which gate ran, and anything it caught on the way.
+- What was deliberately not done.
+
+## What must not appear
+
+- File-by-file narration. The diff already shows it.
+- Effort narration: exploration stories, tool-call counts. Twenty tool
+  calls do not justify twenty paragraphs.
+- The literary register of DSL.md. That voice belongs to durable doctrine,
+  not to a merge decision.
+
+## Shape
+
+One opening sentence tying the diff to its decision. A short section for
+any load-bearing claim about the tree. What landed, grouped by claim rather
+than by file. Gate status. What this unblocks or closes.
+
+## Examples (from PR #479, the exemplar)
+
+Opening sentence, decision first:
+
+> Slice 0.5 of #418, per the owner's decision comment (2026-08-11):
+> `undo:` unwinds in reverse *written* order, never reverse completion
+> order.
+
+A claim the diff cannot show, stated before the change list:
+
+> So the ordering is not reachable-nondeterministic on `main` today. What
+> was missing, and what this PR lands, is the *contract*: nothing pinned
+> parallel siblings' unwind order against a completion-order regression.
+
+A test bullet that carries its proof:
+
+> Mutation-tested: reversing the durable driver's merge loop fails this
+> case.
+
+## Show the surface that changed
+
+A diff shows every line and no shape. What a reader — human or agent —
+needs from a PR body is the shape: which of the surfaces they touch moved,
+and what it looks like now. So a PR that changes a surface shows that
+surface rather than describing the change to it.
+
+The surfaces worth showing are the ones somebody outside this diff
+consumes: the proto message or RPC, the CLI invocation and its output, the
+Flowfile spelling, a metric's name and attributes, an MCP tool's
+signature. Show the *after*, and show the *before* beside it only where
+the change is the difference between them — the paired before/after in
+#540 is what made that issue land, and the same device works here.
+
+    $ flow run local ./workflow.yaml --input tenant=acme
+    step  provision  ok    1.2s
+    outputs:
+      url  https://acme.example
+
+Where the change is control flow or a sequence across components, a
+mermaid diagram carries it in a way prose cannot, and GitHub renders it
+natively. Keep it to the components this diff touches; a diagram of the
+whole system is a diagram of nothing:
+
+```mermaid
+sequenceDiagram
+    participant CLI as flow run
+    participant W as worker
+    participant P as plugin
+    CLI->>W: Run(spec, inputs)
+    W->>P: Task(step, resolved inputs)
+    P-->>W: outputs + declared attributes
+    W-->>CLI: run outputs
+```
+
+Two limits. A diagram is not a substitute for the claim it illustrates —
+state the claim in a sentence, then draw it. And a sketch in a PR body is
+held to a stricter standard than one in an issue: the issue's sketch is a
+proposal and says so, while the PR's must match what actually landed,
+because the merged body is what the next reader trusts over the diff.
+
+## Failure modes
+
+- **The file tour**: bullets restating the diff per file. Delete them;
+  keep only what a reader cannot get from the diff.
+- **The effort diary**: paragraphs proving work happened. Reasoning depth
+  and publication verbosity are separate controls.
+- **The bare gate claim**: "all tests pass" without naming the gate that
+  ran or what it caught. #479's body names the first-run mirror failure it
+  hit and fixed; that sentence saved its reviewer a question.
+
+## Do not hard-wrap a GitHub body
+
+A GitHub issue body, pull request body, or comment renders single
+newlines as line breaks. A `.md` file in the repository does not: it
+follows CommonMark, where consecutive lines join into one paragraph.
+Same markdown, two renderers, and prose wrapped for one looks broken in
+the other.
+
+So the wrapping rule depends on where the text lands:
+
+- **Commit messages** wrap at 72 columns. The reader is `git log` in a
+  terminal, which does no wrapping of its own.
+- **Files in the repository**, including these skills and everything
+  under `docs/`, wrap at the width the file already uses. The renderer
+  joins the lines, and a diff of an unwrapped paragraph is unreadable.
+- **GitHub bodies and comments** are not wrapped at all. Write each
+  paragraph as one long line and let the browser wrap it to the reader's
+  width. A hard-wrapped paragraph shows every break as written, which on
+  a wide screen reads as ragged and truncated.
+
+Code blocks and tables are exempt everywhere: their line breaks are
+content, not formatting. Lists are exempt only in their structure. The
+break between one item and the next is structural and stays; the breaks
+*inside* an item's prose are formatting, and a bullet long enough to
+wrap renders as raggedly as a paragraph does. Keep each item's prose on
+one line, however long.
+
+The cost of getting this wrong is not aesthetic alone. A body that reads
+as broken invites the reader to skim it, and the parts of a PR body worth
+writing are the parts a diff cannot say.
+
+## Attribution footer
+
+Every GitHub post authored by a Claude agent (PR body, issue body, issue
+comment, review comment, review reply) ends with the attribution footer.
+The line an author writes, by hand, is the canonical form:
+
+    ---
+    _Generated by [Claude Code](https://claude.ai/code)_
+
+What actually lands on a post can differ from that. Checked against this
+repo's own merged history: issue comments on #490 carry the canonical
+`https://claude.ai/code` exactly as written above, but the PR bodies for
+#492 and #493 carry a session-specific link instead,
+`https://claude.ai/code/session_<id>`. The two forms are not byte-for-byte
+identical, so a canonical footer appended by hand alongside a
+session-specific one the server supplies would not dedupe against it. We
+cannot observe the server's dedup rule from here, so do not claim one; if
+you see two footers stacked on a post, that is the signal that they
+diverged, not a bug to explain away in advance.
+
+Do not hand-roll a smaller variant on these surfaces, even one that would
+read more quietly, such as `<sup>Generated by ...</sup>`. Where the repo
+controls the surface and no mandate applies, generated docs and artifact
+pages, the compact form
+`<sup><sub>Generated by [Claude Code](https://claude.ai/code)</sub></sup>` is
+the house style.
+
+The actual lever for keeping attribution unobtrusive is posting less often,
+not shrinking the marker. The pushed fix is the reply (see comms-review's
+bot-review loop). A round of review that produces a commit and no comment is
+the good outcome.
+
+## Self-check
+
+Could the owner merge from this body plus a skim of the diff? Does every
+paragraph say something the diff cannot? Is anything here already in the
+linked issue? Cut whatever fails. Does the post end with the canonical
+footer?
