@@ -109,6 +109,26 @@ func TestCommentFindsProse(t *testing.T) {
 	}
 }
 
+// A leading comment belongs to the declaration immediately below it. Presence
+// alone did not catch RunState's prose being copied above WorkloadIdentity,
+// where generated API documentation attributed both descriptions to the
+// identity message and left RunState unnamed.
+func TestStateAndIdentityCommentsNameTheirDeclaration(t *testing.T) {
+	for _, name := range []protoreflect.FullName{
+		"flowstate.v1.RunState",
+		"flowstate.v1.WorkloadIdentity",
+	} {
+		comment, ok := Comment(name)
+		if !ok {
+			t.Errorf("Comment(%q) = _, false; want prose", name)
+			continue
+		}
+		if want := string(name.Name()) + " "; !strings.HasPrefix(comment, want) {
+			t.Errorf("Comment(%q) starts with %q; want its own declaration name %q", name, FirstSentence(comment), name.Name())
+		}
+	}
+}
+
 // Fail closed: every way of asking for something that is not there answers the
 // same way, and none of them panics.
 func TestCommentFailsClosed(t *testing.T) {

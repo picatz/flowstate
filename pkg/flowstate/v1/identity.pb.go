@@ -22,9 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// RunState is the durable workflow state used by the Temporal Run entrypoint.
-// It allows the workflow to continue-as-new while carrying only the minimal
-// required subset of previously produced outputs for the remaining steps.
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
