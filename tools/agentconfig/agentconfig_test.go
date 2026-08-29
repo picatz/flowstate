@@ -114,6 +114,14 @@ func TestArchivedGuidancePreservesMigratedBytes(t *testing.T) {
 	}
 }
 
+func TestGitBlobIDNormalizesCheckoutLineEndings(t *testing.T) {
+	lf := []byte("first\nsecond\n")
+	crlf := []byte("first\r\nsecond\r\n")
+	if got, want := gitBlobID(crlf), gitBlobID(lf); got != want {
+		t.Fatalf("CRLF checkout hashed as %s; want canonical LF blob %s", got, want)
+	}
+}
+
 func TestReplacedGuidanceKeepsFieldNotes(t *testing.T) {
 	root := repoRoot(t)
 	for _, name := range []string{
@@ -194,7 +202,11 @@ func hasAmpPermission(rules []ampPermission, tool, action, matchKey, matchValue 
 	return false
 }
 
+// gitBlobID returns the Git blob identity of canonical repository text. Git may
+// materialize text files with CRLF on some worktrees; the pinned repository blobs
+// use LF, so normalize the checkout representation before constructing the blob.
 func gitBlobID(data []byte) string {
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	h := sha1.New()
 	_, _ = h.Write([]byte(fmt.Sprintf("blob %d\x00", len(data))))
 	_, _ = h.Write(data)
