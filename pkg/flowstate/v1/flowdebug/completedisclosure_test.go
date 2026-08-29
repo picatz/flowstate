@@ -52,7 +52,7 @@ func disclosureSession(t *testing.T, redact func(string) string) (console *askin
 	session, err := flowdebug.New(flowdebug.Options{
 		Console: console,
 		Out:     &out,
-		Steps:   []string{"leak", "after"},
+		Steps:   declared("disclosing", "leak", "after"),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })

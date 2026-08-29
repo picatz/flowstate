@@ -83,7 +83,9 @@ steps:
       # refuses is a file `flow run` fails on.
       backoff: 1.0
     http:
-      json: '${{"instructions": brief_prompt, "max_output_tokens": vars.token_budget * 2}}'
+      json:
+        instructions: ${brief_prompt}
+        max_output_tokens: ${vars.token_budget * 2}
       method: POST
       # Shaped rather than defaulted, so what travels on through this run is
       # three named values instead of a whole gateway response — and so
@@ -143,7 +145,9 @@ steps:
       # attempt to space out.
       backoff: 1.0
     http:
-      json: '${{"summary": steps.turn.summary, "patch": steps.turn.patch}}'
+      json:
+        summary: ${steps.turn.summary}
+        patch: ${steps.turn.patch}
       method: POST
       outputs:
         url: ${response.json.url}
@@ -160,7 +164,8 @@ steps:
     log:
       # A tolerated absence, said out loud: this run either has a landing URL
       # or has a reason it does not, and the field says which.
-      fields: '${{"outcome": steps.landed.value ? "landed" : "declined at the gate"}}'
+      fields:
+        outcome: '${steps.landed.value ? "landed" : "declined at the gate"}'
       message: '${"turn spent %d of %d tokens; %s".format([steps.turn.tokens, vars.token_budget, steps.landed.value ? ("landed at " + steps.land.url) : "not landed"])}'
 outputs:
   tokens:

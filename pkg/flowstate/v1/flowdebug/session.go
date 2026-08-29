@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -89,6 +90,58 @@ const (
 	// enumeration through tab completion and `inspect steps.`, which are
 	// bounded and prefix-filtered for exactly this.
 	MaxScopeNames = 20
+
+	// MaxScopeBindings bounds how many names one [Session.ScopeProto] answer
+	// carries, and therefore how many values it resolves, whatever its caller
+	// asked for.
+	//
+	// A caller's budget is a *request* and this is the producer's ceiling. They
+	// are different things for the reason CLAUDE.md gives twice over, because
+	// this bound was arrived at in two steps and each step is the same lesson:
+	// bounding one resource does not bound another the peer controls the ratio
+	// to.
+	//
+	// First, [v1.DefaultCostLimit] bounds a single evaluation and nothing
+	// bounded how many of them one answer performs — a workload chooses how
+	// many names a scope holds, and a negative limit asked for all of them, so
+	// a caller could buy unbounded compilation with one message. Then, capping
+	// the *evaluations* still left a message materializing a binding and an
+	// expression string per name, so the CPU, the allocation and the response
+	// size were bounded by nothing an evaluation ceiling could see (Codex,
+	// #1194, twice).
+	//
+	// So the ceiling is on the bindings, and the evaluations follow: a value
+	// can only be resolved for a binding that was carried, so one number bounds
+	// both rather than two numbers that have to be kept in agreement.
+	//
+	// 500 rather than something smaller because a producer ceiling narrower
+	// than what a front legitimately asks for would quietly hand it less than
+	// it requested: this repository's two renderers cap themselves at 200
+	// (`debugpane.MaxScopeEvaluations`) and 500 (`flowdap.MaxScopeVariables`),
+	// so this is the larger of them. Nothing here has a use for more.
+	//
+	// The totals are untouched by it. [Session.ScopeProto] still reports what
+	// the run can reach, so an elision says how much it elided rather than
+	// reporting the bound back as the scope's size — the same distinction
+	// [MaxScopeNames] draws for a line somebody reads.
+	MaxScopeBindings = 500
+
+	// MaxStepWindow bounds how many rows one [Session.StepWindowProto] answer
+	// carries, whatever its caller asked for.
+	//
+	// [Session.Steps] takes its window from its caller because an in-process
+	// caller pays for its own copy; a wire answer is a *message*, and the
+	// inventory's size is the workload's choice, so a negative or enormous
+	// limit bought an O(N) response from a caller this API explicitly treats as
+	// untrusted (Codex, #1194). The same argument as [MaxScopeBindings], on the
+	// other listing.
+	//
+	// Deliberately the same number as that one and written as that one, so the
+	// two cannot drift: they answer one question — how many entries may one
+	// debug answer carry — for two listings. A pane asks for a terminal's
+	// height and a wire client pages by [DebugStepWindow.total], so nothing
+	// here has a use for more.
+	MaxStepWindow = MaxScopeBindings
 )
 
 // Tone classifies one fragment of session output, so a terminal can colour
@@ -163,8 +216,9 @@ type Options struct {
 	// In, and In is then not read at all. See [Console].
 	Console Console
 
-	// Steps are the ids this run may reach, for completing `break` and
-	// `until` before the run has been anywhere.
+	// Steps are the steps this run may reach, for completing `break` and
+	// `until` before the run has been anywhere, and for the list
+	// [Session.Steps] answers.
 	//
 	// Optional, and a session with none still completes over the steps it has
 	// watched go past — see [Session.reachableSteps]. It is a caller's answer
@@ -173,10 +227,17 @@ type Options struct {
 	// workflow: `flow run local --debug` has the specification in hand, and an
 	// embedder with only the seam honestly does not.
 	//
-	// Unbounded here, deliberately: these are ids the caller already holds a
+	// Unbounded here, deliberately: these are steps the caller already holds a
 	// whole workflow's worth of, so storing them costs nothing new. What is
-	// bounded is the *answer*, in [Session.Complete].
-	Steps []string
+	// bounded is the *answer* — in [Session.Complete], and in the window
+	// [Session.Steps] copies.
+	//
+	// Each entry names the workflow that declares it as well as its id, because
+	// an id is not an identity across a `call:`: a caller and a callee may both
+	// declare `build` (`eval.go:1804-1812`), and a flattened inventory of the
+	// two holds two rows nothing can tell apart. [Step.State] is ignored here —
+	// nothing has happened to any of them yet.
+	Steps []Step
 
 	// Controlled says this session is driven by [Session.Control] as well as,
 	// or instead of, by lines of text.
@@ -378,10 +439,35 @@ type Session struct {
 	at promptSubject
 
 	// steps are the ids a caller said this run may reach ([Options.Steps]),
-	// and seen are the ids this session has watched go past. Both feed
-	// completion for `break` and `until`; see [Session.reachableSteps].
-	steps []string
-	seen  map[string]struct{}
+	// and seen are the ids this session has watched go past, each against what
+	// it was last watched doing. Both feed completion for `break` and `until`
+	// (see [Session.reachableSteps]); the states feed [Session.Steps].
+	//
+	// One map rather than a second one beside it, because the two questions
+	// have one answer: an id this session has seen is exactly an id it has
+	// watched *do* something, and a separate state map would be a second thing
+	// to bound, a second thing to truncate, and a second place for the two to
+	// disagree about which ids the run reached.
+	steps []Step
+	seen  map[string]StepState
+
+	// seenOrder is the same ids in arrival order, for a caller that named no
+	// steps: a map has none, and a step list in map order is a different list
+	// every time it is drawn. Held under the same bound as seen — an id seen
+	// refuses is one this never hears about. Its entries carry no workflow,
+	// because nothing that reaches [Session.sawStep] knows one.
+	seenOrder []Step
+
+	// sharedIDs are the ids more than one workflow in steps declares, and
+	// sharedCount how many rows carry one.
+	//
+	// Computed once in [New] because steps is a caller's answer and does not
+	// change. They are what makes [Session.Steps] fail closed on an outcome
+	// nothing can attribute: [v1.RunObserver] hands over bare ids, so a
+	// `StepFinished("build")` across a `call:` boundary names two rows and
+	// belongs to one.
+	sharedIDs   map[string]struct{}
+	sharedCount int
 
 	// seenShort reports that seen refused an id it had not already got,
 	// which makes it a *prefix* of the run rather than the run. Completion
@@ -454,6 +540,10 @@ type promptSubject struct {
 	step string
 	kind string
 
+	// workflow is which workflow's steps those are — see [Position.Workflow].
+	// Empty at an autopsy, and empty on a run carrying no runtime position.
+	workflow string
+
 	// redactText and redactValue are the withholding that was in force when
 	// this pause began, captured with the scope rather than read when an
 	// answer is returned.
@@ -475,6 +565,22 @@ func New(opts Options) (*Session, error) {
 		return nil, fmt.Errorf("a session may hold %d breakpoints, and %d were named", MaxBreakpoints, len(opts.Breakpoints))
 	}
 
+	// The inventory's declaration numbers are checked here rather than where
+	// they are rendered, because here is the only place that can answer with an
+	// error. `DebugStep.declaration` is a non-negative int32, so a negative or
+	// unrepresentable number produces a message the schema rejects — and the
+	// rejection would arrive at whoever asked for a window, about an inventory
+	// somebody else supplied, which is a refusal nobody can act on. Rules
+	// compile when configuration loads rather than when a request arrives
+	// (CLAUDE.md); this is that rule applied to an inventory (Codex, #1194).
+	for i, step := range opts.Steps {
+		if !validDeclaration(step.Declaration) {
+			return nil, fmt.Errorf(
+				"step %d (%q) carries declaration %d; a declaration numbers a walk's descents from the root's 0 upward, so it must be between 0 and %d",
+				i, step.ID, step.Declaration, math.MaxInt32)
+		}
+	}
+
 	s := &Session{
 		out:         opts.Out,
 		emit:        opts.Emit,
@@ -483,7 +589,8 @@ func New(opts Options) (*Session, error) {
 		breakpoints: make(map[string]breakpoint, len(opts.Breakpoints)),
 		done:        make(chan struct{}),
 		steps:       slices.Clone(opts.Steps),
-		seen:        map[string]struct{}{},
+		seen:        map[string]StepState{},
+		sharedIDs:   sharedStepIDs(opts.Steps),
 
 		controlled:   opts.Controlled,
 		control:      make(chan controlRequest),
@@ -516,7 +623,67 @@ func New(opts Options) (*Session, error) {
 		s.mode = modeRun
 	}
 
+	for _, step := range s.steps {
+		if _, shared := s.sharedIDs[step.ID]; shared {
+			s.sharedCount++
+		}
+	}
+
 	return s, nil
+}
+
+// sharedStepIDs are the ids more than one *workflow* in an inventory declares.
+//
+// By workflow rather than by row, which is the whole distinction. A workflow
+// that declares one `build` inside a `for_each` body and another at the top
+// level has two rows a run reaches separately, and a session can still
+// attribute outcomes to them because both are that workflow's steps — the
+// engine's own scope isolation is per call, not per row (`eval.go:1799`,
+// `CallScope`). Two `build`s in two workflows are the pair
+// [v1.RunObserver]'s bare ids cannot tell apart.
+//
+// A *name* is not a declaration, which is the correction this key carries: one
+// callee invoked from two `call:` steps appears twice under one name, and so do
+// two different embedded workflows that happen to share a `name:`. Grouping
+// those by name says the session can attribute an outcome it cannot, which is
+// the same defect this whole rule exists to prevent, one level down (Codex,
+// #1186). [Step.Declaration] is what separates them, and the pair is the key so
+// that an inventory built by hand — which numbers nothing and distinguishes its
+// workflows by name — is served by the same function.
+//
+// An unnamed workflow at the same declaration groups with every other one, and
+// that is a stated limit rather than an oversight. An inventory that names no
+// workflow *and* numbers no declaration — a caller that said neither — reports
+// nothing shared, which is right: there is no evidence of a second declaration
+// and blanking every ordinary duplicate id on a guess would be worse than the
+// disease.
+//
+// An earlier draft skipped unnamed entries entirely. That did nothing for the
+// all-unnamed case it was written for (they group under one key either way) and
+// took fail-closed *away* from the mixed case, where a named caller and an
+// unnamed callee genuinely are two workflows.
+func sharedStepIDs(steps []Step) map[string]struct{} {
+	type declaration struct {
+		number   int
+		workflow string
+	}
+
+	declaring := make(map[string]map[declaration]struct{}, len(steps))
+	for _, step := range steps {
+		if declaring[step.ID] == nil {
+			declaring[step.ID] = map[declaration]struct{}{}
+		}
+		declaring[step.ID][declaration{number: step.Declaration, workflow: step.Workflow}] = struct{}{}
+	}
+
+	shared := map[string]struct{}{}
+	for id, declarations := range declaring {
+		if len(declarations) > 1 {
+			shared[id] = struct{}{}
+		}
+	}
+
+	return shared
 }
 
 // Script returns the commands this session accepted, in order. Feeding them
@@ -561,6 +728,11 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 
 	s.sawStep(node.GetId())
 
+	// Entered, said here because this is the only callback that means it — and
+	// said on every arrival, so a loop body the run has come back to reads as
+	// running rather than as whatever the last iteration left behind.
+	s.noteStep(node.GetId(), StepRunning)
+
 	stop, err := s.shouldStop(ctx, node.GetId(), scope)
 	if err != nil {
 		// Cancellation, and the only thing that reaches here as an error. It
@@ -577,7 +749,20 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	// own goroutine answers against the scope the run is actually held in.
 	// Cleared on the way out: a session that kept the last scope alive would
 	// answer questions about a position the run has left.
-	s.prompting(promptSubject{scope: scope, step: node.GetId(), kind: NodeKind(node)})
+	// The workflow whose steps are running here, taken from where the engine
+	// records it rather than from where the step was written: `runCall` moves
+	// the position across a call so that a consumer cannot "confus[e] equal
+	// step ids in two different workflow files" (`eval.go:1804-1812`), and a
+	// debugger holding a run inside a callee is exactly that consumer.
+	//
+	// Empty only where the engine never ran — a session an embedder drives
+	// through [v1.Debugger] itself — which a reader must treat as unsaid
+	// rather than as a name. See [Position.Workflow].
+	workflow, _ := v1.ExecutingWorkflowFromContext(ctx)
+
+	s.prompting(promptSubject{
+		scope: scope, step: node.GetId(), kind: NodeKind(node), workflow: workflow,
+	})
 	defer s.prompting(promptSubject{})
 
 	s.announce(node)
@@ -650,14 +835,17 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 
 	// The tone is the outcome's, matching the transcript's reading of the
 	// same three cases: a failure the run absorbs is a warning, one it does
-	// not is danger, and everything else is account.
-	tone := ToneInfo
+	// not is danger, and everything else is account. The state a step list
+	// carries is that same reading — one switch, so a pane and a printed line
+	// cannot come to disagree about whether a step failed.
+	tone, state := ToneInfo, StepDone
 	switch {
 	case err != nil && tolerated:
-		tone = ToneWarning
+		tone, state = ToneWarning, StepTolerated
 	case err != nil:
-		tone = ToneDanger
+		tone, state = ToneDanger, StepFailed
 	}
+	s.noteStep(id, state)
 	s.printfTone(tone, "  %s %s\n", id, text)
 }
 
@@ -669,6 +857,7 @@ func (s *Session) StepSkipped(id string) {
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
 	s.sawStep(id)
+	s.noteStep(id, StepSkipped)
 
 	s.printf("  %s skipped (`if:` was false)\n", id)
 }
@@ -1285,6 +1474,15 @@ func frozen(scope *v1.Scope) *v1.Scope {
 // Only an id the cache does not already hold sets it: refusing a repeat loses
 // nothing, and a run that loops over one step for an hour should not report
 // itself truncated.
+//
+// It admits an id and says nothing about what the id did: every one of its
+// three callers follows it with a [Session.noteStep] saying that. Splitting the
+// two is what lets one map answer both questions — a state is only ever written
+// for an id this has already admitted, so the bound here is the only bound
+// either needs — and it is what keeps a step the run enters *again* from
+// reading as whatever it did last time. A loop body is entered once per
+// iteration, and a row saying `ok` while the run is held at that very step
+// would be the list disagreeing with the prompt above it.
 func (s *Session) sawStep(id string) {
 	if id == "" {
 		return
@@ -1293,14 +1491,40 @@ func (s *Session) sawStep(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, held := s.seen[id]; held {
+		return
+	}
+
 	if len(s.seen) >= celcomplete.MaxCandidates {
-		if _, held := s.seen[id]; !held {
-			s.seenShort = true
-		}
+		s.seenShort = true
 
 		return
 	}
-	s.seen[id] = struct{}{}
+	s.seen[id] = StepPending
+	// No workflow: this seam is handed a bare id and nothing else, which is
+	// exactly why a caller that holds the file is asked for one.
+	s.seenOrder = append(s.seenOrder, Step{ID: id})
+}
+
+// noteStep records what a step was last watched doing.
+//
+// Only for an id [Session.sawStep] already admitted, which every caller
+// guarantees by calling that first. Past the bound the state is dropped exactly
+// as the id was, and [Session.StepsTruncated] is what says so — a state written
+// for an id the list does not carry would be an answer nothing can be asked
+// about.
+func (s *Session) noteStep(id string, state StepState) {
+	if id == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, held := s.seen[id]; !held {
+		return
+	}
+	s.seen[id] = state
 }
 
 // noteDeclined reports, once per breakpoint, that a condition could not be

@@ -463,6 +463,16 @@ needs the identical pin, for the identical reason:
 
     GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 
+`gofmt` is the third member of this family, and its version of the failure is a
+false *finding* rather than a false error: the standalone `gofmt` binary on `PATH`
+is whatever toolchain owns `PATH`, not the one `go.mod` selects, and formatting
+output differs between toolchains (1.26's and 1.27's disagree on the indentation
+of a multi-value return's composite literals — `auth/vocabulary_test.go` is the
+tree's standing example, "unformatted" under a 1.26 gofmt and clean under CI's
+1.27). Before reporting a file on `main` as unformatted, or "fixing" one, run the
+module's own toolchain's binary: `$(GOTOOLCHAIN=go1.27.0 go env GOROOT)/bin/gofmt`.
+A PR that reformatted that file under the wrong gofmt is what CI caught on #1140.
+
 The staticcheck *release* is pinned to the toolchain as well as beside it, and that
 direction is the one that bites. staticcheck type-checks with its own copy of
 `go/types`, which reads the export data the toolchain's compiler wrote, and export
@@ -698,6 +708,78 @@ for reading the report. It also asserts it found more than a thousand tests
 before reporting a clean sweep — a checker that walks nothing and says
 everything is fine is the failure this whole tool is about, and it would have
 been the easiest one to ship.
+
+## Assert where the answers differ
+
+The section above is about a test that makes no claim. This one is about a test
+that makes a real claim, in a place where the claim cannot fail — which looks
+identical from the outside and is caught by nothing except mutation.
+
+The shape, in the four instances one night produced:
+
+- A cgroup's protection could be a number, a saturation (`max`), or unreadable.
+  Through the function under test, **saturation and unreadable produce the same
+  number**: both subtract nothing. So the `max` case passed with `max` handling
+  deleted — the right figure, for the wrong reason (#1134).
+- `corpusSizes` maps a name to a call. Every row in the real table agrees with
+  itself, so a comparison written where the rows are read is one **no test can
+  reach**, and deleting it survives (#1141).
+- `NotContains(stderr, "42")` for "no inspection was answered", where the
+  account prints a `t.TempDir()` path full of random digits. About one run in
+  three those digits contain `42` (#1145).
+- Three fixtures that **encoded the defect they were written for**: a projection
+  test that set the wrong Temporal field and asserted it arrived, so it passed
+  on the wrong field entirely (#1148).
+
+Two habits answer all of it.
+
+**Extract the decision to where a fixture can drive it.** If the real data
+always agrees with itself, a check written inline against that data is
+untestable by construction. `unreadableResults`, `sliceReturners` and
+`protectionAt` are all functions taking their inputs for exactly this reason,
+and each was extracted only after a mutation showed the inline version could not
+be reached.
+
+**Check the positive direction before trusting the negative one.** An
+absence assertion is worth nothing until you know the thing could have been
+present: `inspect 'ans' + 'wered'` renders `answered`, so `NotContains` has
+something to be about. Same for a refusal — testing that a reader *refuses*
+says nothing about whether its caller **acts** on the refusal, and that was a
+separate mutation and a separate test both times it came up.
+
+And when a mutation survives that you cannot honestly kill, **say so in the
+code**. Two shipped that night with a written reason — a chunk size that bounds
+allocation rather than count, and a `Close` on a failure path nothing observes.
+A named survivor is a limit somebody can read; a quiet one is a claim of
+coverage that is false.
+
+## A check you did not watch run is a check that did not run
+
+Two ways a gate goes green without looking at what you think it looked at. Both
+bit in one night, both are invisible in the output, and the fix for each is one
+`git fetch`.
+
+**A branch cut before a guard landed does not have the guard.** Conformance
+corpora work was written on a branch cut from `main` an hour before the guard
+for exactly that work merged, so `corpora_test.go` did not exist in that tree
+and the registration check never ran. The tests were green by not running.
+Rebasing onto current `main` is what surfaced it — and then the guard caught the
+missing entry on the first corpus added after it landed, with a diagnostic
+naming the fix.
+
+**An against-main check can pass against a `main` that has already moved.**
+`flow breaking --against origin/main` and `buf breaking` fetch their base inside
+the job. #1139's `test` job went green at 04:03 against a base that changed at
+03:47, and the same check failed locally against the real `main` minutes later.
+It would not have broken `main` — after the merge nothing reads as removed — but
+merging on it means landing a change whose gate passed against a tree that does
+not exist.
+
+Freshening every branch every time `main` moves is a treadmill, and on a busy
+day it never ends. The rule that holds is narrower: **freshen when a check
+compares against `main` and `main` changed in a way that check reads.** For
+`flow breaking` that is `examples/`; for `buf breaking`, `proto/`. Everything
+else can wait for the merge.
 
 ## No compiled binary is ever committed (`tools/artifacts`)
 

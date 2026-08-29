@@ -196,6 +196,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
+			name:    "FLOWSTATE_PLUGIN_PINS",
+			value:   "unset",
+			purpose: "Default for `--plugin-pins`: a YAML file mapping plugin names to the digest the binary answering to each must have, merged with any --plugin-pin (#1010). Unset means no pins file; a deployment with neither this nor --plugin-pin configures no digest pins, and every plugin name launches exactly as it always has.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
 			name:    "FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS",
 			value:   "unset",
 			purpose: "Handshake: the protocol versions the host offers. Set by the host on the child process.",
@@ -464,6 +470,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND",
 			value:   "0",
 			purpose: "Default for `--task-queue-activities-per-second` on `flow worker`: maximum rate, per second, at which the Temporal server dispatches activity tasks from this worker's task queue, shared across every worker polling that queue (last-writer-wins if they disagree). `0` takes the Temporal SDK's own default (effectively unlimited); setting it disables eager activity execution for this worker. A negative value refuses to start (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_STICKY_CACHE_SIZE",
+			value:   "0",
+			purpose: "Default for `--sticky-cache-size` on `flow worker`: maximum number of workflow executions kept in this process's sticky cache. Unlike the other four `FLOWSTATE_WORKER_*` capacity variables, `0` does NOT take the Temporal SDK's own default (10000) by being passed through — `worker.SetStickyWorkflowCacheSize` assigns its argument unconditionally, so `0` reaching it would configure a zero-entry cache and force full history replay on every workflow task. `0` (or unset) is implemented by not calling the setter at all — see docs/DEPLOYMENT.md's capacity section and workerCapacity's doc comment in cmd/flow/main.go (#921).",
 			read:    "cmd/flow/main.go",
 		},
 		{

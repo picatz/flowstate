@@ -26,16 +26,30 @@ import (
 // configuration change an operator can review, rather than a change to a
 // provider-specific code path. Load one from a file with [ParsePolicy].
 type Policy struct {
-	// Issuers are the trusted issuer entries, in precedence order.
+	// Issuers are the trusted issuer entries. Their order is not significant.
 	//
 	// Several entries may name the same issuer, which is how one platform
 	// grants different roles to different workloads: a GitHub Actions issuer
 	// can appear twice, once requiring repository "picatz/flowstate" with the
 	// role "deployer" and once requiring another repository with a lesser role.
-	// The first entry whose audience and claim rules a token satisfies wins,
-	// so order them narrowest first: a broad entry above a narrower one for
-	// the same issuer makes the narrow one unreachable, silently. See
-	// [Policy.UnreachableIssuers], which reports exactly that.
+	//
+	// # Entries for one issuer must be disjoint
+	//
+	// Exactly one entry may admit any given credential. A token or certificate
+	// that satisfies two is refused with [AmbiguousIssuerError] — see
+	// [OIDCVerifier.Verify] and [MTLSVerifier.VerifyPeer] — because each entry
+	// grants its own namespace and role, and picking one of them by position
+	// would make a line's place in a file decide who a caller is.
+	//
+	// Tiering is therefore written as exclusion rather than as order. "The main
+	// branch deploys, every other branch reads" is two entries: one requiring
+	// `ref: any_of [refs/heads/main]` with the deployer role, and one requiring
+	// `ref: none_of [refs/heads/main]` with the reader role. See
+	// [ClaimRule.NoneOf].
+	//
+	// [Policy.UnreachableIssuers] reports, at load, the overlaps provable from
+	// the file alone: an entry another entry completely covers, which can now
+	// never admit anybody at all.
 	Issuers []TrustedIssuer `json:"issuers" yaml:"issuers"`
 
 	// Federation configures the other direction: the identity Flowstate presents
@@ -318,10 +332,11 @@ type TrustedIssuer struct {
 	// "repository_owner" whose org login has uppercase letters or an underscore,
 	// the answer is not a looser grammar. It is one issuer entry per tenant, each
 	// with a fixed Namespace and a Require rule that pins the claim identifying
-	// that tenant, and those entries must be ordered before any entry of the
-	// same issuer that reads NamespaceClaim: entries are tried in order, and a
-	// namespace an admitting entry cannot map is a rejection, deliberately never
-	// a reason to try the next entry.
+	// that tenant — and the entry that reads NamespaceClaim must then *exclude*
+	// exactly those values with a [ClaimRule.NoneOf] rule on the same claim.
+	// Order will not do it: entries for one issuer have to be disjoint (see
+	// [Policy.Issuers]), so a token satisfying both the pinned entry and the
+	// claim-reading one is refused rather than taken by whichever comes first.
 	NamespaceClaim string `json:"namespace_claim,omitempty" yaml:"namespace_claim,omitempty"`
 
 	// NamespaceMap, when set alongside NamespaceClaim, replaces the grammar
@@ -388,14 +403,49 @@ type TrustedIssuer struct {
 // When the claim holds a JSON array, such as "groups", the rule matches if any
 // element equals any accepted value. Booleans and numbers are compared by their
 // JSON text, so AnyOf ["true"] matches the claim value true.
+//
+// # The claim must be present, whatever the rule says about its value
+//
+// Every rule on this type is a statement about a claim the issuer asserts, so
+// an absent claim fails the rule — AnyOf and NoneOf alike. See
+// [ClaimRule.check], where that is decided and argued: a NoneOf that held
+// vacuously against a missing claim would let an issuer widen an entry to
+// everybody by dropping a claim from its tokens, which is a fail-open change
+// nobody in this repository would have made or reviewed.
 type ClaimRule struct {
 	// Claim is the name of the claim to check, such as "sub", "repository", or
 	// "email". Required.
 	Claim string `json:"claim" yaml:"claim"`
 
 	// AnyOf are the accepted values. The rule holds when the claim equals one
-	// of them. At least one is required.
-	AnyOf []string `json:"any_of" yaml:"any_of"`
+	// of them.
+	//
+	// At least one of AnyOf and NoneOf is required; a rule with neither says
+	// nothing about the claim it names.
+	AnyOf []string `json:"any_of,omitempty" yaml:"any_of,omitempty"`
+
+	// NoneOf are the refused values. The rule holds only when the claim equals
+	// none of them — and, for a list-valued claim, only when no element does,
+	// so one excluded group in a "groups" array refuses the token however many
+	// other groups it lists.
+	//
+	// This is what makes tiered entries for one issuer writable without
+	// relying on order. Entries are disjoint or they are ambiguous (see
+	// [Policy.Issuers]), so "main branch deploys, every other branch reads" is
+	// two entries: one with `ref: any_of [refs/heads/main]`, and one with
+	// `ref: none_of [refs/heads/main]`. Without this field the second entry
+	// would have to be written as "any branch", which the first entry's token
+	// also satisfies, and the verifier would refuse both.
+	//
+	// It is exclusion, never a wildcard: NoneOf narrows an entry that some
+	// other rule has already narrowed, and it does not on its own say whose
+	// workload is admitted. [ClaimRule.narrowsWho] is where that distinction
+	// is enforced for the public multi-tenant issuers this package refuses to
+	// let a policy leave open.
+	//
+	// A value in both AnyOf and NoneOf is refused when the policy loads: see
+	// [TrustedIssuer.validateRequire].
+	NoneOf []string `json:"none_of,omitempty" yaml:"none_of,omitempty"`
 }
 
 // RequireClaim returns a [ClaimRule] requiring that the named claim equals the
@@ -408,6 +458,14 @@ func RequireClaim(claim, value string) ClaimRule {
 // one of the given values.
 func RequireClaimAnyOf(claim string, values ...string) ClaimRule {
 	return ClaimRule{Claim: claim, AnyOf: values}
+}
+
+// RequireClaimNoneOf returns a [ClaimRule] requiring that the named claim is
+// present and equals none of the given values — the Go spelling of `none_of`,
+// and the way a broad entry is written disjoint from the narrow entries beside
+// it. See [ClaimRule.NoneOf].
+func RequireClaimNoneOf(claim string, values ...string) ClaimRule {
+	return ClaimRule{Claim: claim, NoneOf: values}
 }
 
 // supportedAlgorithms are the signature algorithms this package can verify.
@@ -873,6 +931,12 @@ func (t TrustedIssuer) validateMTLS() error {
 }
 
 // validateRequire checks the claim rules common to every kind.
+//
+// Everything here is decided when the policy loads rather than when a request
+// arrives, per CLAUDE.md's "fail closed": a rule that cannot hold, or that says
+// two things about one value, is a file an operator has to fix, and finding it
+// at start-up costs a restart where finding it at verification time costs
+// however long it takes somebody to notice.
 func (t TrustedIssuer) validateRequire() error {
 	for i, rule := range t.Require {
 		switch {
@@ -882,12 +946,36 @@ func (t TrustedIssuer) validateRequire() error {
 			return fmt.Errorf("require[%d]: the %q claim is already matched exactly against the issuer", i, rule.Claim)
 		case t.kind() == IssuerKindOIDC && slices.Contains(timeClaims, rule.Claim):
 			return fmt.Errorf("require[%d]: the %q claim is a timestamp validated by the verifier, not a value to match", i, rule.Claim)
-		case len(rule.AnyOf) == 0:
-			return fmt.Errorf("require[%d]: any_of needs at least one value", i)
+		case len(rule.AnyOf) == 0 && len(rule.NoneOf) == 0:
+			return fmt.Errorf("require[%d]: a rule on %q needs any_of, none_of, or both: with neither it says "+
+				"nothing about the claim it names", i, rule.Claim)
 		}
 		for j, value := range rule.AnyOf {
 			if value == "" {
 				return fmt.Errorf("require[%d]: any_of[%d] is empty", i, j)
+			}
+		}
+		for j, value := range rule.NoneOf {
+			if value == "" {
+				return fmt.Errorf("require[%d]: none_of[%d] is empty", i, j)
+			}
+		}
+
+		// A value written in both lists is a contradiction, and it is refused
+		// rather than resolved because either resolution is a guess about what
+		// the operator meant. Accepting the value silently drops a refusal
+		// somebody wrote down; refusing it silently drops an acceptance. And
+		// the value can never be the one that satisfies the rule either way —
+		// AnyOf holds only if some claim value is accepted, NoneOf fails if
+		// any claim value is refused — so listing it twice is dead text at
+		// best and a misread policy at worst. Same posture as
+		// [NewOIDCVerifier] refusing WithEgressPolicy alongside an egress
+		// section: a contradiction is not a precedence question.
+		for _, value := range rule.AnyOf {
+			if slices.Contains(rule.NoneOf, value) {
+				return fmt.Errorf("require[%d]: %q is in both any_of and none_of for claim %q, so the rule "+
+					"says the claim must and must not be that value. Remove it from whichever list did not "+
+					"mean it", i, value, rule.Claim)
 			}
 		}
 	}
@@ -1132,8 +1220,16 @@ var requesterChosenClaims = []string{"aud"}
 // A rule that does not narrow who is still perfectly legal — an operator may
 // layer one for defence in depth, or to accept one of several audiences — it
 // simply cannot be the only thing an entry says.
+//
+// An exclusion narrows nobody, which is why a non-empty AnyOf is required here
+// and not merely a rule on a claim the platform assigns. `repository: none_of
+// [picatz/other]` admits every repository on GitHub except one, so an entry
+// carrying only that is the same unrestricted entry
+// [TrustedIssuer.validateMultiTenantPinning] exists to refuse, wearing a rule.
+// [ClaimRule.NoneOf] is for making two entries disjoint from each other, never
+// for pinning one of them to an account.
 func (r ClaimRule) narrowsWho() bool {
-	return !slices.Contains(requesterChosenClaims, r.Claim)
+	return len(r.AnyOf) > 0 && !slices.Contains(requesterChosenClaims, r.Claim)
 }
 
 // validateIssuerURL checks that an issuer identifier is the kind of URL
@@ -1218,7 +1314,18 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 	clone.Algorithms = slices.Clone(t.Algorithms)
 	clone.Require = slices.Clone(t.Require)
 	for i, rule := range clone.Require {
+		// Every slice inside a rule, not only the accepting one. A NoneOf left
+		// aliased is the fail-open direction of this bug: a caller that emptied
+		// or rewrote its own copy after building a verifier would be removing
+		// exclusions the running verifier is still reading, so an entry written
+		// to keep callers out would start letting them in — and the write would
+		// race concurrent verification besides.
+		//
+		// TestCloneSharesNoClaimRuleSliceWithItsSource walks these fields by
+		// reflection rather than by name, so a third list added to [ClaimRule]
+		// later fails there rather than being quietly left aliased here.
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
+		clone.Require[i].NoneOf = slices.Clone(rule.NoneOf)
 	}
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
 
@@ -1268,6 +1375,33 @@ func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window life
 }
 
 // check reports whether a verified claims set satisfies this rule.
+//
+// # An absent claim fails the rule, whatever the rule says
+//
+// This is the decision [ClaimRule]'s own doc points at, made here because here
+// is where it is observable, and it is the one place in this type where a
+// plausible reading is fail-open.
+//
+// [ClaimRule.AnyOf] has always required the claim to be present: there is no
+// value to compare, so the rule cannot hold. [ClaimRule.NoneOf] read as a bare
+// "the value is not in this set" would hold *vacuously* against a claim the
+// token never carried — and the entry that field exists to write is the broad
+// one ("every branch except main"), so the vacuous reading admits, through the
+// widest entry in the policy, exactly the tokens whose issuer stopped asserting
+// the claim. That change comes from the issuer, not from the reviewed file, and
+// it produces no diagnostic anywhere: the policy still reads correctly.
+//
+// So presence is the rule's precondition and the value test is what differs
+// between the two fields. It costs the operator a rule they may not have
+// wanted — an issuer that mints "ref" only on some tokens needs a second entry
+// for the ones without it, spelled out — which is the direction this package
+// pays in everywhere else (a namespace it cannot determine rejects; a claim
+// shape it cannot compare rejects).
+//
+// The same reasoning decides the list-valued case one line down: NoneOf fails
+// if *any* element is excluded, rather than holding because some other element
+// is not, so a "groups" array carrying one refused group is refused however
+// many permitted groups it also carries.
 func (r ClaimRule) check(claims map[string]any) error {
 	value, ok := claims[r.Claim]
 	if !ok {
@@ -1277,6 +1411,27 @@ func (r ClaimRule) check(claims map[string]any) error {
 	found := claimStrings(value)
 	if len(found) == 0 {
 		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf, Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
+	}
+
+	// Exclusion is checked before acceptance so that a rule carrying both
+	// answers with the refusal an operator wrote rather than with the generic
+	// "not one of any_of" — and so that a claim carrying an excluded value
+	// alongside an accepted one cannot pass on the accepted one.
+	for _, candidate := range found {
+		if slices.Contains(r.NoneOf, candidate) {
+			return &ClaimMismatchError{
+				Claim:        r.Claim,
+				Want:         r.AnyOf,
+				Got:          truncate(strings.Join(found, ", "), maxClaimValueLength),
+				RefusedValue: truncate(candidate, maxClaimValueLength),
+			}
+		}
+	}
+
+	// A rule that only excludes has nothing left to check: the claim is
+	// present and carries none of the refused values.
+	if len(r.AnyOf) == 0 {
+		return nil
 	}
 
 	for _, candidate := range found {

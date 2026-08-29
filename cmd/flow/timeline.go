@@ -303,46 +303,45 @@ func timelineHoldsTheSegmentsEnding(msg *v1.GetTimelineResponse) bool {
 // guess this surface would then print as a fact. The count is what can be said
 // truthfully, and `flow get` is where the rest of the answer lives.
 func retryingStepsFooter(workflowID, runID string, msg *v1.GetResponse, now time.Time) string {
-	// Two conditions, each saying something the other cannot, and a pending
-	// activity has to pass both before this note is owed anything about it.
+	// One condition, now that presence carries the meaning it always should
+	// have. [v1.PendingActivity.NextAttemptScheduledTime] is unset while an
+	// attempt is scheduled or started and set while one is backing off — that
+	// is Temporal's own documented contract for `next_attempt_schedule_time`
+	// (go.temporal.io/api@v1.63.5, workflow/v1/message.pb.go:951-953: "Next
+	// time when activity will be scheduled. If activity is currently scheduled
+	// or started it will be null."), and it only became trustworthy here once
+	// the server started reading that field instead of `scheduled_time`, which
+	// carries no such promise and is set for every pending activity regardless
+	// of state (#1148). Before that fix presence meant nothing, so this
+	// predicate fell back on comparing the field against this machine's own
+	// clock — which is what re-created the silence #1148 fixed one surface
+	// over: a backlogged retry whose due time had passed compared as "not
+	// after now" and read as no retry at all. Dropping that comparison is the
+	// fix; a time in the past is rendered as overdue below rather than treated
+	// as absent.
 	//
-	// A count past the first says there *is* a previous attempt and it failed.
-	// Temporal reports every activity that is scheduled or started and not yet
-	// finished, so a healthy run on its first attempt at one step is in this
-	// list too, and that step's scheduling is already a row with nothing
-	// missing from it.
+	// No separate attempt-count guard, and that is a conclusion rather than an
+	// omission. A first attempt has nothing to back off from, so Temporal has
+	// no next-attempt time to give it: the field is only ever populated once a
+	// previous attempt has failed, which is the same event that advances the
+	// attempt count past one. The two fields report one fact from different
+	// places, so an `attempt <= 1` filter here would never fire on its own —
+	// `next` is already nil whenever `attempt` is 1 — and would only ever
+	// matter by disagreeing with a server that violated its own documented
+	// contract, at which point trusting the count over the field it exists to
+	// replace would be the wrong side to land on. #1148 reached the same
+	// conclusion for `flow get` and `flow watch`, which already key "retrying"
+	// off this field's presence alone (get.go) with no attempt check beside it.
 	//
-	// A next attempt still ahead says that failure has no row *yet*, and this
-	// is the condition the note actually turns on — an attempt count alone gets
-	// it backwards. The server writes the previous attempt's failure into the
-	// account the moment the next attempt *starts*, on the ActivityTaskStarted
-	// arm of its timeline conversion, so a step whose retry is already running
-	// has that failure on the reader's screen and a note about it would be
-	// pointing three lines up (Codex, #1142). The only state this note exists
-	// for is the one in between: failed, and waiting.
-	//
-	// A time already past is not evidence of waiting either, and is deliberately
-	// read as silence rather than as an overdue attempt. The schema says this
-	// field is unset while an attempt runs, but the server fills it from
-	// Temporal's `scheduled_time` rather than its `next_attempt_schedule_time`,
-	// and only the latter is documented to be null for an activity that is
-	// scheduled or started — so a running attempt reaches here carrying the
-	// moment *it* was scheduled, which is behind us. Staying quiet costs a hint
-	// about a state that is already changing; speaking would be a claim about a
-	// row the reader can see.
-	//
-	// The comparison is against this machine's clock, which is not the authority
-	// on the server's schedule. Skew larger than a backoff interval mis-sorts
-	// the two states in whichever direction it leans — the cost of deciding this
-	// from a timestamp, and the same clock `flow get` already counts down
-	// against.
+	// The failure this note exists for is still the one in between: an
+	// activity whose previous attempt failed and whose next has not started.
+	// A retry already running has its failure on the reader's screen from a
+	// row above (Codex, #1142) rather than from this footer — the account
+	// writes that failure the moment the next attempt *starts*, the same
+	// moment Temporal clears this field.
 	retrying := make([]*v1.PendingActivity, 0, len(msg.GetPendingActivities()))
 	for _, activity := range msg.GetPendingActivities() {
-		if activity.GetAttempt() <= 1 {
-			continue
-		}
-
-		if next := activity.GetNextAttemptScheduledTime(); next == nil || !next.AsTime().After(now) {
+		if activity.GetNextAttemptScheduledTime() == nil {
 			continue
 		}
 
@@ -369,18 +368,43 @@ func retryingStepsFooter(workflowID, runID string, msg *v1.GetResponse, now time
 			"is retrying cannot be told from here"
 
 	case len(retrying) == 1:
-		// The countdown is unconditional here, because the filter above is what
-		// established it: nothing reaches this slice without a next attempt
-		// still ahead of the same `now`.
-		//
 		// "attempt N is due in" rather than "attempt N, next attempt in",
 		// because those are one attempt and not two. The schema's attempt is
 		// the one about to run, so naming a *next* one after it would invent a
 		// further try nobody is waiting for — and the try whose failure is
 		// missing from the account is the one before it.
-		head = fmt.Sprintf("one step is retrying — attempt %d is due in %s",
-			retrying[0].GetAttempt(),
-			roundedDuration(retrying[0].GetNextAttemptScheduledTime().AsTime().Sub(now)))
+		//
+		// Not unconditionally a countdown, though — the filter above only
+		// established that a next-attempt time exists, not that it is still
+		// ahead of `now`. A backlogged retry (the server running behind its own
+		// schedule, or this reader's clock behind the server's) has a next
+		// attempt time in the past, and that is still "retrying", not "not
+		// retrying" — collapsing the two back into silence is exactly what
+		// #1148 was fixing one surface over. So the direction decides the verb:
+		// future is a countdown, past is reported honestly as overdue rather
+		// than folded into either "due in a negative number" or silence.
+		next := retrying[0].GetNextAttemptScheduledTime().AsTime()
+
+		// The overdue branch names whose clock said so, and the countdown does
+		// not, because skew does two different things to them. `now` is this
+		// process's clock and the schedule is the server's, so a reader whose
+		// clock runs fast sees an ordinary wait as already late — skew changes
+		// the *category* here, from "waiting" to "behind", which is a different
+		// thing to go and investigate. On the countdown it only shifts a number
+		// a reader is already watching tick, and the reading stays "retrying,
+		// not yet due". Attributing the clock is what lets somebody dismiss a
+		// small overdue as their own machine rather than the server's backlog
+		// (Codex, #1155).
+		var when string
+		if next.After(now) {
+			when = fmt.Sprintf("due in %s", roundedDuration(next.Sub(now)))
+		} else {
+			when = fmt.Sprintf("overdue by %s against this machine's clock",
+				roundedDuration(now.Sub(next)))
+		}
+
+		head = fmt.Sprintf("one step is retrying — attempt %d is %s",
+			retrying[0].GetAttempt(), when)
 
 	default:
 		// The furthest, because that is what an attempt count is read for: a

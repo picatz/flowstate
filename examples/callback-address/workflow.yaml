@@ -63,7 +63,12 @@ steps:
   # before a wait that may outlive several segments.
   - id: register
     http:
-      json: '${{"document": inputs.document, "callback": {"workflow_id": run.workflow_id, "run_id": run.run_id, "signal": "review-decided"}}}'
+      json:
+        document: ${inputs.document}
+        callback:
+          workflow_id: ${run.workflow_id}
+          run_id: ${run.run_id}
+          signal: review-decided
       method: POST
       url: https://reviews.example.com/reviews
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -178,6 +179,56 @@ func computePatch(ctx context.Context, gitBin string, hardened *gitHardening, wo
 	}
 
 	return out, filesChanged, truncatedOutput
+}
+
+// resetWorkingContext discards whatever a previous run left inside workDir -
+// both tracked and untracked changes - restoring it to the commit it is
+// already checked out at. See codex.proto's own doc comment on
+// ExecInputs.reset_working_context for what this does and does not do (no
+// ref or sha, no fetch, no checkout of a different commit).
+//
+// Called before observeWorkspace, deliberately: the whole point is that the
+// baseline this run reads afterward comes back clean, which is what lets
+// computePatch produce a patch instead of failing closed on a dirty start.
+//
+// gitBin and hardened come from prepareHardenedGit, the same hardening
+// observeWorkspace and computePatch use - a reset is exactly as capable of
+// running a repository-configured helper as the diff it exists to enable,
+// so it gets no less scrutiny than either.
+//
+// Scoped to workDir and nothing outside it, the same containment
+// resolveWorkingContext already enforces on the path itself: both git
+// commands run with "-C workDir" and a "--" "." pathspec, so a
+// working_context that is a subdirectory of a larger checkout has only its
+// own subtree touched - `git checkout HEAD -- .` restores tracked content
+// under the current directory (index and working tree both, unlike a plain
+// `git checkout -- .` which leaves a staged change staged), and
+// `git clean -fd -- .` removes untracked files and directories under it.
+// Neither command reaches outside workDir even when workDir is nested
+// inside a larger repository.
+//
+// Fails rather than silently doing nothing: unlike computePatch's own
+// best-effort fallback (a diff nobody asked to see), a reset an author
+// explicitly requested that did not happen must be reported, not left for
+// the next baseline check to discover as "still dirty" with no explanation
+// (see CLAUDE.md, "Diagnostics are a feature" - a silent no-op gives the
+// author no reason to doubt the run).
+func resetWorkingContext(ctx context.Context, gitBin string, hardened *gitHardening, workDir string) error {
+	if gitBin == "" || hardened == nil {
+		return errors.New("no git binary configured, or working_context is not a plain git checkout this plugin will touch")
+	}
+
+	if _, ok, _ := runGitBounded(ctx, gitBin, workDir, hardened.env, maxPatchBytes,
+		append(slices.Clone(hardened.args), "checkout", "HEAD", "--", ".")...); !ok {
+		return errors.New("git checkout HEAD -- . failed")
+	}
+
+	if _, ok, _ := runGitBounded(ctx, gitBin, workDir, hardened.env, maxPatchBytes,
+		append(slices.Clone(hardened.args), "clean", "-fd", "--", ".")...); !ok {
+		return errors.New("git clean -fd -- . failed")
+	}
+
+	return nil
 }
 
 // workspaceBaseline is what was true of working_context *before* a run

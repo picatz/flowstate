@@ -108,6 +108,12 @@ type PeerVerifier interface {
 type mtlsEntry struct {
 	issuer  TrustedIssuer
 	caCerts []*x509.Certificate
+
+	// policyIndex is this entry's row in [Policy.Issuers], carried because
+	// this list holds only the kind: mtls entries and a position in it is
+	// therefore not a row an operator can count to. See [oidcEntry], where the
+	// reasoning is written down once for both verifiers.
+	policyIndex int
 }
 
 // MTLSVerifier is the [PeerVerifier] built from a [Policy]'s kind: mtls
@@ -141,7 +147,7 @@ var _ PeerVerifier = (*MTLSVerifier)(nil)
 func NewMTLSVerifier(policy Policy) (*MTLSVerifier, error) {
 	var entries []mtlsEntry
 
-	for _, issuer := range policy.Issuers {
+	for policyIndex, issuer := range policy.Issuers {
 		if issuer.kind() != IssuerKindMTLS {
 			continue
 		}
@@ -154,7 +160,15 @@ func NewMTLSVerifier(policy Policy) (*MTLSVerifier, error) {
 		// Copied, not aliased, for the identical reason [NewOIDCVerifier]
 		// copies each entry: this verifier is read from many goroutines on
 		// every request and must not be something a caller can still change.
-		entries = append(entries, mtlsEntry{issuer: issuer.clone(), caCerts: certs})
+		//
+		// policyIndex, not len(entries): this list is filtered by kind, so a
+		// position in it is not a row an operator can count to in their file.
+		// See [oidcEntry], which carries the same field for the same reason.
+		entries = append(entries, mtlsEntry{
+			issuer:      issuer.clone(),
+			caCerts:     certs,
+			policyIndex: policyIndex,
+		})
 	}
 
 	if len(entries) == 0 {
@@ -181,11 +195,23 @@ func (v *MTLSVerifier) ClientCAPool() *x509.CertPool {
 // VerifyPeer implements [PeerVerifier].
 //
 // Every kind: mtls entry whose CA pool the verified chain's certificates
-// intersect is tried, in policy order, exactly like [OIDCVerifier.Verify]
-// tries every candidate entry sharing a token's issuer: the first entry whose
-// require rules the certificate's subject satisfies wins, and namespace
-// determination is a rejection rather than a reason to try the next entry —
-// see [TrustedIssuer.namespaceFor].
+// intersect is asked, exactly like [OIDCVerifier.Verify] asks every candidate
+// entry sharing a token's issuer, and exactly one of them has to admit the
+// certificate: a chain two entries both admit is refused with
+// [AmbiguousIssuerError] rather than attributed to whichever comes first. The
+// entries' order in the policy decides nothing.
+//
+// That is the same refusal [subjectFromLeaf] already makes one level down, for
+// the same reason. A leaf carrying two URI SANs is refused rather than having
+// one of them picked, because silently choosing between two names a
+// certificate legitimately carries authenticates a subject nobody chose; two
+// entries admitting one certificate — one selecting `uri_san` and one
+// `dns_san`, say, each with its own namespace and role — is that choice made
+// between two *policies* instead of two SANs.
+//
+// Namespace determination stays a rejection and never a reason to look
+// further, per [TrustedIssuer.namespaceFor]; with exactly one entry admitting,
+// there is nothing further to look at in any case.
 func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certificate) (Principal, error) {
 	if len(chains) == 0 || len(chains[0]) == 0 {
 		return Principal{}, fmt.Errorf("%w: no verified client certificate chain was presented", ErrNoToken)
@@ -193,7 +219,19 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 
 	leaf := chains[0][0]
 
-	var failures []error
+	// The subject a certificate presents is per entry, because SubjectFrom is:
+	// two entries selecting different SANs read different names off one leaf.
+	// So the winning entry and the subject it read are kept together, and
+	// winner is meaningful only where it is read, under exactly one match.
+	type peerMatch struct {
+		entry   mtlsEntry
+		subject string
+	}
+	var (
+		failures []error
+		admitted []matchedEntry
+		winner   peerMatch
+	)
 	for _, entry := range v.entries {
 		if !chainMatchesCA(chains, entry.caCerts) {
 			continue
@@ -215,40 +253,55 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 			continue
 		}
 
-		// The tenant is established here, from the verified certificate, and
-		// nowhere else — see [TrustedIssuer.namespaceFor]'s own doc. A
-		// candidate entry whose namespace cannot be determined is a rejection,
-		// not a reason to try the next one.
-		namespace, err := entry.issuer.namespaceFor(claims)
-		if err != nil {
-			return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.issuer.Name, err)
+		admitted = append(admitted, matchedEntry{
+			policyIndex: entry.policyIndex,
+			name:        entry.issuer.Name,
+			issuer:      entry.issuer.Issuer,
+		})
+		winner = peerMatch{entry: entry, subject: subject}
+	}
+
+	if len(admitted) > 1 {
+		return Principal{}, ambiguousIssuer(admitted)
+	}
+
+	if len(admitted) == 0 {
+		switch len(failures) {
+		case 0:
+			// No configured entry's CA pool contains any certificate in the
+			// verified chain. Reachable when several MTLSVerifiers coexist behind
+			// one listener's combined ClientCAs, or defensively if this is ever
+			// called with a chain crypto/tls verified against a broader pool than
+			// this policy's own — this package never assumes its own CA pool was
+			// the only one composing the listener's ClientCAs.
+			return Principal{}, fmt.Errorf("%w: client certificate does not chain to a trusted issuer's CA", ErrUntrustedIssuer)
+		case 1:
+			return Principal{}, failures[0]
+		default:
+			return Principal{}, errors.Join(failures...)
 		}
-
-		return Principal{
-			Issuer:                entry.issuer.Issuer,
-			IssuerName:            entry.issuer.Name,
-			Subject:               subject,
-			Namespace:             namespace,
-			Role:                  entry.issuer.Role,
-			Claims:                claims,
-			CertificateThumbprint: sha256Hex(leaf.Raw),
-		}, nil
 	}
 
-	switch len(failures) {
-	case 0:
-		// No configured entry's CA pool contains any certificate in the
-		// verified chain. Reachable when several MTLSVerifiers coexist behind
-		// one listener's combined ClientCAs, or defensively if this is ever
-		// called with a chain crypto/tls verified against a broader pool than
-		// this policy's own — this package never assumes its own CA pool was
-		// the only one composing the listener's ClientCAs.
-		return Principal{}, fmt.Errorf("%w: client certificate does not chain to a trusted issuer's CA", ErrUntrustedIssuer)
-	case 1:
-		return Principal{}, failures[0]
-	default:
-		return Principal{}, errors.Join(failures...)
+	entry := winner.entry
+	subject := winner.subject
+	claims := map[string]any{"subject": subject}
+
+	// The tenant is established here, from the verified certificate, and
+	// nowhere else — see [TrustedIssuer.namespaceFor]'s own doc.
+	namespace, err := entry.issuer.namespaceFor(claims)
+	if err != nil {
+		return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.issuer.Name, err)
 	}
+
+	return Principal{
+		Issuer:                entry.issuer.Issuer,
+		IssuerName:            entry.issuer.Name,
+		Subject:               subject,
+		Namespace:             namespace,
+		Role:                  entry.issuer.Role,
+		Claims:                claims,
+		CertificateThumbprint: sha256Hex(leaf.Raw),
+	}, nil
 }
 
 // admitsPeer checks the claim rules common to every kind against a

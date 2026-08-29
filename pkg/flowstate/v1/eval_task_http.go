@@ -590,7 +590,10 @@ func httpExpectationMet(
 	}
 
 	kind := ErrorKindUpstream
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		kind = ErrorKindRateLimited
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		kind = ErrorKindInvalidInput
 	}
 

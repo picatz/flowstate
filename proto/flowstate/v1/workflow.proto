@@ -435,6 +435,159 @@ message Workflow {
   // control plane before a durable run is accepted.
   repeated PluginRequirement plugin_requirements = 12 [(buf.validate.field).repeated = {max_items: 64}];
   repeated ResolvedPlugin resolved_plugins = 13 [(buf.validate.field).repeated = {max_items: 64}];
+
+  // Concurrency declares that at most one run of this workflow may be in flight
+  // per key. See [Concurrency] for the mechanism, the three answers it can give,
+  // and the two things it deliberately does not do.
+  //
+  // On the workflow rather than under [Triggers], because it must hold for every
+  // start path — `flow run`, an agent over MCP, a `SignalWithStart` — and writing
+  // it once per trigger is one fact written three times, which is the shape that
+  // drifts.
+  Concurrency concurrency = 14 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// Concurrency is "at most one run of this workflow per key", answered at submit.
+//
+// A workflow that touches a resource nothing else may touch at the same time — a
+// cluster it drains, a ledger it reconciles, a deploy of one service — writes:
+//
+//     concurrency:
+//       key: ${inputs.cluster}
+//       on_conflict: reject
+//
+// and a second submission naming the same cluster is refused while the first is
+// still running.
+//
+// # The permit is a workflow id
+//
+// There is no lease, no fencing token and no lock table, because Temporal already
+// has exactly one mutual-exclusion primitive and it is the workflow id: at most
+// one execution may be open under one id at a time. So [Concurrency.key] is
+// composed with the run's tenant and this workflow's name, digested, and used as
+// the id of the run itself — the identical construction webhook delivery dedupe
+// already uses (`webhookWorkflowID`, server/webhook.go), under its own
+// `flowstate-lock-` prefix so a key can never address, join or block a run
+// created by a delivery or by [RunRequest.entity_key].
+//
+// Two properties fall out of the holder *being* a run rather than holding a
+// permit on behalf of one. The permit's lifetime is the run's own execution
+// timeout, so an orphaned permit that wedges a resource forever is structurally
+// impossible rather than something a lease has to expire. And acquisition never
+// waits: all three arms of [Concurrency.on_conflict] answer immediately, at
+// submit, while the caller is still present to be told.
+//
+// # Submit-time by construction, which is why both drivers agree
+//
+// Nothing in a run ever reads this field. It is consumed once, by the server
+// deciding what id to start the run under, and the engine — either engine — never
+// sees it. So invariant 3 is satisfied by there being nothing for the two drivers
+// to disagree about: `flow run local` executes the same steps in the same order
+// whether or not this block is present, exactly as it does for [Triggers], and no
+// local rehearsal is quietly pretending to model contention it cannot model. That
+// is a property of *where* this is enforced, not a promise this comment makes: a
+// reader can check it by grepping for the field's accessor, which appears only
+// under `server/` and `flowfile/`.
+//
+// # What it does not do
+//
+// It does not queue. "Run the next one after this finishes" is
+// [ScheduleTrigger.Overlap]'s `buffer_one`/`buffer_all`, which lives in Temporal's
+// *schedule* machinery and is unreachable from a manual `Run`; the validator
+// refuses those three names here rather than accepting a word it would silently
+// not honour. And it does not lock a *span of steps* within a run, or anything
+// shared between two different workflows: both of those need a run able to reach
+// another run, which no node kind can do.
+message Concurrency {
+  // OnConflict is what happens when a run already holds this key.
+  //
+  // Exactly three arms, and the ceiling is not an editorial choice: a workflow id
+  // can express precisely these three answers. Each maps to one pair of Temporal
+  // start policies, and there is nothing between them.
+  enum OnConflict {
+    // Unspecified is ON_CONFLICT_REJECT.
+    //
+    // Left as a real arm rather than folded away, for [ScheduleTrigger.Overlap]'s
+    // reason: "the author said nothing" and "the author wrote reject" stay
+    // distinguishable in the specification even though they behave identically.
+    // Defaulting to the refusal is the fail-closed direction (invariant 6) — an
+    // author who writes `key:` and forgets `on_conflict:` gets exclusion, not a
+    // second concurrent run.
+    ON_CONFLICT_UNSPECIFIED = 0;
+
+    // Reject refuses the submission while another run holds the key, and tells
+    // the caller so — `AlreadyExists`, naming the run that holds it.
+    //
+    // `WORKFLOW_ID_CONFLICT_POLICY_FAIL` with
+    // `WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE`: a run that has *finished*
+    // releases the key, which is the difference from a webhook delivery's
+    // `REJECT_DUPLICATE`. A delivery id names one event forever; a concurrency
+    // key names a resource that is free again once the run holding it ends.
+    ON_CONFLICT_REJECT = 1;
+
+    // Join returns the run already holding the key instead of starting a second
+    // one, with [RunResponse.joined] true — the generalization of what a webhook
+    // redelivery already does (`AcceptedDelivery.Joined`).
+    //
+    // For a caller whose request is "make sure this is happening" rather than
+    // "start this now": two agents asked to reconcile the same ledger both end up
+    // watching one reconciliation.
+    //
+    // Implemented as `WORKFLOW_ID_CONFLICT_POLICY_FAIL` and the already-started
+    // error, not as `USE_EXISTING`, and the difference is the whole reason
+    // [RunResponse.joined] can be trusted. `USE_EXISTING` answers a conflict
+    // silently with the incumbent, and `WorkflowExecutionErrorWhenAlreadyStarted`
+    // does not apply to it because nothing was disallowed — so the server gets
+    // back a run id and no way to tell whether it started it. Every fact this
+    // server states about a run has to be one it established; `SignalWithStart`
+    // decides its own `created` the same way, from the same error, which carries
+    // the incumbent's run id at no extra round trip.
+    ON_CONFLICT_JOIN = 2;
+
+    // TerminateOther stops the run holding the key and starts this one.
+    //
+    // `WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING`. Terminate rather than
+    // cancel, deliberately and destructively: the incumbent gets no chance to run
+    // its `undo:` compensations, exactly as [ScheduleTrigger.Overlap]'s
+    // `terminate_other` says of a firing. The arm to reach for when the newest
+    // request is the true one — a redeploy superseding the deploy it interrupts —
+    // and never for anything whose half-finished state matters.
+    ON_CONFLICT_TERMINATE_OTHER = 3;
+  }
+
+  // Key is what is held: the resource one run at a time may touch.
+  //
+  // Written as a literal for a workflow that is globally exclusive of itself, or
+  // as an expression over the run's own arguments — `${inputs.cluster}` — for one
+  // exclusive per cluster.
+  //
+  // # Resolved once, at submit, from bound inputs and nothing else
+  //
+  // The expression is evaluated exactly once, in `FlowstateServer.Run`, after
+  // [BindRunInputs] and before the run exists — the same moment and the same
+  // discipline [SignalPolicyRule.subject_from] established. `inputs.*` is the
+  // whole of what it may read, and the validator refuses anything else, because
+  // at that moment nothing else exists: no step has produced an output, `vars:`
+  // have not been evaluated, and there is no run to have a `run.id`.
+  //
+  // What the resolved literal is used for is the *only* thing it is used for: it
+  // is digested into the run's workflow id and then discarded. It is never
+  // written to a memo, a search attribute or history, which is deliberate — a key
+  // is frequently the name of a customer or a cluster, and `webhookWorkflowID`'s
+  // reasoning about durable, broadly readable identifiers (invariant 8) applies
+  // unchanged. Nothing downstream can read the expression either, since nothing
+  // downstream reads this message at all.
+  Value key = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // OnConflict is which of the three answers this workflow wants. Unset is
+  // ON_CONFLICT_REJECT — see that arm for why the default is the refusal.
+  OnConflict on_conflict = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).enum = {defined_only: true}
+  ];
 }
 
 // PluginRequirement is what a Flowfile's plugins: block declares: a plugin
@@ -650,31 +803,80 @@ message InputDeclaration {
   // legitimately ride in history, but that should not be casually pasted into a
   // terminal, a log, or an agent's answer.
   //
-  // This is display etiquette and nothing more. It is not containment: the value
-  // is an ordinary part of the run's history exactly like any other input, and
-  // anyone with access to that history reads it in the clear, the same way they
-  // read any other input. A secret reference is different: it keeps the value
-  // *out* of history entirely, resolving it only inside the activity that needs
-  // it. That is containment, and this is not it. Marking sensitive a value that
-  // must never reach an operator's screen at all is a mistake; that value is a
-  // secret reference, not this.
+  // This is a rule about display, and it is enforced — see the list below for
+  // exactly where. It is not containment: the value is an ordinary part of the
+  // run's history exactly like any other input, and anyone with access to that
+  // history reads it in the clear, the same way they read any other input. A
+  // secret reference is different: it keeps the value *out* of history
+  // entirely, resolving it only inside the activity that needs it. That is
+  // containment, and this is not it. Marking sensitive a value that must never
+  // reach an operator's screen at all is a mistake; that value is a secret
+  // reference, not this.
   //
   // # What this does on an *input*, precisely
   //
-  // Declared *outputs* are redacted everywhere Flowstate renders them; an input
-  // is rendered on exactly one surface (a schedule's bound arguments, through
-  // `flow schedule describe` and `flow schedule list`), and there a
-  // sensitive-declared value is redacted the same way, server-side, before it
-  // crosses the wire. The redaction lives on the server rather than the client
-  // because the server is the only party that holds both the schedule and the
-  // spec that declared the sensitivity; a `ScheduleDescription` on the wire
-  // carries the already-redacted value, not the raw one for a client to hide.
+  // This sentence used to say an input was rendered on exactly one surface —
+  // a schedule's bound arguments — and that stopped being true twice, first
+  // when a sensitive *input* was made a reason to withhold a run's whole step
+  // transcript and carried state (#975), and again when a `for_each` bound one
+  // into a failing step and the failure sentence printed it (#974). Both are
+  // written down here now, because this comment travels in the descriptor set
+  // to an editor's hover, and a normative sentence about what a flag does must
+  // not be something the renderers have quietly outgrown.
   //
-  // What is not yet built is a reveal path: `flow get` has `--reveal-sensitive`,
-  // and the schedule RPCs have no field to carry that request. An operator who
-  // needs the value must read it from wherever it was configured, not from a
-  // describe. That is a display-surface gap, not a containment one: this flag
-  // was never containment (see above).
+  // A sensitive-declared value is withheld or redacted on four surfaces:
+  //
+  //  1. A schedule's bound arguments, through `flow schedule describe` and
+  //     `flow schedule list`, redacted server-side before they cross the wire
+  //     — the server is the only party holding both the schedule and the spec
+  //     that declared the sensitivity, so a `ScheduleDescription` carries the
+  //     already-redacted value rather than the raw one for a client to hide.
+  //  2. A run's step transcript and the carried state of a running run,
+  //     withheld *whole* — every step, every name — the moment a
+  //     specification declares anything sensitive, input or output. Blunt on
+  //     purpose: a `vars:` block is very often just `${inputs.<name>}` and a
+  //     loop's `state:` carries whatever the body computed from one, so a rule
+  //     that traced names would look precise and miss most of it.
+  //  3. The values a `flow test` case prints — its transcript, its stub
+  //     diagnostics, its witnesses, and an attached debugger's own output.
+  //  4. The sentence a failed run reports, wherever the renderer holds the
+  //     run's arguments as well as its file: `flow run local`, and `flow run`
+  //     following the run it just submitted. The value is removed from the
+  //     text rather than the text being withheld, because nothing else on a
+  //     response answers "why did this fail".
+  //
+  // The mechanism for 3 and 4 is a value set, not a name: the declared value
+  // and every value nested inside it, so a `for_each`'s bound item is covered
+  // by the declaration on the list it was drawn from, and a `vars:` copy by
+  // the declaration on what it copied. Nothing re-declares sensitivity at a
+  // binding.
+  //
+  // # What is not enforced, and cannot be by this flag
+  //
+  // None of this is containment, and the list above does not make it so. The
+  // value is still an ordinary part of the run's history; anyone with access
+  // to that history reads it in the clear. Specifically:
+  //
+  //   - `flow get <id>` and `flow watch <id>` are later invocations holding
+  //     neither the file nor the arguments. They redact what they can name and
+  //     leave a failure sentence alone: withholding it would silence the only
+  //     field that says why a run failed, on every failed run anybody looks up
+  //     by id.
+  //   - A `log:` step prints what its author told it to print. An expression
+  //     that writes the value into a message is a disclosure the file asked
+  //     for, and a task Flowstate does not own can put a value anywhere it
+  //     likes.
+  //   - The value set matches by content. A value CEL has transformed — hashed,
+  //     re-encoded, arithmetic applied — is a different value, and no rule
+  //     working from a declaration can follow it there.
+  //
+  // Marking sensitive a value that must never reach an operator's screen at
+  // all is therefore still a mistake; that value is a secret reference.
+  //
+  // `--reveal-sensitive` is the one deliberate escape hatch, on every surface
+  // above except the schedule RPCs, which have no field to carry the request:
+  // an operator who needs a schedule's bound argument reads it from wherever
+  // it was configured, not from a describe.
   bool sensitive = 7;
 
   // Field 8 was Pattern: an RE2 regular expression a `type: string` value had to
@@ -1181,6 +1383,26 @@ message Wait {
     // drivers, so every arm of this message has the replay-safe clock the
     // binding rule asks for. See [NowIdentifier].
     Value duration_expr = 5;
+
+    // SignalBatch waits for a signal and then takes every other delivery
+    // already buffered for that name, in one step: `wait_for_signals:`.
+    //
+    // The event-accumulator shape — a burst of orders, approvals, or webhook
+    // deliveries processed together — rather than a second way to spell an
+    // approval gate. It blocks exactly as `signal` does until the *first*
+    // delivery, then drains what is already buffered without blocking again, so
+    // "process whatever arrived" falls out of the wait that already exists
+    // rather than needing a new timer.
+    //
+    // A fifth arm rather than a mode inside `signal`, because the two bind
+    // disjoint name sets in their `outputs:` — see [SignalBatch] for the whole
+    // argument, and for the honest accounting of what batching does and does
+    // not remove from workflow history.
+    //
+    // `timeout` and `timeout_expr` below work on it unchanged, and mean what
+    // they mean on `signal`: how long to wait for the first delivery. A batch
+    // that lapses produces `count: 0` and `timed_out: true`.
+    SignalBatch signal_batch = 7;
   }
 
   // Timeout bounds how long the wait may last, for a wait that might otherwise
@@ -1685,6 +1907,22 @@ message StepPolicy {
   // best-effort work expressible: a notification that could not be delivered
   // should not abandon the workload that succeeded.
   bool continue_on_error = 3;
+
+  // TotalTimeout bounds the step across every attempt and every wait between
+  // them: the wall-clock budget the whole retried step gets, where Timeout
+  // bounds one attempt inside it.
+  //
+  // It sits here rather than in RetryPolicy because the bound it names applies
+  // to a step that declares no retry at all — a single long attempt is already
+  // cut at the engine's default overall budget. Spelling it under Retry would
+  // claim the bound exists only when retrying does, which is false of the
+  // mechanism it maps to.
+  //
+  // An explicit value is honoured exactly. The engine widens its default
+  // overall budget when a declared Timeout multiplied by the attempts allowed
+  // would not fit inside it; a value written here suppresses that widening,
+  // because a budget the engine silently extends is not a budget.
+  google.protobuf.Duration total_timeout = 4 [(buf.validate.field).duration = {gt: {}}];
 }
 
 // RetryPolicy describes how a failed step attempt is retried.

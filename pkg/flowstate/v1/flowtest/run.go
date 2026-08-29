@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -119,9 +121,14 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 	// table's template and silently never its rows — the parsed-vs-built
 	// divergence #1015 is about, wearing #924's clothes. On a file Load
 	// already expanded this is a no-op: no surviving entry carries `cases:`.
-	expanded, err := expandTableEntries(file.Tests)
-	if err != nil {
-		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: err.Error()}}
+	// Collected against no document: a [File] built in Go was never parsed, so
+	// its refusals are the same refusals with no line to give them — which is
+	// what [newProblems] answers for a nil document, rather than this door
+	// needing a second shape of the same check.
+	p := newProblems(nil)
+	expanded, _ := expandTableEntries(p, file.Tests)
+	if refused := p.err(); refused != nil {
+		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: refused.Error()}}
 	}
 	shallow := *file
 	shallow.Tests = expanded
@@ -228,7 +235,8 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// invocations (Codex, #1052, twice).
 				record := !opts.skipTranscript &&
 					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
-				return runCase(ctx, &test, l.deliveryPath, l.load, record, file.Vars)
+				return runCase(ctx, &test, l.deliveryPath, l.load, record,
+					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
@@ -528,7 +536,7 @@ func RunSourceWith(ctx context.Context, label string, workflowSource, testSource
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars map[string]any) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -545,9 +553,42 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		}
 	}()
 
+	// The redaction posture, established BEFORE anything can fail (#1072; Codex,
+	// #1197, eleventh). What a file withholds is load-time information — the
+	// taint closure is computed from the document and nothing setup does can add
+	// to it — so there is no reason for it to arrive late, and every reason not
+	// to: `workflow: "${vars.path}"` substitutes a withheld string into the very
+	// field the loader quotes back in `loading workflow %q`, and that exit is
+	// reached before the run's own sensitive values are known.
+	//
+	// It widens once the case's bound inputs and secrets are known (see below),
+	// and `caseError` always reads the current one, so an exit is protected by
+	// whatever is established by the time it is taken.
+	// Both halves that are knowable now: what the file withholds, and the case's
+	// own `secrets:` plaintext. The second belongs here for the same reason as
+	// the first — `test.Secrets` is on the case before anything runs — and it is
+	// needed here too, because a *literal* var named from `secrets:` is
+	// deliberately not in [withheldVars] (see [withheldMaterial]) and would
+	// otherwise reach a setup failure through the value it was substituted into.
+	posture := sensitiveInputs{}.WithValues(
+		append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...)...)
+
+	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
+	// surface in vars.go's containment table, and the one its own row predicted
+	// would be a leak until it met the row.
+	//
+	// Through [redactedErrorText], which *is* the pair every other rendering here
+	// uses: withhold entirely under a withholding posture, else the value
+	// comparison and then the substring backstop. Every exit below sets the
+	// error through this and none by assignment, so a seventh exit added later
+	// cannot quietly become a seventh surface.
+	caseError := func(format string, args ...any) {
+		result.Error = redactedErrorText(fmt.Sprintf(format, args...), posture)
+	}
+
 	compiled, err := compileStubs(test.Stubs)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -572,7 +613,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	workflow, err := load()
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 	// Reported to the caller for coverage: the workflow this case compiled is
@@ -586,7 +627,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// virtual day later.
 	stubs, err := bindStubs(compiled, workflow)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -595,13 +636,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// disagreeing with the workflow, and a whole virtual day of execution
 	// cannot make the claim checkable. See [checkExpectationNames].
 	if err := checkExpectationNames(&test.Expect, workflow); err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -664,7 +705,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if test.Trigger != nil && test.Trigger.Replays() {
 		mapped, deliveryID, failures, err := replayDelivery(test, deliveryPath, workflow)
 		if err != nil {
-			result.Error = err.Error()
+			caseError("%s", err)
 			return
 		}
 		if len(failures) > 0 || mapped == nil {
@@ -709,7 +750,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		bound = b
 		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
 		if err != nil {
-			result.Error = fmt.Sprintf("resolving workflow %q's signal policy: %v", test.Workflow, err)
+			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
 			return
 		}
 		policies = resolved
@@ -733,13 +774,24 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// the substring backstop catches "Bearer " + secret. An empty value is
 	// skipped — replacing the empty string would mark every position in
 	// every line while protecting nothing.
-	for _, value := range test.Secrets {
-		if value == "" {
-			continue
-		}
-		sensitive.values = append(sensitive.values, value)
-		sensitive.substrings = append(sensitive.substrings, value)
-	}
+	sensitive = sensitive.WithValues(slices.Collect(maps.Values(test.Secrets))...)
+
+	// And what a computed var inherited from one (#1072, repair 4). The
+	// substring backstop above is complete only while no var can *transform*
+	// anything: `${vars.token.substring(0, 8)}` is a prefix of a secret, so it
+	// matches no sensitive value and contains none, and it would have printed
+	// in a witness in the clear. The taint is decided at load, by reference
+	// rather than by inspecting a value ([withheldFrom]), and this is where it
+	// becomes the one redaction set every surface of this case already shares.
+	sensitive = sensitive.WithValues(vars.withheld.text...)
+
+	// The posture widens to the case's own set here, which is a superset of what
+	// it was: `sensitive` now carries the file's withheld material as well as the
+	// run's inputs and secrets. Every exit taken from this point on renders
+	// through the fuller one, and every exit before it through what was already
+	// known — which is the whole of the ordering fix, in one assignment.
+	posture = sensitive
+
 	// A debugging session prints what the transcript prints, so it withholds
 	// what the transcript withholds (Codex, #1109). Capability-discovered the
 	// way the autopsy is: a debugger that does not implement it simply prints
@@ -752,18 +804,18 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// "a redactor is installed" as "this case withholds values" and says so
 	// at the autopsy — a rule that redacts nothing would put that notice on
 	// every failing case.
-	if redact := sensitive; redact.withholdAll || len(redact.substrings) > 0 || len(redact.values) > 0 {
+	if redact := sensitive; !redact.Empty() {
 		debugger := v1.DebuggerFromContext(ctx)
 
 		if redacting, ok := debugger.(interface {
 			SetRedactor(func(string) string)
 		}); ok {
 			redacting.SetRedactor(func(text string) string {
-				if redact.withholdAll {
+				if redact.WithholdAll() {
 					return "[withheld]\n"
 				}
 
-				return redactSensitiveSubstrings(text, redact.substrings)
+				return redact.RedactSubstrings(text)
 			})
 			defer redacting.SetRedactor(nil)
 		}
@@ -781,11 +833,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			SetValueRedactor(func(any) any)
 		}); ok {
 			redacting.SetValueRedactor(func(value any) any {
-				if redact.withholdAll {
+				if redact.WithholdAll() {
 					return "[withheld]"
 				}
 
-				return redactSensitiveTree(value, redact.values)
+				return redact.RedactTree(value)
 			})
 			defer redacting.SetValueRedactor(nil)
 		}
@@ -839,7 +891,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder)
 	defer stopScripts()
 	if scriptErr != nil {
-		result.Error = scriptErr.Error()
+		caseError("%s", scriptErr)
 		return
 	}
 
@@ -869,7 +921,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// failed expectation, because nothing about the expectations was actually
 	// judged.
 	if errors.Is(runErr, v1.ErrDebugSessionEnded) {
-		result.Error = fmt.Sprintf("the debug session ended this run before it finished, so this "+
+		caseError("the debug session ended this run before it finished, so this "+
 			"case has no verdict: %v", runErr)
 		result.Passed = false
 

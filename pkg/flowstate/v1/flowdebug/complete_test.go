@@ -16,6 +16,38 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
+func TestRenderCompletionBoundsAttackerChosenNamesAndTotalOutput(t *testing.T) {
+	t.Parallel()
+
+	candidates := make([]flowdebug.Candidate, celcomplete.MaxCandidates)
+	for i := range candidates {
+		candidates[i] = flowdebug.Candidate{Text: fmt.Sprintf("output_%03d", i), Detail: "an output this step produced"}
+	}
+	candidates[len(candidates)-1].Text = strings.Repeat("x", 950_000)
+
+	rendered := flowdebug.RenderCompletion(flowdebug.Completion{Candidates: candidates})
+
+	assert.LessOrEqual(t, len(rendered), flowdebug.MaxCompletionBytes,
+		"rendering is bounded before a transcript sink receives the materialized string")
+	assert.NotContains(t, rendered, strings.Repeat("x", flowdebug.MaxCompletionCandidateBytes+1),
+		"one long output name cannot establish a huge padding width")
+	assert.Contains(t, rendered, "… and more, not listed\n",
+		"a byte-bounded answer says that candidates were omitted")
+}
+
+func TestRenderCompletionTruncatesANameAtAUTF8Boundary(t *testing.T) {
+	t.Parallel()
+
+	rendered := flowdebug.RenderCompletion(flowdebug.Completion{Candidates: []flowdebug.Candidate{{
+		Text: strings.Repeat("界", flowdebug.MaxCompletionCandidateBytes),
+	}}})
+
+	assert.True(t, strings.ToValidUTF8(rendered, "invalid") == rendered,
+		"bounding a display name must not split its final encoded rune")
+	assert.LessOrEqual(t, len(strings.TrimSuffix(rendered, "\n")), flowdebug.MaxCompletionCandidateBytes)
+	assert.Contains(t, rendered, "…")
+}
+
 // Completion is asked *at a breakpoint*, over the scope the run is actually
 // held in, so every test here drives a real local run and asks its questions
 // from inside a [flowdebug.Console] — which is where a terminal would ask them.
@@ -232,7 +264,7 @@ func TestBreakCompletesOverStepsTheRunHasNotReached(t *testing.T) {
 	t.Parallel()
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: []string{"build", "test", "deploy"}},
+		flowdebug.Options{Steps: declared("completed", "build", "test", "deploy")},
 		[]string{"continue"},
 		[][]string{{"break de"}})
 
@@ -265,7 +297,7 @@ func TestDeleteCompletesOverBreakpointsAndNotOverSteps(t *testing.T) {
 	t.Parallel()
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: []string{"build", "test", "deploy"}, Breakpoints: []string{"deploy"}},
+		flowdebug.Options{Steps: declared("completed", "build", "test", "deploy"), Breakpoints: []string{"deploy"}},
 		[]string{"continue"},
 		[][]string{{"delete "}})
 
@@ -297,7 +329,7 @@ func TestTheVerbIsReadTheWayTheSessionReadsIt(t *testing.T) {
 	t.Parallel()
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: []string{"deploy"}},
+		flowdebug.Options{Steps: declared("completed", "deploy")},
 		[]string{"continue"},
 		[][]string{{"   break de", "break\tde", "  br"}})
 
@@ -322,7 +354,7 @@ func TestCompletionIsBounded(t *testing.T) {
 	}
 
 	console, _ := completingRun(t,
-		flowdebug.Options{Steps: many},
+		flowdebug.Options{Steps: declared("completed", many...)},
 		[]string{"continue"},
 		[][]string{{"break step"}})
 

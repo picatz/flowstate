@@ -22,10 +22,17 @@ import (
 // nothing to say. Returning nil is important: a hover popup containing a guess is
 // worse than no popup.
 func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
+	pos = clampPosition(pos) // see [clampPosition]
+
+	if doc.isTestDocument() {
+		// The test language's own, narrow hover — see testhover.go. Not the
+		// workflow grammar's answers: a document with no `steps:` has no
+		// step, input key, or `${...}` reference for that machinery to find.
+		return hoverTestDocument(doc, pos)
+	}
 	if !doc.speaksFlowfile() {
 		return nil // see [document.speaksFlowfile]
 	}
-	pos = clampPosition(pos) // see [clampPosition]
 
 	if doc.parsed == nil {
 		return nil
@@ -189,6 +196,7 @@ func dslKeyAt(step *parsedStep, pos lsp.Position) (dslKey, lsp.Range, bool) {
 		{"for_each", step.forEachEntry},
 		{"loop", step.loopEntry},
 		{"wait_for_signal", step.waitForSignalEntry},
+		{"wait_for_signals", step.waitForSignalsEntry},
 		{"switch", step.switchEntry},
 	} {
 		if block.entry != nil && block.entry.value != nil {
@@ -628,6 +636,17 @@ func waitResultDoc(name string) string {
 		fmt.Fprintf(&b, "\n\nRead as `%s.identity.subject`, `%s.identity.issuer`, `%s.accepted_at`, `%s.local`. "+
 			"Never anything the payload claims: a payload is evidence, a sender is identity.",
 			v1.SenderOutput, v1.SenderOutput, v1.SenderOutput, v1.SenderOutput)
+	case v1.DeliveriesOutput:
+		fmt.Fprintf(&b, "**`%s`** · `list`", v1.DeliveriesOutput)
+		fmt.Fprintf(&b, "\n\nEvery delivery this drain took, oldest first, each a `{%s, %s}` map shaped exactly "+
+			"as a single `wait_for_signal:`'s own two outputs are.", v1.PayloadOutput, v1.SenderOutput)
+		fmt.Fprintf(&b, "\n\nEmpty rather than absent on a drain that lapsed, so `size(%s)` is answerable either way.",
+			v1.DeliveriesOutput)
+	case v1.CountOutput:
+		fmt.Fprintf(&b, "**`%s`** · `int`", v1.CountOutput)
+		fmt.Fprintf(&b, "\n\nHow many deliveries this drain took. Its own name rather than `size(%s)` because it is "+
+			"what nearly every reader wants: the `if:` deciding whether there was anything to process.",
+			v1.DeliveriesOutput)
 	case v1.TimedOutOutput:
 		fmt.Fprintf(&b, "**`%s`** · `bool`", v1.TimedOutOutput)
 		fmt.Fprintf(&b, "\n\nWhether the wait ended because nobody answered in time.")

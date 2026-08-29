@@ -422,11 +422,21 @@ const (
 func (s *Session) scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names {
 	var groups []Names
 
-	add := func(name, listing string, names []string) {
+	// The root is the parameter and the listing is derived from it, rather
+	// than both being written at each call. They are one fact — `inspect
+	// steps.` is the command that enumerates the names under `steps` — and
+	// writing it twice per group is how the prompt's pointer and a renderer's
+	// prefix come to disagree about a group somebody adds later. See
+	// [Names.Root].
+	add := func(name, root string, names []string) {
 		if len(names) == 0 {
 			return
 		}
-		groups = append(groups, Names{Group: name, Names: names, listing: listing})
+		listing := ""
+		if root != "" {
+			listing = "inspect " + root + "."
+		}
+		groups = append(groups, Names{Group: name, Names: names, Root: root, listing: listing})
 	}
 
 	// No namespace named for the autopsy's bindings: one is offered bare, and
@@ -440,7 +450,7 @@ func (s *Session) scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names 
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		add(scopeGroupSteps, "inspect steps.", names)
+		add(scopeGroupSteps, "steps", names)
 	}
 
 	// These two are the lines a namespace is easiest to get wrong on, because
@@ -450,14 +460,14 @@ func (s *Session) scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names 
 	// (complete.go:271). `Scope.AmbientVars` are the workflow's declared
 	// `vars:`, and those are what `vars.` reaches (complete.go:280-282).
 	add(scopeGroupVars, "", sortedKeys(scope.GetVars()))
-	add(scopeGroupWorkflowVars, "inspect vars.", sortedKeys(scope.GetAmbientVars()))
+	add(scopeGroupWorkflowVars, "vars", sortedKeys(scope.GetAmbientVars()))
 
 	// The arguments the run was started with, which completion has offered
 	// since it learned the `inputs.` root (complete.go:305) and this collector
 	// did not. A value surface narrower than what [Session.Evaluate] resolves
 	// is the failure this function's own comment warns about, so leaving it out
 	// made the warning describe the code (Codex, #1120).
-	add(scopeGroupInputs, "inspect inputs.", sortedKeys(scope.GetInputs()))
+	add(scopeGroupInputs, "inputs", sortedKeys(scope.GetInputs()))
 
 	// The last two roots, and the ones that are not keyed by anything in the
 	// scope: `run` and `trigger` are answered *whole* by the activation
@@ -472,8 +482,8 @@ func (s *Session) scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names 
 	// the run rather than contents of it: `run.local` is a real answer when it
 	// is false, and both roots resolve for every run there is.
 	activation := scope.Activation(context.Background())
-	add(scopeGroupRun, "inspect run.", rootNames(activation, v1.RunRoot))
-	add(scopeGroupTrigger, "inspect trigger.", rootNames(activation, v1.TriggerRoot))
+	add(scopeGroupRun, "run", rootNames(activation, v1.RunRoot))
+	add(scopeGroupTrigger, "trigger", rootNames(activation, v1.TriggerRoot))
 
 	return groups
 }
@@ -936,6 +946,9 @@ func NodeKind(node *v1.Node) string {
 	case *v1.Node_Wait:
 		if signal := kind.Wait.GetSignal(); signal != nil {
 			return fmt.Sprintf("wait_for_signal %q", signal.GetName())
+		}
+		if batch := kind.Wait.GetSignalBatch(); batch != nil {
+			return fmt.Sprintf("wait_for_signals %q", batch.GetName())
 		}
 
 		return "wait"

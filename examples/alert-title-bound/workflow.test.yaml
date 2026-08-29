@@ -1,0 +1,48 @@
+# Three cases, because the bound has two ways to matter and one way to be
+# gotten wrong. The default passes, unremarkably. The second title is exactly
+# 40 runes and 44 *bytes* — proof that the bound reads as this file's header
+# says: a byte-counting bound would have refused this one, and `max_len:`
+# lets it through because the display it is sized for shows characters, not
+# encoded bytes. The third is that same title with one more rune appended,
+# refused before `page` ever runs.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the declared default fits the pager's display
+    stubs:
+      - task: log
+        where: "inputs.message == 'paging: primary db unreachable, failing over'"
+        returns: {}
+    expect:
+      ran: [page]
+      outputs:
+        page_title: "primary db unreachable, failing over"
+
+  - name: a 40-rune title with multi-byte characters still fits — the bound counts characters, not bytes
+    inputs:
+      page_title: "café-eu régiao: réplica caída, retry 123"
+    stubs:
+      - task: log
+        where: "inputs.message == 'paging: café-eu régiao: réplica caída, retry 123'"
+        returns: {}
+    expect:
+      ran: [page]
+      outputs:
+        page_title: "café-eu régiao: réplica caída, retry 123"
+
+  - name: one rune past the bound is refused before paging runs
+    inputs:
+      # The 40-rune title above with one more character appended.
+      page_title: "café-eu régiao: réplica caída, retry 1234"
+    stubs:
+      # Declared and never reached: the refusal happens at submit, before the
+      # first step, exactly as `parameterized-deploy`'s own refusals do.
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must be at most 40 character(s) long; got 41"

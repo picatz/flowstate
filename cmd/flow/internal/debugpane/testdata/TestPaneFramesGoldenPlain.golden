@@ -1,0 +1,84 @@
+steps ─────────────────────────────────────────────────────────────────────────
+→ ▶ checkout running
+  ○ build pending
+  ○ flaky pending
+  ○ gated pending
+  ○ deploy pending
+  ○ notify pending
+  6 step(s)
+
+scope ─────────────────────────────────────────────────────────────────────────
+  vars.region          "eu-west-1"
+  inputs.version       "2026.9.0"
+  run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.local            true
+  run.run_id           "local"
+  run.workflow_id      "local"
+  trigger.delivery_id  ""
+  trigger.kind         "manual"
+  trigger.name         ""
+  1 more of 10 (`scope` lists the names; `inspect <name>` reads one)
+
+steps ─────────────────────────────────────────────────────────────────────────
+  ✓ checkout ok
+→ ▶ build running
+  ○ flaky pending
+  ○ gated pending
+  ○ deploy pending
+  ○ notify pending
+  6 step(s)
+
+scope ─────────────────────────────────────────────────────────────────────────
+  steps.checkout       {"artifact":"checkout.tar.gz"}
+  vars.region          "eu-west-1"
+  inputs.version       "2026.9.0"
+  run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.local            true
+  run.run_id           "local"
+  run.workflow_id      "local"
+  trigger.delivery_id  ""
+  trigger.kind         "manual"
+  2 more of 11 (`scope` lists the names; `inspect <name>` reads one)
+
+steps ─────────────────────────────────────────────────────────────────────────
+  ✓ checkout ok
+  ✓ build ok
+→ ▶ flaky running
+  ○ gated pending
+  ○ deploy pending
+  ○ notify pending
+  6 step(s)
+
+scope ─────────────────────────────────────────────────────────────────────────
+  steps.build          {"artifact":"build.tar.gz"}
+  steps.checkout       {"artifact":"checkout.tar.gz"}
+  vars.region          "eu-west-1"
+  inputs.version       "2026.9.0"
+  run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.local            true
+  run.run_id           "local"
+  run.workflow_id      "local"
+  trigger.delivery_id  ""
+  3 more of 12 (`scope` lists the names; `inspect <name>` reads one)
+
+steps ─────────────────────────────────────────────────────────────────────────
+  ✓ checkout ok
+  ✓ build ok
+  △ flaky tolerated
+  — gated skipped
+→ ▶ deploy running
+  ○ notify pending
+  6 step(s)
+
+scope ─────────────────────────────────────────────────────────────────────────
+  steps.build      {"artifact":"build.tar.gz"}
+  steps.checkout   {"artifact":"checkout.tar.gz"}
+  steps.flaky      {"error":"deliberate failure"}
+  vars.region      "eu-west-1"
+  inputs.version   "2026.9.0"
+  run.identity     {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.local        true
+  run.run_id       "local"
+  run.workflow_id  "local"
+  4 more of 13 (`scope` lists the names; `inspect <name>` reads one)
+

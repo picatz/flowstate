@@ -3,6 +3,7 @@ package flowdebug
 import (
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
@@ -10,6 +11,17 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
+)
+
+const (
+	// MaxCompletionBytes bounds the string RenderCompletion materializes. The
+	// MCP transcript has its own bound, but it sees this string only after the
+	// renderer has built it.
+	MaxCompletionBytes = 64 << 10
+
+	// MaxCompletionCandidateBytes keeps one attacker-chosen name from setting
+	// an enormous padding width for every other candidate.
+	MaxCompletionCandidateBytes = 256
 )
 
 // Completion is what the session offers at one cursor position.
@@ -679,8 +691,13 @@ func (s *Session) reachableSteps(at promptSubject, prefix string) ([]string, boo
 	}
 
 	s.mu.Lock()
-	for _, id := range s.steps {
-		add(id)
+	for _, step := range s.steps {
+		// The bare id, because that is what `break` and `until` name: the
+		// engine's own vocabulary for a step is an id (`v1.Debugger` and
+		// `v1.RunObserver` are both handed one), so a breakpoint on `build`
+		// deliberately holds at every step called `build` the run reaches.
+		// [Step.Workflow] disambiguates a *list*, not a breakpoint.
+		add(step.ID)
 	}
 	for id := range s.seen {
 		add(id)
@@ -730,26 +747,52 @@ func (s *Session) breakpointIDs() []string {
 func RenderCompletion(answer Completion) string {
 	width := 0
 	for _, candidate := range answer.Candidates {
-		width = max(width, len(candidate.Text))
+		width = max(width, min(len(candidate.Text), MaxCompletionCandidateBytes))
 	}
 
 	var out strings.Builder
+	out.Grow(min(MaxCompletionBytes, len(answer.Candidates)*(width+32)))
+	const more = "… and more, not listed\n"
 	for _, candidate := range answer.Candidates {
+		text := capCompletionField(candidate.Text, MaxCompletionCandidateBytes)
+		detail := capCompletionField(candidate.Detail, MaxCompletionCandidateBytes)
+		line := text + "\n"
 		if candidate.Detail == "" {
-			out.WriteString(candidate.Text + "\n")
-
-			continue
+			// Keep the unadorned form above.
+		} else {
+			line = padRight(text, width) + "   " + detail + "\n"
 		}
-		out.WriteString(padRight(candidate.Text, width) + "   " + candidate.Detail + "\n")
+		if out.Len()+len(line) > MaxCompletionBytes-len(more) {
+			out.WriteString(more)
+
+			return out.String()
+		}
+		out.WriteString(line)
 	}
 	if answer.Truncated {
 		// Said out loud, because a list somebody scans for a name that is not
 		// in it should tell them the list was cut rather than let them
 		// conclude the name does not exist.
-		out.WriteString("… and more, not listed\n")
+		out.WriteString(more)
 	}
 
 	return out.String()
+}
+
+// capCompletionField truncates without splitting a UTF-8 encoding. It only
+// examines the bounded prefix: converting an untrusted name to []rune here
+// would recreate a proportional allocation before the rendering bound.
+func capCompletionField(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+
+	end := limit - len("…")
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+
+	return s[:end] + "…"
 }
 
 // padRight pads to width, for the column a detail starts at.

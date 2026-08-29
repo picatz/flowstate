@@ -32,9 +32,14 @@ func newToyConfig(t *testing.T) payloadcodec.Config {
 }
 
 // TestZeroConfigIsTheNullCodec pins the default. Every deployment that has
-// configured nothing must get exactly the payload path it had before this
-// package existed, not a codec converter wrapping an identity codec, which
-// would be a different set of bytes for the same value.
+// configured nothing must get the serializer itself, not a codec converter
+// wrapping an identity codec, which would be a different set of bytes for the
+// same value.
+//
+// The serializer rather than converter.GetDefaultDataConverter() since #911:
+// the composite is flowstate's own now, differing from the SDK's only in the
+// order of the two proto converters. Pinning the identity here is what stops a
+// codec converter quietly reappearing on the unconfigured path.
 func TestZeroConfigIsTheNullCodec(t *testing.T) {
 	t.Parallel()
 
@@ -43,7 +48,7 @@ func TestZeroConfigIsTheNullCodec(t *testing.T) {
 	require.False(t, cfg.Enabled())
 	require.Equal(t, "none", cfg.Name())
 	require.NoError(t, cfg.Validate())
-	require.Equal(t, converter.GetDefaultDataConverter(), cfg.DataConverter())
+	require.Equal(t, payloadcodec.Serializer(), cfg.DataConverter())
 }
 
 // TestCodecRoundTripsAValue is the ordinary direction: a value encoded through

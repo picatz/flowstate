@@ -295,16 +295,27 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 		return FixResult{Source: data, Refusals: []Diagnostic{refusal}}, nil
 	}
 
-	// A Flowfile holding an anchor, alias, or merge key is refused rather than
-	// rewritten, in the same words the compiler uses (see strict.go). The rewriter
-	// leaves it byte for byte alone: rooting a reference or stamping an edition
-	// onto a file the compiler then refuses for its anchors would be the "`flow
-	// fix . && git commit` succeeds on a file `flow validate` rejects" outcome this
-	// command exists to avoid. Mechanically inlining the construct — so the author
-	// is not left to spell it out by hand — is a named follow-up (#653); until
-	// then the positioned refusal tells them exactly what to write.
+	// A Flowfile holding an anchor, alias, or merge key is not one this build's
+	// grammar accepts (see strict.go), so nothing below this may run on it: rooting
+	// a reference or stamping an edition onto a file the compiler then refuses for
+	// its anchors would be the "`flow fix . && git commit` succeeds on a file `flow
+	// validate` rejects" outcome this command exists to avoid.
+	//
+	// What happens instead is the whole of the migration across that refusal: a
+	// whole-value alias is replaced by the bytes of the value its anchor names, and
+	// the anchor markers are dropped. That rewrite is this pass and nothing else —
+	// the file comes back holding no anchors and no aliases, and [Fix]'s fixed-point
+	// loop re-parses it, so the next round is an ordinary document that the walks
+	// below see for the first time in the spelling they understand.
+	//
+	// A merge key is not inlined, because reproducing `<<:` precedence is deciding
+	// which of two spellings of a key the author meant. It is refused in the
+	// compiler's own words, as is anything else this cannot copy byte-safely, and a
+	// refusal leaves the file byte for byte alone — see fixalias.go.
 	if strictRefusals := strictYAMLRefusalsIn(file); len(strictRefusals) > 0 {
-		return FixResult{Source: data, Refusals: strictRefusals}, nil
+		inlined, _ := inlineWholeValueAliases(data, file)
+
+		return inlined, nil
 	}
 
 	f := &fixer{
@@ -1866,9 +1877,13 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
-			if named && name == waitForSignalKey {
-				// Everything below a `wait_for_signal:` is inside the wait, which is
-				// what the shaping subtraction one branch down needs to know.
+			if named && (name == waitForSignalKey || name == waitForSignalsKey) {
+				// Everything below a `wait_for_signal:` or a `wait_for_signals:` is
+				// inside the wait, which is what the shaping subtraction one branch
+				// down needs to know. Both, because both bind a result bare in their
+				// `outputs:` — a rewriter that knew one of the two would corrupt a
+				// working file in exactly the case it did not know about, which is
+				// the failure this whole comment block exists to record.
 				waiting = true
 			}
 			if named && waiting && name == waitOutputsKey {
@@ -1879,8 +1894,11 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// names and a step may legitimately be called any of them.
 				//
 				// Taken from where the engine evaluates the thing, per CLAUDE.md:
-				// [v1.ShapeSignalOutputs] binds exactly these three, at the moment
-				// the wait resolves, and nowhere else.
+				// [v1.ShapeSignalOutputs] and [v1.ShapeSignalBatchOutputs] bind
+				// exactly these names, at the moment the wait resolves, and nowhere
+				// else. [waitShapingNames] is the union of the two arms' result
+				// names; see its own comment for why the union rather than a pair
+				// of sets keyed off which arm opened this subtree.
 				steps = without(steps, waitShapingNames)
 			}
 			if named && name == triggersKey {

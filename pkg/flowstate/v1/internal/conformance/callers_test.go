@@ -42,6 +42,11 @@ var oneSidedByDesign = map[string]string{
 	"AssertRehearsalSenderIsNeverAuthorizedDurably": "the claim is about durable admission only — " +
 		"a rehearsal's stand-in sender must never authorize a durable delivery (signalrehearsal.go), " +
 		"so a local caller would be asserting a property the local driver deliberately does not have",
+	"AssertRateLimitDelayHonored": "the claim is about a real clock only — the durable driver's " +
+		"retry backoff is a Temporal timer, and testsuite.WorkflowTestSuite auto-skips virtual time " +
+		"for it, so a wall-clock elapsed duration measured there reads near zero whether or not the " +
+		"header's delay won and would not distinguish the fix from its absence; see ratelimit.go's " +
+		"doc comment",
 }
 
 // driverCallers is where each exported function is consumed from, after

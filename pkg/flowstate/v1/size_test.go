@@ -44,22 +44,29 @@ func TestCompletedRunOutputsAreBounded(t *testing.T) {
 		"a transcript within the reserved payload limit was refused")
 }
 
-// TestTheBoundIsMeasuredAgainstWhatIsActuallySerialized is the regression for
-// #716: flowstate's DataConverter serializes every RunState and every
-// completed run's Workflow_StepOutputs as ProtoJSON (NewProtoJSONPayloadConverter
-// wins the match ahead of the binary converter — see
-// go.temporal.io/sdk/converter's default_data_converter.go), and ProtoJSON is
-// not a fixed percentage larger than binary protobuf: field names are spelled
-// out per occurrence, so a transcript of many small map entries — exactly what
-// a run with many steps produces — expands far more than a transcript of one
-// large value does.
+// TestTheBoundIsMeasuredAgainstProtoJSON is the regression for #716, kept
+// unchanged by #911.
+//
+// #716's finding: ProtoJSON is not a fixed percentage larger than binary
+// protobuf. Field names are spelled out per occurrence, so a transcript of many
+// small map entries — exactly what a run with many steps produces — expands far
+// more than a transcript of one large value does, and a proto.Size-based check
+// admitted transcripts the ProtoJSON encoding put over the limit.
+//
+// Since #911 ProtoJSON is no longer what a payload is written as; the write
+// side registers the binary converter first. The measurement stays ProtoJSON
+// anyway, on purpose: [v1.CheckRunStateSize] runs inside workflow code, so its
+// arithmetic is a determinism input and changing it would rewrite a branch
+// every already-suspended run must reproduce on replay. See encodedPayloadSize
+// in size.go. So this test now pins a bound that deliberately over-counts — the
+// over-count is margin, and it fails in the safe direction — rather than one
+// that matches the wire.
 //
 // This builds a transcript from many tiny numeric outputs specifically because
 // that is the shape the old proto.Size-based check got wrong: comfortably
 // under the bound in binary, over it once every field name in every one of
-// those small entries is spelled out in the payload Temporal would actually be
-// asked to store.
-func TestTheBoundIsMeasuredAgainstWhatIsActuallySerialized(t *testing.T) {
+// those small entries is spelled out.
+func TestTheBoundIsMeasuredAgainstProtoJSON(t *testing.T) {
 	t.Parallel()
 
 	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{}}

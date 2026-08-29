@@ -15,7 +15,8 @@ steps:
   # and the parent workflow's header for the composed shape this is part of.
   - id: provision_access
     http:
-      json: '${{"tenant": inputs.tenant}}'
+      json:
+        tenant: ${inputs.tenant}
       method: POST
       outputs:
         resource_id: ${response.json.resource_id}
@@ -23,7 +24,8 @@ steps:
       url: https://provisioning.internal.example.com/access-grants
     undo:
       http:
-        json: '${{"resource_id": steps.provision_access.resource_id}}'
+        json:
+          resource_id: ${steps.provision_access.resource_id}
         method: DELETE
         url: https://provisioning.internal.example.com/access-grants
 outputs:

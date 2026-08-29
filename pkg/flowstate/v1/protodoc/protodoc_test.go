@@ -39,8 +39,10 @@ func TestEmbeddedDescriptorSetCarriesSourceInfo(t *testing.T) {
 	// silently lost it would cost the documentation of every message in it and
 	// nothing would say so.
 	want := map[string]bool{
+		"flowstate/v1/audit.proto":         false,
 		"flowstate/v1/authorization.proto": false,
 		"flowstate/v1/catalog.proto":       false,
+		"flowstate/v1/debug.proto":         false,
 		"flowstate/v1/diagnostics.proto":   false,
 		"flowstate/v1/identity.proto":      false,
 		"flowstate/v1/reports.proto":       false,

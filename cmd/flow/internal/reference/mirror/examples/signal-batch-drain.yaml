@@ -1,0 +1,161 @@
+edition: v2026.3
+name: signal-batch-drain
+description: An event accumulator that drains a burst of signals in one step, rather than paying a loop iteration for each — and that leaves what it could not take for the next drain.
+
+# # Why a batch, and what batching actually buys
+#
+# The accumulator shape this repository already had is `loop:` around
+# `wait_for_signal:` — see `examples/entity-order`, which is the right shape for
+# what it does: an entity mutated one event at a time, where each mutation is a
+# decision the loop has to make before the next arrives.
+#
+# It is the wrong shape for a *burst*. Each `wait_for_signal:` consumes exactly
+# one buffered delivery, so fifty orders placed in the same second cost fifty
+# loop iterations. And it is worth being exact about what those fifty cost,
+# because the obvious answer is wrong:
+#
+#   - Not signal events. A signal costs one `WorkflowExecutionSignaled` entry in
+#     history whether it is drained in a batch or consumed one at a time, and
+#     nothing can change that: the event is written when the sender's call is
+#     accepted, long before any workflow code decides how to read it. Anyone
+#     who tells you batching halves your history is measuring the wrong column.
+#   - A workflow task per iteration, which is what it does buy. Scheduled,
+#     Started and Completed — three events — plus whatever the body schedules,
+#     every time round. A burst drained in one step coalesces into a handful of
+#     workflow tasks instead, because signals arriving while a task is already
+#     pending are delivered into that same task.
+#   - One `results` entry per iteration, weighed against the loop's own
+#     `MaxLoopResultsBytes` bound. `docs/DSL.md` warns that this shape
+#     "accumulates one entry per signal forever"; a drain records one entry for
+#     the whole burst.
+#
+# So: fewer workflow tasks and one results entry instead of N. That is the
+# honest headline, and it is the reason to reach for `wait_for_signals:` when
+# events arrive in bursts and the *set* is what you want to act on.
+#
+# # It blocks like a gate and then stops blocking
+#
+# `wait_for_signals:` waits exactly as `wait_for_signal:` does — the same
+# durable timer, the same `timeout:`, the same cancellation — until the *first*
+# delivery. Then it takes everything else already buffered without waiting
+# again. "Process whatever arrived" falls out of the wait that already exists;
+# there is no settling window and no second timer, and this file deliberately
+# does not pretend there is one. A fixed batching window is what `settle` below
+# is: an ordinary `sleep:`.
+#
+# # The bound, and what happens at it
+#
+# `max_batch:` is deliberately small here — smaller than the burst the tests
+# send — because a bound nothing reaches is a bound nothing tests. What is left
+# past it is not dropped and not re-buffered: it stays where it was, and the
+# next drain takes it. That is what `remainder` below shows, and it is why
+# reaching the bound costs an iteration rather than an order.
+#
+# Send a burst at one of these with:
+#
+#   flow signal <workflow-id> order-placed --data '{"id": "ord-1", "cents": 1999}'
+#
+# and rehearse the same thing on a laptop, which is what `workflow.test.yaml`
+# beside this file does under a virtual clock.
+#
+# # Why every duration here is measured in seconds
+#
+# A real order accumulator batches over minutes and lapses over hours. The
+# durations below are deliberately small so that a run nobody sends anything to
+# finishes on its own, unattended, inside the budget the example harnesses give
+# it — the same choice `examples/wait-timeout` and `examples/signal-rule-identity`
+# make, and for the same reason: an example whose subject is a deadline passing
+# has to be one a test can sit through. Scale them; nothing else about this file
+# changes.
+steps:
+  # The batching window, spelled as what it is. A drain takes what has arrived,
+  # so something has to decide how long "arrived" means — and a plain durable
+  # timer says it in one line, with no new grammar and nothing new to bound.
+  #
+  # A quiet-period settle ("drain once nothing new has arrived for 30s") is a
+  # different feature with a second timer per iteration behind it, and it is
+  # deliberately not this one.
+  - id: settle
+    sleep: 2s
+
+  # The drain. `max_batch: 3` against a burst of five, so this file demonstrates
+  # a bound being reached rather than merely declared.
+  - id: batch
+    description: Takes the first three orders of the burst; the rest stay buffered.
+    wait_for_signals:
+      name: order-placed
+      max_batch: 3
+      # A drain asks a question the same way a gate does, under exactly the same
+      # rules: evaluated once at the moment this step is known to be parking,
+      # seeing the enclosing scope and `now` and not the wait's own result, and
+      # refused any reach to a `sensitive:` input or a `${secret(...)}`.
+      #
+      # It matters more here than the shape suggests. An operator holding a run
+      # id sees `order-placed` — a routing key — and learns nothing about how
+      # many this run is prepared to take or what it will do with them. A drain
+      # parked on an empty channel is exactly as opaque as a parked approval
+      # gate, and this is the sentence that makes it not so.
+      #
+      # A drain that finds orders already buffered never parks, and so asks
+      # nobody anything.
+      prompt: send up to 3 order-placed events; whatever has arrived is taken together
+      # How long to wait for the *first* delivery, not for the batch to fill.
+      # A drain that lapses is an ordinary outcome, not a failure: `count` is 0
+      # and `timed_out` is true, and the run carries on.
+      timeout: 5s
+      # Shaped exactly as a `wait_for_signal:`'s `outputs:` is — same evaluator,
+      # same single moment, and it replaces rather than extends. What differs is
+      # the names it binds: `deliveries`, `count` and `timed_out`. There is no
+      # `payload` and no `sender` here, because a batch has many of each, and a
+      # name that silently meant "the first one" is the kind of value an author
+      # reads once and then branches on forever.
+      outputs:
+        cents: ${deliveries.map(delivery, delivery.payload.cents)}
+        ids: ${deliveries.map(delivery, delivery.payload.id)}
+        # Its own name rather than `size(deliveries)`, because this is what
+        # nearly every reader of a drain actually wants.
+        taken: ${count}
+        timed_out: ${timed_out}
+
+  # The remainder, which is the whole point of leaving it. Nothing was dropped
+  # at the bound above, so this drain finds the two orders that did not fit and
+  # takes them immediately — no timer is spent, because a drain that finds
+  # something buffered never parks.
+  - id: remainder
+    description: Takes whatever the bounded drain above left behind.
+    wait_for_signals:
+      name: order-placed
+      timeout: 5s
+      outputs:
+        ids: ${deliveries.map(delivery, delivery.payload.id)}
+        taken: ${count}
+        timed_out: ${timed_out}
+
+  # And the empty case, stated as its own step because it is the one an author
+  # most has to distinguish. Nothing is left to take, so this lapses on its own
+  # short bound and reports it — the same normal-outcome rule every other wait
+  # in this language follows, at batch scale.
+  - id: nothing_left
+    description: Lapses with an empty batch, which is an outcome rather than an error.
+    wait_for_signals:
+      name: order-placed
+      timeout: 1s
+      outputs:
+        taken: ${count}
+        timed_out: ${timed_out}
+  - id: report
+    log:
+      message: ${"drained %d then %d orders; %d left".format([steps.batch.taken, steps.remainder.taken, steps.nothing_left.taken])}
+outputs:
+  order_ids:
+    value: ${steps.batch.ids + steps.remainder.ids}
+    description: every order id this run drained, in the order the senders placed them
+  order_cents:
+    value: ${steps.batch.cents}
+    description: what the first, bounded drain took, one amount per order — reported separately from the remainder by design, since the remainder is precisely what did not fit
+  first_drain_filled:
+    value: ${steps.batch.taken == 3}
+    description: whether the bounded drain reached its `max_batch:`, which is the case this example exists to reach rather than merely declare
+  drained_dry:
+    value: ${steps.nothing_left.timed_out}
+    description: whether the final drain found nothing left, which is how a lapsed batch reports itself

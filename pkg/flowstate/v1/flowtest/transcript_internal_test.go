@@ -2,7 +2,6 @@ package flowtest
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +51,7 @@ func TestFailureTextIsWithheldWhenTheSetCouldNotBeBuilt(t *testing.T) {
 
 	text, tone := stepOutcomeText(
 		transcriptEvent{kind: eventStepFinished, step: "boom", failure: "expression refused secret-material-here"},
-		sensitiveInputs{withholdAll: true},
+		v1.WithheldSensitiveValues(),
 		map[string]switchFact{},
 	)
 	assert.Equal(t, ToneDanger, tone)
@@ -125,7 +124,7 @@ func TestFailureTextCountsAgainstTheByteBudget(t *testing.T) {
 func TestShortSensitiveKeyRedactsInKeyPosition(t *testing.T) {
 	t.Parallel()
 
-	sensitive := sensitiveInputs{values: []any{"zq"}}
+	sensitive := sensitiveInputs{}.WithValues("zq")
 	text, _ := stepOutcomeText(transcriptEvent{
 		kind: eventStepFinished,
 		step: "use",
@@ -138,67 +137,6 @@ func TestShortSensitiveKeyRedactsInKeyPosition(t *testing.T) {
 	require.NotContains(t, text, "zq")
 	require.Contains(t, text, `[redacted]: "ok"`)
 	require.Contains(t, text, `kept: "visible"`)
-}
-
-// TestOverlappingSensitiveSubstringsRedactWhole pins round eight's P1: with
-// secrets `abcd` and `abcdef`, replacing the shorter first splits the longer
-// into `[redacted]ef` — a partial leak decided by map iteration order. The
-// replacement site orders longest-first, whatever order the set arrives in.
-func TestOverlappingSensitiveSubstringsRedactWhole(t *testing.T) {
-	t.Parallel()
-
-	for _, order := range [][]string{
-		{"abcd", "abcdef"},
-		{"abcdef", "abcd"},
-	} {
-		got := redactSensitiveSubstrings("token abcdef here", order)
-		require.Equal(t, "token [redacted] here", got,
-			"order %v must not leak a suffix of the longer secret", order)
-	}
-}
-
-// TestIntersectingSensitiveSubstringsRedactWhole pins round fourteen's P1:
-// two secrets that intersect without containment — `ABCDE` and `CDEFG`
-// across derived text `ABCDEFG` — leak a fragment under sequential
-// replacement in either order. The union of matches has no order to get
-// wrong; self-overlapping matches are covered by the same union.
-func TestIntersectingSensitiveSubstringsRedactWhole(t *testing.T) {
-	t.Parallel()
-
-	for _, order := range [][]string{
-		{"ABCDE", "CDEFG"},
-		{"CDEFG", "ABCDE"},
-	} {
-		got := redactSensitiveSubstrings("xx ABCDEFG yy", order)
-		require.Equal(t, "xx [redacted] yy", got,
-			"order %v must not leak either secret's fragment", order)
-	}
-
-	require.Equal(t, "[redacted]", redactSensitiveSubstrings("aaa", []string{"aa"}),
-		"self-overlapping matches all enter the union")
-}
-
-// TestSensitiveSubstringRedactionBoundsAttackerShapedWork pins the MCP
-// denial-of-service regression: duplicate short descendants used to create
-// one span per overlapping match, per duplicate, before any spans were
-// merged. Duplicate values now cost one search, while too many distinct
-// searches fail closed before scanning attacker-controlled text repeatedly.
-func TestSensitiveSubstringRedactionBoundsAttackerShapedWork(t *testing.T) {
-	t.Parallel()
-
-	rendered := strings.Repeat("a", 100_000)
-	duplicates := make([]string, 1024)
-	for i := range duplicates {
-		duplicates[i] = "aa"
-	}
-	require.Equal(t, sensitiveMarker, redactSensitiveSubstrings(rendered, duplicates))
-
-	distinct := make([]string, 11)
-	for i := range distinct {
-		distinct[i] = fmt.Sprintf("secret-%d", i)
-	}
-	require.Equal(t, sensitiveMarker, redactSensitiveSubstrings(rendered, distinct),
-		"work above the bound must withhold the complete value")
 }
 
 // TestSuiteTranscriptBudgetDropsWithASentence pins round thirteen's P1:
@@ -220,61 +158,6 @@ func TestSuiteTranscriptBudgetDropsWithASentence(t *testing.T) {
 	require.Equal(t, ToneWarning, dropped[0].Tone)
 
 	require.Nil(t, b.take(nil), "a case with no account stays a case with no account")
-}
-
-// TestNonStringSensitiveScalarsJoinTheSubstringBackstop pins round fifteen's
-// P1: a `sensitive: true` integer converted to text — `${string(inputs.pin)}`
-// — matches neither the typed equality nor a string-only substring set, so
-// its canonical rendering joins the backstop under the same floor and root
-// exemption a string descendant gets.
-func TestNonStringSensitiveScalarsJoinTheSubstringBackstop(t *testing.T) {
-	t.Parallel()
-
-	set := sensitiveNativeValues(&v1.Scope{Inputs: map[string]*v1.Value{
-		"pin": v1.NewLiteral(int64(8231)),
-	}}, map[string]bool{"pin": true})
-
-	require.Contains(t, set.substrings, "8231",
-		"the number's canonical text must be replaceable wherever a conversion strands it in a string")
-	require.Equal(t, "code [redacted] here", redactSensitiveSubstrings("code 8231 here", set.substrings))
-}
-
-// TestShortNumericDescendantsJoinTheBackstopAtTheFloor pins the boundary
-// round seventeen asked about: a nested numeric descendant's converted text
-// enters the substring set at the same two-rune floor as any descendant —
-// `creds: {pin: 12}` renders "12" redacted — and a one-rune numeric stays
-// out for the floor's own documented reason: replacing every occurrence of a
-// single digit shreds the line (every `t=7m` timestamp included) while
-// protecting a ten-value guessing space.
-func TestShortNumericDescendantsJoinTheBackstopAtTheFloor(t *testing.T) {
-	t.Parallel()
-
-	set := sensitiveNativeValues(&v1.Scope{Inputs: map[string]*v1.Value{
-		"creds": v1.NewLiteralMap(map[string]any{"pin": int64(12)}),
-	}}, map[string]bool{"creds": true})
-
-	require.Contains(t, set.substrings, "12",
-		"a two-rune converted numeric descendant is at the floor, not under it")
-	require.Equal(t, "code [redacted] here", redactSensitiveSubstrings("code 12 here", set.substrings))
-}
-
-// TestNestedSensitiveKeysRedact pins round ten's P1: redactSensitiveTree
-// redacted values at every depth but preserved map keys, so a sensitive key
-// nested inside an output's structured value printed — including one below
-// the substring floor. Keys now redact by exact match at every level, in the
-// one shared walk.
-func TestNestedSensitiveKeysRedact(t *testing.T) {
-	t.Parallel()
-
-	got := redactSensitiveTree(map[string]any{
-		"outer": map[string]any{"zq": "v", "kept": "w"},
-	}, []any{"zq"})
-
-	outer, ok := got.(map[string]any)["outer"].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, outer, "zq")
-	require.Contains(t, outer, sensitiveMarker)
-	require.Contains(t, outer, "kept")
 }
 
 // TestTranscriptLinesEscapeControlRunes pins round ten's P2: a scripted

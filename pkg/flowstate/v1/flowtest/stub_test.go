@@ -728,7 +728,7 @@ tests:
 // TestUnmatchedStubWithholdsAWhereEvaluationErrorWhenSensitiveInputsCannotBeEnumerated
 // pairs with TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerate:
 // when the redaction set could not be built at all
-// ([sensitiveInputs.withholdAll]), [redactSensitiveSubstrings] has nothing to
+// ([sensitiveInputs.WithholdAll()]), [redactSensitiveSubstrings] has nothing to
 // check a where: error's text against, so the fail-closed answer withholds
 // the error text outright rather than printing something nothing has cleared
 // as safe.

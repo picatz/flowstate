@@ -136,6 +136,13 @@ var dslKeys = map[string][]dslKey{
 		{name: "wait_for_signal", detail: "string or map", docs: "Wait for a named signal, which is how a human approval reaches a workload. " +
 			"Write `wait_for_signal: deploy-approved`, or a mapping with `name:` and `timeout:`. " +
 			"What the sender sent becomes this step's outputs. " + oneStepKind},
+		{name: "wait_for_signals", detail: "string or map", docs: "Wait for a named signal and then take every other delivery already buffered for it, in one step. " +
+			"Write `wait_for_signals: order-placed`, or a mapping with `name:`, `max_batch:` and `timeout:`. " +
+			"Reports `" + v1.DeliveriesOutput + "` (a list of `{" + v1.PayloadOutput + ", " + v1.SenderOutput + "}`, oldest first), `" +
+			v1.CountOutput + "`, and `" + v1.TimedOutOutput + "`. " + oneStepKind + "\n\n" +
+			"This is the event-accumulator spelling: the alternative is `loop:` around `wait_for_signal:`, which pays a loop iteration — " +
+			"a workflow task, and one `results` entry against the loop's bound — for every single event. " +
+			"It does not reduce the number of signal *events* in history; nothing can, since one is written when the sender's call is accepted."},
 		{name: "call", detail: "string", docs: "Run another Flowfile as a step, resolved relative to *this file's* own directory at compile time. " + oneStepKind + "\n\n" +
 			"The callee runs isolated: its steps see only its bound arguments (`with:`) and the profile, not this file's steps or `vars:`. " +
 			"What it declares in its own `outputs:` comes back under this step's id, the way a task's would."},
@@ -165,6 +172,10 @@ var dslKeys = map[string][]dslKey{
 			"Only a task step schedules the one activity this bounds. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
 			"`wait_until:`, `wait_for_signal:` and `value:` are refused: each either schedules zero or more of something else, or nothing " +
 			"at all, so put `timeout:` on the steps inside the body that need it instead."},
+		{name: "total_timeout", detail: "duration", docs: "Bounds the step across *every* attempt and every wait between them, written as `30s`, `5m`, or `1h`: the wall-clock budget for the whole retried step, where `timeout:` bounds one attempt inside it.\n\n" +
+			"Write it when the deadline is what matters — an SLA is ten minutes however many tries that is, not an attempt count computed backwards from a backoff curve. A step declaring none takes the engine's default overall budget, so a step is bounded across its attempts either way; this key is how an author says by how much.\n\n" +
+			"A declared value is honoured exactly. The engine widens its default overall budget to fit `timeout:` multiplied by the attempts allowed, and writing this key suppresses that widening — a budget the engine silently extends is not a budget. It may not be shorter than `timeout:`, since one that expires inside the first attempt allows none.\n\n" +
+			"Refused on the same step kinds `timeout:` is refused on, for the same reason: they schedule no single activity for either clock to bound."},
 		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults.\n\n" +
 			"Only a task step schedules the one activity this re-runs. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
 			"`wait_until:`, `wait_for_signal:` and `value:` are refused for the same reason `timeout:` is: put `retry:` on the steps inside " +
@@ -207,6 +218,24 @@ var dslKeys = map[string][]dslKey{
 			v1.PayloadOutput + "` and `" + v1.SenderOutput + "` are gone unless a line re-exposes them, and reading one that was dropped is a `flow validate` error rather than an empty value.\n\n" +
 			"The point is to state a gate once: later `if:`s and the workflow's `outputs:` read `${" + v1.StepsRoot +
 			".approval.approved}` instead of each re-deriving the condition, so the report cannot disagree with the branch that ran."},
+	},
+	"wait_for_signals": {
+		{name: "name", detail: "string", docs: "The signal this step drains, and what a sender addresses with `flow signal <workflow-id> <name>`."},
+		{name: "max_batch", detail: "int", docs: "How many deliveries one drain takes. Omitted or `0` takes as many as a run may carry across a suspend.\n\n" +
+			"What is left past the bound stays buffered for the next drain, so reaching it costs another iteration rather than an event. " +
+			"Worth writing when the step's body is expensive per delivery."},
+		{name: "timeout", detail: "duration", docs: "Bounds how long this waits for the *first* delivery. A drain that lapses is not a failure: it produces `" +
+			v1.CountOutput + ": 0` and `" + v1.TimedOutOutput + ": true`, and the run carries on. Omit it to wait indefinitely."},
+		{name: "prompt", detail: "string or expression", docs: "What this gate is asking for, carried to whoever is being asked - under exactly `wait_for_signal:`'s own rules.\n\n" +
+			"Evaluated once, the moment the wait *parks*, with `" + v1.NowIdentifier + "` bound over the ordinary scope. " +
+			"Not the wait's result: the result does not exist yet when the question is asked. " +
+			"A drain that found deliveries already buffered never parks, so it asks nothing.\n\n" +
+			"It may not reach an input declared `sensitive:`, by any spelling, and may not hold a `${secret(...)}` reference."},
+		{name: "outputs", detail: "map", docs: "Shapes what this step produces, the way `wait_for_signal:`'s own `outputs:` does - same evaluator, same single moment, and it **replaces** rather than extends.\n\n" +
+			"What differs is the names bound bare: `" + v1.DeliveriesOutput + "`, `" + v1.CountOutput + "`, `" + v1.TimedOutOutput +
+			"`, and `" + v1.NowIdentifier + "`. There is no `" + v1.PayloadOutput + "` and no `" + v1.SenderOutput +
+			"`, because a batch has many of each.\n\n" +
+			"```yaml\noutputs:\n  ids: ${" + v1.DeliveriesOutput + ".map(d, d." + v1.PayloadOutput + ".id)}\n  processed: ${" + v1.CountOutput + "}\n```"},
 	},
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
@@ -269,6 +298,13 @@ func lookupDSLKey(level, name string) (dslKey, bool) {
 // document is usually mid-edit and therefore invalid at exactly the moment
 // completion is requested.
 func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
+	if doc.isTestDocument() {
+		// The test language's own completion, over its own document shape —
+		// see testcompletion.go. Not the workflow grammar's candidates,
+		// deliberately: a step's `for_each:` or a task's own inputs would be
+		// wrong answers with confidence in a document that has neither.
+		return completeTestDocument(doc, clampPosition(pos))
+	}
 	if !doc.speaksFlowfile() {
 		return &lsp.CompletionList{Items: []lsp.CompletionItem{}} // see [document.speaksFlowfile]
 	}
@@ -337,6 +373,8 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		return list(dslCandidates("switch", word, replace))
 	case endsWith(path, "wait_for_signal"):
 		return list(dslCandidates("wait_for_signal", word, replace))
+	case endsWith(path, "wait_for_signals"):
+		return list(dslCandidates("wait_for_signals", word, replace))
 	case endsWith(path, "steps"):
 		// A step key is a property or a task name, and from where the cursor is
 		// they are the same kind of thing: both are ways to finish this line. The
@@ -534,7 +572,7 @@ func bindsClock(key string, path []string) bool {
 	switch {
 	case endsWith(path, "steps"):
 		return key == waitUntilKey || key == sleepKey
-	case endsWith(path, "wait_for_signal"):
+	case endsWith(path, "wait_for_signal"), endsWith(path, "wait_for_signals"):
 		return key == signalTimeoutKey
 	case withinWaitOutputsShaping(path):
 		return true
@@ -562,7 +600,7 @@ func bindsClock(key string, path []string) bool {
 // left alone.
 func withinWaitOutputsShaping(path []string) bool {
 	for i := 0; i+1 < len(path); i++ {
-		if path[i] != "wait_for_signal" || path[i+1] != taskShapingKey {
+		if (path[i] != "wait_for_signal" && path[i] != "wait_for_signals") || path[i+1] != taskShapingKey {
 			continue
 		}
 		if i == 0 || path[i-1] != "steps" {
@@ -585,6 +623,34 @@ func withinWaitOutputsShaping(path []string) bool {
 // outputs and the http task's shaping use the same word, and neither binds these
 // — so the path must show the wait above it.
 func waitResultCandidates(path []string) []celcomplete.Candidate {
+	if endsWith(path, "wait_for_signals", "outputs") {
+		// The batch spelling's own result, which is a different set of names —
+		// see [v1.SignalBatchOutputs]. Offered per arm rather than as a union of
+		// the two, for the reason the validator scopes per arm: offering
+		// `payload` here would teach a reference nothing binds, and the author
+		// would find out at run time on whichever driver they were not watching.
+		return []celcomplete.Candidate{
+			{
+				Name:   v1.DeliveriesOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "list",
+				Docs:   waitResultDoc(v1.DeliveriesOutput),
+			},
+			{
+				Name:   v1.CountOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "int",
+				Docs:   waitResultDoc(v1.CountOutput),
+			},
+			{
+				Name:   v1.TimedOutOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "bool",
+				Docs:   waitResultDoc(v1.TimedOutOutput),
+			},
+		}
+	}
+
 	if !endsWith(path, "wait_for_signal", "outputs") {
 		return nil
 	}
@@ -1139,18 +1205,19 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks 
 	return items
 }
 
-// stepKeyCandidates is dslCandidates("steps", ...), minus timeout and retry
-// once the step at the cursor has already committed to a kind that refuses
-// both.
+// stepKeyCandidates is dslCandidates("steps", ...), minus timeout,
+// total_timeout and retry once the step at the cursor has already committed to
+// a kind that refuses all three.
 //
-// checkPolicyPlacement (flowfile/parse_wait.go) refuses timeout:/retry: on
+// checkPolicyPlacement (flowfile/parse_wait.go) refuses
+// timeout:/total_timeout:/retry: on
 // every step kind but a task, because only a task's arm ever reads a
 // StepPolicy — so once current.kindKey names one of those kinds,
-// recommending either key is completeAt actively suggesting syntax its own
+// recommending any of them is completeAt actively suggesting syntax its own
 // diagnostic then refuses. current is nil (no kind chosen yet, or not inside
 // a step at all) and current.kindKey == "" (a task, or a kind not decided
 // yet) both still offer the full menu: both are exactly the cases where
-// timeout:/retry: are legal or might become so.
+// all three are legal or might become so.
 func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) []lsp.CompletionItem {
 	if current == nil || current.kindKey == "" {
 		return dslCandidates("steps", prefix, replace)
@@ -1159,7 +1226,7 @@ func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) [
 	all := dslCandidates("steps", prefix, replace)
 	items := make([]lsp.CompletionItem, 0, len(all))
 	for _, item := range all {
-		if item.Label == "timeout" || item.Label == "retry" {
+		if item.Label == "timeout" || item.Label == "total_timeout" || item.Label == "retry" {
 			continue
 		}
 		items = append(items, item)

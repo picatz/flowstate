@@ -115,6 +115,133 @@ func TestStripeVerificationDoesNotHashASenderSizedTimestamp(t *testing.T) {
 	require.LessOrEqual(t, *hashed, len(body)+32)
 }
 
+// verifyTrigger builds a well-formed trigger declaring exactly the schemes
+// named, each bound to key, for [TestVerifyWebhookDeliverySpendsConstantWork].
+func verifyTrigger(schemes ...string) *WebhookTrigger {
+	verify := make(map[string]*Value, len(schemes))
+	for _, scheme := range schemes {
+		verify[scheme] = &Value{Kind: &Value_SecretRef{
+			SecretRef: &SecretRef{Scheme: "env", Name: "WEBHOOK_SECRET"},
+		}}
+	}
+
+	return &WebhookTrigger{
+		Name:           "counted",
+		Verify:         verify,
+		IdempotencyKey: NewExpr(`event.body.id`),
+	}
+}
+
+// TestVerifyWebhookDeliverySpendsConstantWork pins residual 2 of #973: the
+// number of schemes a trigger declares, and whether a declared scheme's key
+// resolved, must not change how much [VerifyWebhookDelivery] hashes. Before
+// this, a trigger declaring two schemes hashed twice what one declaring a
+// single scheme did, and a scheme with no resolved key hashed nothing at all
+// — both readable from outside by timing a delivery to a route whose
+// `verify:` shape is otherwise unknown.
+//
+// Counted rather than timed, for the reason [TestEveryWebhookRefusalHashesExactlyOnce]
+// gives: the claim is about work, and work is countable without a flake.
+func TestVerifyWebhookDeliverySpendsConstantWork(t *testing.T) {
+	key := secrets.NewSecret(secrets.NewRef("env", "WEBHOOK_SECRET"), "shh")
+	body := []byte(`{"id":"evt_1"}`)
+	now := time.Now()
+
+	spend := func(t *testing.T, trigger *WebhookTrigger, keys map[string]secrets.Secret) (calls, hashed int) {
+		t.Helper()
+
+		c, b := countedSigning(t)
+		_ = VerifyWebhookDelivery(trigger, keys, nil, body, now)
+
+		return *c, *b
+	}
+
+	baseline := func(t *testing.T) (int, int) {
+		t.Helper()
+
+		return spend(t, verifyTrigger(WebhookSchemeHMACSHA256), map[string]secrets.Secret{
+			WebhookSchemeHMACSHA256: key,
+		})
+	}
+
+	wantCalls, wantHashed := baseline(t)
+	require.Equal(t, len(webhookVerificationSchemes), wantCalls,
+		"one HMAC per scheme this build knows, not per scheme declared")
+
+	for name, run := range map[string]func(t *testing.T) (int, int){
+		"one scheme declared, resolved": baseline,
+
+		"the other scheme declared, resolved": func(t *testing.T) (int, int) {
+			return spend(t, verifyTrigger(WebhookSchemeStripe), map[string]secrets.Secret{
+				WebhookSchemeStripe: key,
+			})
+		},
+
+		"both schemes declared, both resolved": func(t *testing.T) (int, int) {
+			return spend(t, verifyTrigger(WebhookSchemeHMACSHA256, WebhookSchemeStripe), map[string]secrets.Secret{
+				WebhookSchemeHMACSHA256: key,
+				WebhookSchemeStripe:     key,
+			})
+		},
+
+		"one scheme declared, no key resolved at all": func(t *testing.T) (int, int) {
+			return spend(t, verifyTrigger(WebhookSchemeHMACSHA256), nil)
+		},
+
+		"one scheme declared, a zero-value key": func(t *testing.T) (int, int) {
+			return spend(t, verifyTrigger(WebhookSchemeHMACSHA256), map[string]secrets.Secret{
+				WebhookSchemeHMACSHA256: {},
+			})
+		},
+
+		"both schemes declared, one key unresolved": func(t *testing.T) (int, int) {
+			return spend(t, verifyTrigger(WebhookSchemeHMACSHA256, WebhookSchemeStripe), map[string]secrets.Secret{
+				WebhookSchemeHMACSHA256: key,
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls, hashed := run(t)
+			require.Equal(t, wantCalls, calls,
+				"the number of schemes declared or resolved changed how many times this hashed")
+			require.Equal(t, wantHashed, hashed,
+				"the number of schemes declared or resolved changed how many bytes this hashed")
+		})
+	}
+}
+
+// TestSpendWebhookVerificationWorkMatchesADeclaredDelivery pins the other half
+// of residual 2: an unrouted delivery ([SpendWebhookVerificationWork], what
+// the receiver calls when no route matched) must cost exactly what a routed
+// one does, whatever that route would have declared — otherwise routed and
+// unrouted are a route-existence oracle in the shape #955 already removed
+// once.
+func TestSpendWebhookVerificationWorkMatchesADeclaredDelivery(t *testing.T) {
+	key := secrets.NewSecret(secrets.NewRef("env", "WEBHOOK_SECRET"), "shh")
+	body := []byte(`{"id":"evt_1"}`)
+	now := time.Now()
+
+	declaredCalls, declaredHashed := func() (int, int) {
+		c, b := countedSigning(t)
+		_ = VerifyWebhookDelivery(verifyTrigger(WebhookSchemeHMACSHA256, WebhookSchemeStripe),
+			map[string]secrets.Secret{WebhookSchemeHMACSHA256: key, WebhookSchemeStripe: key}, nil, body, now)
+
+		return *c, *b
+	}()
+
+	unroutedCalls, unroutedHashed := func() (int, int) {
+		c, b := countedSigning(t)
+		SpendWebhookVerificationWork(nil, body, now)
+
+		return *c, *b
+	}()
+
+	require.Equal(t, declaredCalls, unroutedCalls,
+		"an unrouted delivery hashed a different number of times than a routed one")
+	require.Equal(t, declaredHashed, unroutedHashed,
+		"an unrouted delivery hashed a different number of bytes than a routed one")
+}
+
 // TestWebhookVerificationHashesTheBodyWithoutCopyingIt pins the half of the
 // uniformity claim that counting bytes cannot see.
 //

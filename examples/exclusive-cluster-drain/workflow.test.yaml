@@ -1,0 +1,31 @@
+# `concurrency:` is inert to a run, on the same terms `triggers:` is and for the
+# same reason: nothing under `engine/` reads it, and `flow run local` composes no
+# workflow id at all. The exclusion is a submit-time property of the server, so
+# what a rehearsal can honestly assert is the workload underneath — which runs
+# identically whether or not another cluster's drain is in flight somewhere.
+#
+# The half this cannot reach is covered where it lives: the server's own tests
+# start a real second run against a real Temporal and check all three
+# `on_conflict:` answers, including that tenant A's key does not block tenant B's.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a drain cordons and then drains the named cluster
+    inputs:
+      cluster: prod-eu
+    expect:
+      ran: [cordon, drain]
+      outputs:
+        cluster: prod-eu
+
+  - name: the reason defaults when the caller gives none
+    inputs:
+      cluster: staging-us
+    expect:
+      ran: [cordon, drain]
+      outputs:
+        cluster: staging-us

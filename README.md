@@ -43,7 +43,6 @@ which carries the fully annotated version:
 edition: v2026.3
 name: approval-gate
 description: Wait for a human to approve a deploy, then act on what they decided.
-
 inputs:
   version:
     type: string
@@ -54,7 +53,7 @@ inputs:
     type: string
     required: true
     example: production
-    must: 'this in ["staging", "production"]'
+    must: this in ["staging", "production"]
   expected_approver:
     type: string
     required: true
@@ -71,7 +70,6 @@ signals:
         claims:
           team: release-managers
     distinct_from_starter: true
-
 steps:
   - id: request
     log:
@@ -95,10 +93,7 @@ steps:
         # `optMap`'s first argument names the value it binds — here `isApproved`,
         # the payload's `approved` field once it is known to be present — and the
         # second is the expression evaluated with that name in scope.
-        outcome: >-
-          ${payload.?approved
-              .optMap(isApproved, isApproved ? "deployed" : "rejected")
-              .orValue("undecided")}
+        outcome: '${payload.?approved.optMap(isApproved, isApproved ? "deployed" : "rejected").orValue("undecided")}'
         sender: ${sender}
 
   # One dispatch, not three sibling `if:`s. The validator knows this value is

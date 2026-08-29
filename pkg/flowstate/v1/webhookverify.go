@@ -2,11 +2,10 @@ package flowstatev1
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"maps"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +106,26 @@ const maxSignaturesPerHeader = 8
 //
 // The error is for the operator's log. It names which scheme failed and why,
 // which is exactly what must not reach the sender.
+//
+// # Constant work, regardless of what is declared
+//
+// This spends exactly one verification of every scheme this build knows —
+// [webhookVerificationSchemes], currently two — on every call, whatever the
+// trigger declares and whatever keys resolved. A trigger naming one scheme, a
+// trigger naming both, and a trigger whose one scheme resolved no key all cost
+// the same: an outside party timing a known route could otherwise count how
+// many schemes it requires, or notice that a misconfigured route (no key
+// resolved) answers *faster* than a working one, from the delivery it sends
+// itself (#973). A scheme not declared, or declared with no key, is still
+// verified — against [webhookDecoyKeys], a key nobody holds — and the result
+// discarded; only a declared, resolved scheme's outcome decides the return.
+// [SpendWebhookVerificationWork] is the same work with nothing to decide,
+// which is what an unrouted delivery spends so routed and unrouted cost alike.
+//
+// The loop never returns before every scheme has been tried, for the same
+// reason: stopping at the first declared scheme that fails would make a
+// two-scheme trigger cost one HMAC when its first scheme is wrong and two when
+// its first scheme is right — the identical leak in a different shape.
 func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
 	// The declaration's own rules first, because a malformed trigger cannot be a
 	// basis for accepting anything — the same order [BindWebhookTriggerInputs]
@@ -116,32 +135,111 @@ func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secr
 		return err
 	}
 
-	for _, scheme := range slices.Sorted(maps.Keys(trigger.GetVerify())) {
+	verify := trigger.GetVerify()
+
+	var (
+		failed     error
+		unresolved string
+	)
+
+	for _, scheme := range webhookVerificationSchemes {
+		_, declared := verify[scheme]
 		key, held := keys[scheme]
-		if !held || key.IsZero() {
-			return fmt.Errorf("webhook %q verifies with %q and this deployment resolved no key for it, "+
-				"so the delivery cannot be checked and is refused", trigger.GetName(), scheme)
+		usable := held && !key.IsZero()
+
+		effectiveKey := key
+		if !declared || !usable {
+			// Not this delivery's business either way: a scheme it never named,
+			// or one it named that this deployment cannot check. Verified anyway,
+			// against a key nobody has, so the work spent does not depend on
+			// which case this is.
+			effectiveKey = webhookDecoyKeys[scheme]
 		}
 
-		var err error
-		switch scheme {
-		case WebhookSchemeHMACSHA256:
-			err = verifyHMACSHA256(key, headers, body)
-		case WebhookSchemeStripe:
-			err = verifyStripe(key, headers, body, now)
-		default:
-			// Unreachable through CheckWebhookTrigger, which refuses an unknown
-			// scheme with a line and a column. Kept because the alternative to an
-			// arm here is a switch that falls through to acceptance, which is the
-			// one way this function must never be wrong.
-			err = fmt.Errorf("scheme %q is not one this build can verify", scheme)
+		err := verifyScheme(scheme, effectiveKey, headers, body, now)
+
+		if !declared {
+			continue
 		}
-		if err != nil {
-			return fmt.Errorf("webhook %q: %w", trigger.GetName(), err)
+		if !usable {
+			if unresolved == "" {
+				unresolved = scheme
+			}
+			continue
+		}
+		if err != nil && failed == nil {
+			failed = fmt.Errorf("webhook %q: %w", trigger.GetName(), err)
 		}
 	}
 
-	return nil
+	if unresolved != "" {
+		return fmt.Errorf("webhook %q verifies with %q and this deployment resolved no key for it, "+
+			"so the delivery cannot be checked and is refused", trigger.GetName(), unresolved)
+	}
+
+	return failed
+}
+
+// verifyScheme dispatches one scheme's arithmetic. Shared by
+// [VerifyWebhookDelivery], which uses the result, and
+// [SpendWebhookVerificationWork], which spends the same work and discards it.
+func verifyScheme(scheme string, key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
+	switch scheme {
+	case WebhookSchemeHMACSHA256:
+		return verifyHMACSHA256(key, headers, body)
+	case WebhookSchemeStripe:
+		return verifyStripe(key, headers, body, now)
+	default:
+		// Unreachable: both callers range over [webhookVerificationSchemes],
+		// which this switch covers exhaustively. Kept because the alternative to
+		// an arm here is a switch that falls through to acceptance, which is the
+		// one way this function must never be wrong.
+		return fmt.Errorf("scheme %q is not one this build can verify", scheme)
+	}
+}
+
+// webhookDecoyKeys are keys nobody holds, one per scheme this build knows,
+// generated once per process.
+//
+// [VerifyWebhookDelivery] verifies against one of these whenever a scheme is
+// not this delivery's to answer for — not declared, or declared with no key
+// resolved — so that the work spent does not reveal which case it was.
+// [SpendWebhookVerificationWork] uses the same keys for the same reason, for a
+// delivery that matched no route at all.
+//
+// Generated per process rather than fixed, for the reason
+// [WebhookReceiver]'s own decoy was: a constant would be a value an attacker
+// could compute against, and a zero key would skip the work this exists to
+// spend.
+var webhookDecoyKeys = func() map[string]secrets.Secret {
+	keys := make(map[string]secrets.Secret, len(webhookVerificationSchemes))
+	for _, scheme := range webhookVerificationSchemes {
+		buf := make([]byte, sha256.Size)
+		if _, err := rand.Read(buf); err != nil {
+			// rand.Read only fails when the system's entropy source is broken,
+			// which nothing downstream can recover from either.
+			panic("webhookverify: generating a decoy key: " + err.Error())
+		}
+		keys[scheme] = secrets.NewSecret(secrets.NewRef("internal", "webhook-verify-decoy-"+scheme),
+			hex.EncodeToString(buf))
+	}
+
+	return keys
+}()
+
+// SpendWebhookVerificationWork performs the same total hashing
+// [VerifyWebhookDelivery] spends on any delivery whose route exists, against
+// keys nobody holds, and reports nothing.
+//
+// It is what a receiver calls for a delivery that matched no route at all, so
+// that an unrouted delivery costs what a routed one costs regardless of how
+// many schemes that route would have declared — [VerifyWebhookDelivery] spends
+// a constant amount of work per call (#973), and this is that same amount with
+// no trigger to decide against.
+func SpendWebhookVerificationWork(headers map[string]string, body []byte, now time.Time) {
+	for _, scheme := range webhookVerificationSchemes {
+		_ = verifyScheme(scheme, webhookDecoyKeys[scheme], headers, body, now)
+	}
 }
 
 // verifyHMACSHA256 checks the generic scheme: an HMAC-SHA256 of the raw body.

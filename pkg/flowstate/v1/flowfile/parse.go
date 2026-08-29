@@ -68,7 +68,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -96,11 +96,14 @@ var (
 	// `async` is here rather than in nodeKindKeys for the reason `undo` is: it
 	// is not a kind of work, it is a property of a step doing some other kind —
 	// the one marker that lets execution depart from written order (#418).
-	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo", "async", "with", "digest"}
+	// `total_timeout` sits beside `timeout` rather than inside `retry:` because
+	// the bound it names binds a step that declares no `retry:` at all — see
+	// [v1.StepTimeoutsFor].
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "total_timeout", "retry", "continue_on_error", "undo", "async", "with", "digest"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
-	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call", "value", "switch"}
+	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
@@ -815,6 +818,16 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// schedule is `flow schedule create`. See flowfile/triggers.go.
 	if f, found := fields.get("triggers"); found {
 		workflow.Triggers = c.triggers(f.key, f.value, "triggers", ref{path: "triggers", label: "triggers"})
+	}
+
+	// What at most one run of this workflow may hold at a time, read alongside
+	// `triggers:` for the same reason: it is a fact about the whole workflow's
+	// relationship with the outside world — the resource nothing else may touch
+	// while this runs — rather than about any one step. See flowfile/concurrency.go
+	// and [v1.Concurrency]. Nothing here holds anything: both drivers ignore this,
+	// and the server composes the run's id from it at submit.
+	if f, found := fields.get("concurrency"); found {
+		workflow.Concurrency = c.concurrency(f.value, "concurrency", ref{path: "concurrency", label: "concurrency"})
 	}
 
 	// Who may deliver a named signal, read alongside `triggers:` for the same
@@ -1538,6 +1551,10 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			if wait := c.waitForSignal(kind.value, kindPath, r); wait != nil {
 				step.Kind = &v1.Node_Wait{Wait: wait}
 			}
+		case "wait_for_signals":
+			if wait := c.waitForSignals(kind.value, kindPath, r); wait != nil {
+				step.Kind = &v1.Node_Wait{Wait: wait}
+			}
 		case "switch":
 			if sw := c.switchNode(kind.value, kindPath, r); sw != nil {
 				step.Kind = &v1.Node_Switch{Switch: sw}
@@ -2022,6 +2039,30 @@ func (c *compiler) policy(fields *fieldSet, path string, r ref) *v1.StepPolicy {
 		if ok {
 			policy.Timeout = timeout
 			declared = true
+		}
+	}
+
+	if f, found := fields.get("total_timeout"); found {
+		total, ok := c.duration(f.value, fieldPath(path, "total_timeout"),
+			ref{step: r.step, path: fieldPath(path, "total_timeout"), label: "total_timeout"})
+		if ok {
+			policy.TotalTimeout = total
+			declared = true
+
+			// A total smaller than one attempt cannot allow one attempt: the
+			// step's whole budget expires inside the first try, so the
+			// `timeout:` beside it can never be the thing that fires and the
+			// step is bounded by a number the author almost certainly did not
+			// mean to be the only one. It is a property of the file — two
+			// literals in one step, comparable without knowing anything about
+			// the deployment — which is the test [validate.go]'s own standard
+			// sets for whether a diagnostic belongs here at all.
+			if timeout := policy.GetTimeout().AsDuration(); timeout > 0 && total.AsDuration() < timeout {
+				c.report(spanOfNode(f.key), ref{step: r.step, path: fieldPath(path, "total_timeout"), label: "total_timeout"},
+					"total_timeout: %s is shorter than timeout: %s, so the step's whole budget expires "+
+						"inside its first attempt; raise total_timeout: above timeout:, or lower timeout: to fit",
+					total.AsDuration(), timeout)
+			}
 		}
 	}
 

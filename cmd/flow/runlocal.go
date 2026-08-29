@@ -255,15 +255,22 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// well as gates, so each step's own account arrives at the prompt that
 	// paused it.
 	if debugging {
+		// The panes, on the console and nowhere else — see debugpanes.go. The
+		// stderr theme and capabilities, because that is the stream this
+		// command's console owns: `flow run local -o json --debug` has a piped
+		// stdout and the panes belong to the terminal beside it.
+		emit, panes := debugPanesFor(ctx, console, narrate, surface.ErrTheme, surface.ErrCaps,
+			debugEmitter(narrate, surface.ErrTheme))
+
 		session, err := flowdebug.New(flowdebug.Options{
 			In:      cmd.InOrStdin(),
 			Console: consoleOrNil(console),
 			Out:     narrate,
-			Emit:    debugEmitter(narrate, surface.ErrTheme),
+			Emit:    emit,
 			// This command holds the specification, so `break` and `until`
 			// complete over every step the run may reach rather than only the
 			// ones it has been to.
-			Steps: stepIDs(workflow),
+			Steps: stepList(workflow),
 		})
 		if err != nil {
 			return err
@@ -271,6 +278,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		if console != nil {
 			console.SetCompleter(session.Complete)
 		}
+		panes.setSession(session)
 		// This process is about to exit either way, so the reader parking
 		// costs nothing here — closed anyway because a session's owner closes
 		// it, and a habit that holds only where it is load-bearing is one that
@@ -306,6 +314,15 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	}
 	response = redactGetResponse(response, workflow, reveal)
 
+	// And the failure sentence, which [redactGetResponse] deliberately leaves
+	// alone because most of its callers hold no arguments to redact against.
+	// This one does: it bound them a few lines up. See sensitive.go's "The
+	// failure sentence" section for why this surface is redacted rather than
+	// withheld, and #974 for the loop that put a `sensitive:` input's element
+	// into a sentence nothing else here was looking at.
+	sensitive := runSensitiveValues(workflow, inputs, reveal)
+	response = redactFailureText(response, sensitive)
+
 	if runErr != nil {
 		// A machine caller is owed a document about the failure, which is the half
 		// of the durable driver's behaviour that was missing here: `flow run -o json`
@@ -327,7 +344,12 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		return wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr))
+		// Redacted after the wrap, not before it, so the whole sentence a
+		// person reads is covered — the wrapper's own frame included — and so
+		// the loopback remedy is resolved off the original chain before that
+		// chain is dropped. See [redactFailureError].
+		return redactFailureError(
+			wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr)), sensitive)
 	}
 
 	// The same word `flow get` uses for the same outcome, through the same pill, on

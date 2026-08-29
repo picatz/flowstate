@@ -57,6 +57,7 @@ func corpusSizes() map[string]int {
 		"AuthorityContainmentCases":       len(AuthorityContainmentCases(standIn)),
 		"AuthorityDenialCases":            len(AuthorityDenialCases()),
 		"CallCases":                       len(CallCases()),
+		"CleartextCredentialCases":        len(CleartextCredentialCases(standIn)),
 		"ContainmentProhibitedValues":     len(ContainmentProhibitedValues()),
 		"ControlFlowCases":                len(ControlFlowCases(standIn)),
 		"EgressIdentityCases":             len(EgressIdentityCases()),
@@ -80,6 +81,7 @@ func corpusSizes() map[string]int {
 		"PluginTaskInputCases":            len(PluginTaskInputCases()),
 		"PolicyCases":                     len(PolicyCases()),
 		"RehearsalSignalCases":            len(RehearsalSignalCases()),
+		"SignalBatchCases":                len(SignalBatchCases()),
 		"ResponseScopeCases":              len(ResponseScopeCases(standIn)),
 		"SwitchCases":                     len(SwitchCases()),
 		"TaskOutputElementBoundCases":     len(TaskOutputElementBoundCases(standIn)),
@@ -141,7 +143,9 @@ var unresolvedResults = map[string]account{
 	"ErrorKindTimeoutTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginIdentityTaskDef":   {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginTaskInputsTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
+	"RateLimitTaskDef":        {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"StepTimeoutTaskDef":      {what: "a v1.TaskDef, which is a struct rather than a slice"},
+	"TotalTimeoutTaskDef":     {what: "a v1.TaskDef, which is a struct rather than a slice"},
 }
 
 // account is what an unreadable result actually is.

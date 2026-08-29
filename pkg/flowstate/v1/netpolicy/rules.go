@@ -141,6 +141,17 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 		cel.Variable("port", cel.IntType),
 		cel.Variable("method", cel.StringType),
 		cel.Variable("path", cel.StringType),
+		// credentials is true when the request carries a worker-resolved
+		// credential (a bearer secret or a JIT federation target) — the same
+		// fact the http task's cleartext refusal keys on (#963). It is
+		// request-scoped, not connection-scoped: whether *this* request
+		// carries a credential is not a property of the connection it may
+		// share with other requests, so a rule combining it with ip is
+		// rejected at compile time the same way method or path would be. Unset
+		// reads as false, which is the compatible reading for a rule written
+		// before this attribute existed: a rule that names host or method but
+		// never credentials keeps meaning exactly what it meant.
+		cel.Variable("credentials", cel.BoolType),
 		ext.Strings(ext.StringsVersion(5)),
 	}, identityDecls...)...)
 	if err != nil {

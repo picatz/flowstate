@@ -36,7 +36,9 @@ steps:
       outputs:
         available: ${response.json.available}
       parse_json: true
-      query: '${{"tenant": inputs.tenant, "plan": inputs.plan}}'
+      query:
+        tenant: ${inputs.tenant}
+        plan: ${inputs.plan}
       url: https://provisioning.internal.example.com/quota
 outputs:
   available:

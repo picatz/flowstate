@@ -94,6 +94,16 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 
 	// Same position the parser reads it: alongside `triggers:`, a fact about the
 	// whole workflow's relationship with the outside world.
+	if concurrency := wf.GetConcurrency(); concurrency != nil {
+		written, err := concurrencyToYAML(concurrency)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "concurrency", Value: written})
+	}
+
+	// Same position the parser reads it: alongside `triggers:`, a fact about the
+	// whole workflow's relationship with the outside world.
 	if signals := wf.GetSignals(); len(signals) > 0 {
 		written, err := signalsToYAML(signals)
 		if err != nil {
@@ -269,6 +279,17 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			}
 			step = append(step, yaml.MapItem{Key: "timeout", Value: durationToYAML(timeout)})
 		}
+		// Written after `timeout:` and before `retry:`, which is where the parser
+		// lists it and where an author reads it: the two clocks together, then
+		// what happens between them.
+		if total := policy.GetTotalTimeout(); total != nil {
+			if subject, ok := unrepresentablePolicySubject(node); ok {
+				return nil, fmt.Errorf(
+					"step %q is %s and cannot carry `total_timeout:`: it schedules no single "+
+						"activity for the key to bound", node.GetId(), subject)
+			}
+			step = append(step, yaml.MapItem{Key: "total_timeout", Value: durationToYAML(total)})
+		}
 		if retry := policy.GetRetry(); retry != nil {
 			if subject, ok := unrepresentablePolicySubject(node); ok {
 				return nil, fmt.Errorf(
@@ -408,7 +429,21 @@ func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
 	// sorted: the same workflow has to produce the same document every time for a
 	// formatter to be usable or a diff to be readable.
 	for _, name := range slices.Sorted(maps.Keys(task.GetInputs())) {
-		value, err := inputValueToYAML(task.GetInputs()[name])
+		write := inputValueToYAML
+		if name == v1.ShapingInput && v1.TaskShapesOutputs(task.GetName()) {
+			// The one input read by a rule of its own, so the one input that
+			// cannot be written by the general one: a mapping under a shaping
+			// task's `outputs:` is compiled entry by entry into a
+			// `Value_Structure` (see [compiler.shapedOutputs]), not through
+			// [compiler.composite]. Unfolding a folded expression here would
+			// therefore write a document that compiles to a *different* value —
+			// a shaped set of names where the workflow holds one expression that
+			// builds a map — which is a formatter changing what a file says.
+			// Read off the same two predicates the parser branches on, rather
+			// than off the key's spelling, so the two cannot drift.
+			write = fencedInputValueToYAML
+		}
+		value, err := write(task.GetInputs()[name])
 		if err != nil {
 			return nil, fmt.Errorf("input %q: %w", name, err)
 		}
@@ -691,9 +726,35 @@ func durationToYAML(d *durationpb.Duration) string {
 // An expression is written fenced. The fence is optional when reading a field the
 // schema types as an expression, but an input can be either, so writing it is what
 // makes the document mean what it meant.
+//
+// A mapping or a sequence holding a `${...}` anywhere inside it is *one*
+// expression by the time it gets here — see [compiler.composite] — so the
+// fenced form is the whole of what the value says. It is not the whole of what
+// an author wrote, and writing it back is what put a 778-character line in
+// `examples/`, so [unfoldedStructure] offers the mapping spelling back as a
+// candidate first (#850).
 func inputValueToYAML(value *v1.Value) (any, error) {
+	return writtenInputValue(value, true)
+}
+
+// fencedInputValueToYAML is [inputValueToYAML] for the one position whose read
+// rule is not [compiler.composite]: a shaping task's `outputs:`, where a mapping
+// means a shaped set of names rather than an expression that builds a map. See
+// [taskInputsToYAML], which is the only caller and carries the reasoning.
+func fencedInputValueToYAML(value *v1.Value) (any, error) {
+	return writtenInputValue(value, false)
+}
+
+// writtenInputValue is the whole of both, with unfold saying whether the
+// structure spelling may be offered for an expression that builds one.
+func writtenInputValue(value *v1.Value, unfold bool) (any, error) {
 	switch kind := value.GetKind().(type) {
 	case *v1.Value_Expr:
+		if unfold {
+			if unfolded, ok := unfoldedStructure(value); ok {
+				return unfolded, nil
+			}
+		}
 		text, err := exprToText(kind.Expr)
 		if err != nil {
 			return nil, err
@@ -1240,8 +1301,63 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 
 		return "wait_for_signal", mapping, nil
 
+	case *v1.Wait_SignalBatch:
+		// Key by key for the reason above: `flow fix` rewrites through this
+		// function, so a key nothing writes back is a key the command silently
+		// removes — and this arm has one more of them than its sibling.
+		mapping := yaml.MapSlice{{Key: "name", Value: textToYAML(kind.SignalBatch.GetName())}}
+
+		// Directly after the name, because a reader asking what this step drains
+		// asks how much of it next. Zero is the absent value and the ceiling
+		// both, so it is written back only when the author wrote something: a
+		// `max_batch: 0` round-tripping into an explicit key would be this
+		// function inventing a line.
+		if n := kind.SignalBatch.GetMaxBatch(); n > 0 {
+			mapping = append(mapping, yaml.MapItem{Key: "max_batch", Value: int(n)})
+		}
+
+		if prompt := kind.SignalBatch.GetPrompt(); prompt != nil {
+			value, err := inputValueToYAML(prompt)
+			if err != nil {
+				return "", nil, fmt.Errorf("wait_for_signals prompt: %w", err)
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "prompt", Value: value})
+		}
+
+		switch {
+		case wait.GetTimeoutExpr() != nil:
+			value, err := fencedExprToYAML(wait.GetTimeoutExpr())
+			if err != nil {
+				return "", nil, fmt.Errorf("wait_for_signals timeout: %w", err)
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "timeout", Value: value})
+
+		case wait.GetTimeout() != nil:
+			mapping = append(mapping,
+				yaml.MapItem{Key: "timeout", Value: durationToYAML(wait.GetTimeout())})
+		}
+
+		if shaped := kind.SignalBatch.GetOutputs(); len(shaped) > 0 {
+			out := make(yaml.MapSlice, 0, len(shaped))
+			for _, name := range slices.Sorted(maps.Keys(shaped)) {
+				value, err := inputValueToYAML(shaped[name])
+				if err != nil {
+					return "", nil, fmt.Errorf("wait_for_signals outputs %q: %w", name, err)
+				}
+				out = append(out, yaml.MapItem{Key: name, Value: value})
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "outputs", Value: out})
+		}
+
+		// The scalar form when there is nothing else to say, as above.
+		if len(mapping) == 1 {
+			return "wait_for_signals", kind.SignalBatch.GetName(), nil
+		}
+
+		return "wait_for_signals", mapping, nil
+
 	default:
-		return "", nil, fmt.Errorf("wait has no sleep, wait_until, or wait_for_signal")
+		return "", nil, fmt.Errorf("wait has no sleep, wait_until, wait_for_signal, or wait_for_signals")
 	}
 }
 

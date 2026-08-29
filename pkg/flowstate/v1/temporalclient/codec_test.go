@@ -44,15 +44,23 @@ func TestOptionsCarryTheCodec(t *testing.T) {
 }
 
 // TestUnconfiguredOptionsAreUnchanged is the other half: a deployment that has
-// configured no codec must get the byte-for-byte payload path it had before the
-// slot existed, including the SDK's own failure behavior.
+// configured no codec must get the plain serializer and the SDK's own failure
+// behavior, with nothing transforming its payloads.
+//
+// The converter it must equal is [payloadcodec.Serializer], not
+// converter.GetDefaultDataConverter. Since #911 the two differ — flowstate
+// registers the binary proto converter ahead of the ProtoJSON one, so payloads
+// are written as `binary/protobuf` — and the assertion is deliberately identity
+// against that serializer rather than a looser check, because what this test
+// exists to catch is a codec converter reaching a deployment that configured
+// none.
 func TestUnconfiguredOptionsAreUnchanged(t *testing.T) {
 	t.Parallel()
 
 	opts, err := temporalclient.Config{}.Options()
 	require.NoError(t, err)
 
-	require.Equal(t, converter.GetDefaultDataConverter(), opts.DataConverter)
+	require.Equal(t, payloadcodec.Serializer(), opts.DataConverter)
 
 	failure := opts.FailureConverter.ErrorToFailure(errNotAcceptable)
 	require.Equal(t, errNotAcceptable.Error(), failure.GetMessage())

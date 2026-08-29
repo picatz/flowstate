@@ -352,14 +352,24 @@ no `continue-on-error`. It landed advisory with 21 findings, measured below, bec
 a check is tried against a corpus before it is turned on; the corpus is clean now,
 so the trial is over.
 
-**The byte-identical clause is enforced over `examples/` and unmet for the snippets
-in prose**, and the measurement is in Part III. `flow fmt` now writes what the corpus
-already spelled — short durations, plain-first quoting, indented sequences (#850) —
-and `TestEveryExampleIsAlreadyWhatTheFormatterWrites` holds every workflow under
+**The byte-identical clause is enforced, over `examples/` and over the snippets in
+prose alike.** `flow fmt` writes what the corpus already spelled — short durations,
+plain-first quoting, indented sequences, and the mapping spelling of a structure
+whose entries hold expressions (#850) — and
+`TestEveryExampleIsAlreadyWhatTheFormatterWrites` holds every workflow under
 `examples/` to those bytes, alongside a second pass proving idempotence and a
-`proto.Equal` proving the reformat kept the workflow each file compiles to. The
-snippets in `README.md` and `docs/DSL.md` are not yet held to anything, which is the
-half of this clause that remains.
+`proto.Equal` proving the reformat kept the workflow each file compiles to.
+
+The snippets in prose are held by the same two claims, in
+`TestShownWorkflowsAreCanonical`, over the same list of documents the compile and
+lint checks read. Every complete workflow shown is canonical today and that test's
+`notYetCanonical` is empty, so a snippet is held to bytes from the day it lands.
+The map stays as the way a future exemption is written down rather than left
+silent — an entry asserts the shape it claims to fail in, so a fix cannot leave a
+stale exemption behind — and with nothing exempt,
+`TestTheCanonicalClaimFailsOnANonCanonicalSnippet` is what keeps the claim
+falsifiable: it drives both failure shapes over blocks written by hand, so a green
+run means the check can still fail rather than that it stopped looking.
 
 ### R9. The charter enforces itself or shrinks
 
@@ -450,38 +460,71 @@ shipped both answers to #545, which means the status quo is not the conservative
 position but the inconsistent one. Condemned by R4, which binds the resolution without
 pre-empting #545's measurement of what YAML permits.
 
-**R8's byte-identical clause, held over the corpus and still open in prose.**
-Measured by running `flow fmt --stdout` over each shown Flowfile and comparing bytes:
+**R8's byte-identical clause, held over the corpus and over prose, with nothing
+exempt.** This was a table of which shown workflows were canonical, and deleting it
+is the point rather than a tidy-up: its rows restated in prose, which somebody has
+to remember to update, exactly what two tests decide on every run —
+`TestEveryExampleIsAlreadyWhatTheFormatterWrites` over `examples/`, and
+`TestShownWorkflowsAreCanonical` over every complete workflow shown in `README.md`,
+`docs/DSL.md`, `docs/ARCHITECTURE.md` and this file. A second declaration of facts a
+test already decides is the same defect as a value written down twice, and this one
+failed in exactly that way: the hand-measured version stood stale for the four months
+between `c4ead7c` and #850's re-measurement, describing a formatter that had moved
+under it.
 
-| Corpus | Canonical today |
-| --- | --- |
-| every workflow under `examples/` (87 files) | all byte-identical, and held there by a test |
-| the one complete workflow in `README.md` | not canonical |
-| the one complete workflow in `docs/DSL.md` | `flow fmt` **refuses** it, because a comment inside it cannot be carried back |
+So those tests are the authority, and what is written here is what they cannot say:
+every one of them passes today, and `notYetCanonical` — the map that names an
+exemption in writing — is empty. `flowfile/showncanonical_test.go` is where to read
+which workflows are covered, and it draws that list from the same place the compile
+and lint checks draw it, so it cannot fall behind a document somebody adds.
 
-The first row was `0 byte-identical` when this table was written, and the direction
-of that failure was the finding: `flow fmt` wrote sequences at zero indentation,
-normalized `24h` to `24h0m0s`, and re-quoted a single-quoted string with backslash
-escapes — so making the corpus canonical would have meant rewriting every teaching
-file into a shape no teaching file used. The gap was never that the examples were
-sloppy; it was that the formatter was not canon for anything.
+The corpus half was `0 byte-identical` when this section was first written, and the
+direction of that failure was the finding: `flow fmt` wrote sequences at zero
+indentation, normalized `24h` to `24h0m0s`, and re-quoted a single-quoted string with
+backslash escapes — so making the corpus canonical would have meant rewriting every
+teaching file into a shape no teaching file used. The gap was never that the examples
+were sloppy; it was that the formatter was not canon for anything.
 
-#850 closed it in that direction rather than this one. Each of those three defaults
-was decided against what the corpus already spelled — the shortest exact duration,
-plain-then-single-quoted scalars, indented sequences — and `examples/` was reformatted
-once against the result. What is left of the clause is the two rows above that are
-not `examples/`, and one of them names its own remaining work: the formatter still
-refuses a comment written inside a mapping the compiler folds into a single
-expression, so `docs/DSL.md`'s worked example cannot be held to bytes until either
-that comment moves or the fold keeps a place to hang it.
+#850 closed it in that direction rather than this one, in two passes. Three defaults
+were decided against what the corpus already spelled — the shortest exact duration,
+plain-then-single-quoted scalars, indented sequences — and then the fold below was
+decided the same way, each pass reformatting `examples/` once against the result.
 
-One rewrite the corpus reformat did *not* make, and it is the reason a folded block
-scalar no longer appears in the list above: `flow fmt` still unfolds one into a
-single line, and roughly 120 folded scalars in `examples/` were unfolded by the
-reformat. Re-folding is a re-wrapping decision — a width, and a rule for where a
-break may fall that no string can be corrupted by — and it was left undecided rather
-than guessed at, since a formatter that folds wrongly changes what a file says. It is
-the next thing this clause needs after the prose snippets.
+**The fold, and what closing it cost.** `compiler.composite` collapses any mapping or
+sequence holding a `${...}` anywhere inside it into a single `Value_Expr` — a CEL map
+literal — because that is the only way a per-key expression can be evaluated. `Marshal`
+wrote that value back the one way it knew, as a fenced string on one line, so the keys
+the author wrote were not in the document the formatter produced: a comment anchored to
+one of them had nowhere to go, which is what refused `docs/DSL.md`'s worked example, and
+the first reformat flattened 59 authored mappings and sequences into one-line literals
+on the way to being canonical — 20 `json:`, 19 `query:`, 12 `fields:`, 4 `headers:`,
+4 others — of which `examples/plugins/sql/transfer.yaml:82` reached 778 characters.
+
+`Marshal` now offers the mapping spelling back as a candidate and verifies it by
+re-compiling and comparing the value with `proto.Equal`, the way `scalarStyles` and
+`scalarSurvives` already choose between renderings of a scalar; `unfoldedStructure`
+is that chooser. All 59 sites are authored mappings and sequences again, the longest
+line under `examples/` is 436 characters of format-string prose rather than 778 of
+flattened structure, and the two `notYetCanonical` holdouts closed with it.
+
+Three things keep the fenced one-line form, and each is a verification failure rather
+than a rule written down twice: a key that is not a constant string, an expression
+written with a macro (which cel-go cannot unparse), and an all-constant structure,
+whose mapping spelling compiles to a *literal* rather than to the expression the
+value holds. A shaping task's `outputs:` keeps it too, and that one is a real
+distinction rather than a shortfall — a mapping there means a shaped set of names,
+so unfolding one would change what the file says.
+
+**Folding is the other, smaller question, and stays parked.** `flow fmt` unfolds a
+folded block scalar into a single line. Re-folding is a re-wrapping decision — a
+width, and a rule for where a break may fall that no string can be corrupted by —
+and it stays undecided rather than guessed at, since a formatter that folds wrongly
+changes what a file says. The unfold above removed most of its motivation: the lines
+that made folding look necessary were the flattened structures, not authored prose.
+`README.md`'s `approval-gate` was the one shown workflow it left non-canonical, and
+that was answered in the README — the `outcome:` expression is written as the single
+line the formatter writes, with the prose above it still naming each piece of the
+idiom.
 
 **What tier 4 found in the shown corpus, and what it finds now.** `flow lint
 examples/` reported 21 findings across 12 of the 86 files it read, measured at the

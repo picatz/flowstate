@@ -73,6 +73,14 @@
 //     not match, so an identity-scoped allowlist denies it. The value is supplied
 //     by the task making the request; a request not made through a Flowstate task
 //     sees the empty identity.
+//   - credentials bool, request-scoped only: whether this request carries a
+//     worker-resolved credential — a bearer secret or a JIT federation target
+//     (#963). It composes with identity, so "this tenant's credentials may reach
+//     only this host" is expressible as one rule; host stays the same normalized
+//     attribute a rule without credentials already uses, so there is no second
+//     host form to get wrong. Unset — a request not made through a task that sets
+//     it — reads as false, which is also what an old rule predating this
+//     attribute already meant, so adding it changes no existing rule's answer.
 //
 // Attributes are normalized to the form the request will actually take, so that a
 // rule cannot be evaded by spelling the same target differently. host is
@@ -109,6 +117,31 @@
 // request. Rules within one scope combine with OR; because allow rules are
 // enforced at each scope that defines them, request-scoped and connection-scoped
 // allow rules combine with AND.
+//
+// # Per-host rate limits
+//
+// Beside the rules — not among them — a policy may bound how fast this process
+// makes requests to a named host:
+//
+//	p, err := netpolicy.New(
+//		netpolicy.WithMaxRequestsPerSecondPerProcess("api.example.com", 100),
+//	)
+//
+// The name is the honest one. The bucket lives in the policy, one policy is
+// bound into the http task per worker process, and so a fleet of N workers sends
+// up to N times the number written. The deployment-wide answer is the upstream's
+// own 429, which is honored end to end: a rate-limited response is retryable and
+// its Retry-After is scheduled by both drivers. This bound caps one process's
+// contribution before the upstream has to refuse; it does not replace the
+// upstream refusing.
+//
+// Exceeding it is a [*RateLimitedError], not a [*DenyError]: the request was
+// permitted and is merely early, so it carries the delay until a token exists
+// and the http task retries after it. Nothing blocks — waiting inside the
+// request would hold the worker's activity slot for the wait. ratelimit.go
+// carries the rest of the reasoning, including why an internal limiter failure
+// allows the request rather than refusing it, which is the one place in this
+// package that does not fail closed.
 //
 // # Errors
 //
@@ -150,8 +183,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/net/idna"
 )
 
 // Policy is an egress policy and the http.Client that enforces it. A Policy is
@@ -168,6 +199,12 @@ type Policy struct {
 
 	// client is built once so that all callers share one connection pool.
 	client *http.Client
+
+	// rateLimits holds the per-host token buckets, or is nil when the policy
+	// configures none. Unlike everything above it, this is state that changes
+	// as requests are made — see ratelimit.go for why it is a bound beside the
+	// rules rather than a rule, and why the number it enforces is per process.
+	rateLimits *hostRateLimiter
 }
 
 // New builds a policy from the given options. With no options it returns the safe
@@ -202,6 +239,8 @@ func New(opts ...Option) (*Policy, error) {
 	if err := p.compileRules(); err != nil {
 		return nil, err
 	}
+
+	p.rateLimits = newHostRateLimiter(cfg.hostRates, cfg.now)
 
 	p.client = p.newClient()
 
@@ -328,6 +367,15 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
+	// After every check that decides whether the request is permitted, and
+	// before anything is sent: a refused request must not spend one of the
+	// host's tokens. Every redirect hop re-enters here, so a hop counts against
+	// the host it is actually made to, which is the host the limit belongs to.
+	// See [Policy.checkRate], which is where the whole argument lives.
+	if err := rt.policy.checkRate(req.Context(), req.URL, req.URL.Redacted()); err != nil {
+		return nil, err
+	}
+
 	// A round tripper must not modify the request it is given, so the attributes
 	// the dialer needs are attached to a copy.
 	if !rt.policy.connRules.empty() {
@@ -397,13 +445,14 @@ func (p *Policy) checkRequest(req *http.Request) error {
 	}
 
 	return p.requestRules.evaluate(req.Context(), target, map[string]any{
-		"url":      target,
-		"scheme":   scheme,
-		"host":     ruleHost(req.URL),
-		"port":     int64(port),
-		"method":   req.Method,
-		"path":     rulePath(req.URL),
-		"identity": identityFromContext(req.Context()),
+		"url":         target,
+		"scheme":      scheme,
+		"host":        ruleHost(req.URL),
+		"port":        int64(port),
+		"method":      req.Method,
+		"path":        rulePath(req.URL),
+		"identity":    identityFromContext(req.Context()),
+		"credentials": credentialsFromContext(req.Context()),
 	})
 }
 
@@ -415,14 +464,11 @@ func (p *Policy) checkRequest(req *http.Request) error {
 // written, "EXAMPLE.com", "example.com." and "example.com" would be three
 // different strings to a rule, and a deny rule naming one of them would not
 // match the others.
+// The normalization itself is [normalizeHost] (ratelimit.go), because the
+// per-host rate bound keys on the same rules and a second copy of them would be
+// a bucket configured under a spelling that no request ever matches.
 func ruleHost(u *url.URL) string {
-	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-
-	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
-		host = ascii
-	}
-
-	return host
+	return normalizeHost(u.Hostname())
 }
 
 // rulePath returns the path as rules see it, cleaned of the "." and ".." segments

@@ -137,6 +137,17 @@ type codeActionContext struct {
 // pass: a document Fix leaves byte-identical can still hold a misspelled key,
 // and a document full of migrations may carry no suggested edit at all.
 func codeActions(doc *document, params codeActionParams) []codeAction {
+	if doc.isTestDocument() {
+		// Deliberately refused, not merely unreached (#1110 item 8): both
+		// sources below are workflow-specific — migrationActions rewrites a
+		// Flowfile edition, and suggestedEditActions turns the validator's
+		// own suggested edits into quickfixes, and the flowtest loader's
+		// diagnostics (diagnoseTestDocument, testfile.go) carry no suggested
+		// edit for this to read. There is nothing here to compute yet, and
+		// saying so beats falling through the Flowfile gate below by
+		// accident.
+		return nil
+	}
 	if !doc.speaksFlowfile() {
 		return nil // see [document.speaksFlowfile]
 	}

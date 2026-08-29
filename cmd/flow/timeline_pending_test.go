@@ -243,13 +243,13 @@ func TestATimelineReportsTheRetryNoRowCanHold(t *testing.T) {
 // find something already three lines up. That is a wrong claim rather than a
 // stale one, which is why it is worth its own test (Codex, #1142).
 //
-// The second case is the same state arriving differently. The schema says the
-// next-attempt field is unset while an attempt runs, but the server fills it
-// from Temporal's `scheduled_time` rather than its `next_attempt_schedule_time`,
-// and only the latter is documented to be null for a scheduled or started
-// activity — so a running attempt can reach the CLI carrying the moment it was
-// itself scheduled, which is behind us. A time already past is therefore read as
-// silence rather than as an overdue attempt.
+// Presence is what tells the two states apart, and only presence: an attempt
+// that is running has no next-attempt time at all, by Temporal's own contract
+// for `next_attempt_schedule_time` (#1148). There is no second case here for a
+// next-attempt time that has already slipped into the past — that is not this
+// state arriving differently, it is a genuinely overdue retry, and it gets its
+// own assertion in [TestTheRetryNoteCountsWhatItCanAndInventsNothing] instead
+// of being folded into silence here.
 func TestARetryThatIsAlreadyRunningIsNotAMissingRow(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -265,16 +265,6 @@ func TestARetryThatIsAlreadyRunningIsNotAMissingRow(t *testing.T) {
 			because: "the failure this note claims has no row was written into the " +
 				"account when this attempt started, so the note points at a row the " +
 				"reader can already see",
-		},
-		{
-			name: "the schedule it carries is already behind us",
-			pending: &v1.PendingActivity{
-				Attempt:                  3,
-				LastFailure:              "connection refused",
-				NextAttemptScheduledTime: timestamppb.New(time.Now().Add(-time.Minute)),
-			},
-			because: "a moment already past is the attempt's own scheduling rather than " +
-				"a wait still to come, and claiming a missing row on it is a guess",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -309,6 +299,14 @@ func TestARetryThatIsAlreadyRunningIsNotAMissingRow(t *testing.T) {
 // pending activity. That step's scheduling is already in the account, with
 // nothing missing from it — announcing a retry there would put a warning on
 // every running workload, and a warning that is always on is one nobody reads.
+//
+// A running first attempt has no next-attempt time to give it, by the same
+// contract that lets [retryingStepsFooter] key off presence alone (#1148), so
+// there is no case here pairing `Attempt: 1` with a future
+// `NextAttemptScheduledTime`: a real server cannot produce that combination,
+// and a fixture asserting silence on it would be testing an attempt-count
+// guard this predicate no longer has. [TestTheRetryNoteCountsWhatItCanAndInventsNothing]
+// covers what the predicate does when handed that input anyway.
 func TestABusyRunIsNotDescribedAsAStuckOne(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -328,18 +326,6 @@ func TestABusyRunIsNotDescribedAsAStuckOne(t *testing.T) {
 			},
 			because: "a step running its first attempt has failed at nothing, and its " +
 				"scheduling is already a row in the account above",
-		},
-		{
-			name: "a first attempt still waiting for a worker",
-			present: &v1.GetResponse{
-				Status: v1.RunResponse_STATUS_RUNNING,
-				PendingActivities: []*v1.PendingActivity{{
-					Attempt:                  1,
-					NextAttemptScheduledTime: timestamppb.New(time.Now().Add(stillAhead)),
-				}},
-			},
-			because: "a schedule in the future is only half of it — nothing has failed, " +
-				"so no row is missing and the wait is ordinary queueing",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -631,13 +617,17 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 				"would claim a missing row the reader can see",
 		},
 		{
-			name: "a schedule already behind us says nothing",
+			name: "a schedule already behind us is reported as overdue",
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 				backingOff(3, now.Add(-time.Minute)),
 			}},
-			want: "",
-			because: "a moment already past is the running attempt's own scheduling " +
-				"rather than a wait still to come",
+			want: opening + "one step is retrying — attempt 3 is overdue by 1m0s " +
+				"against this machine's clock" + tail,
+			because: "a next-attempt time in the past is still a next-attempt time — " +
+				"presence is what the field promises, and folding an overdue retry back " +
+				"into silence is the exact regression #1148 fixed one surface over; the " +
+				"clock is named because `now` is this process's and the schedule is the " +
+				"server's, so skew alone can produce this line (Codex, #1155)",
 		},
 		{
 			name: "several waiting steps name the furthest along",
@@ -651,13 +641,23 @@ func TestTheRetryNoteCountsWhatItCanAndInventsNothing(t *testing.T) {
 				"one where four are on attempt 2",
 		},
 		{
-			name: "a first attempt in flight is not counted as a retry",
+			name: "an out-of-contract first attempt is trusted anyway",
+			// This fixture cannot come from a real server: Temporal's own
+			// documented contract for `next_attempt_schedule_time` is that it is
+			// populated only once a previous attempt has failed, which is the
+			// same event that advances `attempt` past one — so `attempt: 1`
+			// paired with a non-nil next-attempt time is a state the field's own
+			// contract forbids. The predicate has no attempt-count guard to catch
+			// it regardless, on the same reasoning `flow get` already applies
+			// (#1148): the field is what is trusted, not a second count kept
+			// beside it that could disagree.
 			msg: &v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 				{Attempt: 1, NextAttemptScheduledTime: timestamppb.New(now.Add(time.Minute))},
 				backingOff(4, now.Add(45*time.Second)),
 			}},
-			want:    opening + "one step is retrying — attempt 4 is due in 45s" + tail,
-			because: "the busy step's scheduling is already a row, so nothing about it is missing",
+			want: opening + "2 steps are retrying — the furthest on attempt 4" + tail,
+			because: "presence alone decides now, so both activities with a next-attempt " +
+				"time are counted regardless of what their attempt field says",
 		},
 		{
 			name:    "a run with nothing pending says nothing",
