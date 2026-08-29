@@ -600,6 +600,12 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, err
 	}
+	if workflow.GetConcurrency() != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(
+			"this workflow declares a `concurrency:` key and SignalWithStart requires an entity_key; "+
+				"both address the run by its workflow id and only one of them can, so use Run or drop "+
+				"the workflow's concurrency block"))
+	}
 
 	// The name has to be one the trusted workflow actually waits for, and this
 	// RPC is the one place that has to say so out loud.
