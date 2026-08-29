@@ -1039,10 +1039,10 @@ tenant's namespace (`FlowstateServer`'s `Priority{FairnessKey: namespace}` —
 so it covers every task a run goes on to schedule and survives
 Continue-As-New. That part is verified and correctly wired.
 
-Temporal made Task Queue Priority and Fairness GA in Server 1.31. Priority is
+Temporal made Task Queue Priority and Fairness GA in Server 1.31+. Priority is
 enabled by default there; Fairness is not. A self-hosted deployment enables it
-with `matching.enableFairness: true` at task-queue, namespace, or cluster scope.
-Temporal Cloud enables it per namespace, where it is a paid feature. Flowstate
+with `matching.enableFairness: true` at Task Queue, Namespace, or cluster scope.
+Temporal Cloud enables it per Namespace, where it is a paid feature. Flowstate
 does not change either setting.
 
 This is still **not** an isolation guarantee. Fairness is weighted and
