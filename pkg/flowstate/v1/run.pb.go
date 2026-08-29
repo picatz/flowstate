@@ -1378,6 +1378,9 @@ func (x *Frame) GetLoopState() *Value {
 	return nil
 }
 
+// RunState is the durable workflow state used by the Temporal Run entrypoint.
+// It allows the workflow to continue-as-new while carrying only the minimal
+// required subset of previously produced outputs for the remaining steps.
 type RunState struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Workflow *Workflow              `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`

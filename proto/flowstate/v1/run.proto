@@ -662,6 +662,9 @@ message Frame {
   Value loop_state = 6;
 }
 
+// RunState is the durable workflow state used by the Temporal Run entrypoint.
+// It allows the workflow to continue-as-new while carrying only the minimal
+// required subset of previously produced outputs for the remaining steps.
 message RunState {
   Workflow workflow = 1 [
     (buf.validate.field).required = true,
