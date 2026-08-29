@@ -18,9 +18,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -153,4 +155,45 @@ func TestCurrentDetailsMarkdownMatchesPositionPathShape(t *testing.T) {
 	p.enter(0, "cleanup")
 	assert.Equal(t, "On step `cleanup`", p.currentDetailsMarkdown(),
 		"entering a new top-level step must drop the previous step's deeper path")
+}
+
+// TestCurrentDetailsMarkdownSaysWhenARunIsHeld is the operator-facing half of
+// #928 stage 2's attribution: somebody meeting a stopped workload in Temporal
+// Web should learn it is stopped on purpose, by which lease, and until when.
+//
+// It also pins the deliberate omission. The *holder* is not rendered here,
+// because a step id is grammar-constrained (`^[A-Za-z0-9-_]+$`, which is what
+// makes backticking it safe) and an attested subject is not — it is bounded and
+// otherwise arbitrary, so putting one in markdown would be exactly the crossing
+// [progress.currentDetailsMarkdown]'s own comment is careful about. Who holds
+// the lease travels on the expiry timer's plain-text summary and on the signal
+// delivery in history, where it is a typed field.
+func TestCurrentDetailsMarkdownSaysWhenARunIsHeld(t *testing.T) {
+	p := &progress{}
+	p.enter(0, "deploy")
+
+	unheld := p.currentDetailsMarkdown()
+	require.Equal(t, "On step `deploy`", unheld,
+		"an unheld run says nothing about a lease")
+
+	p.setDebugLease(&v1.DebugSession{
+		SessionId: "run-1/debug/0",
+		AttachedBy: &v1.WorkloadIdentity{
+			Issuer: "https://issuer.example.com", Subject: "sre-1@example.com",
+		},
+		LeaseExpiresAt: timestamppb.New(time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)),
+	})
+
+	held := p.currentDetailsMarkdown()
+	assert.Equal(t,
+		"On step `deploy` — held by debug lease `run-1/debug/0` until 2026-08-28T09:00:00Z", held)
+
+	assert.NotContains(t, held, "sre-1@example.com",
+		"an attested subject is not grammar-constrained, so it does not go into markdown")
+
+	// And the run stops saying it is held the moment it is not, rather than
+	// leaving a stale line behind for the rest of the segment.
+	p.setDebugLease(nil)
+	assert.Equal(t, unheld, p.currentDetailsMarkdown(),
+		"a released run kept claiming to be held")
 }

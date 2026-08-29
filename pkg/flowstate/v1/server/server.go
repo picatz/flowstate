@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"sync"
@@ -843,6 +844,94 @@ func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[stri
 	return map[string]any{signalPolicyMemoKey: encoded}, nil
 }
 
+// debugPolicyMemoKey is the memo field recording who may pause a run under a
+// debug lease — [v1.Workflow.Debug], frozen at submit exactly as
+// [signalPolicyMemoKey] freezes its neighbour, and read back by the same
+// `DescribeWorkflowExecution` every verb already makes.
+//
+// A key of its own rather than a second field inside the signal policy entry,
+// even though both encode a partial [v1.Workflow]. The two stanzas are
+// independent — a workflow may declare either, both, or neither — and
+// `signalPolicies` fails closed on a *present* signal-policy key that decodes
+// to nothing, which is a rule a workflow declaring only `debug:` would trip if
+// the one key had to be written for it.
+//
+// Absent means **not debuggable**, which is the opposite of what an absent
+// [signalPolicyMemoKey] means and is the whole of the fail-closed decision
+// recorded on picatz/flowstate#928. A run started before this key existed
+// therefore reads correctly with no compatibility arm, for the reverse of the
+// usual reason: nothing could pause it then either.
+const debugPolicyMemoKey = "flowstate.debugPolicy"
+
+// signalProtocolMemoKey distinguishes runs submitted after the engine reserved
+// its signal prefix from runs whose workflows could legitimately use those
+// names. Its value is the protocol version understood by the submitting
+// server; absence means the legacy, unreserved signal surface.
+const (
+	signalProtocolMemoKey       = "flowstate.signalProtocolVersion"
+	currentSignalProtocol int32 = 1
+)
+
+// debugPolicyMemoEntry encodes a workflow's declared `debug:` stanza into its
+// own memo entry, through the same shape [signalPolicyMemoEntry] uses: a
+// partial [v1.Workflow] marshalled with proto, so the reader needs nothing but
+// `proto.Unmarshal` and `.GetDebug()`.
+//
+// Resolves the stanza's `subject: ${...}` rules against the run's bound inputs
+// before encoding, for the identical reason its neighbour does — the
+// enforcement path must never evaluate an expression, because it runs on every
+// ask and the expression reads values the caller chose.
+//
+// Returns a nil map for a workflow with no `debug:`, which is the fail-closed
+// zero case: no key, no lease, no pause.
+func debugPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+	declared := wf.GetDebug()
+	if declared == nil {
+		return nil, nil
+	}
+
+	resolved, err := v1.ResolvePolicySubjects(ctx, "debug", declared,
+		&v1.Scope{Profile: wf.GetProfile(), Inputs: inputs})
+	if err != nil {
+		return nil, fmt.Errorf("resolving the declared debug policy's per-run subjects: %w", err)
+	}
+
+	encoded, err := proto.Marshal(&v1.Workflow{Debug: resolved})
+	if err != nil {
+		return nil, fmt.Errorf("encoding the declared debug policy: %w", err)
+	}
+
+	return map[string]any{debugPolicyMemoKey: encoded}, nil
+}
+
+// policyMemoEntries is every authorization policy a run carries on its memo,
+// assembled once so that a path writing one of them cannot forget the other.
+//
+// Both submit paths — [FlowstateServer.prepareCreate] and
+// [FlowstateServer.CreateSchedule] — call this rather than the two encoders,
+// which is the same "one function, two callers" discipline
+// [signalPolicyMemoEntry]'s own comment records, extended to cover the moment
+// a second policy joined the first. The hole it forecloses is the one a
+// scheduled approval gate already had once: a firing that carried the tenant
+// memo and not the policy, so enforcement silently became the zero case.
+func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+	entries := map[string]any{signalProtocolMemoKey: currentSignalProtocol}
+
+	signals, err := signalPolicyMemoEntry(ctx, wf, inputs)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(entries, signals)
+
+	debug, err := debugPolicyMemoEntry(ctx, wf, inputs)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(entries, debug)
+
+	return entries, nil
+}
+
 // workflowNameMemoKey is the memo field recording a workflow's own declared
 // name — see [v1.RunSummary.Name] for why this cannot be read off Temporal's
 // built-in WorkflowType.
@@ -1535,6 +1624,23 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// The same argument for the `debug:` stanza, which compiles to the same
+	// [v1.SignalPolicy] and is checked by the same rules — see
+	// [v1.CheckDebugPolicy]. false: this is the workflow's own declaration,
+	// checked before [v1.BindRunInputs] has resolved anything, so a rule may
+	// still legitimately carry an unresolved `subject_from`.
+	if err := v1.CheckDebugPolicy(wf.GetDebug(), false); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// And the reservation the lease mechanics depend on: a workflow that waits
+	// for a signal the engine owns would have its gate answered by a pause ask.
+	// Refused here as well as in the compiler because a hand-built
+	// specification reaches this RPC with no compiler in front of it.
+	if err := v1.CheckReservedSignalNames(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// The same argument, for the two trigger blocks a `concurrency:` key cannot
 	// share a run's workflow id with (see [v1.CheckConcurrency]). The compiler
 	// refuses both combinations with a line and a column; a specification built
@@ -1664,7 +1770,7 @@ func (s *FlowstateServer) prepareCreate(
 	for k, v := range starterMemoEntry(identity) {
 		memo[k] = v
 	}
-	signalEntry, err := signalPolicyMemoEntry(ctx, wf, inputs)
+	signalEntry, err := policyMemoEntries(ctx, wf, inputs)
 	if err != nil {
 		// Two different failures share this one call, and they get the same
 		// answer for different reasons. CheckSignalPolicies and v1.Validate

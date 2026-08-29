@@ -245,6 +245,33 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 				"authorizes a durable one", name))
 	}
 
+	// A name the engine reserved is not a workflow's signal, and the policy
+	// that governs it is not the workflow's `signals:` block — so it is routed
+	// away before anything reads that map. Reaching the zero case below with a
+	// reserved name would authorize a pause ask on the strength of a workflow
+	// having declared nothing, which is the exact substitution
+	// [v1.DebugPolicyCheck] exists to refuse.
+	//
+	// After the rehearsal refusal above and not before it, because that refusal
+	// is about the *sender's shape* and holds whatever the name is: a rehearsal
+	// identity may no more take a debug lease than deliver an approval.
+	if v1.IsReservedSignalName(name) {
+		current, err := s.usesCurrentSignalProtocol(resp.GetWorkflowExecutionInfo().GetMemo())
+		if err != nil {
+			return connect.NewError(connect.CodePermissionDenied, err)
+		}
+		if !current {
+			// Before the protocol marker existed, the prefix was not reserved.
+			// Preserve that run's routing: the engine's own compatibility gate
+			// likewise leaves the channel untouched when the workflow predates
+			// `debug:`. Fall through to the ordinary signal-policy path as
+			// well — legacy workflows could declare a policy for this name,
+			// and compatibility includes enforcing it.
+		} else {
+			return s.authorizeReservedSignal(resp, name, sender)
+		}
+	}
+
 	policies, hasMemo, err := s.signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
 	if err != nil {
 		// The memo is there and unreadable — nothing can be concluded about what
@@ -290,6 +317,135 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 	}
 
 	return nil
+}
+
+// usesCurrentSignalProtocol reports whether the run was submitted with the
+// reserved engine signal surface. An absent marker identifies a legacy run,
+// where `flowstate_*` was an ordinary workflow-owned namespace. A malformed or
+// unknown marker is refused rather than guessed at: routing a reserved name by
+// the wrong protocol can either consume a workflow's delivery or authorize an
+// engine command under the ordinary signal zero case.
+func (s *FlowstateServer) usesCurrentSignalProtocol(memo *common.Memo) (bool, error) {
+	payload, ok := memo.GetFields()[signalProtocolMemoKey]
+	if !ok {
+		return false, nil
+	}
+
+	var version int32
+	if err := s.dataConverter.FromPayload(payload, &version); err != nil {
+		return false, fmt.Errorf("this run's signal protocol marker could not be read, so a reserved signal cannot be routed safely: %w", err)
+	}
+	if version != currentSignalProtocol {
+		return false, fmt.Errorf("this run uses signal protocol version %d, which this server does not understand", version)
+	}
+
+	return true, nil
+}
+
+// authorizeReservedSignal decides a delivery on a channel the engine owns
+// rather than one a workflow declared.
+//
+// One name exists ([v1.DebugSignal] — every ask travels on it, with its verb in
+// the payload so that ordering comes from one FIFO rather than from a channel
+// per verb), and it is governed by [v1.Workflow.Debug] — which fails closed, so
+// a workflow with no `debug:` stanza refuses every delivery, including from the
+// identity that started the run. Any other reserved name is refused outright:
+// the prefix is the engine's, this build knows one name in it, and accepting a
+// second would deliver onto a channel nothing reads while telling the caller it
+// worked.
+//
+// # Why this is a signal at all
+//
+// #928's slice 2 is written as "pause/resume as a signal the interpreter checks
+// at the step boundary it already visits", and taking that literally is what
+// buys the whole of this door for free: the caller is attested by
+// [FlowstateServer.identityFor], the payload is bounded by
+// [v1.CheckSignalPayloadSize], the run is resolved and tenancy-checked by
+// `authorizeRunDecision`, and the decision is written to the audit trail by
+// [FlowstateServer.auditAllow] — all of it above, none of it written twice for
+// debugging. What that record cannot yet say is that the delivery *was* a debug
+// ask: [v1.AuditRecord] carries the RPC and the run, and a signal's name is not
+// one of its fields. `flow debug attach` gets its own
+// [v1.AuthorizationAction] in stage 3, which is where that closes.
+func (s *FlowstateServer) authorizeReservedSignal(
+	resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender,
+) error {
+	if !v1.IsDebugSignalName(name) {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("signal %q: names beginning %q belong to the engine, and this build has no such "+
+				"channel; nothing waits on it and delivering there would report a success that did nothing",
+				name, v1.ReservedSignalPrefix))
+	}
+
+	policy, err := s.debugPolicy(resp.GetWorkflowExecutionInfo().GetMemo())
+	if err != nil {
+		// The same rule an unreadable signal policy gets, and for the same
+		// reason: nothing can be concluded about what this run permits, so
+		// nobody may act on the strength of a guess.
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("this run's declared debug policy could not be read, so no caller may pause it "+
+				"until it can be: %w", err))
+	}
+
+	starterIdentity, hasStarter, err := s.starterAsIdentity(resp.GetWorkflowExecutionInfo().GetMemo())
+	if err != nil {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("this run's starter could not be read, so no caller may pause it "+
+				"until it can be: %w", err))
+	}
+
+	if err := v1.DebugPolicyCheck(policy, sender.GetIdentity(), starterIdentity, hasStarter); err != nil {
+		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("signal %q: %w", name, err))
+	}
+
+	return nil
+}
+
+// debugPolicy reads a run's frozen `debug:` stanza back off its memo.
+//
+// Absent is a real answer and not an error — it means the run declared no
+// `debug:` and is therefore not debuggable, which [v1.DebugPolicyCheck] refuses
+// on. Present-but-undecodable is the opposite: nothing can be concluded, and it
+// is returned as an error so the caller refuses rather than reading corruption
+// as "no policy". That is [signalPolicies]'s rule, applied to the stanza whose
+// zero case already denies — where reading a decode failure as absence would be
+// less catastrophic and is still refused, because "I could not read it" and "it
+// says nothing" are different sentences and only one of them is true.
+//
+// A present key that decodes to a policy this server would never have written —
+// no rules, a rule matching every sender, a `subject_from` that survived
+// resolution — is refused for [signalPolicies]'s reason, through the same
+// checker: [debugPolicyMemoEntry] never writes any of those shapes.
+func (s *FlowstateServer) debugPolicy(memo *common.Memo) (*v1.SignalPolicy, error) {
+	payload, ok := memo.GetFields()[debugPolicyMemoKey]
+	if !ok {
+		return nil, nil
+	}
+
+	var encoded []byte
+	if err := s.dataConverter.FromPayload(payload, &encoded); err != nil {
+		return nil, fmt.Errorf("server: reading the debug policy recorded on a run: %w", err)
+	}
+
+	var spec v1.Workflow
+	if err := proto.Unmarshal(encoded, &spec); err != nil {
+		return nil, fmt.Errorf("server: decoding the debug policy recorded on a run: %w", err)
+	}
+
+	declared := spec.GetDebug()
+	if declared == nil {
+		return nil, fmt.Errorf(
+			"server: the debug policy recorded on a run decoded to nothing, which is not an entry this " +
+				"server would have written — it writes no key at all for a workflow with no `debug:`")
+	}
+
+	// true: resolution happened once, at submit, before this was frozen.
+	if err := v1.CheckDebugPolicy(declared, true); err != nil {
+		return nil, fmt.Errorf(
+			"server: the debug policy recorded on a run is not a policy this server would have written: %w", err)
+	}
+
+	return declared, nil
 }
 
 // starterAsIdentity reads a run's recorded starter and renders it as a
@@ -476,10 +632,6 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 		return nil, s.auditDeny(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
 	}
 
-	if err := s.auditAllow(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
-		return nil, err
-	}
-
 	// An absent payload is an empty one rather than nil, so a waiting step's
 	// outputs exist and `${approval.timed_out}` resolves whether or not the
 	// sender sent anything. A step whose outputs are missing entirely would fail
@@ -506,6 +658,11 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// wait that quietly never resolves. See [authorizeSignal] for the
 	// zero-case and fail-closed rules this enforces.
 	if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+		return nil, s.auditDeny(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
+	}
+
+	if err := s.auditAllow(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
 		return nil, err
 	}
 

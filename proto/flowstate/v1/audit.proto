@@ -211,4 +211,9 @@ enum AuditDenyCode {
   // The resource exists and belongs to another tenant, or records no tenant
   // that this caller could be. FlowstateServer.ownedBy answering false.
   AUDIT_DENY_CODE_TENANT_MISMATCH = 3;
+
+  // The caller may address the resource, but a policy governing the requested
+  // operation refused it. FlowstateServer.authorizeSignal's name-level policy
+  // check is the first emitter.
+  AUDIT_DENY_CODE_POLICY_DENIED = 4;
 }
