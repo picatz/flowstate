@@ -4,6 +4,11 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
+
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The three directions [Plugin.callContext] has to get right, and #1130's bug
@@ -172,7 +177,9 @@ func TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime(t *testing.T) {
 
 // TestACallWithNoDeadlineStillDiesAtCallTimeout is the backstop over the same
 // real path: the "slow" fixture blocks until its context ends, and with no
-// caller deadline the host's own bound is the only thing that can end it.
+// caller deadline the host's own bound is the only thing that can end it. The
+// wire error identifies that bound without comparing the host's clock to the
+// deadline Connect propagates to the plugin process.
 func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -181,30 +188,34 @@ func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 
 	host := openHost(t, cfg)
 
-	defs := host.TaskDefs()
-	if len(defs) != 1 {
-		t.Fatalf("host provides %d tasks, want 1", len(defs))
+	p, ok := host.Lookup("slow")
+	if !ok {
+		t.Fatal("plugin was not launched")
+	}
+	service, err := p.TaskService()
+	if err != nil {
+		t.Fatalf("TaskService: %v", err)
 	}
 
 	done := make(chan error, 1)
-	start := time.Now()
 	go func() {
 		// context.Background(), not t.Context(): a context the test would
 		// cancel at cleanup is a deadline of sorts, and the shape under test
 		// is the caller that brought nothing at all.
-		_, err := defs[0].Fn(context.Background(), nil, nil)
+		_, err := service.Execute(context.Background(), connect.NewRequest(&pluginv1.ExecuteRequest{
+			Task: &flowstatev1.Task{Name: "slow_task"},
+		}))
 		done <- err
 	}()
 
 	select {
 	case err := <-done:
-		elapsed := time.Since(start)
 		if err == nil {
-			t.Fatalf("a call with no deadline of its own succeeded after %s, want CallTimeout to end it", elapsed)
+			t.Fatal("a call with no deadline of its own succeeded, want CallTimeout to end it")
 		}
-		if elapsed < cfg.CallTimeout {
-			t.Errorf("the call ended after %s, before its %s CallTimeout; something other than the "+
-				"bound under test ended it", elapsed, cfg.CallTimeout)
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
+			t.Errorf("call error code = %s, want %s from CallTimeout (err: %v)",
+				connect.CodeOf(err), connect.CodeDeadlineExceeded, err)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("a call with no deadline of its own was still running 15s in, want it bounded by CallTimeout")
