@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+	printf '\n==> %s\n' "$1"
+}
+
+step "Installing system dependencies"
+packages=()
+command -v ffmpeg >/dev/null 2>&1 || packages+=(ffmpeg)
+command -v jq >/dev/null 2>&1 || packages+=(jq)
+if ! docker compose version >/dev/null 2>&1; then
+	packages+=(docker-compose-plugin)
+fi
+if ((${#packages[@]})); then
+	sudo apt-get update
+	sudo apt-get install -y "${packages[@]}"
+else
+	echo "System dependencies are already installed"
+fi
+
+step "Installing the Go toolchain pinned by go.mod"
+go_version="$(awk '$1 == "go" { print $2; exit }' go.mod)"
+case "$(uname -m)" in
+	x86_64) go_arch=amd64 ;;
+	aarch64) go_arch=arm64 ;;
+	*) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+toolchain_home="$HOME/.local/share/flowstate"
+versioned_go="$toolchain_home/go-$go_version"
+if [[ ! -x "$versioned_go/bin/go" ]]; then
+	(
+		tmpdir="$(mktemp -d)"
+		trap 'rm -rf "$tmpdir"' EXIT
+		archive="go${go_version}.linux-${go_arch}.tar.gz"
+		checksum="$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all' | jq -er \
+			--arg version "go$go_version" --arg archive "$archive" \
+			'.[] | select(.version == $version) | .files[] | select(.filename == $archive) | .sha256')"
+		curl -fsSL "https://go.dev/dl/$archive" -o "$tmpdir/$archive"
+		printf '%s  %s\n' "$checksum" "$tmpdir/$archive" | sha256sum -c -
+		mkdir -p "$toolchain_home"
+		tar -C "$tmpdir" -xzf "$tmpdir/$archive"
+		mv "$tmpdir/go" "$versioned_go"
+	)
+fi
+ln -sfn "go-$go_version" "$toolchain_home/go"
+
+profile_marker="# Flowstate orb toolchain"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+	cat >> "$HOME/.bash_profile" <<'EOF'
+
+# Flowstate orb toolchain
+export PATH="$HOME/.local/share/flowstate/go/bin:$HOME/go/bin:$PATH"
+EOF
+fi
+export PATH="$toolchain_home/go/bin:$HOME/go/bin:$PATH"
+go version
+
+step "Downloading dependencies for every Go module"
+while IFS= read -r module; do
+	echo "  $module"
+	(cd "$(dirname "$module")" && go mod download)
+done < <(find . -name go.mod -not -path './.git/*' -print | sort)
+
+step "Installing VS Code extension dependencies"
+(cd editors/vscode && npm ci)
+
+step "Installing appearance-test tools"
+vhs_version="$(awk '$1 == "VHS_VERSION:" { print $2; exit }' .github/workflows/ci.yml)"
+if ! vhs --version 2>/dev/null | grep -Fq "$vhs_version"; then
+	GOBIN="$HOME/go/bin" go install "github.com/charmbracelet/vhs@$vhs_version"
+fi
+
+ttyd_version="$(awk '$1 == "TTYD_VERSION:" { print $2; exit }' .github/workflows/ci.yml)"
+if ! ttyd --version 2>/dev/null | grep -Fq "$ttyd_version"; then
+	(
+		ttyd_sha256="$(awk '$1 == "TTYD_SHA256:" { print $2; exit }' .github/workflows/ci.yml)"
+		tmp_ttyd="$(mktemp)"
+		trap 'rm -f "$tmp_ttyd"' EXIT
+		curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/$ttyd_version/ttyd.x86_64" -o "$tmp_ttyd"
+		printf '%s  %s\n' "$ttyd_sha256" "$tmp_ttyd" | sha256sum -c -
+		install -m 0755 "$tmp_ttyd" "$HOME/go/bin/ttyd"
+	)
+fi
+
+step "Orb setup complete"

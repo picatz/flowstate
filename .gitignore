@@ -63,3 +63,6 @@ go.work
 # profile, the HTML report and the per-package summary. Generated fresh by
 # every run and never a statement about a specific commit worth committing.
 .coverage/
+
+# Per-orb portal metadata is runtime state, not repository configuration.
+.amp/portals/*
