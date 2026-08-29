@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -157,7 +156,7 @@ func TestReplacedGuidanceKeepsFieldNotes(t *testing.T) {
 	}
 }
 
-func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
+func TestAmpSettingsUsePortableSkillsWithoutBrittleShellGuards(t *testing.T) {
 	data := read(t, filepath.Join(repoRoot(t), ".amp", "settings.json"))
 	var settings struct {
 		DisableClaudeSkills bool            `json:"amp.skills.disableClaudeCodeSkills"`
@@ -169,67 +168,12 @@ func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
 	if !settings.DisableClaudeSkills {
 		t.Fatal("Amp must use .agents/skills without also loading Claude mirrors")
 	}
-
-	guards := []struct {
-		tool        string
-		matchKey    string
-		matchValue  string
-		description string
-	}{
-		{tool: "Bash", matchKey: "cmd", matchValue: "*gh pr merge*", description: "GitHub CLI pull-request merge"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release create*", description: "GitHub CLI release creation"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release edit*", description: "GitHub CLI release edit"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release delete*", description: "GitHub CLI release deletion"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*gh release upload*", description: "GitHub CLI release upload"},
-		{tool: "mcp__github__merge_pull_request", description: "GitHub MCP pull-request merge"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*git*reset*--hard*", description: "hard git reset"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*git*clean*-*f*", description: "forced git clean variants"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*r*f*", description: "recursive forced removal with lowercase recursive flag first"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*f*r*", description: "recursive forced removal with lowercase force flag first"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*R*f*", description: "recursive forced removal with uppercase recursive flag first"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*f*R*", description: "recursive forced removal with uppercase force flag first"},
+	if !hasAmpPermission(settings.Permissions, "mcp__github__merge_pull_request", "ask", "", "") {
+		t.Fatal("Amp must ask before the exact GitHub MCP pull-request merge tool")
 	}
-	for _, guard := range guards {
-		if !hasAmpPermission(settings.Permissions, guard.tool, "ask", guard.matchKey, guard.matchValue) {
-			t.Errorf("Amp permissions must ask before %s", guard.description)
-		}
-	}
-
-	for _, command := range []string{
-		"gh pr merge 1218 --squash",
-		"gh release create v1.2.3",
-		"gh release edit v1.2.3 --draft",
-		"gh release delete v1.2.3",
-		"gh release upload v1.2.3 artifact.tgz",
-		"git clean -f",
-		"git clean -df",
-		"git clean -fd",
-		"git clean --force -d",
-		"rm -rf scratch",
-		"rm -fr scratch",
-		"rm -r -f scratch",
-		"rm -f -r scratch",
-		"rm -Rf scratch",
-		"rm -fR scratch",
-		"rm -R -f scratch",
-		"rm -f -R scratch",
-		"rm --recursive --force scratch",
-		"rm --force --recursive scratch",
-	} {
-		if !ampBashPrompts(settings.Permissions, command) {
-			t.Errorf("Amp permissions do not prompt for high-impact command %q", command)
-		}
-	}
-
-	for _, command := range []string{
-		"git push origin HEAD",
-		"gh release list",
-		"gh release view v1.2.3",
-		"gh release verify v1.2.3",
-		"gh pr view 1218 --json mergeable",
-	} {
-		if ampBashPrompts(settings.Permissions, command) {
-			t.Errorf("routine/read-only command %q must remain autonomous", command)
+	for _, rule := range settings.Permissions {
+		if rule.Tool == "Bash" {
+			t.Fatal("do not enforce Flowstate policy with command-text Bash globs; equivalent spellings, paths, aliases, and wrappers make them brittle and they add approval friction to routine work")
 		}
 	}
 }
@@ -241,25 +185,6 @@ func hasAmpPermission(rules []ampPermission, tool, action, matchKey, matchValue 
 		}
 		if matchKey == "" || strings.Contains(fmt.Sprint(rule.Matches[matchKey]), matchValue) {
 			return true
-		}
-	}
-	return false
-}
-
-func ampBashPrompts(rules []ampPermission, command string) bool {
-	for _, rule := range rules {
-		if rule.Tool != "Bash" || rule.Action != "ask" {
-			continue
-		}
-		patterns, ok := rule.Matches["cmd"].([]any)
-		if !ok {
-			continue
-		}
-		for _, raw := range patterns {
-			matched, err := path.Match(fmt.Sprint(raw), command)
-			if err == nil && matched {
-				return true
-			}
 		}
 	}
 	return false
