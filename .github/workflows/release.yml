@@ -191,6 +191,11 @@ jobs:
           if [[ "$RELEASE_VERSION" == *-* ]]; then
             prerelease=(--prerelease)
           fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$RELEASE_VERSION" \
+            -f target_commitish="$SOURCE_COMMIT" \
+            --jq .body > "$notes"
           if [[ "$RESUME_DRAFT" == "true" ]]; then
             unexpected=$(comm -23 \
               <(gh release view "$RELEASE_VERSION" --json assets --jq '.assets[].name' | sort) \
@@ -199,13 +204,14 @@ jobs:
               echo "::error::workflow draft contains unexpected assets and will not be modified: $unexpected"
               exit 1
             fi
+            gh release edit "$RELEASE_VERSION" --draft --title "$RELEASE_VERSION" --notes-file "$notes"
             gh release upload "$RELEASE_VERSION" --clobber dist/*
           else
             gh release create "$RELEASE_VERSION" \
               --verify-tag \
               --draft \
               --title "$RELEASE_VERSION" \
-              --generate-notes \
+              --notes-file "$notes" \
               "${prerelease[@]}" \
               dist/*
           fi
