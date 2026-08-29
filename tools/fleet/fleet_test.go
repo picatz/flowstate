@@ -1,8 +1,10 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -155,7 +157,14 @@ func TestAdviceIsGivenWhereItCanBeActedOn(t *testing.T) {
 		plan := PlanFor(Machine{Cores: 8, Load1: 0, MemoryFree: 64 * gib, MemoryKnown: true, DiskFree: gib})
 
 		require.NotEmpty(t, plan.Advice)
-		assert.Contains(t, strings.Join(plan.Advice, "\n"), "go clean -cache")
+
+		// The remedy has to be one that leaves the machine able to work. This
+		// used to name `go clean -cache`, which is correct and expensive: it
+		// discards every entry and charges a cold rebuild to every lane, and
+		// the rebuild is itself load enough to keep the fleet at zero for as
+		// long as it runs. `-prune` gives back what a lane needs and keeps the
+		// rest.
+		assert.Contains(t, strings.Join(plan.Advice, "\n"), "tools/fleet -prune")
 	})
 
 	t.Run("a busy machine says to wait rather than to prune", func(t *testing.T) {
@@ -341,6 +350,233 @@ func TestAMemoryLimitIsAlsoInheritedFromEveryAncestor(t *testing.T) {
 	})
 }
 
+// TestPageCacheIsNotMemoryALaneWaitsFor is [memoryFree]'s own distinction —
+// MemAvailable rather than MemFree — asserted one level down, where it was
+// missed until a machine demonstrated it.
+//
+// Both cgroup v1's memory.usage_in_bytes and v2's memory.current count file
+// cache as used. So the reading is worst exactly after a build, which is what
+// fills the cache and also what makes the next lane cheapest: measured here, a
+// leaf limited to 13.3 GiB reported 9.7 GiB used while holding 6 MiB of RSS
+// and 9.3 GiB of cache, and the fleet answered "dispatch nothing — memory is
+// the bound" on an idle box, advising a wait for lanes that did not exist.
+func TestPageCacheIsNotMemoryALaneWaitsFor(t *testing.T) {
+	// 8 GiB limit, 6 GiB "used", of which 5 GiB is evictable file cache. A
+	// lane's real headroom is 7 GiB, not 2.
+	dirs := cgroupPairLayout(t, []string{"8589934592 6442450944 5368709120"})
+
+	free, found := tightestMemoryFree(dirs, "memory.max", "memory.current")
+
+	require.True(t, found)
+	assert.Equal(t, uint64(7*gib), free,
+		"page cache was counted as memory a lane has to wait for, which is what held the fleet "+
+			"at zero on a box with a hot build cache and nothing running")
+
+	t.Run("a cgroup with no stat file is read as holding all of it", func(t *testing.T) {
+		// The conservative direction, and the one a missing file must take: an
+		// unreadable breakdown is not evidence that the usage is reclaimable.
+		free, found := tightestMemoryFree(
+			cgroupPairLayout(t, []string{"8589934592 6442450944"}), "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free)
+	})
+
+	t.Run("more cache than usage cannot invent headroom", func(t *testing.T) {
+		// The two files are read separately and a cgroup is a moving target,
+		// so the subtraction can be handed a larger cache than usage. That must
+		// clamp rather than wrap: unsigned arithmetic would turn 1 GiB used
+		// into sixteen exabytes free, which wins every minimum it is folded
+		// into and hands out lanes against memory that is not there.
+		free, found := tightestMemoryFree(
+			cgroupPairLayout(t, []string{"8589934592 1073741824 4294967296"}), "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(8*gib), free, "the whole limit is free, and not one byte more")
+	})
+}
+
+// TestProtectedCacheIsNotHeadroom is the other half of the question
+// [TestPageCacheIsNotMemoryALaneWaitsFor] answers.
+//
+// File cache is evictable *unless* something asked the kernel not to evict it.
+// `memory.min` is that request, and a page under it is not headroom — counting
+// it as headroom is how a budget tool dispatches a lane straight into an OOM
+// kill, which is worse than the refusal it replaced (Codex, #1134).
+func TestProtectedCacheIsNotHeadroom(t *testing.T) {
+	// 8 GiB limit, 6 GiB used, 5 GiB of it cache — but 4 GiB of the level is
+	// protected, so only 1 GiB of that cache may be counted back.
+	dir := protectedLayout(t, protection{cache: 5 * gib, min: 4 * gib})
+
+	free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+	require.True(t, found)
+	assert.Equal(t, uint64(3*gib), free,
+		"protected cache was counted as headroom, so a lane would be dispatched against memory "+
+			"the kernel has been told to keep")
+
+	t.Run("a descendant cannot protect more than its ancestors allow", func(t *testing.T) {
+		// The correction that removed a whole walk. A descendant's *effective*
+		// min is capped by its ancestors' — protection is handed down — so a
+		// child declaring 4 GiB under a parent declaring zero has no hard
+		// protection at all, and summing configured floors counted memory the
+		// kernel would happily reclaim (Codex, #1134).
+		//
+		// 7 GiB, not 3: the top level protects nothing, so nothing beneath it
+		// is protected either, and its cache is headroom.
+		dir := protectedLayout(t, protection{cache: 5 * gib},
+			protection{cache: 0, min: 4 * gib})
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(7*gib), free,
+			"a descendant's configured floor was counted as protection its ancestors do not grant")
+	})
+
+	t.Run("unprotected cache is still headroom", func(t *testing.T) {
+		// The direction that would make this whole change pointless: a
+		// protection check that refused every subtraction would restore the
+		// bug it was written to fix.
+		dir := protectedLayout(t, protection{cache: 5 * gib})
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(7*gib), free)
+	})
+
+	// Read directly, because through `tightestMemoryFree` the three answers this
+	// has to tell apart all come out as the same number. Complete protection
+	// and an unreadable value both subtract nothing, so a test at that level
+	// passes whichever one the code produces — which is what happened: the
+	// first version of the `max` case here was green with `max` handling
+	// deleted, asserting the right figure for the wrong reason.
+	t.Run("a protection is a number, a saturation, or a refusal", func(t *testing.T) {
+		for name, test := range map[string]struct {
+			write       func(t *testing.T, dir string)
+			floor       uint64
+			present     bool
+			established bool
+		}{
+			// cgroup v2 spells complete protection as the literal `max`, which
+			// an integer parse refuses — so the one level asking the kernel to
+			// reclaim nothing read as the one level protecting nothing, and its
+			// cache came straight back as headroom (Codex, #1134).
+			"max saturates":                {write: writesMin("max"), floor: math.MaxUint64, present: true, established: true},
+			"a number is a number":         {write: writesMin("12345"), floor: 12345, present: true, established: true},
+			"zero is a real answer":        {write: writesMin("0"), floor: 0, present: true, established: true},
+			"a negative floor refuses":     {write: writesMin("-1"), floor: 0, present: true, established: false},
+			"an unparseable value refuses": {write: writesMin("not a number"), floor: 0, present: true, established: false},
+			// Not NotExist: a file this process cannot read is not a file
+			// saying nothing is protected.
+			"an unreadable file refuses": {
+				write: func(t *testing.T, dir string) {
+					t.Helper()
+					require.NoError(t, os.MkdirAll(filepath.Join(dir, "memory.min"), 0o755))
+				},
+				floor: 0, present: false, established: false,
+			},
+			// A level with no memory controller cannot protect anything, and
+			// nothing below it can either — so it contributes zero and does not
+			// stop the walk.
+			"an absent file contributes zero": {write: func(*testing.T, string) {}, floor: 0, present: false, established: true},
+		} {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				test.write(t, dir)
+
+				floor, present, established := protectionAt(dir)
+
+				assert.Equal(t, test.established, established)
+				assert.Equal(t, test.present, present,
+					"absence and a value are different answers, and only absence means there is "+
+						"no controller here to walk for")
+				assert.Equal(t, test.floor, floor)
+			})
+		}
+	})
+
+	t.Run("an unreadable probe at the top refuses rather than establishing zero", func(t *testing.T) {
+		// The preflight that skips the walk when there is no controller used a
+		// bare `os.Stat`, which cannot tell absence from a permission denial or
+		// an I/O error — so every one of those established a zero and counted
+		// the whole cache back. That is the same fail-open this function had one
+		// read further in, reintroduced at its own front door by the fix for
+		// something else (Codex, #1134).
+		//
+		// A self-referential symlink, because it is the one error that is
+		// neither absence nor success and needs no privileges to arrange.
+		dir := protectedLayout(t, protection{cache: 5 * gib, noController: true})
+		require.NoError(t, os.Symlink("memory.min", filepath.Join(dir, "memory.min")))
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"a probe that failed for a reason other than absence was read as 'no controller here'")
+	})
+
+}
+
+// writesMin writes a `memory.min` holding exactly this text.
+func writesMin(value string) func(t *testing.T, dir string) {
+	return func(t *testing.T, dir string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.min"), []byte(value+"\n"), 0o644))
+	}
+}
+
+// protection describes one level of a fixture hierarchy: how much file cache it
+// reports, and what it asks the kernel to protect.
+type protection struct {
+	cache uint64
+	min   uint64
+
+	// noController omits `memory.min` entirely, which is what a cgroup v1 level
+	// looks like — and what a v2 level whose parent never enabled the memory
+	// controller looks like. Distinct from a min of zero, which is a level that
+	// *can* protect and has chosen not to.
+	noController bool
+
+	// raw writes `memory.min` verbatim, for the values that are not integers:
+	// `max`, which v2 spells complete protection as, and whatever a corrupt or
+	// future kernel might put there.
+	raw string
+}
+
+// protectedLayout writes a cgroup at 8 GiB limit and 6 GiB used, with levels
+// nested under it, and returns the top.
+func protectedLayout(t *testing.T, levels ...protection) string {
+	t.Helper()
+
+	top := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(top, "memory.max"), []byte("8589934592\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(top, "memory.current"), []byte("6442450944\n"), 0o644))
+
+	dir := top
+	for i, level := range levels {
+		if i > 0 {
+			dir = filepath.Join(dir, "nested")
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+		}
+		if level.cache > 0 {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.stat"),
+				[]byte("inactive_file "+strconv.FormatUint(level.cache, 10)+"\n"), 0o644))
+		}
+		if !level.noController {
+			value := strconv.FormatUint(level.min, 10)
+			if level.raw != "" {
+				value = level.raw
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.min"),
+				[]byte(value+"\n"), 0o644))
+		}
+	}
+
+	return top
+}
+
 // TestTheCgroupChainStaysInsideItsMount pins the walk's two ends: it starts at
 // the process's own cgroup and stops at the mount root, and a relative path
 // carrying `..` cannot take it somewhere that is not a cgroup at all.
@@ -387,9 +623,15 @@ func cgroupPairLayout(t *testing.T, levels []string) []string {
 	for _, pair := range levels {
 		dir = filepath.Join(dir, "level")
 		require.NoError(t, os.MkdirAll(dir, 0o755))
-		if fields := strings.Fields(pair); len(fields) == 2 {
+		// A third field is the level's reclaimable page cache, written as the
+		// `memory.stat` a real cgroup carries beside the pair.
+		if fields := strings.Fields(pair); len(fields) >= 2 {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.max"), []byte(fields[0]+"\n"), 0o644))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte(fields[1]+"\n"), 0o644))
+			if len(fields) == 3 {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.stat"),
+					[]byte("rss 4096\ninactive_file "+fields[2]+"\ntotal_inactive_file "+fields[2]+"\n"), 0o644))
+			}
 		}
 		dirs = append([]string{dir}, dirs...)
 	}
@@ -416,7 +658,10 @@ func TestTheDiskBoundCoversWhereBuildIntermediatesLand(t *testing.T) {
 		})
 
 		require.Contains(t, targets, "/tmp", "the go command's scratch directory is a filesystem a lane writes to")
-		assert.Equal(t, uint64(64<<20), tightestFree(targets, func(path string) uint64 { return free[path] }),
+
+		got, measured := tightestFree(targets, reading(free))
+		assert.True(t, measured)
+		assert.Equal(t, uint64(64<<20), got,
 			"the tightest mount is the bound, whichever of the three it is")
 	})
 
@@ -428,12 +673,36 @@ func TestTheDiskBoundCoversWhereBuildIntermediatesLand(t *testing.T) {
 	})
 
 	// An unmeasurable mount is a missing fact, not a full one: statfs failing
-	// on a path reports zero, and folding that into the minimum would refuse
+	// on a path reports nothing, and folding that into the minimum would refuse
 	// the whole fleet on the strength of a read that did not happen.
 	t.Run("an unreadable filesystem does not read as a full one", func(t *testing.T) {
 		free := map[string]uint64{".": 100 * gib}
 
-		assert.Equal(t, uint64(100*gib),
-			tightestFree([]string{".", "/gone", "/also-gone"}, func(path string) uint64 { return free[path] }))
+		got, measured := tightestFree([]string{".", "/gone", "/also-gone"}, reading(free))
+		assert.True(t, measured)
+		assert.Equal(t, uint64(100*gib), got)
 	})
+
+	// And the direction that cost a P1: a filesystem at ENOSPC has zero bytes
+	// available and that is a *measurement*. While zero and unreadable shared
+	// one spelling, a full GOCACHE dropped out of the minimum entirely, so a
+	// machine whose cache mount was the only full one read as healthy and
+	// `-prune` answered "nothing to prune" (Codex, #1112).
+	t.Run("a full filesystem is measured, not skipped", func(t *testing.T) {
+		free := map[string]uint64{".": 100 * gib, "/cache": 0}
+
+		got, measured := tightestFree([]string{".", "/cache"}, reading(free))
+		assert.True(t, measured)
+		assert.Zero(t, got, "a measured zero is the tightest mount there is")
+	})
+}
+
+// reading turns a table of free bytes into the two-value reader tightestFree
+// takes: present means measured, absent means the path could not be read.
+func reading(free map[string]uint64) func(string) (uint64, bool) {
+	return func(path string) (uint64, bool) {
+		got, ok := free[path]
+
+		return got, ok
+	}
 }

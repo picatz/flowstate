@@ -28,6 +28,12 @@ import (
 //	    name: deploy-approved
 //	    timeout: 24h
 //
+//	- id: orders
+//	  wait_for_signals:
+//	    name: order-placed
+//	    max_batch: 50
+//	    timeout: 30s
+//
 // A signal takes either form: the scalar for the common case, and the mapping when
 // there is more to say. That is worth the extra branch in the parser, because
 // `wait_for_signal: deploy-approved` is what someone writes when they are learning
@@ -36,6 +42,14 @@ import (
 
 // signalKeys are the keys of the mapping form of wait_for_signal.
 var signalKeys = []string{"name", "timeout", "prompt", "outputs"}
+
+// signalBatchKeys are the keys of the mapping form of wait_for_signals.
+//
+// Beside [signalKeys] rather than derived from it, because the difference is the
+// point: a batch takes `max_batch:` and a single wait does not, so an author who
+// writes `max_batch:` under the wrong one is told so by the ordinary
+// unknown-key diagnostic rather than having it silently accepted and ignored.
+var signalBatchKeys = []string{"name", "max_batch", "timeout", "prompt", "outputs"}
 
 // parseDuration reads a duration the way the DSL writes one, which is
 // [v1.ParseDuration] — Go's syntax, plus days.
@@ -230,15 +244,7 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 	// like. What is different is only what a prompt may *reach*, which is
 	// [checkSensitivePrompt]'s business and not this function's.
 	if f, found := fields.get("prompt"); found {
-		promptPath := fieldPath(path, "prompt")
-
-		// Recorded for `timeout:`'s reason: [compiler.expression] records only the
-		// expression's own span, so without a value span at this path a diagnostic
-		// about the prompt would land on the whole step instead of on the line.
-		c.pos.record(promptPath, spanOfNode(c.resolveQuiet(f.value)))
-
-		prompt := c.inputValue(f.value, promptPath,
-			ref{step: r.step, path: promptPath, label: "wait_for_signal prompt"})
+		prompt := c.waitPrompt(f.value, path, r, "wait_for_signal")
 		if prompt == nil {
 			return nil
 		}
@@ -246,31 +252,9 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 	}
 
 	if f, found := fields.get("timeout"); found {
-		timeoutPath := fieldPath(path, "timeout")
-		timeoutRef := ref{step: r.step, path: timeoutPath, label: "wait_for_signal timeout"}
-
-		// Recorded here because neither reading below does: a literal duration
-		// compiles through [compiler.duration] and an expression through
-		// [compiler.expression], which records only the expression's own span.
-		// Without a value span at this path, a validator diagnostic about the
-		// timeout — an unknown name in `timeout: ${...}` — had nowhere to land
-		// but the whole step (#318).
-		c.pos.record(timeoutPath, spanOfNode(c.resolveQuiet(f.value)))
-
-		if computed, isExpr := c.computedDuration(f.value, timeoutPath, timeoutRef); isExpr {
-			if computed == nil {
-				return nil
-			}
-			wait.TimeoutExpr = computed
-
-			return wait
-		}
-
-		timeout, ok := c.duration(f.value, timeoutPath, timeoutRef)
-		if !ok {
+		if !c.waitTimeout(wait, f.value, path, r, "wait_for_signal") {
 			return nil
 		}
-		wait.Timeout = timeout
 	}
 
 	return wait
@@ -451,7 +435,16 @@ func (c *compiler) checkPolicyPlacement(step *v1.Node, fields *fieldSet, path st
 		return
 	}
 
-	for _, name := range []string{"timeout", "retry"} {
+	// `total_timeout:` is refused wherever `timeout:` is, for the same reason: a
+	// step kind that schedules no single activity has neither one attempt to
+	// bound nor a set of them to bound together. Its advice is derived from
+	// `timeout:`'s rather than written out a second time — seven near-identical
+	// sentences is how one rule with two spellings drifts.
+	if a, ok := advice["timeout"]; ok {
+		advice["total_timeout"] = strings.ReplaceAll(a, "put `timeout:`", "put `total_timeout:`")
+	}
+
+	for _, name := range []string{"timeout", "total_timeout", "retry"} {
 		f, found := fields.get(name)
 		if !found {
 			continue
@@ -460,4 +453,179 @@ func (c *compiler) checkPolicyPlacement(step *v1.Node, fields *fieldSet, path st
 		c.report(spanOfNode(f.key), ref{step: r.step, path: fieldPath(path, name), label: name},
 			"does nothing on %s: %s", subject, advice[name])
 	}
+}
+
+// waitForSignals compiles `wait_for_signals`, in either the scalar or the
+// mapping form.
+//
+// The scalar form is accepted for the same reason the single wait's is: a
+// `wait_for_signals: order-placed` that drains with the default bound is what
+// somebody writes when they are learning the spelling, and making them write a
+// two-line mapping to say one thing is friction that makes a feature feel
+// heavier than it is.
+//
+// Written beside [compiler.waitForSignal] rather than folded into it. The two
+// share every key but one, so folding is tempting — and it is exactly the
+// `drain: true` shape the schema comment on [v1.SignalBatch] rejects, arriving
+// in the parser instead of in the message: one function whose reading of
+// `outputs:` depends on which key opened it. What *is* shared is shared as
+// functions ([compiler.waitTimeout], [compiler.waitPrompt],
+// [compiler.waitOutputs]), so the two arms cannot drift in how a timeout or a
+// prompt is read.
+func (c *compiler) waitForSignals(n ast.Node, path string, r ref) *v1.Wait {
+	n = c.resolve(n, path, r)
+	if n == nil {
+		return nil
+	}
+	c.pos.record(path, spanOfNode(n))
+
+	// The scalar form: the signal's name and nothing else.
+	if _, isMapping := n.(*ast.MappingNode); !isMapping {
+		if _, isValue := n.(*ast.MappingValueNode); !isValue {
+			name, ok := c.text(n, path, ref{step: r.step, path: path, label: "wait_for_signals"})
+			if !ok {
+				return nil
+			}
+			return c.signalBatchWait(n, name, r, path)
+		}
+	}
+
+	fields, ok := c.fields(n, path, r, signalBatchKeys)
+	if !ok {
+		return nil
+	}
+
+	var name string
+	if f, found := fields.get("name"); found {
+		name, _ = c.text(f.value, fieldPath(path, "name"),
+			ref{step: r.step, path: fieldPath(path, "name"), label: "signal name"})
+	} else {
+		c.report(spanOfNode(n), ref{step: r.step, path: path, label: "wait_for_signals"},
+			"needs a name, which is what a sender addresses; write `wait_for_signals: order-placed`, or give the mapping a `name:`")
+		return nil
+	}
+
+	wait := c.signalBatchWait(n, name, r, path)
+	if wait == nil {
+		return nil
+	}
+	batch := wait.GetSignalBatch()
+
+	// `max_batch:` bounds how many deliveries one drain takes, read exactly as
+	// `for_each:`'s `max_parallel:` is and refused above the same ceiling the
+	// schema names. Zero means the ceiling, which is what an author who omits
+	// the key gets — so the key is worth writing only to take *fewer*, which is
+	// what a step whose body is expensive per delivery wants.
+	if f, found := fields.get("max_batch"); found {
+		maxBatch, _ := c.integer(f.value, fieldPath(path, "max_batch"),
+			ref{step: r.step, path: fieldPath(path, "max_batch"), label: "wait_for_signals max_batch"},
+			0, v1.MaxSignalBatch)
+		batch.MaxBatch = maxBatch
+	}
+
+	if f, found := fields.get("outputs"); found {
+		outputsPath := fieldPath(path, "outputs")
+		shaped := c.waitOutputs(f.value, outputsPath, r)
+		if shaped == nil {
+			return nil
+		}
+		batch.Outputs = shaped
+	}
+
+	if f, found := fields.get("prompt"); found {
+		prompt := c.waitPrompt(f.value, path, r, "wait_for_signals")
+		if prompt == nil {
+			return nil
+		}
+		batch.Prompt = prompt
+	}
+
+	if f, found := fields.get("timeout"); found {
+		if !c.waitTimeout(wait, f.value, path, r, "wait_for_signals") {
+			return nil
+		}
+	}
+
+	return wait
+}
+
+// signalBatchWait builds the batch wait, reporting a name the schema will not
+// accept.
+//
+// The same three checks [compiler.signalWait] makes, through the same
+// [validSignalName], because the two spellings address one namespace: a name
+// legal for a `wait_for_signal:` is legal here and one that is not is not, and
+// a second copy of the rule is a second place for it to drift.
+func (c *compiler) signalBatchWait(n ast.Node, name string, r ref, path string) *v1.Wait {
+	batchRef := ref{step: r.step, path: path, label: "wait_for_signals"}
+
+	switch {
+	case name == "":
+		c.report(spanOfNode(n), batchRef, "needs a signal name; it is what a sender addresses")
+		return nil
+	case len(name) > 128:
+		c.report(spanOfNode(n), batchRef, "signal name is longer than 128 characters")
+		return nil
+	case !validSignalName(name):
+		c.report(spanOfNode(n), batchRef,
+			"signal name %q may only contain letters, digits, dashes, and underscores, and must start with a letter or digit", name)
+		return nil
+	}
+
+	return &v1.Wait{Kind: &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{Name: name}}}
+}
+
+// waitPrompt compiles either spelling's `prompt:`.
+//
+// One reader for both, so that what a fence means, what an unfenced string
+// means, and where a diagnostic lands cannot differ between them. What a prompt
+// may *reach* is not this function's business — that is [checkSensitivePrompt]'s
+// — and it reads both arms for the same reason this function serves both.
+func (c *compiler) waitPrompt(n ast.Node, path string, r ref, key string) *v1.Value {
+	promptPath := fieldPath(path, "prompt")
+
+	// Recorded for `timeout:`'s reason: [compiler.expression] records only the
+	// expression's own span, so without a value span at this path a diagnostic
+	// about the prompt would land on the whole step instead of on the line.
+	c.pos.record(promptPath, spanOfNode(c.resolveQuiet(n)))
+
+	return c.inputValue(n, promptPath,
+		ref{step: r.step, path: promptPath, label: key + " prompt"})
+}
+
+// waitTimeout compiles either spelling's `timeout:` onto wait, in whichever of
+// the two fields the value's form selects, and reports whether it succeeded.
+//
+// One reader for both spellings for [compiler.waitPrompt]'s reason, and one
+// that writes to [v1.Wait] rather than to either arm — which is where the field
+// lives, because a bound on a wait is a property of waiting and not of what is
+// being waited for.
+func (c *compiler) waitTimeout(wait *v1.Wait, n ast.Node, path string, r ref, key string) bool {
+	timeoutPath := fieldPath(path, "timeout")
+	timeoutRef := ref{step: r.step, path: timeoutPath, label: key + " timeout"}
+
+	// Recorded here because neither reading below does: a literal duration
+	// compiles through [compiler.duration] and an expression through
+	// [compiler.expression], which records only the expression's own span.
+	// Without a value span at this path, a validator diagnostic about the
+	// timeout — an unknown name in `timeout: ${...}` — had nowhere to land but
+	// the whole step (#318).
+	c.pos.record(timeoutPath, spanOfNode(c.resolveQuiet(n)))
+
+	if computed, isExpr := c.computedDuration(n, timeoutPath, timeoutRef); isExpr {
+		if computed == nil {
+			return false
+		}
+		wait.TimeoutExpr = computed
+
+		return true
+	}
+
+	timeout, ok := c.duration(n, timeoutPath, timeoutRef)
+	if !ok {
+		return false
+	}
+	wait.Timeout = timeout
+
+	return true
 }

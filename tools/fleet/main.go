@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +14,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
 	number := flag.Bool("n", false, "print only the lane count, for a script to read")
 	env := flag.Bool("env", false, "print only the environment a lane must be given")
+	prune := flag.Bool("prune", false, "trim the shared build cache until a lane fits, oldest entry first")
 	flag.Parse()
 
 	if *env {
@@ -26,6 +31,13 @@ func main() {
 	}
 
 	machine := readMachine()
+
+	if *prune {
+		runPrune(machine)
+
+		return
+	}
+
 	plan := PlanFor(machine)
 
 	if *number {
@@ -92,7 +104,19 @@ func readMachine() Machine {
 			}
 		}
 	}
-	machine.CacheSizeBytes = cacheSize()
+	machine.CacheSizeBytes = cacheSize(goEnv("GOCACHE"))
+
+	// The cache's own mount and everything else a lane writes to, kept apart:
+	// the cache can only give bytes back to its own filesystem, and a prune
+	// only unblocks the machine when every *other* target is already clear of
+	// the target too — see [Machine.CacheDiskFree] and [Machine.OtherDiskFree].
+	cache := goEnv("GOCACHE")
+	if cache != "" {
+		machine.CacheDiskFree, machine.CacheDiskKnown = diskFree(cache)
+	}
+
+	others := otherFilesystems(laneWriteTargets(goEnv), cache, deviceOf)
+	machine.OtherDiskFree, machine.OtherDiskKnown = tightestFree(others, diskFree)
 
 	return machine
 }
@@ -144,7 +168,9 @@ func memoryFree() (uint64, bool) {
 // only the first two paths would confidently recommend a fleet that fails at
 // the link step with an error naming neither disk nor memory.
 func laneDiskFree() uint64 {
-	return tightestFree(laneWriteTargets(goEnv), diskFree)
+	free, _ := tightestFree(laneWriteTargets(goEnv), diskFree)
+
+	return free
 }
 
 // laneWriteTargets names the directories a lane's writes land in, in the order
@@ -174,20 +200,79 @@ func laneWriteTargets(env func(string) string) []string {
 	return targets
 }
 
+// otherFilesystems returns the write targets that are not on the cache's own
+// filesystem — the ones a prune cannot give bytes back to.
+//
+// By filesystem identity rather than by path, and the difference is the common
+// case rather than an edge one: on a single-volume machine the worktree, the
+// cache and GOTMPDIR are three different paths on one device, so excluding by
+// path alone left two of them in this list reporting the cache's own low
+// reading. Every warning about "another filesystem" would then fire exactly
+// when pruning was about to work, because deleting cache entries raises free
+// space for all three at once (Codex, #1113).
+//
+// The device lookup is a parameter for the reason [laneWriteTargets]'s
+// environment lookup is: so a test can pose a machine whose mounts this
+// process cannot arrange. A target whose device cannot be read stays in the
+// list, which over-reports rather than over-promises — the safe direction for
+// a claim that a prune will be enough.
+func otherFilesystems(targets []string, cache string, device func(string) (uint64, bool)) []string {
+	cacheDevice, known := device(cache)
+
+	var others []string
+
+	for _, target := range targets {
+		if target == cache {
+			continue
+		}
+		if known {
+			if got, ok := device(target); ok && got == cacheDevice {
+				continue
+			}
+		}
+		others = append(others, target)
+	}
+
+	return others
+}
+
+// deviceOf identifies the filesystem a path sits on.
+func deviceOf(path string) (uint64, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+
+	return uint64(stat.Dev), true
+}
+
 // tightestFree is the minimum over the readable answers, and it is the readable
 // part that needs saying: a path whose filesystem cannot be stat'ed reports
 // zero, and folding that in would make every unreadable target a full disk and
 // refuse the fleet outright. An unmeasurable mount is a missing fact, not a
 // full one — the same distinction [Machine.MemoryKnown] carries for memory.
-func tightestFree(paths []string, free func(string) uint64) uint64 {
-	var tightest uint64
+func tightestFree(paths []string, free func(string) (uint64, bool)) (uint64, bool) {
+	var (
+		tightest uint64
+		measured bool
+	)
+
 	for _, path := range paths {
-		if got := free(path); got > 0 && (tightest == 0 || got < tightest) {
-			tightest = got
+		got, ok := free(path)
+		if !ok {
+			continue
+		}
+		if !measured || got < tightest {
+			tightest, measured = got, true
 		}
 	}
 
-	return tightest
+	return tightest, measured
 }
 
 // goEnv asks the go command for one of its own variables, which is the only
@@ -202,27 +287,242 @@ func goEnv(name string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func diskFree(path string) uint64 {
+// diskFree reports free bytes on a path's filesystem, and whether it could be
+// read at all.
+//
+// The two answers are separate because zero is a legitimate reading. A
+// filesystem at ENOSPC has zero bytes available and that is a *fact*; folding
+// it into the same value an unreadable path returns made a full GOCACHE
+// indistinguishable from a missing one, so it dropped out of the tightest-mount
+// calculation and `-prune` answered "nothing to prune" on precisely the
+// condition it exists to fix (Codex, #1112). The same distinction
+// [Machine.MemoryKnown] already draws, for the same reason.
+func diskFree(path string) (uint64, bool) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0
+		return 0, false
 	}
 
-	return stat.Bavail * uint64(stat.Bsize)
+	return stat.Bavail * uint64(stat.Bsize), true
 }
 
-// cacheSize is best-effort: it is advice, not a bound, so a slow or missing
-// answer costs a line of output rather than a wrong plan.
-func cacheSize() uint64 {
-	dir := goEnv("GOCACHE")
+// cacheSize is how much of a build cache a prune could actually reclaim.
+//
+// Best-effort: it decides advice, not a bound, so a slow or missing answer
+// costs a line of output rather than a wrong plan.
+//
+// The directory is a parameter rather than read from the environment, and that
+// is not decoration — while it read GOCACHE itself there was no way to pose a
+// cache to it, so the one function whose number the prune promises had no test
+// at all, and it went out counting a fuzz corpus it could never remove (Codex,
+// #1112).
+func cacheSize(dir string) uint64 {
 	if dir == "" {
 		return 0
 	}
 
+	// Only what [pruneCache] could actually remove, which is not the whole
+	// tree: the fuzz corpus lives under GOCACHE and is deliberately preserved,
+	// so a walk of everything promised a prune it could not deliver — eight
+	// gigabytes of corpus beside one of entries would ask for eight and free
+	// one, without ever reporting that it fell short (Codex, #1112). Both
+	// numbers come from one enumeration now, so they cannot drift.
 	var total uint64
-	_ = filepath.WalkDir(dir, func(_ string, entry os.DirEntry, err error) error {
-		// An unreadable subtree makes the number smaller, which is the right
-		// direction for a figure that only ever prints advice.
+	for _, entry := range cacheEntries(dir) {
+		total += entry.size
+	}
+
+	return total
+}
+
+// runPrune trims the build cache to what the plan needs, and says what it did.
+func runPrune(m Machine) {
+	want := PruneFor(m)
+
+	// Nothing wrong and nothing this can fix are different answers, and the
+	// first cut of this reported the second as the first: an empty or
+	// unreadable cache under a full disk came back as Bytes zero and printed
+	// "already past the floor" at a machine that fits no lanes (Codex, #1112).
+	if want.Short == 0 {
+		fmt.Printf("fleet: nothing to prune — %s free is already past the %s floor and a lane's %s\n",
+			bytes(m.DiskFree), bytes(DiskFloorBytes), bytes(LaneDiskBytes))
+
+		return
+	}
+
+	for _, line := range want.Advice {
+		fmt.Printf("fleet: %s\n", line)
+	}
+
+	if want.Bytes == 0 {
+		return
+	}
+
+	freed, removed, err := pruneCache(goEnv("GOCACHE"), want.Bytes)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("fleet: freed %s across %d cache entries, oldest first\n", bytes(freed), removed)
+
+	// Re-read rather than compute: the number that matters is what the
+	// filesystem says now, and something else may have been writing to it
+	// throughout.
+	after := readMachine()
+	plan := PlanFor(after)
+	fmt.Printf("fleet: %s free now — %d lane(s), %s is the bound\n",
+		bytes(after.DiskFree), plan.Lanes, plan.Bound)
+}
+
+// pruneCache trims the shared build cache, least recently used first, until it
+// has given back target bytes.
+//
+// This is cmd/go's own trimSubdir with a *size* cutoff where it has a *time*
+// one, and that difference is the whole reason it exists. Go trims entries
+// unused for five days, at most once a day ([cache.DiskCache.Trim]), which
+// cannot help a machine that filled twenty-three gigabytes between breakfast
+// and lunch: nothing in that cache is five days old. And Go has no size budget
+// at all — `go help cache` offers exactly two levers, that five-day sweep and
+// `go clean -cache`, which discards everything and charges a cold rebuild to
+// every lane. This is the missing middle, and it is the difference between a
+// machine that unblocks itself and one that waits for somebody to notice.
+//
+// The rules are Go's, deliberately, because the cache is its format and not
+// ours: only `-a` and `-d` names are entries, an entry may be a *directory*
+// (an executable cache entry) and needs RemoveAll rather than Remove, and only
+// the 256 hex subdirectories hold them. Everything else the directory contains
+// is left alone — trim.txt, the lock, and the fuzz corpus especially. Those
+// corpus entries are inputs that once expanded coverage; they cost
+// machine-hours to rediscover, and `go help cache` says plainly that removing
+// them makes fuzzing less effective.
+//
+// mtime is the "last used" signal because that is what Go maintains it as, and
+// its own accuracy note applies here unchanged: an entry's mtime is refreshed
+// on use only when it is already more than an hour stale, a deliberate trade
+// against disk churn. An hour of imprecision is nothing against a cache whose
+// entries span days, and it is the same signal Go's own trim sorts on.
+//
+// Safe while builds are in flight. The cache is content-addressed, so a removed
+// entry is a miss and a miss is a rebuild. That is exactly what separates this
+// from the failure [DiskFloorBytes] exists to prevent, where a write meets
+// ENOSPC halfway and leaves a partial object that surfaces later as a corrupt
+// cache entry and reads like a compiler bug.
+func pruneCache(dir string, target uint64) (freed uint64, removed int, err error) {
+	if dir == "" || target == 0 {
+		return 0, 0, nil
+	}
+
+	entries := cacheEntries(dir)
+
+	// Oldest first, which is the order the cache can most afford to lose.
+	slices.SortFunc(entries, func(a, b cacheEntry) int { return a.used.Compare(b.used) })
+
+	for _, e := range entries {
+		if freed >= target {
+			break
+		}
+
+		if e.isDir {
+			err = os.RemoveAll(e.path)
+		} else {
+			err = os.Remove(e.path)
+		}
+		if err != nil {
+			// A racing `go build` may have removed or replaced this entry
+			// already, which is not a failure of the prune: the bytes are gone
+			// either way and the next entry is still there to take.
+			if !os.IsNotExist(err) {
+				return freed, removed, fmt.Errorf("pruning %s: %w", e.path, err)
+			}
+			err = nil
+
+			continue
+		}
+
+		freed += e.size
+		removed++
+	}
+
+	return freed, removed, nil
+}
+
+// cacheEntry is one thing [pruneCache] may remove.
+type cacheEntry struct {
+	path  string
+	size  uint64
+	used  time.Time
+	isDir bool
+}
+
+// cacheEntries enumerates the removable entries of a build cache.
+//
+// One enumeration serves both the prune and [cacheSize], deliberately: they
+// were two walks with different rules, so the size promised and the size
+// reclaimable disagreed by exactly the fuzz corpus (Codex, #1112). A number
+// derived from the thing it describes cannot drift from it.
+//
+// The rules are cmd/go's, because the cache is its format and not ours: only
+// `-a` and `-d` names are entries, they live only in the 256 hex
+// subdirectories, and an entry may be a directory — an executable cache entry.
+// Everything else the directory holds is left alone: trim.txt, the lock, and
+// the fuzz corpus especially, whose values are inputs that once expanded
+// coverage, cost machine-hours to rediscover, and which `go help cache` says
+// plainly it is worse off without.
+func cacheEntries(dir string) []cacheEntry {
+	if dir == "" {
+		return nil
+	}
+
+	var entries []cacheEntry
+
+	for i := range 256 {
+		subdir := filepath.Join(dir, fmt.Sprintf("%02x", i))
+
+		// Read the whole directory before anything is removed, for the reason
+		// cmd/go gives at the same point: removing files during a scan can
+		// invalidate the offset the scan is walking.
+		f, err := os.Open(subdir)
+		if err != nil {
+			continue
+		}
+		names, _ := f.Readdirnames(-1)
+		_ = f.Close()
+
+		for _, name := range names {
+			if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") {
+				continue
+			}
+
+			path := filepath.Join(subdir, name)
+
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+
+			size := uint64(info.Size())
+			if info.IsDir() {
+				size = treeSize(path)
+			}
+
+			entries = append(entries, cacheEntry{
+				path:  path,
+				size:  size,
+				used:  info.ModTime(),
+				isDir: info.IsDir(),
+			})
+		}
+	}
+
+	return entries
+}
+
+// treeSize totals a directory entry, which an executable cache entry is.
+func treeSize(root string) uint64 {
+	var total uint64
+
+	_ = filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return nil
 		}
@@ -379,13 +679,156 @@ func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, boo
 		if err != nil || used < 0 {
 			continue
 		}
-		free := uint64(limit) - min(uint64(limit), uint64(used))
+
+		// Page cache is not memory a lane has to wait for — except the part
+		// something has asked the kernel not to reclaim.
+		held := uint64(used) - min(uint64(used), evictableFile(dir))
+
+		free := uint64(limit) - min(uint64(limit), held)
 		if !found || free < tightest {
 			tightest, found = free, true
 		}
 	}
 
 	return tightest, found
+}
+
+// evictableFile is the part of a cgroup's recorded usage that is file-backed
+// page cache the kernel will actually evict before it kills anything.
+//
+// Two questions, and the second one is easy to forget. How much file cache does
+// this level hold, and how much of it is something the kernel has been told to
+// keep — because a page protected by `memory.min` is *not* headroom, and
+// counting it as headroom is how this tool would dispatch a lane into an OOM
+// kill (Codex, #1134).
+//
+// # Why this level's own floor is the whole answer
+//
+// It reads `memory.min` here and nowhere else, and that is a correctness
+// argument rather than a shortcut. In cgroup v2 a descendant's *effective* min
+// is capped by its ancestors': protection is handed down, so a child under a
+// parent declaring zero has no hard protection however large its own number is,
+// and the sum of every descendant's effective min cannot exceed this level's.
+// So this level's configured floor is already an upper bound on everything
+// protected in its subtree, and an upper bound is exactly what is wanted —
+// overstating the protection understates the headroom, which is the direction a
+// dispatch budget should be wrong in.
+//
+// This replaced a bounded walk over every descendant, which summed *configured*
+// floors and therefore counted protection the kernel would not honour: under a
+// zero-min ancestor it turned 7 GiB of headroom into 3 and could restore the
+// zero-lane reading this whole change exists to remove (Codex, #1134). The walk
+// drew four separate findings — a v1 host it defeated, a bound on directory
+// reads rather than directory entries, a budget reset per ancestor, and a probe
+// that could not tell absence from an I/O error — and every one of them was a
+// property of machinery that did not need to exist.
+func evictableFile(dir string) uint64 {
+	cache := reclaimableFile(dir)
+	if cache == 0 {
+		return 0
+	}
+
+	protected, _, established := protectionAt(dir)
+	if !established {
+		// Fail closed. The old, conservative reading — every byte of usage
+		// counted as held — is exactly what a level whose protection could not
+		// be read deserves.
+		return 0
+	}
+
+	return cache - min(cache, protected)
+}
+
+// protectionAt is what one level declares with `memory.min`, and whether that
+// could be read at all.
+//
+// Three outcomes rather than two, because "unreadable" and "unprotected" are
+// opposite answers and a parse failure was quietly giving the second. cgroup v2
+// spells complete protection as the literal `max`, which [readInt] refuses —
+// so the one level asking the kernel to reclaim nothing read as the one level
+// protecting nothing, and its cache was counted straight back as headroom
+// (Codex, #1134).
+//
+// That is the same fail-open shape as the wrap before it, and this closes the
+// class rather than the instance: `max` saturates, a number is a number, an
+// absent file is a level with no memory controller and so nothing to protect,
+// and *everything else* refuses. There is no longer a way for an unreadable
+// value to arrive as a zero.
+func protectionAt(dir string) (floor uint64, present, established bool) {
+	raw, err := os.ReadFile(filepath.Join(dir, memoryMinFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		// No memory controller at this level, so nothing here is protected —
+		// and nothing below it can be either, since a controller is enabled
+		// top-down. Absence is an answer; every other error is not.
+		return 0, false, true
+	}
+	if err != nil {
+		return 0, false, false
+	}
+
+	value := strings.TrimSpace(string(raw))
+	if value == "max" {
+		return math.MaxUint64, true, true
+	}
+
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, true, false
+	}
+
+	return uint64(parsed), true, true
+}
+
+// memoryMinFile is where a cgroup declares what it will not have reclaimed.
+const memoryMinFile = "memory.min"
+
+// reclaimableFile is the file-backed page cache a cgroup's usage includes,
+// before asking whether any of it is protected.
+//
+// This is [memoryFree]'s own distinction — MemAvailable rather than MemFree —
+// one level down, where it was missed. Both cgroup v1's memory.usage_in_bytes
+// and v2's memory.current count page cache as used, so a container whose Go
+// build cache is hot reports almost no headroom while holding almost no
+// anonymous memory at all. Measured on the machine that found this: a leaf
+// cgroup limited to 13.3 GiB reported 9.7 GiB used and held 6 MiB of RSS
+// against 9.3 GiB of cache, so the fleet was told memory was the bound and
+// dispatched nothing — on a box with a hot cache and nothing running.
+//
+// That is the worst direction for this tool to be wrong in. A build is what
+// fills the cache, so the reading is most wrong exactly after the work that
+// makes the next lane cheapest, and the advice it prints ("wait for the
+// running lanes to finish") names a cause that is not there.
+//
+// Only *inactive* file pages count. Active ones are reclaimable too, but
+// reclaiming them costs somebody's working set, and a budget for deciding
+// whether to add load should err toward the tighter number. Anything
+// unreadable counts as zero, which is the same direction.
+func reclaimableFile(dir string) uint64 {
+	raw, err := os.ReadFile(filepath.Join(dir, "memory.stat"))
+	if err != nil {
+		return 0
+	}
+
+	// v1 reports the hierarchy under `total_inactive_file` and this cgroup
+	// alone under `inactive_file`; v2 has only the latter and is already
+	// recursive. The totals are what pair with a hierarchical usage, so they
+	// are preferred where they exist.
+	byKey := map[string]uint64{}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		key, value, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		if n, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64); err == nil {
+			byKey[key] = n
+		}
+	}
+
+	if total, ok := byKey["total_inactive_file"]; ok {
+		return total
+	}
+
+	return byKey["inactive_file"]
 }
 
 // unlimitedMemory is the threshold above which a memory limit is a way of

@@ -27,10 +27,73 @@ const maxDocumentBytes = 1 << 20 // 1 MiB
 // snapshot while a newer version is being built beside it. That is what makes the
 // concurrent handling implied by jsonrpc2.AsyncHandler safe without holding a lock
 // across analysis.
+// documentKind says which of the languages this server speaks a document holds.
+//
+// A `*.test.yaml` is flowtest's suite format and `testdefaults.yaml` its shared
+// directory fixture — real languages of this repository, but not the Flowfile
+// grammar. Before the kind existed, a test file handed to this server was
+// diagnosed *as a workflow*: `tests:` an unknown key, no `steps:`, every line a
+// squiggle — false diagnostics on a correct file, the exact failure this
+// package's doc names as worse than silence (#1110). The kind is what routes a
+// document to checks that speak its language and gates off the ones that do not.
+type documentKind int
+
+const (
+	docWorkflow documentKind = iota
+	docTestFile
+	docTestDefaults
+)
+
+// speaksFlowfile reports whether the workflow grammar's features may answer
+// for this document. A test document never gets a workflow answer: a
+// completion, hover, symbol tree or format computed from the workflow
+// grammar would be confidently wrong in someone's editor, which is worse
+// than the honest empty answer.
+//
+// This does not mean a test document gets nothing. #1110 item 8 gave the
+// test language its own answers — completion, an outline of its cases, and
+// hover on a stub's task name — each behind its own dispatch on doc.kind
+// rather than behind this gate; see completeAt, testDocumentSymbols and
+// hoverAt. speaksFlowfile stays the question "may the *workflow* grammar
+// answer here", not "may anything answer here".
+func (doc *document) speaksFlowfile() bool { return doc.kind == docWorkflow }
+
+// isTestDocument reports whether doc is one of flowtest's own file kinds —
+// a `*.test.yaml` suite or a directory's `testdefaults.yaml` — as opposed to
+// a Flowfile. The two test kinds share a document shape at every level below
+// the top (both nest a `defaults:` block of the same [flowtest.Defaults]
+// shape), which is why features that answer for one often take doc.kind as
+// a parameter rather than being written twice.
+func (doc *document) isTestDocument() bool {
+	return doc.kind == docTestFile || doc.kind == docTestDefaults
+}
+
+// kindOfURI reads the kind off the document's basename, which is also how the
+// editor configurations decide what to attach: `**/*.test.yaml` and
+// `testdefaults.yaml` name the test language, everything else the Flowfile.
+func kindOfURI(uri lsp.DocumentURI) documentKind {
+	base := string(uri)
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	switch {
+	case strings.HasSuffix(base, ".test.yaml"), strings.HasSuffix(base, ".test.yml"):
+		return docTestFile
+	case base == "testdefaults.yaml":
+		return docTestDefaults
+	default:
+		return docWorkflow
+	}
+}
+
 type document struct {
 	uri     lsp.DocumentURI
 	version int
 	text    string
+
+	// kind routes the document to the language it actually holds; see
+	// [documentKind].
+	kind documentKind
 
 	// tasks is the registry every answer about this document is derived from.
 	// Never nil: [newDocument] substitutes [v1.DefaultRegistry] so that no
@@ -133,6 +196,7 @@ func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Regist
 		uri:      uri,
 		version:  version,
 		text:     text,
+		kind:     kindOfURI(uri),
 		tasks:    tasks,
 		index:    newLineIndex(text),
 		tooLarge: len(text) > maxDocumentBytes,

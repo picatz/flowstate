@@ -383,3 +383,64 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 		return map[string]any{}
 	}
 }
+
+// debugInputSchema is the debug tool's input surface: the same two documents
+// flowstate_test takes, plus which case to hold and the script to drive it
+// with.
+//
+// A script rather than a session handle, and that is the whole design. MCP is
+// request/response with no console attached, so an interactive prompt has
+// nowhere to live — but a [flowdebug.Session] already reads its commands as a
+// *stream* (#928 slice 1 built it that way so a session could be recorded and
+// replayed), and a stream is exactly what an agent can submit. One call is one
+// session: the commands drive it, the transcript comes back, and the script
+// that produced it is echoed so the same session can be re-run or extended.
+func debugInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"workflow": map[string]any{
+				"type": "string",
+				"description": "The Flowfile YAML to debug, exactly as it would be written to disk, " +
+					"including the `edition:` line.",
+			},
+			"tests": map[string]any{
+				"type": "string",
+				"description": "A `*.test.yaml` document whose case supplies the run being debugged: its " +
+					"`inputs:`, its `stubs:` standing in for every task, and its `signals:` scripting " +
+					"any wait. The case's `expect:` is still judged, and a case that fails is held " +
+					"open once more afterward so the remaining commands can question the finished " +
+					"run. A case's own `workflow:` is accepted but never consulted: the `workflow` " +
+					"argument above is what runs.",
+			},
+			"case": map[string]any{
+				"type": "string",
+				"description": "Which case to debug, by exact name. Required when `tests` declares more " +
+					"than one: a session drives one run, and a script driving several would be " +
+					"answering about a run it cannot name.",
+			},
+			"commands": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+				"description": "The debug script, one command per entry, in order: `step` (run this step " +
+					"and stop at the next), `continue`, `until <step-id>`, `break <step-id>`, " +
+					"`break <step-id> if <cel-expression>` (stop there only when the expression " +
+					"holds, which is how a step inside a `for_each` is reached at one iteration " +
+					"rather than every one), " +
+					"`delete <step-id>`, `breakpoints`, `inspect <cel-expression>` (evaluate against " +
+					"the paused run's own scope), `complete <partial-command>` (list what could be " +
+					"written at the end of that text, over the paused run's own names — the same " +
+					"answer a terminal gives for a tab press), " +
+					"`scope` (list what it can name), `info` (describe " +
+					"the step it is stopped at), and `quit` (abandon the run, which fails the case). " +
+					"The run starts held before its first step. When the script runs out the run " +
+					"continues to the end on its own, so a script that only inspects is safe.",
+			},
+		},
+		"required": []any{"workflow", "tests", "commands"},
+		// Refused rather than ignored, for the reason [messageSchema] gives: a
+		// misspelled argument silently dropped is a tool that "worked" and did
+		// something other than what was asked.
+		"additionalProperties": false,
+	}
+}

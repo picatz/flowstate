@@ -96,6 +96,36 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 
 		return nil
 
+	case *v1.Wait_SignalBatch:
+		// The bound is read through the same [v1.EvalWaitTimeout] the single
+		// wait's arm reads it through, so the two spellings cannot disagree
+		// about what a written-but-zero `timeout:` means. That equivalence is
+		// why `timeout` stayed on [v1.Wait] rather than being restated on the
+		// new message.
+		timeout, bounded, err := v1.EvalWaitTimeout(context.Background(), wait, e.scope, workflow.Now(e.ctx))
+		if err != nil {
+			return nodeFailed(err)
+		}
+
+		outputs, err := e.waitForSignals(node, kind.SignalBatch, timeout, bounded)
+		if err != nil {
+			return err
+		}
+
+		// One shaping moment, as above, through the sibling of the function
+		// above — see [v1.ShapeSignalBatchOutputs], which is literally the same
+		// evaluator, so a driver cannot shape a batch differently from a single
+		// wait.
+		shaped, err := v1.ShapeSignalBatchOutputs(
+			context.Background(), kind.SignalBatch, outputs, e.scope, workflow.Now(e.ctx))
+		if err != nil {
+			return nodeFailed(err)
+		}
+
+		e.recordOutputs(node, shaped)
+
+		return nil
+
 	default:
 		return nodeFailed(fmt.Errorf("unsupported wait kind %T", wait.GetKind()))
 	}
@@ -104,10 +134,16 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 // waitFor sleeps on a durable timer.
 func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 	if d > 0 {
-		// Sleep returns an error only when the run is cancelled, which must
+		// `NewTimerWithOptions` rather than `workflow.Sleep`, which is the same
+		// command with a fixed `Sleep` summary — see [sleepSummary] for why the
+		// step's own name is worth the extra line.
+		//
+		// The future returns an error only when the run is cancelled, which must
 		// propagate: a cancelled run has to stop waiting, and swallowing this
 		// would make a waiting step the one place cancellation does not reach.
-		if err := workflow.Sleep(e.ctx, d); err != nil {
+		timer := workflow.NewTimerWithOptions(e.ctx, d,
+			workflow.TimerOptions{Summary: sleepSummary(e.path, node.GetId())})
+		if err := timer.Get(e.ctx, nil); err != nil {
 			return nodeFailed(err)
 		}
 	}
@@ -197,7 +233,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		return nil, nodeFailed(err)
 	}
 
-	leave := e.waits.enter(e.pendingWait(node, signal, deadline, prompt, promptCut))
+	leave := e.waits.enter(e.pendingWait(node, name, deadline, prompt, promptCut))
 	defer leave()
 
 	var delivery v1.SignalDelivery
@@ -251,7 +287,9 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
 		}
-		selector.AddFuture(workflow.NewTimer(timerCtx, timeout), func(workflow.Future) {})
+		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, timeout,
+			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())}),
+			func(workflow.Future) {})
 	}
 	selector.Select(e.ctx)
 
@@ -301,6 +339,209 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	return v1.SignalOutputs(delivery.GetPayload(), delivery.GetSender(), false), nil
 }
 
+// waitForSignals blocks until the first delivery arrives or the wait times out,
+// then takes everything else already buffered for that name without blocking
+// again.
+//
+// # It is [executor.waitForSignal] with a drain where the single take was
+//
+// Written beside it rather than folded into it, and that is the cost this
+// feature chose to pay: a second signal-receiving path per driver, which has to
+// stay in step with the single-wait one on four subtleties that are all already
+// load-bearing. Each is called out where it happens below — the carried
+// signals before the channel, the point the prompt is evaluated, the point the
+// wait announces itself, and the [cancelSignalWaitTimerChange] version gate —
+// and each is pinned by a conformance case that asserts the two spellings agree.
+//
+// # The drain is not a poll
+//
+// Nothing new waits. The blocking part is the *same* selector construction the
+// single wait uses, over the same channel, `ctx.Done()` and the same optional
+// cancellable timer, and it resolves on the first delivery exactly as before.
+// Only once something has arrived does this take the rest, with `ReceiveAsync`
+// against a channel that already holds them. So "process whatever arrived"
+// falls out of the wait that exists rather than needing a settle window or a
+// second timer — which is why the settle window is a separate question and not
+// this one.
+func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout time.Duration, bounded bool) (*v1.Node_Outputs, error) {
+	name := batch.GetName()
+	limit := v1.SignalBatchSize(batch)
+
+	channel := workflow.GetSignalChannel(e.ctx, name)
+
+	// Subtlety one, carried-before-channel. Signals drained into the run's own
+	// state before an earlier segment suspended are older than anything still
+	// on the channel, and `deliveries` is ordered oldest first — so they are
+	// taken first, exactly as [executor.takePendingSignal] takes the carried one
+	// ahead of the channel peek in the single wait. Getting this backwards would
+	// reorder a batch across a Continue-As-New and nowhere else, which is a bug
+	// that only appears in a run long enough to suspend.
+	deliveries := e.takePendingSignals(name, limit)
+
+	// Then whatever is already buffered on the channel, up to the bound. This
+	// is subtlety two's other half: a batch that finds anything here resolves
+	// without ever parking, so it evaluates no prompt and announces no wait,
+	// which is the single wait's own rule for its early-arrival peek.
+	deliveries = drainInto(e.ctx, channel, deliveries, limit)
+
+	if len(deliveries) > 0 {
+		workflow.GetLogger(e.ctx).Info("step drained signals that had already arrived",
+			"id", node.GetId(), "signal", name, "count", len(deliveries))
+
+		return v1.SignalBatchOutputs(deliveries, false), nil
+	}
+
+	// A bound that has already lapsed, answered before the selector for
+	// [executor.waitForSignal]'s reason: a selector holding a ready channel and
+	// an already-fired timer may take either, and which one would then be a
+	// property of the SDK's scheduling rather than of the workload.
+	if bounded && timeout <= 0 {
+		workflow.GetLogger(e.ctx).Info("batch wait timed out before it began",
+			"id", node.GetId(), "signal", name, "timeout", timeout)
+
+		return v1.SignalBatchOutputs(nil, true), nil
+	}
+
+	var deadline *timestamppb.Timestamp
+	if bounded {
+		deadline = timestamppb.New(workflow.Now(e.ctx).Add(timeout))
+	}
+
+	// Subtlety two, the prompt's evaluation point: here, after both ways this
+	// wait could have resolved without parking, and at the same instant the
+	// wait announces itself. [v1.EvalSignalBatchPrompt] is [v1.EvalSignalPrompt]
+	// under another name for precisely this reason — the two must not be able
+	// to drift in what they refuse or how they bound.
+	prompt, promptCut, err := v1.EvalSignalBatchPrompt(context.Background(), batch, e.scope, workflow.Now(e.ctx))
+	if err != nil {
+		return nil, nodeFailed(err)
+	}
+
+	// Subtlety three, the announcement point. A batch parked on an empty
+	// channel is a gate an operator can act on, and it is reported exactly as a
+	// single wait is: same [v1.PendingWait], same `signal_name`, so every
+	// surface that already lists parked gates lists this one with no change.
+	leave := e.waits.enter(e.pendingWait(node, name, deadline, prompt, promptCut))
+	defer leave()
+
+	var (
+		delivery v1.SignalDelivery
+		received bool
+	)
+
+	selector := workflow.NewSelector(e.ctx)
+	selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
+		received = c.Receive(e.ctx, &delivery)
+	})
+	selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
+
+	// Subtlety four, the version gate. The same changeID as the single wait's,
+	// deliberately: it names one decision — "this engine cancels an answered
+	// gate's timer" — and a run that reached that decision through either
+	// spelling must replay it the same way. A second changeID would record a
+	// second marker for the same behaviour and give a replaying run two
+	// answers to one question.
+	var cancelTimer workflow.CancelFunc
+	if bounded {
+		timerCtx := e.ctx
+		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
+		}
+		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, timeout,
+			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())}),
+			func(workflow.Future) {})
+	}
+	selector.Select(e.ctx)
+
+	if cancelTimer != nil {
+		cancelTimer()
+	}
+
+	// Cancellation before `received`, for [executor.waitForSignal]'s reason: a
+	// cancelled wait and an unanswered one are the same shape here, and treating
+	// a cancelled batch as an empty one would make `flow cancel` take the
+	// "nothing arrived" branch instead of stopping the run.
+	if err := e.ctx.Err(); err != nil {
+		return nil, stepFailed(err, "cancelled while waiting for signal %q", name)
+	}
+
+	if !received {
+		if !bounded {
+			return nil, nodeFailed(fmt.Errorf("stopped waiting for signal %q", name))
+		}
+
+		workflow.GetLogger(e.ctx).Info("batch wait timed out",
+			"id", node.GetId(), "signal", name, "timeout", timeout)
+
+		return v1.SignalBatchOutputs(nil, true), nil
+	}
+
+	// The drain proper: the delivery that answered the wait, plus everything
+	// that arrived alongside it and is sitting on the channel now. This is the
+	// whole saving — a burst delivered while one workflow task was pending is
+	// read here in that one task rather than in one task each.
+	deliveries = drainInto(e.ctx, channel, []*v1.SignalDelivery{{
+		Payload: delivery.GetPayload(),
+		Sender:  delivery.GetSender(),
+	}}, limit)
+
+	workflow.GetLogger(e.ctx).Info("step drained a batch of signals",
+		"id", node.GetId(), "signal", name, "count", len(deliveries))
+
+	return v1.SignalBatchOutputs(deliveries, false), nil
+}
+
+// drainInto appends whatever is already buffered on channel to deliveries,
+// without blocking, stopping at limit.
+//
+// The same `ReceiveAsync` loop [drainSignals] runs at Continue-As-New, which is
+// what makes this feature a spelling rather than a mechanism: Temporal offers no
+// batch receipt — `ReceiveChannel` has `Receive`, `ReceiveWithTimeout`,
+// `ReceiveAsync`, `ReceiveAsyncWithMoreFlag` and `Len`, and a drain is a loop
+// over the third — so the primitive was already written here and only
+// unreachable from a Flowfile.
+//
+// # Where the two loops differ, which is the whole of what makes a limit right
+// here and wrong there
+//
+// [drainSignals] takes everything, unconditionally, and must: it runs at a
+// suspend, and a delivery it declined to take is a delivery *lost*, unsaying an
+// acknowledgement the sender already received (#1013). It has nowhere to leave
+// one — the channel it is reading is about to be discarded with the run.
+//
+// This loop has somewhere to leave one. Stopping at the limit leaves the
+// remainder exactly where it was, on a channel that outlives this step, so the
+// next drain takes it and nothing is dropped or re-buffered. That is what a
+// `loop:` around the step already wants, and it is why reaching the bound costs
+// an iteration rather than a delivery — the same promise [drainSignals] keeps by
+// taking everything, kept here by taking some and leaving the rest.
+//
+// It is also why the bound is safe to be a count. The resource the peer controls
+// is how many arrive, and what is not taken is not read into memory at all — so
+// bounding the count bounds what one step materializes, which is the resource a
+// step's own outputs are weighed in. The carry's equivalent bound is bytes, at
+// [v1.CheckRunStateSize]; see [v1.MaxSignalBatch] for why one is enforced and
+// the other is a threshold.
+//
+// The two loops never run against one channel at once — one runs while a step
+// executes, the other while the run suspends — and `ReceiveAsync` removes what
+// it reads, so a delivery is taken by exactly one of them.
+func drainInto(ctx workflow.Context, channel workflow.ReceiveChannel, deliveries []*v1.SignalDelivery, limit int) []*v1.SignalDelivery {
+	for len(deliveries) < limit {
+		var delivery v1.SignalDelivery
+		if !channel.ReceiveAsync(&delivery) {
+			break
+		}
+
+		deliveries = append(deliveries, &v1.SignalDelivery{
+			Payload: delivery.GetPayload(),
+			Sender:  delivery.GetSender(),
+		})
+	}
+
+	return deliveries
+}
+
 // recordOutputs records a step's outputs in the scope later steps resolve
 // against.
 func (e *executor) recordOutputs(node *v1.Node, outputs *v1.Node_Outputs) {
@@ -327,6 +568,43 @@ func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, *v1.SignalS
 	return nil, nil, false
 }
 
+// takePendingSignals consumes up to limit early-arriving signals held for this
+// name, oldest first.
+//
+// The plural of [executor.takePendingSignal], and it keeps that function's two
+// properties rather than reimplementing them: each carried signal is *consumed*,
+// so a later wait on the same name is not satisfied a second time by one
+// delivery; and the order is the order they arrived, which is the order
+// `deliveries` reports.
+func (e *executor) takePendingSignals(name string, limit int) []*v1.SignalDelivery {
+	if e.signals == nil || limit <= 0 {
+		return nil
+	}
+
+	var (
+		taken []*v1.SignalDelivery
+		kept  []*v1.PendingSignal
+	)
+
+	for _, pending := range e.signals.pending {
+		if pending.GetName() != name || len(taken) >= limit {
+			kept = append(kept, pending)
+
+			continue
+		}
+		taken = append(taken, &v1.SignalDelivery{
+			Payload: pending.GetPayload(),
+			Sender:  pending.GetSender(),
+		})
+	}
+
+	if len(taken) > 0 {
+		e.signals.pending = kept
+	}
+
+	return taken
+}
+
 // drainSignals collects signals that have arrived but not been waited for, so
 // that suspending the run does not lose them.
 //
@@ -341,23 +619,34 @@ func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, *v1.SignalS
 // Draining is possible only because the specification declares every signal name
 // statically: the run knows exactly which channels to check, without guessing at
 // what someone might have sent.
+//
+// # Everything drained is carried, unconditionally
+//
+// This used to stop once len(pending) reached [v1.MaxPendingSignals], silently
+// dropping whatever a sender had already been told was delivered — the RPC that
+// accepted the delivery had already returned success by the time this ran, so
+// the drop was invisible to the one party who could have reacted to it (#1013).
+// An acknowledged delivery is a promise, and this is the one place that promise
+// gets kept or broken: a `flow signal` that reported success is a fact about
+// the sender's world, and this function does not get to make it retroactively
+// false.
+//
+// So it does not stop. The bound that protects the run is
+// [v1.CheckRunStateSize], weighed by the caller against everything else the run
+// carries once this returns — a carry too large to fit fails the run loudly,
+// visibly, at the moment it happens, which is the fate an unconsumed flood
+// deserves. [v1.MaxPendingSignals] still names the count a well-behaved
+// workload should never approach, and crossing it here is worth an operator's
+// attention, so it is logged once — as a warning about a wait that may be
+// missing, not as a decision about what to keep.
 func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.PendingSignal) []*v1.PendingSignal {
 	pending := carried
+	warned := len(pending) > v1.MaxPendingSignals
 
 	for _, name := range v1.SignalNames(spec) {
 		channel := workflow.GetSignalChannel(ctx, name)
 
 		for {
-			if len(pending) >= v1.MaxPendingSignals {
-				// The first to arrive is the one that approved the gate, so the
-				// oldest are kept. A sender that delivers a million signals
-				// cannot grow the run's state without limit.
-				workflow.GetLogger(ctx).Warn(
-					"dropping signals beyond the carry limit; a wait consumes one, and the earliest are kept",
-					"signal", name, "limit", v1.MaxPendingSignals)
-				return pending
-			}
-
 			var delivery v1.SignalDelivery
 			if !channel.ReceiveAsync(&delivery) {
 				break
@@ -371,6 +660,15 @@ func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.Pending
 				Payload: delivery.GetPayload(),
 				Sender:  delivery.GetSender(),
 			})
+
+			if !warned && len(pending) > v1.MaxPendingSignals {
+				warned = true
+				workflow.GetLogger(ctx).Warn(
+					"carrying more early-arriving signals than a well-behaved workload should — "+
+						"a wait may be missing, or a sender is not stopping; nothing is dropped, but "+
+						"the run will fail if the carry grows too large to fit",
+					"count", len(pending), "typical_limit", v1.MaxPendingSignals)
+			}
 		}
 	}
 

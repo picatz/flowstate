@@ -276,7 +276,25 @@ func gitInitRepo(t *testing.T, committed string) string {
 
 func runGitTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+
+	// Auto-maintenance off, on every invocation, because it outlives the test.
+	//
+	// `git commit` runs `git maintenance run --auto`, and since git 2.43 that
+	// *detaches*: the commit returns, the test returns, `t.TempDir`'s cleanup
+	// starts removing the directory — and the still-running maintenance writes
+	// a pack into `.git/objects/pack` under it. `RemoveAll` then fails with
+	// "directory not empty", which the harness reports as a failure of a test
+	// whose body already passed.
+	//
+	// It is rare because auto-maintenance has thresholds a two-file repository
+	// does not usually cross, and it is not rare enough: CI hit it on #1125,
+	// on a diff that touches no git code at all. Verified with `GIT_TRACE=1`,
+	// which names `git maintenance run --auto --quiet` on a plain commit here
+	// and nothing at all with these two settings.
+	//
+	// Set per invocation rather than once after `init`, so that `init` itself
+	// is covered and no future call can be added ahead of the configuring one.
+	cmd := exec.Command("git", append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)

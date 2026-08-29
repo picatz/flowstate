@@ -3,6 +3,7 @@ package flowtest
 import (
 	"fmt"
 
+	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 )
@@ -34,6 +35,43 @@ const (
 	maxExpansionDepth = 64
 )
 
+// decodeStrict is [yaml.UnmarshalWithOptions] under [yaml.Strict], with the
+// decoder's own panics turned into refusals.
+//
+// goccy v1.19.2 dereferences a nil `ast.ArrayNode` when a document nests a
+// sequence inside structs inside a sequence and the inner sequence is written
+// as an empty tagged node — `tests: [{expect: {ran: !!seq}}]`, thirty-seven
+// bytes, is enough (`ast.(*ArrayNodeIter).Len` at ast.go:1543, reached from
+// `decodeSlice` at decode.go:1593). `FuzzLoadSource` found it in CI; the
+// corpus entry beside this package pins it.
+//
+// A test document is untrusted input — read from a fork's checkout, generated,
+// or handed to the `flowstate_test` MCP tool by whoever is talking to it — and
+// a refusal is the only answer this loader may give to one it cannot read. A
+// panic is the process, which for `flow test` is the run and for `flow mcp` is
+// every session that server is holding. So the decode is contained here rather
+// than left to whatever happens to be above it: the language server recovers at
+// its RPC boundary (`lsp/server.go:67`) and would survive, which is exactly why
+// the containment cannot live there — nothing else has one.
+//
+// Delete this when the dependency is fixed: it exists for a defect in a pinned
+// version, not for anything about this format. The scope is deliberately one
+// call, so a panic raised by this package's own checks is not swallowed with
+// it.
+func decodeStrict(data []byte, into any) (err error) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		err = fmt.Errorf("the YAML decoder stopped on this document (%v); that is a defect in the "+
+			"decoder rather than a rule of this format, and the shape it is known to stop on is an "+
+			"empty tagged node where a list belongs — write the list out, as `ran: []`, or drop the tag", r)
+	}()
+
+	return yaml.UnmarshalWithOptions(data, into, yaml.Strict())
+}
+
 // checkExpansionBounds parses data only as far as the AST — never as far as
 // yaml.Unmarshal, which resolves every alias into the destination value
 // before any check written against that destination gets a chance to run —
@@ -51,6 +89,14 @@ func checkExpansionBounds(data []byte) error {
 		return nil
 	}
 
+	return checkExpansionBoundsIn(file)
+}
+
+// checkExpansionBoundsIn is [checkExpansionBounds] for a caller that has
+// already parsed the document — the suite loader, which keeps the tree to
+// answer where a diagnostic belongs (position.go) and would otherwise parse the
+// same bytes twice, once per reader, on every load.
+func checkExpansionBoundsIn(file *ast.File) error {
 	anchors := map[string]ast.Node{}
 	for _, doc := range file.Docs {
 		collectAnchors(doc.Body, anchors)

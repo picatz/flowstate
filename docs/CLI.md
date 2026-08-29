@@ -718,7 +718,49 @@ tests:
         - steps.join.value.region == vars.order.region
 ```
 
-Literals only, for now: any `${` inside a var is refused, including a reference to another var, so there is no evaluation order and no cycles — and a mixed string (`"https://${vars.host}/v1"`) is refused too, because a partial substitution would be a template language this file deliberately is not. Build combined text in the workflow, or state it literally.
+A var value that is *itself* a whole-value `${...}` fence is an expression over the block's other vars, evaluated once when the file loads (#1072). That is the same fence rule the workflow's own `vars:` follows, and for the same reason: a var legitimately holds the literal string `steps.greet.result`, so the syntax rather than the content says which one you meant. Composition is what it is for — a base fixture stated once, a variant built from it:
+
+```yaml
+vars:
+  region: eu-west-1
+  base: "${ {'id': 'ord_1', 'region': vars.region} }"
+  rush: "${ {'id': vars.base.id + '_rush', 'region': vars.base.region} }"
+  endpoint: "${'https://api.' + vars.region + '.example.com/v1'}"
+```
+
+The rules, each with the reason it exists:
+
+- **A computed var reads its sibling vars and nothing else.** No `steps` (the block is evaluated before any case runs, so nothing has produced anything), no `inputs` (a file's vars are shared by every case and a case's `inputs:` are its own), no `run` or `trigger`. Each is refused in its own words.
+- **Evaluation is in dependency order, once per var.** A cycle is refused at load, naming the path: `vars.a → vars.b → vars.a`. Where a directory's `testdefaults.yaml` is in play the diagnostic names the file each hop was written in, because a cycle can exist in neither document on its own.
+- **The environment is library-less and deterministic.** A file's vars are not bound to a workflow — `defaults.workflow` and a case's own `workflow:` may name different files in one suite — so a var that compiled under one case's profile and failed under another's would make load-time evaluation depend on which case you looked at. A call needing a profile library (`json_parse`, `split`, `base64.encode`) is therefore a load-time refusal naming the function; write it in `expect.check:`, which compiles under the case's own profile.
+- **Bounded by cost, per expression and across the file.** Each var's expression spends at most `MaxVarsPerFile`-th of the budget one ordinary expression gets, so a file declaring the maximum 200 vars spends, in total, what a single expression elsewhere in the system may.
+- **A var on any path to a secret is withheld, and one redaction cannot withhold is refused.** If a var's value stands in for a secret — it is referenced from a case's `secrets:` — the taint spreads through the dependency graph in *both* directions, to a fixed point: every var computed from it, and every var it was computed *from*. The source material of a secret is secret, so `derived: "${'Bearer ' + vars.token}"` named from `secrets:` withholds `vars.token` as well as `vars.derived`. The taint follows references rather than values, which is what makes it answerable when the file loads.
+
+  The contract in one sentence: **a value derived from secret material is withheld where it is a non-empty string, and refused into existence where it is anything else** — because anything else can carry the secret in a form redaction cannot reach: its digits, its truth, its shape, its very emptiness.
+
+  A tainted **non-empty string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else — including a check's own evaluator error, which carries its operands. Everything else is a load-time refusal naming the chain that taints it. A **number or boolean** — `${size(vars.token)}` — has nothing in it to match once a fixture has carried it into a run, and a length is a fact about a secret in its own right. A **container** leaks by shape, which survives leaf redaction completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality oracle whose answer is whether the map is empty, and clearing every string inside it changes nothing about that — so a tainted container is refused whatever its leaves are. The **empty string** is the same oracle without the container: the redaction set cannot hold `""`, since it occurs at every position of every string, so `${vars.token == 'guess' ? '' : 'x'}` renders `""` beside a `[redacted]` sibling.
+
+  Each var is judged the moment it evaluates, before any var that reads it — so a value redaction cannot withhold never enters the block at all, and no later expression's error can quote it. A refused var's dependents do not evaluate and add no diagnostics of their own; the root refusal stands for the chain, while an unrelated problem elsewhere in the file is still reported.
+
+  The refusal costs one respelling, and says so: keep the derived value a string and express the structure at the position that *uses* it, where a `${vars.x}` leaf resolves at any depth, inside lists, and through `defaults.inputs:`.
+
+  ```yaml
+  vars:
+    token: s3cr3t
+    header: "${'Bearer ' + vars.token}"     # a string: withheld wherever it prints
+  tests:
+    - name: the structure lives where it is used
+      inputs:
+        headers:
+          Authorization: "${vars.header}"
+          Accept: application/json          # untainted, and still shown
+  ```
+
+  A var on no path to any secret is untouched, so `${size(vars.hostlist)}` and a map of hostnames stay ordinary fixtures.
+
+  The cost, stated: a benign var that merely contributed to a secret is withheld too — a `"Bearer"` prefix, a port — and refused if it is not a string. Fail closed is the posture; a token minus its prefix is still a token.
+
+A fence *inside* a structure is still refused, and so is a mixed string (`"https://${vars.host}/v1"`): a partial substitution would be a template language this file deliberately is not. Build the combined text in a var — `"${'https://' + vars.host + '/v1'}"` — and reference that.
 
 **One asymmetry, stated because it is load-bearing**: inside a stub's `where:` and `returns:`, `vars.` keeps meaning the *workflow's* own `vars:` block — those expressions evaluate against the run's scope, and a load-time substitution there would silently hijack that meaning. A stub speaks the run's language; everywhere else in the test file, `vars.` is the file's.
 
@@ -800,7 +842,7 @@ A case can name who the run started as (`starter:`) and who each scripted signal
 stands in for (`sender:`). **A green case says nothing about whether that identity
 would be allowed to do any of this in production.** Nothing attested either one, and
 `flow test` takes no policy flags: `--task-policy` and `--egress-policy` are declared
-on `flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`,
+on `flow worker`, `flow run local`, `flow mcp`, `flow server dev` and `flow task run`,
 and deliberately not here.
 
 What a `starter:` reaches is the workflow's own `signals:` policy, through the same
@@ -814,7 +856,7 @@ access policy (a fixed allow-everything rule, evaluated under the constant
 
 Task-shape policy carries one qualification, because "`flow test` installs none" is
 true of the *command* and not of the *process*. The flag is declared on `flow worker`,
-`flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, and deliberately
+`flow run local`, `flow mcp`, `flow server dev` and `flow task run`, and deliberately
 not on `flow test` — but it installs a process-wide policy that a case never clears,
 and the same machinery runs elsewhere: the `flowstate_test` MCP tool runs cases in
 whatever process serves it, so under `flow mcp --task-policy` a case's dispatches are

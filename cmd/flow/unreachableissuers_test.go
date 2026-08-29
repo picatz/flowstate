@@ -48,24 +48,30 @@ func TestWarnUnreachableIssuersNamesTheEntryAndTheRemedy(t *testing.T) {
 	require.Contains(t, logged, "entry=ci-main-only")
 	require.Contains(t, logged, "entry_index=1")
 	require.Contains(t, logged, "shadowed_by=ci-any-branch")
-	require.Contains(t, logged, "move ci-main-only above ci-any-branch")
-	// Never a claim that every such caller holds the named entry's role: an
-	// entry above the named one may take some of them without admitting all
-	// of them. See UnreachableIssuer.String.
+	require.Contains(t, logged, "narrow ci-any-branch with a require rule using none_of")
+	// Reordering is not offered: entries for one issuer are disjoint or the
+	// callers they share are refused, in whichever order they are written.
+	require.NotContains(t, logged, "move ci-main-only above ci-any-branch")
+	// Never a claim that every such caller holds some entry's role: another
+	// entry may take some of them without admitting all of them, and under the
+	// current contract they hold no role at all. See UnreachableIssuer.String.
 	require.NotContains(t, logged, "get that entry's namespace and role")
 }
 
 // TestWarnUnreachableIssuersSaysNothingAboutACorrectPolicy is the other half:
-// a correctly ordered policy, and an anonymous server with no policy at all,
-// log nothing. A false "this can never be reached" would send an operator to
-// reorder authentication that was right.
+// a policy whose entries are disjoint, and an anonymous server with no policy
+// at all, log nothing. A false "this can never be reached" would send an
+// operator to rewrite authentication that was right.
 func TestWarnUnreachableIssuersSaysNothingAboutACorrectPolicy(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string
 		policy *auth.Policy
 	}{
 		{
-			name: "narrow before broad",
+			// The tiering pattern as the contract wants it written: two
+			// entries for one issuer, made disjoint by none_of rather than by
+			// their order.
+			name: "tiers made disjoint with none_of",
 			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{
 				{
 					Name:      "ci-main-only",
@@ -79,10 +85,13 @@ func TestWarnUnreachableIssuersSaysNothingAboutACorrectPolicy(t *testing.T) {
 					Namespace: "acme",
 				},
 				{
-					Name:      "ci-any-branch",
+					Name:      "ci-other-branches",
 					Issuer:    "https://token.actions.githubusercontent.com",
 					Audiences: []string{"flowstate"},
-					Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
+					Require: []auth.ClaimRule{
+						auth.RequireClaim("repository", "picatz/flowstate"),
+						auth.RequireClaimNoneOf("ref", "refs/heads/main"),
+					},
 					Role:      "viewer",
 					Namespace: "acme",
 				},

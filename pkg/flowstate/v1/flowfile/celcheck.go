@@ -468,8 +468,17 @@ func forAnAuthor(message string) string {
 	message = containerNote.ReplaceAllString(message, "")
 
 	if match := unknownFunction.FindStringSubmatch(message); match != nil {
+		// Both venues named, because a diagnostic is read wherever validation
+		// runs and this one is advice: an agent that reached this through
+		// `flowstate_validate` has no shell to run `flow tasks` in, and was
+		// being sent to a command it cannot run for the one answer it needs.
+		// The catalog is the same catalog either way — GetCatalog is what
+		// `flow tasks` prints — so naming it serves the reader in the terminal
+		// and the reader over the wire with one sentence rather than a
+		// venue-aware rewrite of it.
 		return fmt.Sprintf(
-			"no function called %q; run `flow tasks` to see the functions this profile provides",
+			"no function called %q; the functions this profile provides are listed by "+
+				"`flow tasks`, and by the GetCatalog RPC (`flowstate_get_catalog` over MCP)",
 			match[1])
 	}
 

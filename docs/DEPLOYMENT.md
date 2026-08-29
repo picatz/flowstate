@@ -51,6 +51,78 @@ Concretely: a plugin, or anything that achieves code execution inside a
 worker process, reaches every secret material that worker holds for every
 tenant it serves — not just the tenant whose run happened to launch it.
 
+**What the host isolates, stated plainly (#1010):** a plugin runs as the same
+user as the worker, with the worker's full filesystem, network and kernel
+reach. The host guarantees which bytes run when pinned, that the plugin
+cannot read the worker's memory or its environment-borne credentials, cannot
+impersonate the host on its socket, and cannot outlive it. It does not
+constrain what the plugin does with the worker's own privileges — resource
+limits, filesystem visibility and syscall filtering are the deployment's job,
+exactly as they are for the worker itself. The host isolates **by process,
+not by privilege**, and no schema vocabulary claims otherwise; see [the
+four-tier isolation model](#the-four-tier-isolation-model) for where that
+kind of control actually lives.
+
+### Pinning which bytes a plugin name may run
+
+A plugin name is a mutable reference: whoever can write the file at that
+path chooses what this worker executes under it, forever and silently. A
+digest pin turns one name into an immutable reference, checked before the
+process exists — a compromised plugin's own announcement of itself cannot
+take part in the decision to admit it. It is opt-in per name: an unpinned
+name launches exactly as it always has, so pinning is adopted one plugin at a
+time rather than as a flag day for a whole fleet (`pkg/flowstate/v1/plugin/config.go`).
+
+Compute the digest to pin the same way the host measures one at launch —
+`sha256sum` over the installed binary, prefixed `sha256:` — which is also
+what the worker's own log line for a launched plugin already reports
+(`distribution` in the "loaded plugin" line):
+
+```console
+$ echo "sha256:$(sha256sum /usr/local/lib/flowstate/plugins/flowstate-plugin-github | cut -d' ' -f1)"
+sha256:1f3d...c2
+```
+
+One-off pins go straight on the command line, repeatable:
+
+```console
+$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+    --plugin-pin github=sha256:1f3d...c2
+```
+
+A deployment pinning more than a couple of plugins keeps them in a file
+instead — the artifact an operator diffs in code review — and points every
+verb that launches plugins at it, the same way `--task-policy` and
+`--egress-policy` point at theirs:
+
+```yaml
+# /etc/flowstate/plugin-pins.yaml
+pins:
+  github: sha256:1f3d...c2
+  slack: sha256:9ab0...44
+```
+
+```console
+$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+    --plugin-pins /etc/flowstate/plugin-pins.yaml
+```
+
+Unknown keys and a name pinned twice — in the file, on the command line, or
+split across both — are startup errors rather than a pin silently dropped:
+the same "fail closed on configuration" rule `--task-policy` follows. A pin
+naming a plugin `--plugin` does not admit, or any pin given with no
+`--plugin-dir` for it to apply to, is refused for the identical reason: a
+pin nothing can ever check is not protecting anything, however confidently
+an operator believes it is. `$FLOWSTATE_PLUGIN_PINS` is the pins-file
+default, mirroring `$FLOWSTATE_PLUGIN_DIR`, and every worker-facing verb that
+launches plugins — `worker`, `server`, `mcp`, `run local`, `lsp`, `plugins` —
+takes both flags, because all of them build a host through the one place in
+the CLI that does (`cmd/flow/plugins.go`'s `pluginFlags.host`).
+
+A pin says only that these exact bytes are the ones entitled to answer to
+this name. It says nothing about who built them or whether anyone vouches
+for them — that is the open half of #146, and it is not what this answers.
+
 **The good news, which nobody had written down before this document:**
 `pluginEnv` builds a plugin's environment from nothing, not by inheriting the
 worker's own (`pkg/flowstate/v1/plugin/launch.go`, `pluginEnv`). The worker's
@@ -635,13 +707,63 @@ the initial Temporal connection worked; it does not mean the connection is
 the pool's per-tenant Temporal clients (`temporalclient.Pool`) reconnecting
 after that.
 
-`flow worker` exposes no HTTP surface at all — no listener, no `/healthz`, no
-`--internal-listen` flag — so a worker's liveness has to come from the
-process itself: run it under a supervisor that treats process exit as the
-signal (`systemd`'s `Restart=on-failure` in the [systemd
+`flow worker` takes the same `--internal-listen` flag
+(`FLOWSTATE_INTERNAL_ADDRESS`), with the same default — **unset, so nothing is
+bound** — and the same refusal off loopback. Set it and the worker serves
+`/healthz` and `/debug/pprof/*` on that address and nothing else; leave it
+alone and the worker binds no socket at all, which is what every recipe in
+this document does today.
+
+What a `200` from a worker's `/healthz` means, precisely: the listener binds
+only *after* `w.Start()` returns, which is after the egress and task policies
+loaded, the secret providers opened, the plugin fleet launched and passed its
+strict start-up check, the Temporal client dialed, and the worker began
+polling its queue. So the first `200` implies all of that happened. It does
+**not** re-check any of it afterwards — the same caveat the server's route
+carries.
+
+There is deliberately no `/readyz`. A worker's readiness question is "are this
+worker's pollers actually attached to the task queue right now", and the Go
+SDK does not expose that: `worker.Worker` reports no poller state, and the
+only health call available (`client.Client.CheckHealth`) answers a question
+about the *frontend*, not about this worker's pollers — a worker whose pollers
+died would keep answering `200` to that, which is worse than not offering the
+route. What does answer the real question is already wired: the SDK's own
+metrics, exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (see
+[Metrics](#metrics)), carry poller counts and task-queue backlog per worker.
+Use those for readiness and this endpoint for liveness.
+
+A worker's liveness therefore still comes from the process itself where no
+listener is configured: run it under a supervisor that treats process exit as
+the signal (`systemd`'s `Restart=on-failure` in the [systemd
 recipe](#single-vm-ec2-or-similar-systemd--the-best-supported-production-shape)
-above, or a Kubernetes `Deployment`'s own restart-on-crash) rather than an
-HTTP probe, because there is no port to point one at.
+above, or a Kubernetes `Deployment`'s own restart-on-crash). With the listener
+configured, add an `exec` probe — and it has to be `exec`, never `httpGet`,
+for the reason the next paragraph gives about loopback and the kubelet:
+
+```yaml
+        # flow worker, with --internal-listen 127.0.0.1:9090 set on the
+        # container's command line (or FLOWSTATE_INTERNAL_ADDRESS in its env).
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          periodSeconds: 10
+          failureThreshold: 3
+```
+
+Two things to weigh before turning it on, both of which are why it is off by
+default. The port serves `/debug/pprof/*` alongside `/healthz` — one flag
+turns on both, there is no way to take the health route without the profiler —
+and a heap profile of a worker contains whatever that worker's address space
+contains, which on a worker means secret values resolved for an in-flight
+step. That is precisely the material the [secrets
+model](ARCHITECTURE.md#secrets) keeps out of Temporal's history, so anything
+that can reach this socket can read past that boundary. It has no authentication and no TLS
+of its own; loopback and a shared network namespace are the entire access
+control, which is why a non-loopback address is refused rather than warned
+about (`checkInternalListenAddress`, `cmd/flow/internallistener.go`). Weigh
+that against a liveness probe, and against the capacity runbook below, which
+is what wants the profiler.
 
 A Kubernetes `httpGet` probe is dialed by the kubelet from the node's own
 network namespace, against the pod's IP — not from inside the pod's network
@@ -936,6 +1058,13 @@ correctly under load; this repo's own design bias (`CLAUDE.md`, "proto-first",
 "leaning into Temporal") is to surface what Temporal does rather than
 reimplement it, and this is exactly that call.
 
+That refusal is about *inbound* admission — runs arriving at `flow server` —
+and is unchanged. It is not in tension with the outbound bound described under
+[Per-host egress rate limits](#per-host-egress-rate-limits) below: no substrate
+control knows that some third-party API publishes a limit, so there is nothing
+there to surface rather than reimplement, and the bound that does exist for it
+is the API's own 429.
+
 ## Metrics
 
 Telemetry is OTLP push, gated per signal on the standard `OTEL_*` environment
@@ -960,8 +1089,7 @@ at it and let the collector's own Prometheus exporter serve `/metrics` from
 there; `examples/observability/docker-compose.yaml` wires exactly that
 (Collector receiving OTLP, Prometheus scraping the Collector).
 
-Every metric below is real code, cited by call site — not a proposal. Two
-instrumentation sources exist, and one deliberate gap:
+Every metric below is real code, cited by call site — not a proposal.
 
 **RPC metrics**, from the `otelconnect` interceptor wired onto every command
 that speaks Connect RPC — `flow server` (`cmd/flow/main.go:923`), `flow server
@@ -1019,14 +1147,156 @@ codebase; see the [Temporal SDK metrics
 reference](https://docs.temporal.io/references/sdk-metrics) for the current
 list. Verified here only as "on and reachable," not enumerated.
 
-**No metric exists yet for a run's own lifecycle** — started, completed,
-failed, a step's retry count — searched for and not found anywhere under
-`pkg/flowstate/v1` or `cmd/flow` outside the two tables above. An operator
-wanting "runs per tenant per hour" or "step failure rate" today has to derive
-it from spans (`engine.startTaskSpan` and neighbors) or from `flow list`
-against Temporal visibility, not from a counter. That is a real gap, not a
-documentation one — file it separately rather than treat this catalog as
-covering it.
+**Go runtime metrics** are registered on every long-running process the same
+way the Temporal SDK handler is: inside `initTelemetry`, gated on
+`OTEL_METRICS_EXPORTER`/`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` specifically —
+not on tracing or logging alone — via
+`go.opentelemetry.io/contrib/instrumentation/runtime`
+(`cmd/flow/telemetry.go`, beside where the meter provider is built). That
+package's v0.61.0 still defaults `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` to
+`true`, so what actually reaches a collector today is the
+`process.runtime.go.*` set rather than the newer `go.memory.*` convention;
+either name is what an operator should dashboard for the CPU/memory guidance
+below:
+
+| Metric | Type | Unit | Meaning |
+| --- | --- | --- | --- |
+| `process.runtime.go.mem.heap_alloc` | up-down counter | bytes | Heap bytes currently allocated |
+| `process.runtime.go.mem.heap_idle` | up-down counter | bytes | Heap bytes idle (unused, uncommitted) |
+| `process.runtime.go.mem.heap_inuse` | up-down counter | bytes | Heap bytes in in-use spans |
+| `process.runtime.go.mem.heap_objects` | up-down counter | — | Number of allocated heap objects |
+| `process.runtime.go.mem.heap_released` | up-down counter | bytes | Heap bytes released to the OS |
+| `process.runtime.go.mem.heap_sys` | up-down counter | bytes | Heap bytes obtained from the OS |
+| `process.runtime.go.mem.live_objects` | up-down counter | — | Number of live objects |
+| `process.runtime.go.mem.lookups` | counter | — | Pointer lookups performed by the runtime |
+| `process.runtime.go.gc.count` | counter | — | Completed GC cycles |
+| `process.runtime.go.gc.pause_ns` | histogram | ns | Per-pause GC stop-the-world duration |
+| `process.runtime.go.gc.pause_total_ns` | counter | ns | Cumulative GC stop-the-world duration |
+| `process.runtime.go.goroutines` | up-down counter | — | Live goroutine count |
+| `process.runtime.go.cgo.calls` | counter | — | Cumulative cgo calls made |
+| `runtime.uptime` | counter | ms | Time since the process started reporting |
+
+Registered whenever metrics are enabled — including a short client command
+like `flow get`, not only `flow server`/`flow worker` — but that costs a
+single extra export at the command's own shutdown flush rather than a second
+exporter or a second goroutine; see the doc comment beside
+`otelruntime.Start` in `cmd/flow/telemetry.go` for why splitting this by verb
+was rejected. On the two long-running processes it is the answer to the "How
+to read this process's own CPU/memory" guidance below without reaching for
+pprof: `process.runtime.go.mem.heap_alloc` and `process.runtime.go.goroutines`
+climbing together tracks the same "is this worker's own memory the
+constraint" question a heap profile answers, over OTLP instead of a loopback
+`kubectl exec`.
+
+**Run-lifecycle metrics** (#917), the gap the paragraph above used to record
+rather than fill: a run's own started/completed/failed and its duration,
+independent of a step's. Recorded at the one place each driver already
+witnesses the whole of a run — locally at `RunWithInputs`/`observeRun`
+(`pkg/flowstate/v1/runspan.go`), durably at `engine.Run`
+(`pkg/flowstate/v1/engine/workflow.go`) through Temporal's own replay-safe
+`workflow.GetMetricsHandler`, since a run's boundary is workflow code there
+and the plain OTel meter API is not safe to call from it (see
+`engine/runmetrics.go`'s doc for the mechanism and why the two drivers reach
+these instruments through genuinely different code).
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.run.starts` | counter | — | `flowstate.workflow.name`, `flowstate.driver` | One increment per run, once — never once per Continue-As-New segment |
+| `flowstate.run.duration` | histogram | s | `flowstate.workflow.name`, `flowstate.driver`, `flowstate.run.outcome`, `error.type` (on failure) | Duration from start to terminal outcome. Durably this is the segment that ends the run, not the sum of every Continue-As-New segment a long workload took — see `metricschema.InstrumentRunDuration`'s doc for why |
+| `flowstate.run.executions` | counter | — | same as `flowstate.run.duration` | Run completions, by outcome — the "step failure rate" and "runs per workflow" answer this table previously said did not exist |
+
+A Continue-As-New segment boundary records neither instrument: it is a
+handover to the next segment, not a completion, and counting it as one would
+make one submission look like several runs. `flowstate.workflow.name` and
+`flowstate.driver` are the only identity these carry — no run id, no
+execution id, no tenant — the same `ClassConfiguration`/`ClassConstruction`
+split every other `flowstate.*` label in this document follows; see
+`pkg/flowstate/v1/metricschema` for the allowlist and why a run id can never
+reach an instrument.
+
+What is still not here: a step's own retry count as a run-level rollup (the
+task-level duration/executions pair above already carries one measurement per
+attempt) and any label scoped to a tenant rather than a workflow — this
+system has no `ClassConfiguration`-bounded tenant label declared yet, so
+"runs per tenant per hour" still means filtering `flow list` or a trace by
+namespace rather than reading one off this table.
+
+`examples/observability/grafana/dashboards/flowstate.json`'s "Run lifecycle"
+row panels the table above; its "Runs and steps" row now also panels
+`temporal_workflow_task_schedule_to_start_latency` and `temporal_num_pollers`
+— on the wire since the Temporal SDK metrics handler was wired up, but
+previously undashboarded, which left the slot-exhaustion runbook below's
+"watch both" only half-answerable from the shipped dashboard.
+
+## Audit trail
+
+`flow server` and `flow server dev` write down every authorization decision —
+allow and deny alike — before the mutation the decision permits. This is not
+telemetry: it is unconditional, it is not sampled, and it does not depend on
+`OTEL_*` being configured at all. picatz/flowstate#1018 is the design; this is
+the part of it an operator turns a knob on.
+
+**What is recorded.** One record per decision, keyed by the closed
+`AuthorizationAction` vocabulary (`proto/flowstate/v1/authorization.proto`)
+rather than a second list of verbs — the audited surface is every action a
+WorkflowService RPC actually reaches, derived from the same bindings
+`TestEveryRPCHasExactlyOneAuthorizationAction` already checks, so a new RPC
+cannot arrive unaudited without that test failing first. Each record carries
+the action, the allow/deny decision, the RPC name, the caller's attested
+`WorkloadIdentity` (absent when the deployment runs `--insecure-no-auth`), the
+kind and id of the resource addressed (a workflow id, a schedule name, or a
+namespace), the server's own clock, and — on a denial — a code from a small
+closed set (`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`).
+There is no free-text field: no error message, no request payload, no
+specification. That is deliberate, not an oversight — see
+`pkg/flowstate/v1/audit`'s package doc and `proto/flowstate/v1/audit.proto`'s
+file comment for why a scrubber was rejected in favor of a record with nothing
+in it for a scrubber to catch.
+
+**Where it goes.** Every deployment gets stderr, unconditionally, one JSON
+object per line — the floor that survives an operator who configured no
+collector. When telemetry logs are configured (`OTEL_LOGS_EXPORTER=otlp`, or
+`OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` — the same
+[variables the Metrics section above documents](#metrics)), records also go
+out through an OTel `LoggerProvider` the audit trail owns for itself, on its
+own instrumentation scope (`flowstate.audit`) and its own event name
+(`flowstate.audit.authorization_decision`). It is never the global logger
+provider telemetry logs use: that one is a no-op until an operator configures
+it, which is correct for ordinary logs and exactly wrong for a trail that has
+to survive nobody configuring anything. A collector can therefore route or
+filter on the scope without having to recognize an audit record by shape.
+
+**`--audit-required`.** By default a sink's own failure is swallowed: an
+operator's collector outage does not become an outage of the service they
+never asked to gate on it, and the record simply does not reach that sink this
+time. `--audit-required` changes that trade — pass it, and a decision that
+cannot be written to *every* configured sink fails the request instead,
+matching the shape `flow worker --allow-unversioned-interpreter` already
+uses for the same kind of choice: a deployment's refusal belongs at the
+command, with a `--help` entry, not in an environment variable documented only
+in prose. The cost is stated in the flag's own help text: this is availability
+traded for a complete trail, and it is why the OTel sink switches from an
+ordinary batch processor to a synchronous one under `--audit-required` — a
+batch processor's export happens after the request has already been answered,
+so a "required" sink backed by one would prove nothing at the decision point.
+Stderr needs no such switch; every write to it is already synchronous.
+
+The default is auditing **on**, best-effort — every deployment gets a stderr
+trail from the moment it starts serving, and nothing has to be configured to
+get one. `--audit-required` is the opt-in for a deployment that would rather
+refuse a request than let it go unrecorded. The alternative default —
+auditing off until asked for — was rejected: an audit trail nobody remembered
+to enable is indistinguishable, to whoever goes looking for it after the
+fact, from one that was never built at all, and the whole cost of the
+default here is a line of JSON on stderr per decision.
+
+**Recording the decision, not the effect.** A record is written *before* the
+mutation it authorizes, because the record's subject is the decision, not what
+happened afterward: "this caller was authorized for `workload.signal` on run X
+at server time T" is true the instant the check returns, whether or not
+Temporal goes on to deliver the signal. This trail therefore cannot answer
+"did the signal actually reach the run" — the run's own timeline and Temporal's
+event history are the artifacts for that question, not this one.
 
 ## Worker capacity
 
@@ -1038,12 +1308,12 @@ set: `--max-concurrent-activities`, `--max-concurrent-workflow-tasks`,
 (`FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES`,
 `FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS`,
 `FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND`,
-`FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND`; `cmd/flow/main.go`). All
-four default to `0`, which the flag help text and `workerCapacityOptions`'s
-doc comment both spell out as "take the Temporal SDK's own default" — an
-unset flag changes no behavior on any existing deployment. `flow server
-dev`'s embedded worker does not read any of these; it exists for the laptop,
-where the SDK defaults are the right answer.
+`FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND`; `cmd/flow/main.go`), plus,
+as of #921, one more: `--sticky-cache-size`
+(`FLOWSTATE_WORKER_STICKY_CACHE_SIZE`). All five default to `0`, but that
+default does not mean the same thing on the fifth flag — see below. `flow
+server dev`'s embedded worker does not read any of these; it exists for the
+laptop, where the SDK defaults are the right answer.
 
 **Defaults, unset.** The Go SDK sizes an untuned worker at
 `MaxConcurrentActivityExecutionSize` = 1000, `MaxConcurrentWorkflowTaskExecutionSize`
@@ -1096,6 +1366,201 @@ reference](https://docs.temporal.io/references/sdk-metrics) for exact names),
 plus this process's own CPU/memory if raising slots is the lever being
 pulled, since that is what tells you when the free remedy has run out of
 room.
+
+**How to read this process's own CPU/memory.** Go runtime metrics are
+registered on both binaries once metrics are enabled (`OTEL_METRICS_EXPORTER`
+or an OTLP metrics endpoint — see [Go runtime metrics](#metrics) above for the
+full table), so an operator who already points `OTEL_EXPORTER_OTLP_ENDPOINT`
+somewhere gets `process.runtime.go.mem.heap_alloc`,
+`process.runtime.go.gc.pause_ns` and `process.runtime.go.goroutines` on a
+dashboard for free — no flag, no pprof session, no shell into the pod. What
+the worker *also* has, for the deeper "which allocation" or "which stack"
+question a gauge cannot answer, is `--internal-listen`
+(`FLOWSTATE_INTERNAL_ADDRESS`), off by default, loopback or refused, described
+under [Health checks and probes](#health-checks-and-probes) above along with
+what turning it on exposes. Start the worker with it, then, from inside that
+process's own network namespace — the host for the `systemd` recipe, `kubectl
+exec` into the pod for Kubernetes:
+
+```console
+$ go tool pprof -top http://127.0.0.1:9090/debug/pprof/heap       # memory: is this worker's heap the constraint?
+$ go tool pprof -top http://127.0.0.1:9090/debug/pprof/profile    # CPU, 30s sample: is it CPU-bound?
+$ curl -s http://127.0.0.1:9090/debug/pprof/goroutine?debug=1 | head -n 1
+```
+
+That last line is the cheapest read of the three: a goroutine count climbing
+with the slot count and a stack profile piling up in one activity is "raise
+the slots, this process has room"; a flat count with the CPU profile pinned is
+"the process itself is the constraint", which is the rung where the answer
+turns into a replica. Turn the flag back off — or leave it bound to loopback
+and reachable only by `kubectl exec` — once the question is answered, since a
+heap profile of a worker carries whatever secrets that worker resolved.
+
+**Sticky workflow cache (`--sticky-cache-size`).** Sticky execution is the
+affinity between a workflow execution's tasks and the worker that last handled
+them: as long as that worker keeps the execution's evaluated state cached, the
+next workflow task resumes from it instead of replaying the run's history from
+the start. `--sticky-cache-size` (`FLOWSTATE_WORKER_STICKY_CACHE_SIZE`) sets
+how many executions this process keeps cached; the SDK's own default is 10000
+(`worker.SetStickyWorkflowCacheSize`,
+`go.temporal.io/sdk@v1.47.0/internal/internal_task_handlers.go:41`), sized for
+a lighter per-entry cost than Flowstate's — the cache holds an evaluated
+interpreter state per entry, not a bare workflow struct.
+
+Read both signals before changing it, in either direction:
+
+- **Raise** when `temporal_sticky_cache_total_forced_eviction` is non-zero and
+  rising while `temporal_sticky_cache_size` sits at the configured limit
+  (panel in `examples/observability/grafana/dashboards/flowstate.json`,
+  `temporal_sticky_cache_hit`/`_miss` beside it for the hit-rate half of the
+  same picture). A forced eviction is a replay an operator is paying for that
+  more cache would have avoided.
+- **Lower** when `process.runtime.go.mem.heap_alloc` (see "How to read this
+  process's own CPU/memory" above) climbs with cache size, and a heap profile
+  taken through `--internal-listen` shows the sticky cache rather than
+  activity execution as the growth. A larger cache is memory traded for fewer
+  replays; on a memory-constrained worker that trade can go the other way.
+
+**The zero sentinel means something different here than on the other four
+flags — do not assume it generalizes.** `worker.SetStickyWorkflowCacheSize`
+assigns its argument unconditionally (there is no SDK-side "0 means default"
+substitution the way `augmentWorkerOptions` provides for the four flags
+above), so passing `0` straight through would configure a *zero-entry* cache —
+every workflow task forced to replay its full history, the opposite of what
+an operator typing `0` for "leave this alone" means. `runWorker` therefore
+calls the setter only when `--sticky-cache-size` was set to a value greater
+than zero; an unset (or explicitly `0`) flag leaves the SDK's own default in
+place by never calling the setter at all. See `workerCapacity`'s doc comment
+and `applyStickyCacheSize` in `cmd/flow/main.go` for where this is
+implemented, and `TestApplyStickyCacheSizeNotCalledWhenUnset` in
+`cmd/flow/worker_test.go` for the test that pins the negative direction.
+
+**This setter is process-global, not per-worker.** `worker.SetStickyWorkflowCacheSize`
+configures a cache "shared between workers running within same process"
+(the SDK's own doc comment) and must be called before any worker in the
+process starts. `flow worker` builds exactly one worker per process today, so
+there is only one caller of it and no ordering question. If `flow worker` (or
+any future verb) ever starts a second `worker.New` in the same process, this
+call has to move to wherever the *first* of them starts, and a second call
+later in the process's life would silently resize the cache the first worker
+is already relying on rather than configuring a cache of its own — read
+`cmd/flow/main.go`'s comment at the call site before adding a second worker to
+this process.
+
+**Poller counts (`MaxConcurrentActivityTaskPollers` /
+`MaxConcurrentWorkflowTaskPollers`) have no flag, on purpose.** #921's design
+pass considered exposing them and refused, for a reason worth restating so it
+is not re-proposed without new facts: setting either to a fixed count is not
+merely "one more knob", it silently opts this worker out of the SDK's own
+poller autoscaling. The SDK's doc for both fields is explicit — if neither the
+field nor `ActivityTaskPollerBehavior`/`WorkflowTaskPollerBehavior` is set,
+and the worker's namespace is enrolled in server-side poller autoscaling, the
+worker automatically autoscales its poller count instead of running with a
+fixed one. A flag whose effect is "stop autoscaling", shipped on a deployment
+whose operator may not know their namespace is enrolled at all, is a knob that
+makes an operator's situation worse by being used, not better. (The
+`PollerBehavior` alternative that would ask for a target rather than a fixed
+count is itself `NOTE: Experimental` in the SDK, so it is not a safer
+substitute today either.)
+
+The metric this refusal points an operator at instead is not
+`temporal_num_pollers` by itself — it only reports the count actually
+configured, fixed or autoscaled, which is not a saturation signal on its own.
+The shape that *is* a saturation signal is two series read together, both
+already on the `examples/observability` dashboard:
+`temporal_workflow_task_schedule_to_start_latency` climbing **while**
+`temporal_worker_task_slots_available` stays non-zero — slots sitting idle
+because nothing is fetching work to fill them. When that shape appears, the
+remedy is enrolling the namespace in poller autoscaling, or scaling out (each
+replica brings its own poller set) — not a flag this binary declines to offer.
+
+**The resource-based slot supplier / `WorkerTuner` stays deferred.** #921's
+design pass considered adopting `worker.Options.Tuner` — Temporal's newer,
+resource-aware alternative to fixed slot counts — in place of
+`--max-concurrent-activities`/`--max-concurrent-workflow-tasks`, and deferred
+it rather than shipping it, for three reasons on the record so the next
+proposal starts from them instead of re-discovering them:
+
+1. `Tuner` is `NOTE: Experimental` in the SDK, and it is **mutually exclusive**
+   with `MaxConcurrentActivityExecutionSize`/`MaxConcurrentWorkflowTaskExecutionSize`
+   — the two flags already shipped and documented above. Adopting it is a
+   breaking change to a published CLI surface, not an additive one.
+2. The resource-based tuner (`worker.NewResourceBasedTuner`) requires an
+   `InfoSupplier`, and the SDK's own implementation of one lives in
+   `contrib/sysinfo`, a separate Go module — adopting it pulls in a new
+   third-party dependency and a new `govulncheck` surface in exchange for an
+   experimental API replacing a stable one.
+3. A resource tuner targeting a fraction of memory is only as correct as what
+   it reads memory *from*. A host-level reading taken inside a memory-limited
+   container targets a fraction of the *node's* memory, not the container's
+   limit, and keeps issuing slots on that basis until the container's own
+   limit — not the host's — triggers an OOM kill. That is the fail-closed
+   posture this document asks for everywhere else, inverted, in exactly the
+   deployment shape this runbook is written for.
+
+Preconditions that would reopen this, stated so a future proposal can check
+them rather than re-litigate them from scratch: `Tuner` loses `Experimental`
+status in the SDK; a cgroup-correct `SysInfoProvider` is available (from
+`contrib` or written here); and any adoption replaces
+`--max-concurrent-activities`/`--max-concurrent-workflow-tasks` rather than
+sitting beside them — two live spellings of "how many slots" is a
+maintenance burden, not a feature.
+
+### Per-host egress rate limits
+
+Neither worker-capacity lever above can say "at most 100 requests per second to
+`api.stripe.com`". Both bound *this deployment's activity start rate*, and one
+task queue serves every step, so throttling to one API's published limit
+throttles `log`, every other API, and every tenant with it (#912). What can say
+it is the egress policy, which is already host-scoped, deployment-owned, and
+sitting on the chokepoint every outbound HTTP call crosses:
+
+```yaml
+egress:
+  max_requests_per_second_per_process:
+    api.stripe.com: 100
+    api.github.com: 10
+```
+
+Loaded the same way every other egress setting is — `flow worker
+--egress-policy` / `flow run local --egress-policy` (or
+`FLOWSTATE_EGRESS_POLICY`). There is no new flag and no new mechanism: it is a
+field in the file `examples/egress-policy.yaml` already demonstrates.
+
+**The number is per worker process. N workers multiply it.** The token bucket
+lives in the policy object, and one policy is bound into the `http` task once
+per process, so a fleet of ten workers loading this file sends up to ten times
+these numbers. Dividing by the worker count is the operator's job, and a fleet
+that autoscales is a fleet whose effective ceiling moves with it. This is the
+same property `--max-activities-per-second` has, named for the same reason
+rather than hidden.
+
+**The deployment-wide bound is the upstream's own 429, and it now works.** A
+429 used to be classified as a permanent invalid-input failure, which meant the
+`Retry-After` header the http task parsed and attached was never consulted by
+either driver — the one status the header exists for was the one that dropped
+it. `ErrorKindRateLimited` (retryable) fixed that: a rate-limited response is
+retried, and its `Retry-After` is what schedules the next attempt, on both the
+local and the durable driver. So the honest division of labor is: **the API's
+own limit is what protects the API; this field caps what one process
+contributes before the API has to say no.** If you need a true fleet-wide cap,
+this is not it, and nothing in Flowstate is — the API's 429 is.
+
+**Exceeding it is not a denial, and nothing blocks.** A refused request fails
+as `RateLimited` carrying the wait until the bucket frees a token, and the
+step's retry schedules from that. It deliberately does not sleep inside the
+activity: a limiter that waited would hold a worker slot for the whole wait,
+turning a bound on one host's traffic into a concurrency bound on everything
+the worker does. The visible cost of refusing instead is that a held-back
+attempt spends one of the step's `attempts:`, so a step calling a
+heavily-limited host wants a retry policy with room in it.
+
+**Two more properties worth knowing before writing a number.** The key is the
+host with no port and no wildcards, normalized the way the `host` rule attribute
+is (case, the trailing root dot, Punycode, and canonical IP literals) — so one
+host serving two services on two ports shares one budget. And this covers the
+`http` task only: a plugin making its own outbound calls is a separate process
+with its own client and is not governed by the egress policy at all.
 
 ## Worker versioning, every time
 

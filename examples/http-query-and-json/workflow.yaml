@@ -36,7 +36,11 @@ steps:
   - id: submit
     http:
       # Values can reference earlier steps, like any other input.
-      json: '${{"echoed_query": steps.search.json.args, "nested": {"works": true, "count": 3}}}'
+      json:
+        echoed_query: ${steps.search.json.args}
+        nested:
+          works: true
+          count: 3
       method: POST
       parse_json: true
       url: https://httpbin.org/post
@@ -56,5 +60,8 @@ steps:
       # `q` went out containing a space and an ampersand and came back exactly as
       # written, which is what escaping it once, here, is worth; and `tags` arrived
       # as two values under one name rather than one value with a comma in it.
-      fields: '${{"q": steps.search.json.args["q"], "tags": steps.search.json.args["tag"].join(", "), "sent": string(steps.submit.json.json["nested"]["count"])}}'
+      fields:
+        q: ${steps.search.json.args["q"]}
+        tags: ${steps.search.json.args["tag"].join(", ")}
+        sent: ${string(steps.submit.json.json["nested"]["count"])}
       message: the server echoed the request back

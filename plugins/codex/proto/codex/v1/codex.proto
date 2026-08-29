@@ -117,6 +117,36 @@ message ExecInputs {
   // when the operator's policy has not allowed it is refused as
   // sdk.InvalidInput naming this field, not silently downgraded to false.
   bool allow_network = 8;
+
+  // ResetWorkingContext discards whatever a previous run left inside
+  // working_context - both tracked and untracked changes - before this
+  // run's own baseline is read, restoring it to the commit it is already
+  // checked out at (there is no ref or sha here to name a *different*
+  // commit, only "clean").
+  //
+  // This is what closes #967: codex.exec computes patch by diffing
+  // working_context against a baseline read *before* the turn, and fails
+  // closed - no patch at all - when that baseline is already dirty (see
+  // diff.go, computePatch). A workflow retrying an agentic turn in a loop
+  // leaves the previous attempt's own edits sitting in working_context,
+  // since neither this task nor plugins/git's git.commit_push ever touches
+  // that directory again once a patch has been read out of it - so without
+  // this, only a loop's first iteration can ever produce one. Set true on
+  // the second and later iterations, immediately before the next turn, and
+  // each attempt gets the same clean baseline the first one did.
+  //
+  // Requires working_context to be set (refused as sdk.InvalidInput
+  // otherwise - there is nothing to reset) and requires
+  // FLOWSTATE_CODEX_GIT_BIN to be configured with working_context resolving
+  // to a plain git checkout (refused as sdk.Failed otherwise, rather than
+  // silently doing nothing - an author who asked for a reset and did not
+  // get one must be told, not left to discover it from a baseline that is
+  // still dirty). This never fetches or checks out a different commit:
+  // advancing working_context to a commit other than the one it already
+  // has checked out is a separate, larger capability - see
+  // plugins/codex/README.md and examples/plugins/agentic-fix's "What is
+  // still missing" for what that would additionally require.
+  bool reset_working_context = 9;
 }
 
 // ExecOutputs is one run's bounded result.

@@ -79,14 +79,46 @@ import (
 func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
+	batches := batchPromptSteps(wf)
+
 	for _, problem := range v1.WaitPromptProblems(wf, v1.SkipCalls) {
+		// The key the author actually wrote, so the squiggle lands on their line
+		// rather than on a key that is not in the file. A fixed
+		// `wait_for_signal.prompt` was right while that was the only spelling
+		// carrying a prompt; with two, it points a `wait_for_signals:` author at
+		// a path their step does not have and the diagnostic falls back to the
+		// whole step.
+		field := "wait_for_signal.prompt"
+		if batches[problem.StepID] {
+			field = "wait_for_signals.prompt"
+		}
+
 		ds = append(ds, Diagnostic{
 			Step:    problem.StepID,
-			Field:   "wait_for_signal.prompt",
+			Field:   field,
 			Code:    v1.DiagnosticCodeSensitiveInPrompt,
 			Message: fmt.Sprintf("%v", problem.Err),
 		})
 	}
 
 	return ds
+}
+
+// batchPromptSteps names the steps whose prompt was written under
+// `wait_for_signals:`, so [checkSensitivePrompt] can point at the key the author
+// wrote.
+//
+// Derived from the specification rather than tracked alongside the walk, which
+// is the cheaper of the two and the one that cannot drift: the arm a step took
+// is a fact about the compiled workflow, and reading it is one traversal.
+func batchPromptSteps(wf *v1.Workflow) map[string]bool {
+	steps := map[string]bool{}
+
+	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
+		if node.GetWait().GetSignalBatch() != nil {
+			steps[node.GetId()] = true
+		}
+	}})
+
+	return steps
 }

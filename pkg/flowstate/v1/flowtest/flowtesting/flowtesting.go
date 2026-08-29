@@ -79,6 +79,12 @@ type config struct {
 	dirSet           bool
 	budget           dst.Budget
 	coverageRequired bool
+
+	// walkCase and walkDrive are [WithWalk]'s: the one case held at every step
+	// boundary, and what moves it. See walk.go.
+	walkSet   bool
+	walkCase  string
+	walkDrive func(*Walk)
 }
 
 // WithDir names the directory a case's `workflow:` and a trigger case's
@@ -165,6 +171,7 @@ func run(t *testing.T, file *flowtest.File, path string, cfg config) {
 	if reason := refusal(file); reason != "" {
 		t.Fatal(reason)
 	}
+	refuseUnknownWalk(t, file, cfg)
 
 	for _, test := range file.Tests {
 		want := test.Name
@@ -183,11 +190,27 @@ func run(t *testing.T, file *flowtest.File, path string, cfg config) {
 func runCase(t testing.TB, file *flowtest.File, path string, cfg config, want string) {
 	t.Helper()
 
-	result := flowtest.Run(t.Context(), file, cfg.dir, flowtest.RunOptions{
+	one := flowtest.RunOptions{
 		Label:  path,
 		Budget: cfg.budget,
 		Select: func(name string) bool { return name == want },
-	})
+	}
+
+	// The walked case runs under a session a caller can move; every other case
+	// runs exactly as it would without one, so a suite with a walk in it is
+	// still the suite.
+	run := func(debugger v1.Debugger) flowtest.RunResult {
+		one.Debugger = debugger
+
+		return flowtest.Run(t.Context(), file, cfg.dir, one)
+	}
+
+	var result flowtest.RunResult
+	if cfg.walkedCase(want) {
+		result = walked(t, cfg, run)
+	} else {
+		result = run(nil)
+	}
 
 	// One name selected exactly one case: [refusal] guaranteed the name is
 	// unique and the caller got it from the file, so anything else is this

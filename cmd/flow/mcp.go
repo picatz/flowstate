@@ -12,8 +12,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -167,15 +169,27 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	}
 
 	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
-	extra := []flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
-		// No timeout: stdio's single caller is the process that launched this
-		// one, and this surface is unchanged by the bound `flow mcp serve`
-		// applies for its own reasons. See [testToolHandler].
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
-	}
 
-	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps, extra...)
+	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
+		stdioExtraTools(cmd)...)
+}
+
+// stdioExtraTools is the three tools on this surface that are not RPCs, in one
+// place because the tests stand the same server up and a second list is the
+// two-copies defect [flowmcp.AddCapabilities] states for the registration it
+// owns — a tool added here and forgotten there is a tool nothing exercises.
+//
+// None takes a timeout: stdio's single caller is the process that launched
+// this one, and this surface is unchanged by the bound `flow mcp serve`
+// applies for its own reasons. See [testToolHandler].
+func stdioExtraTools(cmd *cobra.Command) []flowmcp.ToolRegistration {
+	return []flowmcp.ToolRegistration{
+		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
+		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
+		// The debugger's own front (#928 slice 3), beside the tool whose
+		// verdicts it explains.
+		{Tool: flowmcp.DebugTool(), Handler: debugToolHandler(0)},
+	}
 }
 
 // The one tool that is not an RPC.
@@ -198,10 +212,15 @@ func runMCP(cmd *cobra.Command, args []string) error {
 
 // maxRunLocalLogRecords bounds how many `log:` lines are carried back.
 //
-// Same reason [flowmcp.MaxResultBytes] gives one level up, and bounded by count
-// rather than bytes because a loop is how this gets large: the run controls how
-// many records there are, and each one is small.
-const maxRunLocalLogRecords = 200
+// Count and bytes are independent bounds: a loop controls the former, while one
+// message or field controls the latter. The byte budget is deliberately a
+// fraction of the answer budget because JSON escaping can expand every byte to
+// six and the run itself still has to fit beside the logs.
+const (
+	maxRunLocalLogRecords = 200
+	maxRunLocalLogBytes   = flowmcp.MaxResultBytes / 16
+	maxRunLocalProtoBytes = flowmcp.MaxResultBytes / 16
+)
 
 // runLocalArguments is the tool's whole input surface.
 //
@@ -418,6 +437,13 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 		// this context expiring means the call ran out of time.
 		response := localRun(outputs, runErr, ctx.Err(), started, time.Now())
 
+		// Bounded before redaction, deliberately: redactGetResponse clones its
+		// input outright, so handing it the raw response re-pays exactly the
+		// workflow-sized allocation the preflight refuses (Codex, #1083). The
+		// order is safe because bounding only drops and marks values —
+		// redaction below still masks everything that survived.
+		response, preflightNotes := boundRunLocalResponse(response)
+
 		// An agent's context is an untrusted-consumer surface exactly like a
 		// terminal — a leaked credential in a transcript is a leaked credential —
 		// so this tool result honours `sensitive:` the same way `flow run local`
@@ -426,7 +452,7 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 		// fail-closed case a spec-less renderer falls back to; see sensitive.go.
 		response = redactGetResponse(response, workflow, revealSensitiveRequested(posture))
 
-		encoded, err := renderRunLocalResult(response, logs.records())
+		encoded, err := renderRunLocalResult(response, logs.records(), preflightNotes)
 		if err != nil {
 			return flowmcp.ToolError(err), nil
 		}
@@ -598,6 +624,54 @@ func testReportFailed(report *v1.TestReport) bool {
 // ever runs.
 const maxTestFailureMessageBytes = 4 << 10
 
+// maxTestRefusedBytes bounds a reduced report's `refused` — the loader's own
+// error for a `tests` document it would not read at all.
+//
+// The same class of value as a failure message and reachable the same way, but
+// by a shorter path: a refusal quotes what it refused (`trigger %q`, an
+// unreadable signature, a case name), and the document it quotes from may be
+// [flowtest.MaxTestFileBytes] — a megabyte — so a submitted document can
+// choose the size of the answer refusing it. Every rung carried it whole,
+// including the floor, which is how a floor whose contract is that it fits
+// came back four times the cap (Codex, #1109).
+const maxTestRefusedBytes = 4 << 10
+
+// capText cuts text to at most max bytes and says that it did.
+//
+// ToValidUTF8 because the cut lands wherever the byte count does, and protojson
+// refuses to marshal a string field holding invalid UTF-8 — slicing mid-rune
+// would turn a large answer into an encoding error, which is the failure these
+// ladders exist to replace arriving by a different door.
+func capText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+
+	// The suffix comes out of max rather than being added to it. A caller
+	// dividing a budget between strings and capping each at its share was
+	// overrunning by the length of this sentence per string, which across a
+	// thousand of them is forty kilobytes the budget never accounted for
+	// (Codex, #1109). "At most max bytes" is what a caller reads this as, so
+	// it is what it does.
+	suffix := fmt.Sprintf("... (truncated, exceeded %d bytes)", max)
+	if len(suffix) >= max {
+		// No room to both cut and say so. Cutting wins: a caller that asked
+		// for this few bytes is already past the point of explaining.
+		return strings.ToValidUTF8(text[:max], "")
+	}
+
+	return strings.ToValidUTF8(text[:max-len(suffix)], "") + suffix
+}
+
+// maxTestFloorPasses bounds the floor's remeasuring in [renderTestResultWithin].
+//
+// Each pass halves the share, so five of them is a sixteenth of the first
+// guess and the loop is over long before this. The bound is on passes because
+// a floor that cannot fit at all exists — five hundred cases have structure
+// as well as strings, and at a small enough budget that structure is the whole
+// of it — and that answer is the floor whether or not it fits.
+const maxTestFloorPasses = 5
+
 // renderTestResult brings a v1.TestReport under [flowmcp.MaxResultBytes] —
 // [renderRunLocalResult]'s own bound and its own discipline, reused rather
 // than reinvented: stop at a document that still parses, and say what left
@@ -608,12 +682,24 @@ const maxTestFailureMessageBytes = 4 << 10
 // the ladder, and the floor that is returned whether or not it fits are the
 // same ones [renderRunLocalResult] already established.
 func renderTestResult(report *v1.TestReport) ([]byte, error) {
+	return renderTestResultWithin(report, flowmcp.MaxResultBytes)
+}
+
+// renderTestResultWithin is [renderTestResult] against a smaller budget, for a
+// report that is about to be embedded in a larger answer rather than being one.
+//
+// The budget travels rather than being read from [flowmcp.MaxResultBytes]
+// because the surface's cap is a promise about the *whole* answer, and a
+// report that spends all of it leaves nothing for the document carrying it —
+// see [flowmcp.FitResultWithin], and [renderDebugResult], which computes the
+// wrapper's cost and passes the remainder.
+func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 	trimmed, ok := proto.Clone(report).(*v1.TestReport)
 	if !ok {
 		return nil, errors.New("rendering the report: the report is not a TestReport")
 	}
 
-	encoded, _, err := flowmcp.FitResult(
+	encoded, _, err := flowmcp.FitResultWithin(limit,
 		func() ([]byte, error) {
 			encoded, err := marshalJSON(report, false)
 			if err != nil {
@@ -630,18 +716,15 @@ func renderTestResult(report *v1.TestReport) ([]byte, error) {
 		func() ([]byte, error) {
 			for _, c := range trimmed.GetCases() {
 				for _, f := range c.GetFailures() {
-					if len(f.GetMessage()) > maxTestFailureMessageBytes {
-						// ToValidUTF8 because the cut lands wherever the byte
-						// count does, and protojson refuses to marshal a string
-						// field holding invalid UTF-8 — slicing mid-rune would
-						// turn a large answer into an encoding error, which is
-						// the failure this ladder exists to replace arriving by
-						// a different door.
-						f.Message = strings.ToValidUTF8(f.GetMessage()[:maxTestFailureMessageBytes], "") +
-							fmt.Sprintf("... (truncated, exceeded %d bytes)", maxTestFailureMessageBytes)
-					}
+					f.Message = capText(f.GetMessage(), maxTestFailureMessageBytes)
 				}
 			}
+
+			// The refusal is capped on the same rung, for the same reason and
+			// at no cost: a report is either refused, in which case it has no
+			// cases and this is the only thing in it worth bounding, or it has
+			// cases and carries no refusal at all.
+			trimmed.Refused = capText(trimmed.GetRefused(), maxTestRefusedBytes)
 
 			encoded, err := marshalJSON(trimmed, false)
 			if err != nil {
@@ -658,25 +741,69 @@ func renderTestResult(report *v1.TestReport) ([]byte, error) {
 		// it fits, the same reasoning [renderRunLocalResult]'s own last rung
 		// gives for the fields nothing further can drop.
 		func() ([]byte, error) {
-			summary := &v1.TestReport{File: report.GetFile(), Refused: report.GetRefused()}
-			for _, c := range trimmed.GetCases() {
-				caseError := c.GetError()
-				if caseError == "" && len(c.GetFailures()) > 0 {
-					caseError = fmt.Sprintf(
-						"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
-						len(c.GetFailures()), flowmcp.MaxResultBytes)
-				}
-				summary.Cases = append(summary.Cases, &v1.TestCase{
-					Name:     c.GetName(),
-					Passed:   c.GetPassed(),
-					Duration: c.GetDuration(),
-					Error:    caseError,
-				})
-			}
+			// Every string this keeps is bounded by a share of the budget
+			// rather than by a constant, because how many shares there are is
+			// the *document's* choice: [flowtest.MaxTestsPerFile] is 500 and
+			// [flowtest.MaxTestFileBytes] is a megabyte, so five hundred cases
+			// with two-kilobyte names is an ordinary submitted document and a
+			// floor keeping them whole is four times this cap.
+			//
+			// Counted rather than estimated, because the first cut of this
+			// divided by the number of *cases* while emitting two strings per
+			// case, so a document with long names and long errors alike got
+			// twice the budget it was allotted (Codex, #1109). What is kept is
+			// the file, the refusal, and a name and an error each.
+			kept := 2 + 2*len(trimmed.GetCases())
 
-			encoded, err := marshalJSON(summary, false)
-			if err != nil {
-				return nil, fmt.Errorf("rendering the report: %w", err)
+			// And then measured rather than trusted. Half the budget goes to
+			// the strings and half to the structure around them, which is a
+			// guess about JSON overhead this has no business making twice: if
+			// the guess was wrong the share halves and the summary is built
+			// again, so the arithmetic is a starting point instead of a
+			// promise.
+			share := limit / (2 * kept)
+
+			var encoded []byte
+
+			for pass := 0; pass < maxTestFloorPasses; pass++ {
+				summary := &v1.TestReport{
+					File:    capText(report.GetFile(), share),
+					Refused: capText(trimmed.GetRefused(), share),
+				}
+				for _, c := range trimmed.GetCases() {
+					caseError := c.GetError()
+					if caseError == "" && len(c.GetFailures()) > 0 {
+						caseError = fmt.Sprintf(
+							"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
+							len(c.GetFailures()), limit)
+					}
+					summary.Cases = append(summary.Cases, &v1.TestCase{
+						Name:     capText(c.GetName(), share),
+						Passed:   c.GetPassed(),
+						Duration: c.GetDuration(),
+						Error:    capText(caseError, share),
+					})
+				}
+
+				var err error
+
+				encoded, err = marshalJSON(summary, false)
+				if err != nil {
+					return nil, fmt.Errorf("rendering the report: %w", err)
+				}
+
+				if len(encoded) <= limit {
+					return encoded, nil
+				}
+
+				// Halved rather than recomputed from the overshoot: the
+				// overshoot here is mostly structure, which shrinking the
+				// strings does not touch, so subtracting it would converge on
+				// a share of zero one byte at a time.
+				share /= 2
+				if share < 16 {
+					break
+				}
 			}
 
 			return encoded, nil
@@ -810,6 +937,133 @@ type runLocalResult struct {
 	Note string              `json:"note,omitempty"`
 }
 
+// shallowGetResponse copies a response one field at a time through
+// protoreflect: every set shares the source field's pointer, so nothing the
+// size of the transcript is duplicated, and no hand-kept field list exists to
+// drift when the schema grows.
+func shallowGetResponse(response *v1.GetResponse) *v1.GetResponse {
+	trimmed := &v1.GetResponse{}
+	src := response.ProtoReflect()
+	dst := trimmed.ProtoReflect()
+	src.Range(func(fd protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		dst.Set(fd, value)
+		return true
+	})
+	return trimmed
+}
+
+// boundRunLocalResponse bounds a local run's response in proto space, before
+// anything downstream copies or marshals it.
+//
+// protojson builds its answer in memory, [redactGetResponse] clones its input
+// outright, and [renderRunLocalResult]'s ladder clones once more — so the
+// bound has to run before all three: a workflow-sized transcript is exactly
+// the allocation this preflight exists to refuse, and a bound that runs after
+// the first full copy has already paid for it. That is why the run_local
+// handler calls this ahead of redaction rather than leaving it to the
+// renderer, which used to hold this code after the redacting clone (Codex,
+// #1083). The order is safe in the direction that matters: bounding drops and
+// marks values, and redaction then masks whatever survived.
+//
+// The preflight is only the trigger, though — the semantics stay the ladder's
+// ([renderRunLocalResult]). On overflow the response is reduced by the
+// ladder's own selector ([flowmcp.ReducedTranscript]: a new arm sharing the
+// kept steps, the caller's response untouched), and the declared outputs and
+// the failure message take the ladder's own rungs where the transcript alone
+// was not the weight. The arm is replaced even when every step was kept,
+// because the steps below write into it ([flowmcp.DropDeclaredOutputs]'s
+// nested half) and the shallow copy's own arm is still the caller's message.
+//
+// The last resort is this preflight's own, because no rung can reach it: one
+// step whose outputs alone exceed [flowmcp.MaxResultBytes] survives every
+// reduction — a transcript arm must keep at least one real step to stay
+// schema-valid, and that step is the whole weight — and then rides the
+// floor's "returned whether or not it fits" contract straight past the cap
+// (Codex, #1083). Its values are therefore replaced with size markers; see
+// [hollowedStepValues].
+//
+// The returned notes ride every rung of the rendered answer, because a
+// reduced answer must never be a silent one.
+func boundRunLocalResponse(response *v1.GetResponse) (*v1.GetResponse, []string) {
+	if proto.Size(response) <= maxRunLocalProtoBytes {
+		return response, nil
+	}
+
+	var notes []string
+
+	trimmed := shallowGetResponse(response)
+	if outputs := trimmed.GetOutputs(); outputs != nil {
+		arm, kept, total := flowmcp.ReducedTranscript(outputs)
+		trimmed.Kind = &v1.GetResponse_Outputs{Outputs: arm}
+		if kept < total {
+			notes = append(notes, fmt.Sprintf(
+				"the step outputs were reduced to %d of their %d steps before rendering", kept, total))
+		}
+	}
+	if proto.Size(trimmed) > flowmcp.MaxResultBytes && flowmcp.DropDeclaredOutputs(trimmed) {
+		notes = append(notes, "the declared outputs were dropped before rendering")
+	}
+	if runError := trimmed.GetError(); runError != nil && proto.Size(trimmed) > flowmcp.MaxResultBytes {
+		cloned, _ := proto.Clone(runError).(*v1.RunResponse_Error)
+		if flowmcp.CapErrorMessage(cloned) {
+			notes = append(notes, "this run's failure message was truncated before rendering")
+		}
+		trimmed.Kind = &v1.GetResponse_Error{Error: cloned}
+	}
+	if outputs := trimmed.GetOutputs(); outputs != nil && proto.Size(trimmed) > flowmcp.MaxResultBytes {
+		if hollowed, note := hollowedStepValues(outputs.GetStepValues()); hollowed != nil {
+			trimmed.Kind = &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{
+				StepValues: hollowed,
+				RunOutputs: outputs.GetRunOutputs(),
+			}}
+			notes = append(notes, note)
+		}
+	}
+
+	return trimmed, notes
+}
+
+// hollowedStepValues keeps a transcript's shape — real step ids, real output
+// names, both the author's own spelling — and replaces every value with an
+// `[omitted: <n> bytes]` marker naming how big the real one was. It is
+// [redactStepValues]'s shape for [boundRunLocalResponse]'s reason: a
+// bracketed annotation is unmistakably this surface's own note rather than
+// something the workflow produced, and keeping the names keeps the answer
+// diagnosable — a reader learns which step and which output carried the
+// weight, which is exactly what they need to have the workflow carry less.
+//
+// A nil answer means no step carries values at all, which is a document that
+// arrived invalid; it is left alone rather than repaired here, the same
+// answer [flowmcp.ReduceTranscript] gives.
+func hollowedStepValues(steps map[string]*v1.Node_Outputs) (map[string]*v1.Node_Outputs, string) {
+	hollowed := make(map[string]*v1.Node_Outputs, len(steps))
+	for id, outputs := range steps {
+		named := outputs.GetNamedValues()
+		if len(named) == 0 {
+			continue
+		}
+		values := make(map[string]*v1.Value, len(named))
+		for name, value := range named {
+			values[name] = v1.NewValue(fmt.Sprintf("[omitted: %d bytes]", proto.Size(value)))
+		}
+		hollowed[id] = &v1.Node_Outputs{NamedValues: values}
+	}
+	if len(hollowed) == 0 {
+		return nil, ""
+	}
+
+	subject := fmt.Sprintf("the %d kept steps' outputs", len(hollowed))
+	if len(hollowed) == 1 {
+		for id := range hollowed {
+			subject = fmt.Sprintf("step %q's outputs", id)
+		}
+	}
+
+	return hollowed, fmt.Sprintf("%s still exceeded %d bytes after every reduction, so each value was "+
+		"replaced with an \"[omitted: <n> bytes]\" marker (the step ids and output names are real; "+
+		"the values were this large)", subject, flowmcp.MaxResultBytes)
+}
+
 // renderRunLocalResult assembles the answer and brings it under the cap.
 //
 // Shrinking is in order of what a reader can most afford to lose, and it stops
@@ -822,7 +1076,20 @@ type runLocalResult struct {
 // the "re-encode, re-measure, stop at the first that fits" discipline this
 // function used to spell out by hand is the same code the other two shrinking
 // answers on this surface run.
-func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([]byte, error) {
+//
+// The response arrives already bounded in proto space by
+// [boundRunLocalResponse] — the handler runs that first, before redaction —
+// and preflightNotes are that bound's account, riding every rung below so a
+// reduced answer is never a silent one.
+func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord, preflightNotes []string) ([]byte, error) {
+	preflightNote := strings.Join(preflightNotes, "; ")
+	withPreflight := func(note string) string {
+		if preflightNote == "" {
+			return note
+		}
+		return preflightNote + "; " + note
+	}
+
 	run, err := marshalJSON(response, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
@@ -835,7 +1102,7 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 
 	encoded, _, err := flowmcp.FitResult(
 		func() ([]byte, error) {
-			encoded, err := json.Marshal(runLocalResult{Run: run, Logs: logs})
+			encoded, err := json.Marshal(runLocalResult{Run: run, Logs: logs, Note: preflightNote})
 			if err != nil {
 				return nil, fmt.Errorf("rendering the answer: %w", err)
 			}
@@ -847,7 +1114,7 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		func() ([]byte, error) {
 			encoded, err := json.Marshal(runLocalResult{
 				Run:  run,
-				Note: fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", flowmcp.MaxResultBytes),
+				Note: withPreflight(fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", flowmcp.MaxResultBytes)),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("rendering the answer: %w", err)
@@ -877,10 +1144,10 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 					kept, total)
 			}
 
-			return renderTrimmedRun(trimmed, fmt.Sprintf(
+			return renderTrimmedRun(trimmed, withPreflight(fmt.Sprintf(
 				"%s: the answer exceeded %d bytes. "+
 					"Have the workflow carry less, or read the values it needs in a step of its own",
-				note, flowmcp.MaxResultBytes))
+				note, flowmcp.MaxResultBytes)))
 		},
 
 		// Last, what the workflow declared it answers with. This is the most
@@ -898,10 +1165,10 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 			// clearing the arm outright.
 			flowmcp.DropDeclaredOutputs(trimmed)
 
-			return renderTrimmedRun(trimmed, fmt.Sprintf(
+			return renderTrimmedRun(trimmed, withPreflight(fmt.Sprintf(
 				"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
 					"Read what the run produced with `flow get`, or have the workflow answer with less",
-				flowmcp.MaxResultBytes))
+				flowmcp.MaxResultBytes)))
 		},
 
 		// The floor, and the rung that says "possibly a failure message" was not
@@ -921,15 +1188,41 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		func() ([]byte, error) {
 			flowmcp.CapErrorMessage(trimmed.GetError())
 
-			return renderTrimmedRun(trimmed, fmt.Sprintf(
+			return renderTrimmedRun(trimmed, withPreflight(fmt.Sprintf(
 				"the declared outputs, step outputs and logs were dropped and this run's failure "+
 					"message truncated: the answer exceeded %d bytes. Read the run in full with "+
 					"`flow get`, or have the workflow answer with less",
-				flowmcp.MaxResultBytes))
+				flowmcp.MaxResultBytes)))
 		},
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	// The cap is a promise about rendered bytes, and the preflight's last
+	// resort measured proto bytes — which a rendering can outgrow: JSON
+	// escaping expands a control-heavy string toward six output bytes per
+	// input byte, and bytes fields grow a third through base64, so a kept
+	// step small enough in proto space can carry the floor past the cap in
+	// the only representation the cap is about (Codex, #1109). Every rung
+	// above measured real bytes, so being here over the cap means the kept
+	// step outputs are the remaining weight — the declared outputs and the
+	// failure message already took their rungs — and the last resort runs
+	// where bytes are real: hollow the kept steps and render once more.
+	// After that the answer is the floor whether or not it fits, which is
+	// the same contract the rung above states, now over values bounded by
+	// the schema or by this surface rather than by the workflow.
+	if len(encoded) > flowmcp.MaxResultBytes {
+		if outputs := trimmed.GetOutputs(); outputs != nil {
+			if hollowed, note := hollowedStepValues(outputs.GetStepValues()); hollowed != nil {
+				trimmed.Kind = &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{
+					StepValues: hollowed,
+					RunOutputs: outputs.GetRunOutputs(),
+				}}
+
+				return renderTrimmedRun(trimmed, withPreflight(note))
+			}
+		}
 	}
 
 	return encoded, nil
@@ -977,9 +1270,10 @@ type runLocalLogs struct {
 // runLocalLogSink is the collection itself, held apart from the handler because
 // slog.Handler is copied by WithAttrs and the records must not be.
 type runLocalLogSink struct {
-	mu   sync.Mutex
-	seen int
-	held []runLocalLogRecord
+	mu    sync.Mutex
+	seen  int
+	bytes int
+	held  []runLocalLogRecord
 }
 
 // newRunLocalLogs returns an empty collector.
@@ -995,18 +1289,28 @@ func (l *runLocalLogs) Handle(_ context.Context, record slog.Record) error {
 	defer l.sink.mu.Unlock()
 
 	l.sink.seen++
-	if len(l.sink.held) >= maxRunLocalLogRecords {
+	if len(l.sink.held) >= maxRunLocalLogRecords || l.sink.bytes >= maxRunLocalLogBytes {
 		return nil
 	}
 
+	remaining := maxRunLocalLogBytes - l.sink.bytes
+	message := boundedRunLocalLogString(record.Message, &remaining)
 	fields := make(map[string]string, record.NumAttrs()+len(l.attrs))
 	for _, attr := range l.attrs {
-		fields[attr.Key] = attr.Value.String()
+		if remaining == 0 {
+			break
+		}
+		key := boundedRunLocalLogString(attr.Key, &remaining)
+		fields[key] = boundedRunLocalLogString(attr.Value.String(), &remaining)
 	}
 	record.Attrs(func(attr slog.Attr) bool {
-		fields[attr.Key] = attr.Value.String()
+		if remaining == 0 {
+			return false
+		}
+		key := boundedRunLocalLogString(attr.Key, &remaining)
+		fields[key] = boundedRunLocalLogString(attr.Value.String(), &remaining)
 
-		return true
+		return remaining > 0
 	})
 	if len(fields) == 0 {
 		fields = nil
@@ -1015,11 +1319,29 @@ func (l *runLocalLogs) Handle(_ context.Context, record slog.Record) error {
 	label, _ := logLabel(record.Level)
 	l.sink.held = append(l.sink.held, runLocalLogRecord{
 		Level:   label,
-		Message: record.Message,
+		Message: message,
 		Fields:  fields,
 	})
+	l.sink.bytes = maxRunLocalLogBytes - remaining
 
 	return nil
+}
+
+// boundedRunLocalLogString spends from remaining without splitting UTF-8. The
+// bounded clone prevents a short retained prefix from keeping an
+// attacker-sized backing string alive for the lifetime of the MCP call.
+func boundedRunLocalLogString(s string, remaining *int) string {
+	if len(s) <= *remaining {
+		*remaining -= len(s)
+		return strings.Clone(s)
+	}
+
+	end := *remaining
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	*remaining = 0
+	return strings.Clone(s[:end])
 }
 
 // WithAttrs returns a handler that also emits attrs, collecting into the same

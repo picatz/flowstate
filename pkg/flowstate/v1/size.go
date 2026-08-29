@@ -175,14 +175,16 @@ const (
 	// payload where it is chosen puts the refusal on the party who can act on
 	// it, at the moment they act.
 	//
-	// The arithmetic this buys, stated rather than implied: [MaxPendingSignals]
-	// alone caps a hostile carry at 128 payloads of whatever Temporal's blob
-	// limit admits — hundreds of mebibytes attempted against a two-mebibyte
-	// budget. With this bound the worst-case product is 128 × 64 KiB = 8 MiB,
-	// still more than a run can carry, so [CheckRunStateSize] remains the
-	// backstop for a carry that is pathological in *count* — but a realistic
-	// carry of a handful of maximal payloads now fits, and no single sender's
-	// single send can be the surprise.
+	// The arithmetic this buys, stated rather than implied: an acknowledged
+	// signal is carried unconditionally, however many accumulate (see
+	// [MaxPendingSignals]), so nothing here caps the *count* — only
+	// [CheckRunStateSize] does, by failing the run once the carry no longer
+	// fits. What this bound caps is the other factor in that product: without
+	// it, a sender's payload could be whatever Temporal's own blob limit
+	// admits, and one oversized delivery — not a flood, a single send — could
+	// be most of a two-mebibyte budget by itself. At 64 KiB a carry has to
+	// genuinely grow in count before it is pathological, and a realistic
+	// backlog of ordinary payloads fits with room to spare.
 	//
 	// 64 KiB is generous for what a payload is: a signal's payload becomes the
 	// waiting step's outputs — an approval, an entity mutation, a callback's
@@ -260,16 +262,19 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 		size, MaxSignalPayloadBytes)
 }
 
-// encodedPayloadSize reports the byte length flowstate's payload converter
-// actually produces for m — not proto.Size's binary-protobuf estimate.
+// encodedPayloadSize reports a ProtoJSON byte length for m — deliberately not
+// proto.Size's binary estimate, and, since #911, deliberately not the encoding
+// flowstate now writes either.
 //
-// The SDK's default DataConverter (payloadcodec.Config.DataConverter, when no
-// codec is configured) is a composite whose own comment says the order is
-// deliberate: ProtoJSONPayloadConverter is checked before the binary one and
-// wins the match for every proto.Message flowstate hands it, so every RunState
-// and every completed run's Workflow_StepOutputs is serialized as ProtoJSON,
-// never as binary protobuf. proto.Size measures a payload nothing here ever
-// writes.
+// # Why ProtoJSON is what is measured
+//
+// It is what flowstate used to write, and what this bound was calibrated
+// against. The SDK's default DataConverter is a composite whose own comment
+// says the order is deliberate: ProtoJSONPayloadConverter is checked before the
+// binary one and wins the match for every proto.Message handed to it, so every
+// RunState and every completed run's Workflow_StepOutputs was serialized as
+// ProtoJSON, never as binary protobuf. proto.Size measured a payload nothing
+// here ever wrote (#716).
 //
 // The gap is not academic. Field names are spelled out per occurrence instead
 // of a one-or-two-byte tag, map entries carry a key and a value name each, and
@@ -280,14 +285,38 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 // against real transcripts, ProtoJSON output ran 1.03x-1.32x of proto.Size's
 // estimate — against a bound that reserved 3.1% over the blob limit, so at the
 // low end of that range the reserve was already roughly half spent by the
-// measurement error alone (#716).
+// measurement error alone.
+//
+// # Why the measurement no longer matches the write encoding
+//
+// #911 flipped the *write* side: payloadcodec registers the binary
+// ProtoPayloadConverter ahead of the ProtoJSON one, so new payloads go to
+// history as `binary/protobuf`. The two deliberately differ, and the asymmetry
+// is the point of the decision rather than an oversight.
+//
+// [CheckRunStateSize] is called from workflow code — engine/workflow.go, on the
+// Continue-As-New path — so this arithmetic is a determinism input in exactly
+// the sense [MaxRunStateBytes] already argues for itself above: it decides a
+// branch that every replay of every already-suspended run must reproduce.
+// Flipping what is measured is a one-way door and #911 explicitly declined to
+// open it; flipping what is written is a two-way door, because Temporal selects
+// a decoder per payload from that payload's own `encoding` metadata.
+//
+// The consequence is that the bound now over-counts, by whatever the ProtoJSON
+// expansion of that particular message happens to be. That is the safe
+// direction — the check refuses early, and the reclaimed bytes become margin
+// under a blob limit rather than capacity anyone may spend. Loosening the
+// measurement to match is its own later decision, and needs the monotonicity
+// argument (a run that passed the larger measure still passes the smaller one)
+// written down here and tested before anyone relies on it.
 //
 // This calls protojson.Marshal directly with zero-value MarshalOptions rather
 // than going through go.temporal.io/sdk/converter: that is byte-for-byte what
 // ProtoJSONPayloadConverter.ToPayload does for a standard proto.Message (see
 // its source — `c.protoMarshalOptions.Marshal(valueProto)` with
-// protojson.MarshalOptions{}), so the measurement matches the encoding
-// exactly, without this determinism-sensitive package taking on a dependency
+// protojson.MarshalOptions{}), so the measurement stays pinned to that encoding
+// whatever the write side does next, without this determinism-sensitive
+// package taking on a dependency
 // on the Temporal SDK or on whatever payload codec a deployment has
 // configured. A codec's own expansion is a separate, already-reserved budget —
 // see [MaxCodecExpansionBytes] — because this function measures the payload a

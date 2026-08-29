@@ -82,6 +82,23 @@ func EgressIdentityExpectedOutputs() *v1.Workflow_StepOutputs {
 // server is loopback and the shipped default correctly refuses it — and it is
 // exported because the two drivers' test packages both need it, which is the
 // same reason every other helper in this package is exported.
+//
+// # Why this one saves and restores where [allowLoopback] counts
+//
+// It installs a *different* definition, so it cannot join that exemption's
+// count: a holder of one would silently get the other's policy. What it does
+// instead is nest, and nesting is exactly right here — the calling test has
+// already taken the plain exemption through [NewHTTPServer], and this replaces
+// it for one subtest and puts it back. The frames come off in the order they
+// went on, so the count underneath is untouched and correct.
+//
+// That is sound only while every caller is *serial*, which every caller is: Go
+// runs serial tests to completion before resuming a parallel one, so nothing
+// else can be swapping the same entry meanwhile. A test calling this with
+// t.Parallel() would be racing the same way [loopbackExemption] describes, and
+// nothing here can detect it — testing.TB does not say whether its test is
+// parallel. So it is written down instead: do not call this from a parallel
+// test; give it its own [v1.Registry] if you need one.
 func InstallEgressIdentityPolicy(tb testing.TB) {
 	tb.Helper()
 

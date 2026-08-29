@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -20,6 +21,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/operatorservice/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -151,6 +153,51 @@ func WithNamespacePool(pool *temporalclient.Pool) Option {
 	return func(s *FlowstateServer) error { s.pool = pool; return nil }
 }
 
+// WithTemporalNamespace records which Temporal namespace this server's own client
+// is dialed for.
+//
+// It routes nothing and changes nothing about where a run goes. The client handed
+// to [New] was dialed for a namespace before this server existed; this only lets
+// the server say which one, because a [client.Client] carries its namespace on
+// every request it sends and offers no way to read it back. Temporal's raw APIs
+// take the namespace as a request field, so anything reaching past the SDK needs
+// it named.
+//
+// It is emphatically not [WithNamespace], which sets the *Flowstate tenant* a
+// caller whose identity names none is treated as belonging to. Those are two
+// boundaries with one word between them, and a deployment can legitimately set
+// both to values with nothing to do with each other — see [WithNamespace] for the
+// documentation bug that made this distinction expensive once already.
+//
+// It is also not a new spelling of "which namespace". `cmd/flow` already
+// computes exactly this value, as `cfg.Options().Namespace`, and already passes it
+// into this package as an argument — to [EnsureSearchAttributesRegistered], from
+// `cmd/flow/main.go` and `cmd/flow/serverdev.go`. This gives that
+// already-computed value a second home on the server rather than inventing a way
+// to derive it here.
+//
+// A deployment routing tenants onto separate Temporal namespaces has no single
+// answer to record and does not need one: [WithNamespacePool] supplies the
+// per-tenant answer, which [FlowstateServer.clientAndTemporalNamespaceFor] prefers.
+//
+// The empty namespace is refused. There is no deployment it is right for —
+// [temporalclient.Config.Options] resolves a non-empty namespace for every
+// configuration, falling back to [temporalclient.DefaultNamespace] — so a caller
+// passing one has an unresolved value in hand, and recording it would put an empty
+// namespace on a request that fails somewhere far from here. Better a startup
+// error naming the option.
+func WithTemporalNamespace(name string) Option {
+	return func(s *FlowstateServer) error {
+		if name == "" {
+			return errors.New("WithTemporalNamespace: the Temporal namespace must be named; " +
+				"temporalclient.Config.Options resolves a non-empty one for every configuration, " +
+				"so an empty value here is an unresolved one rather than a choice")
+		}
+		s.temporalNamespace = name
+		return nil
+	}
+}
+
 // WithTaskQueues routes each tenant's runs to a task queue of its own, so a
 // per-tenant worker fleet is addressable rather than merely startable.
 //
@@ -216,6 +263,17 @@ func WithCredentialTargets(targets ...string) Option {
 		s.credentialTargets = append([]string(nil), targets...)
 		return nil
 	}
+}
+
+// WithAudit installs the recorder every authorization decision is written to.
+//
+// Without one, decisions are made and nothing is written down — which is the
+// library default rather than a deployment's answer, because the sink and the
+// question of whether a record is *required* both belong to the process doing
+// the serving. See the audit package for the shape, and server/audit.go for
+// where the records come from.
+func WithAudit(recorder *audit.Recorder) Option {
+	return func(s *FlowstateServer) error { s.audit = recorder; return nil }
 }
 
 // WithPluginCatalog supplies the server/worker capability snapshot used to pin
@@ -376,6 +434,14 @@ type FlowstateServer struct {
 	// zero-configuration path.
 	pool *temporalclient.Pool
 
+	// temporalNamespace is the Temporal namespace temporalClient is dialed for,
+	// on a deployment with no pool. Empty means nobody said, which
+	// [FlowstateServer.clientAndTemporalNamespaceFor] refuses rather than guesses.
+	//
+	// Emphatically not [FlowstateServer.namespace], which is the *Flowstate
+	// tenant*. See [WithTemporalNamespace].
+	temporalNamespace string
+
 	// taskQueues decides which task queue a tenant's runs are submitted to. The
 	// zero value routes every run to [engine.RunTaskQueueName], which is the
 	// zero-configuration path — see [WithTaskQueues].
@@ -428,6 +494,13 @@ type FlowstateServer struct {
 	// client: memos, a schedule's stored arguments, an activity's heartbeat
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
+
+	// audit records authorization decisions. Nil records nothing and is not an
+	// error: whether this deployment keeps an audit trail, and whether an
+	// action that cannot be recorded may happen at all, is a decision for the
+	// process that serves rather than for the library. See [WithAudit] and
+	// pkg/flowstate/v1/audit.
+	audit *audit.Recorder
 }
 
 // trustedWorkflow returns the deployment-owned specification registered for
@@ -1004,6 +1077,78 @@ func (s *FlowstateServer) clientFor(namespace string) (client.Client, error) {
 	return temporal, nil
 }
 
+// clientAndTemporalNamespaceFor is [FlowstateServer.clientFor], also reporting the
+// Temporal namespace that client is dialed for.
+//
+// # Nothing calls this yet, and that is on purpose
+//
+// It is the plumbing half of a follow-up named in `timeline.go`: `GetTimeline`'s
+// round trips are bounded only transitively, through the events it scans, because
+// giving them a budget of their own the way `list.go` has one
+// (`maxListRequests`) means reaching past the SDK to Temporal's raw
+// `GetWorkflowExecutionHistory`, which takes a Temporal namespace as a request
+// field — and a Temporal client is dialed for a namespace and can never be asked
+// which. This answers that question. It landed on its own rather than inside that
+// change because getting it wrong points one tenant's reads at another tenant's
+// namespace, where they would succeed and nothing would say so, and a change with
+// that failure mode is reviewed by itself. Do not delete it as dead code; see
+// maxTimelineScan in `timeline.go` for the ask it unblocks.
+//
+// # The pair comes from one lookup, here as well as in the pool
+//
+// A raw request needs both halves, and it needs them to be halves of one answer:
+// the client's connection decides which cluster is spoken to, the namespace in
+// the request field decides whose history is read, and a mismatch is a legal
+// request that succeeds against the wrong tenant. So this returns both from a
+// single [temporalclient.Pool.ForWithNamespace], and there is deliberately no
+// namespace-only accessor beside [FlowstateServer.clientFor] for a caller to
+// reassemble a pair out of. Fixing that in the pool and leaving the server free
+// to call two accessors would have moved the defect rather than removed it
+// (Codex, #1139).
+//
+// # It fails closed, in both configurations
+//
+// Pooled, it refuses exactly where [FlowstateServer.clientFor] refuses, because
+// both are [temporalclient.Pool.resolve]: a deployment that maps namespaces and
+// has no entry for this tenant gets an error, never the namespace the process
+// happened to be pointed at. An accessor that answered where clientFor refuses
+// would be the same tenancy breach clientFor exists to prevent, reached by asking
+// for the name instead of for the client.
+//
+// Pool-less, it refuses when nobody said. Answering "" would hand a caller an
+// empty namespace to put in a request field, which fails at the far end of an RPC
+// with a message about Temporal rather than about this deployment's configuration.
+// A server built for a surface with no Temporal client at all — `flow mcp`'s
+// `server.New(nil)`, which answers only Validate, Compile and GetCatalog — is
+// refused here for the same reason and correctly: it has no namespace because it
+// has nothing to name one for.
+func (s *FlowstateServer) clientAndTemporalNamespaceFor(namespace string) (client.Client, string, error) {
+	if s.pool == nil {
+		if s.temporalNamespace == "" {
+			return nil, "", connect.NewError(connect.CodeFailedPrecondition, errors.New(
+				"this server was not told which Temporal namespace its client is dialed for; "+
+					"pass server.WithTemporalNamespace, or server.WithNamespacePool on a "+
+					"deployment that routes tenants to namespaces of their own"))
+		}
+		// Both read from this server's own immutable configuration, in one
+		// place, so the pair cannot be assembled out of two moments here either.
+		return s.temporalClient, s.temporalNamespace, nil
+	}
+
+	temporal, temporalNamespace, err := s.pool.ForWithNamespace(namespace)
+	if err != nil {
+		// FailedPrecondition and a message naming only the caller's own
+		// namespace, for the reasons [FlowstateServer.clientFor] gives: the
+		// deployment cannot route this tenant, an operator has to fix it, and
+		// naming the others would describe this deployment's tenancy to someone
+		// outside it.
+		return nil, "", connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+			"this deployment has no Temporal namespace configured for %q: %w", namespace, err))
+	}
+
+	return temporal, temporalNamespace, nil
+}
+
 // Ensure FlowstateServer implements the WorkflowServiceHandler interface.
 var _ flowstatev1connect.WorkflowServiceHandler = (*FlowstateServer)(nil)
 
@@ -1046,6 +1191,19 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// stay a boundary between tenants rather than a single deployment-wide
 	// name flat enough for one tenant to reach another's trusted entry.
 	identity := s.identityFor(ctx)
+
+	// The decision, written down before any of the work it permits.
+	//
+	// Here, rather than at the [FlowstateServer.clientFor] call further down,
+	// because this RPC's authorization question is "may this caller start work
+	// in their own namespace" and nothing between here and there can change the
+	// answer: what follows is the specification being checked, which is a
+	// question about the file rather than about the caller. The resource is the
+	// run that does not exist yet, so the key is empty until the id is composed
+	// — a decision about starting work is not a decision about a run.
+	if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, identity.GetNamespace()); err != nil {
+		return nil, err
+	}
 
 	// The caller's copy, kept as it arrived, so the attestation below has
 	// something to compare the executed specification against.
@@ -1092,6 +1250,37 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		workflowID = entityID
 	}
 
+	// The permit, composed the same way and from the same halves: the tenant this
+	// server attested, the workflow's own name, and the key the author declared —
+	// resolved here, now that inputs are bound and before anything durable
+	// exists. See [v1.Concurrency] for why the id *is* the mutual exclusion, and
+	// [v1.ConcurrencyWorkflowID] for why the tenant is inside the digest.
+	//
+	// Refused rather than ordered when a caller also names an entity key: both are
+	// addressing schemes for one run's id, so honouring either would silently
+	// discard the other — a run the caller believes is addressable as an entity
+	// but is not, or an exclusion the author declared and does not get. There is
+	// no correct precedence to pick, which is invariant 6's case for refusing.
+	onConflict := workflow.GetConcurrency().GetOnConflict()
+	if workflow.GetConcurrency() != nil {
+		if req.Msg.GetEntityKey() != "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(
+				"this workflow declares a `concurrency:` key and the request also names an entity_key; "+
+					"both address the run by its workflow id and only one of them can, so drop the "+
+					"entity_key or the workflow's concurrency block"))
+		}
+
+		key, err := v1.ResolveConcurrencyKey(ctx, workflow, inputs)
+		if err != nil {
+			// The caller's mistake, and reported as one: what a key resolves to is
+			// decided by the inputs they submitted, exactly as a signal rule's
+			// `subject_from` is (see [signalPolicyMemoEntry]'s own refusal).
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+
+		workflowID = v1.ConcurrencyWorkflowID(identity.GetNamespace(), workflow.GetName(), key)
+	}
+
 	// This is a manual start — the `Run` RPC is what `flow run`, an agent over
 	// MCP and any other caller reach — so the workflow's own `manual:` block
 	// decides whether it may happen, against the identity this server attested
@@ -1112,6 +1301,36 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, err
 	}
 	options.ID = workflowID
+
+	// The three answers a workflow id can give, each one pair of Temporal
+	// policies — see [v1.Concurrency.OnConflict], which names the pairs, and
+	// webhook.go, which sets the fourth pair for the fourth question ("this event
+	// starts one run", where a *finished* run must not be started again either).
+	//
+	// Reuse is left at Temporal's default here rather than set alongside conflict,
+	// and that is the whole difference between a permit and a dedupe key: a run
+	// that has ended has released the resource, so the next submission naming the
+	// same key is a new run rather than a duplicate of the old one.
+	if workflow.GetConcurrency() != nil {
+		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
+		} else {
+			// Both of the other two, `join` included — see
+			// [v1.Concurrency_ON_CONFLICT_JOIN] for why it is not
+			// `USE_EXISTING`. Unspecified lands here too, deliberately: the
+			// fail-closed arm is the refusal, so an author who wrote `key:` and
+			// no `on_conflict:` gets exclusion rather than a second concurrent
+			// run.
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+		}
+
+		// Asked for the error rather than the silent answer the SDK defaults to,
+		// for the reason the webhook path asks for it and `SignalWithStart` asks
+		// for it: the error carries the incumbent's run id, so both "this was
+		// refused" and "this joined" are facts this code establishes rather than
+		// infers from a run id it cannot otherwise recognize.
+		options.WorkflowExecutionErrorWhenAlreadyStarted = true
+	}
 
 	// Provenance, in the same memo the tenant and the starter are recorded in and
 	// for the same reason: it is read afterwards, by whoever asks how this run
@@ -1165,6 +1384,54 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 	})
 	if err != nil {
+		// A conflict on the permit, which is the one failure here that is not this
+		// server failing. Both arms that can produce it are answered from the
+		// error itself, which carries the incumbent's run id, so neither costs a
+		// second Temporal call.
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if workflow.GetConcurrency() != nil && errors.As(err, &already) {
+			if onConflict == v1.Concurrency_ON_CONFLICT_JOIN {
+				// The incumbent, returned as this request's answer, with the join
+				// stated rather than left for the caller to deduce — see
+				// [v1.RunResponse.joined], and `AcceptedDelivery.Joined`, which is
+				// the same answer to the same question one start path over.
+				//
+				// SpecificationAsSubmitted is deliberately false rather than
+				// asSubmitted: the run this names is not the one this request would
+				// have started, so its specification is whatever the *incumbent*
+				// submitted, and answering about the caller's own copy would tell
+				// them a fact about a run that never existed.
+				return connect.NewResponse(&v1.RunResponse{
+					WorkflowId:               workflowID,
+					RunId:                    already.RunId,
+					Status:                   v1.RunResponse_STATUS_RUNNING,
+					Joined:                   true,
+					SpecificationAsSubmitted: proto.Bool(false),
+				}), nil
+			}
+
+			// AlreadyExists rather than Internal: the caller asked for something
+			// this workflow's author said may not happen concurrently, and the
+			// answer is a refusal they can act on — wait, or join — not a server
+			// fault. Naming the run that holds the key is not disclosure: the id is
+			// composed under this caller's own tenant, so a run they cannot address
+			// cannot be the one they collided with.
+			//
+			// The arm named is the effective one rather than the literal field: an
+			// author who wrote no `on_conflict:` still got this refusal, and telling
+			// them their file says "unset" would send them looking for a word that
+			// is not there.
+			refusing := onConflict
+			if refusing == v1.Concurrency_ON_CONFLICT_UNSPECIFIED {
+				refusing = v1.Concurrency_ON_CONFLICT_REJECT
+			}
+
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
+				"another run of %q already holds this workflow's concurrency key (run %s); "+
+					"`on_conflict: %s` refuses a second one until it finishes",
+				workflow.GetName(), already.RunId, v1.ConcurrencyOnConflictName(refusing)))
+		}
+
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
 	}
 
@@ -1265,6 +1532,16 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// first time a signal is actually delivered and denied for a reason the
 	// author never saw at submit.
 	if err := v1.CheckSignalPolicies(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// The same argument, for the two trigger blocks a `concurrency:` key cannot
+	// share a run's workflow id with (see [v1.CheckConcurrency]). The compiler
+	// refuses both combinations with a line and a column; a specification built
+	// by hand arrives without it, and accepting one here would create a run whose
+	// declared exclusion silently does not hold — which is worse than the
+	// refusal, because nothing about the run afterwards says so.
+	if err := v1.CheckConcurrency(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -1613,13 +1890,14 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	// returned its status to whoever asked, so any caller who knew or guessed an
 	// id could read another tenant's run — and a completed run returns its whole
 	// outputs, which is the workload's data rather than only its existence.
-	temporal, resp, err := s.authorizeRun(ctx, req.Msg.GetWorkflowId(), req.Msg.GetRunId())
+	temporal, resp, err := s.authorizeRun(ctx, "Get", req.Msg.GetWorkflowId(), req.Msg.GetRunId())
 	if err != nil {
 		return nil, err
 	}
 	switch respStatus := getWorkflowExecutionStatus(resp); respStatus {
 	case v1.RunResponse_STATUS_RUNNING:
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		pending, pendingTruncated := s.pendingActivities(resp)
 
 		return connect.NewResponse(
 			&v1.GetResponse{
@@ -1639,7 +1917,8 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// answer to "why has this been RUNNING for six hours" costs no
 				// further round trip. See pendingActivities for what is and is
 				// not claimed.
-				PendingActivities: s.pendingActivities(resp),
+				PendingActivities:          pending,
+				PendingActivitiesTruncated: pendingTruncated,
 				// The one field on this response that answers what a healthy
 				// entity actually holds — see [entityState]'s own comment for
 				// why a run that is, by design, always RUNNING was otherwise
@@ -1806,11 +2085,18 @@ func failureError(
 	// name that it was a timeout and which kind, in place of Temporal's own
 	// "activity StartToClose timeout (type: StartToClose)" — one line, not a
 	// budget value this layer has nothing to compute it from.
+	//
+	// Classified as well as named, on the rule the application-error branch
+	// above already follows and the schema states: `kind` is "always set
+	// alongside Message" (service.proto), and leaving it empty made the one
+	// failure this branch exists for the one failure a programmatic consumer
+	// could read nothing structural from. [v1.ErrorKindTimeout] is what
+	// engine.recordedStepKind answers for the step-level shape of this (#915),
+	// and a run-level timeout is that same fact one scope out — so it is the
+	// same word rather than a second one meaning the same thing.
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
-		return &v1.RunResponse_Error{
-			Message: status.String() + ": timed out (" + timeoutKindText(timeoutErr.TimeoutType()) + ")",
-		}
+		return timeoutFailure(status, timeoutErr.TimeoutType())
 	}
 
 	// Its own text is then the best there is.
@@ -1819,6 +2105,26 @@ func failureError(
 	}
 
 	return &v1.RunResponse_Error{Message: status.String()}
+}
+
+// timeoutFailure is the whole of what [failureError] answers for a run that
+// ended on a clock rather than on a fault: what happened, in words, and the
+// classification beside it.
+//
+// A function rather than a literal at the call site because the classification
+// is the half that had been missing. `kind` is "always set alongside Message"
+// (service.proto), and this branch — the one shape of failure with nothing in
+// the chain to read a classification back out of — was the one leaving it
+// empty, so the only failure an agent could read nothing structural from was a
+// timeout. [v1.ErrorKindTimeout] is what engine.recordedStepKind answers for
+// the step-level shape of this (#915); a run-level timeout is that same fact
+// one scope out, so it is the same word rather than a second one meaning the
+// same thing, and the message is what says which scope.
+func timeoutFailure(status v1.RunResponse_Status, kind enums.TimeoutType) *v1.RunResponse_Error {
+	return &v1.RunResponse_Error{
+		Message: status.String() + ": timed out (" + timeoutKindText(kind) + ")",
+		Kind:    v1.ErrorKindTimeout.String(),
+	}
 }
 
 // timeoutKindText names a Temporal timeout type in words an author's Flowfile
@@ -2042,10 +2348,28 @@ func entityState(ctx context.Context, temporal client.Client, resp *workflowserv
 // of fields Temporal already answered with — no further round trip, and
 // nothing inferred: an activity mid-retry has an attempt count and a last
 // failure, and which *step* it is remains the progress query's answer.
-func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkflowExecutionResponse) []*v1.PendingActivity {
+func (s *FlowstateServer) pendingActivities(
+	resp *workflowservice.DescribeWorkflowExecutionResponse,
+) ([]*v1.PendingActivity, bool) {
 	infos := resp.GetPendingActivities()
 	if len(infos) == 0 {
-		return nil
+		return nil, false
+	}
+
+	// Bounded by count, and each message bounded by length, because "a handful
+	// of retrying steps" was an assumption rather than a fact: a
+	// suspension-opaque block may schedule [v1.MaxAtomicBlockActivities], and
+	// nothing stops all of them from retrying at once. Both the number of
+	// entries and the length of each one's sentence are the workload's choice,
+	// so both are bounded rather than one of them (Codex, #1119).
+	//
+	// The same shape [v1.RunProgress.PendingWaitsTruncated] uses, down to
+	// keeping the entries it did collect: the bound is a count rather than a
+	// size, and the first retrying steps of a run holding thousands are still
+	// the answer to "what is this stuck on".
+	truncated := len(infos) > maxPendingActivities
+	if truncated {
+		infos = infos[:maxPendingActivities]
 	}
 
 	out := make([]*v1.PendingActivity, 0, len(infos))
@@ -2055,13 +2379,38 @@ func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkfl
 			// The message alone rather than the whole failure chain: the chain
 			// repeats what the attempt count already says, and the outermost
 			// message is the sentence the task classified its own failure into.
-			LastFailure: info.GetLastFailure().GetMessage(),
+			//
+			// Through the deployment's own converter, because a codec-configured
+			// deployment has the real message in `encoded_attributes` and the
+			// literal string "Encoded failure" in its place — so this reported
+			// "Encoded failure" as the reason every retrying step was retrying,
+			// which is the answer to "why has this been RUNNING for six hours"
+			// made useless on the deployments most likely to be asking. Found
+			// while fixing the same read one file over (Codex, #1119).
+			LastFailure: boundedFailure(s.decodedFailureMessage(info.GetLastFailure())),
 		}
 
-		// Only when Temporal set one: an attempt running right now has no next
-		// schedule, and inventing a zero time would read as 1970.
-		if scheduled := info.GetScheduledTime(); scheduled != nil {
-			pending.NextAttemptScheduledTime = scheduled
+		// Temporal's `next_attempt_schedule_time`, not its `scheduled_time`,
+		// and the difference is the whole meaning of this field.
+		//
+		// `scheduled_time` (field 9) carries no documentation and is set for
+		// *any* pending activity — including one whose attempt is running right
+		// now. `next_attempt_schedule_time` (field 18) is documented as "Next
+		// time when activity will be scheduled. If activity is currently
+		// scheduled or started it will be null", which is precisely what the
+		// comment on this field has always claimed and what
+		// [v1.PendingActivity.NextAttemptScheduledTime] promises a reader.
+		//
+		// Reading the wrong one made presence meaningless: every pending
+		// activity carried a time, so a client could not tell an attempt waiting
+		// out its backoff from one running, and had to compare against its own
+		// clock instead. `flow timeline`'s retry note was written that way and
+		// paid for it — a backlogged retry whose due time had passed read as
+		// silence (Codex, #1142). With this, presence is the answer again.
+		//
+		// Only when Temporal set one: inventing a zero time would read as 1970.
+		if next := info.GetNextAttemptScheduleTime(); next != nil {
+			pending.NextAttemptScheduledTime = next
 		}
 
 		// What the running attempt last said it was doing. Without this the phase a
@@ -2080,5 +2429,13 @@ func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkfl
 		out = append(out, pending)
 	}
 
-	return out
+	return out, truncated
 }
+
+// maxPendingActivities bounds how many retrying steps one answer reports.
+//
+// Sized like [v1.MaxPendingWaits] rather than derived from anything: past a
+// few dozen, "which step is stuck" has stopped being the question and "this
+// whole fan-out is stuck" has become it, which the count and the flag together
+// already say.
+const maxPendingActivities = 64

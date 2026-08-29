@@ -393,6 +393,12 @@ type parsedStep struct {
 	// which is the kind of wrong answer that is worse than no answer.
 	waitForSignalEntry *entry
 
+	// waitForSignalsEntry is the batch spelling's mapping form, held apart from
+	// its sibling for the identical reason: its `timeout:` means how long to
+	// wait for the first delivery, and answering with the step-level key's
+	// documentation is the wrong answer that is worse than none.
+	waitForSignalsEntry *entry
+
 	// waitShapingEntries are the values of a `wait_for_signal:`'s `outputs:` block,
 	// which are expressions evaluated in a scope no other position has: the wait's
 	// own result, bound bare. Held apart from every other `outputs:` in the
@@ -605,6 +611,8 @@ func (s *parsedStep) kind() string {
 		return "wait_until"
 	case s.waitForSignalEntry != nil:
 		return "wait_for_signal"
+	case s.waitForSignalsEntry != nil:
+		return "wait_for_signals"
 	case s.valueEntry != nil:
 		return "value"
 	case s.switchEntry != nil:
@@ -666,6 +674,19 @@ func (s *parsedStep) entryForField(field string) *entry {
 	// The gate's own `timeout:`, named with its full path by the validator so
 	// it can never be confused with the step-level key spelled the same. The
 	// qualified lookup resolves inside the gate's mapping only.
+	//
+	// The plural is tried first, because "wait_for_signal." is a prefix of
+	// "wait_for_signals." — cutting the shorter one off a batch's field leaves
+	// "s.timeout", which matches no key, and the diagnostic falls back to the
+	// whole step. A prefix that is a prefix of another prefix is checked longest
+	// first or not at all.
+	if name, isWait := strings.CutPrefix(field, "wait_for_signals."); isWait {
+		for _, e := range nestedEntries(s.waitForSignalsEntry) {
+			if e.key == name {
+				return e
+			}
+		}
+	}
 	if name, isWait := strings.CutPrefix(field, "wait_for_signal."); isWait {
 		for _, e := range nestedEntries(s.waitForSignalEntry) {
 			if e.key == name {
@@ -677,7 +698,7 @@ func (s *parsedStep) entryForField(field string) *entry {
 	// The gate's own keys come last so that a step-level key spelled the same —
 	// the step's `timeout:`, which bounds an attempt rather than the wait —
 	// resolves first, exactly as hover keeps the two apart.
-	for _, group := range [][]*entry{s.entries, nestedEntries(s.forEachEntry), nestedEntries(s.loopEntry), nestedEntries(s.retryEntry), nestedEntries(s.waitForSignalEntry)} {
+	for _, group := range [][]*entry{s.entries, nestedEntries(s.forEachEntry), nestedEntries(s.loopEntry), nestedEntries(s.retryEntry), nestedEntries(s.waitForSignalEntry), nestedEntries(s.waitForSignalsEntry)} {
 		for _, e := range group {
 			if e.key == field {
 				return e
@@ -1111,11 +1132,16 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 			if s.retryEntry == nil {
 				s.retryEntry = e
 			}
-		case "wait_for_signal":
+		case "wait_for_signal", "wait_for_signals":
 			// Only the mapping form has keys of its own; `wait_for_signal: name`
 			// is a scalar and is documented at the step level like any other key.
-			if s.waitForSignalEntry == nil && e.value != nil && e.value.kind == kindMapping {
-				s.waitForSignalEntry = e
+			//
+			// Both spellings read here, into whichever field names the key the
+			// author wrote, because everything below this line — the shaping
+			// entries and the fenced `timeout:` — is identical between them and
+			// a second copy of it is a second place for the two to drift.
+			if e.value != nil && e.value.kind == kindMapping && s.waitEntryFor(e.key) == nil {
+				s.setWaitEntry(e.key, e)
 				for _, we := range e.value.entries {
 					switch we.key {
 					case "outputs":
@@ -1833,4 +1859,28 @@ func walkValues(v *value, fn func(*value)) {
 	for _, e := range v.entries {
 		walkValues(e.value, fn)
 	}
+}
+
+// waitEntryFor returns the recorded mapping entry for whichever wait spelling
+// key names, and setWaitEntry records one.
+//
+// A pair of two-line helpers rather than a map, because the two fields are read
+// by name everywhere else in this file and a map would make every one of those
+// a lookup that can miss.
+func (s *parsedStep) waitEntryFor(key string) *entry {
+	if key == "wait_for_signals" {
+		return s.waitForSignalsEntry
+	}
+
+	return s.waitForSignalEntry
+}
+
+func (s *parsedStep) setWaitEntry(key string, e *entry) {
+	if key == "wait_for_signals" {
+		s.waitForSignalsEntry = e
+
+		return
+	}
+
+	s.waitForSignalEntry = e
 }

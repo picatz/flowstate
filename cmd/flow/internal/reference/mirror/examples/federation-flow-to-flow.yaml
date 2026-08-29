@@ -29,5 +29,6 @@ steps:
     vars:
       peer: ${json_parse(steps.check_on_peer.body)}
     log:
-      fields: '${{"peer_status": peer["status"]}}'
+      fields:
+        peer_status: ${peer["status"]}
       message: read a run's status from the peer deployment

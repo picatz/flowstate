@@ -1,7 +1,5 @@
 package flowtest
 
-import "fmt"
-
 // Table entries (#924 slice 2): a `tests:` entry that declares `cases:` is a
 // template, and each row under it is one run merged over that template.
 //
@@ -18,10 +16,18 @@ import "fmt"
 // leaving entries that declare none exactly as they were.
 //
 // The result is a flat list of effective cases, which is what lets the rest of
-// this package stay unaware that a table is a thing an author can write.
-func expandTableEntries(tests []Test) ([]Test, error) {
+// this package stay unaware that a table is a thing an author can write — and,
+// beside it, one [caseSource] per case, because after this the index of a case
+// in the flat list no longer says where it was written (#923 step 1). This is
+// the only pass that can know that, so it is the pass that records it.
+//
+// An entry this refuses is skipped rather than expanded, and the entries around
+// it still are: a table nobody can name rows in says nothing about whether the
+// next entry is coherent, and stopping here would go back to reporting a suite
+// one problem per run.
+func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 	// Nothing in this file writes a table: the overwhelmingly common shape,
-	// and worth not allocating for.
+	// and worth not allocating for beyond the sources every case now carries.
 	tabled := false
 	for i := range tests {
 		if tests[i].Cases != nil {
@@ -31,13 +37,29 @@ func expandTableEntries(tests []Test) ([]Test, error) {
 		}
 	}
 	if !tabled {
-		return tests, nil
+		sources := make([]caseSource, len(tests))
+		for i := range tests {
+			sources[i] = caseSource{
+				path:      at("tests").item(i),
+				ownStubs:  len(tests[i].Stubs),
+				ownChecks: len(tests[i].Expect.Check),
+			}
+		}
+
+		return tests, sources
 	}
 
 	expanded := make([]Test, 0, len(tests))
-	for _, entry := range tests {
+	sources := make([]caseSource, 0, len(tests))
+	for index, entry := range tests {
+		where := at("tests").item(index)
 		if entry.Cases == nil {
 			expanded = append(expanded, entry)
+			sources = append(sources, caseSource{
+				path:      where,
+				ownStubs:  len(entry.Stubs),
+				ownChecks: len(entry.Expect.Check),
+			})
 
 			continue
 		}
@@ -47,8 +69,10 @@ func expandTableEntries(tests []Test) ([]Test, error) {
 		// both halves, and "test 3/the fast one" is not an identity anyone
 		// can act on.
 		if entry.Name == "" {
-			return nil, fmt.Errorf("a `tests:` entry declaring `cases:` has no name, and a row's " +
+			p.report(site{at: where}, "a `tests:` entry declaring `cases:` has no name, and a row's "+
 				"identity is `<entry name>/<row name>`; name the entry")
+
+			continue
 		}
 		// An empty table is refused rather than silently running nothing: an
 		// author who wrote `cases: []` meant to write rows, and a file that
@@ -57,23 +81,61 @@ func expandTableEntries(tests []Test) ([]Test, error) {
 		// from an absent `cases:` because YAML gives an empty sequence a
 		// non-nil slice and an absent key a nil one.
 		if len(entry.Cases) == 0 {
-			return nil, fmt.Errorf("test %q declares `cases:` with no rows, so it would run nothing; "+
-				"write a row, or drop the `cases:` key to run the entry itself", entry.Name)
+			p.report(site{test: entry.Name, at: where.field("cases")},
+				"test %q declares `cases:` with no rows, so it would run nothing; "+
+					"write a row, or drop the `cases:` key to run the entry itself", entry.Name)
+
+			continue
+		}
+		if len(entry.Expect.Check) > MaxChecksPerTest {
+			p.report(site{test: entry.Name, at: where.field("expect").field("check")},
+				"test %q table entry declares %d checks, more than the limit of %d",
+				entry.Name, len(entry.Expect.Check), MaxChecksPerTest)
+
+			continue
 		}
 
 		for i, row := range entry.Cases {
+			rowWhere := where.field("cases").item(i)
 			if row.Name == "" {
-				return nil, fmt.Errorf("test %q case %d has no name", entry.Name, i+1)
+				p.report(site{test: entry.Name, at: rowWhere}, "test %q case %d has no name", entry.Name, i+1)
+
+				continue
 			}
 			if row.Cases != nil {
-				return nil, fmt.Errorf("test %q case %q declares its own `cases:`, and a table is one "+
-					"level deep; move the rows up, or split the entry in two", entry.Name, row.Name)
+				p.report(site{test: entry.Name, at: rowWhere.field("cases")},
+					"test %q case %q declares its own `cases:`, and a table is one "+
+						"level deep; move the rows up, or split the entry in two", entry.Name, row.Name)
+
+				continue
+			}
+			if len(row.Expect.Check) > MaxChecksPerTest {
+				p.report(site{test: entry.Name + "/" + row.Name, at: rowWhere.field("expect").field("check")},
+					"test %q case %q declares %d checks, more than the limit of %d",
+					entry.Name, row.Name, len(row.Expect.Check), MaxChecksPerTest)
+
+				continue
+			}
+			if checks := len(entry.Expect.Check) + len(row.Expect.Check); checks > MaxChecksPerTest {
+				p.report(site{test: entry.Name + "/" + row.Name, at: rowWhere.field("expect").field("check")},
+					"test %q case %q declares %d checks after its table entry is applied, more than the limit of %d",
+					entry.Name, row.Name, checks, MaxChecksPerTest)
+
+				continue
 			}
 			expanded = append(expanded, mergeRow(entry, row))
+			// Counted before the merge below folds the entry's stubs and
+			// claims in: what the row wrote itself is what this document can
+			// point at, and the rest belongs to the entry or to `defaults:`.
+			sources = append(sources, caseSource{
+				path:      rowWhere,
+				ownStubs:  len(row.Stubs),
+				ownChecks: len(row.Expect.Check),
+			})
 		}
 	}
 
-	return expanded, nil
+	return expanded, sources
 }
 
 // mergeRow produces the effective case one row runs as.

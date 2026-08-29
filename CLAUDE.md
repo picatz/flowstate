@@ -463,6 +463,16 @@ needs the identical pin, for the identical reason:
 
     GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 
+`gofmt` is the third member of this family, and its version of the failure is a
+false *finding* rather than a false error: the standalone `gofmt` binary on `PATH`
+is whatever toolchain owns `PATH`, not the one `go.mod` selects, and formatting
+output differs between toolchains (1.26's and 1.27's disagree on the indentation
+of a multi-value return's composite literals — `auth/vocabulary_test.go` is the
+tree's standing example, "unformatted" under a 1.26 gofmt and clean under CI's
+1.27). Before reporting a file on `main` as unformatted, or "fixing" one, run the
+module's own toolchain's binary: `$(GOTOOLCHAIN=go1.27.0 go env GOROOT)/bin/gofmt`.
+A PR that reformatted that file under the wrong gofmt is what CI caught on #1140.
+
 The staticcheck *release* is pinned to the toolchain as well as beside it, and that
 direction is the one that bites. staticcheck type-checks with its own copy of
 `go/types`, which reads the export data the toolchain's compiler wrote, and export
@@ -601,6 +611,206 @@ provider is namespaced *every* tenant gets a segment including the default one
 
 So: an isolation test asserting that each party reaches its own resource is a
 functionality test wearing a security test's clothes. Write the negative direction.
+
+## A green test that asserts nothing (`make vacuity`)
+
+The two sections below say what to test. This one is about the failure where
+you did write the test, it runs, it is green, it appears in the coverage
+report — and it makes no claim at all, so the defect it was written to catch
+walks straight past it. That is worse than a missing test, because an absent
+test is visible and a green one is an assurance nobody has any reason to
+doubt.
+
+    make vacuity            # the counts, and every unasserted site
+    make vacuity SITES=1    # every site, conditional ones included
+
+Two shapes, both of which this repository has shipped, enforced differently
+because the tree stands in two different places.
+
+**`unasserted`** — a test that reaches no assertion. The tree is at zero, and
+the two deliberate sites carry a `//vacuity:ignore unasserted <reason>` naming
+why (a subprocess entry point, whose assertions belong to whoever launched it).
+So a finding now is one a diff introduced. The reason is required: a marker
+without one is ignored, because "this test is making the mistake the check
+describes, on purpose" is a sentence somebody has to be willing to write —
+which is the rule `//lint:ignore` already carries elsewhere in this file.
+
+**`conditional`** — every claim a test makes is inside a loop, over something
+nothing says is non-empty. `for _, c := range Cases() { … assert … }` proves
+precisely nothing when `Cases()` returns an empty slice, and an empty slice is
+what a corpus becomes when somebody moves the last case out of it. This is
+`ZeroValueCases` one section down, wearing a different hat: a count of cases
+would not have noticed either, because both numbers were the number the code
+produced.
+
+The tree had 167 of those when this landed, and they are **reported, never
+enforced** — read the current figure out of the command rather than out of this
+sentence. A number
+that size can only be a map: enforcing it would mean a sweep, which this
+repository has twice paid for, or an allowlist, which rots. What the number is
+for is that a *new* one arrives in a diff somebody is reading, where the answer
+— assert the corpus is non-empty, outside the loop — is one line.
+
+The largest single cluster is the conformance corpus, and that one is answered
+at its source rather than at forty call sites — `corpora_test.go`, beside
+`callers_test.go`, which already walks that package for the two-callers rule
+and already cites `ZeroValueCases` for why. The two ask one question at two
+depths: that file asks whether both drivers *call* each corpus, this one asks
+whether calling it is worth anything.
+
+Those forty sites still appear in the report, because the tool cannot see a
+guarantee made in another package — which is the honest limit of a syntactic
+check and worth knowing before reading the number as forty open problems.
+
+The mechanism is `tools/fuzztargets`' shape once more: a hand-written table
+calling every corpus, a walk over the package's exported slice-returning
+functions, and a test that fails when the two disagree. A corpus not in the
+table is a finding; one in the table that no longer exists is a finding; and a
+function that is genuinely not a corpus goes in `notACorpus` **with a reason**,
+the same rule `oneSidedByDesign` next door already carries. Go cannot enumerate
+a package's functions at run time, so the list is written out — and the walk is
+what makes a written-out list trustworthy rather than a thing somebody
+remembered to update.
+
+Three properties worth knowing.
+
+It **parses rather than builds**, and groups files by the `package` clause they
+carry rather than by build tag — which is why it reaches `plugins/*` when
+`make coverage` and `make modernize` do not — a separate module is just
+another directory to a syntax tree, and a plugin's containment tests are
+exactly where a vacuous claim costs the most. `plugins/codex`'s is the
+worked example the tool's doc uses: two adjacent tests loop over the same
+`childEnv` result, one counts what it found and fails on the wrong number,
+and its neighbour — asserting that the child's environment never carries a
+host variable — is satisfied by an environment with nothing in it. Same file,
+one line apart, which is the best evidence available that these are oversights
+rather than a style.
+
+It **errs toward silence, deliberately**. Handing the test handle to anything
+counts as asserting, because whatever received it may fail the test and a
+syntactic analysis cannot follow the call across a package. That trades false
+negatives for false positives on purpose: a check that cries wolf is one people
+run with their eyes closed, and this one has to be believed, because it fails
+a build. Eleven of the first thirteen findings were this shape before the rule
+existed.
+
+What it counts as an assertion is deliberately generous and deliberately
+*resolved*: `panic` fails a test and so counts, and `assert`/`require` are
+matched by import path rather than by the bare identifier, because both are
+ordinary Go names a test may bind to something else. Both directions were
+review findings on the same day it landed, and both are the same lesson — a
+gate is only worth as much as the precision of what it will accept as proof.
+
+And **nothing in CI had to learn a new job.** `tools/vacuity`'s own
+`TestTheRepositoryHasNoUnassertedTest` walks the tree under `go test ./...`,
+so the gate holds in the venue everybody already watches; `make vacuity` is
+for reading the report. It also asserts it found more than a thousand tests
+before reporting a clean sweep — a checker that walks nothing and says
+everything is fine is the failure this whole tool is about, and it would have
+been the easiest one to ship.
+
+## Assert where the answers differ
+
+The section above is about a test that makes no claim. This one is about a test
+that makes a real claim, in a place where the claim cannot fail — which looks
+identical from the outside and is caught by nothing except mutation.
+
+The shape, in the four instances one night produced:
+
+- A cgroup's protection could be a number, a saturation (`max`), or unreadable.
+  Through the function under test, **saturation and unreadable produce the same
+  number**: both subtract nothing. So the `max` case passed with `max` handling
+  deleted — the right figure, for the wrong reason (#1134).
+- `corpusSizes` maps a name to a call. Every row in the real table agrees with
+  itself, so a comparison written where the rows are read is one **no test can
+  reach**, and deleting it survives (#1141).
+- `NotContains(stderr, "42")` for "no inspection was answered", where the
+  account prints a `t.TempDir()` path full of random digits. About one run in
+  three those digits contain `42` (#1145).
+- Three fixtures that **encoded the defect they were written for**: a projection
+  test that set the wrong Temporal field and asserted it arrived, so it passed
+  on the wrong field entirely (#1148).
+
+Two habits answer all of it.
+
+**Extract the decision to where a fixture can drive it.** If the real data
+always agrees with itself, a check written inline against that data is
+untestable by construction. `unreadableResults`, `sliceReturners` and
+`protectionAt` are all functions taking their inputs for exactly this reason,
+and each was extracted only after a mutation showed the inline version could not
+be reached.
+
+**Check the positive direction before trusting the negative one.** An
+absence assertion is worth nothing until you know the thing could have been
+present: `inspect 'ans' + 'wered'` renders `answered`, so `NotContains` has
+something to be about. Same for a refusal — testing that a reader *refuses*
+says nothing about whether its caller **acts** on the refusal, and that was a
+separate mutation and a separate test both times it came up.
+
+And when a mutation survives that you cannot honestly kill, **say so in the
+code**. Two shipped that night with a written reason — a chunk size that bounds
+allocation rather than count, and a `Close` on a failure path nothing observes.
+A named survivor is a limit somebody can read; a quiet one is a claim of
+coverage that is false.
+
+## A check you did not watch run is a check that did not run
+
+Two ways a gate goes green without looking at what you think it looked at. Both
+bit in one night, both are invisible in the output, and the fix for each is one
+`git fetch`.
+
+**A branch cut before a guard landed does not have the guard.** Conformance
+corpora work was written on a branch cut from `main` an hour before the guard
+for exactly that work merged, so `corpora_test.go` did not exist in that tree
+and the registration check never ran. The tests were green by not running.
+Rebasing onto current `main` is what surfaced it — and then the guard caught the
+missing entry on the first corpus added after it landed, with a diagnostic
+naming the fix.
+
+**An against-main check can pass against a `main` that has already moved.**
+`flow breaking --against origin/main` and `buf breaking` fetch their base inside
+the job. #1139's `test` job went green at 04:03 against a base that changed at
+03:47, and the same check failed locally against the real `main` minutes later.
+It would not have broken `main` — after the merge nothing reads as removed — but
+merging on it means landing a change whose gate passed against a tree that does
+not exist.
+
+Freshening every branch every time `main` moves is a treadmill, and on a busy
+day it never ends. The rule that holds is narrower: **freshen when a check
+compares against `main` and `main` changed in a way that check reads.** For
+`flow breaking` that is `examples/`; for `buf breaking`, `proto/`. Everything
+else can wait for the merge.
+
+## No compiled binary is ever committed (`tools/artifacts`)
+
+`go build ./some/tool` writes its binary into whatever directory you are in,
+and the next `git add -A` commits it. That has happened three times here —
+`embedding` at 46 MB (ff6131b, removed by #922), `gate` at five megabytes, and
+`vacuity` at 3.3 MB, which reached `main` in #1125 after being removed from
+the index once and coming back, because a later build recreated it and a later
+`git add -A` picked it up again.
+
+Each was answered with a `.gitignore` entry naming that one path, which
+prevents that one recurrence and nothing else. `tools/artifacts` is the part
+that generalises: one test walking the tracked set and failing on anything
+carrying an executable's magic bytes. It matches on magic rather than on size
+or on a name, because the question is "is this a program" — the largest thing
+legitimately tracked here is a 412 KB descriptor set, which a size rule would
+have to be tuned around.
+
+Prefer `go run ./tools/whatever` over `go build`, and if you must build, send
+it somewhere outside the tree with `-o`.
+
+The list of magic numbers is measured rather than remembered, which is the part
+worth keeping. The first version was ELF, Mach-O and PE — the three a person
+thinks of — and it left five of Go's own targets (wasm, AIX, and Plan 9's three
+architectures, whose magic is per-architecture) able to commit a binary straight
+past a check named for refusing exactly that. `make check` sets
+`ARTIFACT_SWEEP=1`, which cross-builds one program per entry in `go tool dist
+list` and fails if any of them produces something the list does not know. The PR
+lane does not set it: that sweep costs a couple of minutes on a cold cache to
+guard an event that happens when Go adds a port, while the tracked-file gate it
+calibrates runs in milliseconds on every push.
 
 ## Test the traversal, not just the step
 
@@ -943,6 +1153,36 @@ When several agents edit interlocking packages:
   a shell are shell-local, so a lane given them runs at exactly the unbounded
   defaults this exists to prevent while the shell shows the value and `go test`
   never sees it.
+
+  When disk is the bound, it can fix it rather than only naming it:
+
+      go run ./tools/fleet -prune             # give back what a lane needs
+
+  This exists because Go has no size budget for its build cache and cannot be
+  given one. `go help cache` offers exactly two levers, and on a busy day
+  neither works: a sweep of entries unused for *five days*, run at most once a
+  day, and `go clean -cache`, which discards everything. A machine that fills
+  twenty-three gigabytes between breakfast and lunch has nothing five days old
+  to sweep, so the first is a no-op — and the second charges a cold rebuild to
+  every lane, which is itself load enough to hold the fleet at zero for as long
+  as it runs. That is not hypothetical: it happened here, and the tool sat
+  correctly reporting "dispatch nothing" until somebody noticed.
+
+  `-prune` is the missing middle — cmd/go's own `trimSubdir` with a *size*
+  cutoff where it has a *time* one. It takes oldest entries first until a lane
+  fits and stops, so the hot entries survive. Its rules are Go's, because the
+  cache is Go's format: only `-a` and `-d` names are entries, an entry may be a
+  *directory* (an executable cache entry) needing `RemoveAll`, and mtime is a
+  real last-used signal because Go refreshes it on use. One rule is ours: the
+  fuzz corpus is never touched — those inputs cost machine-hours to rediscover
+  and `go help cache` says plainly that removing them makes fuzzing less
+  effective.
+
+  Safe to run while builds are in flight, and that safety is the same property
+  the disk floor protects: the cache is content-addressed, so a removed entry
+  is a miss and a miss is a rebuild. What is *not* safe is running out of disk
+  mid-write, which leaves a partial object that surfaces later as a corrupt
+  cache entry and reads like a compiler bug.
 
   It reads cores, memory, disk and the current load, and the smallest bound
   wins. Load matters as much as capacity: it counts work this process cannot

@@ -2,13 +2,17 @@ package flowtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -117,9 +121,14 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 	// table's template and silently never its rows — the parsed-vs-built
 	// divergence #1015 is about, wearing #924's clothes. On a file Load
 	// already expanded this is a no-op: no surviving entry carries `cases:`.
-	expanded, err := expandTableEntries(file.Tests)
-	if err != nil {
-		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: err.Error()}}
+	// Collected against no document: a [File] built in Go was never parsed, so
+	// its refusals are the same refusals with no line to give them — which is
+	// what [newProblems] answers for a nil document, rather than this door
+	// needing a second shape of the same check.
+	p := newProblems(nil)
+	expanded, _ := expandTableEntries(p, file.Tests)
+	if refused := p.err(); refused != nil {
+		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: refused.Error()}}
 	}
 	shallow := *file
 	shallow.Tests = expanded
@@ -226,7 +235,8 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// invocations (Codex, #1052, twice).
 				record := !opts.skipTranscript &&
 					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
-				return runCase(ctx, &test, l.deliveryPath, l.load, record, file.Vars)
+				return runCase(ctx, &test, l.deliveryPath, l.load, record,
+					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
@@ -447,9 +457,25 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // the reason on the case; [RunSource] and [RunFile] pass a background context
 // and are unchanged by this existing.
 func RunSourceContext(ctx context.Context, label string, workflowSource, testSource []byte) *v1.TestReport {
+	return RunSourceWith(ctx, label, workflowSource, testSource, RunOptions{}).Report
+}
+
+// RunSourceWith is [RunSourceContext] with the caller's own [RunOptions] —
+// the door a front that needs more than a verdict comes through, and today
+// that is the MCP debug adapter (#928 slice 3), which needs [RunOptions.Select]
+// to name one case and [RunOptions.Debugger] to drive it.
+//
+// Label is this door's to set, not the caller's: it is the report identity and
+// the coverage identity, and both are the label argument. Everything else the
+// caller brings. skipTranscript stays on for the reason it was set here at all
+// — the submitter is not the reader on this door, so the case account is
+// memory an untrusted submission shapes for nobody. A debugging session hears
+// the same account directly through [v1.RunObserver] instead, which is what
+// makes that discard cost a debug front nothing.
+func RunSourceWith(ctx context.Context, label string, workflowSource, testSource []byte, opts RunOptions) RunResult {
 	file, err := LoadSource(testSource)
 	if err != nil {
-		return &v1.TestReport{File: label, Refused: err.Error()}
+		return RunResult{Report: &v1.TestReport{File: label, Refused: err.Error()}}
 	}
 
 	// The loader parses the one submitted workflow per case, with no delivery
@@ -461,7 +487,10 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 	// submitted workflow. Coverage riding the report through [runSuite] is
 	// what makes this door answer with the same account the CLI's does
 	// (issue #931).
-	result := runSuite(ctx, file, RunOptions{Label: label, skipTranscript: true}, func(*Test) (loader, string) {
+	opts.Label = label
+	opts.skipTranscript = true
+
+	return runSuite(ctx, file, opts, func(*Test) (loader, string) {
 		return loader{
 			load: func() (*v1.Workflow, error) {
 				workflow, err := flowfile.Unmarshal(workflowSource)
@@ -474,7 +503,6 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 			deliveryPath: "",
 		}, label
 	})
-	return result.Report
 }
 
 // runCase runs one test and reports its verdict. load resolves the workflow
@@ -508,7 +536,7 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars map[string]any) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -525,9 +553,42 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		}
 	}()
 
+	// The redaction posture, established BEFORE anything can fail (#1072; Codex,
+	// #1197, eleventh). What a file withholds is load-time information — the
+	// taint closure is computed from the document and nothing setup does can add
+	// to it — so there is no reason for it to arrive late, and every reason not
+	// to: `workflow: "${vars.path}"` substitutes a withheld string into the very
+	// field the loader quotes back in `loading workflow %q`, and that exit is
+	// reached before the run's own sensitive values are known.
+	//
+	// It widens once the case's bound inputs and secrets are known (see below),
+	// and `caseError` always reads the current one, so an exit is protected by
+	// whatever is established by the time it is taken.
+	// Both halves that are knowable now: what the file withholds, and the case's
+	// own `secrets:` plaintext. The second belongs here for the same reason as
+	// the first — `test.Secrets` is on the case before anything runs — and it is
+	// needed here too, because a *literal* var named from `secrets:` is
+	// deliberately not in [withheldVars] (see [withheldMaterial]) and would
+	// otherwise reach a setup failure through the value it was substituted into.
+	posture := sensitiveInputs{}.WithValues(
+		append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...)...)
+
+	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
+	// surface in vars.go's containment table, and the one its own row predicted
+	// would be a leak until it met the row.
+	//
+	// Through [redactedErrorText], which *is* the pair every other rendering here
+	// uses: withhold entirely under a withholding posture, else the value
+	// comparison and then the substring backstop. Every exit below sets the
+	// error through this and none by assignment, so a seventh exit added later
+	// cannot quietly become a seventh surface.
+	caseError := func(format string, args ...any) {
+		result.Error = redactedErrorText(fmt.Sprintf(format, args...), posture)
+	}
+
 	compiled, err := compileStubs(test.Stubs)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -552,7 +613,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	workflow, err := load()
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 	// Reported to the caller for coverage: the workflow this case compiled is
@@ -566,7 +627,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// virtual day later.
 	stubs, err := bindStubs(compiled, workflow)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -575,13 +636,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// disagreeing with the workflow, and a whole virtual day of execution
 	// cannot make the claim checkable. See [checkExpectationNames].
 	if err := checkExpectationNames(&test.Expect, workflow); err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
-		result.Error = err.Error()
+		caseError("%s", err)
 		return
 	}
 
@@ -644,7 +705,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if test.Trigger != nil && test.Trigger.Replays() {
 		mapped, deliveryID, failures, err := replayDelivery(test, deliveryPath, workflow)
 		if err != nil {
-			result.Error = err.Error()
+			caseError("%s", err)
 			return
 		}
 		if len(failures) > 0 || mapped == nil {
@@ -689,7 +750,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		bound = b
 		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
 		if err != nil {
-			result.Error = fmt.Sprintf("resolving workflow %q's signal policy: %v", test.Workflow, err)
+			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
 			return
 		}
 		policies = resolved
@@ -713,13 +774,75 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// the substring backstop catches "Bearer " + secret. An empty value is
 	// skipped — replacing the empty string would mark every position in
 	// every line while protecting nothing.
-	for _, value := range test.Secrets {
-		if value == "" {
-			continue
+	sensitive = sensitive.WithValues(slices.Collect(maps.Values(test.Secrets))...)
+
+	// And what a computed var inherited from one (#1072, repair 4). The
+	// substring backstop above is complete only while no var can *transform*
+	// anything: `${vars.token.substring(0, 8)}` is a prefix of a secret, so it
+	// matches no sensitive value and contains none, and it would have printed
+	// in a witness in the clear. The taint is decided at load, by reference
+	// rather than by inspecting a value ([withheldFrom]), and this is where it
+	// becomes the one redaction set every surface of this case already shares.
+	sensitive = sensitive.WithValues(vars.withheld.text...)
+
+	// The posture widens to the case's own set here, which is a superset of what
+	// it was: `sensitive` now carries the file's withheld material as well as the
+	// run's inputs and secrets. Every exit taken from this point on renders
+	// through the fuller one, and every exit before it through what was already
+	// known — which is the whole of the ordering fix, in one assignment.
+	posture = sensitive
+
+	// A debugging session prints what the transcript prints, so it withholds
+	// what the transcript withholds (Codex, #1109). Capability-discovered the
+	// way the autopsy is: a debugger that does not implement it simply prints
+	// whatever it was going to, and the only implementation that exists is
+	// [flowdebug.Session]. Installed per case, because `sensitive` is this
+	// case's — its inputs, its secrets — and cleared afterward so a session
+	// driving a second case never carries the first one's rule.
+	//
+	// Installed only where it would do something, because the session reads
+	// "a redactor is installed" as "this case withholds values" and says so
+	// at the autopsy — a rule that redacts nothing would put that notice on
+	// every failing case.
+	if redact := sensitive; !redact.Empty() {
+		debugger := v1.DebuggerFromContext(ctx)
+
+		if redacting, ok := debugger.(interface {
+			SetRedactor(func(string) string)
+		}); ok {
+			redacting.SetRedactor(func(text string) string {
+				if redact.WithholdAll() {
+					return "[withheld]\n"
+				}
+
+				return redact.RedactSubstrings(text)
+			})
+			defer redacting.SetRedactor(nil)
 		}
-		sensitive.values = append(sensitive.values, value)
-		sensitive.substrings = append(sensitive.substrings, value)
+
+		// And the same set at the *value* seam, because the substring half of
+		// it deliberately omits short descendants — replacing every "7" in
+		// every line would make a transcript unreadable — so a sensitive
+		// `credentials: [7]` had nothing in `substrings` to catch it and
+		// `inspect inputs.credentials` printed it in full, while the ordinary
+		// transcript redacted the whole container (Codex, #1109). Values match
+		// by equality rather than by looking like something, which is exactly
+		// what a short descendant needs, and it is the same
+		// [redactSensitiveTree] every witness rendering already applies.
+		if redacting, ok := debugger.(interface {
+			SetValueRedactor(func(any) any)
+		}); ok {
+			redacting.SetValueRedactor(func(value any) any {
+				if redact.WithholdAll() {
+					return "[withheld]"
+				}
+
+				return redact.RedactTree(value)
+			})
+			defer redacting.SetValueRedactor(nil)
+		}
 	}
+
 	if recorder != nil {
 		recorder.sensitive = sensitive
 	}
@@ -768,7 +891,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder)
 	defer stopScripts()
 	if scriptErr != nil {
-		result.Error = scriptErr.Error()
+		caseError("%s", scriptErr)
 		return
 	}
 
@@ -789,11 +912,48 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
 
-	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
+	// An abandoned run is not a verdict about the workflow, whatever the case
+	// expected. `quit` ends the run wherever it stands, so a case declaring
+	// `expect.failed: true` would otherwise be *satisfied* by the debugger's
+	// own error and pass without ever reaching the failure it named — a
+	// debugger turning a red case green, which is the one thing `--debug` must
+	// never do (Codex, #1109). Reported as the case's error rather than as a
+	// failed expectation, because nothing about the expectations was actually
+	// judged.
+	if errors.Is(runErr, v1.ErrDebugSessionEnded) {
+		caseError("the debug session ended this run before it finished, so this "+
+			"case has no verdict: %v", runErr)
+		result.Passed = false
+
+		return
+	}
+
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
 	result.Passed = len(result.Failures) == 0
+
+	// The autopsy (#1072 decision 4's follow-on): a failing case under a
+	// debugging session stops once more, after the verdict, with the
+	// failures printed and the finished run's scope still questionable —
+	// the same [postRunScope] the checks were judged against, so what an
+	// author inspects here and what a check would have read are one thing.
+	// Capability-discovered the way an observing session is: a debugger
+	// that does not implement it simply ends when the run ends, and nothing
+	// here can change the verdict — it was reached above.
+	if !result.Passed {
+		if examiner, ok := v1.DebuggerFromContext(ctx).(interface {
+			Autopsy(context.Context, *v1.Scope, map[string]ref.Val, []string)
+		}); ok {
+			rendered := make([]string, 0, len(result.Failures))
+			for _, failure := range result.Failures {
+				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
+			}
+			scope := postRunScope(workflow, bound, outputs)
+			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, runErr, sensitive), rendered)
+		}
+	}
 
 	// Only for a run that completed: on one that failed, a stub the run never
 	// reached is legitimately unanswered, and the report cannot tell that
@@ -1254,7 +1414,7 @@ func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
 // failure mode a test framework may not have — a green test that should be
 // red is worse than a framework that cannot run at all, because the second
 // one is at least visibly broken.
-func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error) []*v1.Diagnostic {
+func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 
 	failed := runErr != nil
@@ -1402,7 +1562,7 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	}
 
 	if want.Outputs != nil {
-		failures = append(failures, compareOutputs(want.Outputs, outputs.GetRunOutputs().GetValues())...)
+		failures = append(failures, compareOutputs(want.Outputs, outputs.GetRunOutputs().GetValues(), sensitive)...)
 	}
 
 	return failures
@@ -1491,7 +1651,20 @@ func topLevelStepUniverse(nodes []*v1.Node, universe map[string]bool) {
 // expected, both directions: a missing key and an extra one are both
 // reported, because a case naming three outputs and getting a fourth
 // unexpected one is a case whose workflow no longer matches its own promise.
-func compareOutputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnostic {
+//
+// Every value it names goes through [redactedScalarText], which is the same
+// two passes and the same 48-rune cap the `expect.check` witnesses take
+// ([checkWitnesses]). The two are sibling halves of one `expect:` block and
+// were not the same: checks rendered through the redaction seam, outputs
+// through a bare `%v`, and `assertChecks` was handed the sensitive set on the
+// line below the call that was not. That is this repository's most-paid-for
+// shape — one question answered twice, and only one of the answers looked at.
+//
+// Both sides are rendered through it, not just the run's. An expected value is
+// written in the file, so it is the author's own — but a case may name a value
+// that *equals* a declared-sensitive one, and a diff printing it in the clear
+// beside the redacted actual would disclose it by elimination.
+func compareOutputs(want map[string]any, got map[string]*v1.Value, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 
 	for name, wantVal := range want {
@@ -1506,9 +1679,10 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnos
 		}
 		if errKind := gotVal.GetError(); errKind != nil {
 			failures = append(failures, &v1.Diagnostic{
-				Field:   "expect.outputs",
-				Value:   name,
-				Message: fmt.Sprintf("output %q: expected %v, but evaluating it failed: %s", name, wantVal, errKind.GetMessage()),
+				Field: "expect.outputs",
+				Value: name,
+				Message: fmt.Sprintf("output %q: expected %s, but evaluating it failed: %s",
+					name, redactedScalarText(wantVal, sensitive), redactedBareText(errKind.GetMessage(), sensitive)),
 			})
 			continue
 		}
@@ -1517,15 +1691,16 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnos
 			failures = append(failures, &v1.Diagnostic{
 				Field:   "expect.outputs",
 				Value:   name,
-				Message: fmt.Sprintf("output %q: could not compare: %v", name, err),
+				Message: fmt.Sprintf("output %q: could not compare: %s", name, redactedBareText(err.Error(), sensitive)),
 			})
 			continue
 		}
 		if !looseEqual(wantVal, gotNative) {
 			failures = append(failures, &v1.Diagnostic{
-				Field:   "expect.outputs",
-				Value:   name,
-				Message: fmt.Sprintf("output %q: expected %v, got %v", name, wantVal, gotNative),
+				Field: "expect.outputs",
+				Value: name,
+				Message: fmt.Sprintf("output %q: expected %s, got %s",
+					name, redactedScalarText(wantVal, sensitive), redactedScalarText(gotNative, sensitive)),
 			})
 		}
 	}

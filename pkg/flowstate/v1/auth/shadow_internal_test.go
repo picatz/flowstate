@@ -89,6 +89,106 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 	require.Len(t, fields, len(compared)+len(ignored), "a field listed in this test no longer exists on TrustedIssuer")
 }
 
+// TestClaimRuleFieldsAreAccountedFor is TestTrustedIssuerFieldsAreAccountedFor
+// one level down, and it exists because the level below is where the
+// containment check can go quietly wrong: a field added to [ClaimRule] that
+// [ClaimRule.check] reads and [ruleImplies] does not would make shadows report
+// a *correct* policy as broken, or miss a dead entry, with nothing failing.
+//
+// Add the field below with the reason it is or is not consulted.
+func TestClaimRuleFieldsAreAccountedFor(t *testing.T) {
+	compared := map[string]string{
+		"AnyOf":  "check accepts on it, so containment needs the narrow rule's list inside the broad rule's",
+		"NoneOf": "check refuses on it, so containment needs the broad rule's list inside the narrow rule's",
+	}
+
+	ignored := map[string]string{
+		"Claim": "claimRulesCover pairs rules by it before ruleImplies is asked anything",
+	}
+
+	fields := reflect.VisibleFields(reflect.TypeOf(ClaimRule{}))
+	for _, field := range fields {
+		_, isCompared := compared[field.Name]
+		_, isIgnored := ignored[field.Name]
+		require.Truef(t, isCompared != isIgnored,
+			"ClaimRule.%s is not accounted for in ruleImplies: decide whether ClaimRule.check reads it, "+
+				"compare it there if so, and record the answer in this test", field.Name)
+	}
+	require.Len(t, fields, len(compared)+len(ignored), "a field listed in this test no longer exists on ClaimRule")
+}
+
+// TestRuleImpliesPointsEachHalfTheRightWay drives [ruleImplies] directly, over
+// pairs the grid above cannot reach and over the one pair whose answer a
+// backwards NoneOf comparison would flip.
+//
+// It takes its inputs rather than reading a policy for the reason CLAUDE.md's
+// "assert where the answers differ" gives: the containment of two lists in
+// opposite directions is a decision whose wrong answers are all still
+// plausible-looking booleans, and the only way to see them is to hand it the
+// pairs where the two directions disagree.
+func TestRuleImpliesPointsEachHalfTheRightWay(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		narrow, broad ClaimRule
+		want          bool
+		why           string
+	}{
+		{
+			name:   "a subset of accepted values implies the superset",
+			narrow: RequireClaim("ref", "refs/heads/main"),
+			broad:  RequireClaimAnyOf("ref", "refs/heads/main", "refs/heads/dev"),
+			want:   true,
+			why:    "every value the narrow rule accepts, the broad rule accepts",
+		},
+		{
+			name:   "a superset of accepted values does not",
+			narrow: RequireClaimAnyOf("ref", "refs/heads/main", "refs/heads/dev"),
+			broad:  RequireClaim("ref", "refs/heads/main"),
+			want:   false,
+			why:    "a dev token satisfies the narrow rule and not the broad one",
+		},
+		{
+			name:   "excluding more implies excluding less",
+			narrow: RequireClaimNoneOf("ref", "refs/heads/main", "refs/heads/dev"),
+			broad:  RequireClaimNoneOf("ref", "refs/heads/main"),
+			want:   true,
+			why:    "NoneOf containment runs the other way from AnyOf's: more excluded is narrower",
+		},
+		{
+			name:   "excluding less does not imply excluding more",
+			narrow: RequireClaimNoneOf("ref", "refs/heads/main"),
+			broad:  RequireClaimNoneOf("ref", "refs/heads/main", "refs/heads/dev"),
+			want:   false,
+			why:    "a dev token satisfies the narrow rule and is refused by the broad one",
+		},
+		{
+			name:   "the tiered pair is disjoint in both directions",
+			narrow: RequireClaimNoneOf("ref", "refs/heads/main"),
+			broad:  RequireClaim("ref", "refs/heads/main"),
+			want:   false,
+			why:    "this is the pair ClaimRule.NoneOf exists to write; reporting it as shadowing would call a correct policy broken",
+		},
+		{
+			name:   "and the other way round",
+			narrow: RequireClaim("ref", "refs/heads/main"),
+			broad:  RequireClaimNoneOf("ref", "refs/heads/main"),
+			want:   false,
+			why:    "the excluded value is exactly the one the other entry takes",
+		},
+		{
+			name:   "an unconstrained rule is implied by nothing narrower it cannot see",
+			narrow: RequireClaim("ref", "refs/heads/main"),
+			broad:  ClaimRule{Claim: "ref"},
+			want:   true,
+			why:    "a broad rule with neither list checks nothing, so anything on the same claim implies it",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.Equal(t, testCase.want, ruleImplies(testCase.narrow, testCase.broad), testCase.why)
+		})
+	}
+}
+
 // shadowTestEntries is a grid over every field admits reads, wide enough that
 // each condition has a strictly broader and a strictly narrower value.
 func shadowTestEntries() []TrustedIssuer {
@@ -102,6 +202,17 @@ func shadowTestEntries() []TrustedIssuer {
 			{RequireClaimAnyOf("repository", "picatz/flowstate", "picatz/other")},
 			{RequireClaim("repository", "picatz/flowstate"), RequireClaim("ref", "refs/heads/main")},
 			{RequireClaim("ref", "refs/heads/main")},
+			// The exclusion half, in every arrangement that can disagree with
+			// the acceptance half: an exclusion alone, one that excludes
+			// strictly more, the other side of the tiered pair
+			// ClaimRule.NoneOf exists for, and one rule carrying both. Without
+			// these the differential check below cannot see ruleImplies at all
+			// — it would run the whole grid against rules that never set
+			// NoneOf and report agreement it never tested.
+			{RequireClaimNoneOf("ref", "refs/heads/main")},
+			{RequireClaimNoneOf("ref", "refs/heads/main", "refs/heads/dev")},
+			{RequireClaim("repository", "picatz/flowstate"), RequireClaimNoneOf("ref", "refs/heads/main")},
+			{{Claim: "ref", AnyOf: []string{"refs/heads/dev"}, NoneOf: []string{"refs/heads/main"}}},
 		}
 	)
 
@@ -148,6 +259,13 @@ func shadowTestTokens() []shadowToken {
 					{"repository": "picatz/other", "ref": "refs/heads/main"},
 					{"ref": "refs/heads/main"},
 					{"repository": []any{"picatz/flowstate", "picatz/third"}},
+					// The values an exclusion can land on: one it names, one it
+					// does not, and a list carrying both — the case where
+					// "some element is permitted" and "no element is refused"
+					// give different answers.
+					{"repository": "picatz/flowstate", "ref": "refs/heads/dev"},
+					{"repository": "picatz/flowstate", "ref": "refs/heads/topic"},
+					{"repository": "picatz/flowstate", "ref": []any{"refs/heads/main", "refs/heads/topic"}},
 				} {
 					tokens = append(tokens, shadowToken{
 						alg:       alg,

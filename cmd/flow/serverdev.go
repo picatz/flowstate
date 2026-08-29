@@ -194,6 +194,11 @@ flow server dev -o json`,
 			"than silently ignoring the authentication a deployment configured")
 	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 
+	// picatz/flowstate#1018, same flag `flow server` takes: whether an audit
+	// sink's own failure fails the request. Auditing itself is unconditional —
+	// see [addAuditRequiredFlag]'s help.
+	addAuditRequiredFlag(cmd)
+
 	// The resolved endpoints as data, so a script or an agent can start the
 	// stack and then address it without parsing prose.
 	addOutputFlag(cmd)
@@ -574,6 +579,13 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		server.WithDataConverter(cfg.Codec.DataConverter()),
 		server.WithPluginCatalog(pluginCatalog),
 
+		// The namespace this whole stack is pointed at, told to the server as
+		// well as to the registration below. The constant is the source in this
+		// command for the reason its own doc gives — [devRefusals] has already
+		// established that no Temporal environment configuration is in play — so
+		// unlike `flow server` there is no resolution step to read it out of.
+		server.WithTemporalNamespace(devTemporalNamespace),
+
 		// The one thing this command has that neither `flow server` nor
 		// `flow worker` can have: the control plane below and the worker a few
 		// lines down share the single client this function opened, which is the
@@ -589,6 +601,17 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		// eager dispatch to step around.
 		server.WithEagerWorkflowStart(),
 	}
+
+	// picatz/flowstate#1018: this stack's own control plane gets the same audit
+	// trail `flow server` does. Built after the temporalConfig call above, for
+	// the same startTelemetry-ordering reason [runServer] states.
+	auditRequired, _ := cmd.Flags().GetBool(auditRequiredFlag)
+	recorder, err := startAudit(cmd.Context(), auditRequired)
+	if err != nil {
+		return fmt.Errorf("configuring the audit trail: %w", err)
+	}
+	serverOpts = append(serverOpts, server.WithAudit(recorder))
+
 	if err := server.EnsureSearchAttributesRegistered(cmd.Context(), temporal, devTemporalNamespace); err != nil {
 		logger.Warn("could not register Flowstate's search attributes; "+
 			"`flow list --filter` still works, scanning executions rather than querying an index",
@@ -676,8 +699,10 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	// stops, then the client it polls through closes, then the plugins it
 	// dispatched to, then the Temporal child process. Telemetry is flushed here,
 	// before any of that, so the last spans belong to a stack that was still
-	// whole when they were recorded.
+	// whole when they were recorded. The audit trail's own OTel sink, same
+	// shape, same reason.
 	flushTelemetry()
+	flushAudit()
 
 	return nil
 }

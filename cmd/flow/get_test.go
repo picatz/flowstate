@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -462,22 +463,28 @@ func TestAPendingActivityLineSaysWhatItIsDoing(t *testing.T) {
 
 	now := time.Now()
 
-	lines := pendingActivityLines([]*v1.PendingActivity{
+	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 		{Attempt: 1, Phase: "reading the response"},
-	}, now)
+	}}, now)
 
-	require.Equal(t, []string{"retrying, attempt 1, reading the response"}, lines)
+	// Running, not retrying. A pending activity on its first attempt with no next
+	// attempt due has simply not finished, and calling that a retry tells an
+	// operator a step is failing when nothing has failed — the first thing they
+	// would do about it is go looking for an error that is not there. This line
+	// said "retrying" for every pending activity until the server began reading
+	// the field its own schema describes (Codex, #1142).
+	require.Equal(t, []string{"running, attempt 1, reading the response"}, lines)
 
 	// A phase is an aside about the attempt running now; a failure and a countdown
 	// describe attempts that are over. So the phase goes last, and the order is
 	// asserted rather than the presence of each part — a line that reported what a
 	// finished attempt is doing would read as a contradiction.
-	lines = pendingActivityLines([]*v1.PendingActivity{{
+	lines = pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
 		Attempt:                  3,
 		LastFailure:              "connection refused",
 		NextAttemptScheduledTime: timestamppb.New(now.Add(4 * time.Second)),
 		Phase:                    "requesting",
-	}}, now)
+	}}}, now)
 
 	require.Equal(t,
 		[]string{"retrying, attempt 3: connection refused (next attempt in 4s), requesting"},
@@ -496,9 +503,89 @@ func TestAPendingActivityLineSaysWhatItIsDoing(t *testing.T) {
 func TestAPendingActivityWithNoPhaseSaysNothingAboutIt(t *testing.T) {
 	t.Parallel()
 
-	lines := pendingActivityLines([]*v1.PendingActivity{
+	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{
 		{Attempt: 2, LastFailure: "boom"},
-	}, time.Now())
+	}}, time.Now())
 
-	require.Equal(t, []string{"retrying, attempt 2: boom"}, lines)
+	// A second attempt with no next one due is *running*, and it carries the
+	// first attempt's failure while it runs — which is why the failure alone
+	// cannot decide the word.
+	require.Equal(t, []string{"running, attempt 2: boom"}, lines)
+}
+
+// TestAPendingActivityLineCannotBeSplitByItsOwnFailure covers a hole this
+// function had before `flow timeline` was written, and which reviewing that
+// command's rendering is what surfaced.
+//
+// A pending activity's `last_failure` is the workload's own sentence, and it
+// was concatenated into a printed line bare. A newline in it makes what looks
+// like a second retrying step, and an ANSI escape restyles the terminal from
+// inside a `flow get` answer. Both surfaces that render this — `flow get` and
+// `flow watch` — got it, because there is one renderer.
+func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
+	t.Parallel()
+
+	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
+		Attempt:     2,
+		LastFailure: "boom\nrunning, attempt 9: totally fine\x1b[31m",
+	}}}, time.Now())
+
+	require.Len(t, lines, 1, "one pending activity produced more than one line")
+
+	assert.NotContains(t, lines[0], "\n",
+		"a failure message with a newline invented a line that reads as another retrying step")
+	assert.NotContains(t, lines[0], "\x1b",
+		"a workload's failure text chose how the reader's terminal looks")
+
+	// Escaping is not redaction: the diagnosis still has to be readable.
+	assert.Contains(t, lines[0], "boom")
+	assert.Contains(t, lines[0], "running, attempt 2")
+}
+
+// TestAPendingActivityListSaysWhenItIsPartial is the notice that existed on the
+// wire and reached nobody.
+//
+// The server bounds how many retrying steps it projects and reports
+// `pending_activities_truncated` beside them, exactly as it does for gates —
+// and no reader here read it, so a run retrying sixty-four steps printed four
+// lines and stopped, which reads as a run retrying four. That is the difference
+// between a slow run and a stuck one, and it is the whole question `flow get`
+// grew pending activities to answer (#1119).
+//
+// Both surfaces render through this function, so there is one test rather than
+// two.
+func TestAPendingActivityListSaysWhenItIsPartial(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	// Genuinely retrying rather than merely pending, because that is what this
+	// notice counts: a next attempt is due, so the step is waiting rather than
+	// running. Without the due time it is a *running* attempt, and the sentence
+	// about "more retrying steps" would be counting something else.
+	retrying := &v1.PendingActivity{
+		Attempt:                  2,
+		LastFailure:              "boom",
+		NextAttemptScheduledTime: timestamppb.New(now.Add(4 * time.Second)),
+	}
+
+	partial := pendingActivityLines(&v1.GetResponse{
+		PendingActivities:          []*v1.PendingActivity{retrying},
+		PendingActivitiesTruncated: true,
+	}, now)
+
+	require.Equal(t, []string{
+		"retrying, attempt 2: boom (next attempt in 4s)",
+		"and more retrying steps than this run reports",
+	}, partial, "a bounded list of retrying steps was presented as the whole of it")
+
+	// The negative direction, which is what keeps the notice meaningful: an
+	// answer that *is* complete must not carry it, or every run reads as one
+	// with more going on than it says.
+	whole := pendingActivityLines(&v1.GetResponse{
+		PendingActivities: []*v1.PendingActivity{retrying},
+	}, now)
+
+	require.Equal(t, []string{"retrying, attempt 2: boom (next attempt in 4s)"}, whole,
+		"a complete list of retrying steps claimed there were more")
 }

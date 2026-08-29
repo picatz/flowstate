@@ -127,7 +127,8 @@ func DefaultStepTimeouts() StepTimeouts {
 	}
 }
 
-// StepTimeoutsFor applies a step's declared `timeout:` over the given defaults.
+// StepTimeoutsFor applies a step's declared `timeout:` and `total_timeout:` over
+// the given defaults.
 //
 // The precedence is the durable driver's, because it is the durable driver's:
 // `engine/policy.go` calls this to build its activity options, and the local
@@ -137,10 +138,25 @@ func DefaultStepTimeouts() StepTimeouts {
 // would leave a step cut short by a ceiling derived from defaults rather than by
 // its own policy.
 //
+// A declared `total_timeout:` replaces the overall bound outright, and
+// **suppresses that widening**. The widening exists to keep a default from
+// overriding what an author wrote; once the author has written the overall bound
+// themselves there is nothing left for it to protect, and extending a budget its
+// author chose is the one thing a budget must not do. So a step declaring both
+// keys gets exactly the two numbers it declared, even where they do not fit each
+// other — a `total_timeout:` smaller than `timeout: × attempts` is a deliberate
+// statement that the step gets fewer attempts than the count allows, which is
+// what a wall-clock SLA means.
+//
 // A step declaring nothing takes the defaults unchanged, which is what makes the
 // two drivers agree about the step nobody wrote a `timeout:` for.
 func StepTimeoutsFor(policy *StepPolicy, base StepTimeouts) StepTimeouts {
 	out := base
+
+	total := policy.GetTotalTimeout().AsDuration()
+	if total > 0 {
+		out.ScheduleToClose = total
+	}
 
 	timeout := policy.GetTimeout().AsDuration()
 	if timeout <= 0 {
@@ -148,9 +164,11 @@ func StepTimeoutsFor(policy *StepPolicy, base StepTimeouts) StepTimeouts {
 	}
 	out.StartToClose = timeout
 
-	if attempts := RetryAttemptsFor(policy.GetRetry()); attempts > 0 {
-		if budget := timeout * time.Duration(attempts); budget > out.ScheduleToClose {
-			out.ScheduleToClose = budget
+	if total <= 0 {
+		if attempts := RetryAttemptsFor(policy.GetRetry()); attempts > 0 {
+			if budget := timeout * time.Duration(attempts); budget > out.ScheduleToClose {
+				out.ScheduleToClose = budget
+			}
 		}
 	}
 

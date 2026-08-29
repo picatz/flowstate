@@ -57,6 +57,57 @@ func TestCheckBounds(t *testing.T) {
 	}
 }
 
+func TestTableCheckBoundsRunBeforeRowsAreExpanded(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		entryChecks int
+		rowChecks   int
+		rows        int
+		want        string
+	}{
+		{
+			name:        "entry before row multiplication",
+			entryChecks: flowtest.MaxChecksPerTest + 1,
+			rows:        flowtest.MaxTestsPerFile,
+			want:        "table entry",
+		},
+		{
+			name:        "effective row after entry merge",
+			entryChecks: flowtest.MaxChecksPerTest,
+			rowChecks:   1,
+			rows:        1,
+			want:        "after its table entry is applied",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var b strings.Builder
+			b.WriteString("tests:\n  - name: a table\n    workflow: ./workflow.yaml\n    expect:\n      check:\n")
+			for range tc.entryChecks {
+				b.WriteString("        - true\n")
+			}
+			b.WriteString("    cases:\n")
+			for i := range tc.rows {
+				fmt.Fprintf(&b, "      - name: row-%d\n", i)
+				if tc.rowChecks > 0 {
+					b.WriteString("        expect:\n          check:\n")
+					for range tc.rowChecks {
+						b.WriteString("            - true\n")
+					}
+				}
+			}
+
+			_, err := flowtest.LoadSource([]byte(b.String()))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.want)
+			require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxChecksPerTest))
+		})
+	}
+}
+
 // `expect.check:` (#1072): CEL claims over the finished run, witnessed on
 // failure — the values a red claim read, printed beside it, redacted through
 // the one spelling every other surface uses.

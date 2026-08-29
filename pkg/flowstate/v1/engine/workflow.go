@@ -269,10 +269,33 @@ func recordedStepError(err error) (string, bool) {
 // falls through to [v1.ClassifyError], whose own default (Internal, for a
 // non-nil error it does not otherwise recognize) is the right answer for a
 // failure that crossed the boundary in a shape nothing here expected.
+//
+// A [temporal.TimeoutError] is checked before the application error, and the
+// order is the same line [durableStepTimeoutMessage] draws for the same reason,
+// stated there at length: a schedule-to-close budget that expires after a
+// retryable failure wraps the last attempt's [temporal.ApplicationError] as the
+// timeout's own cause, and `errors.As` walks straight through to find it — so
+// asking about an application error first answers with the stale prior
+// attempt's classification and hides that the budget is what ended the step.
+// The message and the kind must name the same fact, and they now decide it the
+// same way round.
+//
+// Every timeout type is one answer, not only the two a step's policy names.
+// [durableStepTimeoutMessage] returns err untranslated for schedule-to-start
+// and heartbeat because there is no per-step budget value it could quote for
+// those — but "which budget" is a question about the sentence, not about the
+// classification: a worker that never picked the activity up and a worker that
+// stopped reporting progress both ended the attempt on time rather than on a
+// fault, and neither is a defect in Flowstate (#915).
 func recordedStepKind(err error) v1.ErrorKind {
 	var run *ErrRunFailed
 	if errors.As(err, &run) && run.Kind != "" {
 		return run.Kind
+	}
+
+	var timeoutErr *temporal.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return v1.ErrorKindTimeout
 	}
 
 	var app *temporal.ApplicationError
@@ -311,12 +334,30 @@ const defaultMaxStepsPerRun = 200
 // passed to NewContinueAsNewErrorWithOptions, and a workflow's own dispatch
 // table always points at the registered name.
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
+	workflowName := st.GetWorkflow().GetName()
+
+	// #917's run-lifecycle metrics. Recorded here, around the whole of this
+	// segment, rather than inside runWorkflow: this is the one function every
+	// entry to a segment and every exit from one already passes through — the
+	// choke point [classifyRunError]'s own doc names for the identical reason
+	// — so it is the one place a start and a completion can be counted without
+	// adding a second seam runWorkflow's several return statements would each
+	// have to remember. workflow.Now is the deterministic clock every other
+	// duration in this package uses; see recordRunStart/recordRunCompletion
+	// for why a Continue-As-New segment records at most one of the two.
+	recordRunStart(ctx, workflowName)
+	started := workflow.Now(ctx)
+
 	outputs, err := runWorkflow(ctx, st)
 
 	// Both halves pass through unchanged, including the partial transcript a failed
 	// run carries: Temporal drops the result when the error is non-nil, so this is
 	// the honest shape rather than a value worth suppressing here.
-	return outputs, classifyRunError(err)
+	err = classifyRunError(err)
+
+	recordRunCompletion(ctx, workflowName, err, workflow.Now(ctx).Sub(started))
+
+	return outputs, err
 }
 
 // classifyRunError puts a terminal run failure's [v1.ErrorKind] where a client
@@ -438,7 +479,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	vars := st.GetVars()
 	if len(vars) == 0 && len(st.GetWorkflow().GetVars()) > 0 {
 		var evaluated v1.Scope
-		if err := workflow.ExecuteActivity(ctx, WorkflowVars, &v1.Scope{
+		if err := workflow.ExecuteActivity(withSummary(ctx, runVarsSummary), WorkflowVars, &v1.Scope{
 			AmbientVars: st.GetWorkflow().GetVars(),
 			Profile:     st.GetWorkflow().GetProfile(),
 

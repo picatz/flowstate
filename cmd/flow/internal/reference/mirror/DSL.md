@@ -85,6 +85,7 @@ headings below, not this list.*
   - [State: one carried value, named bare, updated explicitly](#state-one-carried-value-named-bare-updated-explicitly)
   - [Reading a loop's result: `results` and `state`, not the `as:` name](#reading-a-loops-result-results-and-state-not-the-as-name)
   - [`results` is bounded, and retained across Continue-As-New only when read](#results-is-bounded-and-retained-across-continue-as-new-only-when-read)
+  - [The burst case has its own spelling: `wait_for_signals:`](#the-burst-case-has-its-own-spelling-wait_for_signals)
   - [Bounded, because the author does not control the trip count](#bounded-because-the-author-does-not-control-the-trip-count)
   - [A `for_each` is bounded on its trip count too](#a-for_each-is-bounded-on-its-trip-count-too)
   - [Both drivers, and determinism](#both-drivers-and-determinism)
@@ -130,6 +131,19 @@ headings below, not this list.*
   - [Why a label is not an input](#why-a-label-is-not-an-input)
   - [What it is for: the filter](#what-it-is-for-the-filter)
   - [The memo, not a search attribute](#the-memo-not-a-search-attribute)
+- [The twelfth round: three clocks, and the one an SLA means](#the-twelfth-round-three-clocks-and-the-one-an-sla-means)
+  - [The bound existed; the sentence for it did not](#the-bound-existed-the-sentence-for-it-did-not)
+  - [The spelling](#the-spelling-3)
+  - [On the step, not under `retry:`](#on-the-step-not-under-retry)
+  - [Three timeouts, three different promises](#three-timeouts-three-different-promises)
+  - [An explicit value wins outright](#an-explicit-value-wins-outright)
+  - [What it deliberately does not add](#what-it-deliberately-does-not-add)
+- [The thirteenth round: `concurrency:`, and the permit that is a run](#the-thirteenth-round-concurrency-and-the-permit-that-is-a-run)
+  - [The spelling](#the-spelling-4)
+  - [The permit is a workflow id](#the-permit-is-a-workflow-id)
+  - [Three answers, because an id can give three](#three-answers-because-an-id-can-give-three)
+  - [Submit-time, which is why both drivers agree](#submit-time-which-is-why-both-drivers-agree)
+  - [What it does not do](#what-it-does-not-do)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -496,8 +510,11 @@ to be about one key. It edits the lines it must, copies the rest through byte fo
 so a file with nothing to change comes back identical, which is what makes running it
 over a directory safe — and refuses the shapes it would have to guess at: flow style,
 which has no line structure to rewrite, and — since the [strict YAML
-profile](#the-grammar-is-a-strict-subset-of-yaml) — any file carrying an anchor,
-alias, or merge key, which the grammar no longer accepts at all. A refusal exits
+profile](#the-grammar-is-a-strict-subset-of-yaml) — a merge key (`<<:`), whose
+precedence rule cannot be reproduced without deciding which spelling of a colliding
+key the author meant. A whole-value alias is *not* in that set: it is replaced by
+the anchored value's own source bytes and the anchor marker is dropped, which is
+mechanical and decides nothing. A refusal exits
 non-zero, as does `--check` finding work,
 so `flow fix . && git commit` cannot succeed over a file still written in a spelling
 nothing compiles.
@@ -547,24 +564,47 @@ omission. An edition boundary — a newer edition refusing what the edition a fi
 declares still resolves — would mean this build carried two grammars, which is
 precisely the cost the no-deprecation decision above was made to avoid: declaring
 an older edition has never made an older grammar compile. So a file is refused
-for an anchor whatever it says its edition is, and `flow fix` leaves it byte for
-byte alone rather than stamping it forward. The cost, paid knowingly: an author
-on an older edition spells the construct out by hand *before* `flow fix` will
-bring the file forward, rather than getting both in one pass.
+for an anchor whatever it says its edition is.
+
+What `flow fix` does with such a file is a separate question from what the compiler
+says about it, and the answer is: it carries it across where it can do so
+mechanically. A **whole-value alias** — `retry: *backoff`, `- *host`, an alias that
+is the entire value of a key or a whole list item — is replaced by the source bytes
+of the value its anchor names, and every anchor marker is dropped, in the same run
+that stamps the edition forward. Copying source lines rather than re-rendering the
+parsed value is what keeps the comments among them, and the author's own quoting
+of them, exactly as written.
+
+A **merge key** is not carried across. `<<: *base` beside a sibling key is a
+*precedence* rule, so writing the merged keys out means deciding which spelling of
+a colliding key wins — judgement, which `flow fix` does not exercise. The same goes
+for anything else the rewriter cannot copy byte-safely: an alias inside flow style,
+an alias naming an anchor the document never declares, an anchor declared twice, a
+cycle. Each of those refuses the *whole* file with a positioned diagnostic saying
+which construct and why, and the bytes are left exactly alone — half-inlined
+aliases would leave a document where a surviving alias names an anchor that is
+already gone.
+
+Inlining is also the one place in the front end that follows an alias at all, so it
+is where the total-node budget stops being redundant: every expansion is charged
+against the same `maxNodes` the compiler bounds a document by, and a chain is
+bounded by `maxAliasDepth` with the anchors being expanded held on a stack. A
+billion-laughs document is refused rather than expanded — a `flow fix` that wrote a
+file larger than the compiler will read would be breaking the file it was fixing.
+See `flowfile/fixalias.go`.
 
 What this profile deliberately does **not** reach is plain-scalar typing:
 `message: 0o777` still compiles to the integer 511, and a bare `2026.1` still
 arrives as a float. That is the YAML substrate no profile of *constructs* touches,
 and it stays the open question behind #546.
 
-Two follow-ups are named rather than done here. `flow fix` **refuses** a file
-holding one of the three constructs today, in the same words the compiler uses,
-rather than mechanically inlining it on the way across an edition — the inlining is
-byte-safe and requires no judgement, so it is worth doing, but it is a rewriter of
-its own. And the machinery the refusal makes redundant (the cycle pass, the
-merge branch of the node budget, the formatter's merge handling) is left in place:
-closing the door is this change; removing the corridor behind it is cleanup a
-reviewer should read on its own.
+One follow-up is named rather than done here: the machinery the refusal makes
+redundant *on the compile path* (the cycle pass, the formatter's merge handling) is
+left in place, because closing the door is this change and removing the corridor
+behind it is cleanup a reviewer should read on its own. The node budget and the
+alias-depth bound are not part of that cleanup at all — `flow fix`'s inlining and
+the pin collector both still follow aliases on input an outside party chooses, so
+those two bounds are load-bearing rather than redundant.
 
 ### The type system is not a later phase
 
@@ -1567,14 +1607,16 @@ offline from a stored delivery, with no network and no receiver:
 
 ```yaml
 tests:
-  - name: a stripe delivery starts a run with the mapped inputs
+  - name: a stripe delivery verifies against the bound key and starts a run
     workflow: ./workflow.yaml
+    secrets:
+      "env:STRIPE_WEBHOOK_SECRET": whsec_example_fixture_key
     trigger:
       webhook: stripe
       payload: ./testdata/stripe-charge.json   # one JSON document: headers and body
     expect:
       inputs: { order_id: ord_H1x9, amount: 4200 }
-      idempotency_key: t=1755043200,v1=6f0b…
+      idempotency_key: t=1577836800,v1=922e…
 
   - name: an unverifiable delivery is refused, and no run happens
     workflow: ./workflow.yaml
@@ -1588,10 +1630,19 @@ tests:
 
 No network, deterministic, and it turns the argument mapping into a unit test — the
 one part of a workflow that would otherwise be debuggable only in production. The
-mapping is real; the verification *outcome* is declared rather than computed, so a
-case can assert what happens to a delivery that does not verify without holding a
-signing key. `examples/webhook-trigger` is the worked example, and it runs in CI like
-the rest.
+mapping is real, and the verification *outcome* is computed or declared depending on
+what the case supplies. When its `secrets:` binds every key the trigger's `verify:`
+names — the first case above — the outcome comes from the same signature arithmetic
+the served receiver runs, over the fixture's exact `body` bytes, with the signed
+timestamp checked against `flow test`'s own clock epoch (2020-01-01T00:00Z), so a
+signed fixture verifies identically forever and an edited payload must be re-signed
+with the bound key. With no keys bound, `signature: valid|invalid` declares the
+outcome instead, so a case can still assert what happens to a delivery that does not
+verify without holding a signing key. Binding the keys *and* declaring `signature:`
+is refused, naming both, because a declaration that could contradict the arithmetic
+is one fact written down twice. `examples/webhook-trigger` is the worked example —
+its third case replays a captured delivery with an edited body and asserts the
+arithmetic refuses it — and it runs in CI like the rest.
 
 ### `manual:` narrows, and the body can read how a run started
 
@@ -2270,41 +2321,39 @@ exactly as written below.
 edition: v2026.3
 name: deploy
 description: Ship a build, gate production behind a human, then page in order.
-
 vars:
+  api: https://deploys.internal.example.com
+  oncall:
+    - ada
+    - grace
+    - katherine
   service: billing
   version: 2026.07.30-r1
-  api: https://deploys.internal.example.com
-  oncall: [ada, grace, katherine]
-
 steps:
   - id: submit
     description: Ask the deployment API to roll the service.
+    retry:
+      attempts: 3
     http:
-      method: POST
-      url: ${vars.api + '/deployments'}
+      expect: ${response.status_code == 202}
       json:
         service: ${vars.service}
         version: ${vars.version}
-      parse_json: true
-      expect: ${response.status_code == 202}
+      method: POST
       outputs:
         deployment: ${response.json.id}
-    retry:
-      attempts: 3
-
+      parse_json: true
+      url: ${vars.api + "/deployments"}
   - id: approval
     description: A human approves the roll, or the day ends without one.
     wait_for_signal:
       name: approve
       timeout: 24h
-
   - id: halt
     if: ${steps.approval.timed_out || !steps.approval.payload.approved}
     log:
       level: warn
-      message: ${'deployment %s not approved; stopping'.format([steps.submit.deployment])}
-
+      message: ${"deployment %s not approved; stopping".format([steps.submit.deployment])}
   - id: page
     if: ${!steps.approval.timed_out && steps.approval.payload.approved}
     for_each:
@@ -2314,13 +2363,13 @@ steps:
       steps:
         - id: notify
           log:
-            # Quoted, because the `: ` inside the format string is YAML mapping syntax.
-            message: "${'paging %s: %s %s is rolling'.format([person, vars.service, vars.version])}"
             fields:
               deployment: ${steps.submit.deployment}
               # sender, not payload: who approved this is attested by the
               # server, never a field the approver typed in — see #194.
               approved_by: ${steps.approval.sender.identity.subject}
+            # Quoted, because the `: ` inside the format string is YAML mapping syntax.
+            message: '${"paging %s: %s %s is rolling".format([person, vars.service, vars.version])}'
 ```
 
 Worth noticing what is absent: no `cel:`, no `expr:` nested inside anything, no
@@ -3516,6 +3565,80 @@ loop is bounded only by `max_iterations:`, same as it always was; this is the sa
 local-cannot-rehearse-a-CAN-seam boundary the section above already states for
 `update:`'s "never evaluated after `until:` holds" case, one instance of a general
 rule rather than a new one.
+
+### The burst case has its own spelling: `wait_for_signals:`
+
+The paragraph above names the entity accumulator's cost — one `results` entry per
+signal, forever — and the retention rules bound it. What they do not do is remove
+the reason it is there, which is that `wait_for_signal:` consumes exactly one
+buffered delivery per iteration. Fifty orders placed in the same second cost fifty
+iterations of the loop around it.
+
+`wait_for_signals:` is the spelling for that case. It waits exactly as
+`wait_for_signal:` does — same durable timer, same `timeout:`, same cancellation —
+until the *first* delivery, then takes everything else already buffered without
+waiting again:
+
+```yaml
+- id: settle
+  sleep: 30s
+
+- id: batch
+  wait_for_signals:
+    name: order-placed
+    max_batch: 50
+    timeout: 5m
+    outputs:
+      ids: ${deliveries.map(delivery, delivery.payload.id)}
+      processed: ${count}
+      timed_out: ${timed_out}
+```
+
+`examples/signal-batch-drain` writes it out with its own tests.
+
+**What batching actually removes, stated exactly, because the obvious reading is
+wrong.** A signal costs one `WorkflowExecutionSignaled` event in history whether it
+is drained in a batch or consumed one at a time, and nothing can change that: the
+event is written when the sender's RPC is accepted, long before any workflow code
+decides how to read it. What the per-iteration shape pays *on top* of that is what a
+batch removes — a workflow task per iteration (Scheduled/Started/Completed, plus
+whatever the body schedules), and one `Workflow.StepOutputs` entry per iteration
+weighed against `MaxLoopResultsBytes`. A burst drained in one step coalesces into a
+handful of workflow tasks, because signals arriving while a task is already pending
+are delivered into that same task, and records one results entry.
+
+So: fewer workflow tasks and one results entry instead of N, not fewer signal
+events. Anyone claiming the latter is measuring the wrong column.
+
+**It binds different names, which is why it is a fifth arm of `Wait` and not a
+`drain: true` flag on the fourth.** A drain's `outputs:` sees `deliveries` (a list
+of `{payload, sender}` maps, oldest first), `count`, and `timed_out`. It does not
+see `payload` or `sender`, because a batch has many of each and a name that silently
+meant "the first one" is the sort of value an author reads once and branches on
+forever. A flag inside `wait_for_signal:` would make every `outputs:` expression's
+validity depend on a sibling key's value — a *reported* refusal where the schema's
+own comment on `Signal.outputs` argues for a structural one, and that argument
+applies here unchanged.
+
+**Bounded by count, because count is what the far side chooses.** `max_batch:` is
+capped at `MaxPendingSignals`, which is also what an omitted key means. Bytes follow
+from the count: each delivery is already bounded by `MaxSignalPayloadBytes` at
+admission, so a bounded count bounds the whole. What is left past the bound is
+neither dropped nor re-buffered — it stays on the channel, and the next drain takes
+it, which is what a `loop:` around this step already wants. Reaching the bound
+therefore costs an iteration rather than an event.
+
+**Admission is unchanged, and deliberately so.** `SignalPolicyCheck` and
+`CheckSignalPayloadSize` run at the `Signal` RPC, before a delivery reaches any
+channel, so every delivery in a batch was individually admitted against the sender
+the server attested for it. A batch cannot route around per-sender policy, because
+the policy is not at receive time. There was nothing new to build here — only
+something to keep true.
+
+**A settle window is deliberately not part of this.** "Drain once nothing new has
+arrived for 30s" is a second durable timer per iteration and a distinct feature. A
+*fixed* batching window is expressible today, as an ordinary `sleep:` before the
+drain — which is what `settle` is above.
 
 ### Bounded, because the author does not control the trip count
 
@@ -5002,8 +5125,8 @@ name. This round is that vocabulary.
 edition: v2026.3
 name: nightly-etl
 labels:
-  team: payments
   cost-center: cc-1234
+  team: payments
 steps:
   - id: gather
     log:
@@ -5073,6 +5196,228 @@ anything, because a visibility query is an optimization hint and never a boundar
 `versioning_info` rather than a memo, because it is a fact about where the run is
 *executing* — one that legitimately changes at Continue-As-New — and a memo written at
 submit would freeze a value the run itself does not honour.
+
+## The twelfth round: three clocks, and the one an SLA means
+
+### The bound existed; the sentence for it did not
+
+A step has always been bounded twice. `timeout:` bounds one attempt, and
+`v1.DefaultScheduleToCloseTimeout` — ten minutes — bounds the step across every
+attempt and every wait between them, on both drivers, whether or not the step
+writes a `retry:` block at all. The durable driver passes the second to Temporal
+as the activity's `ScheduleToCloseTimeout`; the local driver wraps its retry loop
+in a context deadline carrying that same value as a named cause. One precedence
+function, `v1.StepTimeoutsFor`, decides both for both drivers.
+
+What no Flowfile could do was *say what the second one is*. An author who needed
+"give up after ten minutes, however many tries that takes" had to work backwards
+from the backoff curve to an attempt count — arithmetic that is wrong the moment
+any interval changes, and that says nothing about the thing they actually meant.
+That is this repository's own definition of scaffolding: a capability complete,
+tested, and unreachable from a file.
+
+### The spelling
+
+```yaml
+- id: provision
+  http:
+    method: POST
+    url: https://api.example.com/clusters
+  timeout: 30s         # one attempt
+  total_timeout: 10m   # the deadline: stop after ten minutes, whatever the attempts
+  retry:
+    attempts: 20
+    interval: 5s
+    backoff: 2
+```
+
+### On the step, not under `retry:`
+
+The obvious place is inside `retry:`, beside `attempts:` and `interval:`, and it
+is the wrong one. The bound this key names already applies to a step with no
+`retry:` block whatsoever: a single twenty-minute attempt is cut at ten minutes
+today. Writing it under `retry:` would spell "this bound exists only when
+retrying does", which is false of the mechanism it maps to, and would leave an
+author with no way to bound a step that never retries.
+
+So `retry:` remains the one spelling of *retry*, and this is the one spelling of
+the step's other clock — exactly as `v1.StepTimeouts` already pairs the two as
+one type in the package both drivers import.
+
+The name is `total_timeout:` and not `schedule_to_close:`. The Go type is named
+after Temporal's option deliberately and internally; the schema is public, and a
+public key naming a transport is a transport we can never change.
+
+### Three timeouts, three different promises
+
+The cost of putting it here is that an author now has three keys with `timeout`
+in the name, and they must read as three different promises rather than three
+spellings of one:
+
+| key | what it bounds | what happens when it fires |
+| --- | --- | --- |
+| `timeout:` on a step | one attempt at it | the attempt fails; `retry:` may try again |
+| `total_timeout:` on a step | the step, across every attempt and every wait between them | the step fails; there is no further attempt |
+| `timeout:` inside `wait_for_signal:` | how long the gate waits | not a failure at all: the step produces `timed_out: true` and the run carries on |
+
+The third is the one that is genuinely a different kind of thing, and it always
+was. The first two are the same kind of thing at two scales, which is why they
+sit next to each other on the step and why `flow fix` writes them in that order.
+
+### An explicit value wins outright
+
+One behavioral decision, and it is the only one this round makes.
+`StepTimeoutsFor` *widens* the overall bound when a declared `timeout:`
+multiplied by the attempts allowed would not fit inside it — otherwise a step
+declaring a five-minute `timeout:` would be cut short at ten minutes by a
+ceiling derived from defaults rather than by its own policy.
+
+A declared `total_timeout:` **suppresses that widening**. The widening exists to
+stop a default from overriding what an author wrote; once the author has written
+the overall bound themselves, there is nothing left for it to protect, and a
+deadline the engine silently extends is not a deadline. A step declaring neither
+key behaves exactly as it always has.
+
+The compiler refuses one arrangement with a position: a `total_timeout:` shorter
+than the `timeout:` beside it, because a budget that expires inside the first
+attempt allows no attempt at all. Both values are literals in one step, so this
+is a property of the file rather than of a deployment, which is the line
+`flowfile/validate.go` draws for what a diagnostic may say.
+
+### What it deliberately does not add
+
+**Two-phase fast/slow retry gets no spelling**, and the judgment is recorded here
+rather than left open. With a wall-clock bound plus `max_interval:`, "try fast,
+then back off and keep trying until the deadline" is already expressible: a short
+`interval:`, a `backoff:` capped by `max_interval:`, bounded by `total_timeout:`.
+That is the shape most deadlines actually want. A genuine two-phase policy is a
+second `RetryPolicy` inside one step, which is a grammar question rather than a
+field, and it should be asked as one if anyone ever needs it.
+
+**And the diagnostic for a budget that lapses mid-backoff is not finished.**
+Temporal raises a timeout when a deadline reaches an attempt that is *in flight*;
+a `ScheduleToClose` budget running out during a backoff instead returns the last
+attempt's failure with a `RetryState` field distinguishing it, and nothing else
+doing so. So that case still reads as the dependency's own error rather than as
+the budget. The arm is one condition — and `testsuite`'s environment leaves
+`RetryState` unspecified, so it could be written and could not be tested, which
+is not a bar this repository lowers for a claim about a substrate's error shape.
+It is a follow-up, named rather than quietly skipped.
+
+## The thirteenth round: `concurrency:`, and the permit that is a run
+
+Two runs could not coordinate over a shared resource. Not "there was no `lock:`
+keyword" — nothing weaker worked either, because no node kind can reach another run
+(#913). Two drains of one cluster, two reconciliations of one ledger, two deploys of
+one service: the language had no way to say *not at the same time*.
+
+The grep came first, and it changed the answer. The repository already spells "one at
+a time" three times — a schedule's `overlap:`, webhook delivery dedupe, and entity
+addressing — and all three keys come from **outside the run**. So this was never a
+missing primitive. It was a missing *key source*: a Flowfile could not name one.
+
+### The spelling
+
+```yaml
+edition: v2026.3
+name: cluster-drain
+inputs:
+  cluster:
+    type: string
+    required: true
+concurrency:
+  key: ${inputs.cluster}
+  on_conflict: reject
+steps:
+  - id: drain
+    log:
+      message: ${"draining " + inputs.cluster}
+```
+
+A top-level block, on the workflow rather than under `triggers:`, because it must
+hold for every start path — `flow run`, an agent over MCP, a `SignalWithStart`. Once
+per trigger would be one fact written three times, which is the shape that drifts.
+
+`key:` is a literal for a workflow exclusive of itself, or an expression over the
+run's own arguments. `inputs.*` is the whole of what it may read, and the validator
+refuses everything else with the reason rather than an "unknown name": at the moment
+it resolves, no step has produced an output, `vars:` have not been evaluated, and
+there is no run to have a `run.id`.
+
+### The permit is a workflow id
+
+There is no lease, no fencing token and no lock table, because Temporal has exactly
+one mutual-exclusion primitive and it is the workflow id. The key is composed with
+the run's tenant and the workflow's name, digested, and used as the id of the run
+itself — the identical construction webhook delivery dedupe already uses, under a
+`flowstate-lock-` prefix of its own so a key can never address, join or block a run
+some other scheme created.
+
+The holder therefore *is* a run rather than something holding a permit on a run's
+behalf, and two of #913's requirements fall out of that rather than being built. The
+lease is bounded and expires: the permit's lifetime is the run's own execution
+timeout, so an orphan that wedges a resource forever is structurally impossible.
+Acquisition is bounded in wait time: it never waits at all — every answer comes back
+at submit, while the caller is still there to be told.
+
+The tenant is inside the digest and comes only from the identity the server attested,
+never from the request. The test that matters is the negative one, per the house rule:
+tenant A holding `shared-looking-key` does not block tenant B's run of the same
+workflow with the same key, and nothing B can submit — including `terminate_other` —
+reaches A's run.
+
+### Three answers, because an id can give three
+
+`reject` (the default, including for an author who writes `key:` and no
+`on_conflict:`) refuses the second submission with `AlreadyExists`, naming the run
+that holds the key. `join` returns the incumbent instead, with `joined` set on the
+response — the generalization of what a webhook redelivery already does. And
+`terminate_other` stops the incumbent and starts the new one, destructively: no
+`undo:` compensation runs, exactly as a schedule's `terminate_other` says of a
+firing.
+
+Three and not four. A workflow id can express precisely these, and `join` is
+implemented as a refusal caught rather than as Temporal's `USE_EXISTING`, because
+`USE_EXISTING` answers silently and leaves the server unable to say whether it
+started the run it is reporting. Every fact this server states is one it established;
+`SignalWithStart` decides its own `created` from the same error.
+
+### Submit-time, which is why both drivers agree
+
+Nothing inside a run reads this block. It is consumed once, by the server choosing
+what id to start the run under, and neither engine ever sees it — so invariant 3 is
+satisfied by there being nothing for the two drivers to disagree about. `flow run
+local` executes the same steps in the same order whether or not the block is present,
+exactly as it does for `triggers:`.
+
+That dissolves the honest problem #913 raised about the alternative shape: a `lock:`
+node kind would have semantics the local driver has no second run to contend with,
+so a local rehearsal of contention would be a rehearsal of nothing. Here there is
+nothing to rehearse, and the example's `*.test.yaml` says so in its opening lines
+rather than pretending otherwise.
+
+### What it does not do
+
+**It does not queue.** "Run the next one after this finishes" is a schedule's
+`buffer_one`/`buffer_all`, which lives in Temporal's schedule machinery and is
+unreachable from a manual `Run`. Those three names are *refused by name* rather than
+falling through to "not one of the three", and the diagnostic sends the author to
+`triggers.schedule.overlap:`, where they genuinely exist — a word accepted and not
+honoured would be worse than a refusal.
+
+**It cannot sit beside a webhook or a schedule trigger.** A delivery-started run's id
+*is* its delivery id, which is what makes a redelivery join the first run rather than
+start a second; a schedule's firings get ids Temporal composes with the firing time,
+which no caller can override. In the first case a concurrency key would silently
+weaken dedupe, in the second it would never hold. Both combinations are refused, at
+the compiler with a line and a column and at the server for a specification built by
+hand — fail closed rather than pick a winner. This is the one place the design's own
+acceptance criteria were amended by the implementation: composing `overlap:` and
+`concurrency:` on one workflow is not something the substrate can do.
+
+**It does not lock a span of steps inside a run**, or anything shared between two
+different workflows. Both need a run able to reach another run, which no node kind
+can do — the open half of #913, and the author-side case for #133's Update.
 
 ## The standing rule
 

@@ -105,6 +105,14 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		return set.sorted()
 	}
 
+	if doc.kind != docWorkflow {
+		// A test document speaks flowtest's language, not the Flowfile's, and
+		// the checks below would report a correct suite as a broken workflow —
+		// `tests:` an unknown key, no `steps:` — which is exactly the false
+		// diagnosis this package's doc rules out (#1110).
+		return diagnoseTestDocument(doc)
+	}
+
 	if doc.parseErr != nil {
 		// Nothing downstream can be trusted once the document does not parse:
 		// the model is absent, and every other check would guess. One precise

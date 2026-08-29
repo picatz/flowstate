@@ -723,323 +723,6 @@ type stubVerdict struct {
 // (CLAUDE.md, "bound anything that consumes untrusted input").
 const maxUnmatchedStubValueLen = 200
 
-// sensitiveInputs is the redaction set one unmatched-stub diagnostic is
-// rendered against: what [unmatchedStubError] must not print, plus whether
-// that set could be built at all.
-//
-// The two lists are deliberately different sizes. values is compared with
-// [reflect.DeepEqual] against every node of the invocation, so it holds each
-// sensitive input's whole value *and* every value nested within it.
-// substrings is the textual backstop [redactSensitiveSubstrings] applies to
-// the rendered line, which is a far blunter instrument — a string replaced
-// everywhere it occurs — so it holds a narrower set; the walk in
-// [sensitiveNativeValues] decides which strings earn a place in it.
-//
-// withholdAll is the fail-closed answer: when the set could not be built
-// completely, no input can be shown to be safe, so every input on the
-// invocation is withheld. [sensitiveNativeValues] documents the two ways that
-// happens.
-type sensitiveInputs struct {
-	values      []any
-	substrings  []string
-	withholdAll bool
-}
-
-// minSensitiveSubstringRunes is the shortest *descendant* string
-// [redactSensitiveSubstrings] will replace textually. A one-rune leaf is not
-// a redaction, it is a shredder: replacing every `a` in the rendered line
-// with the marker destroys the diagnostic while protecting nothing
-// [isSensitiveValue] has not already caught by comparing that leaf on its
-// own. A declared input's own value is exempt from this floor — it is the
-// thing `sensitive:` names, and `"Bearer " + inputs.token` is precisely the
-// shape the backstop exists for.
-const minSensitiveSubstringRunes = 2
-
-// maxSensitiveDescendants bounds how many values one invocation's redaction
-// set may hold, counting both what the walk below has collected and what it
-// still has queued. The queue is counted because it is memory the same input
-// controls: bounding only the result would leave a wide, shallow value free
-// to push millions of entries onto the stack on the way to a bounded answer,
-// which is the "bounding one resource does not bound another" failure
-// CLAUDE.md names.
-//
-// A workflow input may legitimately carry maxListElements = 10,000 elements
-// (pkg/flowstate/v1/constraints.go), and every entry in the set costs one
-// [reflect.DeepEqual] per node of the invocation in [redactSensitiveTree]
-// plus, for a string, a full [strings.ReplaceAll] pass over the rendered
-// value. 1024 sits far above any real credential — a token, a key pair, a
-// small object of headers — and far below where building a *failure* message
-// costs more than the run it is reporting on.
-//
-// Blowing the bound is not a reason to redact less: [sensitiveNativeValues]
-// answers withholdAll, so an input too large to enumerate withholds the whole
-// invocation rather than printing the part of it the walk never reached. That
-// is one mechanism serving two of CLAUDE.md's rules at once — bound the
-// resource the attacker controls, and deny when you cannot decide.
-const maxSensitiveDescendants = 1024
-
-// sensitiveNativeValues returns, as native Go values comparable with
-// [reflect.DeepEqual], every value the run's own `sensitive:` inputs carry:
-// each such input's whole value and every value nested within it. These are
-// what [unmatchedStubError] must not print even when they reach a task's
-// inputs under a different name, since `sensitive:` is a property of the
-// value's origin, not of whatever a step chose to call it.
-//
-// The descendants are in there because a sensitive declaration can itself be
-// structured. A `creds:` input marked `sensitive: true` and read as
-// `${inputs.creds.token}` puts a leaf into the invocation that is not
-// [reflect.DeepEqual] to anything the scope holds, so a set of whole values
-// alone prints that credential in the clear — and [redactSensitiveSubstrings]
-// does not save it either, since the whole value there is a map rather than a
-// string. Returns the zero value when there is nothing to redact, which is
-// the common case and costs one nil map read per invocation.
-//
-// # The cost of matching by value, and why it is still the right rule
-//
-// This matches by *content*, with no provenance: nothing in
-// [invocationNativeInputs] records which declaration a native value came
-// from, so a descendant that happens to equal an unrelated input's value
-// redacts that input too. Sensitive `creds: {enabled: false}` puts `false`
-// into the set, and an ordinary `follow_redirects: false` on the same
-// invocation then renders as `[redacted: follow_redirects]` — hiding one of
-// the discriminating fields this diagnostic exists to show (Codex, #956).
-//
-// That cost is real, and it is chosen for the same reason cmd/flow's
-// redactStepValues chooses the same trade at greater length. The precise
-// alternative is to trace each value back to the declaration it came from,
-// and a trace catches only what it can see: a sensitive leaf that reaches the
-// invocation through a step's `vars:`, through another step's output, or
-// concatenated into a larger string has no path back to `inputs.creds` at
-// all. Such a rule would print those in the clear while implying that it
-// traces sensitive data — a mechanism that looks precise and is not, which is
-// worse than one that is honestly blunt, because a reader trusts the one that
-// looks precise (CLAUDE.md, "fail closed").
-//
-// So the blunt rule stays and its cost is written down here, rather than
-// being rediscovered by whoever next wonders why an unrelated `false` came
-// back redacted.
-func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sensitiveInputs {
-	if len(sensitiveNames) == 0 {
-		return sensitiveInputs{}
-	}
-
-	// node carries whether a queued value is the declared input itself rather
-	// than something nested inside it, which only the substring floor above
-	// cares about.
-	type node struct {
-		value any
-		root  bool
-	}
-
-	var out sensitiveInputs
-	for name, v := range scope.GetInputs() {
-		if !sensitiveNames[name] {
-			continue
-		}
-
-		// A sensitive input this cannot read is withheld whole, and takes
-		// every other input on the invocation with it. Skipping it — which is
-		// what a `continue` here does — drops it out of the redaction set
-		// silently, so *nothing* about that input is redacted anywhere in the
-		// diagnostic: an allow-on-error in the one function whose job is to
-		// deny (CLAUDE.md, "fail closed": a component that allows when it
-		// cannot decide will eventually allow everything).
-		lit := v.GetLiteral()
-		if lit == nil {
-			return sensitiveInputs{withholdAll: true}
-		}
-		native, err := literalToGo(lit)
-		if err != nil {
-			return sensitiveInputs{withholdAll: true}
-		}
-
-		// Sensitivity belongs to the declared input's origin, so it follows
-		// every descendant when a task selects one field or one list element
-		// out of a structured value. The container is kept as well: a task may
-		// carry it whole.
-		pending := []node{{value: native, root: true}}
-		for len(pending) > 0 {
-			if len(out.values)+len(pending) > maxSensitiveDescendants {
-				return sensitiveInputs{withholdAll: true}
-			}
-
-			n := pending[len(pending)-1]
-			pending = pending[:len(pending)-1]
-			out.values = append(out.values, n.value)
-
-			switch value := n.value.(type) {
-			case string:
-				// "" is excluded whatever its origin: replacing it inserts
-				// the marker between every rune of the rendered line.
-				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
-					out.substrings = append(out.substrings, value)
-				}
-			case int64, uint64, float64, bool:
-				// A non-string scalar's canonical text joins the backstop:
-				// `${string(inputs.pin)}` turns the number into a string the
-				// typed equality can never see (Codex, #1052). fmt.Sprint is
-				// the spelling both CEL's string() of an int and this
-				// package's own rendering produce; a reformatted spelling
-				// (padding, precision) is past what a substring set can
-				// enumerate, which is the boundary the withholdAll rule
-				// already draws for sets that cannot be built at all. The
-				// floor and root exemption apply exactly as for a string
-				// descendant.
-				text := fmt.Sprint(value)
-				if n.root || utf8.RuneCountInString(text) >= minSensitiveSubstringRunes {
-					out.substrings = append(out.substrings, text)
-				}
-			case map[string]any:
-				// Keys are descendants too: sensitivity belongs to the whole
-				// declared value, and a map whose *keys* carry the material —
-				// account ids, say — leaks through a walk that only enqueues
-				// what they map to (Codex, #1052). A key rides the queue as
-				// any string descendant does, so the substring floor and the
-				// descendant bound apply to it unchanged.
-				for name, child := range value {
-					pending = append(pending, node{value: name}, node{value: child})
-				}
-			case []any:
-				for _, child := range value {
-					pending = append(pending, node{value: child})
-				}
-			}
-		}
-	}
-	return out
-}
-
-// isSensitiveValue reports whether v is one of the run's own sensitive-input
-// values, by content rather than by the name the task happened to give it:
-// `message: ${inputs.token}` is caught the same as `inputs.token` itself.
-func isSensitiveValue(v any, sensitiveValues []any) bool {
-	for _, sv := range sensitiveValues {
-		if reflect.DeepEqual(v, sv) {
-			return true
-		}
-	}
-	return false
-}
-
-// redactSensitiveTree walks v and replaces every value that [isSensitiveValue]
-// recognizes, at any depth, with a marker string.
-//
-// A `map[string]any` or `[]any` compares as a whole against reflect.DeepEqual,
-// so a top-level check alone misses the far more common shape: a sensitive
-// scalar carried *inside* a structured input, such as `headers: {Authorization:
-// ${inputs.token}}`. The whole headers map is never equal to the token; only
-// one leaf of it is, so the leaf has to be checked on its own (#386
-// follow-up). The recursion mirrors the two structured shapes an input can
-// hold ([invocationNativeInputs] never produces anything else): a map keyed
-// by string, and a list.
-func redactSensitiveTree(v any, sensitiveValues []any) any {
-	if isSensitiveValue(v, sensitiveValues) {
-		return sensitiveMarker
-	}
-
-	switch t := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, e := range t {
-			// Keys redact by exact match at every depth, not only where a
-			// renderer happens to print one at the top level: a sensitive
-			// struct's key — including one below the substring floor — is as
-			// much the material as the value it maps to (Codex, #1052). Two
-			// sensitive keys folding into one marker entry lose a pair, which
-			// is the redaction doing its job, not a collision to avoid.
-			if isSensitiveValue(k, sensitiveValues) {
-				k = sensitiveMarker
-			}
-			out[k] = redactSensitiveTree(e, sensitiveValues)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = redactSensitiveTree(e, sensitiveValues)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
-// sensitiveMarker is what a redacted leaf renders as inside a structure:
-// deliberately not shaped like a value the workload could have produced
-// itself, the same discipline [formatUnmatchedStubValue]'s own top-level
-// marker follows.
-const sensitiveMarker = "[redacted]"
-
-// redactSensitiveSubstrings is the backstop for a sensitive value that
-// reaches the invocation as part of a larger string rather than as the whole
-// value or a map/list leaf: `"Bearer " + inputs.token` renders as one
-// string, which [redactSensitiveTree] cannot see into because nothing about
-// the concatenated result equals the token on its own. Each sensitive
-// string's exact text is replaced wherever it occurs in rendered, so the
-// credential cannot survive by being wrapped in unrelated characters.
-//
-// It reads [sensitiveInputs.substrings] rather than the full value set on
-// purpose: this replacement is textual and unanchored, so a string short
-// enough to occur by accident does more damage to the diagnostic than it
-// prevents. [sensitiveNativeValues] is where that line is drawn, and
-// [minSensitiveSubstringRunes] is where it is argued.
-func redactSensitiveSubstrings(rendered string, substrings []string) string {
-	// Every match of every sensitive string is found against the ORIGINAL
-	// text, the intervals merged, and the merged spans spliced out in one
-	// pass. Sequential ReplaceAll cannot be ordered into correctness: with
-	// containment (`abcd` in `abcdef`) the shorter-first order splits the
-	// longer into `[redacted]ef`, and with intersection (`ABCDE` and `CDEFG`
-	// across `ABCDEFG`) *either* order leaves the other's fragment exposed —
-	// both partial leaks, the second one whatever you sort by (Codex, #1052).
-	// A union of matches has no order to get wrong. One site, so the stub
-	// diagnostics and the transcript share the answer.
-	type span struct{ start, end int }
-	var spans []span
-	for _, s := range substrings {
-		if s == "" {
-			continue
-		}
-		for from := 0; from <= len(rendered)-len(s); {
-			i := strings.Index(rendered[from:], s)
-			if i < 0 {
-				break
-			}
-			start := from + i
-			spans = append(spans, span{start: start, end: start + len(s)})
-			// Advance one byte, not one match length: self-overlapping
-			// matches ("aa" across "aaa") must all enter the union.
-			from = start + 1
-		}
-	}
-	if len(spans) == 0 {
-		return rendered
-	}
-
-	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
-
-	var b strings.Builder
-	prev := 0
-	current := spans[0]
-	flush := func() {
-		b.WriteString(rendered[prev:current.start])
-		b.WriteString(sensitiveMarker)
-		prev = current.end
-	}
-	for _, sp := range spans[1:] {
-		if sp.start <= current.end {
-			if sp.end > current.end {
-				current.end = sp.end
-			}
-			continue
-		}
-		flush()
-		current = sp
-	}
-	flush()
-	b.WriteString(rendered[prev:])
-	return b.String()
-}
-
 // truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting
 // at a rune boundary rather than a byte offset. A byte cut through the
 // middle of a multi-byte UTF-8 sequence produces invalid UTF-8, which
@@ -1066,14 +749,14 @@ func truncateRuneSafe(rendered string, max int) string {
 // into a larger string; see [invocationNativeInputs]'s doc for why that
 // distinction has to survive past evaluation and into anything printed.
 func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitive sensitiveInputs) string {
-	// sensitive.withholdAll is the fail-closed case: the redaction set could
+	// sensitive.WithholdAll() is the fail-closed case: the redaction set could
 	// not be built completely, so no input can be shown to be safe and every
 	// one of them is withheld — see [sensitiveNativeValues].
-	if isSecret || sensitive.withholdAll || isSensitiveValue(v, sensitive.values) {
+	if isSecret || sensitive.WithholdAll() || sensitive.IsSensitive(v) {
 		return fmt.Sprintf("[redacted: %s]", name)
 	}
 
-	redacted := redactSensitiveTree(v, sensitive.values)
+	redacted := sensitive.RedactTree(v)
 
 	var rendered string
 	if s, ok := redacted.(string); ok {
@@ -1082,9 +765,36 @@ func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitive sensi
 		rendered = fmt.Sprintf("%v", redacted)
 	}
 
-	rendered = redactSensitiveSubstrings(rendered, sensitive.substrings)
+	rendered = sensitive.RedactSubstrings(rendered)
 
 	return truncateRuneSafe(rendered, maxUnmatchedStubValueLen)
+}
+
+// formatUnmatchedStubEvalError renders a `where:` evaluation error for the
+// unmatched-stub diagnostic. CEL runtime errors can quote an operand's value
+// verbatim rather than just its type or position — `timestamp(inputs.token)`
+// on a non-RFC3339 string reports `invalid RFC 3339 timestamp "<the string>"`,
+// and an unresolved map/list index reports `no such key: <the key's value>`
+// — so this text is exactly as capable of leaking a sensitive input as the
+// invocation's own inputs are, and gets the same treatment (#977, filed from
+// #956, which built the redaction set this reuses).
+//
+// [whereSource] is exempt: it is the author's own text, never a runtime
+// value, so it needs no redaction and is printed as written.
+//
+// The tree comparison [formatUnmatchedStubValue] uses ([redactSensitiveTree]
+// and [isSensitiveValue]) is not available here — an error is a string by
+// the time it reaches this function, not a value with structure to walk —
+// so the only tool that applies is the textual backstop,
+// [redactSensitiveSubstrings]. When the redaction set could not be built at
+// all ([sensitiveInputs.WithholdAll()]), that backstop has nothing to check
+// the text against, so the fail-closed answer is to withhold the whole
+// message rather than print text nothing has cleared as safe.
+func formatUnmatchedStubEvalError(err error, sensitive sensitiveInputs) string {
+	if sensitive.WithholdAll() {
+		return "[redacted: where: evaluation error]"
+	}
+	return sensitive.RedactSubstrings(err.Error())
 }
 
 // unmatchedStubError builds the diagnostic for a task invocation no declared
@@ -1117,7 +827,7 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	// see: say which one, so an author staring at a diagnostic that shows
 	// nothing knows it is a refusal rather than a bug (CLAUDE.md,
 	// "diagnostics are a feature").
-	if sensitive.withholdAll {
+	if sensitive.WithholdAll() {
 		b.WriteString("  (every input above is withheld: this run's sensitive inputs could not be enumerated, " +
 			"so nothing on this invocation can be shown to be safe to print)\n")
 	}
@@ -1137,7 +847,8 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 			case v.matched:
 				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> true", i+1, where)
 			case v.err != nil:
-				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> error: %s", i+1, where, v.err)
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> error: %s", i+1, where,
+					formatUnmatchedStubEvalError(v.err, sensitive))
 			default:
 				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> false", i+1, where)
 			}

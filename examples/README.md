@@ -28,6 +28,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [loop-poll-until](loop-poll-until) | `loop:` in its stateless mode — a bounded poll that repeats a check until the body reports ready, or gives up at `max_iterations:` | yes |
 | [paged-fan-out](paged-fan-out) | The batch shape — a `loop:` walking a cursor API to exhaustion with a `for_each` inside it fanning out over each page under `max_parallel:`, and the file honest about the window draining at every page boundary | yes |
 | [entity-order](entity-order) | An entity — `loop:` + `wait_for_signal:`, addressable, mutated by repeated signals, surviving Continue-As-New, closing on a terminal event rather than by exhausting its loop | no |
+| [signal-batch-drain](signal-batch-drain) | `wait_for_signals:` — the accumulator that drains a whole burst in one step rather than paying a loop iteration per event, with `max_batch:` reached rather than merely declared and the remainder left for the next drain | no |
 | [renewal-reminder](renewal-reminder) | The same two nodes as `entity-order` with the polarity reversed — a `loop:` around a `wait_for_signal:` whose *lapse* is the work (send the reminder, go round again) and whose delivered signal is the stop. Temporal's `sleep-for-days`, and the shape drift detection and certificate rotation take | no |
 | [deployment-reconciler](deployment-reconciler) | The reconciler shape: a `loop:` whose every pass reads the world and compares it against the state the run carries, so what a pass *decides* never depends on which event woke it — with a `wait_for_signal:` `timeout:` as the resync interval and a delivered signal as the interrupt. Level-triggered convergence, and a README naming what an n-way `select:` would add | yes |
 | [ops-healthcheck](ops-healthcheck) | `for_each` over a list of services, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |
@@ -44,6 +45,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [usage-billing](usage-billing) | `math.greatest`, and `double()` before dividing so CEL's int-truncating division does not silently undercharge a partial block | no |
 | [interpolation](interpolation) | Text and expressions in one value: several `${...}` in a message, the `$${` escape, and the whole-value fence that keeps its type | no |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
+| [signal-rule-identity](signal-rule-identity) | Two `signals:` rules that gate on identity rather than a claim — `subject:` pinning one automated caller with no role to name, and `namespace:` beside `claims:` naming one tenant's holders of a role — and why each is the exception to gating on `claims:` alone | no |
 | [approval-escalation](approval-escalation) | The chase a real approval is — a `loop:` asking on a cadence, escalating to a backup approver the `signals:` policy already named, and auto-rejecting when the ask budget runs out, with a README on why that budget is `until:`'s and not `max_iterations:`'s | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |
@@ -67,15 +69,22 @@ $ flow validate examples/hello-world/workflow.yaml
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
+| [enum-input](enum-input) | `type: enum` — an input whose `values:` declare the closed set of strings it will accept, refused by name (not a hand-built `must:`) the moment a caller sends anything else | no |
+| [alert-title-bound](alert-title-bound) | `max_len:` on a `type: string` input, refusing a title too long for the pager display it is headed for — counted in runes, not bytes, so a multi-byte title at the bound is let through and one rune past it is refused | no |
 | [saga-provisioning](saga-provisioning) | `undo:` — saga compensation: three steps, a failure on the third, and the first two taken back in reverse order. The one example that ends in a failed run, on purpose | yes |
 | [order-fulfillment](order-fulfillment) | The same compensation over a business transaction — reserve stock, charge a card, undo both when the carrier step is asked to fail | yes |
 | [progressive-rollout](progressive-rollout) | `loop:` + `call:` + `undo:` together — traffic shifted 5% → 25% → 50% by a loop carrying the percentage, each stage a reusable called workflow with its own compensation, and every stage unwound newest-first when the canary is asked to fail | yes |
 | [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
+| [utilization-guard](utilization-guard) | `must:` on a declared output, refusing a computed percentage two individually valid inputs produced together — a bound no single input's own `must:` could ever state | no |
 | [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
 | [pinned-call](pinned-call) | `digest:` on a `call:`, pinning the callee to the bytes the caller reviewed and verified when the file compiles, so a callee that changed since cannot reach a run without somebody reading the change | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
+| [schedule-interval](schedule-interval) | The other cadence and the other kind of bound: `every:` rather than `cron:`, and `start_at:`/`end_at:` closing a schedule's firing window rather than leaving it open-ended | no |
+| [schedule-overlap-policies](schedule-overlap-policies) | A decision guide for `overlap:` naming all six policies and why each is right where it is right — `cancel_other` here, and `buffer_all`/`terminate_other`/`allow_all` as three minimal sibling schedules beside it | no |
+| [exclusive-cluster-drain](exclusive-cluster-drain) | `concurrency:` — at most one run of this workflow per key, decided at submit: one drain per cluster, `on_conflict: reject` naming the run that already holds it, and why the block cannot queue and cannot sit beside a webhook or a schedule — with `join` and `terminate_other` as two minimal sibling workflows beside it | no |
 | [webhook-trigger](webhook-trigger) | `triggers:` as a list of call sites — a `webhook:` binding a delivery's payload to `inputs:` through `with:`, checked against that signature by `flow validate`, and replayed offline from a stored delivery by `flow test` (including the delivery that does not verify) | no |
 | [trigger-context](trigger-context) | `trigger.kind`, `trigger.name`, `trigger.principal` and `trigger.delivery_id` read in a step's `if:` so a scheduled sweep does not page anyone, `manual:` narrowing who may start a run by hand and requiring a recorded reason, and `flow test` setting the context directly so both sides of a trigger-guarded branch are exercisable with no real trigger | no |
+| [manual-denied](manual-denied) | `manual: denied` — refusing a hand start outright rather than narrowing who may make one, for a workload whose only honest caller is its own webhook | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
 | [embedding](embedding/README.md) | Flowstate as a Go library — `pkg/flowstate/embed`: compiling `flowfile/workflow.yaml` from bytes, a custom Go task registered with no `.proto` descriptor, and running it locally or (with `--durable`) against a real Temporal server. A Go program, not a `flow run`able Flowfile alone — read its README | no |
 | [operations/tenant-routing](operations/tenant-routing/) | Per-tenant worker routing — `flow server --task-queue-prefix` and `flow worker --tenant`, one fleet per tenant with that tenant's own secrets and egress policy, why the composed queue name cannot be forged, and the two half-configured command lines refused at startup. A two-process demo rather than a Flowfile, so read its README | no |
@@ -149,6 +158,21 @@ $ flow run local examples/parameterized-deploy/workflow.yaml \
 Every other example runs as written, with no arguments, which is the rule: an example is
 something to paste and watch work. Only an example whose subject *is* a required input
 needs a file saying what it requires.
+
+Where a directory holds a `debug.script` — `loop-accumulate/` does — that file is a
+recorded debugging session about this example, and it plays back against the workflow
+beside it:
+
+```console
+$ flow debug replay examples/loop-accumulate/debug.script \
+    examples/loop-accumulate/workflow.yaml
+```
+
+It is a *reproduction* rather than a check: the commands a session accepted, so replaying
+them holds the run in the same places and asks the same questions somebody asked while
+working out why the loop's last term never lands in its sum. `cmd/flow`'s own tests replay
+it, which is what keeps it from rotting into a file describing a workflow that has moved
+on.
 
 The examples marked as needing network reach `httpbin.org`. They will fail without internet
 access, and the `http` task's egress policy denies internal addresses by default — see

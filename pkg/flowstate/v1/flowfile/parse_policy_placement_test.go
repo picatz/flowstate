@@ -13,13 +13,14 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
-// policyPlacementInject is the two ways an author can bind step policy: a
-// `retry:` block and a `timeout:` scalar, each written at the step's own
-// indentation (four spaces beneath `- id: s`), matching where the wait tests
-// inject them.
+// policyPlacementInject is the three ways an author can bind step policy: a
+// `retry:` block and the two duration scalars — `timeout:` for one attempt and
+// `total_timeout:` for all of them — each written at the step's own indentation
+// (four spaces beneath `- id: s`), matching where the wait tests inject them.
 var policyPlacementInject = map[string]string{
-	"retry":   "    retry:\n      attempts: 3\n",
-	"timeout": "    timeout: 5m\n",
+	"retry":         "    retry:\n      attempts: 3\n",
+	"timeout":       "    timeout: 5m\n",
+	"total_timeout": "    total_timeout: 5m\n",
 }
 
 // minimalCalleeForPolicyPlacement is a callee with no declared inputs, so the
@@ -211,7 +212,7 @@ func TestPolicyPlacementCoversEveryNonTaskNodeKind(t *testing.T) {
 }
 
 // TestPolicyPlacementRefused is the sweep itself: for every fixture above,
-// writing `retry:` or `timeout:` on that kind of step produces a positioned
+// writing any of the policy keys on that kind of step produces a positioned
 // diagnostic naming that kind as the subject.
 func TestPolicyPlacementRefused(t *testing.T) {
 	t.Parallel()

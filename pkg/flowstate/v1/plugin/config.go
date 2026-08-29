@@ -30,9 +30,11 @@ const (
 	// handshake.
 	DefaultDescribeTimeout = 10 * time.Second
 
-	// DefaultCallTimeout bounds a secret resolution or a task execution. It is
-	// the outer bound on a plugin's own work, applied on top of whatever
-	// deadline the caller already carries — the shorter of the two wins.
+	// DefaultCallTimeout bounds a secret resolution or a task execution that
+	// arrives with no deadline of its own. A caller that carries one keeps it;
+	// see [Config.CallTimeout] for the layering, and Plugin.callContext for why
+	// the older "shorter of the two wins" rule was wrong in the direction a
+	// step's `timeout:` takes.
 	DefaultCallTimeout = 30 * time.Second
 
 	// DefaultHealthTimeout bounds one health poll. It is short because a health
@@ -293,10 +295,30 @@ type Config struct {
 	// wherever it was not filled in.
 	HandshakeTimeout time.Duration
 	DescribeTimeout  time.Duration
-	CallTimeout      time.Duration
-	HealthTimeout    time.Duration
-	HealthInterval   time.Duration
-	ShutdownGrace    time.Duration
+
+	// CallTimeout bounds one secret resolution or task execution whose caller
+	// brought no deadline — and only that call. It is the middle of three
+	// layers, and it is the only one that is the host's to decide:
+	//
+	//   - A step's `timeout:` bounds the attempt. Both drivers turn it into a
+	//     context deadline before the call reaches a plugin (the local driver
+	//     per attempt, the durable driver as the activity's StartToClose), and
+	//     a step that declares none still gets
+	//     [flowstatev1.DefaultStartToCloseTimeout]. That deadline is the
+	//     author's answer and is passed through untouched.
+	//   - This bounds a call that arrived with no deadline at all — a direct
+	//     [Plugin.TaskService] or [Plugin.SecretService] caller using
+	//     context.Background(), where nothing else would ever end the call.
+	//   - Whatever the plugin enforces internally (the codex plugin's own run
+	//     timeout, an HTTP client's) bounds its work beneath both.
+	//
+	// It was applied on top of the caller's deadline until #1130, which capped
+	// every plugin task at thirty seconds however long the step allowed.
+	CallTimeout time.Duration
+
+	HealthTimeout  time.Duration
+	HealthInterval time.Duration
+	ShutdownGrace  time.Duration
 
 	// DisableHealthChecks turns off health polling. Zero HealthInterval means
 	// the default rather than off, so that turning polling off is something a

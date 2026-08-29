@@ -130,6 +130,44 @@ func TestEveryCommandSaysWhatItIsFor(t *testing.T) {
 	}
 }
 
+// TestEveryCommandIsInAGroup is the same failure as a missing README row, one
+// surface further in.
+//
+// Cobra files a command with no GroupID under a bare "Commands" heading, below
+// every named group and beside `help` and `completion` — which, as the note on
+// `fix` in main.go already says, is where an author stops looking. Nothing
+// announces it. The command works, `flow --help` renders, `flow <verb> --help`
+// is correct, and the only symptom is that the verb is not found by somebody
+// reading the list to learn what the tool does.
+//
+// It had happened four times before this test existed — `plugins`, `timeline`,
+// `mcp`, and `dap` the day it was added — which is the argument for asking the
+// question here rather than in a reviewer's head. Only top-level commands are
+// checked: a subcommand is listed under its parent, where grouping is the
+// parent's business.
+func TestEveryCommandIsInAGroup(t *testing.T) {
+	root := newRootCommand()
+
+	groups := make(map[string]bool, len(root.Groups()))
+	for _, group := range root.Groups() {
+		groups[group.ID] = true
+	}
+	require.NotEmpty(t, groups, "the CLI declares no groups at all")
+
+	for _, command := range root.Commands() {
+		if name := command.Name(); name == "help" || name == "completion" {
+			// Cobra's own, documented by cobra. See [realCommands].
+			continue
+		}
+
+		assert.True(t, groups[command.GroupID],
+			"`flow %s` is in no group, so `flow --help` lists it under a bare "+
+				"\"Commands\" heading below every named one — set its GroupID in "+
+				"main.go beside the verb it belongs with",
+			command.Name())
+	}
+}
+
 // TestBuildingTheCLITwiceBuildsTheSameCLI is what lets the tests above trust their
 // answer.
 //

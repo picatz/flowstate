@@ -262,3 +262,177 @@ func TestCodexExecRefusesNetworkAccessWithoutOperatorGrant(t *testing.T) {
 		t.Errorf("error = %v, want it to name allow_network", err)
 	}
 }
+
+// TestCodexExecRefusesResetWorkingContextWithoutWorkingContext proves
+// reset_working_context is refused as an authoring mistake, not silently
+// ignored, when there is nothing named to reset - see CLAUDE.md,
+// "Diagnostics are a feature."
+func TestCodexExecRefusesResetWorkingContextWithoutWorkingContext(t *testing.T) {
+	_, err := codexExec(context.Background(), inputsFor(map[string]any{
+		"prompt":                "hi",
+		"reset_working_context": true,
+	}), nil)
+	if err == nil {
+		t.Fatal("codexExec requesting reset_working_context with no working_context: got no error, want one")
+	}
+	if !strings.Contains(err.Error(), "working_context") {
+		t.Errorf("error = %v, want it to name working_context", err)
+	}
+}
+
+// TestCodexExecResetWorkingContextFailsClosedWithoutGitConfigured proves
+// this is not the same best-effort shape computePatch itself has: an
+// author who asked for a reset and cannot get one must be told, not left to
+// discover it later from a baseline that observeWorkspace reports dirty
+// with no explanation.
+func TestCodexExecResetWorkingContextFailsClosedWithoutGitConfigured(t *testing.T) {
+	t.Setenv(gitBinaryEnv, "")
+
+	// Not what this test is about: a codex binary must be configured for
+	// codexExec to reach the reset logic at all, since that check runs
+	// first (see resolveCodexBinary in exec.go).
+	applyFakeCodexEnv(t, buildFakeCodex(t), fakeCodexEnv{})
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "work"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv(workdirRootEnv, root)
+
+	_, err := codexExec(context.Background(), inputsFor(map[string]any{
+		"prompt":                "hi",
+		"working_context":       "work",
+		"reset_working_context": true,
+	}), nil)
+	if err == nil {
+		t.Fatal("codexExec requesting reset_working_context with no git binary configured: got no error, want one")
+	}
+	if !strings.Contains(err.Error(), gitBinaryEnv) {
+		t.Errorf("error = %v, want it to name %s", err, gitBinaryEnv)
+	}
+}
+
+// TestCodexExecResetWorkingContextDiscardsLeftoverEdits is the end-to-end
+// version of TestResetWorkingContextDiscardsTrackedAndUntrackedChanges
+// (diff_test.go): proof that codexExec actually wires the reset in, ahead
+// of the baseline read, rather than only that the helper function works in
+// isolation. sandbox_mode is left at its READ_ONLY default deliberately -
+// reset_working_context requires only working_context, not a write grant,
+// since the reset itself is not the agent writing anything.
+func TestCodexExecResetWorkingContextDiscardsLeftoverEdits(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	if err := os.Mkdir(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	initRepoWithCommit(t, gitBin, repoDir)
+	t.Setenv(workdirRootEnv, root)
+
+	// Stands in for a previous turn's own edits, still sitting in
+	// working_context because nothing before this input existed to clean
+	// them up - see #967.
+	if err := os.WriteFile(filepath.Join(repoDir, "a.txt"), []byte("one\ntwo\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "untracked.txt"), []byte("new\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile untracked.txt: %v", err)
+	}
+
+	bin := buildFakeCodex(t)
+	events := writeEventsFile(t,
+		`{"type":"thread.started","thread_id":"th_1"}`,
+		`{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"ok"}}`,
+		`{"type":"turn.completed"}`,
+	)
+	applyFakeCodexEnv(t, bin, fakeCodexEnv{eventsFile: events})
+
+	_, err := codexExec(context.Background(), inputsFor(map[string]any{
+		"prompt":                "hi",
+		"working_context":       "repo",
+		"reset_working_context": true,
+	}), nil)
+	if err != nil {
+		t.Fatalf("codexExec: unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(repoDir, "a.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile a.txt after codexExec: %v", err)
+	}
+	if string(got) != "one\n" {
+		t.Errorf("a.txt after codexExec with reset_working_context = %q, want the committed content %q", got, "one\n")
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "untracked.txt")); !os.IsNotExist(err) {
+		t.Errorf("untracked.txt after codexExec with reset_working_context: stat err = %v, want IsNotExist", err)
+	}
+}
+
+// TestCodexExecResetWorkingContextEnablesARetriedPatch reproduces #967's
+// exact mechanism end to end: a first turn's own edit left dirty in
+// working_context makes a second, unreset turn's patch come back empty
+// (computePatch fails closed on a dirty baseline) - the bug this input
+// closes - and a third turn that resets first gets a patch again. fakecodex
+// is told to write to working_context itself (FAKECODEX_WRITE_FILE), which
+// is what a real WORKSPACE_WRITE turn's own edits would leave behind.
+func TestCodexExecResetWorkingContextEnablesARetriedPatch(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	if err := os.Mkdir(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	initRepoWithCommit(t, gitBin, repoDir)
+	t.Setenv(workdirRootEnv, root)
+
+	policyPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(policyPath, []byte("sandbox_mode = \"workspace-write\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv(policyEnv, policyPath)
+
+	bin := buildFakeCodex(t)
+	events := writeEventsFile(t,
+		`{"type":"thread.started","thread_id":"th_1"}`,
+		`{"type":"item.completed","item":{"id":"1","type":"file_change","status":"completed","changes":[{"path":"a.txt","kind":"update"}]}}`,
+		`{"type":"turn.completed"}`,
+	)
+
+	runTurn := func(reset bool) string {
+		t.Helper()
+		applyFakeCodexEnv(t, bin, fakeCodexEnv{eventsFile: events})
+		t.Setenv("FAKECODEX_WRITE_FILE", filepath.Join(repoDir, "a.txt"))
+		t.Setenv("FAKECODEX_WRITE_CONTENT", "one\ntwo\n")
+
+		outputs, err := codexExec(context.Background(), inputsFor(map[string]any{
+			"prompt":                "fix it",
+			"sandbox_mode":          "SANDBOX_MODE_WORKSPACE_WRITE",
+			"working_context":       "repo",
+			"reset_working_context": reset,
+		}), nil)
+		if err != nil {
+			t.Fatalf("codexExec: unexpected error: %v", err)
+		}
+		return outputs.GetNamedValues()["patch"].GetLiteral().GetStringValue()
+	}
+
+	if patch := runTurn(false); !strings.Contains(patch, "+two") {
+		t.Fatalf("first turn's patch = %q, want it to contain the agent's own edit", patch)
+	}
+
+	// Nothing reverted the first turn's edit - the same #967 mechanism a
+	// git.commit_push step never touching working_context leaves behind -
+	// so a second turn with no reset starts dirty and gets no patch at all.
+	if patch := runTurn(false); patch != "" {
+		t.Fatalf("second turn's patch with no reset = %q, want empty: the workspace should still be dirty from the first turn", patch)
+	}
+
+	// Reset first, and the same shape of turn produces a patch again.
+	if patch := runTurn(true); !strings.Contains(patch, "+two") {
+		t.Fatalf("third turn's patch with reset_working_context = %q, want it to contain the edit again", patch)
+	}
+}

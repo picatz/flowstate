@@ -342,6 +342,25 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 var exampleLapsingGates = map[string]string{
 	"wait-timeout":     "the lapse is the subject: answering the gate would run the other branch",
 	"expense-approval": "both gates lapse by default (denied_no_response), the fail-closed branch the example exists to show; answering either would run the other paths",
+
+	// signal-rule-identity's two rules gate on an identity this harness's fixed
+	// "examples"/"flowstate:test" sender can never satisfy — one names an exact
+	// external subject, the other an exact namespace, and both are the whole
+	// point of the file (see its own header). Delivering a payload here would
+	// only prove it gets refused, which `flow test`'s own case for each rule
+	// already asserts, with a sender the file's author actually controls. Both
+	// gates use a short `timeout:` precisely so an unattended run still finishes.
+	"signal-rule-identity": "both rules require an identity this harness's fixed sender cannot present; flow test asserts the refusal with a sender that can",
+
+	// signal-batch-drain's three drains are about *how many* arrived, and this
+	// harness answers each named signal exactly once — which would demonstrate
+	// a batch of one, the shape a `wait_for_signal:` already has. The empty
+	// batch is the one claim a single scripted answer can make honestly here,
+	// and the file's every drain lapses in seconds so an unanswered run still
+	// finishes. Bursts of two, three and five, drained across a `max_batch:`
+	// the burst genuinely exceeds, are `flow test`'s own three cases beside the
+	// file and the shared SignalBatchCases table both drivers run.
+	"signal-batch-drain": "this harness answers a signal once, and a batch of one is not what the file is about; its own flow test cases send real bursts, and the shared conformance table runs them on both drivers",
 }
 
 // exampleDurableSkips names an example this harness genuinely cannot run durably,

@@ -128,6 +128,13 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// by its second use, just before it is frozen into the schedule.
 	identity := s.identityFor(ctx)
 
+	// The decision, before the schedule exists to be one — the same placement
+	// and the same reasoning as [FlowstateServer.Run]'s, since a schedule is a
+	// run somebody arranged in advance. The resource is the name being claimed.
+	if err := s.auditAllow(ctx, "CreateSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, req.Msg.GetName()); err != nil {
+		return nil, err
+	}
+
 	// Through the trusted lookup, for the identical reason [FlowstateServer.Run]
 	// and [FlowstateServer.SignalWithStart] do: a schedule is a run somebody
 	// arranged in advance, so the trust boundary that keeps `manual:` and
@@ -409,7 +416,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// times. A cadence meaning something other than what was intended is almost
 	// always visible in the first two of those and almost never visible in the
 	// expression, which is exactly why a caller should not have to ask twice.
-	description, err := s.describeSchedule(ctx, temporal, namespace, name)
+	description, _, err := s.describeSchedule(ctx, temporal, namespace, name)
 	if err != nil {
 		return nil, err
 	}
@@ -450,6 +457,12 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 	// never in the listing.
 	temporal, err := s.clientFor(namespace)
 	if err != nil {
+		return nil, s.auditDeny(ctx, "ListSchedules", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, namespace,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err)
+	}
+
+	// A tenant, not a schedule, for [FlowstateServer.List]'s reason.
+	if err := s.auditAllow(ctx, "ListSchedules", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, namespace); err != nil {
 		return nil, err
 	}
 
@@ -513,13 +526,25 @@ func (s *FlowstateServer) DescribeSchedule(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	name := req.Msg.GetName()
+
 	temporal, namespace, err := s.scheduleClientFor(ctx)
 	if err != nil {
-		return nil, err
+		return nil, s.auditDeny(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err)
 	}
 
-	description, err := s.describeSchedule(ctx, temporal, namespace, req.Msg.GetName())
+	// The describe *is* the authorization decision for this verb — it is the
+	// round trip that reads the memo — so the record is written from its
+	// outcome rather than from a second lookup beside it. Nothing has been
+	// disclosed at this point: the description is still here, and the response
+	// is composed below.
+	description, code, err := s.describeSchedule(ctx, temporal, namespace, name)
 	if err != nil {
+		return nil, s.auditDeny(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name, code, err)
+	}
+
+	if err := s.auditAllow(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
 		return nil, err
 	}
 
@@ -532,7 +557,7 @@ func (s *FlowstateServer) DeleteSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "DeleteSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -550,7 +575,7 @@ func (s *FlowstateServer) PauseSchedule(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "PauseSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +593,7 @@ func (s *FlowstateServer) ResumeSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "ResumeSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +611,7 @@ func (s *FlowstateServer) TriggerSchedule(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	handle, err := s.authorizeSchedule(ctx, "TriggerSchedule", req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -626,10 +651,29 @@ func (s *FlowstateServer) scheduleClientFor(ctx context.Context) (client.Client,
 // The refusal is "no such schedule" rather than "denied", the same answer a run in
 // another tenant gets. Denied would confirm that a schedule of that name exists
 // somewhere, which is the one fact a caller in the wrong tenant must not learn.
-func (s *FlowstateServer) authorizeSchedule(ctx context.Context, name string) (client.ScheduleHandle, error) {
+// rpc is the WorkflowService method whose decision this is; the audit record is
+// keyed to an authorization action through it — see audit.go.
+func (s *FlowstateServer) authorizeSchedule(ctx context.Context, rpc, name string) (client.ScheduleHandle, error) {
+	handle, code, err := s.authorizeScheduleDecision(ctx, name)
+	if err != nil {
+		return nil, s.auditDeny(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name, code, err)
+	}
+
+	if err := s.auditAllow(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
+		return nil, err
+	}
+
+	return handle, nil
+}
+
+// authorizeScheduleDecision is the decision itself, carrying the reason it came
+// out the way it did — [FlowstateServer.authorizeRunDecision]'s shape, for its
+// reason: the two refusals below are deliberately one answer to the caller, so
+// the code cannot be recovered from the error afterwards.
+func (s *FlowstateServer) authorizeScheduleDecision(ctx context.Context, name string) (client.ScheduleHandle, v1.AuditDenyCode, error) {
 	temporal, namespace, err := s.scheduleClientFor(ctx)
 	if err != nil {
-		return nil, err
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE, err
 	}
 
 	handle := temporal.ScheduleClient().GetHandle(ctx, scheduleIDFor(namespace, name))
@@ -638,14 +682,14 @@ func (s *FlowstateServer) authorizeSchedule(ctx context.Context, name string) (c
 	// reads the memo. One round trip answers both "does it exist" and "is it mine".
 	description, err := handle.Describe(ctx)
 	if err != nil {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, noSuchSchedule(name)
 	}
 
 	if !s.ownedBy(namespace, description.Memo) {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, noSuchSchedule(name)
 	}
 
-	return handle, nil
+	return handle, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, nil
 }
 
 // noSuchSchedule is the one answer every absent or unauthorized schedule gets.
@@ -677,16 +721,23 @@ func actOnScheduleError(verb, name string, err error) error {
 // author's own words survive: Temporal rewrites a cron expression into a calendar
 // spec when it stores one, and answering `0 9 * * MON-FRI` with a list of ranges is
 // accurate and unrecognisable.
-func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.Client, namespace, name string) (*v1.ScheduleDescription, error) {
+// It reports the deny code alongside a refusal, for
+// [FlowstateServer.authorizeRunDecision]'s reason: the two refusals below are
+// one answer to the caller by design, so an audit record's code has to come
+// from the branch that chose it rather than from inspecting the error after
+// the fact. [FlowstateServer.CreateSchedule] describes what it has just
+// created and has no use for the code; [FlowstateServer.DescribeSchedule],
+// where the description *is* the authorization decision, does.
+func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.Client, namespace, name string) (*v1.ScheduleDescription, v1.AuditDenyCode, error) {
 	handle := temporal.ScheduleClient().GetHandle(ctx, scheduleIDFor(namespace, name))
 
 	description, err := handle.Describe(ctx)
 	if err != nil {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, noSuchSchedule(name)
 	}
 
 	if !s.ownedBy(namespace, description.Memo) {
-		return nil, noSuchSchedule(name)
+		return nil, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, noSuchSchedule(name)
 	}
 
 	reported := &v1.ScheduleDescription{
@@ -743,7 +794,7 @@ func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.
 		reported.Trigger = state.GetWorkflow().GetTriggers().GetSchedule()
 	}
 
-	return reported, nil
+	return reported, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, nil
 }
 
 // redactedInputMarkerFormat and redactedInputValue mirror

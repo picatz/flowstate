@@ -168,7 +168,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_INTERNAL_ADDRESS",
 			value:   "unset",
-			purpose: "Default for `--internal-listen` on `flow server`: a socket separate from the public listener, carrying health and pprof. Unset (the default) means no internal listener at all; set it to a loopback address such as `127.0.0.1:9090` to turn it on. Refused unless it is loopback; this listener has no TLS configuration of its own.",
+			purpose: "Default for `--internal-listen` on `flow server` and `flow worker`: a private socket of that process's own, carrying health and pprof. Unset (the default) means no internal listener at all; set it to a loopback address such as `127.0.0.1:9090` to turn it on. Refused unless it is loopback: it serves pprof, whose profiles carry the process's memory (resolved secret values among them), and it has no authentication or TLS configuration of its own.",
 			read:    "cmd/flow/internallistener.go",
 		},
 		{
@@ -194,6 +194,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Handshake: refuses to serve a plugin protocol to a process that did not mean to launch one. Set by the host on the child process.",
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_PINS",
+			value:   "unset",
+			purpose: "Default for `--plugin-pins`: a YAML file mapping plugin names to the digest the binary answering to each must have, merged with any --plugin-pin (#1010). Unset means no pins file; a deployment with neither this nor --plugin-pin configures no digest pins, and every plugin name launches exactly as it always has.",
+			read:    "cmd/flow/plugins.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS",
@@ -467,6 +473,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_WORKER_STICKY_CACHE_SIZE",
+			value:   "0",
+			purpose: "Default for `--sticky-cache-size` on `flow worker`: maximum number of workflow executions kept in this process's sticky cache. Unlike the other four `FLOWSTATE_WORKER_*` capacity variables, `0` does NOT take the Temporal SDK's own default (10000) by being passed through — `worker.SetStickyWorkflowCacheSize` assigns its argument unconditionally, so `0` reaching it would configure a zero-entry cache and force full history replay on every workflow task. `0` (or unset) is implemented by not calling the setter at all — see docs/DEPLOYMENT.md's capacity section and workerCapacity's doc comment in cmd/flow/main.go (#921).",
+			read:    "cmd/flow/main.go",
+		},
+		{
 			name:    "FLOWSTATE_WORKER_STOP_TIMEOUT",
 			value:   "2m0s",
 			purpose: "Default for `--worker-stop-timeout` on `flow worker`: how long a shutdown (SIGINT or SIGTERM) waits for in-flight activities and workflow tasks to finish before the worker exits regardless. Parsed with v1.ParseDuration, the same grammar the DSL itself accepts (Go's duration syntax plus days); an unparsable value refuses to start rather than silently keep the default. Keep it under whatever grace period the deployment shape actually gives the process — see docs/DEPLOYMENT.md.",
@@ -520,6 +532,28 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			purpose: "Headers, protocol, timeouts and the rest: read by the OTLP exporters themselves rather than re-spelled here, so anything else OTLP-speaking is configured the same way.",
 			read:    "go.opentelemetry.io/otel exporters",
 			family:  true,
+		},
+		{
+			name:  "OTEL_TRACES_SAMPLER",
+			value: "parentbased_always_on",
+			purpose: "Select the head sampler (`always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, " +
+				"`parentbased_always_off`, `parentbased_traceidratio`, and the jaeger_remote and xray variants the " +
+				"SDK also accepts), matched per the OTel spec. `flow` never calls `sdktrace.WithSampler`, so the " +
+				"tracer provider is built with none configured and the SDK reads this variable itself. Set it on " +
+				"the worker: sampling is a head decision made where the root span starts, and every child span " +
+				"follows the parent's decision through `parentbased_*` regardless of what this variable says on " +
+				"the process that created the child. This shapes what gets exported, not the span, metrics, or " +
+				"logs pipeline itself — a tail-based decision (keep every trace touching an error, regardless of " +
+				"its head sampling) belongs in a collector, not here.",
+			read: "go.opentelemetry.io/otel/sdk/trace (consulted only when WithSampler is absent)",
+		},
+		{
+			name:  "OTEL_TRACES_SAMPLER_ARG",
+			value: "unset",
+			purpose: "The argument the selected sampler takes: a ratio in `[0,1]` for `traceidratio` and " +
+				"`parentbased_traceidratio`, a remote-sampler endpoint for `jaeger_remote`, ignored by every " +
+				"other sampler. Meaningless without `OTEL_TRACES_SAMPLER` naming a sampler that reads it.",
+			read: "go.opentelemetry.io/otel/sdk/trace (consulted only when WithSampler is absent)",
 		},
 		{
 			name:  "FLOWSTATE_TASK_QUEUE_PREFIX",

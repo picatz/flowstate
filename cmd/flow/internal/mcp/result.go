@@ -44,6 +44,26 @@ import (
 // rung. A rung that cannot be encoded is a defect in this surface, not a large
 // answer, and quietly reporting the next-smaller document would hide it.
 func FitResult(rungs ...func() ([]byte, error)) ([]byte, int, error) {
+	return FitResultWithin(MaxResultBytes, rungs...)
+}
+
+// FitResultWithin is [FitResult] against a budget smaller than the surface's
+// own, for an answer that will be *embedded* in another one.
+//
+// The whole difference is who spends the cap. A ladder that fits its document
+// to [MaxResultBytes] has fitted a *final* answer; wrap that document in
+// anything — one more object, one key, one note saying what was dropped — and
+// the result is over the bound, and every rung of the outer ladder retains the
+// inner document, so the outer floor is oversized by construction and
+// [FitResult]'s own contract hands it back that way (Codex, #1109). The bytes
+// the wrapper needs have to be taken out of the inner budget, because they are
+// not the inner document's to spend.
+//
+// Callers should compute the reserve rather than guess it: encode the wrapper
+// with the embedded document elided, measure what came back, and pass the
+// remainder. A guessed reserve is a second bound that can be wrong in the
+// direction this exists to prevent.
+func FitResultWithin(limit int, rungs ...func() ([]byte, error)) ([]byte, int, error) {
 	if len(rungs) == 0 {
 		// Unreachable from this package; loud rather than a nil answer if a
 		// future caller builds an empty ladder.
@@ -60,7 +80,7 @@ func FitResult(rungs ...func() ([]byte, error)) ([]byte, int, error) {
 			return nil, i, err
 		}
 
-		if len(encoded) <= MaxResultBytes {
+		if len(encoded) <= limit {
 			return encoded, i, nil
 		}
 	}
@@ -336,8 +356,35 @@ const maxReducedTranscriptBytes = MaxResultBytes / 2
 // nothing keepable, the transcript is returned exactly as it arrived: it is not
 // this function's business to repair a document that was already invalid.
 func ReduceTranscript(outputs *v1.Workflow_StepOutputs) (kept, total int) {
-	steps := outputs.GetStepValues()
-	total = len(steps)
+	reduced, kept, total := reducedStepValues(outputs.GetStepValues())
+	if reduced != nil {
+		outputs.StepValues = reduced
+	}
+
+	return kept, total
+}
+
+// ReducedTranscript is [ReduceTranscript] for a transcript the caller may not
+// mutate: the same selection, answered as a new arm that shares the kept
+// steps' messages and the declared outputs rather than cloning either. The
+// local-run preflight uses it to bound a response *before* anything marshals
+// or clones it, without writing into the response the engine handed over —
+// one selection policy, two spellings, so the two venues cannot drift.
+func ReducedTranscript(outputs *v1.Workflow_StepOutputs) (*v1.Workflow_StepOutputs, int, int) {
+	reduced, kept, total := reducedStepValues(outputs.GetStepValues())
+	if reduced == nil {
+		reduced = outputs.GetStepValues()
+	}
+
+	return &v1.Workflow_StepOutputs{StepValues: reduced, RunOutputs: outputs.GetRunOutputs()}, kept, total
+}
+
+// reducedStepValues is the selection both spellings share: smallest steps
+// first under the byte budget, at least one kept whatever it costs. A nil map
+// answer means there was nothing to select over (no step carries values), and
+// the caller keeps what it had.
+func reducedStepValues(steps map[string]*v1.Node_Outputs) (map[string]*v1.Node_Outputs, int, int) {
+	total := len(steps)
 
 	type entry struct {
 		name string
@@ -355,7 +402,7 @@ func ReduceTranscript(outputs *v1.Workflow_StepOutputs) (kept, total int) {
 	}
 
 	if len(entries) == 0 {
-		return total, total
+		return nil, total, total
 	}
 
 	slices.SortFunc(entries, func(a, b entry) int {
@@ -380,7 +427,5 @@ func ReduceTranscript(outputs *v1.Workflow_StepOutputs) (kept, total int) {
 		budget -= e.size
 	}
 
-	outputs.StepValues = reduced
-
-	return len(reduced), total
+	return reduced, len(reduced), total
 }

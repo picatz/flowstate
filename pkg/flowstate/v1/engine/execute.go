@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -73,6 +74,23 @@ type executor struct {
 	// descending into a loop body or a parallel branch, both of which share
 	// their enclosing workflow's own tree.
 	curSpec *v1.Workflow
+
+	// path is the enclosing steps this executor runs inside, outermost first —
+	// the `loop:`, `parallel:` or `call:` steps descended through to get here,
+	// and empty at the top level.
+	//
+	// It exists for the history labels in summary.go, which need to say *which*
+	// `page` a row came from: an id is unique within a visibility domain rather
+	// than within a file, so two sibling loops may each declare a body step of
+	// the same name. [progress] tracks the same position for the live query and
+	// cannot be reused for this — it is deliberately nil in a parallel branch, a
+	// concurrent iteration and an async step, because a run has no single
+	// position while several things are in flight, and a *label* has no such
+	// difficulty: each command knows exactly where it was written.
+	//
+	// Always built with [executor.within], never with a bare append: a sibling
+	// appending onto a shared backing array would rewrite the other's position.
+	path []string
 
 	// budget and processed implement the step budget for Continue-As-New.
 	budget    int
@@ -555,7 +573,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		vars = e.resume[calleeDepth].GetCallVars()
 	} else if len(callee.GetVars()) > 0 {
 		var evaluated v1.Scope
-		if err := workflow.ExecuteActivity(e.ctx, WorkflowVars, &v1.Scope{
+		if err := workflow.ExecuteActivity(withSummary(e.ctx, callVarsSummary(e.path, node.GetId())), WorkflowVars, &v1.Scope{
 			AmbientVars: callee.GetVars(),
 			Profile:     v1.CalleeProfile(e.scope, callee),
 
@@ -608,6 +626,10 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		identity: e.identity,
 		runID:    e.runID,
 		scope:    inner,
+
+		// A callee's steps run inside the step that called it, which is what
+		// keeps two call sites of one workflow apart in history.
+		path: e.within(node),
 
 		budget:    e.budget,
 		processed: e.processed,
@@ -679,7 +701,7 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 		return e.runLoop(node, kind.Loop, depth, susp, descend)
 
 	case *v1.Node_Parallel:
-		return e.runParallel(kind.Parallel, depth, susp)
+		return e.runParallel(node, kind.Parallel, depth, susp)
 
 	case *v1.Node_Wait:
 		return e.runWait(node, kind.Wait)
@@ -757,6 +779,16 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 	return nil
 }
 
+// within returns the position a step nested inside node runs at.
+//
+// [slices.Concat] and not `append`, always: append may write into the backing
+// array e.path already has, so two branches descending from one executor would
+// each see the other's step id in their own position. That is a bug whose only
+// symptom is a wrong label, which is the kind that survives.
+func (e *executor) within(node *v1.Node) []string {
+	return slices.Concat(e.path, []string{node.GetId()})
+}
+
 // runTask schedules one task activity and records its outputs.
 func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	// Resolve into a copy: the specification is reused across iterations and
@@ -767,7 +799,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		return nodeFailed(err)
 	}
 
-	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy()))
+	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy(), stepSummary(e.path, node.GetId())))
 
 	var out v1.Node_Outputs
 	var evalErr error
@@ -872,24 +904,40 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 // path, read here instead of there because a step's own policy — not a
 // compensation's narrowed budget — is what names the origin.
 func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
-	var timeoutErr *temporal.TimeoutError
-	if !errors.As(err, &timeoutErr) {
+	timeoutType, imposed := durableStepTimeoutType(err)
+	if !imposed {
 		return err
-	}
-
-	origin := "the step default; set timeout: on the step to change it"
-	if policy.GetTimeout().AsDuration() > 0 {
-		origin = "the step's declared timeout:"
 	}
 
 	timeouts := v1.StepTimeoutsFor(policy, v1.DefaultStepTimeouts())
 
-	var budgeted string
-	switch timeoutErr.TimeoutType() {
+	// The origin is per timeout type, not per step. Both arms named `timeout:`
+	// before `total_timeout:` existed, which was already the wrong key for the
+	// overall bound: an operator told "every attempt together exceeded 10m0s
+	// (the step default; set timeout: on the step to change it)" who then set
+	// `timeout:` would move the per-attempt bound and watch the same failure
+	// happen at the same ten minutes. Each arm names the key that actually moves
+	// the number in the sentence beside it.
+	var budgeted, origin string
+	switch timeoutType {
 	case enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
 		budgeted = fmt.Sprintf("one attempt exceeded %s", timeouts.StartToClose)
+		origin = "the step default; set timeout: on the step to change it"
+		if policy.GetTimeout().AsDuration() > 0 {
+			origin = "the step's declared timeout:"
+		}
 	case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE:
 		budgeted = fmt.Sprintf("every attempt together exceeded %s", timeouts.ScheduleToClose)
+		origin = "the step default; set total_timeout: on the step to change it"
+		if policy.GetTotalTimeout().AsDuration() > 0 {
+			origin = "the step's declared total_timeout:"
+		} else if timeouts.ScheduleToClose != v1.DefaultScheduleToCloseTimeout {
+			// No `total_timeout:`, but a declared `timeout:` widened the overall
+			// bound to fit the attempts it allows, so the number above is derived
+			// from that key rather than from the default — and naming the default
+			// here would describe a value that is not the one that fired.
+			origin = "widened to fit the step's declared timeout: and attempts; set total_timeout: to bound it directly"
+		}
 	default:
 		// A schedule-to-start or heartbeat timeout names no per-step budget this
 		// engine sets, so there is nothing this can say beyond Temporal's own
@@ -902,6 +950,40 @@ func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
 		err:     err,
 		message: fmt.Sprintf("timed out: %s (%s)", budgeted, origin),
 	}
+}
+
+// durableStepTimeoutType reports which per-step budget Temporal ended the
+// activity on, and whether one ended it at all.
+//
+// Split out from [durableStepTimeoutMessage] so the question "did a budget end
+// this?" is answered in one place, and so the answer is a timeout *type* rather
+// than an error — the origin sentence differs per type, because the two types
+// are set by two different keys.
+//
+// Only a [temporal.TimeoutError] counts, for the reason
+// [durableStepTimeoutMessage]'s doc gives at length, and it is read before
+// anything else in the chain.
+//
+// # A shape this deliberately does not claim to cover
+//
+// Temporal raises a TimeoutError when a deadline reaches an attempt that is *in
+// flight*. A ScheduleToClose budget running out during a *backoff* is a
+// different shape: the server has the last attempt's failure in hand, so it
+// stops retrying and returns that, with `RetryState` distinguishing "the budget
+// ran out" from "the attempts ran out" and nothing else doing so. That case
+// reads today as the dependency's own error with no mention of the budget, and
+// it is not fixed here: `testsuite`'s environment leaves RetryState Unspecified
+// on the error it hands back, so an arm reading it could be written and could
+// not be tested, and an untested claim about a substrate's error shape is
+// exactly the kind this repository has been wrong about before. Tracked as a
+// follow-up rather than landed on a guess.
+func durableStepTimeoutType(err error) (enumspb.TimeoutType, bool) {
+	var timeoutErr *temporal.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return timeoutErr.TimeoutType(), true
+	}
+
+	return enumspb.TIMEOUT_TYPE_UNSPECIFIED, false
 }
 
 // durableStepTimeoutError carries [durableStepTimeoutMessage]'s translated
@@ -993,8 +1075,11 @@ func (e *executor) dispatch(
 // deployment's task-shape policy evaluates a compensation against its real caller.
 //
 // The activity options are the ones a step with no `retry:` and no `timeout:`
-// gets, from `activityOptionsFor(nil)`. The local driver reaches the same defaults
-// through `runStepWithPolicy` with a nil policy, from the same constants.
+// gets, from `activityOptionsFor(nil, …)`. The local driver reaches the same
+// defaults through `runStepWithPolicy` with a nil policy, from the same
+// constants. The summary is the exception it does not share: history is a
+// durable-only object, and [undoStepSummary] is what keeps a saga unwinding
+// six steps from reading as six more steps running.
 //
 // The context is a parameter rather than `e.ctx` because a compensation triggered
 // by a cancellation must not run on the cancelled context — see [compensate],
@@ -1023,7 +1108,7 @@ func (e *executor) dispatch(
 func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, within time.Duration) error {
 	task := entry.GetTask()
 
-	opts := activityOptionsFor(nil)
+	opts := activityOptionsFor(nil, undoStepSummary(entry.GetStepId()))
 	budgetLimited := false
 	if within > 0 {
 		// Narrowed and never widened: a budget with more room left than a step's
@@ -1159,7 +1244,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	resultsBytes := v1.LoopResultsSize(results)
 
 	if loop.GetMaxParallel() > 1 {
-		iterations, err := e.runIterationsConcurrently(loop, name, items[startItem:], inner, innerSusp)
+		iterations, err := e.runIterationsConcurrently(e.within(node), loop, name, items[startItem:], inner, innerSusp)
 		if err != nil {
 			return err
 		}
@@ -1189,7 +1274,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	for i := startItem; i < len(items); i++ {
 		e.setLoopFrame(inner, i, results)
 
-		iteration, err := e.runIteration(loop, name, items[i], inner, innerSusp, i == startItem && descend)
+		iteration, err := e.runIteration(e.within(node), loop, name, items[i], inner, innerSusp, i == startItem && descend)
 		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
@@ -1325,7 +1410,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		// recently committed to resuming from.
 		e.progress.setLoopState(node.GetId(), state)
 
-		iteration, stop, next, err := e.runLoopIteration(loop, name, state, inner, innerSusp, i == startItem && descend)
+		iteration, stop, next, err := e.runLoopIteration(e.within(node), loop, name, state, inner, innerSusp, i == startItem && descend)
 		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
@@ -1375,7 +1460,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 // its state holds next. The until and update evaluations happen in workflow code,
 // which invariant 4 permits for a loop's own control expressions exactly as it does
 // for a `for_each`'s `items:` — the durable driver already evaluates those inline.
-func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, bool, *v1.Value, error) {
+func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName string, state *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, bool, *v1.Value, error) {
 	// Each iteration starts from the outputs visible before the loop, so an iteration
 	// cannot observe a previous one — the only thread between them is the carried
 	// state.
@@ -1395,6 +1480,7 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		identity:  e.identity,
 		runID:     e.runID,
 		scope:     scope,
+		path:      body,
 		budget:    e.budget,
 		processed: e.processed,
 		frames:    e.frames,
@@ -1462,7 +1548,7 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 }
 
 // runIteration executes the loop body once against its own output scope.
-func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
 	// Each iteration starts from the outputs visible before the loop, so an
 	// iteration cannot observe a previous one — which keeps its behavior
 	// independent of how many ran before it, and identical whether iterations run
@@ -1478,6 +1564,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
 		scope:     e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
+		path:      body,
 		budget:    e.budget,
 		processed: e.processed,
 		frames:    e.frames,
@@ -1522,7 +1609,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 //
 // Results keep the order of the input list rather than the order iterations
 // finished, so a loop's results do not depend on scheduling.
-func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
 	limit := int(loop.GetMaxParallel())
 	if limit > len(items) {
 		limit = len(items)
@@ -1562,6 +1649,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					identity:  e.identity,
 					runID:     e.runID,
 					scope:     e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					path:      body,
 					budget:    e.budget,
 					signals:   e.signals,
 					undo:      iterationUndo,
@@ -1632,8 +1720,12 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 }
 
 // runParallel runs branches concurrently and merges their outputs.
-func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
+func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp int) error {
 	branches := parallel.GetBranches()
+
+	// Computed once, outside the loop: every branch runs at the same position,
+	// and [executor.within] allocates.
+	branchPath := e.within(node)
 	scopes := make([]*v1.Workflow_StepOutputs, len(branches))
 	errs := make([]error, len(branches))
 	undos := make([]*v1.UndoLog, len(branches))
@@ -1654,12 +1746,18 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 			// make the result depend on scheduling.
 			branchOutputs := cloneOutputs(e.scope.GetOutputs())
 			worker := &executor{
-				ctx:       gctx,
-				spec:      e.spec,
-				curSpec:   e.curSpec,
-				identity:  e.identity,
-				runID:     e.runID,
-				scope:     e.scope.WithOutputs(branchOutputs),
+				ctx:      gctx,
+				spec:     e.spec,
+				curSpec:  e.curSpec,
+				identity: e.identity,
+				runID:    e.runID,
+				scope:    e.scope.WithOutputs(branchOutputs),
+
+				// Carried where [progress] deliberately is not: a run has no
+				// single *position* while branches are in flight, and a
+				// *label* has no such difficulty — each branch's commands know
+				// exactly which `parallel:` step they were written under.
+				path:      branchPath,
 				budget:    e.budget,
 				signals:   e.signals,
 				undo:      branchUndo,

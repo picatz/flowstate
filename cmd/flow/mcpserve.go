@@ -755,6 +755,17 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) (*mc
 		// afterward, and this surface does not serve it. Same schema, same
 		// handler, one paragraph that is true here.
 		flowmcp.ToolRegistration{Tool: flowmcp.ReducedTestTool(), Handler: testToolHandler(testTimeout)},
+
+		// The debug tool is served here for the reason the test tool is: it
+		// runs the identical stubbed run — no egress, no secret resolved, a
+		// virtual clock — and adds only questions asked at its step
+		// boundaries. It takes the same timeout and the same *exclusive*
+		// registry guard ([registryMutatingTools]), because it reaches
+		// [flowtest.RunSourceWith] through the same door and can stub a task
+		// this build does not register exactly as a test case can. A finite script cannot hold the run open: when it runs
+		// out the session resumes, so the bound that ends a test call ends
+		// this one.
+		flowmcp.ToolRegistration{Tool: flowmcp.DebugTool(), Handler: debugToolHandler(testTimeout)},
 	)
 
 	return srv, nil
@@ -830,14 +841,31 @@ func newMCPServeRegistryGuard() *mcpServeRegistryGuard {
 	return &mcpServeRegistryGuard{sem: semaphore.NewWeighted(mcpServeRegistryReaders)}
 }
 
-// wrapTool is [flowmcp.Deps.WrapHandler]: exclusive for the tool that mutates
+// registryMutatingTools names every tool that reaches [flowtest]'s source
+// door, which registers a synthetic definition into [v1.DefaultRegistry] for
+// any task a case stubs that this build does not have.
+//
+// A set rather than a name, because there are two now and the second one
+// arrived by being forgotten: flowstate_debug drives the identical run
+// through the identical door, and it was wrapped as a *reader* while its own
+// registration comment claimed it took this guard — so a debug session's
+// synthetic task names were visible to a concurrent validate, compile, or
+// catalog read (Codex, #1109). Anything routed through
+// [flowtest.RunSourceWith] belongs here; a tool that only reads the registry
+// does not.
+var registryMutatingTools = map[string]bool{
+	flowmcp.TestToolName:  true,
+	flowmcp.DebugToolName: true,
+}
+
+// wrapTool is [flowmcp.Deps.WrapHandler]: exclusive for the tools that mutate
 // the registry, shared for every tool that reads it.
 //
 // timeout is the whole budget an exclusive call gets, waiting for the lock
 // included — see this type's doc.
 func (g *mcpServeRegistryGuard) wrapTool(timeout time.Duration) func(string, mcp.ToolHandler) mcp.ToolHandler {
 	return func(tool string, next mcp.ToolHandler) mcp.ToolHandler {
-		if tool == flowmcp.TestToolName {
+		if registryMutatingTools[tool] {
 			return g.exclusive(next, timeout)
 		}
 

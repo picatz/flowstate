@@ -174,6 +174,26 @@ plugin's design:
   harmless config key, a linked worktree, a submodule checkout, or a
   `working_context` that is a subdirectory of a larger repository all get no
   patch, and `files_changed` still reports what the run touched.
+- **`reset_working_context` closes #967.** Without it, only a loop's first
+  agentic turn can ever produce a patch: `computePatch` fails closed on a
+  dirty baseline, and a previous turn's own edits are still sitting in
+  `working_context` since nothing - not this task, not
+  [`plugins/git`](../git)'s `git.commit_push`, which builds its commit in an
+  in-memory clone - ever touches that directory again once a patch has been
+  read out of it. Setting this input discards those edits (tracked and
+  untracked alike) before this run's own baseline is read, restoring
+  `working_context` to the commit it is already checked out at - not a
+  different one; there is no ref or sha to name here. It reuses the same
+  hardened git invocation and the same `gitWorktreeIsPlain` containment
+  check `computePatch` and `observeWorkspace` already run, so a
+  `working_context` that fails that check (a subdirectory of a larger
+  repository, a linked worktree, ...) refuses the request outright rather
+  than silently doing nothing - unlike the patch computation's own
+  best-effort fallback, a reset an author explicitly asked for and did not
+  get has to be reported. See codex.proto's own doc comment on
+  `ExecInputs.reset_working_context`, and `examples/plugins/agentic-fix`'s
+  "What is still missing" for what advancing `working_context` to a
+  *different* commit between turns would additionally take.
 - **The library's own subprocess launch (`Exec.Run`) is not what this plugin
   calls.** `process.go` builds the same argv shape but constructs the
   child's environment from an explicit allowlist rather than a copy of this
@@ -280,6 +300,20 @@ needs live testing" for the specifics, in short:
   `errors.go`'s `classifyRunError`, against real stderr wording.
 - Real token usage numbers, given the Usage fields upstream added that this
   plugin does not yet surface.
+- **`reset_working_context`'s own git operations run against a real `git`
+  binary in every test (`resetWorkingContext`'s tests use `realGitBinary`,
+  the same fixture `diff_test.go`'s own patch tests do) - what has not run
+  live is the *agentic loop this input exists for*, end to end against a
+  real `codex` binary.** `TestCodexExecResetWorkingContextEnablesARetriedPatch`
+  proves the mechanism - a dirty baseline blocks a patch, a reset clears it,
+  a second patch comes back - by having `fakecodex` write the file edit
+  itself (`FAKECODEX_WRITE_FILE`/`FAKECODEX_WRITE_CONTENT`) rather than a
+  real agent doing it. Whether a real `codex` binary, mid-turn, ever leaves
+  `working_context` in a state this input's two commands
+  (`git checkout HEAD -- .` then `git clean -fd -- .`) cannot fully restore
+  - a submodule the agent initialized, a `.git/index.lock` from a turn
+    killed mid-write, a permission bit changed on a file `codex` created -
+  is untested against the real binary.
 
 ## What proves this plugin's task is reachable
 

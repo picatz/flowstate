@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -142,7 +144,7 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 // documentedLocalTools names every tool on this surface that is not the
 // projection of an RPC.
 //
-// There is one, and it should stay hard to add to. A tool with no service method
+// There are three, and it should stay hard to add to. A tool with no service method
 // behind it is a capability that exists only here — no Connect client, no CLI
 // verb, nothing else to compare its behavior against — so each one is a
 // deliberate exception rather than a category.
@@ -159,9 +161,19 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 // verdicts — and a single tool choosing between them by which arguments were
 // set is the shape [runLocalArguments]'s own doc comment already rejected for
 // `vars`: an implicit mode a caller has to infer.
+// flowstate_debug: the step debugger's MCP front (#928 slice 3), driving the
+// same flowtest run flowstate_test drives. Not an RPC because a debug session
+// is a *conversation* with a run held open in this process, and the durable
+// half of that — pausing a run on a worker somewhere else — is #928's own
+// slice 2, whose wire messages are schema decided there rather than invented
+// here. And not folded into flowstate_test's tool for the reason given just
+// above: a verdict and a transcript of questions are different documents, and
+// a tool choosing between them by which arguments were set is the implicit
+// mode this surface keeps refusing.
 var documentedLocalTools = map[string]bool{
 	flowmcp.RunLocalToolName: true,
 	flowmcp.TestToolName:     true,
+	flowmcp.DebugToolName:    true,
 }
 
 func documentedLocalToolNames() []string {
@@ -327,10 +339,9 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 // runMCP registers, so a test connects to the identical tool set an agent
 // does.
 func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
-	return []flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(posture)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
-	}
+	// The command's own list, not a copy of it: a tool registered for an agent
+	// and missing here is a tool no test ever calls.
+	return stdioExtraTools(posture)
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a
@@ -649,6 +660,37 @@ steps:
 		"a value the source did not mark sensitive must render unchanged")
 }
 
+// TestTheRunLocalToolBoundsBeforeItRedacts pins the composition the handler's
+// ordering has to keep: the preflight bound runs first (redaction clones its
+// input outright, so a bound behind it re-pays the workflow-sized allocation
+// it exists to refuse — Codex, #1083), and redaction still masks everything
+// that survives the reduction. A transcript big enough to trigger the bound
+// beside a `sensitive: true` declaration exercises both at once, which is the
+// join a page-shaped test of either cannot see.
+func TestTheRunLocalToolBoundsBeforeItRedacts(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	const secret = "sk-live-0123456789abcdef"
+
+	var source strings.Builder
+	fmt.Fprintf(&source, "edition: v2026.3\nname: big-and-secret\noutputs:\n  token:\n    value: ${\"%s\"}\n    sensitive: true\nsteps:\n", secret)
+	for i := range 40 {
+		fmt.Fprintf(&source, "  - id: s%d\n    value: ${\"%s\"}\n", i, strings.Repeat("x", 4<<10))
+	}
+
+	result, answer := callRunLocal(t, session, map[string]any{"source": source.String()})
+	require.False(t, result.IsError, "the workflow failed: %s", result.Content[0].(*mcp.TextContent).Text)
+
+	require.NotContains(t, result.Content[0].(*mcp.TextContent).Text, secret,
+		"the actual secret string must be absent from the rendered bytes, not merely covered by a marker")
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"],
+		"redaction stopped applying once the answer was big enough to bound")
+	assert.Contains(t, answer.Note, "reduced",
+		"the transcript was big enough to trigger the bound and the answer does not say so")
+}
+
 // TestTheRunLocalToolRevealSensitiveShowsValues checks the escape hatch on this
 // surface: --reveal-sensitive on the `flow mcp` process, decided once at
 // start-up, shows what the tool would otherwise withhold.
@@ -915,9 +957,9 @@ func TestTheRunLocalAnswerIsBounded(t *testing.T) {
 		}
 	}
 
-	response := localRun(outputs, nil, nil, time.Now(), time.Now())
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
 
-	encoded, err := renderRunLocalResult(response, []runLocalLogRecord{{Level: "INFO", Message: "hi"}})
+	encoded, err := renderRunLocalResult(response, []runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
 		"a run's outputs are the workflow's choice, and this one spent %d bytes of a model's context",
@@ -954,10 +996,9 @@ func TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs(t *testing.T) {
 		}},
 	}
 
-	encoded, err := renderRunLocalResult(
-		localRun(outputs, nil, nil, time.Now(), time.Now()),
-		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
-	)
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 
 	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
@@ -996,10 +1037,9 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 		}
 	}
 
-	encoded, err := renderRunLocalResult(
-		localRun(outputs, nil, nil, time.Now(), time.Now()),
-		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
-	)
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes)
 
@@ -1021,6 +1061,78 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 		"the transcript is still whole, so nothing was actually reduced")
 }
 
+// TestASingleOversizedStepCannotDefeatTheBound: every reduction keeps at
+// least one real step, because an empty transcript arm is a document the
+// schema rejects — so a run whose one step alone exceeds the cap used to walk
+// every rung as a no-op and ride the floor's "returned whether or not it
+// fits" contract straight past it (Codex, #1083). The preflight's last resort
+// replaces that step's values with size markers: the shape survives, the
+// weight does not, and the note names the step.
+func TestASingleOversizedStepCannotDefeatTheBound(t *testing.T) {
+	t.Parallel()
+
+	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"scrape": {NamedValues: map[string]*v1.Value{
+			"body": v1.NewValue(strings.Repeat("x", 2<<20)),
+		}},
+	}}
+
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"one step's outputs are the workflow's choice too, and this one spent %d bytes of a model's context",
+		len(encoded))
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	require.Contains(t, answer.Run.Outputs.StepValues, "scrape",
+		"the transcript arm lost its one step, which is a GetResponse the schema rejects")
+	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+		"[omitted:", "the oversized value survived as itself rather than as a size marker")
+	assert.Contains(t, answer.Note, `step "scrape"`,
+		"the note does not name the step that carried the weight")
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
+}
+
+// TestAStepThatOutgrowsItsProtoSizeInJSONCannotDefeatTheBound is the escape
+// the proto-space arithmetic cannot see (Codex, #1109): JSON escaping expands
+// a control-heavy string toward six rendered bytes per proto byte, so a step
+// under every proto-space threshold can still carry the ladder's floor past
+// the cap in the one representation the cap is about. The last resort
+// therefore also runs where bytes are real — after the ladder, measured on
+// the rendered answer.
+func TestAStepThatOutgrowsItsProtoSizeInJSONCannotDefeatTheBound(t *testing.T) {
+	t.Parallel()
+
+	// ~200KiB of 0x01 bytes: under flowmcp.MaxResultBytes in proto form, and
+	// six times it once every byte renders as .
+	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"scrape": {NamedValues: map[string]*v1.Value{
+			"body": v1.NewValue(strings.Repeat("\x01", 200<<10)),
+		}},
+	}}
+
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
+		"the rendered answer escaped the cap through JSON expansion: %d bytes", len(encoded))
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+	require.Contains(t, answer.Run.Outputs.StepValues, "scrape")
+	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+		"[omitted:", "the expanding value survived as itself rather than as a size marker")
+	assert.Contains(t, answer.Note, `step "scrape"`)
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
+}
+
 // TestARunThatFitsIsNotTrimmed is the other side of that bound: an ordinary run
 // keeps its outputs and its logs, so the trimming path cannot quietly become the
 // normal one.
@@ -1031,10 +1143,9 @@ func TestARunThatFitsIsNotTrimmed(t *testing.T) {
 		"greet": {NamedValues: map[string]*v1.Value{"body": v1.NewValue("hello")}},
 	}}
 
-	encoded, err := renderRunLocalResult(
-		localRun(outputs, nil, nil, time.Now(), time.Now()),
-		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
-	)
+	response, preflightNotes := boundRunLocalResponse(localRun(outputs, nil, nil, time.Now(), time.Now()))
+	encoded, err := renderRunLocalResult(response,
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}}, preflightNotes)
 	require.NoError(t, err)
 
 	var answer runLocalAnswer
@@ -1044,6 +1155,31 @@ func TestARunThatFitsIsNotTrimmed(t *testing.T) {
 	assert.Len(t, answer.Logs, 1)
 	assert.Equal(t, "hello",
 		answer.Run.Outputs.StepValues["greet"].NamedValues["body"].Literal["stringValue"])
+}
+
+// TestRunLocalLogsAreByteBounded covers the single-record direction of the
+// collector's bound. A record count cannot constrain one workflow-controlled
+// message or field, and retaining a short slice of either would still retain
+// its large backing allocation.
+func TestRunLocalLogsAreByteBounded(t *testing.T) {
+	t.Parallel()
+
+	logs := newRunLocalLogs()
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, strings.Repeat("界", 1<<20), 0)
+	record.Add("body", strings.Repeat("x", 2<<20))
+	require.NoError(t, logs.Handle(t.Context(), record))
+
+	records := logs.records()
+	require.Len(t, records, 1)
+	assert.LessOrEqual(t, len(records[0].Message), maxRunLocalLogBytes)
+	assert.True(t, utf8.ValidString(records[0].Message), "the byte cap split a UTF-8 rune")
+
+	held := len(records[0].Message)
+	for key, value := range records[0].Fields {
+		held += len(key) + len(value)
+	}
+	assert.LessOrEqual(t, held, maxRunLocalLogBytes,
+		"one log record retained %d bytes despite the collector's byte budget", held)
 }
 
 // TestTheRunLocalToolRefusesUnknownArguments.

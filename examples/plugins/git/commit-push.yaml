@@ -64,7 +64,8 @@ steps:
       # A files map's keys are ordinary YAML mapping keys, not expressions -
       # only a value is `${...}`-interpolated - which is why the path this
       # example writes is a fixed literal rather than a fourth input.
-      files: '${{"FLOWSTATE_EXAMPLE.md": inputs.content}}'
+      files:
+        FLOWSTATE_EXAMPLE.md: ${inputs.content}
       message: ${inputs.message}
       # Not optional: a write always needs a credential. A secret reference,
       # resolved inside the task, never a literal - see plugins/git/README.md,

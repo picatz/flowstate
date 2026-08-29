@@ -231,6 +231,36 @@ message RunResponse {
   // caller is owed about their own request, and leaves the disclosure question
   // alone.
   optional bool specification_as_submitted = 6;
+
+  // Joined is true when this response describes a run that was already going
+  // rather than one this request started.
+  //
+  // Only [Concurrency.ON_CONFLICT_JOIN] produces it: the workflow declared a
+  // `concurrency:` key, another run of the same workflow already held that key in
+  // this tenant, and the author asked for the incumbent to be returned instead of
+  // a refusal. [RunResponse.workflow_id] and [RunResponse.run_id] then name *that*
+  // run — a run this caller did not start, may not have submitted the same inputs
+  // to, and whose specification is therefore not necessarily theirs.
+  //
+  // Which is why it is a field rather than something a caller infers from a run id
+  // it did not recognize. A caller that submits and gets back a run id has no way
+  // to tell "mine" from "somebody else's, joined" by looking, and the two differ in
+  // what the caller may conclude: [RunResponse.specification_as_submitted] is
+  // answered about the *incumbent's* specification, so a client redacting a joined
+  // run's outputs against its own copy is redacting against a file that did not
+  // run. Establishing the fact here is the same discipline
+  // `WorkflowExecutionErrorWhenAlreadyStarted` buys the webhook path
+  // (`AcceptedDelivery.Joined`): a join is a thing the server states, never a thing
+  // a reader deduces from silence.
+  //
+  // A plain `bool` rather than an `optional` one, unlike the field above it, and
+  // the asymmetry is deliberate. Silence there is a third answer — an older server
+  // that substitutes specifications and cannot say so — and reading it as false
+  // would be unsafe. Here false is the safe reading and the overwhelmingly common
+  // one: a server too old to have this field cannot have honoured a
+  // `concurrency:` block either, so it never joined anything, and "unset" and
+  // "did not join" are the same fact rather than two.
+  bool joined = 7;
 }
 
 // GetRequest is the request message for getting a workflow run.
@@ -295,6 +325,23 @@ message GetResponse {
   // reasoning progress is; empty for a running run means nothing is mid-retry,
   // which is itself the answer: the run is waiting or between steps, not stuck.
   repeated PendingActivity pending_activities = 9;
+
+  // PendingActivitiesTruncated is true when this run is retrying more steps
+  // than the answer reports.
+  //
+  // A count bound and a flag, exactly as [RunProgress.pending_waits_truncated]
+  // does it, and for the same reason: a reader must never mistake some of the
+  // retrying steps for all of them. The first of them are still the answer to
+  // "what is this stuck on" rather than a partial map whose keys a caller might
+  // index by.
+  //
+  // It exists because "a handful of retrying steps" was an assumption rather
+  // than a fact. A suspension-opaque block may schedule
+  // [MaxAtomicBlockActivities] activities, and nothing stops all of them from
+  // retrying at once — so both the number of entries and the length of each
+  // one's message are the workload's choice, and an unbounded projection of
+  // them is a read one authorized caller can make expensive (Codex, #1119).
+  bool pending_activities_truncated = 13;
 
   // Outputs are the values the workflow declared it would report, computed by
   // this run: the answer, as against the transcript `outputs` above holds.
@@ -868,6 +915,32 @@ service WorkflowService {
   // caller: a short or empty page is not the end of the listing.
   rpc List(ListRequest) returns (ListResponse) {}
 
+  // GetTimeline reports what a run did, event by event, read back from its own
+  // durable history.
+  //
+  // [Get] answers what a run *is* — its status, where it has reached, what is
+  // mid-retry, what it is parked on. None of that survives the moment somebody
+  // most wants it: a run that has already failed has no now left to describe,
+  // and "which step, on which attempt, with what sentence, and what was it
+  // waiting for before that" is a question about the past. Locally the debugger
+  // answers it. For a run on a worker somewhere else this is the answer, and
+  // before it there was none through this service at all — an operator had to
+  // leave the tenancy boundary and ask the temporal CLI, exactly as they did
+  // for [GetResponse.pending_activities] before that field existed.
+  //
+  // Read-only in the strongest sense available: it starts nothing, signals
+  // nothing and changes nothing, so it is the one verb about a live workload
+  // that an agent can be pointed at unattended, as [Validate] is for a file.
+  //
+  // Authorized like every other verb addressing a run, and refused the same way
+  // — see [GetRequest]. A history is the whole account of a workload, so a
+  // timeline readable by whoever guessed an id would be a larger disclosure
+  // than [Get]'s, not a smaller one.
+  //
+  // Bounded, and it says when a bound was reached rather than letting a short
+  // answer read as a complete one — see [GetTimelineResponse.truncated].
+  rpc GetTimeline(GetTimelineRequest) returns (GetTimelineResponse) {}
+
   // Cancel asks a run to stop and lets it clean up on the way out.
   //
   // [CancelResponse] is empty: it says the stop request was accepted, not that
@@ -1048,6 +1121,151 @@ message ValidateResponse {
   // (which version of the grammar answered, how long it took) without changing
   // the shape a caller already parses.
   ValidationReport report = 1;
+}
+
+// GetTimelineRequest addresses one run and asks for a page of its account.
+message GetTimelineRequest {
+  // WorkflowId is the run to read, as [RunResponse.workflow_id] reports it.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 1024
+    }
+  ];
+
+  // RunId names one attempt of that workflow. Empty reads the latest, which is
+  // what a caller holding only a workflow id wants.
+  //
+  // Unlike [SignalRequest], where addressing a run rather than the workflow is
+  // a mistake with consequences, naming one here is ordinary: a workload that
+  // continued as new has a timeline per segment, and walking back through them
+  // is what [GetTimelineResponse.next_run_id] is for.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 1024}];
+
+  // MaxEntries bounds the answer. Zero means the server's default.
+  //
+  // A ceiling as well as a default, because a history is as long as a workload
+  // is busy and the caller does not pay for reading it.
+  int32 max_entries = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 5000
+  }];
+
+  // AfterEventId resumes an account past the last entry a caller already read:
+  // pass [TimelineEntry.event_id] from the last row of the previous answer.
+  //
+  // This exists because a ceiling with no way past it is a dead end, and the
+  // ceiling is genuinely reachable — one suspension-opaque block may schedule
+  // [MaxAtomicBlockActivities] activities, and a *successful* activity already
+  // contributes two entries, so a single valid segment can hold several times
+  // the largest answer this will return (Codex, #1119).
+  //
+  // An event id rather than an opaque cursor, and that is the decision worth
+  // stating. Temporal's own page token would be the obvious cursor and still
+  // cannot be used — though not for the reason first given here, and the
+  // correction matters because the old one sends a reader to plumb something
+  // already plumbed. The Temporal namespace a raw history request needs is
+  // available to the server now. The *token* is reachable only by dropping
+  // below the SDK: its iterator begins at the first page and exposes no
+  // cursor, so through the supported surface there is nothing to hand a
+  // caller at one end and nothing to seed at the other. Temporal's raw
+  // GetWorkflowExecutionHistory does carry the token both ways — at the cost
+  // of re-implementing what the SDK supplies from behind internal/ (RawHistory
+  // decoding, the per-attempt timeout, retries), a copy that fails silently
+  // when the SDK moves. #1135 priced that trade and the decision was to keep
+  // the event id and this walk, document the transitive round-trip bound where
+  // the budget would have gone, and ask the SDK upstream for token access on
+  // the iterator. An event id needs nothing but the history itself.
+  //
+  // The cost, stated rather than glossed: each request walks the run's history
+  // from the start, so resuming re-reads what it skips. That is bounded work —
+  // a single run's history is bounded by Temporal, and by this server's own
+  // scan budget besides — and it buys something a token would not, since the
+  // walk that reaches the cursor has also collected the labels the rows after
+  // it refer back to.
+  //
+  // Requires run_id, and is refused without it. Event ids restart at 1 in every
+  // segment, so a cursor means nothing until the segment it counts within is
+  // named — and an empty run_id means "the latest", which is a *different*
+  // segment the moment the workload continues as new between two calls. Applied
+  // to the new segment, the old cursor silently skips its beginning or mixes
+  // two segments' entries into one account (Codex, #1119). Refusing beats
+  // guessing: [GetTimelineResponse.run_id] reports the segment every answer was
+  // read from, so a caller resuming has the value in hand.
+  int64 after_event_id = 4 [(buf.validate.field).int64.gte = 0];
+}
+
+// GetTimelineResponse is what one run did.
+message GetTimelineResponse {
+  // Entries are in the order they happened, oldest first, which is the order a
+  // history is written and the order an account is read.
+  repeated TimelineEntry entries = 1;
+
+  // RunId is the segment this account was read from, always set — including
+  // when the request named none and the server resolved the latest.
+  //
+  // It exists so that resuming is possible at all: event ids restart in every
+  // segment, so [GetTimelineRequest.after_event_id] requires the run id, and a
+  // caller who asked for "the latest" would otherwise not know what that
+  // resolved to. Reporting it turns "read more of what I just read" into
+  // something a caller can express.
+  string run_id = 6;
+
+  // Truncated is true when this is not the whole of this run's account.
+  //
+  // Resume with [GetTimelineRequest.after_event_id] set to the last entry's
+  // [TimelineEntry.event_id]. Raising [GetTimelineRequest.max_entries] is not
+  // the way past it: the ceiling is a ceiling, and a segment can legitimately
+  // hold several times the largest answer this returns.
+  //
+  // Set for any of three reasons, deliberately not told apart, because a reader
+  // does the same thing with all of them: the answer hit its entry ceiling, the
+  // read hit its scan budget, or the walk stopped short of the run's end. The
+  // last is checked against the *data* rather than the transport — a closed
+  // run's history ends with an event saying how it ended, so an account of a
+  // closed run that does not reach one is short however it came to be. That is
+  // the "not short, but claiming to be the whole of it" failure CLAUDE.md names,
+  // and the only defence against it is a check that does not trust the reader.
+  //
+  // Conservative in one direction on purpose. An answer that exactly filled
+  // its entry ceiling is reported as truncated whether or not anything follows
+  // it, because knowing would mean reading further and the ceiling is the
+  // instruction not to. So a walk can end with one request that returns
+  // nothing and says it is whole — a wasted round trip, and the right trade
+  // against the alternative, which is a prefix that claims to be an account.
+  //
+  // One shape a caller has to handle: truncated with *no* entries at all. It
+  // means the scan budget was spent before reaching the cursor, on a history
+  // larger than this server will walk, and it is a stopping point rather than
+  // something to retry — the same request will do the same thing.
+  bool truncated = 2;
+
+  // NextRunId is the segment this one handed over to, set when this run
+  // continued as new.
+  //
+  // Because a timeline is per run and a workload is not: a long-lived entity is
+  // a chain of segments, and a caller reading its whole account follows this.
+  string next_run_id = 3;
+
+  // PreviousRunId is the segment that handed over to this one, empty on the
+  // first.
+  //
+  // Forward traversal alone is a trap, which is what makes this worth its own
+  // field: omitting [GetTimelineRequest.run_id] resolves the *latest* segment,
+  // whose next_run_id is by definition empty — so a caller holding nothing but
+  // a workflow id could reach no earlier segment at all, and the chain was
+  // walkable only by somebody who had kept the original run id elsewhere
+  // (Codex, #1119).
+  string previous_run_id = 4;
+
+  // FirstRunId is the segment the workload began at, which is where a caller
+  // reading the whole of a long-lived entity should start.
+  //
+  // Both this and previous_run_id come off the history's own first event, which
+  // this read has in hand either way, so neither costs a round trip.
+  string first_run_id = 5;
 }
 
 // CompileRequest is one Flowfile to compile.

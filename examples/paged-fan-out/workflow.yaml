@@ -95,7 +95,8 @@ steps:
               next_cursor: ${response.json.next_cursor}
               records: ${response.json.records}
             parse_json: true
-            query: '${{"cursor": cursor}}'
+            query:
+              cursor: ${cursor}
             url: https://catalog.internal.example.com/records
         - id: index
           description: Fan out over this page's records, three at a time.
@@ -110,7 +111,9 @@ steps:
             steps:
               - id: send
                 http:
-                  json: '${{"id": record.id, "title": record.title}}'
+                  json:
+                    id: ${record.id}
+                    title: ${record.title}
                   method: POST
                   outputs:
                     id: ${record.id}

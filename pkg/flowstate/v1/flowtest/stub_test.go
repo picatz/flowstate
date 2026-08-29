@@ -654,6 +654,143 @@ tests:
 	require.True(t, found, "expected an expect.failed diagnostic showing both stub verdicts; got %v", c.GetFailures())
 }
 
+// TestUnmatchedStubRedactsAWhereEvaluationErrorThatQuotesASensitiveValue is
+// the #977 regression: a `where:` clause can fail in a way that quotes the
+// operand's actual value in the CEL runtime error text rather than just its
+// type — `timestamp()` on a string that is not RFC 3339 reports
+// `invalid RFC 3339 timestamp "<the string>"` — so a sensitive input reaches
+// the diagnostic through `-> error: …` even though [formatUnmatchedStubValue]
+// withholds that same input from the "invocation carried" block a few lines
+// above it. The fix must redact the error text on the same terms without
+// erasing what a reader needs: which stub, which where:, and that it errored.
+func TestUnmatchedStubRedactsAWhereEvaluationErrorThatQuotesASensitiveValue(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: where-error-probe
+inputs:
+  token:
+    type: string
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+      headers:
+        Authorization: ${inputs.token}
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: a where clause whose evaluation error would quote the sensitive token
+    workflow: ./workflow.yaml
+    inputs:
+      token: not-a-timestamp-shh-secret
+    stubs:
+      - task: http
+        where: timestamp(inputs.token) > timestamp('2020-01-01T00:00:00Z')
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+
+		// The sensitive value must not appear anywhere in the message, not
+		// just inside the "invocation carried" block.
+		require.NotContains(t, msg, "not-a-timestamp-shh-secret")
+
+		// The diagnostic must still say what failed: the stub's own where:
+		// text (the author's, never sensitive), that it was tried and
+		// errored, and the input it carried was withheld — not silence.
+		require.Contains(t, msg, "timestamp(inputs.token) > timestamp('2020-01-01T00:00:00Z')")
+		require.Contains(t, msg, "-> error:")
+		require.Contains(t, msg, "[redacted]")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic redacting the where: error; got %v", c.GetFailures())
+}
+
+// TestUnmatchedStubWithholdsAWhereEvaluationErrorWhenSensitiveInputsCannotBeEnumerated
+// pairs with TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerate:
+// when the redaction set could not be built at all
+// ([sensitiveInputs.WithholdAll()]), [redactSensitiveSubstrings] has nothing to
+// check a where: error's text against, so the fail-closed answer withholds
+// the error text outright rather than printing something nothing has cleared
+// as safe.
+func TestUnmatchedStubWithholdsAWhereEvaluationErrorWhenSensitiveInputsCannotBeEnumerated(t *testing.T) {
+	t.Parallel()
+
+	var bulk strings.Builder
+	for i := range 1100 {
+		fmt.Fprintf(&bulk, "\n        - element-%d", i)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: bulk-where-error
+inputs:
+  bulk:
+    type: list
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: "an unenumerable sensitive input also withholds a where clause's error text"
+    workflow: ./workflow.yaml
+    inputs:
+      bulk:`+bulk.String()+`
+    stubs:
+      - task: http
+        where: 1 / (1 - 1) == 1
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+		require.NotContains(t, msg, "division by zero",
+			"the error text itself is withheld when nothing can be shown safe, not just the invocation's inputs")
+		require.Contains(t, msg, "1 / (1 - 1) == 1", "the where: source is the author's own text and still prints")
+		require.Contains(t, msg, "-> error:")
+		require.Contains(t, msg, "[redacted: where: evaluation error]")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic withholding the where: error text; got %v", c.GetFailures())
+}
+
 // TestUnmatchedStubValueTruncatesOnARuneBoundary is the Codex-review
 // follow-up: eliding an overlong value at a fixed byte offset can land in the
 // middle of a multi-byte UTF-8 sequence, producing invalid UTF-8 that

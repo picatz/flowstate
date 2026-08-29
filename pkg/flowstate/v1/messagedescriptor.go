@@ -166,8 +166,17 @@ var engineProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 
 	// Every file of flowstate/v1, not merely the ones one of them imports: a
 	// build links the whole generated package, so the set it has is the whole
-	// schema. This list is the twelve files flowstate/v1 is spelled in; a
-	// thirteenth belongs here the day it exists.
+	// schema.
+	//
+	// The list is written out because Go cannot enumerate a package's
+	// variables, and it is *checked* by TestEveryFileOfTheSchemaIsProvided,
+	// which walks the registry for every `flowstate/v1/` path and fails on one
+	// this set does not reach. It had to be: the sentence here used to say a
+	// thirteenth file belonged here the day it existed, and by the time
+	// anybody looked there were three missing — `audit.proto` and
+	// `authorization.proto`, which nothing else imports, and `debug.proto`,
+	// which arrived with #928's wire messages. A list nothing walks is a list
+	// that is already wrong (Codex, #1194).
 	//
 	// flowstate/plugin/v1 is deliberately absent, and not by oversight: this
 	// package cannot name it (plugin.proto imports these files, so the Go
@@ -175,7 +184,10 @@ var engineProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 	// necessarily a plugin host. The SDK, which is on the other side of that
 	// import and does talk to a host, names it through alsoProvided.
 	for _, file := range []protoreflect.FileDescriptor{
+		File_flowstate_v1_audit_proto,
+		File_flowstate_v1_authorization_proto,
 		File_flowstate_v1_catalog_proto,
+		File_flowstate_v1_debug_proto,
 		File_flowstate_v1_diagnostics_proto,
 		File_flowstate_v1_identity_proto,
 		File_flowstate_v1_reports_proto,

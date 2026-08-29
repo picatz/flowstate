@@ -575,6 +575,18 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
+			Name:  "GetTimeline",
+			Input: (&v1.GetTimelineRequest{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().GetTimeline(ctx, connect.NewRequest(in.(*v1.GetTimelineRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
 			Name:  "Signal",
 			Input: (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
@@ -1048,6 +1060,46 @@ func ReducedTestTool() *mcp.Tool {
 	tool.Description = ReducedTestToolDescription
 
 	return tool
+}
+
+// DebugToolName is the step debugger, as a tool (#928 slice 3).
+const DebugToolName = ToolPrefix + "debug"
+
+// DebugToolDescription is written for the model deciding whether a failing
+// case is worth a debugger.
+//
+// It leads with the question this tool answers that no other tool here does —
+// *why* did the case fail — because a model that reads this as "another way to
+// run tests" will keep guessing with log steps instead.
+const DebugToolDescription = "Hold a test case's run at each step and ask the paused run questions: what a step " +
+	"produced, what an expression evaluates to, what is in scope. This is the tool for \"why did " +
+	"that fail\", after " + TestToolName + " has told you that it did.\n\n" +
+	"One call is one session. `commands` is the script that drives it — the run starts held before " +
+	"its first step, each command answers or advances, and when the script runs out the run " +
+	"continues to the end. Nothing here is interactive and nothing waits for a human: submit the " +
+	"questions you have, read the transcript, submit more.\n\n" +
+	"The answer carries the session transcript (every stop, every step's own outcome, every " +
+	"answer), the script that produced it — re-send it with more commands appended to go further — " +
+	"and the case's ordinary verdict, which this tool cannot change: a debugged run is the run, and " +
+	"its expectations are judged exactly as " + TestToolName + " judges them.\n\n" +
+	"`inspect` evaluates CEL against the paused run's own scope, through the engine's own " +
+	"evaluator: it is cost-bounded like every expression in the file, and it can name whatever the " +
+	"file could name at that point (`steps.<id>.<output>`, `inputs`, `vars`, a loop's binding). It " +
+	"cannot resolve a secret — `secret(...)` is compiled into a reference when a workflow is built " +
+	"and is never a function anything calls, so there is nothing here to call.\n\n" +
+	"A case that fails is held open once more after the verdict, its failures printed and the " +
+	"finished run still questionable — so one script can assert, see the failure, and then ask what " +
+	"the run actually produced.\n\n" +
+	"Runs on stubs, like " + TestToolName + ": no egress, no secret resolved, a virtual clock. " +
+	"Debugging a real, unstubbed local run is not this tool."
+
+// DebugTool declares the debug tool.
+func DebugTool() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        DebugToolName,
+		Description: DebugToolDescription,
+		InputSchema: debugInputSchema(),
+	}
 }
 
 // NewMessage constructs an empty message for a descriptor.

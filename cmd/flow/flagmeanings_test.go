@@ -190,8 +190,10 @@ func TestRemovedFlagSpellingsRefuseAndSayWhatToSayInstead(t *testing.T) {
 		})
 	}
 
-	// `flow worker` binds no socket, so the remedy that belongs to `flow
-	// server` must not be offered there — a suggestion naming a flag the
+	// `flow worker` binds no *public* socket — since #916 it can bind an
+	// opt-in loopback one for health and pprof, which is spelled
+	// --internal-listen and not --listen — so the remedy that belongs to
+	// `flow server` must not be offered there: a suggestion naming a flag the
 	// command does not have is a false diagnostic, which CLAUDE.md holds is
 	// worse than a missing one.
 	assert.NotContains(t, runFlow(t, "worker", "--address", "temporal:7233").Err.Error(), "--listen")

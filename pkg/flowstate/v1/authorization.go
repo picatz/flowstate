@@ -28,7 +28,15 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ,
-		Rpcs:   []string{"Get", "List"},
+		// GetTimeline joins these rather than taking a scope of its own, and
+		// the reason is which way the disclosure actually runs. A timeline
+		// reads no payload at all — labels the interpreter chose, and a
+		// failure's outermost message — while Get on a completed run returns
+		// the whole of its step outputs, which is the workload's data. A scope
+		// separating them would grant strictly less than the one beside it: a
+		// distinction with no security difference, and a fourth spelling of
+		// "may this caller read this run".
+		Rpcs: []string{"Get", "GetTimeline", "List"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
@@ -92,6 +100,11 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 		Action:   AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST,
 		Parent:   AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
 		McpTools: []string{"flowstate_test"},
+	},
+	{
+		Action:   AuthorizationAction_AUTHORIZATION_ACTION_MCP_DEBUG,
+		Parent:   AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		McpTools: []string{"flowstate_debug"},
 	},
 }
 

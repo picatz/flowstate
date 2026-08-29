@@ -84,7 +84,8 @@ steps:
             method: GET
             outputs:
               id: ${record}
-            query: '${{"record": record}}'
+            query:
+              record: ${record}
             url: https://httpbin.org/get
 
   # A vendor lookup this run also depends on, hit once rather than per

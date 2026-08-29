@@ -411,6 +411,144 @@ func (x *Signal) GetPrompt() *Value {
 	return nil
 }
 
+// SignalBatch names something a workload waits to be told *repeatedly*, and
+// takes every delivery already buffered in one step.
+//
+// # The shape it replaces, and what batching actually saves
+//
+// The event-accumulator shape today is `loop:` around `wait_for_signal:`: one
+// signal per iteration, appended to the loop's `results`. A burst of fifty
+// orders costs fifty iterations of that loop.
+//
+// It is worth being exact about the saving, because the obvious reading is
+// wrong. A signal costs one `WorkflowExecutionSignaled` event in history
+// whether it is drained in a batch or consumed one at a time — batching does
+// *not* remove those, and nothing can: the event is written when the sender's
+// RPC is accepted, long before any workflow code decides how to read it. What
+// the per-iteration shape pays *on top* of that is what a batch removes:
+//
+//   - a workflow task per iteration (Scheduled/Started/Completed, three events),
+//     plus the body's own activity events, where a burst drained in one step
+//     coalesces into a handful of workflow tasks — a burst arriving while a task
+//     is already pending is delivered into that same task;
+//   - one `Workflow.StepOutputs` entry per iteration, weighed against
+//     [MaxLoopResultsBytes] by `AccumulateLoopResult`, where a batch records one.
+//
+// So the honest headline is "fewer workflow tasks and one results entry instead
+// of N", not "fewer signal events".
+//
+// # A separate message from [Signal], rather than a `drain:` flag on it
+//
+// By exactly the argument [Signal.outputs] makes for sitting on [Signal] rather
+// than on [Wait]: a drain binds `deliveries` and `count`, and does *not* bind
+// `payload` or `sender`. A flag inside [Signal] would make every `outputs:`
+// expression's validity depend on the value of a sibling key — the reported
+// refusal that comment rejects in favour of a structural one.
+//
+// # Admission is unaffected, and deliberately so
+//
+// `SignalPolicyCheck` and `CheckSignalPayloadSize` run at the `Signal` RPC,
+// before a delivery ever reaches a channel. Every delivery in a batch was
+// individually admitted by the same policy, against the sender the server
+// attested for it. A batch therefore cannot route around per-sender policy,
+// because the policy is not at receive time — there is nothing new to enforce
+// here, only something to keep true.
+type SignalBatch struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is what a sender addresses, under exactly [Signal.name]'s rules — the
+	// same channel, read a different way.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// MaxBatch bounds how many deliveries one drain takes. Zero means
+	// [MaxPendingSignals], which is also the ceiling.
+	//
+	// Bounded here rather than trusted, because a signal burst is peer-controlled
+	// input and the batch is the multiplication: the count is what the far side
+	// chooses, and bytes follow from it — each delivery is already bounded by
+	// [MaxSignalPayloadBytes] at admission, so a bounded count bounds the whole.
+	// A bounded `int32` in the manner of [ForEach.max_parallel], for the same
+	// reason: bound the resource the peer controls.
+	//
+	// Deliveries past the bound are *not* dropped and *not* re-buffered — they
+	// are simply left on the channel, so the next drain takes them. That is what
+	// a `loop:` around this already wants, and it means a bound being reached
+	// costs an iteration rather than an approval.
+	MaxBatch int32 `protobuf:"varint,2,opt,name=max_batch,json=maxBatch,proto3" json:"max_batch,omitempty"`
+	// Outputs shapes what the waiting step produces, exactly as [Signal.outputs]
+	// does — same evaluator, same single moment, same replace-not-extend rule.
+	//
+	// What differs is the names it binds, and that difference is why this is a
+	// separate message: `deliveries` (a list of `{payload, sender}` maps, oldest
+	// first), `count`, and `timed_out`, plus `now`. There is no `payload` and no
+	// `sender`, because a batch has many of each.
+	Outputs map[string]*Value `protobuf:"bytes,3,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Prompt is what this gate is asking for, under [Signal.prompt]'s whole
+	// contract: evaluated once at the moment the wait parks, seeing the enclosing
+	// scope and `now` and not the wait's result, bounded by [MaxWaitPromptBytes],
+	// and refused any reach to a `sensitive:` input or a `${secret(...)}` by
+	// [CheckWaitPromptsAreAskable].
+	Prompt        *Value `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignalBatch) Reset() {
+	*x = SignalBatch{}
+	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignalBatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignalBatch) ProtoMessage() {}
+
+func (x *SignalBatch) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignalBatch.ProtoReflect.Descriptor instead.
+func (*SignalBatch) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SignalBatch) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SignalBatch) GetMaxBatch() int32 {
+	if x != nil {
+		return x.MaxBatch
+	}
+	return 0
+}
+
+func (x *SignalBatch) GetOutputs() map[string]*Value {
+	if x != nil {
+		return x.Outputs
+	}
+	return nil
+}
+
+func (x *SignalBatch) GetPrompt() *Value {
+	if x != nil {
+		return x.Prompt
+	}
+	return nil
+}
+
 // SignalSender is who the server attests sent a signal, never what the
 // sender's own payload claims.
 //
@@ -468,7 +606,7 @@ type SignalSender struct {
 
 func (x *SignalSender) Reset() {
 	*x = SignalSender{}
-	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -480,7 +618,7 @@ func (x *SignalSender) String() string {
 func (*SignalSender) ProtoMessage() {}
 
 func (x *SignalSender) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -493,7 +631,7 @@ func (x *SignalSender) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalSender.ProtoReflect.Descriptor instead.
 func (*SignalSender) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SignalSender) GetIdentity() *WorkloadIdentity {
@@ -541,6 +679,15 @@ const file_flowstate_v1_signal_proto_rawDesc = "" +
 	"\x06prompt\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\x06prompt\x1aO\n" +
 	"\fOutputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xba\x02\n" +
+	"\vSignalBatch\x12B\n" +
+	"\x04name\x18\x01 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\x04name\x12'\n" +
+	"\tmax_batch\x18\x02 \x01(\x05B\n" +
+	"\xbaH\a\x1a\x05\x18\x80\x01(\x00R\bmaxBatch\x12@\n" +
+	"\aoutputs\x18\x03 \x03(\v2&.flowstate.v1.SignalBatch.OutputsEntryR\aoutputs\x12+\n" +
+	"\x06prompt\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x06prompt\x1aO\n" +
+	"\fOutputsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\x9d\x01\n" +
 	"\fSignalSender\x12:\n" +
 	"\bidentity\x18\x01 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\x12;\n" +
@@ -561,32 +708,37 @@ func file_flowstate_v1_signal_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_signal_proto_rawDescData
 }
 
-var file_flowstate_v1_signal_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_flowstate_v1_signal_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_flowstate_v1_signal_proto_goTypes = []any{
 	(*SignalPolicy)(nil),          // 0: flowstate.v1.SignalPolicy
 	(*SignalPolicyRule)(nil),      // 1: flowstate.v1.SignalPolicyRule
 	(*Signal)(nil),                // 2: flowstate.v1.Signal
-	(*SignalSender)(nil),          // 3: flowstate.v1.SignalSender
-	nil,                           // 4: flowstate.v1.SignalPolicyRule.ClaimsEntry
-	nil,                           // 5: flowstate.v1.Signal.OutputsEntry
-	(*Value)(nil),                 // 6: flowstate.v1.Value
-	(*WorkloadIdentity)(nil),      // 7: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
+	(*SignalBatch)(nil),           // 3: flowstate.v1.SignalBatch
+	(*SignalSender)(nil),          // 4: flowstate.v1.SignalSender
+	nil,                           // 5: flowstate.v1.SignalPolicyRule.ClaimsEntry
+	nil,                           // 6: flowstate.v1.Signal.OutputsEntry
+	nil,                           // 7: flowstate.v1.SignalBatch.OutputsEntry
+	(*Value)(nil),                 // 8: flowstate.v1.Value
+	(*WorkloadIdentity)(nil),      // 9: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
 }
 var file_flowstate_v1_signal_proto_depIdxs = []int32{
-	1, // 0: flowstate.v1.SignalPolicy.allow:type_name -> flowstate.v1.SignalPolicyRule
-	4, // 1: flowstate.v1.SignalPolicyRule.claims:type_name -> flowstate.v1.SignalPolicyRule.ClaimsEntry
-	6, // 2: flowstate.v1.SignalPolicyRule.subject_from:type_name -> flowstate.v1.Value
-	5, // 3: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
-	6, // 4: flowstate.v1.Signal.prompt:type_name -> flowstate.v1.Value
-	7, // 5: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
-	8, // 6: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
-	6, // 7: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	1,  // 0: flowstate.v1.SignalPolicy.allow:type_name -> flowstate.v1.SignalPolicyRule
+	5,  // 1: flowstate.v1.SignalPolicyRule.claims:type_name -> flowstate.v1.SignalPolicyRule.ClaimsEntry
+	8,  // 2: flowstate.v1.SignalPolicyRule.subject_from:type_name -> flowstate.v1.Value
+	6,  // 3: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
+	8,  // 4: flowstate.v1.Signal.prompt:type_name -> flowstate.v1.Value
+	7,  // 5: flowstate.v1.SignalBatch.outputs:type_name -> flowstate.v1.SignalBatch.OutputsEntry
+	8,  // 6: flowstate.v1.SignalBatch.prompt:type_name -> flowstate.v1.Value
+	9,  // 7: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
+	10, // 8: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
+	8,  // 9: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
+	8,  // 10: flowstate.v1.SignalBatch.OutputsEntry.value:type_name -> flowstate.v1.Value
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_signal_proto_init() }
@@ -602,7 +754,7 @@ func file_flowstate_v1_signal_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_signal_proto_rawDesc), len(file_flowstate_v1_signal_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

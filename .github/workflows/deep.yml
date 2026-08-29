@@ -177,13 +177,9 @@ jobs:
               echo
               echo "Produced by workflow run: ${RUN_URL} (the input is also attached there as the \`fuzz-crashers\` artifact)."
               echo
-              echo "Corpus entry \`${entry}\` (Go fuzz corpus text; base64 of the exact bytes):"
+              echo "The bytes themselves are deliberately not inlined here: this repository is public, and SECURITY.md asks for crash inputs to be reported privately — which applies no less to a report this workflow writes about itself. The artifact above, visible to collaborators only, is where they travel."
               echo
-              echo '```'
-              base64 "$entry"
-              echo '```'
-              echo
-              echo "Reproduce: decode the entry back to \`${entry}\` (\`base64 -d\`), then:"
+              echo "Reproduce: download the artifact, restore the entry to \`${entry}\`, then:"
               echo
               echo '```'
               echo "GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run '${target}/${name}' ./${pkgdir}/"
@@ -533,6 +529,137 @@ jobs:
         if: steps.dst.outcome == 'failure'
         run: |
           echo "::error::a schedule diverged from the written-order baseline; see the deep-tier issue filed by this run"
+          exit 1
+
+  # The schedule explorer pointed at the real corpus (#933). The simulation
+  # job above searches four conformance sets; this one searches the 64 shipped
+  # examples, which is precisely where the search has paid before -- pointing
+  # it there is what surfaced the six false divergences #800 fixed, because
+  # real workflows exercise transcript shapes the conformance sets do not.
+  # The whole corpus runs in seconds at written order, so a hundred seeds is
+  # minutes of a weekly job.
+  #
+  # Two honesty rules, stated here because a green sweep can lie two ways.
+  # This explores only the orderings the LOCAL driver is free to choose -- a
+  # `parallel:` block's branch order, and where an `async:` step's work lands
+  # (the cut #477 draws; it is not a claim about Temporal's orderings) -- and
+  # a file with no junction contributes written order however many seeds run.
+  # So the corpus-wide scheduling-decision count is the job's self-check: a
+  # sweep in which no file explored a single decision proved nothing, and the
+  # job refuses that green rather than reporting it (the same rule `flow test`
+  # applies per file when --seeds explores nothing).
+  #
+  # FLOWSTATE-style seed rotation, by run number, for the simulation job's
+  # reason: consecutive weeks explore different windows, and reproducibility
+  # is never the rotation's to lose -- a divergence prints the one seed and
+  # the exact `flow test --seed N -- <file>` line that replays it.
+  flowtest-seeded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # persist-credentials: false — see the fuzz-deep job above. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: A hundred seeded schedules per case over the examples corpus
+        id: seeded
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          SEED0=$(( 1 + GITHUB_RUN_NUMBER * 1000000 ))
+          echo "exploring seeds from ${SEED0}"
+          go run ./cmd/flow test --seeds 100 --seed0 "${SEED0}" examples/ 2>&1 | tee flowtest-seeded.log
+
+      - name: The sweep must have explored something
+        id: explored
+        continue-on-error: true
+        if: steps.seeded.outcome == 'success'
+        run: |
+          # One file reporting a nonzero decision count is enough; the zero
+          # case's own line always carries the "nothing was explored" suffix,
+          # so a line without it is a file that reached a real junction.
+          if grep -E 'scheduling decisions?' flowtest-seeded.log | grep -qv 'nothing was explored'; then
+            echo "the sweep explored real scheduling decisions"
+          else
+            echo "::error::no file in examples/ explored a single scheduling decision; the sweep proved nothing"
+            exit 1
+          fi
+
+      - name: File an issue for a diverging schedule
+        if: steps.seeded.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          title="deep-tier: a seeded schedule diverged in the examples corpus"
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "an open issue already covers a diverging examples schedule; not filing another"
+            exit 0
+          fi
+          body=$(mktemp)
+          {
+            echo "The weekly seeded sweep over examples/ found a schedule whose observables differ from the written-order run's, or a case that failed under one."
+            echo
+            echo "This explores only the orderings the local driver is free to choose (a \`parallel:\` block's branch order, an \`async:\` step's placement), so it says a file's observables depend on one of those, or that the local engine does. It is not flake: the seed replays the interleaving exactly."
+            echo
+            echo "Produced by workflow run: ${RUN_URL}"
+            echo
+            echo "The seed and the command that replays it:"
+            echo
+            echo '```'
+            grep -B 1 -A 3 'REPLAY THIS EXACT SCHEDULE' flowtest-seeded.log | head -n 60 || true
+            echo '```'
+            echo
+            echo "Log tail:"
+            echo
+            echo '```'
+            tail -n 80 flowtest-seeded.log
+            echo '```'
+          } > "$body"
+          gh issue create --title "$title" --label deep-tier --body-file "$body"
+
+      - name: File an issue for a sweep that explored nothing
+        if: steps.explored.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          title="deep-tier: the seeded examples sweep explored nothing"
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "an open issue already covers an empty sweep; not filing another"
+            exit 0
+          fi
+          body=$(mktemp)
+          {
+            echo "The weekly seeded sweep over examples/ ran to green without exploring a single scheduling decision, corpus-wide."
+            echo
+            echo "That green proves nothing: no case in any example reached a \`parallel:\` or \`async:\` junction, so every one of the hundred schedules was written order. Either the junction-bearing examples lost their junctions, or their tests stopped reaching them -- both worth knowing, which is why the job refuses this green rather than reporting it."
+            echo
+            echo "Produced by workflow run: ${RUN_URL}"
+            echo
+            echo "Log tail:"
+            echo
+            echo '```'
+            tail -n 40 flowtest-seeded.log
+            echo '```'
+          } > "$body"
+          gh issue create --title "$title" --label deep-tier --body-file "$body"
+
+      - name: A failed sweep fails the job
+        if: steps.seeded.outcome == 'failure' || steps.explored.outcome == 'failure'
+        run: |
+          echo "::error::the seeded examples sweep failed; see the deep-tier issue filed by this run"
           exit 1
 
   # A leaked coroutine, which is invisible to every other tier: the race

@@ -14,9 +14,11 @@ vim.filetype.add({
     ['Flowfile.yaml'] = 'flowfile',
     ['workflow.yaml'] = 'flowfile',
     ['workflow.yml'] = 'flowfile',
+    ['testdefaults.yaml'] = 'flowfile',
   },
   pattern = {
     ['.*/workflows/.*%.ya?ml'] = 'flowfile',
+    ['.*%.test%.ya?ml'] = 'flowfile',
   },
 })
 

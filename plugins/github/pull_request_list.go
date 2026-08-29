@@ -88,7 +88,7 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 	}
 
 	return sdk.EncodeOutputs(&githubv1.PullRequestListOutputs{
-		PullRequests: prs,
+		PullRequests: pullRequestSummaryValues(prs),
 		Truncated:    truncated,
 		NextCursor:   nextCursor,
 	})

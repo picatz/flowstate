@@ -204,6 +204,61 @@ of these is a bug, even if it passes tests.
    A change to `RunState` that would be fine in a single-version deployment can strand a
    workload that spans a deploy.
 
+### One interpreter, not a workflow type per workload
+
+Temporal's own answer to "one handler, many workloads" is dynamic workflow registration:
+`RegisterDynamicWorkflow` installs a single fallback handler per worker, selected by the
+workflow type name the caller started and handed raw encoded payloads. Flowstate answers
+the same need from the other end — one *static* type that takes the workload as a typed
+argument — and the `RegisterDynamicWorkflow` method on the registry fake in
+`engine/versioning_test.go:382` is empty because that is the decision, not because nothing
+was decided.
+
+`engine.RegisterWorkflows` installs exactly one workflow function, `Run`, with
+`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:191-199`). `Run` takes
+a `*v1.RunState` (`engine/workflow.go:313`), so the compiled specification travels as
+data, and the interpreter dispatches on node kind (`engine/execute.go:692-720`). Which
+workload runs is a value; how any workload runs is the function.
+
+```mermaid
+flowchart LR
+  Files["Flowfiles: nightly-etl, onboard-tenant, incident-runbook"] -->|compile| Spec[["Workflow spec, carried in RunState"]]
+  Spec -->|argument| Run["Run — the one registered workflow type"]
+  Run --> Kind{"node kind"}
+  Kind --> Task["task activity"]
+  Kind --> Wait["durable timer or signal"]
+  Kind --> Fan["for_each, parallel, loop"]
+  Kind --> Branch["switch, value"]
+  Kind --> Call["call: a nested spec"]
+```
+
+The difference from keying on the type name is mechanical rather than stylistic, in three
+places:
+
+- **Determinism is enforced once.** Replay safety is a property of the interpreter, held in
+  one reviewed package (invariant 4) rather than restated by every author. A Flowfile has
+  no spelling for a clock read or a random number, so a workload cannot spend a guarantee
+  that hand-written code behind a dynamic handler can.
+- **The pin has something to pin.** Versioning behaviour is registered per workflow type.
+  One type is one pinned registration covering every run in the fleet; a type per spec
+  would be that registration repeated once per Flowfile anyone has ever written, and a
+  worker cannot register a type for a file it has never seen.
+- **The replay corpus has a stable name.** The gate replays recorded histories through
+  `engine.RegisterWorkflows` itself (`engine/replay_test.go:102`), which works only because
+  the type name in every recorded history is the name a production worker registers.
+
+The cost is Temporal-side and worth stating plainly: every run's WorkflowType is `Run`, so
+anything grouping by workflow type — the Web UI's type filter, `temporal workflow list
+--query 'WorkflowType=...'`, per-type metrics — sees one name for the whole fleet. Run
+metadata carries the grouping instead. A workload's own declared name is written to every
+run's memo unconditionally at submit (`server/server.go:789`, `server/server.go:804`), which
+is what populates `v1.RunSummary.Name` (`proto/flowstate/v1/service.proto:735`,
+`server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
+deployment that has registered search attributes additionally projects it as
+`FlowstateWorkflowName` (`server/server.go:889`), index-only, for tools querying the
+visibility store directly. The grouping exists — it is simply not Temporal's built-in type
+field.
+
 ### Versioning: pinned within a run, upgraded between runs
 
 Invariant 4 says workflow-side code is frozen; this is what "frozen" means when the workflow
@@ -251,7 +306,9 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Child workflow | `call:` — a callee's whole compiled specification runs nested inside the caller's own execution, isolated from the caller's scope and reachable only through its declared `inputs:`/`outputs:`, resolved at compile time so filesystem access never reaches a worker **(done)**; still in the caller's own history rather than a separate one, which a *literal* Temporal child workflow would give — a call is transparent to Continue-As-New in the meantime (see DSL.md), so a callee's own steps count against the same step budget the caller's do |
 | Continue-As-New | transparent history and payload management **(done)**; a suspension-opaque block — a `for_each` with `max_parallel:`, or one inside a `parallel:` branch, a loop body or a `switch:` arm — has no seam inside it, so its items × body product is bounded by `MaxAtomicBlockActivities` before dispatch, keeping one atomic stretch under the history-event cap Temporal would otherwise force-terminate (skipping compensation) at |
 | Worker Deployment Versioning | `flow worker --deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
+| Dynamic workflow registration | not used, deliberately: one *static* interpreter type, `Run`, registered pinned by `engine.RegisterWorkflows`, with the workload arriving as a `RunState` argument rather than as a workflow type name **(done)** — which is what gives one pinned version for the whole fleet, one stable type for the replay corpus to register against, and one place determinism is enforced. The cost is that every run's WorkflowType is `Run`, so Temporal-side per-type tooling sees one name, and the workload's declared name rides in the run's memo instead. See [One interpreter, not a workflow type per workload](#one-interpreter-not-a-workflow-type-per-workload) |
 | Schedules | `triggers: { schedule: ... }` declares a cadence — cron expressions or an interval, with a time zone, jitter and an overlap policy — and `flow schedule create\|list\|describe\|delete\|pause\|resume\|trigger` acts on it **(done)**; the declaration starts nothing, because a file that begins running on merge is a surprise, and arguments are bound and type-checked once at creation rather than at each firing. Calendar specs, start/end bounds, catchup window, pause-on-failure and backfill are not surfaced yet — each is additive |
+| Workflow-id exclusion | `concurrency: { key:, on_conflict: }` **(done)** — at most one run of a workflow per key, decided at submit: the key resolves from the run's bound inputs, is digested with the tenant and the workflow name, and becomes the run's own workflow id, so the permit *is* the run and expires with it. `reject`/`join`/`terminate_other` map to `WorkflowIDConflictPolicy` `FAIL`/`FAIL`-and-catch/`TERMINATE_EXISTING`; `join` is a caught refusal rather than `USE_EXISTING` so that a join is a fact the server established. What is **not** surfaced is *buffering*: `buffer_one`/`buffer_all`/`cancel_other` exist only in Temporal's schedule machinery (the Schedules row's `overlap:`), which a manual `Run` never touches, so a workflow id cannot queue and the validator refuses those three words by name rather than accepting one it would not honour. For the same reason `concurrency:` cannot be combined with a webhook or a schedule trigger, whose runs are already addressed by an id of their own |
 | Memo | a run's tenant, recorded when `Run` starts it and authorized against on every later request **(done)**; a memo rather than a search attribute because it needs no cluster-side registration, so a dev server works unconfigured — the cost being that Temporal cannot filter on it, so `List` reads pages and filters them itself under its own scan and request bounds |
 | Search attributes | `flow list --filter` exists and is CEL, evaluated by the server once per execution it reads, beside the tenant check that was already there **(done)** — the vocabulary is a run's own fields and the diagnostics are the compiler's. What is *not* done is projecting labels into visibility so the store can answer part of it. That is a cost change, deliberately not a meaning change: when it lands, the translatable half of a filter becomes a visibility query and the rest stays a residual predicate, so the same filter returns the same runs whether or not a deployment registered anything. An operator turning pushdown on should not have to re-read a single saved query |
 | Cancellation scopes | per-step `undo:` (saga compensation), run in reverse deterministic registration order when a step fails or cancellation stops the run **(done)**. Concurrent children use their structural position as the ordering key: `for_each` item index or `parallel` branch index, followed by registration order within that child. Drivers merge only after the child boundary, never by completion time, including retries and Continue-As-New. `flow terminate` compensates nothing and cannot: it executes no workflow code |
@@ -381,6 +438,27 @@ leaving the activity. Marshaling succeeds redacted rather than failing because a
 invites a caller to fall back to something less careful.
 A revealed value cannot be wiped from memory — Go strings are immutable — so the guarantee is
 about where a value travels, not how long it lives.
+
+Where a reference stops being one is the whole of invariant 7:
+
+```mermaid
+flowchart LR
+  Author["${secret('db:password')} in a Flowfile"] -->|compile| Ref["SecretRef in the spec"]
+  Ref --> History["submitted; persisted in history and RunState"]
+  History --> Activity["task activity, worker-side"]
+  Activity -->|"ResolveSecret: authorize, then the provider"| Value["value, for this call only"]
+  Value -->|scrubber| Outputs["step outputs, logs, errors"]
+  Ref -->|"refused: cannot be read in an expression"| Eval["workflow-side evaluation"]
+```
+
+Every edge is a rule with code behind it: `SecretRef` is a `Value` kind
+(`proto/flowstate/v1/value.proto:25`, `:155`), so a reference is what compilation produces;
+workflow-side evaluation refuses to resolve one (`pkg/flowstate/v1/eval.go:525-534`) and
+`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `varsecret.go:34`);
+`v1.ResolveSecret` authorizes before the store is consulted, on every resolution
+(`taskruntime.go:90-103`); and the http task reveals through a closure registered with a
+scrubber rather than through a field something can print
+(`eval_task_http_run.go:171-181`).
 
 ### Plugins
 

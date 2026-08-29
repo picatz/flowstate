@@ -172,9 +172,29 @@ func TestRunWorkflowPolicy(t *testing.T) {
 // callers" for the classification #241's P2 puts on the wire.
 func TestRunWorkflowErrorKind(t *testing.T) {
 	baseURL := conformance.NewHTTPServer(t)
+
+	// The timeout case's fixture (#915), in a registry derived from the build's
+	// rather than added to it.
+	//
+	// The other cases need the tasks this build ships — including the
+	// loopback-permitting `http` [conformance.NewHTTPServer] has just installed
+	// on the default registry — and the fixture must not join them there:
+	// TestEveryTaskDescribesItself walks [v1.DefaultRegistry] in parallel with
+	// this and holds every task in it to describing its inputs, which a fixture
+	// taking none cannot do. Registering and unregistering around this test
+	// would leave exactly that window open. Copying is what
+	// [v1.NewContextWithRegistry] is for, and the durable caller reaches the
+	// same task the only way it can (see engine.TestRunWorkflowErrorKind's own
+	// note: an activity cannot see a registry on the workflow's context).
+	registry := v1.NewRegistry()
+	for _, def := range v1.DefaultRegistry().All() {
+		require.NoError(t, registry.Register(def))
+	}
+	require.NoError(t, registry.Register(conformance.ErrorKindTimeoutTaskDef()))
+
 	for _, tc := range conformance.ErrorKindCases(baseURL) {
 		t.Run(tc.Name, func(t *testing.T) {
-			_, err := v1.Run(t.Context(), tc.Workflow)
+			_, err := v1.Run(v1.NewContextWithRegistry(t.Context(), registry), tc.Workflow)
 			require.Error(t, err, "the case must fail the run outright")
 			require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
 		})
@@ -919,6 +939,30 @@ func TestAuthorityContainment(t *testing.T) {
 	for _, test := range conformance.AuthorityContainmentCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
+		})
+	}
+}
+
+// TestCleartextCredential runs #963 half one's shared cases — the http task
+// refusing a bearer secret or a JIT federation credential sent to a
+// non-loopback http:// destination, and the same credential succeeding over
+// https — against the local driver. The durable driver runs the same cases
+// in engine/authority_test.go.
+func TestCleartextCredential(t *testing.T) {
+	tlsServer := conformance.NewTLSCredentialServer(t)
+	tlsServer.InstallTrustingHTTPTask(t)
+
+	for _, test := range conformance.CleartextCredentialCases(tlsServer.URL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runAuthorityCase(t, test)
+			if test.Authority.ProviderCalls != nil {
+				require.Zero(t, test.Authority.ProviderCalls.Load(),
+					"the fixture secret provider was consulted for a request the cleartext refusal should have stopped first")
+			}
+			if test.Authority.Federation != nil && test.Authority.Federation.ExchangeCalls != nil {
+				require.Zero(t, test.Authority.Federation.ExchangeCalls.Load(),
+					"the fixture broker exchanged a credential for a request the cleartext refusal should have stopped first")
+			}
 		})
 	}
 }

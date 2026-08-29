@@ -143,17 +143,19 @@
 // obtain.
 //
 // Several entries may share an issuer, which is how one platform grants
-// different roles to different workloads. The first entry whose audience and
-// rules a token satisfies wins, and [Principal.IssuerName] records which one it
-// was, so an audit log shows the rule that admitted a caller rather than only the
-// issuer that signed the token.
+// different roles to different workloads. Exactly one of them may admit any
+// given token — a token two entries both accept is refused, since each carries
+// its own namespace and role and there is no safe way to choose — and
+// [Principal.IssuerName] records the one that did, so an audit log shows the
+// rule that admitted a caller rather than only the issuer that signed the
+// token.
 //
-// Order narrowest first. A broad entry placed above a narrower one for the same
-// issuer admits every token the narrow entry was written for, under the broad
-// entry's namespace and role, and the file still reads correctly — nothing
-// fails and nothing logs. [Policy.UnreachableIssuers] is that missing symptom:
-// it reports each entry an earlier entry has made unreachable, and `flow server`
-// logs one warning per finding at start-up.
+// Write the entries disjoint rather than ordered. Tiering one issuer into
+// several roles is what `none_of` is for: `ref: any_of [refs/heads/main]` on
+// the deploying entry, `ref: none_of [refs/heads/main]` on the reading one.
+// [Policy.UnreachableIssuers] reports the overlaps a file proves on its own —
+// an entry another entry completely covers, which can then admit nobody at all
+// — and `flow server` logs one warning per finding at start-up.
 //
 // A policy is data, and can be kept in a file next to the rest of a deployment's
 // configuration and reviewed like any other change. See [ParsePolicy]:

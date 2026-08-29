@@ -86,6 +86,11 @@ var exemptScopeConstruction = map[string]string{
 		"structural half would replace; every caller that builds a scope a run will dispatch assigns Identity after it " +
 		"(engine/workflow.go varsScope, v1/call.go CallScope).",
 
+	"pkg/flowstate/v1/concurrency.go#ResolveConcurrencyKey": "resolves a `concurrency:` key in the server, at " +
+		"submit, against the run's bound inputs — before the run exists, and in fact before its workflow id has been " +
+		"composed, since the resolved key is what composes it. The scope is never an activity argument: the literal is " +
+		"digested into the id and discarded, and nothing inside a run ever reads the block.",
+
 	"pkg/flowstate/v1/signalpolicy.go#ResolveSignalPolicySubjects": "resolves `subject_from:` expressions in the server, at " +
 		"submit, against the run's inputs — before the run exists and so before there is a run identity to carry. The scope " +
 		"is never an activity argument, and the identity a signal policy decides on is the *sender's*, attested at delivery.",
@@ -113,10 +118,10 @@ var exemptScopeConstruction = map[string]string{
 		"nothing else; the scope exists for that one in-process read and is never an activity argument — `flow test` " +
 		"runs the local driver only (#155) and dispatches nothing.",
 
-	"pkg/flowstate/v1/flowtest/check.go#assertChecks": "the post-run assertion scope for `expect.check:` (#1072): one " +
-		"in-process evaluation of a case's claims against the finished run's outputs, on the local driver only, never " +
-		"an activity argument. It deliberately carries no identity for the same reason every local run does — " +
-		"`run.identity` stays empty with `run.local` true, and a rehearsal must never look attested.",
+	"pkg/flowstate/v1/flowtest/check.go#postRunScope": "the post-run scope a finished case is questioned against — `expect.check:` " +
+		"evaluation and the debugger's autopsy share it (#1072): in-process, local driver only, never an activity " +
+		"argument. It deliberately carries no identity for the same reason every local run does — `run.identity` " +
+		"stays empty with `run.local` true, and a rehearsal must never look attested.",
 
 	// The two in this package's own tests, which the walk reaches because
 	// engine tests are in scope. Neither builds a scope that is dispatched: one
@@ -348,17 +353,36 @@ type scopeSite struct {
 func scopeSitesInTree(t *testing.T) []scopeSite {
 	t.Helper()
 
+	return scopeSitesUnder(t, repoRootFromEngine)
+}
+
+// scopeSitesUnder is [scopeSitesInTree] over a named root, so the walk's own
+// filtering can be tested against a tree built for the purpose.
+//
+// Parameterised for the reason the filtering below needed fixing at all: the
+// walk was the part that was wrong, and a walk wired to one hardcoded root is
+// the part no test can reach.
+func scopeSitesUnder(t *testing.T, root string) []scopeSite {
+	t.Helper()
+
 	const enginePkg = "pkg/flowstate/v1/engine"
 
 	var sites []scopeSite
 	fset := token.NewFileSet()
-	err := filepath.WalkDir(repoRootFromEngine, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "plugins", "testdata", "node_modules":
+			// .claude holds agent worktrees — a *different revision* of this
+			// same tree, checked out underneath it. Every site found in one is
+			// a site in code that is not here, and the diagnostic above would
+			// tell a reader to exempt a key
+			// (`.claude/worktrees/<branch>/pkg/…`) that stops existing when
+			// that worktree is removed. A guard whose advice cannot be
+			// followed is worse than one that says nothing.
+			case ".git", ".claude", "plugins", "testdata", "node_modules":
 				return filepath.SkipDir
 			}
 			return nil
@@ -368,7 +392,7 @@ func scopeSitesInTree(t *testing.T) []scopeSite {
 			return nil
 		}
 
-		rel, err := filepath.Rel(repoRootFromEngine, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
@@ -612,4 +636,57 @@ func compositeLitOf(expr ast.Expr) *ast.CompositeLit {
 		return nil
 	}
 	return lit
+}
+
+// TestTheScopeGuardIgnoresAgentWorktrees.
+//
+// `.claude/worktrees/<branch>` is a whole checkout of this repository at some
+// other revision, sitting underneath this one. The walk used to descend into it
+// and report every scope literal there as a site of this tree's — and because
+// the exemption list is keyed by path, a site that *is* exempt here
+// (`pkg/flowstate/v1/engine/activities.go#WorkflowVars`) is not exempt under
+// the worktree's prefix, so a clean tree failed its own guard.
+//
+// The advice is what makes it worse than noise. The diagnostic tells a reader
+// to add `.claude/worktrees/<branch>/…` to exemptScopeConstruction, a key that
+// stops existing the moment that worktree is removed — and which the sibling
+// stale-exemption check then reports. A guard whose instructions cannot be
+// followed is worse than one that says nothing.
+func TestTheScopeGuardIgnoresAgentWorktrees(t *testing.T) {
+	t.Parallel()
+
+	// A scope literal carrying no identity — exactly what the guard objects to.
+	const objectionable = `package engine
+
+import v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+func WorkflowVars() *v1.Scope { return &v1.Scope{Profile: "p"} }
+`
+
+	root := t.TempDir()
+	write := func(dir string) {
+		t.Helper()
+
+		at := filepath.Join(root, filepath.FromSlash(dir))
+		if err := os.MkdirAll(at, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(at, "activities.go"), []byte(objectionable), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write(".claude/worktrees/some-branch/pkg/flowstate/v1/engine")
+
+	if sites := scopeSitesUnder(t, root); len(sites) != 0 {
+		t.Errorf("a checkout of another revision underneath this one is not this tree, and yet: %v", sites)
+	}
+
+	// The same file outside .claude is still found, so the assertion above is
+	// about the skip rather than about the walk finding nothing at all.
+	write("pkg/flowstate/v1/engine")
+
+	if sites := scopeSitesUnder(t, root); len(sites) != 1 {
+		t.Errorf("want the one site outside .claude, got %d: %v", len(sites), sites)
+	}
 }

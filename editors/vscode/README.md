@@ -23,9 +23,11 @@ deciding something about a Flowfile, that decision belongs in
    naming the problem and offers to open the setting, rather than silently
    doing nothing.
 2. **Syntax association and language configuration.** `Flowfile`,
-   `Flowfile.yaml`, `workflow.yaml`, `workflow.yml` and `workflows/*.yaml` are
-   recognized as Flowfiles (`docs/EDITORS.md`'s "Which files are Flowfiles"
-   list, mirrored here). Comment toggling (`#`) and bracket/indent behavior
+   `Flowfile.yaml`, `workflow.yaml`, `workflow.yml`, `workflows/*.yaml`,
+   `*.test.yaml` and `testdefaults.yaml` are recognized
+   (`docs/EDITORS.md`'s "Which files are Flowfiles" list, mirrored here);
+   the server checks the two test-file shapes with `flow test`'s own loader
+   rather than the workflow grammar. Comment toggling (`#`) and bracket/indent behavior
    come from `language-configuration.json`. There is no bundled grammar, so
    Flowfiles render as plain text unless you also map the language to YAML's
    tokenizer:

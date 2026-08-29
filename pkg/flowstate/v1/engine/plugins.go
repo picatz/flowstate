@@ -108,5 +108,6 @@ func admitPlugins(ctx workflow.Context, wf *v1.Workflow) error {
 		return nil
 	}
 
-	return workflow.ExecuteActivity(ctx, checkPluginsActivity, pins).Get(ctx, nil)
+	return workflow.ExecuteActivity(withSummary(ctx, pluginAdmissionSummary),
+		checkPluginsActivity, pins).Get(ctx, nil)
 }

@@ -79,7 +79,23 @@ steps:
     sql.exec:
       dsn: ${secret('env:SQL_DSN')}
       engine: ENGINE_POSTGRES
-      statements: '${[{"sql": "INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING", "params": [inputs.idempotency_key]}, {"sql": "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)", "params": [inputs.amount_cents, inputs.from_account_id, inputs.idempotency_key]}, {"sql": "UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)", "params": [inputs.amount_cents, inputs.to_account_id, inputs.idempotency_key]}, {"sql": "UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1", "params": [inputs.idempotency_key]}]}'
+      statements:
+        - sql: INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING
+          params:
+            - ${inputs.idempotency_key}
+        - sql: UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)
+          params:
+            - ${inputs.amount_cents}
+            - ${inputs.from_account_id}
+            - ${inputs.idempotency_key}
+        - sql: UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)
+          params:
+            - ${inputs.amount_cents}
+            - ${inputs.to_account_id}
+            - ${inputs.idempotency_key}
+        - sql: UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1
+          params:
+            - ${inputs.idempotency_key}
   - id: announce
     log:
       message: ${"moved %d cents from account %d to account %d across %d statement(s), one transaction".format([inputs.amount_cents, inputs.from_account_id, inputs.to_account_id, steps.transfer.statement_count])}

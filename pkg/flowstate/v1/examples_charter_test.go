@@ -59,45 +59,25 @@ var exampleCorpusGlobs = []string{
 //   - a real gap somebody has written down and tracked, naming the issue.
 //
 // The second kind is what this list gained when the derivation started walking
-// the whole workflow message graph rather than three hand-picked messages: the
-// seven below are constructs the language has and the portfolio has never shown,
-// which is precisely the finding this test exists to produce. They are recorded
-// rather than papered over, and filling them is portfolio work with its own
-// issue — not something to jam into an unrelated example so that a list goes
-// quiet.
-var constructsWithoutAnExample = map[string]string{
-	"input.values":                 "an enum-constrained input (`values:`); no example declares one — tracked in #969",
-	"manual.denied":                "the deny half of a `manual:` trigger's principal rules; `trigger-context` shows `allowed_principals` only — tracked in #969",
-	"schedule.every":               "the interval spelling of a schedule; `scheduled-report` uses `cron:` — tracked in #969",
-	"schedule.start_at":            "a schedule's activation window start — tracked in #969",
-	"schedule.end_at":              "a schedule's activation window end — tracked in #969",
-	"signal_policy_rule.subject":   "a signals rule matching an exact subject; the enterprise examples gate on `claims:` — tracked in #969",
-	"signal_policy_rule.namespace": "a signals rule matching a namespace — tracked in #969",
-
-	// Per-*value* enum coverage, added because a key per field stays satisfied by
-	// whichever value some example happened to use, so a new policy would land
-	// unnoticed. These are the values nothing selects today.
-	//
-	// `input.type.TYPE_ENUM` is the same gap as `input.values` above, seen from
-	// the other side: an enum-constrained input needs the type and the values
-	// together, and one example closes both.
-	// Surfaced once the derivation stopped skipping proto3 `optional` fields,
-	// which protobuf models as synthetic oneofs. `input.must` and
-	// `input.min_items` turned out to be demonstrated already; these two are not.
-	// Adding a `max_len:` to an existing input that already satisfies it would
-	// make this list go quiet without teaching a reader anything — a constraint
-	// is worth showing where it *refuses* something, which is a deliberate
-	// example rather than a drive-by line.
-	"input.max_len": "a string-length bound on an input; no example declares one, and one worth reading shows it refusing a value — tracked in #969",
-	"output.must":   "a constraint on a declared output; the corpus constrains inputs only — tracked in #969",
-
-	"input.type.TYPE_ENUM":                     "an enum-constrained input; the same gap as input.values — tracked in #969",
-	"schedule.overlap.OVERLAP_BUFFER_ONE":      "an overlap policy no example selects; scheduled-report shows one policy — tracked in #969",
-	"schedule.overlap.OVERLAP_BUFFER_ALL":      "the same — tracked in #969",
-	"schedule.overlap.OVERLAP_CANCEL_OTHER":    "the same — tracked in #969",
-	"schedule.overlap.OVERLAP_TERMINATE_OTHER": "the same — tracked in #969",
-	"schedule.overlap.OVERLAP_ALLOW_ALL":       "the same — tracked in #969",
-}
+// the whole workflow message graph rather than three hand-picked messages: each
+// remaining entry below is a construct the language has and the portfolio has
+// never shown, which is precisely the finding this test exists to produce. They
+// are recorded rather than papered over, and filling them is portfolio work with
+// its own issue — not something to jam into an unrelated example so that a list
+// goes quiet.
+//
+// #969 tracked fifteen of these. All fifteen now have an example —
+// `input.values`, `input.type.TYPE_ENUM`, `manual.denied`, `schedule.every`,
+// `schedule.start_at`, `schedule.end_at`, `signal_policy_rule.subject`,
+// `signal_policy_rule.namespace`, `schedule.overlap.OVERLAP_BUFFER_ONE`,
+// `input.max_len` (`alert-title-bound`), `output.must` (`utilization-guard`),
+// and the four remaining overlap policies — `OVERLAP_BUFFER_ALL`,
+// `OVERLAP_CANCEL_OTHER`, `OVERLAP_TERMINATE_OTHER`, `OVERLAP_ALLOW_ALL`, one
+// real schedule per policy under `schedule-overlap-policies/` — so #969 is
+// closed and this map is empty. It stays declared, empty, for the same reason
+// [examplesWithoutTestFile] does: a future gap in this derivation is a decision
+// written down here, not a silently reappearing map.
+var constructsWithoutAnExample = map[string]string{}
 
 // The required set is derived from the schema three ways: the two `kind` oneofs
 // (a node kind, a wait kind), the task registry, and — the part #901's review
@@ -199,9 +179,11 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.WebhookTrigger{}, "webhook", nil},
 		{&v1.ManualTrigger{}, "manual", nil},
 		{&v1.ScheduleTrigger{}, "schedule", nil},
+		{&v1.Concurrency{}, "concurrency", nil},
 		{&v1.SignalPolicy{}, "signal_policy", nil},
 		{&v1.SignalPolicyRule{}, "signal_policy_rule", nil},
 		{&v1.Signal{}, "signal", nil},
+		{&v1.SignalBatch{}, "signal_batch", nil},
 		{&v1.Switch_Case{}, "switch_case", blockFieldExclusions},
 		{&v1.Switch_Default{}, "switch_default", blockFieldExclusions},
 	} {

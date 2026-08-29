@@ -73,6 +73,13 @@ type Federation struct {
 	Target string
 	// Token is the bearer material the fixture exchanger hands back.
 	Token string
+
+	// ExchangeCalls, when non-nil, counts how many times the fixture
+	// exchanger actually minted a credential — the JIT counterpart to
+	// [Authority.ProviderCalls], for a case naming the same ordering
+	// guarantee about [v1.AuthorizeCredential]: that it is never reached for
+	// a request refused before authorization.
+	ExchangeCalls *atomic.Int32
 }
 
 // HasSecrets reports whether this Authority configures a fixture secret store
@@ -136,7 +143,7 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 		tb.Fatalf("building fixture issuer: %v", err)
 	}
 	broker, err := auth.NewBroker(issuer,
-		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token}),
+		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token, calls: a.Federation.ExchangeCalls}),
 		auth.WithAssumeAllowRules("true"))
 	if err != nil {
 		tb.Fatalf("building fixture broker: %v", err)
@@ -184,7 +191,10 @@ func (p fixtureSecretProvider) Resolve(_ context.Context, req secrets.Request) (
 // fixtureExchanger hands back a fixed bearer credential for whatever target
 // it is registered under, mirroring the shape a real STS exchange takes
 // without making one.
-type fixtureExchanger struct{ token string }
+type fixtureExchanger struct {
+	token string
+	calls *atomic.Int32
+}
 
 func (e fixtureExchanger) Name() string { return "fixture-sts" }
 
@@ -193,6 +203,9 @@ func (e fixtureExchanger) Requirement() auth.Requirement {
 }
 
 func (e fixtureExchanger) Exchange(context.Context, auth.Assertion) (auth.Credential, error) {
+	if e.calls != nil {
+		e.calls.Add(1)
+	}
 	return auth.NewCredential(auth.CredentialBearer, time.Now().Add(time.Hour),
 		map[string]string{"access_token": e.token})
 }

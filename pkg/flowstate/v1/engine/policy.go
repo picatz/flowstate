@@ -92,6 +92,10 @@ func defaultActivityOptions() workflow.ActivityOptions {
 // activityOptionsFor returns the options a specific step runs under, applying any
 // policy the step declares over the defaults.
 //
+// `summary` is the history label — see summary.go for what it carries and why
+// it is a parameter rather than derived here: a compensation and the step it
+// undoes run under the same policy and must not read the same in history.
+//
 // Only the settings a step actually specifies are overridden, so declaring a
 // timeout does not silently reset the retry behavior. The non-retryable error
 // list is never overridable: whether a failure *can* succeed on another attempt
@@ -108,8 +112,9 @@ func defaultActivityOptions() workflow.ActivityOptions {
 // actually ticks at, so a file lowering it would fail perfectly healthy steps and
 // a file raising it would only delay noticing a dead worker. Neither is a decision
 // a workflow is in a position to make.
-func activityOptionsFor(policy *v1.StepPolicy) workflow.ActivityOptions {
+func activityOptionsFor(policy *v1.StepPolicy, summary string) workflow.ActivityOptions {
 	opts := defaultActivityOptions()
+	opts.Summary = summary
 	if policy == nil {
 		return opts
 	}

@@ -598,7 +598,12 @@ func ReachesTheNetwork(nodes []*v1.Node) bool {
 // something from outside the workload.
 func WaitsForASignal(nodes []*v1.Node) bool {
 	return AnyStep(nodes, func(node *v1.Node) bool {
-		return node.GetWait().GetSignal() != nil
+		// Both spellings: a `wait_for_signals:` blocks on a signal exactly as a
+		// `wait_for_signal:` does until its first delivery, so a harness asking
+		// "will this run block waiting to be told something" gets the same
+		// answer about either. Reading one arm would let a file full of drains
+		// look unattended and be started with nothing to answer it.
+		return node.GetWait().GetSignal() != nil || node.GetWait().GetSignalBatch() != nil
 	})
 }
 
@@ -635,7 +640,7 @@ func LapsesWithin(nodes []*v1.Node, budget time.Duration) bool {
 
 	return !AnyStep(nodes, func(node *v1.Node) bool {
 		wait := node.GetWait()
-		if wait.GetSignal() == nil {
+		if wait.GetSignal() == nil && wait.GetSignalBatch() == nil {
 			return false
 		}
 

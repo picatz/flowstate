@@ -1,0 +1,19 @@
+# `overlap:` is inert to a run exactly as `every:` and `start_at:`/`end_at:`
+# are, on the same terms `scheduled-report`'s and `schedule-interval`'s own
+# tests state: nothing here or in `flow run local` reads `triggers:`. What is
+# worth asserting is the workload underneath, which runs identically whichever
+# policy a schedule eventually enforces.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a firing refreshes the named store
+    inputs:
+      store: airport
+    expect:
+      ran: [refresh]
+      outputs:
+        store: airport

@@ -75,9 +75,15 @@ func TestKindForCode(t *testing.T) {
 			want: flowstatev1.ErrorKindUpstream,
 		},
 		{
-			name: "the caller's own deadline is not the plugin's fault",
+			// Not the plugin's fault either, and since #1147 the deadline on a
+			// plugin call *is* the step's `timeout:` — so this is the engine's
+			// own bound being reached, which is what both drivers answer
+			// [flowstatev1.ErrorKindTimeout] for when they end the attempt
+			// themselves rather than letting the call return (#915). Upstream
+			// gave one fact two names depending on which side of that race won.
+			name: "the caller's own deadline is the step's bound, not a dependency failing",
 			err:  context.DeadlineExceeded,
-			want: flowstatev1.ErrorKindUpstream,
+			want: flowstatev1.ErrorKindTimeout,
 		},
 		{
 			name: "an unclassified failure",
