@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -172,7 +173,9 @@ func TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime(t *testing.T) {
 
 // TestACallWithNoDeadlineStillDiesAtCallTimeout is the backstop over the same
 // real path: the "slow" fixture blocks until its context ends, and with no
-// caller deadline the host's own bound is the only thing that can end it.
+// caller deadline the host's own bound is the only thing that can end it. The
+// wire error identifies that bound without comparing the host's clock to the
+// deadline Connect propagates to the plugin process.
 func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -187,7 +190,6 @@ func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	start := time.Now()
 	go func() {
 		// context.Background(), not t.Context(): a context the test would
 		// cancel at cleanup is a deadline of sorts, and the shape under test
@@ -198,13 +200,12 @@ func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 
 	select {
 	case err := <-done:
-		elapsed := time.Since(start)
 		if err == nil {
-			t.Fatalf("a call with no deadline of its own succeeded after %s, want CallTimeout to end it", elapsed)
+			t.Fatal("a call with no deadline of its own succeeded, want CallTimeout to end it")
 		}
-		if elapsed < cfg.CallTimeout {
-			t.Errorf("the call ended after %s, before its %s CallTimeout; something other than the "+
-				"bound under test ended it", elapsed, cfg.CallTimeout)
+		const deadlineExceeded = "deadline_exceeded: context deadline exceeded"
+		if !strings.Contains(err.Error(), deadlineExceeded) {
+			t.Errorf("call error = %v, want CallTimeout's %q refusal", err, deadlineExceeded)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("a call with no deadline of its own was still running 15s in, want it bounded by CallTimeout")
