@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -179,8 +180,9 @@ func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
 		{tool: "Bash", matchKey: "cmd", matchValue: "*gh*release*", description: "GitHub CLI release mutation"},
 		{tool: "mcp__github__merge_pull_request", description: "GitHub MCP pull-request merge"},
 		{tool: "Bash", matchKey: "cmd", matchValue: "*git*reset*--hard*", description: "hard git reset"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*git*clean*-f*", description: "forced git clean"},
-		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*rf*", description: "recursive forced removal"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*git*clean*-*f*", description: "forced git clean variants"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*r*f*", description: "recursive forced removal with recursive flag first"},
+		{tool: "Bash", matchKey: "cmd", matchValue: "*rm*-*f*r*", description: "recursive forced removal with force flag first"},
 	}
 	for _, guard := range guards {
 		if !hasAmpPermission(settings.Permissions, guard.tool, "ask", guard.matchKey, guard.matchValue) {
@@ -188,7 +190,24 @@ func TestAmpSettingsUsePortableSkillsAndGuardHighImpactWrites(t *testing.T) {
 		}
 	}
 
-	if hasAmpPermission(settings.Permissions, "Bash", "ask", "cmd", "*git*push*") {
+	for _, command := range []string{
+		"git clean -f",
+		"git clean -df",
+		"git clean -fd",
+		"git clean --force -d",
+		"rm -rf scratch",
+		"rm -fr scratch",
+		"rm -r -f scratch",
+		"rm -f -r scratch",
+		"rm --recursive --force scratch",
+		"rm --force --recursive scratch",
+	} {
+		if !ampBashPrompts(settings.Permissions, command) {
+			t.Errorf("Amp permissions do not prompt for destructive equivalent %q", command)
+		}
+	}
+
+	if ampBashPrompts(settings.Permissions, "git push origin HEAD") {
 		t.Error("routine git push must remain autonomous; reserve approval prompts for high-impact actions")
 	}
 }
@@ -200,6 +219,25 @@ func hasAmpPermission(rules []ampPermission, tool, action, matchKey, matchValue 
 		}
 		if matchKey == "" || strings.Contains(fmt.Sprint(rule.Matches[matchKey]), matchValue) {
 			return true
+		}
+	}
+	return false
+}
+
+func ampBashPrompts(rules []ampPermission, command string) bool {
+	for _, rule := range rules {
+		if rule.Tool != "Bash" || rule.Action != "ask" {
+			continue
+		}
+		patterns, ok := rule.Matches["cmd"].([]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range patterns {
+			matched, err := path.Match(fmt.Sprint(raw), command)
+			if err == nil && matched {
+				return true
+			}
 		}
 	}
 	return false
