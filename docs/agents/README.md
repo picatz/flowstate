@@ -86,13 +86,18 @@ and whether a deterministic mechanism can prevent it more reliably.
 - `.agents/setup` provisions the pinned toolchain and dependencies for a fresh
   Orb. `.agents/resume` stays fast because Flowstate has no persistent backing
   service or authentication state to repair on wake.
-- Flowstate intentionally lets Amp perform routine reversible repository work
-  autonomously, including pushing branches and creating or updating pull
-  requests, issues, and review comments. `.amp/settings.json` reserves approval
-  prompts for high-impact actions such as merging, publishing releases, or
-  destructively rewriting local state. Broader permission examples can be kept
-  in documentation if a future project needs a stricter posture; they are not
-  the default here.
+- Flowstate intentionally adds no approval ceremony to routine local/repository
+  work such as editing, testing, committing, and pushing branches. External
+  collaboration writes such as creating/updating pull requests, issues, or
+  review comments remain subject to Amp's own authorization contract; when the
+  user's current task explicitly authorizes them, Amp can proceed without an
+  extra repository-specific confirmation. Repository guidance cannot widen the
+  host's authority.
+- `.amp/settings.json` reserves repository-specific approval prompts for actual
+  high-impact mutations: pull-request merges, release creation/edit/delete/upload,
+  hard resets, forced cleans, and recursive forced removal. Read-only `gh`
+  discovery stays autonomous. Broader permission examples can be documented for
+  projects that want a stricter posture; they are not the Flowstate default.
 - Amp-specific controls do not make Claude hooks portable; add an Amp control
   only when a behavior genuinely needs enforcement on that host.
 
