@@ -297,6 +297,10 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		key, err := auth.NewSigningKey("inspect", private)
+		if err != nil {
+			return fmt.Errorf("%s: %w", keyPath, err)
+		}
 		public, err := publicKeyOf(private)
 		if err != nil {
 			return err
@@ -317,8 +321,16 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 		if kid == "" {
 			kid = keyIDFromPath(keyPath)
 		}
-		verifyErr := token.VerifySignature([]jwa.Algorithm{alg}, map[string]any{kid: public})
-		valid := verifyErr == nil
+		// The token chooses its own alg header, so it cannot also choose what
+		// verification operation is acceptable for the configured key. In
+		// particular, explicitly allowing "none" or an HMAC algorithm here can
+		// turn an unsigned or attacker-MACed token into a successful inspection.
+		// NewSigningKey derives the one algorithm this private key is permitted
+		// to use, matching the production verifier's fail-closed allowlist.
+		valid := alg == key.Algorithm()
+		if valid {
+			valid = token.VerifySignature([]jwa.Algorithm{key.Algorithm()}, map[string]any{kid: public}) == nil
+		}
 		result.Valid = &valid
 	}
 
