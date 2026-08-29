@@ -160,6 +160,10 @@ const (
 	// The resource exists and belongs to another tenant, or records no tenant
 	// that this caller could be. FlowstateServer.ownedBy answering false.
 	AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH AuditDenyCode = 3
+	// The caller may address the resource, but a policy governing the requested
+	// operation refused it. FlowstateServer.authorizeSignal's name-level policy
+	// check is the first emitter.
+	AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED AuditDenyCode = 4
 )
 
 // Enum value maps for AuditDenyCode.
@@ -169,12 +173,14 @@ var (
 		1: "AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE",
 		2: "AUDIT_DENY_CODE_RESOURCE_NOT_FOUND",
 		3: "AUDIT_DENY_CODE_TENANT_MISMATCH",
+		4: "AUDIT_DENY_CODE_POLICY_DENIED",
 	}
 	AuditDenyCode_value = map[string]int32{
 		"AUDIT_DENY_CODE_UNSPECIFIED":          0,
 		"AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE": 1,
 		"AUDIT_DENY_CODE_RESOURCE_NOT_FOUND":   2,
 		"AUDIT_DENY_CODE_TENANT_MISMATCH":      3,
+		"AUDIT_DENY_CODE_POLICY_DENIED":        4,
 	}
 )
 
@@ -375,12 +381,13 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x1fAUDIT_RESOURCE_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17AUDIT_RESOURCE_KIND_RUN\x10\x01\x12 \n" +
 	"\x1cAUDIT_RESOURCE_KIND_SCHEDULE\x10\x02\x12!\n" +
-	"\x1dAUDIT_RESOURCE_KIND_NAMESPACE\x10\x03*\xa7\x01\n" +
+	"\x1dAUDIT_RESOURCE_KIND_NAMESPACE\x10\x03*\xca\x01\n" +
 	"\rAuditDenyCode\x12\x1f\n" +
 	"\x1bAUDIT_DENY_CODE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE\x10\x01\x12&\n" +
 	"\"AUDIT_DENY_CODE_RESOURCE_NOT_FOUND\x10\x02\x12#\n" +
-	"\x1fAUDIT_DENY_CODE_TENANT_MISMATCH\x10\x03B\xa9\x01\n" +
+	"\x1fAUDIT_DENY_CODE_TENANT_MISMATCH\x10\x03\x12!\n" +
+	"\x1dAUDIT_DENY_CODE_POLICY_DENIED\x10\x04B\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"AuditProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

@@ -202,6 +202,11 @@ const (
 	// declare.
 	MaxSecretsPerTest = 200
 
+	// MaxChecksPerTest bounds how many CEL claims one effective test may
+	// evaluate. The written pieces are checked before table and defaults
+	// expansion can multiply them, then the effective case is checked again.
+	MaxChecksPerTest = 200
+
 	// MaxAllowUnreachedPerFile bounds how many `coverage.allow_unreached`
 	// entries one file may declare. A workflow has few branches a suite cannot
 	// reach, and a file recording hundreds is a record that has stopped meaning
@@ -1249,21 +1254,27 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// Done here rather than at run time so everything downstream — the
 	// per-test checks below, coverage, `--run`, the Go subtests — keeps
 	// reading one flat list of effective cases and needs no notion of a table.
-	expanded, sources := expandTableEntries(p, file.Tests)
-	file.Tests = expanded
+	expandedCount := 0
+	for _, test := range file.Tests {
+		if test.Cases == nil {
+			expandedCount++
 
-	// The bound is on the runs, not on the written entries: a row is a whole
-	// case, so an entry with four hundred rows costs what four hundred cases
-	// cost. Checked after expansion for that reason, and the diagnostic says
-	// "once its rows are counted" because the limit is otherwise confusing to
-	// read in a file whose `tests:` list is three items long.
-	if len(file.Tests) > MaxTestsPerFile {
+			continue
+		}
+		expandedCount += len(test.Cases)
+	}
+	if expandedCount > MaxTestsPerFile {
+		// Count before expansion: [mergeRow] copies inherited stubs and
+		// checks into each row, so checking only the finished slice would do
+		// the amplification this limit exists to prevent before refusing it.
 		p.report(site{at: tests},
 			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
-			len(file.Tests), MaxTestsPerFile)
+			expandedCount, MaxTestsPerFile)
 
 		return nil, p.err()
 	}
+	expanded, sources := expandTableEntries(p, file.Tests)
+	file.Tests = expanded
 
 	// Validated then merged before anything below bounds or checks a case, so
 	// every per-test check runs against the effective test a case actually
@@ -1319,6 +1330,13 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		if len(test.Secrets) > MaxSecretsPerTest {
 			p.report(r.in(source.path.field("secrets")), "test %q declares %d secrets, more than the limit of %d",
 				test.Name, len(test.Secrets), MaxSecretsPerTest)
+
+			continue
+		}
+		if len(test.Expect.Check) > MaxChecksPerTest {
+			p.report(r.in(source.path.field("expect").field("check")),
+				"test %q declares %d checks, more than the limit of %d",
+				test.Name, len(test.Expect.Check), MaxChecksPerTest)
 
 			continue
 		}
@@ -1725,6 +1743,12 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 	if len(d.Stubs) > MaxDefaultStubs {
 		p.report(site{at: base.field("stubs")},
 			"defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+
+		return false
+	}
+	if len(d.Check) > MaxChecksPerTest {
+		p.report(site{at: base.field("check")},
+			"defaults declares %d checks, more than the limit of %d", len(d.Check), MaxChecksPerTest)
 
 		return false
 	}

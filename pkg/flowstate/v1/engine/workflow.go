@@ -517,7 +517,26 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
-		signals:    &signalCarry{pending: st.GetPendingSignals()},
+		signals: &signalCarry{pending: st.GetPendingSignals()},
+
+		// The run's debug lease, if anybody takes one. Built per segment and
+		// holding no lease to begin with, which is the honest starting state
+		// rather than a gap: a *held* lease and a Continue-As-New cannot
+		// coexist — the boundary that holds is visited before a step and the
+		// budget is checked after one — so a segment always begins unheld. What
+		// can survive the seam is an ask the run accepted delivery of and has
+		// not yet acted on, and that travels in `PendingSignals` exactly as an
+		// early-arriving approval does. See debuglease.go.
+		debug: &debugControl{
+			run: runAddress(ctx),
+
+			// Read from the run's own specification rather than from the memo,
+			// because workflow code cannot see a memo — and it does not need
+			// to: this is the presence question, and the two copies agree about
+			// presence by construction. See [debugControl.declared].
+			declared: st.GetWorkflow().GetDebug() != nil,
+		},
+
 		progress:   position,
 		detailsCtx: detailsCtx,
 		waits:      parked,
@@ -598,6 +617,22 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// while it was on an earlier step would otherwise resume with the
 		// approval gone and wait forever.
 		pending := drainSignals(ctx, st.Workflow, exec.signals.pending)
+
+		// And the one channel the engine owns rather than the specification. A
+		// pause ask buffered when this segment ran out of budget would otherwise
+		// be dropped at the seam — a `flow signal` that reported success and did
+		// nothing — which is precisely the failure drainSignals exists to
+		// prevent, on a channel [v1.SignalNames] cannot know about.
+		//
+		// Skipped entirely for a run whose workflow declares no `debug:`, which
+		// is every run written before that field existed: on those, the same
+		// name may be an ordinary signal the specification waits for, and this
+		// drain would take it. See [debugControl.declared].
+		pending, drainErr := drainDebugAsks(ctx, pending, exec.debug)
+		if drainErr != nil {
+			return v1.PartialTranscript(stepOutputs),
+				compensate(ctx, exec, &ErrRunFailed{Message: drainErr.Error()})
+		}
 
 		next := &v1.RunState{
 			Workflow:    st.Workflow,

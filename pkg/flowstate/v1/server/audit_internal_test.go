@@ -202,6 +202,42 @@ func TestARequiredRecordThatCannotBeWrittenStopsTheMutation(t *testing.T) {
 	require.Equal(t, 1, fake.signals)
 }
 
+// TestASignalPolicyDenialIsAuditedAsADenial: tenancy is only the first half of
+// Signal's authorization. A name-level policy refusal must not leave behind an
+// allow record for a delivery that never happened.
+func TestASignalPolicyDenialIsAuditedAsADenial(t *testing.T) {
+	t.Parallel()
+
+	protocol, err := converter.GetDefaultDataConverter().ToPayload(currentSignalProtocol)
+	require.NoError(t, err)
+
+	fake := &fakeRunClient{
+		describe: &workflowservice.DescribeWorkflowExecutionResponse{
+			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+				Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
+				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+				Memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{
+					signalProtocolMemoKey: protocol,
+				}},
+			},
+		},
+	}
+
+	sink := &recordingEmitter{}
+	s := mustNew(t, fake, WithAudit(recorderFor(t, sink)))
+
+	_, err = s.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: "orders-1",
+		Name:       v1.DebugSignal,
+	}))
+	require.Error(t, err)
+	require.Zero(t, fake.signals, "the policy refused the signal before delivery")
+
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
+	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, record.GetDenyCode())
+}
+
 func recorderFor(t *testing.T, sink audit.Emitter) *audit.Recorder {
 	t.Helper()
 
