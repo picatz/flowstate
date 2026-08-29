@@ -14,21 +14,25 @@ func TestCapturedLogsSynchronizesReadAndWrite(t *testing.T) {
 	logger := newCapturingLogger(t, &logs)
 
 	start := make(chan struct{})
-	var writes sync.WaitGroup
-	writes.Add(1)
+	var workers sync.WaitGroup
+	workers.Add(2)
 	go func() {
-		defer writes.Done()
+		defer workers.Done()
 		<-start
 		for range 1_000 {
 			logger.Info("concurrent capture")
 		}
 	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for range 1_000 {
+			_ = logs.String()
+		}
+	}()
 
 	close(start)
-	for range 1_000 {
-		_ = logs.String()
-	}
-	writes.Wait()
+	workers.Wait()
 
 	if got := strings.Count(logs.String(), "concurrent capture"); got != 1_000 {
 		t.Fatalf("captured %d records, want 1000", got)
