@@ -297,18 +297,12 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		key, err := auth.NewSigningKey("inspect", private)
-		if err != nil {
+		if _, err := auth.NewSigningKey(keyIDFromPath(keyPath), private); err != nil {
 			return fmt.Errorf("%s: %w", keyPath, err)
 		}
 		public, err := publicKeyOf(private)
 		if err != nil {
 			return err
-		}
-
-		alg, err := token.Header.Algorithm()
-		if err != nil {
-			return fmt.Errorf("token header: %w", err)
 		}
 
 		// Keyed by the token's own "kid" header, not the key file's name: a
@@ -325,12 +319,11 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 		// verification operation is acceptable for the configured key. In
 		// particular, explicitly allowing "none" or an HMAC algorithm here can
 		// turn an unsigned or attacker-MACed token into a successful inspection.
-		// NewSigningKey derives the one algorithm this private key is permitted
-		// to use, matching the production verifier's fail-closed allowlist.
-		valid := alg == key.Algorithm()
-		if valid {
-			valid = token.VerifySignature([]jwa.Algorithm{key.Algorithm()}, map[string]any{kid: public}) == nil
-		}
+		// Use the production verifier's asymmetric allowlist; the JOSE verifier
+		// then enforces compatibility with this public key. An RSA PKCS#8 key
+		// does not encode one JWA algorithm, so pinning it to RS256 would also
+		// reject valid RS384, RS512, and RSA-PSS signatures.
+		valid := token.VerifySignature(auth.DefaultAlgorithms(), map[string]any{kid: public}) == nil
 		result.Valid = &valid
 	}
 

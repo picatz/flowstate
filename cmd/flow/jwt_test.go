@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
@@ -190,6 +191,24 @@ func TestJWTInspectRefusesAnUnsignedAlgorithm(t *testing.T) {
 	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	require.Equal(t, false, result["signatureValid"])
+}
+
+func TestJWTInspectAcceptsAnRSAAlgorithmCompatibleWithTheKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "rsa.pem")
+	_, _, err := runKeysGenerateInto(t, "algorithm", string(jwa.RS256), "out", keyPath)
+	require.NoError(t, err)
+	private, err := readPrivateKeyPEM(keyPath)
+	require.NoError(t, err)
+
+	token, err := signJWT("rsa", jwa.RS384, private, jwt.ClaimsSet{jwt.Subject: "worker"})
+	require.NoError(t, err)
+	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, true, result["signatureValid"],
+		"a PKCS#8 RSA key is compatible with every supported RSA signature algorithm")
 }
 
 // TestJWTInspectVerifiesByTheTokensOwnKeyIDNotTheKeyFileName is the regression
