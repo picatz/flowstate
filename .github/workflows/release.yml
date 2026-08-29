@@ -1,0 +1,205 @@
+# Release publication is deliberately manual. A dry run builds the complete
+# payload without granting a write token, minting attestations, creating a tag,
+# or creating a release. Publication additionally requires the repository
+# variable RELEASES_ENABLED=true and the protected `release` environment. The
+# owner should set that variable only after immutable releases and an environment
+# with a required reviewer (self-review disabled) are configured.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to stamp (vX.Y.Z or a SemVer prerelease)
+        required: true
+        type: string
+      publish:
+        description: Publish the existing version tag after building it
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
+      source_commit: ${{ steps.source.outputs.commit }}
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      PUBLISH: ${{ inputs.publish }}
+      WORKFLOW_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Validate version and select the source commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::version must be vX.Y.Z or a SemVer prerelease"
+            exit 1
+          fi
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            IFS=. read -ra identifiers <<< "${RELEASE_VERSION#*-}"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "$identifier" =~ ^0[0-9]+$ ]]; then
+                echo "::error::numeric prerelease identifiers must not have leading zeroes"
+                exit 1
+              fi
+            done
+          fi
+
+          git fetch --no-tags origin +main:refs/remotes/origin/main
+          if [[ "$PUBLISH" == "true" ]]; then
+            git fetch --no-tags origin "refs/tags/$RELEASE_VERSION:refs/tags/$RELEASE_VERSION"
+            commit=$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")
+            if [[ "$commit" != "$WORKFLOW_COMMIT" ]]; then
+              echo "::error::run the publication workflow at $RELEASE_VERSION so its attested source commit is the commit being released"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+              echo "::error::$RELEASE_VERSION does not name a commit reachable from main"
+              exit 1
+            fi
+            git checkout --detach "$commit"
+          else
+            commit=$(git rev-parse HEAD)
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::release source checkout is not clean"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Build archives, SBOMs, and checksums
+        run: make release-artifacts VERSION="$RELEASE_VERSION"
+
+      - name: Name the same-run payload
+        id: names
+        shell: bash
+        run: echo "artifact_name=flowstate-${RELEASE_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the dry-run or publication payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.names.outputs.artifact_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publication-disabled:
+    if: inputs.publish && vars.RELEASES_ENABLED != 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Explain the publication interlock
+        run: |
+          echo "::error::publication is disabled; configure immutable releases and the protected release environment, then set RELEASES_ENABLED=true"
+          exit 1
+
+  publish:
+    if: inputs.publish && vars.RELEASES_ENABLED == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate the tag after the build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +main:refs/remotes/origin/main
+          git fetch --no-tags origin "refs/tags/$RELEASE_VERSION:refs/tags/$RELEASE_VERSION"
+          tag_commit=$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")
+          if [[ "$tag_commit" != "$SOURCE_COMMIT" ]]; then
+            echo "::error::$RELEASE_VERSION moved after the payload was built"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "::error::$RELEASE_VERSION is no longer reachable from main"
+            exit 1
+          fi
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo "::error::release $RELEASE_VERSION already exists"
+            exit 1
+          fi
+
+      - name: Download the exact same-run payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: dist/
+
+      - name: Verify the payload manifest
+        run: cd dist && sha256sum --check SHA256SUMS
+
+      - name: Attest every checksummed payload
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.1
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Attest the checksum manifest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.1
+        with:
+          subject-path: dist/SHA256SUMS
+
+      # GitHub recommends draft -> attach every asset -> publish for immutable
+      # releases. Once published, the repository setting locks the tag and
+      # assets and GitHub creates the release attestation.
+      - name: Create and revalidate the complete draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease=()
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$RELEASE_VERSION" \
+            --verify-tag \
+            --draft \
+            --title "$RELEASE_VERSION" \
+            --generate-notes \
+            "${prerelease[@]}" \
+            dist/*
+
+          # A draft does not lock its tag. Fetch it once more after every asset
+          # is attached and fail rather than publishing if it moved meanwhile.
+          git fetch --no-tags origin "refs/tags/$RELEASE_VERSION:refs/tags/$RELEASE_VERSION"
+          if [[ "$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")" != "$SOURCE_COMMIT" ]]; then
+            echo "::error::$RELEASE_VERSION moved while its draft was being assembled"
+            exit 1
+          fi
+
+      - name: Publish and lock the release
+        run: gh release edit "$RELEASE_VERSION" --draft=false
