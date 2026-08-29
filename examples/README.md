@@ -176,5 +176,5 @@ on.
 
 The examples marked as needing network reach `httpbin.org`. They will fail without internet
 access, and the `http` task's egress policy denies internal addresses by default — see
-[Governed network access](../README.md#what-it-can-do) if you point one at a
-service on `localhost`.
+[Flowstate's governance capabilities](../README.md#what-you-can-build-today) before
+pointing one at a service on `localhost`.
