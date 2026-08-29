@@ -14,7 +14,7 @@ software rather than prose for checks that can be deterministic.
 | `.agents/skills/*/SKILL.md` | Portable task workflows for Amp and Codex | Name and description are advertised; the body loads when selected |
 | `.claude/skills/*/SKILL.md` | Claude Code mirrors of the portable skills | The body loads when selected |
 | `.claude/settings.json` | Claude-specific hooks and permission-time controls | Enforced by Claude Code |
-| `.amp/settings.json` | Minimal Amp workspace settings and exact-tool controls | Applied by Amp in this repository |
+| `.amp/settings.json` | Amp workspace skill selection; no repository-specific permission prompts | Applied by Amp in this repository |
 | `.agents/setup` / `.agents/resume` | Amp Orb provisioning and wake behavior | Run by the Orb lifecycle |
 | `AGENT_FIELD_NOTES.md` | Small index of historical guidance | Never imported; used to locate one relevant archive |
 | `AGENT_FIELD_NOTES_LEGACY.md` and `.agent-history/` | Byte-preserved legacy guidance and skill bodies | Historical reference, loaded only for a concrete question |
@@ -86,21 +86,16 @@ and whether a deterministic mechanism can prevent it more reliably.
 - `.agents/setup` provisions the pinned toolchain and dependencies for a fresh
   Orb. `.agents/resume` stays fast because Flowstate has no persistent backing
   service or authentication state to repair on wake.
-- Flowstate intentionally adds no approval ceremony to routine local/repository
-  work such as editing, testing, committing, and pushing branches. External
-  collaboration writes such as creating/updating pull requests, issues, or
-  review comments remain subject to Amp's own authorization contract; when the
-  user's current task explicitly authorizes them, Amp can proceed without an
-  extra repository-specific confirmation. Repository guidance cannot widen the
+- Flowstate adds no repository-specific Amp approval prompts. Routine local work
+  and task-authorized repository collaboration—branches, commits, pushes, pull
+  requests, issues, review comments, and merges when the user asked to land the
+  change—proceed under Amp's own authorization contract without a second
+  Flowstate-specific confirmation layer. Repository guidance cannot widen the
   host's authority.
-- Do not use command-text Bash globs as a pretend security boundary. Equivalent
-  options, absolute executable paths, aliases, wrappers, and shell composition
-  make that enforcement brittle while adding friction to normal work. Flowstate's
-  Amp settings therefore keep only an exact-tool approval guard for the GitHub
-  MCP merge operation and otherwise rely on Amp's host safety contract plus the
-  shared judgment rules above. A project that later needs stricter shell controls
-  should add a semantic/host-supported mechanism rather than accumulate command
-  spellings.
+- Teams that later demonstrate a recurring need for stricter push, merge,
+  release, or destructive-command controls should add an explicit user/team
+  policy or an opt-in example. Flowstate does not ship a brittle command
+  blacklist preemptively.
 - Amp-specific controls do not make Claude hooks portable; add an Amp control
   only when a behavior genuinely needs enforcement on that host.
 

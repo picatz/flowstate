@@ -79,15 +79,16 @@ The complete rationale lives in
   would materially change product semantics, compatibility, risk, scope, or the
   authority to act.
 - Work autonomously on routine local and repository operations to the extent the
-  active host permits. Branches, commits, tests, ordinary edits, and pushes
-  should not gain extra approval ceremony from this repository. For shared or
-  external state such as pull requests, issues, and review comments, act when
-  the user's current request grants that authority and otherwise follow the
-  host's own authorization contract; repository prose cannot widen it. Ask
-  before actions that are materially destructive, irreversible, or high-impact,
-  such as merging, publishing a release, deleting important state, deploying,
-  or changing production/security controls. Host-specific hooks and permissions
-  are additional safety controls, not a substitute for judgment.
+  active host permits. Branches, commits, tests, ordinary edits, pushes, and
+  task-authorized pull-request, issue, and review changes should not gain extra
+  approval ceremony from this repository. When the user explicitly asks to land
+  a change, merge it after the required review and verification gates are
+  satisfied without asking again. Follow the host's authorization contract;
+  repository prose cannot widen it. Ask only when the task does not grant the
+  needed authority or an action is materially destructive, irreversible,
+  externally consequential, or out of scope, such as force-pushing shared
+  history, deleting important state, deploying, or changing production/security
+  controls.
 - Preserve accurate provenance without inventing it. Do not hard-code a model
   name or duplicate attribution the active host adds automatically.
 

@@ -38,12 +38,6 @@ var preservedGuidanceBlobs = []struct {
 	{path: ".agent-history/skills/pre-pr-review/SKILL.md", blobID: "1bd12a66c9f0831a7075837a8c7c14b2f4094a48"},
 }
 
-type ampPermission struct {
-	Tool    string         `json:"tool"`
-	Action  string         `json:"action"`
-	Matches map[string]any `json:"matches"`
-}
-
 func TestGuidanceStaysLayered(t *testing.T) {
 	root := repoRoot(t)
 	agents := read(t, filepath.Join(root, "AGENTS.md"))
@@ -156,11 +150,11 @@ func TestReplacedGuidanceKeepsFieldNotes(t *testing.T) {
 	}
 }
 
-func TestAmpSettingsUsePortableSkillsWithoutBrittleShellGuards(t *testing.T) {
+func TestAmpSettingsUsePortableSkillsWithoutRepositoryPermissionPrompts(t *testing.T) {
 	data := read(t, filepath.Join(repoRoot(t), ".amp", "settings.json"))
 	var settings struct {
-		DisableClaudeSkills bool            `json:"amp.skills.disableClaudeCodeSkills"`
-		Permissions         []ampPermission `json:"amp.permissions"`
+		DisableClaudeSkills bool              `json:"amp.skills.disableClaudeCodeSkills"`
+		Permissions         []json.RawMessage `json:"amp.permissions"`
 	}
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatalf("parse .amp/settings.json: %v", err)
@@ -168,26 +162,9 @@ func TestAmpSettingsUsePortableSkillsWithoutBrittleShellGuards(t *testing.T) {
 	if !settings.DisableClaudeSkills {
 		t.Fatal("Amp must use .agents/skills without also loading Claude mirrors")
 	}
-	if !hasAmpPermission(settings.Permissions, "mcp__github__merge_pull_request", "ask", "", "") {
-		t.Fatal("Amp must ask before the exact GitHub MCP pull-request merge tool")
+	if len(settings.Permissions) != 0 {
+		t.Fatalf("Flowstate must not add repository-specific Amp approval prompts; got %d permission rules", len(settings.Permissions))
 	}
-	for _, rule := range settings.Permissions {
-		if rule.Tool == "Bash" {
-			t.Fatal("do not enforce Flowstate policy with command-text Bash globs; equivalent spellings, paths, aliases, and wrappers make them brittle and they add approval friction to routine work")
-		}
-	}
-}
-
-func hasAmpPermission(rules []ampPermission, tool, action, matchKey, matchValue string) bool {
-	for _, rule := range rules {
-		if rule.Tool != tool || rule.Action != action {
-			continue
-		}
-		if matchKey == "" || strings.Contains(fmt.Sprint(rule.Matches[matchKey]), matchValue) {
-			return true
-		}
-	}
-	return false
 }
 
 // gitBlobID returns the Git blob identity of canonical repository text. Git may

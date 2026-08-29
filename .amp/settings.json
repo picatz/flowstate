@@ -1,9 +1,3 @@
 {
-  "amp.skills.disableClaudeCodeSkills": true,
-  "amp.permissions": [
-    {
-      "tool": "mcp__github__merge_pull_request",
-      "action": "ask"
-    }
-  ]
+  "amp.skills.disableClaudeCodeSkills": true
 }
