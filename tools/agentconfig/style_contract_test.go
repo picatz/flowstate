@@ -25,6 +25,18 @@ func TestStyleSkillIndexMatchesTheCharter(t *testing.T) {
 	}
 }
 
+func TestMarkdownSectionNormalizesCheckoutLineEndings(t *testing.T) {
+	lf := "# Skill\n## Rule index\nbody\n## Procedure\n"
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+	got, ok := markdownSection(crlf, "## Rule index")
+	if !ok {
+		t.Fatal("CRLF section was not found")
+	}
+	if got != "body" {
+		t.Fatalf("CRLF section = %q, want %q", got, "body")
+	}
+}
+
 func styleRuleHeadings(source string) []string {
 	var headings []string
 	for _, line := range strings.Split(source, "\n") {
@@ -58,6 +70,7 @@ func styleSkillRules(t *testing.T, source string) []string {
 }
 
 func markdownSection(source, heading string) (string, bool) {
+	source = strings.ReplaceAll(source, "\r\n", "\n")
 	start := strings.Index(source, heading+"\n")
 	if start < 0 {
 		return "", false
