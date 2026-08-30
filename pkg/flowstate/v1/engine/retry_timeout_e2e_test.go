@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 type retryBackoffTimeoutShape struct {
 	RetryState        enumspb.RetryState
 	HasTimeoutError   bool
+	TimeoutType       enumspb.TimeoutType
 	HasApplicationErr bool
 	ApplicationType   string
 	ApplicationText   string
@@ -30,14 +32,20 @@ type retryBackoffTimeoutShape struct {
 
 type retryBackoffProbeInput struct {
 	ScheduleToClose time.Duration
+	StartToClose    time.Duration
 	RetryInterval   time.Duration
 	MaximumAttempts int32
 	NonRetryable    bool
+	AttemptTimeout  bool
 }
 
 func retryBackoffTimeoutProbe(ctx workflow.Context, input retryBackoffProbeInput) (retryBackoffTimeoutShape, error) {
+	startToClose := input.StartToClose
+	if startToClose == 0 {
+		startToClose = 5 * time.Second
+	}
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout:    5 * time.Second,
+		StartToCloseTimeout:    startToClose,
 		ScheduleToCloseTimeout: input.ScheduleToClose,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    input.RetryInterval,
@@ -47,7 +55,7 @@ func retryBackoffTimeoutProbe(ctx workflow.Context, input retryBackoffProbeInput
 		},
 	})
 
-	err := workflow.ExecuteActivity(ctx, retryBackoffDependencyFailure, input.NonRetryable).Get(ctx, nil)
+	err := workflow.ExecuteActivity(ctx, retryBackoffDependencyFailure, input.NonRetryable, input.AttemptTimeout).Get(ctx, nil)
 	shape := retryBackoffTimeoutShape{}
 
 	var activityErr *temporal.ActivityError
@@ -57,6 +65,9 @@ func retryBackoffTimeoutProbe(ctx workflow.Context, input retryBackoffProbeInput
 
 	var timeoutErr *temporal.TimeoutError
 	shape.HasTimeoutError = errors.As(err, &timeoutErr)
+	if shape.HasTimeoutError {
+		shape.TimeoutType = timeoutErr.TimeoutType()
+	}
 
 	var applicationErr *temporal.ApplicationError
 	if errors.As(err, &applicationErr) {
@@ -71,7 +82,12 @@ func retryBackoffTimeoutProbe(ctx workflow.Context, input retryBackoffProbeInput
 	return shape, nil
 }
 
-func retryBackoffDependencyFailure(nonRetryable bool) error {
+func retryBackoffDependencyFailure(ctx context.Context, nonRetryable, attemptTimeout bool) error {
+	if attemptTimeout {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
 	if nonRetryable {
 		return temporal.NewNonRetryableApplicationError(
 			"the dependency rejected the request",
@@ -107,6 +123,7 @@ func TestScheduleToCloseLapsingDuringBackoffPreservesTheLastFailure(t *testing.T
 		name           string
 		input          retryBackoffProbeInput
 		wantRetryState enumspb.RetryState
+		wantTimeout    enumspb.TimeoutType
 		wantType       v1.ErrorKind
 		wantMessage    string
 		wantCause      string
@@ -122,6 +139,18 @@ func TestScheduleToCloseLapsingDuringBackoffPreservesTheLastFailure(t *testing.T
 			wantType:       v1.ErrorKindUpstream,
 			wantMessage:    "the dependency returned 502",
 			wantCause:      "502 Bad Gateway",
+		},
+		{
+			name: "schedule-to-close lapses after an attempt timeout",
+			input: retryBackoffProbeInput{
+				ScheduleToClose: time.Second,
+				StartToClose:    250 * time.Millisecond,
+				RetryInterval:   3 * time.Second,
+				MaximumAttempts: 10,
+				AttemptTimeout:  true,
+			},
+			wantRetryState: enumspb.RETRY_STATE_TIMEOUT,
+			wantTimeout:    enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE,
 		},
 		{
 			name: "maximum attempts",
@@ -160,10 +189,16 @@ func TestScheduleToCloseLapsingDuringBackoffPreservesTheLastFailure(t *testing.T
 			require.NoError(t, run.Get(t.Context(), &got))
 
 			require.Equal(t, test.wantRetryState, got.RetryState)
-			require.False(t, got.HasTimeoutError,
-				"a failure retained between attempts must not be mistaken for the TimeoutError shape produced while an attempt is running")
-			require.True(t, got.HasApplicationErr,
-				"the server must return the last attempt's application failure as the activity cause")
+			if test.wantTimeout != enumspb.TIMEOUT_TYPE_UNSPECIFIED {
+				require.True(t, got.HasTimeoutError)
+				require.Equal(t, test.wantTimeout, got.TimeoutType,
+					"the server must report the overall budget rather than retain the prior attempt's timeout type")
+				require.False(t, got.HasApplicationErr)
+				return
+			}
+
+			require.False(t, got.HasTimeoutError)
+			require.True(t, got.HasApplicationErr)
 			require.Equal(t, test.wantType.String(), got.ApplicationType)
 			require.Equal(t, test.wantMessage, got.ApplicationText)
 			require.Equal(t, test.wantCause, got.CauseText,

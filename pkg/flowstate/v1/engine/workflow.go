@@ -216,8 +216,8 @@ func failedAt(err error, position string) error {
 	var cause error
 	if inner != nil {
 		cause = inner.cause
-	} else if durableStepBackoffTimeout(err) {
-		cause = err
+	} else if retained, expired := durableStepBackoffApplicationFailure(err); expired {
+		cause = retained
 	}
 
 	return &ErrRunFailed{
@@ -849,6 +849,7 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 			Recorded:         inner.Recorded,
 			recordedFromTask: inner.recordedFromTask,
 			Kind:             inner.Kind,
+			cause:            inner.cause,
 		}
 	}
 

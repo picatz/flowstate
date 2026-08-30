@@ -77,6 +77,9 @@ func TestTotalTimeoutEndsTheStepDurable(t *testing.T) {
 	require.NotNil(t, dependencyErr,
 		"the last attempt's structured dependency failure must remain reachable beneath the overall timeout")
 	require.ErrorContains(t, dependencyErr, conformance.TotalTimeoutFailure)
+	var activityErr *temporal.ActivityError
+	require.NotErrorAs(t, appErr.Unwrap(), &activityErr,
+		"preserving the dependency must not reintroduce Temporal's activity envelope into the run failure")
 
 	run, err = temporalClient.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
 		ID:        "total-timeout-exhaustion-" + t.Name(),
