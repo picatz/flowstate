@@ -88,9 +88,9 @@ type Diagnostic struct {
 	// its `coverage:` stanza, or the document as a whole.
 	//
 	// Structured beside the message rather than only inside it, because reading
-	// a case name back out of prose is what the editor does today
-	// (`anchorAtNamedTest`, #1110 slice 1) and rewording a diagnostic silently
-	// moves a squiggle when a consumer does that.
+	// a case name back out of prose is what the editor used to do
+	// (`anchorAtNamedTest`, #1110's first slice), where rewording a diagnostic
+	// silently moved a squiggle.
 	Test string
 
 	// Field addresses the value in the source — `tests[0].stubs[1].returns` —
@@ -287,9 +287,8 @@ type site struct {
 	// test is the case's `name:`, when the problem is inside a case.
 	test string
 
-	// at addresses the value in the source. Nil where this document did not
-	// write the value — an inherited stub, a default folded in from a sibling
-	// file — which is exactly when no position may be claimed.
+	// at addresses the value in its source document. Nil where folding erased
+	// the source address, which is exactly when no position may be claimed.
 	at loc
 
 	// file names the document that wrote the value, for a check that knows it
@@ -312,9 +311,10 @@ type site struct {
 // value while staying in the same case and the same document.
 func (r site) in(path loc) site { return site{test: r.test, at: path, file: r.file} }
 
-// writtenIn returns the site with the document that wrote the value named, and
-// no path: a path into another document is not one this parse can resolve.
-func (r site) writtenIn(file string) site { return site{test: r.test, file: file} }
+// writtenIn returns the site with the document that wrote the value named. The
+// path is that document's source address; [problems] resolves it against the
+// retained sibling tree rather than against the suite's.
+func (r site) writtenIn(file string) site { return site{test: r.test, at: r.at, file: file} }
 
 // problems collects every refusal one document earns.
 //
@@ -338,11 +338,11 @@ type problems struct {
 
 	// elsewhere are the paths whose values were written in another file —
 	// [dirDefaults.combineInto]'s answer — and elsewhereFile is that file. A
-	// problem at or under one of them is attributed there and left
-	// unpositioned, because the path addresses that document and looking it up
-	// in this one could only match by accident.
+	// problem at or under one of them is attributed and positioned there from
+	// the sibling document tree retained for this load.
 	elsewhere     []loc
 	elsewhereFile string
+	elsewhereDoc  *document
 
 	// sole is the file every problem *found* has named so far, and spans records
 	// that a second one was seen. Empty means this document's own, which only
@@ -365,11 +365,18 @@ func newProblems(doc *document) *problems {
 
 // wrote records that path's value came from file rather than from the document
 // being parsed.
-func (p *problems) wrote(file string, paths []loc) {
+func (p *problems) wrote(file string, doc *document, paths []loc) {
 	if file == "" || len(paths) == 0 {
+		// Renumbered defaults entries carry their file directly on [site], so
+		// the other document still has to be retained even when no unchanged
+		// path was folded.
+		if file != "" && doc != nil {
+			p.elsewhereFile, p.elsewhereDoc = file, doc
+		}
 		return
 	}
 	p.elsewhereFile = file
+	p.elsewhereDoc = doc
 	p.elsewhere = append(p.elsewhere, paths...)
 }
 
@@ -430,12 +437,14 @@ func (p *problems) record(r site, atKey bool, message string) {
 	p.bytes += len(message)
 
 	d := Diagnostic{File: file, Test: r.test, Field: r.at.String(), Message: message}
-	if file == "" {
-		// This document wrote the value, and so is the only one this parse holds
-		// a tree for: everything else is positioned in a file it cannot see.
-		locate := p.doc.positionOf
+	doc := p.doc
+	if file != "" && file == p.elsewhereFile {
+		doc = p.elsewhereDoc
+	}
+	if doc != nil {
+		locate := doc.positionOf
 		if atKey {
-			locate = p.doc.positionOfKey
+			locate = doc.positionOfKey
 		}
 		if position, known := locate(r.at); known {
 			d.Line, d.Column = position.line, position.column

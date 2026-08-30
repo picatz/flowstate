@@ -12,7 +12,7 @@ import "google/protobuf/duration.proto";
 
 option go_package = "flowstatev1";
 
-// Workflows in Flowstate is a collection of steps that can be executed in a
+// Workflow is a collection of steps that can be executed in a
 // specific order. Each step within a workflow can have inputs and outputs,
 // and can be a task that performs some action. The workflow can be run and the
 // outputs of each step are collected in a structured way that allows for subsequent
@@ -445,6 +445,76 @@ message Workflow {
   // it once per trigger is one fact written three times, which is the shape that
   // drifts.
   Concurrency concurrency = 14 [(google.api.field_behavior) = OPTIONAL];
+
+  // Debug declares who may pause a durable run of this workflow under a debug
+  // lease — the `debug:` stanza beside `signals:`, and the answer to picatz/flowstate#928's
+  // "who may debug this workflow", recorded as an owner decision on 2026-08-23.
+  //
+  // # It *is* [SignalPolicy], rather than a shape beside it
+  //
+  // "This claim must carry this value, checked against the sender the server
+  // attested" is a question this schema already answers, and answers here:
+  // [SignalPolicyRule] is a structured claims map gating an action on a run.
+  // A fourth spelling of it is the mistake CLAUDE.md's design-sketch rule
+  // names with a worked example, so this field's type is that message and
+  // its enforcement is [SignalPolicyCheck] — the same function `authorizeSignal`
+  // reaches, not a second matcher beside it.
+  //
+  // What it costs to reuse rather than to specialize: the message is named for
+  // signals, so a reader meeting `debug:` in a file has to be told that its
+  // grammar is `signals:`'s. That is one sentence of documentation against a
+  // hand-maintained second claims vocabulary, and the trade is the one #726
+  // already decided.
+  //
+  // # The zero case is the opposite of [signals]'s, deliberately
+  //
+  // Absent means **not debuggable durably**. [signals] fails open per name
+  // because authorization there is opt-in — failing closed the day it landed
+  // would have denied every existing workflow's next `flow signal` for a
+  // policy nobody wrote. Nothing has ever been able to pause a durable run, so
+  // there is no existing behavior to preserve and no compatibility argument to
+  // make; the only reachable default is the fail-closed one, which is also the
+  // decision recorded on #928 ("no policy, no pause, no inspect") and the rule
+  // CLAUDE.md states for every policy surface. A run with no `debug:` stanza
+  // refuses every pause ask, including one from the identity that started it.
+  //
+  // # Frozen at submit, enforced where the ask is accepted
+  //
+  // Extracted into the run's memo at submit exactly as [signals] is, and read
+  // back by the same `DescribeWorkflowExecution` every verb already makes, so
+  // a pause ask is refused before Temporal sees it rather than by a check the
+  // workflow could skip. See `server/lifecycle.go`'s `authorizeReservedSignal`.
+  //
+  // # Bounded
+  //
+  // By [SignalPolicy]'s own rules — at most 32 alternative rules, each with at
+  // most 16 claim entries — and by `CheckSpecSize`/`CheckRunStateSize` weighing
+  // the whole message, the same two bounds [signals] carries.
+  SignalPolicy debug = 15 [(google.api.field_behavior) = OPTIONAL];
+
+  // ResolvedTaskCapabilities is the task-availability decision made by the
+  // control plane before durable execution. The task names in the program are
+  // the requirements; this snapshot records that the admitting registry had
+  // every one of them. It is overwritten rather than trusted when a workflow is
+  // submitted, just as [resolved_plugins] is.
+  //
+  // The whole message is carried unchanged across Continue-As-New as part of
+  // the workflow specification. Keeping the snapshot here, rather than beside
+  // transient run state, makes it part of the program carried between segments.
+  // A worker checks it at every segment boundary against its own registry; task
+  // dispatch retains its lookup as the backstop if the fleet changes after
+  // admission. This additive field remains readable by newer workers receiving
+  // an old RunState. The reverse direction relies on Temporal Worker Versioning:
+  // Flowstate's ProtoJSON payloads make a pre-field worker reject, rather than
+  // preserve, an unknown field, so a newly admitted run must not be routed to
+  // that worker.
+  //
+  // Absent means the workflow predates task-capability admission. A new worker
+  // preserves that run's old behavior instead of scheduling a new activity into
+  // history that could not have contained one. Present with an empty task_names
+  // list means the control plane affirmatively resolved a workflow requiring no
+  // tasks; message presence distinguishes those two facts.
+  ResolvedTaskCapabilities resolved_task_capabilities = 16 [(google.api.field_behavior) = OPTIONAL];
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.
@@ -1942,4 +2012,40 @@ message RetryPolicy {
   // MaxInterval caps the delay between attempts, so exponential growth does not
   // produce an unbounded wait.
   google.protobuf.Duration max_interval = 4 [(buf.validate.field).duration = {gt: {}}];
+}
+
+// ResolvedTaskCapabilities is the smallest replay contract for task
+// availability: the canonical set of task names the workflow requires and the
+// schema version that defines how that set was derived.
+//
+// It deliberately carries neither a digest nor claimed provenance. The complete,
+// bounded name list is already the content a digest would summarize, and keeping
+// it gives refusals the task names an operator can act on without introducing an
+// algorithm/version pair that could drift. Provenance comes from the trusted
+// boundary overwriting this field; a string inside the caller-supplied message
+// claiming who wrote it would prove nothing. Task implementation versions are not
+// included because the registry has no such contract today. Plugin behavior that
+// does have versions and digests remains pinned by [ResolvedPlugin].
+message ResolvedTaskCapabilities {
+  // SchemaVersion is compared exactly. Version 1 means task requirements are the
+  // sorted, unique names of every task and compensation reachable through nested
+  // control flow and inlined callees. Zero is never written by a current control
+  // plane and is refused when the message is present; absence of the whole message
+  // is the old-run compatibility signal.
+  uint32 schema_version = 1 [(buf.validate.field).uint32 = {gt: 0}];
+
+  // TaskNames is sorted and unique. The snapshot is included in the specification
+  // and run-state byte limits; max_items is an additional validation constraint on
+  // this field, not a bound imposed on the requirement walk itself.
+  repeated string task_names = 2 [(buf.validate.field).repeated = {
+    unique: true
+    max_items: 100000
+    items: {
+      string: {
+        min_len: 1
+        max_len: 128
+        pattern: "^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$"
+      }
+    }
+  }];
 }

@@ -159,6 +159,29 @@ signals:
         claims:
           team: release-managers
     distinct_from_starter: true
+# Who may pause a *durable* run of this workflow at a step boundary and look at
+# it — the other half of "who may act on this run from outside", written beside
+# the half above because that is where an auditor looks for both.
+#
+# The grammar is `signals:`'s, deliberately: `allow:` is the same list of
+# alternative rules, matched against the same attested identity by the same
+# check. Who may approve a deploy and who may debug one are different questions
+# with different answers, and this file gives them separately — an SRE holding
+# the run to see what it is doing is not thereby a release manager.
+#
+# The zero case is the opposite of `signals:`'s, and it is the reason this
+# stanza has to exist at all: a workflow that writes no `debug:` cannot be
+# paused by anybody, including whoever started it. Nothing has ever been able to
+# stop a durable run, so there is no prior behaviour to keep and the default
+# fails closed.
+#
+# The hold is leased. It expires on its own and the run resumes exactly as if
+# its holder had let go, so a debugger who closes their laptop cannot wedge a
+# release.
+debug:
+  allow:
+    - claims:
+        team: sre
 steps:
   # `run.identity.subject` here, not `inputs.requested_by`: this is what the
   # request actually was, established when the run was submitted

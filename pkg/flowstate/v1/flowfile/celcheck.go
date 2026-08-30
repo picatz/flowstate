@@ -107,11 +107,15 @@ func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 				// [v1.CheckInputConstraints], which is a sharper answer than
 				// cel-go's and is already reported when the file loads.
 
-			case v1.SlotSignalSubject:
+			case v1.SlotSignalSubject, v1.SlotDebugSubject:
 				// signals.go owns a computed `subject:`: it decides where the
 				// expression is routed and narrows what a rule shaped that way may
 				// match, and a second reporter here would say a weaker version of
-				// the same thing on the same line.
+				// the same thing on the same line. The `debug:` stanza compiles
+				// through the same code to the same message, so it gets the same
+				// answer — one of these two positions reporting where the other
+				// stays silent would give an author different diagnostics for the
+				// same expression depending on which stanza they wrote it in.
 
 			case v1.SlotWebhookVerify:
 				// A `verify:` entry is a secret reference rather than an

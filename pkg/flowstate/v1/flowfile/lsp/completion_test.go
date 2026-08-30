@@ -1008,6 +1008,24 @@ edition: v2026.3
 	assert.Equal(t, []string{"message"}, labels(got.Items))
 }
 
+func TestCompletionWalksQuotedWorkflowKeysSemantically(t *testing.T) {
+	t.Parallel()
+
+	const src = "\"edition\": v2026.3\n" +
+		"\"name\": quoted\n" +
+		"\"st\\u0065ps\":\n" +
+		"  - \"i\\u0064\": first\n" +
+		"    \"l\\u006fg\":\n" +
+		"      \n"
+	c := newClient(t)
+	c.initialize()
+	c.open("file:///quoted-keys.yaml", src)
+
+	got := labels(c.complete("file:///quoted-keys.yaml", 5, 6).Items)
+	assert.Contains(t, got, "message",
+		"the escaped task key was not decoded to the registry's log task")
+}
+
 // TestCompletionUsesUTF16Columns checks that a partial word after non-ASCII text is
 // located and replaced correctly.
 func TestCompletionUsesUTF16Columns(t *testing.T) {

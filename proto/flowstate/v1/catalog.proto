@@ -4,7 +4,6 @@ package flowstate.v1;
 
 option go_package = "flowstatev1";
 
-// Task represents a specific operation that can be performed within a workflow as a node step.
 // TaskCatalog is what this build can execute, described so that something other
 // than a person can read it.
 //
@@ -183,12 +182,19 @@ message CELFunction {
 
 // TaskDescription is one task's name and shape.
 message TaskDescription {
+  // Name is the registered task name an author writes, including the plugin
+  // prefix for a plugin task, such as `slack.post`.
   string name = 1;
 
   // Summary is a single line, the same one `flow tasks` prints.
   string summary = 2;
 
+  // Inputs describes the named values the task accepts in the Flowfile's
+  // vocabulary; empty means the task accepts no named inputs.
   repeated TaskField inputs = 3;
+
+  // Outputs describes the named values the task declares it returns before any
+  // author-selected output shaping; empty means it declares no named outputs.
   repeated TaskField outputs = 4;
 
   // NeedsScope reports whether the task must receive every prior step's
@@ -283,8 +289,20 @@ message TaskDescription {
   // these say what a task's messages *are* rather than what a task asks to
   // be trusted with.
   bytes input_descriptor = 10;
+
+  // InputMessage is the fully-qualified protobuf message name within
+  // input_descriptor, or within the reader's own descriptor registry when the
+  // bytes are empty; empty alongside empty bytes declares no input message.
   string input_message = 11;
+
+  // OutputDescriptor encodes the output schema as a FileDescriptorProto or
+  // FileDescriptorSet; empty bytes reuse a known output_message or, when that
+  // name is also empty, declare no output message.
   bytes output_descriptor = 12;
+
+  // OutputMessage is the fully-qualified protobuf message name within
+  // output_descriptor, or within the reader's own descriptor registry when the
+  // bytes are empty; empty alongside empty bytes declares no output message.
   string output_message = 13;
 }
 
@@ -358,6 +376,9 @@ message PluginDescription {
   // Tasks are the tasks this plugin provides, described exactly as a built-in
   // task is.
   repeated TaskDescription tasks = 6;
+
+  // ProtocolVersion is the wire protocol negotiated with this running plugin;
+  // zero leaves the catalog entry incomplete and unable to be pinned to a run.
   uint32 protocol_version = 7;
 
   // TaskSchemaDigest is computed over Tasks' descriptor shape — name,
@@ -375,6 +396,11 @@ message PluginDescription {
   // this field's *meaning* changed must still see the same digest for a
   // plugin whose descriptors did not change.
   string task_schema_digest = 8;
+
+  // DistributionDigest identifies the executable bytes measured for the
+  // running plugin, which runs pin and workers compare exactly. On platforms
+  // without descriptor-backed execution, it identifies the file at the plugin
+  // path immediately before launch rather than proving what the kernel ran.
   string distribution_digest = 9;
 
   // ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
@@ -390,6 +416,7 @@ message PluginDescription {
 
 // TaskField is one input or output, described in the DSL's vocabulary.
 message TaskField {
+  // Name is the protobuf field name used verbatim as the Flowfile key.
   string name = 1;
 
   // Type is what an author would call it: `string`, `list[string]`,

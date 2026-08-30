@@ -257,10 +257,13 @@ message ScheduleDivergenceReport {
   // budget, so what it explored is only the part before the bound.
   bool truncated = 4;
 
-  // WrittenOrder and Seeded are the two renderings the comparison was made
-  // over — the observable account of each run, for a person reading the
-  // failure rather than replaying it.
+  // WrittenOrder is the baseline rendering used for the comparison: the
+  // observable account of the ordinary run, for a person reading the failure
+  // rather than replaying it.
   string written_order = 5;
+
+  // Seeded is the corresponding observable account produced by [seed]. It may
+  // contain task output and must be handled with the same trust as test output.
   string seeded = 6;
 }
 

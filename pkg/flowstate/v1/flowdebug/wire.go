@@ -366,6 +366,7 @@ var verbs = map[v1.DebugCommandVerb]string{
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_SCOPE:       "scope",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_COMPLETE:    "complete",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_INFO:        "info",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_BACKTRACE:   "backtrace",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_QUIT:        "quit",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_HELP:        "help",
 }

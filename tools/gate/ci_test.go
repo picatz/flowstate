@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	yaml "github.com/goccy/go-yaml"
@@ -53,12 +54,33 @@ func mustSkip(t *testing.T, ds map[string]decision, jobs ...string) {
 	}
 }
 
-// TestAMarkdownOnlyDiffReachesNothing is the case this whole mechanism exists
-// for: PR #659 changed CLAUDE.md alone and ran appearance, fuzz-smoke, proto,
-// staticcheck and test. None of those can be affected by that file.
-func TestAMarkdownOnlyDiffReachesNothing(t *testing.T) {
-	ds := decide(t, []string{"CLAUDE.md"}, nil, "pull_request")
+// TestAnUnvalidatedMarkdownOnlyDiffReachesNothing is the case this whole
+// mechanism exists for: a prose file no test reads cannot affect any job.
+// CLAUDE.md no longer belongs in this case because tools/agentconfig validates
+// that adapter and its relationship to the shared contract.
+func TestAnUnvalidatedMarkdownOnlyDiffReachesNothing(t *testing.T) {
+	ds := decide(t, []string{"SECURITY.md"}, nil, "pull_request")
 	mustSkip(t, ds, "test", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
+}
+
+func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
+	for _, f := range []string{
+		".agents/skills/comms-review/SKILL.md",
+		".claude/skills/comms-review/SKILL.md",
+		".amp/settings.json",
+		"CLAUDE.md",
+		"AGENT_FIELD_NOTES_LEGACY.md",
+	} {
+		t.Run(f, func(t *testing.T) {
+			// CI does not seed test-data readers into affected: the full
+			// test job already covers them, while treating the synthetic
+			// package as Go affected would also run staticcheck and
+			// vulncheck. analyse(false) is the production path.
+			ds := decide(t, []string{f}, nil, "pull_request")
+			mustRun(t, ds, "test")
+			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
+		})
+	}
 }
 
 // TestEveryDecisionSaysWhy holds both answers to the same standard the local
@@ -116,8 +138,8 @@ func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 // TestReadmeOrArchitectureOnlyStillReachesTheTestJob is the regression for a
 // Codex P2 on #688: cmd/flow/commands_test.go reads README.md's command
 // table, pkg/flowstate/v1/flowfile/readme_test.go compiles the Flowfiles
-// embedded in README.md and docs/ARCHITECTURE.md, pkg/flowstate/v1/agentsmd_test.go
-// reads AGENTS.md, and cmd/flow/docs_test.go reads and validates every file
+// embedded in README.md and docs/ARCHITECTURE.md, tools/agentconfig validates
+// AGENTS.md, and cmd/flow/docs_test.go reads and validates every file
 // under docs/reference/ — five files read with os.ReadFile rather than an
 // import, so a diff touching only one of them moved neither a Go package,
 // examples/, nor proto/, and reached no job at all before p.repoTestData
@@ -272,7 +294,61 @@ type ciWorkflow struct {
 	Jobs map[string]struct {
 		Needs any    `yaml:"needs"`
 		If    string `yaml:"if"`
+		Steps []struct {
+			Name string            `yaml:"name"`
+			Run  string            `yaml:"run"`
+			Env  map[string]string `yaml:"env"`
+		} `yaml:"steps"`
 	} `yaml:"jobs"`
+}
+
+// TestCIFetchesMainWithAForcedRefUpdate is the regression for main run
+// 33263047571. A rerun may begin with origin/main at the commit checkout first
+// fetched and then observe main having moved. A depth-one fetch without `+`
+// rejects that ordinary update as non-fast-forward and fails before `flow
+// breaking` can inspect anything.
+func TestCIFetchesMainWithAForcedRefUpdate(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
+	for _, step := range wf.Jobs["test"].Steps {
+		if step.Name == "Fetch base branch for the breaking check" {
+			if !strings.Contains(step.Run, "origin +main:refs/remotes/origin/main") {
+				t.Fatalf("the breaking check's base fetch must force the remote-tracking ref update; got %q", step.Run)
+			}
+			return
+		}
+	}
+	t.Fatal("the test job has no base fetch for the breaking check")
+}
+
+// TestGo127LeakCheckDoesNotRequestTheDeletedExperiment pins the toolchain
+// transition that produced #1211. Go 1.27 made the profile generally available
+// and deleted the old experiment name, so carrying it in the job makes the Go
+// command fail before the leak test starts and then misreports the toolchain
+// failure as a leak.
+func TestGo127LeakCheckDoesNotRequestTheDeletedExperiment(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/deep.yml")
+	for _, step := range wf.Jobs["goroutineleak"].Steps {
+		if step.Name == "Goroutine leak check on the async coroutine drain" {
+			if got := step.Env["GOEXPERIMENT"]; strings.Contains(got, "goroutineleakprofile") {
+				t.Fatalf("Go 1.27 deleted GOEXPERIMENT=goroutineleakprofile; leak-check env is %q", got)
+			}
+			return
+		}
+	}
+	t.Fatal("deep CI has no goroutine leak-check step")
+}
+
+func readCIWorkflow(t *testing.T, path string) ciWorkflow {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf ciWorkflow
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatal(err)
+	}
+	return wf
 }
 
 // TestTheWorkflowAndThePlanDecideTheSameJobs is the check that keeps this from

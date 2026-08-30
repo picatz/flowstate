@@ -335,6 +335,56 @@ func TestConcurrencyRefusesAnEntityKeyToo(t *testing.T) {
 	require.Contains(t, err.Error(), "entity_key")
 }
 
+// TestConcurrencyRefusesSignalWithStart closes the other entity-addressed
+// start path: SignalWithStart requires an entity key, so accepting a concurrency
+// block here would let different entity keys bypass the block's shared permit.
+func TestConcurrencyRefusesSignalWithStart(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	wf := entityWorkflow(nil)
+	wf.Concurrency = &v1.Concurrency{Key: v1.NewLiteral("prod-eu")}
+
+	_, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-9",
+		Workflow:  wf,
+		Name:      "update",
+		Payload:   updatePayload(1, false),
+	}))
+	require.Error(t, err)
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	require.Contains(t, err.Error(), "concurrency:")
+	require.Contains(t, err.Error(), "entity_key")
+}
+
+func TestConcurrencySignalWithStartStillSignalsAnExistingEntity(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	workflow := entityWorkflow(nil)
+	first, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-9",
+		Workflow:  workflow,
+		Name:      "update",
+		Payload:   updatePayload(1, false),
+	}))
+	require.NoError(t, err)
+	require.True(t, first.Msg.GetCreated())
+
+	workflow.Concurrency = &v1.Concurrency{Key: v1.NewLiteral("prod-eu")}
+	second, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-9",
+		Workflow:  workflow,
+		Name:      "update",
+		Payload:   updatePayload(2, false),
+	}))
+	require.NoError(t, err)
+	require.False(t, second.Msg.GetCreated(),
+		"the workflow is creation input and cannot strand an entity that is already running")
+	require.Equal(t, first.Msg.GetWorkflowId(), second.Msg.GetWorkflowId())
+	require.Equal(t, first.Msg.GetRunId(), second.Msg.GetRunId())
+}
+
 // TestConcurrencyRefusesAKeyThatDoesNotResolve is the caller-facing half of
 // resolution: what the key evaluates to is decided by the inputs the caller
 // submitted, so a key that resolves to something other than a string is their

@@ -41,10 +41,10 @@ const (
 // scope-carrying compensation (`http` needs previous outputs, so it dispatches
 // through the scoped arm) and whose second step fails, forcing the unwind.
 //
-// The failure is an unknown task rather than a failing http call, so the run
-// fails for a reason that has nothing to do with the policy under test — which
-// is what lets the permitted case assert "the run still failed, but not for
-// this reason".
+// The failure is an invalid invocation of the known log task rather than a
+// failing http call, so the run fails for a reason that has nothing to do with
+// the policy under test. An unknown task cannot drive this unwind: capability
+// admission correctly refuses it before the first step can register its undo.
 func UndoIdentityWorkflow(httpBaseURL string) *v1.Workflow {
 	return &v1.Workflow{
 		Name:    "task-policy-scoped-undo-identity",
@@ -62,10 +62,8 @@ func UndoIdentityWorkflow(httpBaseURL string) *v1.Workflow {
 				}},
 			},
 			{
-				Id: "boom",
-				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name: "unknown-task",
-				}},
+				Id:   "boom",
+				Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
 			},
 		},
 	}
@@ -107,7 +105,7 @@ func AssertUndoIdentityReached(tb testing.TB, err error) {
 	tb.Helper()
 
 	if err == nil {
-		tb.Fatal("running with a permitted identity: got no error, want the run to fail on the unknown task")
+		tb.Fatal("running with a permitted identity: got no error, want the run to fail on invalid task inputs")
 	}
 	if strings.Contains(err.Error(), undoIdentityDenialText) {
 		tb.Fatalf("running with a permitted identity: got %q, want the compensation to reach the task", err)

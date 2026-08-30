@@ -117,6 +117,22 @@ func TestGeneratingRestoresTheEnvironment(t *testing.T) {
 		"the generated CLI reference recorded the environment it was generated in")
 }
 
+func TestRepositoryFileSearchContinuesPastNestedModules(t *testing.T) {
+	root := t.TempDir()
+	name := "pkg/flowstate/v1/taskpolicy_config.go"
+	path := filepath.Join(root, filepath.FromSlash(name))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("canonical policy source"), 0o644))
+
+	nested := filepath.Join(root, "plugins", "example")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "go.mod"), []byte("module example"), 0o644))
+
+	got, err := readRepositoryFileFrom(nested, name)
+	require.NoError(t, err)
+	assert.Equal(t, "canonical policy source", string(got))
+}
+
 // TestEnvironmentMirrorsAreDerived pins the derivation the CLI reference's
 // Environment column depends on.
 //

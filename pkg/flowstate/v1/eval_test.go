@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +47,27 @@ func TestRunWorkflow(t *testing.T) {
 			fmt.Println("\n" + string(b) + "\n")
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
+	}
+}
+
+// TestUnavailableTaskCapabilitiesAreRefusedBeforeEffects is the local caller
+// of the shared admission case. The registry is run-scoped on purpose: using
+// DefaultRegistry here would let a rehearsal claim tasks it cannot dispatch.
+func TestUnavailableTaskCapabilitiesAreRefusedBeforeEffects(t *testing.T) {
+	var effects atomic.Int32
+	tc, effect, missing := conformance.TaskCapabilityAdmissionCase(func() { effects.Add(1) })
+
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(effect))
+	ctx := v1.NewContextWithRegistry(t.Context(), registry)
+
+	out, err := v1.Run(ctx, tc.Workflow)
+	require.Zero(t, effects.Load(), "the first effect ran before capability refusal")
+	require.Error(t, err)
+	require.Nil(t, out, "admission refusal must have no partial transcript")
+	require.ErrorContains(t, err, tc.ExpectedErrorContains)
+	for _, name := range missing {
+		require.ErrorContains(t, err, name)
 	}
 }
 

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Flowstate has no persistent backing services or per-thread authentication to
+# repair when an orb wakes. Keep this hook intentionally fast.
+:

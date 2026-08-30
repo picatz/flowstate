@@ -287,6 +287,13 @@ func ClassifyError(err error) ErrorKind {
 	if err == nil {
 		return ""
 	}
+	// The overall step budget is an outer judgement over the last attempt's
+	// failure. Check it before TaskError because its structured cause is that
+	// last failure, and errors.As would otherwise classify the stale dependency
+	// error instead of the budget that actually ended the step (#1163).
+	if _, ok := errors.AsType[*scheduleToCloseTimeoutError](err); ok {
+		return ErrorKindTimeout
+	}
 	if taskErr, ok := errors.AsType[*TaskError](err); ok {
 		return taskErr.Kind
 	}

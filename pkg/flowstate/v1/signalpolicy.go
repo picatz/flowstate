@@ -143,50 +143,67 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy, requireResolvedSu
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(declared)) {
-		policy := declared[name]
-
-		if len(policy.GetAllow()) == 0 {
-			return fmt.Errorf(
-				"signals[%q] declares no `allow:` rule, so it authorizes nobody", name)
+		if err := CheckPolicyShape(fmt.Sprintf("signals[%q]", name), declared[name], requireResolvedSubjects); err != nil {
+			return err
 		}
+	}
 
-		for i, rule := range policy.GetAllow() {
-			if ruleMatchesEverySender(rule) {
-				return fmt.Errorf(
-					"signals[%q].allow[%d] sets no subject, namespace, or claims, so it matches every "+
-						"sender — which defeats the point of a policy; give it a subject:, a namespace:, "+
-						"or claims:, or remove the rule", name, i)
-			}
-			if requireResolvedSubjects && rule.GetSubjectFrom() != nil {
-				return fmt.Errorf(
-					"signals[%q].allow[%d].subject is still an unresolved expression; a policy read back "+
-						"off a run's memo must never carry one — resolution happens once, at submit, "+
-						"before this policy is frozen, so a populated subject_from here is not a policy "+
-						"this server would have written", name, i)
-			}
-			// Before the shape rules below, deliberately. On the decoded side an
-			// unresolved expression is the finding, and reporting it as an
-			// unnarrowed rule instead would name a fault in the author's file
-			// for something no file did.
-			if rule.GetSubject() != "" && rule.GetSubjectFrom() != nil {
-				return fmt.Errorf(
-					"signals[%q].allow[%d] sets both subject and subject_from; choose either a literal "+
-						"subject or an expression, not both", name, i)
-			}
-			if rule.GetSubjectFrom() != nil && !SubjectFromIsNarrowed(policy, rule) {
-				return fmt.Errorf(
-					"signals[%q].allow[%d].subject_from resolves to whatever the run's inputs say, so "+
-						"alone it lets whoever started the run name themselves as their own approver; "+
-						"add claims: to the rule, or distinct_from_starter: true to the policy. A "+
-						"namespace: does not narrow this — every sender that reaches the check is "+
-						"already in the run's own namespace",
-					name, i)
-			}
-			if subject := rule.GetSubject(); subject != "" && !LooksLikeQualifiedSubject(subject) {
-				return fmt.Errorf(
-					"signals[%q].allow[%d].subject %q is not \"<issuer>#<subject>\"; a bare subject is "+
-						"refused because a subject is only unique within its issuer", name, i, subject)
-			}
+	return nil
+}
+
+// CheckPolicyShape is [CheckSignalPolicyShape]'s per-policy body, with the
+// stanza that carries the policy named by `where` — `signals["approve"]` for a
+// signal name, `debug` for the [Workflow.debug] stanza.
+//
+// Extracted rather than restated, because a second stanza now compiles to the
+// same [SignalPolicy] and a second copy of these rules is exactly the "one
+// value, written down twice" failure CLAUDE.md names — the narrowing rule in
+// particular is a security check, and a debug policy laxer than a signal
+// policy would be that drift in the direction that matters. `where` is a
+// label, not a lookup: it appears only in the diagnostic, so an author reading
+// a fault about `debug:` is not told about `signals:`.
+func CheckPolicyShape(where string, policy *SignalPolicy, requireResolvedSubjects bool) error {
+	if len(policy.GetAllow()) == 0 {
+		return fmt.Errorf(
+			"%s declares no `allow:` rule, so it authorizes nobody", where)
+	}
+
+	for i, rule := range policy.GetAllow() {
+		if ruleMatchesEverySender(rule) {
+			return fmt.Errorf(
+				"%s.allow[%d] sets no subject, namespace, or claims, so it matches every "+
+					"sender — which defeats the point of a policy; give it a subject:, a namespace:, "+
+					"or claims:, or remove the rule", where, i)
+		}
+		if requireResolvedSubjects && rule.GetSubjectFrom() != nil {
+			return fmt.Errorf(
+				"%s.allow[%d].subject is still an unresolved expression; a policy read back "+
+					"off a run's memo must never carry one — resolution happens once, at submit, "+
+					"before this policy is frozen, so a populated subject_from here is not a policy "+
+					"this server would have written", where, i)
+		}
+		// Before the shape rules below, deliberately. On the decoded side an
+		// unresolved expression is the finding, and reporting it as an
+		// unnarrowed rule instead would name a fault in the author's file
+		// for something no file did.
+		if rule.GetSubject() != "" && rule.GetSubjectFrom() != nil {
+			return fmt.Errorf(
+				"%s.allow[%d] sets both subject and subject_from; choose either a literal "+
+					"subject or an expression, not both", where, i)
+		}
+		if rule.GetSubjectFrom() != nil && !SubjectFromIsNarrowed(policy, rule) {
+			return fmt.Errorf(
+				"%s.allow[%d].subject_from resolves to whatever the run's inputs say, so "+
+					"alone it lets whoever started the run name themselves as their own approver; "+
+					"add claims: to the rule, or distinct_from_starter: true to the policy. A "+
+					"namespace: does not narrow this — every sender that reaches the check is "+
+					"already in the run's own namespace",
+				where, i)
+		}
+		if subject := rule.GetSubject(); subject != "" && !LooksLikeQualifiedSubject(subject) {
+			return fmt.Errorf(
+				"%s.allow[%d].subject %q is not \"<issuer>#<subject>\"; a bare subject is "+
+					"refused because a subject is only unique within its issuer", where, i, subject)
 		}
 	}
 
@@ -257,38 +274,51 @@ func ResolveSignalPolicySubjects(ctx context.Context, wf *Workflow, inputs map[s
 
 	resolved := make(map[string]*SignalPolicy, len(signals))
 	for _, name := range slices.Sorted(maps.Keys(signals)) {
-		policy := signals[name]
-
-		allow := make([]*SignalPolicyRule, len(policy.GetAllow()))
-		for i, rule := range policy.GetAllow() {
-			exprValue := rule.GetSubjectFrom()
-			if exprValue == nil {
-				allow[i] = rule
-				continue
-			}
-
-			subject, err := evalSubjectFrom(ctx, exprValue, scope)
-			if err != nil {
-				return nil, fmt.Errorf("signals[%q].allow[%d].subject: %w", name, i, err)
-			}
-
-			allow[i] = &SignalPolicyRule{
-				Subject:   subject,
-				Namespace: rule.GetNamespace(),
-				Claims:    rule.GetClaims(),
-				// SubjectFrom deliberately left unset: resolution is exactly the
-				// act of replacing it with a literal, and a rule carried past
-				// this point must never hold both.
-			}
+		policy, err := ResolvePolicySubjects(ctx, fmt.Sprintf("signals[%q]", name), signals[name], scope)
+		if err != nil {
+			return nil, err
 		}
 
-		resolved[name] = &SignalPolicy{
-			Allow:               allow,
-			DistinctFromStarter: policy.GetDistinctFromStarter(),
-		}
+		resolved[name] = policy
 	}
 
 	return resolved, nil
+}
+
+// ResolvePolicySubjects is [ResolveSignalPolicySubjects]'s per-policy body,
+// with the stanza named by `where` for the same reason [CheckPolicyShape]
+// takes one: a second stanza compiles to the same [SignalPolicy], and one
+// resolver serving both is what keeps `debug:` from acquiring its own
+// evaluation rules. The returned policy is new; policy itself is never
+// mutated.
+func ResolvePolicySubjects(ctx context.Context, where string, policy *SignalPolicy, scope *Scope) (*SignalPolicy, error) {
+	allow := make([]*SignalPolicyRule, len(policy.GetAllow()))
+	for i, rule := range policy.GetAllow() {
+		exprValue := rule.GetSubjectFrom()
+		if exprValue == nil {
+			allow[i] = rule
+			continue
+		}
+
+		subject, err := evalSubjectFrom(ctx, exprValue, scope)
+		if err != nil {
+			return nil, fmt.Errorf("%s.allow[%d].subject: %w", where, i, err)
+		}
+
+		allow[i] = &SignalPolicyRule{
+			Subject:   subject,
+			Namespace: rule.GetNamespace(),
+			Claims:    rule.GetClaims(),
+			// SubjectFrom deliberately left unset: resolution is exactly the
+			// act of replacing it with a literal, and a rule carried past
+			// this point must never hold both.
+		}
+	}
+
+	return &SignalPolicy{
+		Allow:               allow,
+		DistinctFromStarter: policy.GetDistinctFromStarter(),
+	}, nil
 }
 
 // evalSubjectFrom evaluates one rule's subject_from expression to the

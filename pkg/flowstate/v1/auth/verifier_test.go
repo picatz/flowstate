@@ -1112,6 +1112,20 @@ func TestNewOIDCVerifierRejectsBadConfiguration(t *testing.T) {
 			policy: auth.Policy{},
 		},
 		{
+			name: "issuer name too long for exact audit provenance",
+			policy: auth.Policy{Issuers: []auth.TrustedIssuer{{
+				Name:   strings.Repeat("n", auth.MaxPolicyProvenanceBytes+1),
+				Issuer: validIssuer.Issuer, Audiences: validIssuer.Audiences,
+			}}},
+		},
+		{
+			name: "role too long for exact audit provenance",
+			policy: auth.Policy{Issuers: []auth.TrustedIssuer{{
+				Name: validIssuer.Name, Issuer: validIssuer.Issuer, Audiences: validIssuer.Audiences,
+				Role: strings.Repeat("r", auth.MaxPolicyProvenanceBytes+1),
+			}}},
+		},
+		{
 			name:   "negative clock skew",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{validIssuer}},
 			opts:   []auth.Option{auth.WithClockSkew(-time.Second)},

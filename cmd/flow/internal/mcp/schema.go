@@ -432,7 +432,9 @@ func debugInputSchema() map[string]any {
 					"written at the end of that text, over the paused run's own names — the same " +
 					"answer a terminal gives for a tab press), " +
 					"`scope` (list what it can name), `info` (describe " +
-					"the step it is stopped at), and `quit` (abandon the run, which fails the case). " +
+					"the step it is stopped at), `backtrace` (list that step and the `call:` " +
+					"chain that reached it), " +
+					"and `quit` (abandon the run, which fails the case). " +
 					"The run starts held before its first step. When the script runs out the run " +
 					"continues to the end on its own, so a script that only inspects is safe.",
 			},

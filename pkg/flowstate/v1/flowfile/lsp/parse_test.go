@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
 // These tests pin the positional model, because every feature's precision depends
@@ -321,6 +322,15 @@ edition: v2026.3
 			}},
 		},
 		{
+			name: "quoted keys keep their semantic outline names",
+			src: `"st\u0065ps":
+  - "i\u0064": first
+    "l\u006fg":
+      'message': hi
+`,
+			want: []outlineStep{{id: "first", taskName: "log", inputKeys: []string{"message"}}},
+		},
+		{
 			name: "a comment does not end a step",
 			// The comment sits between the step's keys rather than between `task:`
 			// and `name:`, there being no level in between any more. It is the same
@@ -395,4 +405,78 @@ edition: v2026.3
 			assert.Equal(t, tt.want, keyPath(ix, tt.line))
 		})
 	}
+}
+
+func TestScanKeyLineDecodesQuotedKeysAtLoaderBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		line     string
+		wantKey  string
+		wantRaw  string
+		wantRest string
+		want     bool
+	}{
+		{name: "bare behavior", line: "  - bare.key-2 : value # tail", wantKey: "bare.key-2", wantRaw: "bare.key-2", wantRest: " value # tail", want: true},
+		{name: "double quoted escape", line: `  "st\u0065ps": # comment`, wantKey: "steps", wantRaw: `"st\u0065ps"`, wantRest: " # comment", want: true},
+		{name: "single quoted escape", line: `'it''s: # data': value`, wantKey: "it's: # data", wantRaw: `'it''s: # data'`, wantRest: " value", want: true},
+		{name: "colon and comment inside double quotes", line: `"a: b # c": value`, wantKey: "a: b # c", wantRaw: `"a: b # c"`, wantRest: " value", want: true},
+		{name: "empty quoted key is legal YAML", line: `"": value`, wantKey: "", wantRaw: `""`, wantRest: " value", want: true},
+		{name: "unclosed double quote", line: `"steps: value`, want: false},
+		{name: "unclosed single quote", line: `'steps: value`, want: false},
+		{name: "invalid YAML escape", line: `"st\qeps": value`, want: false},
+		{name: "comment between key and colon", line: `"steps" # not a mapping: value`, want: false},
+		{name: "text between key and colon", line: `"steps" nope: value`, want: false},
+		{name: "explicit key remains unsupported", line: `? "steps"`, want: false},
+		{name: "anchored key remains unsupported", line: `&key steps: value`, want: false},
+		{name: "bare key grammar does not broaden", line: `two words: value`, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := scanKeyLine(tt.line)
+			assert.Equal(t, tt.want, ok)
+			if !tt.want {
+				return
+			}
+			assert.Equal(t, tt.wantKey, got.key)
+			assert.Equal(t, tt.wantRest, got.rest)
+			assert.Equal(t, tt.wantRaw, tt.line[got.keyStart:got.keyEnd],
+				"source offsets must remain on the quoted spelling")
+			assert.Equal(t, ':', rune(tt.line[got.colon]))
+		})
+	}
+}
+
+func TestKeyPathDecodesQuotedKeys(t *testing.T) {
+	t.Parallel()
+
+	const src = `"st\u0065ps":
+  - "id": a
+    'l''og':
+      "headers: literal":
+        value: here
+`
+	ix := newLineIndex(src)
+	assert.Equal(t, []string{"steps", "l'og", "headers: literal"}, keyPath(ix, 4))
+}
+
+func TestQuotedKeySemanticsMatchTheStrictTestLoader(t *testing.T) {
+	t.Parallel()
+
+	const src = `"t\u0065sts":
+  - "na\u006de": smoke
+`
+	loaded, err := flowtest.LoadSource([]byte(src))
+	require.NoError(t, err)
+	require.Len(t, loaded.Tests, 1)
+	assert.Equal(t, "smoke", loaded.Tests[0].Name)
+
+	testsKey, ok := scanKeyLine(`"t\u0065sts":`)
+	require.True(t, ok)
+	nameKey, ok := scanKeyLine(`  - "na\u006de": smoke`)
+	require.True(t, ok)
+	assert.Equal(t, "tests", testsKey.key)
+	assert.Equal(t, "name", nameKey.key)
 }
