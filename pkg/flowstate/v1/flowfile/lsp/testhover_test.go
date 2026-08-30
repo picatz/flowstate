@@ -25,10 +25,10 @@ func TestHoverOnAStubTaskNameShowsTheTaskDoc(t *testing.T) {
 	assert.Contains(t, hoverText(h), "task `log`")
 }
 
-// TestHoverOnAStubTaskKeyIsNil is the negative half of the position: the
-// *key* "task" is not the value "log", and only the value has a task name to
-// look up.
-func TestHoverOnAStubTaskKeyIsNil(t *testing.T) {
+// TestHoverOnAStubTaskKeyDescribesTheTestLanguageKey is the other half of the
+// position: the key explains the stub field, while its value explains the
+// registry task.
+func TestHoverOnAStubTaskKeyDescribesTheTestLanguageKey(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
 	c.initialize()
@@ -39,7 +39,8 @@ func TestHoverOnAStubTaskKeyIsNil(t *testing.T) {
 
 	// Column 9 lands inside the word "task" itself, before the colon.
 	h := c.hover("file:///suite.test.yaml", 3, 9)
-	assert.Nil(t, h)
+	require.NotNil(t, h)
+	assert.Contains(t, hoverText(h), "task name this replaces")
 }
 
 // TestHoverOnAnUnregisteredStubTaskIsNil: a stub naming a task this
@@ -59,10 +60,8 @@ func TestHoverOnAnUnregisteredStubTaskIsNil(t *testing.T) {
 	assert.Nil(t, h)
 }
 
-// TestHoverElsewhereInATestDocumentIsNil covers the rest of the surface
-// #1110 item 8 deliberately leaves silent: an expect: key (no generated
-// per-field prose exists to show, see testhover.go's own doc), a case's
-// name: value, and a stub's step: value.
+// TestHoverOnDataValuesInATestDocumentIsNil covers values that have no shared
+// semantic source to explain. Test-language keys themselves are covered below.
 func TestHoverElsewhereInATestDocumentIsNil(t *testing.T) {
 	t.Parallel()
 
@@ -75,7 +74,7 @@ func TestHoverElsewhereInATestDocumentIsNil(t *testing.T) {
 	}{
 		{"a case's own name:", 1, 12},
 		{"a stub's step: value", 3, 20},
-		{"an expect.ran: key", 5, 8},
+		{"an expect.ran: value", 5, 13},
 	}
 
 	for _, p := range positions {
@@ -87,6 +86,53 @@ func TestHoverElsewhereInATestDocumentIsNil(t *testing.T) {
 			assert.Nil(t, c.hover("file:///suite.test.yaml", p.line, p.char))
 		})
 	}
+}
+
+func TestHoverDescribesTestLanguageKeysAndQuotedKeys(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	text := "tests:\n  - name: x\n    \"exp\\u0065ct\":\n      ran: [only]\n"
+	c.open("file:///keys.test.yaml", text)
+
+	expect := c.hover("file:///keys.test.yaml", 2, 8)
+	require.NotNil(t, expect)
+	assert.Contains(t, hoverText(expect), "What the run must have produced")
+	ran := c.hover("file:///keys.test.yaml", 3, 8)
+	require.NotNil(t, ran)
+	assert.Contains(t, hoverText(ran), "Names steps that must have executed")
+	assert.Equal(t, `"exp\u0065ct"`, textInRange(text, *expect.Range))
+}
+
+func TestHoverDescribesTestDefaultsKeysWithoutOfferingSuiteOnlyKeys(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	c.open("file:///testdefaults.yaml", "vars:\n  region: us-east-1\n")
+
+	h := c.hover("file:///testdefaults.yaml", 0, 1)
+	require.NotNil(t, h)
+	assert.Contains(t, hoverText(h), "every suite in this directory")
+}
+
+func TestTestLanguageAnswersDoNotEchoSecretOrFixtureExamples(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	const secret = "super-secret-test-value"
+	const example = "https://fixture.example.invalid/private"
+	text := "tests:\n  - name: x\n    inputs:\n      endpoint: " + example + "\n    secrets:\n      env:API_KEY: " + secret + "\n    expect:\n      \n"
+	c.open("file:///private.test.yaml", text)
+
+	h := c.hover("file:///private.test.yaml", 4, 5)
+	require.NotNil(t, h)
+	answer := hoverText(h)
+	for _, item := range c.complete("file:///private.test.yaml", 7, 6).Items {
+		answer += item.Label + item.Documentation
+	}
+	assert.NotContains(t, answer, secret)
+	assert.NotContains(t, answer, example)
 }
 
 // TestHoverOnAStubTaskNameInsideTestDefaults: a stub's task: name inside

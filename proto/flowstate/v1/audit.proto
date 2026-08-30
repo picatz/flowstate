@@ -21,14 +21,14 @@ option go_package = "flowstatev1";
 //
 // Authorization decisions, allow and deny alike, keyed by AuthorizationAction
 // — the vocabulary this deployment already has (authorization.proto), rather
-// than a second list of verbs. The audited surface is therefore *derived*: it
-// is every action that authorization.go's bindings attach to an RPC, and
-// TestEveryRPCHasExactlyOneAuthorizationAction — which already walks the
-// service descriptor in both directions — fails when an RPC arrives that no
-// action names. A new RPC cannot become an unaudited one silently. The three
-// MCP-only actions (mcp.run_local, mcp.test, mcp.debug) are bound to no RPC
-// and are exempt for v1, written down as an exemption a test asserts rather
-// than as a silence.
+// than a second list of verbs. The recordable vocabulary is therefore
+// *derived*: it is every action that authorization.go's bindings attach to an
+// RPC or MCP tool. TestEveryRPCHasExactlyOneAuthorizationAction and
+// TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction walk those
+// mappings in both directions. The authenticated MCP server's reduced tool
+// list is separately invoked end to end in its conformance test, so a tool on
+// that surface cannot become unaudited silently. Local stdio makes no bearer
+// authorization decision and emits no MCP authorization record.
 //
 // # When it is written
 //
@@ -51,11 +51,12 @@ option go_package = "flowstatev1";
 //
 // Nothing, because there is nothing here to redact. The redaction is
 // structural rather than scrubbed: every field below is either chosen by the
-// server (the action, the decision, the clock, the deny code) or is an
-// identity this deployment itself attested. There is no field a payload, an
-// error message, a signal body or a workflow specification could be placed
-// in, so the two leak classes CLAUDE.md names — reflection through unexported
-// fields, and unwrapping into persisted failures — have nothing to reach.
+// server (the action, operation, decision, clock, deny code, and policy
+// provenance) or is an identity this deployment itself attested. There is no
+// field a payload, an error message, an MCP argument or result, a prompt, a
+// signal body or a workflow specification could be placed in, so the two leak
+// classes CLAUDE.md names — reflection through unexported fields, and
+// unwrapping into persisted failures — have nothing to reach.
 //
 // The grounds for preferring that to a scrubber are in the tree. A
 // secrets.Scrubber is "best effort by construction and not a substitute for
@@ -88,8 +89,17 @@ option go_package = "flowstatev1";
 // Every field is set by the server. The only value here a caller influences at
 // all is resource_key, which is the identifier they addressed — bounded below,
 // and an identifier is not a payload: without it the record cannot say which
-// run was reached, which is the question an audit trail exists to answer.
+// run was reached, which is the question an audit trail exists to answer. RPC
+// and MCP tool names are accepted only after resolving them against the
+// server's registered, authorization-bound operation table; the caller's raw
+// tools/call name is never copied here.
 message AuditRecord {
+  option (buf.validate.message).cel = {
+    id: "audit_record.operation"
+    message: "exactly one of rpc or mcp_tool must identify the audited operation"
+    expression: "(this.rpc != '') != (this.mcp_tool != '')"
+  };
+
   // The action authorized, from the deployment's one closed vocabulary.
   //
   // Never UNSPECIFIED: a decision about no action is not a decision.
@@ -112,20 +122,19 @@ message AuditRecord {
   // was asked for. The bound is AuthorizationActionBinding.rpcs's own, so a
   // reader comparing a record against the bindings is comparing like with
   // like.
-  string rpc = 3 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 64
-    pattern: "^[A-Z][A-Za-z0-9]*$"
+  string rpc = 3 [(buf.validate.field).cel = {
+    id: "audit_record.rpc"
+    message: "rpc must be empty or a bounded WorkflowService method name"
+    expression: "this == '' || (size(this) <= 64 && this.matches('^[A-Z][A-Za-z0-9]*$'))"
   }];
 
   // Who asked, as this deployment attested them — not as they described
   // themselves.
   //
-  // The same WorkloadIdentity a run is started with, from the same call, and
-  // already bounded for a durable sink by its own schema: only the claims an
-  // operator configured are copied, and nothing secret may appear in it. That
-  // bound is not a coincidence to rely on quietly — it is the reason this
-  // field can be an identity rather than a subject string.
+  // The identity coordinates come from the same attested WorkloadIdentity a
+  // run is started with, but claims are always removed before emission. Claims
+  // may be relevant to workload policy; their values are not needed to say who
+  // made which authorization decision and never belong in this trail.
   //
   // Absent for a decision made about an unauthenticated caller, which a
   // deployment started with --insecure-no-auth can have.
@@ -154,6 +163,45 @@ message AuditRecord {
   // A code and not a message: see the redaction note on this file. The
   // caller's own error keeps the prose, and that error is not durable.
   AuditDenyCode deny_code = 8 [(buf.validate.field).enum.defined_only = true];
+
+  // The registered MCP tool the decision was made for, by its full registered
+  // name (for example, flowstate_validate). Exactly one of rpc and mcp_tool is
+  // set.
+  //
+  // Additive rather than moving rpc into a oneof: rpc predates this field and
+  // keeping field 3's cardinality and generated API unchanged preserves old
+  // records and readers under both Buf FILE and WIRE compatibility. The
+  // message-level rule gives new writers the same exclusivity a oneof would
+  // have without changing the old field's contract.
+  //
+  // This is the registered name after authorization-action lookup, never the
+  // untrusted tools/call string before lookup. Arguments, prompts and results
+  // are deliberately absent from this record.
+  string mcp_tool = 9 [(buf.validate.field).cel = {
+    id: "audit_record.mcp_tool"
+    message: "mcp_tool must be empty or a bounded registered tool name"
+    expression: "this == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))"
+  }];
+
+  // The operator-chosen trusted-issuer entry that admitted the caller.
+  // Unlike identity.issuer, which names who signed the credential, this names
+  // the exact policy row that accepted it. It is bounded before emission; it
+  // never comes from a token claim.
+  string issuer_name = 10 [(buf.validate.field).string.max_bytes = 128];
+
+  // The role the same trusted-issuer entry assigned to the caller. Empty when
+  // the policy assigned none. It is bounded before emission and never copied
+  // from a token claim.
+  string role = 11 [(buf.validate.field).string.max_bytes = 128];
+
+  // There is deliberately no MCP session id or JSON-RPC request id. The
+  // session id is a process-local bearer-like routing capability, and the
+  // request id is caller-chosen, variably typed, and not exposed at the SDK's
+  // authoritative tool-handler seam. Persisting either would add sensitive or
+  // unbounded peer text. One AuditRecord is the request correlation unit: one
+  // resolved tool authorization decision, emitted exactly once. Tool errors
+  // and cancellations after an allow do not rewrite that true decision into a
+  // deny or add a second outcome record.
 }
 
 // AuditDecision is the answer itself.

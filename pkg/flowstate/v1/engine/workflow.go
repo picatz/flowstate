@@ -451,6 +451,12 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	if err := admitPlugins(ctx, st.GetWorkflow()); err != nil {
 		return nil, err
 	}
+	// The same segment boundary, after the richer plugin contract so a plugin
+	// rollout mismatch keeps its version/digest diagnostic. This checks every
+	// task the program can reach before vars or a first effect is evaluated.
+	if err := admitTaskCapabilities(ctx, st.GetWorkflow()); err != nil {
+		return nil, err
+	}
 
 	// And before any expression can read it: a trigger recorded with a kind this
 	// build cannot produce is refused rather than carried, because every

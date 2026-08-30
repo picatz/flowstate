@@ -53,6 +53,10 @@ func TestEveryTaskActivityHeartbeats(t *testing.T) {
 	// filtered silently, so an activity that can be slow cannot arrive quietly.
 	require.Contains(t, registered, "CheckPlugins")
 	delete(registered, "CheckPlugins")
+	// CheckTaskCapabilities is the same shape: a bounded in-memory set comparison
+	// against the names frozen when this worker was registered.
+	require.Contains(t, registered, "CheckTaskCapabilities")
+	delete(registered, "CheckTaskCapabilities")
 
 	require.NotEmpty(t, registered,
 		"no activities were found in versioning.go, so this asserted nothing")

@@ -185,6 +185,37 @@ message DebugPosition {
   optional int32 declaration = 5 [(buf.validate.field).int32 = {gte: 0}];
 }
 
+// DebugStackFrame is one level of a paused run's call chain.
+//
+// Frames are ordered innermost first, as DAP and conventional backtraces
+// present them. The first frame is the step about to run; every later frame is
+// the caller's `call:` step. A workflow can nest calls only to MaxCallDepth, so
+// the engine bounds this list where it is built rather than relying on each
+// front to impose a different limit.
+//
+// Only the first frame is paused and therefore has a readable DebugScope.
+// Caller frames identify how execution arrived; retaining their live scopes
+// would keep values reachable after the engine left those scopes and would
+// turn this value message into a serialization of live interpreter state.
+message DebugStackFrame {
+  // Workflow is the workflow that owns [step_id]. Empty means the producer did
+  // not know, with the same meaning as [DebugPosition.workflow].
+  string workflow = 1;
+
+  // StepId is the current step for the first frame and the `call:` step for a
+  // caller frame.
+  string step_id = 2;
+
+  // Kind is the shared NodeKind spelling, including the call description on a
+  // caller frame rather than an adapter-specific label.
+  string kind = 3;
+}
+
+// DebugBacktrace is the bounded call chain for one paused position.
+message DebugBacktrace {
+  repeated DebugStackFrame frames = 1;
+}
+
 // DebugStepState is what a session last watched one step do.
 //
 // The vocabulary is [RunObserver]'s, read once: a step is entered, and then it
@@ -510,6 +541,9 @@ enum DebugCommandVerb {
 
   // List the commands.
   DEBUG_COMMAND_VERB_HELP = 12;
+
+  // List the current step and the `call:` chain that reached it.
+  DEBUG_COMMAND_VERB_BACKTRACE = 13;
 }
 
 // DebugCommand is one thing a debug session is told to do.

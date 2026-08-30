@@ -403,6 +403,18 @@ const (
 	// save cardinality would take the error rate with it.
 	InstrumentTaskExecutions = "flowstate.task.executions"
 
+	// InstrumentTaskRetries counts started task executions after the first
+	// attempt at a step. It does not count first attempts: those are already
+	// represented by [InstrumentTaskExecutions] and [InstrumentTaskDuration].
+	// A retry is counted when it starts, regardless of whether that execution
+	// succeeds, fails, or panics; terminal outcomes remain on the execution
+	// instruments rather than splitting this bounded series.
+	//
+	// The attempt number is never a label. Its configured range need not be
+	// small, while this counter needs only the bounded task and driver labels
+	// to answer whether retries are climbing.
+	InstrumentTaskRetries = "flowstate.task.retries"
+
 	// InstrumentPolicyDenials counts refusals by a deny-by-default surface.
 	// A rate here is the difference between "traffic stopped" and "we are
 	// refusing all of it", which is a question an operator asks at 3am and
@@ -496,6 +508,11 @@ var Instruments = []Instrument{
 		Name:        InstrumentTaskExecutions,
 		Description: "task executions, by outcome",
 		Keys:        []string{TaskName, TaskOutcome, Driver, ErrorType},
+	},
+	{
+		Name:        InstrumentTaskRetries,
+		Description: "task executions that are retries of their step",
+		Keys:        []string{TaskName, Driver},
 	},
 	{
 		Name:        InstrumentPolicyDenials,

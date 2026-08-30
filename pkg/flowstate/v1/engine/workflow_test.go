@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,6 +89,82 @@ func TestRunWorkflow(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
 	}
+}
+
+// TestUnavailableTaskCapabilitiesAreRefusedBeforeEffects is the durable caller
+// of the shared admission case. The control-plane snapshot attests the complete
+// requirement set; this worker lacks the three later tasks, so its segment
+// admission must refuse before dispatching the recorder.
+func TestUnavailableTaskCapabilitiesAreRefusedBeforeEffects(t *testing.T) {
+	var effects atomic.Int32
+	tc, effect, missing := conformance.TaskCapabilityAdmissionCase(func() { effects.Add(1) })
+	require.NoError(t, v1.DefaultRegistry().Register(effect))
+	t.Cleanup(func() { v1.DefaultRegistry().Unregister(effect.Name) })
+
+	required, err := v1.RequiredTaskNames(tc.Workflow)
+	require.NoError(t, err)
+	tc.Workflow.ResolvedTaskCapabilities = &v1.ResolvedTaskCapabilities{
+		SchemaVersion: v1.CurrentTaskCapabilitySchemaVersion,
+		TaskNames:     required,
+	}
+
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	engine.Register(env)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.Zero(t, effects.Load(), "the first effect ran before capability refusal")
+	err = env.GetWorkflowError()
+	require.Error(t, err)
+	require.ErrorContains(t, err, tc.ExpectedErrorContains)
+	for _, name := range missing {
+		require.ErrorContains(t, err, name)
+	}
+}
+
+func TestTaskCapabilitySnapshotSurvivesContinueAsNew(t *testing.T) {
+	wf := &v1.Workflow{
+		Name:  "task-capability-snapshot-can",
+		Steps: []*v1.Node{logStep("first", "one"), logStep("second", "two")},
+		ResolvedTaskCapabilities: &v1.ResolvedTaskCapabilities{
+			SchemaVersion: v1.CurrentTaskCapabilitySchemaVersion,
+			TaskNames:     []string{"log"},
+		},
+	}
+
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	engine.Register(env)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 1})
+	require.True(t, env.IsWorkflowCompleted())
+
+	var continued *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &continued)
+	require.Len(t, continued.Input.GetPayloads(), 1)
+
+	var next v1.RunState
+	require.NoError(t, converter.GetDefaultDataConverter().
+		FromPayload(continued.Input.GetPayloads()[0], &next))
+	require.True(t, proto.Equal(wf.GetResolvedTaskCapabilities(),
+		next.GetWorkflow().GetResolvedTaskCapabilities()),
+		"Continue-As-New changed or dropped the control-plane task snapshot")
+}
+
+func TestWorkflowWithoutTaskCapabilitySnapshotKeepsOldHistoryShape(t *testing.T) {
+	recorder := &activityRecorder{}
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	engine.Register(env)
+	recorder.watch(env)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name:  "pre-task-capability-admission",
+		Steps: []*v1.Node{logStep("only", "old")},
+	}})
+	require.NoError(t, env.GetWorkflowError())
+	require.NotContains(t, recorder.entered(), "CheckTaskCapabilities",
+		"a pre-field workflow scheduled a command absent from its old history")
 }
 
 // TestRunWorkflowPolicy runs the shared condition and policy cases against the

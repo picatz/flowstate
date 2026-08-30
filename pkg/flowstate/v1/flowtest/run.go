@@ -699,7 +699,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
 	// timing can put a real task's Fn in this run's path. See [caseRegistry].
-	ctx = v1.NewContextWithRegistry(ctx, caseRegistry(stubs, v1.SensitiveInputNames(workflow)))
+	registry, err := caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow)
+	if err != nil {
+		caseError("%s", err)
+		return
+	}
+	ctx = v1.NewContextWithRegistry(ctx, registry)
 
 	inputs := v1.NewNamedValues(test.Inputs)
 
@@ -1055,8 +1060,10 @@ func swapRegistry(taskNames []string) func() {
 
 // caseRegistry returns the registry one case executes against: every task this
 // build registers, with its Fn replaced by the case's stub or by a fail-closed
-// refusal, plus a synthetic definition for any stubbed name the build does not
-// have.
+// refusal, plus a synthetic definition for every workflow requirement the build
+// does not have. That includes an intentionally unstubbed plugin task on a
+// skipped branch: capability admission can establish that dispatch has a
+// fail-closed implementation without making the branch run.
 //
 // A fresh registry per case rather than a mutation of the shared one. That is
 // what makes `flow test`'s central promise — no task runs for real — a
@@ -1066,7 +1073,7 @@ func swapRegistry(taskNames []string) func() {
 // and nothing this case does can leak into anyone else's. Issue #195 is what
 // happens without it — a real DNS lookup escaped a supposedly stubbed http task
 // under concurrency, because a swapped global is only ever swapped for a window.
-func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool) *v1.Registry {
+func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool, workflow *v1.Workflow) (*v1.Registry, error) {
 	registry := v1.NewRegistry()
 
 	// Every task this build registers, stubbed or not, which is what makes
@@ -1091,7 +1098,18 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name, sensitiveInputNames)})
 	}
 
-	return registry
+	required, err := v1.RequiredTaskNames(workflow)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range required {
+		if _, already := registry.Lookup(name); already {
+			continue
+		}
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name)})
+	}
+
+	return registry, nil
 }
 
 // unstubbedTaskFn is what a registered task's Fn becomes for the duration of

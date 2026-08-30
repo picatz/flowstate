@@ -14,7 +14,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
@@ -40,6 +45,7 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
+		"mcp_tool", "issuer_name", "role",
 	}
 
 	got := make([]string, 0, fields.Len())
@@ -149,10 +155,10 @@ func TestADenialRecordsTheCodeAndNotTheRefusalsWords(t *testing.T) {
 	require.Contains(t, written.String(), "AUDIT_DENY_CODE_TENANT_MISMATCH")
 }
 
-// TestTheAuditedSurfaceIsTheRPCSurface pins the derivation and its one written
-// exemption. The audited surface is not a list somebody keeps: it is every
-// action the bindings attach to an RPC.
-func TestTheAuditedSurfaceIsTheRPCSurface(t *testing.T) {
+// TestTheAuditSchemaCanExpressEveryBoundAction pins the derived record
+// vocabulary. Actual RPC and authenticated-MCP seam coverage is tested where
+// those surfaces are registered.
+func TestTheAuditSchemaCanExpressEveryBoundAction(t *testing.T) {
 	t.Parallel()
 
 	audited := audit.AuditedActions()
@@ -164,25 +170,144 @@ func TestTheAuditedSurfaceIsTheRPCSurface(t *testing.T) {
 		inAudit[action] = true
 	}
 
-	var exempt []v1.AuthorizationAction
 	for _, binding := range v1.AuthorizationActionBindings() {
-		if !inAudit[binding.GetAction()] {
-			exempt = append(exempt, binding.GetAction())
-		}
+		require.True(t, inAudit[binding.GetAction()],
+			"%s is bound to an operation and absent from the record vocabulary", binding.GetAction())
+	}
+	require.Len(t, inAudit, len(v1.AuthorizationActionBindings()),
+		"the record vocabulary must contain every bound action exactly once")
+}
 
-		require.Equal(t, len(binding.GetRpcs()) > 0, inAudit[binding.GetAction()],
-			"%s is audited if and only if an RPC reaches it", binding.GetAction())
+// TestOldAndNewAuditDescriptorFixturesAreWireCompatible measures the additive
+// choice directly. The old fixture has rpc at field 3; the new fixture adds
+// mcp_tool at field 9 without changing it. An old record decodes under the new
+// descriptor, and an old binary reader preserves the new field as unknown wire
+// data so a relay does not erase it.
+func TestOldAndNewAuditDescriptorFixturesAreWireCompatible(t *testing.T) {
+	t.Parallel()
+
+	oldRecord := auditRecordFixture(t, false)
+	newRecord := auditRecordFixture(t, true)
+
+	old := dynamicpb.NewMessage(oldRecord)
+	old.Set(oldRecord.Fields().ByName("action"), protoreflect.ValueOfInt32(15))
+	old.Set(oldRecord.Fields().ByName("rpc"), protoreflect.ValueOfString("Validate"))
+	wire, err := proto.Marshal(old)
+	require.NoError(t, err)
+
+	decodedNew := dynamicpb.NewMessage(newRecord)
+	require.NoError(t, proto.Unmarshal(wire, decodedNew))
+	require.Equal(t, "Validate", decodedNew.Get(newRecord.Fields().ByName("rpc")).String())
+	require.False(t, decodedNew.Has(newRecord.Fields().ByName("mcp_tool")))
+
+	newer := dynamicpb.NewMessage(newRecord)
+	newer.Set(newRecord.Fields().ByName("action"), protoreflect.ValueOfInt32(16))
+	newer.Set(newRecord.Fields().ByName("mcp_tool"), protoreflect.ValueOfString("flowstate_test"))
+	wire, err = proto.Marshal(newer)
+	require.NoError(t, err)
+
+	decodedOld := dynamicpb.NewMessage(oldRecord)
+	require.NoError(t, proto.Unmarshal(wire, decodedOld))
+	require.Equal(t, int32(16), int32(decodedOld.Get(oldRecord.Fields().ByName("action")).Int()))
+	require.NotEmpty(t, decodedOld.GetUnknown(), "the old reader discarded additive field 9")
+
+	relayed, err := proto.Marshal(decodedOld)
+	require.NoError(t, err)
+	recovered := dynamicpb.NewMessage(newRecord)
+	require.NoError(t, proto.Unmarshal(relayed, recovered))
+	require.Equal(t, "flowstate_test", recovered.Get(newRecord.Fields().ByName("mcp_tool")).String())
+
+	actual := (&v1.AuditRecord{}).ProtoReflect().Descriptor().Fields()
+	require.Equal(t, protoreflect.FieldNumber(3), actual.ByName("rpc").Number())
+	require.Equal(t, protoreflect.FieldNumber(9), actual.ByName("mcp_tool").Number())
+}
+
+func auditRecordFixture(t *testing.T, withMCP bool) protoreflect.MessageDescriptor {
+	t.Helper()
+
+	fields := []*descriptorpb.FieldDescriptorProto{
+		{
+			Name: proto.String("action"), Number: proto.Int32(1),
+			Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:  descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum(),
+		},
+		{
+			Name: proto.String("rpc"), Number: proto.Int32(3),
+			Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:  descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+		},
+	}
+	if withMCP {
+		fields = append(fields, &descriptorpb.FieldDescriptorProto{
+			Name: proto.String("mcp_tool"), Number: proto.Int32(9),
+			Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:  descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+		})
 	}
 
-	// The written exemption. A fourth unaudited action fails here, which is the
-	// point: the gap is a line someone reads rather than a silence.
-	require.ElementsMatch(t, []v1.AuthorizationAction{
-		v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL,
-		v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST,
-		v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_DEBUG,
-	}, exempt,
-		"the only actions v1 leaves unaudited are the three MCP-only ones, which are bound "+
-			"to no RPC and so have no RPC seam to decide at")
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String(fmt.Sprintf("fixture/audit_%t.proto", withMCP)),
+		Package: proto.String(fmt.Sprintf("fixture.audit%d", map[bool]int{false: 1, true: 2}[withMCP])),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name:  proto.String("AuditRecord"),
+			Field: fields,
+		}},
+	}, nil)
+	require.NoError(t, err)
+
+	return file.Messages().ByName("AuditRecord")
+}
+
+// TestMCPRecordUsesItsOwnOperationFieldAndBoundedProvenance proves the new
+// shape through the same recorder production uses. Unknown tools fail closed,
+// and the schema refuses both ambiguous and absent operation identities.
+func TestMCPRecordUsesItsOwnOperationFieldAndBoundedProvenance(t *testing.T) {
+	t.Parallel()
+
+	var sink recordingEmitter
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink))
+	require.NoError(t, err)
+
+	long := strings.Repeat("é", audit.MaxProvenanceBytes)
+	require.NoError(t, recorder.Deny(t.Context(), audit.Subject{
+		MCPTool:    "flowstate_test",
+		Identity:   &v1.WorkloadIdentity{Subject: "agent", Claims: map[string]string{"secret": "claim-value"}},
+		IssuerName: long,
+		Role:       long,
+	}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED))
+	require.Len(t, sink.records, 1)
+	record := sink.records[0]
+	require.Equal(t, "flowstate_test", record.GetMcpTool())
+	require.Empty(t, record.GetRpc())
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST, record.GetAction())
+	require.Empty(t, record.GetIdentity().GetClaims())
+	require.LessOrEqual(t, len(record.GetIssuerName()), audit.MaxProvenanceBytes)
+	require.LessOrEqual(t, len(record.GetRole()), audit.MaxProvenanceBytes)
+	require.True(t, isValidUTF8(record.GetIssuerName()))
+	require.True(t, isValidUTF8(record.GetRole()))
+	require.NoError(t, v1.Validate(record))
+
+	require.Error(t, recorder.Allow(t.Context(), audit.Subject{MCPTool: "flowstate_unknown"}))
+	require.Len(t, sink.records, 1, "an unknown operation was emitted under a guessed action")
+
+	for name, invalid := range map[string]*v1.AuditRecord{
+		"no operation": {
+			Action:    v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST,
+			Decision:  v1.AuditDecision_AUDIT_DECISION_ALLOW,
+			DecidedAt: timestamppb.Now(),
+		},
+		"two operations": {
+			Action:   v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST,
+			Decision: v1.AuditDecision_AUDIT_DECISION_ALLOW,
+			Rpc:      "Validate", McpTool: "flowstate_test",
+			DecidedAt: timestamppb.Now(),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Error(t, v1.Validate(invalid))
+		})
+	}
 }
 
 // TestARequiredSinksFailureIsTheCallersFailure is the fail-closed claim: an
@@ -365,9 +490,11 @@ func TestTheSyncProcessorReportsAnExportFailureToTheEmitter(t *testing.T) {
 		audit.WithEmitter(audit.NewLogEmitter(ok)), audit.Required())
 	require.NoError(t, err)
 	require.NoError(t, recorder.Deny(t.Context(), audit.Subject{
-		RPC:          "Cancel",
+		MCPTool:      "flowstate_test",
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN,
 		ResourceKey:  "orders-9",
+		IssuerName:   "agent-idp",
+		Role:         "mcp-caller",
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH))
 
 	require.Len(t, working.exported, 1)
@@ -381,10 +508,13 @@ func TestTheSyncProcessorReportsAnExportFailureToTheEmitter(t *testing.T) {
 
 		return true
 	})
-	require.Equal(t, "Cancel", attributes["flowstate.audit.rpc"])
+	require.NotContains(t, attributes, "flowstate.audit.rpc")
+	require.Equal(t, "flowstate_test", attributes["flowstate.audit.mcp.tool"])
+	require.Equal(t, "agent-idp", attributes["flowstate.audit.identity.issuer_name"])
+	require.Equal(t, "mcp-caller", attributes["flowstate.audit.identity.role"])
 	require.Equal(t, "AUDIT_DECISION_DENY", attributes["flowstate.audit.decision"])
 	require.Equal(t, "AUDIT_DENY_CODE_TENANT_MISMATCH", attributes["flowstate.audit.deny_code"])
-	require.Equal(t, "AUTHORIZATION_ACTION_WORKLOAD_CANCEL", attributes["flowstate.audit.action"])
+	require.Equal(t, "AUTHORIZATION_ACTION_MCP_TEST", attributes["flowstate.audit.action"])
 }
 
 func isValidUTF8(s string) bool {

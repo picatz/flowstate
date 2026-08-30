@@ -160,6 +160,71 @@ func AssertTaskMetrics(tb testing.TB, reader *sdkmetric.ManualReader, driver str
 		}
 	}
 
+	if points := collected[metricschema.InstrumentTaskRetries]; len(points) != 0 {
+		tb.Fatalf("%s recorded %v for three first attempts; first attempts are executions, not retries",
+			metricschema.InstrumentTaskRetries, points)
+	}
+
+	assertDeclaredAttributesOnly(tb, collected)
+}
+
+// AssertTaskRetryMetrics requires both drivers to describe a fail-then-succeed
+// step the same way: two executions, one retry, and no attempt-number label.
+// The first failure contains [TaskSpanSecret], so the shared attribute audit
+// also proves neither the error text nor an event identifier reached a series.
+func AssertTaskRetryMetrics(tb testing.TB, reader *sdkmetric.ManualReader, driver string, outputs *v1.Workflow_StepOutputs, err error) {
+	tb.Helper()
+
+	if err != nil {
+		tb.Fatalf("the retrying run failed: %v", err)
+	}
+	if want := (&v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{TaskSpanRetryStepID: {}}}); !proto.Equal(want, outputs) {
+		tb.Fatalf("the retrying run produced %v, want %v", outputs, want)
+	}
+
+	collected := collectFlowstateMetrics(tb, reader)
+	retries := collected[metricschema.InstrumentTaskRetries]
+	if len(retries) != 1 {
+		tb.Fatalf("%s recorded %d attribute sets, want one — %v", metricschema.InstrumentTaskRetries, len(retries), retries)
+	}
+	if retries[0].Count != 1 {
+		tb.Fatalf("%s counted %d, want one; counting the first attempt too gives two",
+			metricschema.InstrumentTaskRetries, retries[0].Count)
+	}
+	wantRetryAttrs := map[string]string{
+		metricschema.TaskName: TaskSpanRetryTaskName,
+		metricschema.Driver:   driver,
+	}
+	if !sameAttributes(retries[0].Attributes, wantRetryAttrs) {
+		tb.Fatalf("%s carries %v, want %v", metricschema.InstrumentTaskRetries, retries[0].Attributes, wantRetryAttrs)
+	}
+
+	for _, name := range []string{metricschema.InstrumentTaskExecutions, metricschema.InstrumentTaskDuration} {
+		points := collected[name]
+		var count uint64
+		outcomes := map[string]uint64{}
+		for _, point := range points {
+			count += point.Count
+			outcome := point.Attributes[metricschema.TaskOutcome]
+			outcomes[outcome] += point.Count
+			switch outcome {
+			case metricschema.OutcomeError:
+				if got := point.Attributes[metricschema.ErrorType]; got != v1.ErrorKindUpstream.String() {
+					tb.Fatalf("%s classified the failed first attempt as error.type=%q, want %q; the error message must not become a label",
+						name, got, v1.ErrorKindUpstream.String())
+				}
+			case metricschema.OutcomeSuccess:
+				if _, present := point.Attributes[metricschema.ErrorType]; present {
+					tb.Fatalf("%s put error.type on the successful terminal attempt: %v", name, point.Attributes)
+				}
+			}
+		}
+		if count != 2 || outcomes[metricschema.OutcomeError] != 1 || outcomes[metricschema.OutcomeSuccess] != 1 {
+			tb.Fatalf("%s recorded %d attempts with outcomes %v, want one failed first attempt and one successful retry",
+				name, count, outcomes)
+		}
+	}
+
 	assertDeclaredAttributesOnly(tb, collected)
 }
 
@@ -207,6 +272,10 @@ func assertDeclaredAttributesOnly(tb testing.TB, collected map[string][]Point) {
 
 		for _, point := range points {
 			for key, value := range point.Attributes {
+				if key == v1.SpanAttributeStepID || key == v1.SpanAttributeAttempt {
+					tb.Fatalf("%s carries span-only %q as a metric label; step ids grow with the workflow and attempt counts grow with retry policy, so either creates deployment-controlled time series",
+						name, key)
+				}
 				if _, no := refused[key]; no {
 					tb.Fatalf("%s carries %q, which metricschema refuses on any instrument: it is minted per event, so one value is one time series",
 						name, key)

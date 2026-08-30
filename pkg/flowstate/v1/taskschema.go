@@ -150,6 +150,8 @@ func constraintPhrases(rules *validate.FieldRules) []string {
 			out = append(out, "an email address")
 		case s.GetHostname():
 			out = append(out, "a hostname")
+		case s.GetUuid():
+			out = append(out, "a UUID")
 		}
 	}
 

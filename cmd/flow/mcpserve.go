@@ -18,6 +18,7 @@ import (
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -141,6 +142,11 @@ const (
 // only moment [mcpSessionLimiter] has anything to decide.
 const mcpSessionHeader = "Mcp-Session-Id"
 
+// mcpServeSessionStorage is the operator-facing spelling for the state model
+// this command actually runs. It is emitted at startup and pinned in tests so
+// a process-local handler cannot quietly be presented as a shared service.
+const mcpServeSessionStorage = "process_memory"
+
 // addMCPServeFlags declares the serve surface's own flags.
 //
 // Its own set rather than the parent command's: cobra's local flags are not
@@ -165,13 +171,14 @@ func addMCPServeFlags(cmd *cobra.Command) {
 		"resource, so without one there is nothing to bind a token's audience to and `flow mcp "+
 		"serve` refuses to start rather than serving an unauthenticated MCP endpoint")
 	addTLSFlags(cmd)
+	addAuditRequiredFlag(cmd)
 
 	cmd.Flags().Int64("max-request-bytes", mcpServeDefaultMaxRequestBytes,
 		"largest request body this surface will read, in bytes. A request over the limit is "+
 			"refused with 413 rather than buffered")
 
 	cmd.Flags().Int("max-session-requests", mcpServeDefaultMaxSessionRequests,
-		"how many requests one MCP session may have in flight at once. A request past the limit "+
+		"how many requests one MCP session may have in flight in this process at once. A request past the limit "+
 			"is refused with 503: --max-sessions bounds how many sessions exist and says nothing "+
 			"about how many connections one of them is replayed over")
 
@@ -182,7 +189,7 @@ func addMCPServeFlags(cmd *cobra.Command) {
 			"resource on this surface waits for it")
 
 	cmd.Flags().Int("max-sessions", mcpServeDefaultMaxSessions,
-		"how many MCP sessions may be open at once. A request that would open one past the "+
+		"how many MCP sessions may be open in this process at once. A request that would open one past the "+
 			"limit is refused with 503; sessions idle for "+mcpServeSessionIdleTimeout.String()+
 			" are closed and their slots returned")
 
@@ -210,6 +217,7 @@ type mcpServeFlags struct {
 	maxSessions            int
 	maxSessionRequests     int
 	testTimeout            time.Duration
+	auditRequired          bool
 	protectedResourceFlags protectedResourceFlags
 	tls                    tlsFlags
 }
@@ -223,6 +231,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 	maxSessions, _ := cmd.Flags().GetInt("max-sessions")
 	maxSessionRequests, _ := cmd.Flags().GetInt("max-session-requests")
 	testTimeout, _ := cmd.Flags().GetDuration("test-timeout")
+	auditRequired, _ := cmd.Flags().GetBool(auditRequiredFlag)
 
 	return mcpServeFlags{
 		listen:                 listen,
@@ -233,6 +242,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 		maxSessions:            maxSessions,
 		maxSessionRequests:     maxSessionRequests,
 		testTimeout:            testTimeout,
+		auditRequired:          auditRequired,
 		protectedResourceFlags: protectedResourceFlagsOf(cmd),
 		tls:                    tlsFlagsOf(cmd),
 	}
@@ -336,9 +346,10 @@ type mcpServeLimits struct {
 //     The 401 it writes carries `WWW-Authenticate: Bearer resource_metadata=…`
 //     naming the document mounted at step 5 — PR-1's mechanism
 //     ([auth.ProtectedResource.MetadataURL]), reused rather than a second
-//     challenge built here. No `scope` parameter: #567's D1 is deferred by
-//     omission, so [mcpauth.RequireBearerTokenOptions.Scopes] stays empty and
-//     the middleware emits no scope at all.
+//     challenge built here. The protected-resource document advertises the
+//     schema-owned scope vocabulary, but no request enforces a scope yet, so
+//     [mcpauth.RequireBearerTokenOptions.Scopes] stays empty and the middleware
+//     emits no `scope` challenge parameter.
 //  4. **The session bound**, inside authentication so that an unauthenticated
 //     caller can never consume a session slot — a bound an anonymous peer can
 //     exhaust is a denial of service with extra steps.
@@ -376,14 +387,21 @@ func mcpServeHandler(
 	)
 
 	limiter := newMCPSessionLimiter(limits.maxSessions, limits.maxSessionRequests, limits.sessionIdle, time.Now)
+	resource := protectedResource.Resource()
 
 	authenticated := mcpauth.RequireBearerToken(
-		auth.MCPTokenVerifier(verifier, protectedResource.Resource()),
+		auth.MCPTokenVerifier(verifier, resource,
+			auth.WithMCPFailureObserver(func(ctx context.Context, req *http.Request, err error) {
+				if observation, ok := ctx.Value(mcpAuthenticationObservationKey{}).(*mcpAuthenticationObservation); ok {
+					observation.reason = auth.PublicReason(err)
+				}
+			})),
 		&mcpauth.RequireBearerTokenOptions{
-			ResourceMetadataURL: protectedResource.MetadataURL(),
+			ResourceMetadataURL: protectedResource.ChallengeMetadataURL(resource),
 			// Scopes deliberately empty: see this function's doc, step 3.
 		},
 	)(limiter.wrap(streamable))
+	authenticated = observeMCPAuthenticationFailures(logger, authenticated)
 
 	protection := http.NewCrossOriginProtection()
 
@@ -404,6 +422,54 @@ func mcpServeHandler(
 	mux.Handle(protectedResource.Path(), protectedResource.Handler())
 
 	return maxRequestBodyBytes(mux, limits.maxRequestBytes), nil
+}
+
+// logMCPServeSessionTopology makes the process-local deployment contract an
+// executable startup diagnostic. It is a warning because a second replica or
+// a restart does not merely change capacity: it makes an existing session id
+// unknown unless every request remains on the process that minted it.
+func logMCPServeSessionTopology(logger *slog.Logger) {
+	logger.Warn("MCP sessions are process-local; run one replica and expect restarts to invalidate active sessions",
+		"session_storage", mcpServeSessionStorage,
+		"session_affinity_header", mcpSessionHeader,
+		"horizontal_scaling", false)
+}
+
+type mcpAuthenticationObservationKey struct{}
+
+type mcpAuthenticationObservation struct {
+	reason string
+}
+
+// observeMCPAuthenticationFailures records every refusal from the SDK bearer
+// middleware, including a missing Authorization header that it rejects before
+// calling [auth.MCPTokenVerifier]. The verifier contributes [auth.PublicReason]
+// when it ran; the SDK-only paths use fixed classifications rather than its
+// response body, which is peer-visible text and not a logging boundary.
+func observeMCPAuthenticationFailures(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		observation := &mcpAuthenticationObservation{}
+		req = req.WithContext(context.WithValue(req.Context(), mcpAuthenticationObservationKey{}, observation))
+		recorder := &mcpSessionRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, req)
+
+		if recorder.status != http.StatusUnauthorized && recorder.status != http.StatusForbidden {
+			return
+		}
+		reason := observation.reason
+		if reason == "" {
+			if recorder.status == http.StatusUnauthorized {
+				reason = "missing bearer token"
+			} else {
+				reason = "authenticated caller is not permitted on this session"
+			}
+		}
+		logger.WarnContext(req.Context(), "rejected MCP request",
+			"path", req.URL.Path,
+			"peer", req.RemoteAddr,
+			"status", recorder.status,
+			"reason", reason)
+	})
 }
 
 // exactPattern renders a path as an [http.ServeMux] pattern that matches that
@@ -717,7 +783,12 @@ func (r *mcpSessionRecorder) Unwrap() http.ResponseWriter {
 // outside and prove that every served handler — tools and resources alike —
 // really is behind it, which is a property of this wiring rather than of the
 // guard itself.
-func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) (*mcp.Server, error) {
+func mcpServeTools(
+	guard *mcpServeRegistryGuard,
+	testTimeout time.Duration,
+	recorder *audit.Recorder,
+	reportAuditFailure func(error),
+) (*mcp.Server, error) {
 	srv := flowmcp.NewServer(version)
 
 	// The same nil-Temporal-client server `flow mcp` answers Validate,
@@ -734,6 +805,8 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) (*mc
 		srv,
 		local,
 		flowmcp.Deps{
+			Audit:        recorder,
+			AuditFailure: reportAuditFailure,
 
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
@@ -1005,7 +1078,19 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout)
+	recorder, err := startAudit(cmd.Context(), flags.auditRequired)
+	if err != nil {
+		return fmt.Errorf("configuring the audit trail: %w", err)
+	}
+
+	// After every exit from this point, including handler construction and
+	// listener failures. On graceful shutdown the defer runs only after the
+	// HTTP server has drained, so the batch includes in-flight decisions.
+	defer flushAudit()
+
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
+		logger.Error("could not record MCP tool authorization decision", "error", err)
+	})
 	if err != nil {
 		return err
 	}
@@ -1065,6 +1150,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		"max_request_bytes", flags.maxRequestBytes,
 		"max_sessions", flags.maxSessions,
 		"max_session_requests", flags.maxSessionRequests)
+	logMCPServeSessionTopology(logger)
 
 	serveErr := make(chan error, 1)
 	go func() {

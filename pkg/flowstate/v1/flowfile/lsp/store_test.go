@@ -5,6 +5,7 @@ import (
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestFilesystemPath covers the URI shapes a real editor sends, not only the
@@ -103,4 +104,22 @@ func TestFilesystemPath(t *testing.T) {
 			assert.Equal(t, tt.want, got, "filesystemPath(%q) path", tt.uri)
 		})
 	}
+}
+
+func TestChangeCanInitializeTheLocalPathIndexBeforeOpen(t *testing.T) {
+	t.Parallel()
+	var store documentStore
+	changedURI := lsp.DocumentURI("file:///tmp/changed.test.yaml")
+	changed := store.change(changedURI, 1, []lsp.TextDocumentContentChangeEvent{{Text: validSuite}}, nil)
+	require.NotNil(t, changed)
+
+	indexed, ok := store.getByFilesystemPath("/tmp/changed.test.yaml")
+	require.True(t, ok)
+	assert.Same(t, changed, indexed)
+
+	openedURI := lsp.DocumentURI("file:///tmp/opened.test.yaml")
+	opened := store.open(openedURI, 1, validSuite, nil)
+	indexed, ok = store.getByFilesystemPath("/tmp/opened.test.yaml")
+	require.True(t, ok)
+	assert.Same(t, opened, indexed)
 }

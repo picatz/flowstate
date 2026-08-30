@@ -34,6 +34,9 @@ const (
 type TimelineEntry_Kind int32
 
 const (
+	// KIND_UNSPECIFIED means the producer did not classify an event. The server
+	// never emits it; consumers should treat it as unknown, not infer a kind
+	// from the entry's other fields.
 	TimelineEntry_KIND_UNSPECIFIED TimelineEntry_Kind = 0
 	// KIND_STEP_SCHEDULED is a step's work being handed to a worker. One per
 	// activity, carrying attempt 1: a retry is reported as the *failure* that
@@ -1382,8 +1385,12 @@ func (x *Frame) GetLoopState() *Value {
 // It allows the workflow to continue-as-new while carrying only the minimal
 // required subset of previously produced outputs for the remaining steps.
 type RunState struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	Workflow *Workflow              `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Workflow is the compiled specification this state executes. It is required,
+	// fixed for the run's lifetime, carried unchanged across Continue-As-New, and
+	// counted as part of the durable-state size bound rather than reloaded from a
+	// mutable source.
+	Workflow *Workflow `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// Zero-based index of the next top-level step to execute.
 	//
 	// Superseded by frames, which can also describe a position inside nested
@@ -1629,7 +1636,9 @@ type TimelineEntry struct {
 	EventId int64 `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
 	// Time is when Temporal recorded the event.
 	Time *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=time,proto3" json:"time,omitempty"`
-	Kind TimelineEntry_Kind     `protobuf:"varint,3,opt,name=kind,proto3,enum=flowstate.v1.TimelineEntry_Kind" json:"kind,omitempty"`
+	// Kind classifies the recorded event. Server-produced entries always use a
+	// non-zero value; KIND_UNSPECIFIED denotes an unclassified producer value.
+	Kind TimelineEntry_Kind `protobuf:"varint,3,opt,name=kind,proto3,enum=flowstate.v1.TimelineEntry_Kind" json:"kind,omitempty"`
 	// Step is the label the interpreter wrote onto the command — the step's
 	// position and what the command is, as “ `pages` > `page` · sleep “.
 	//

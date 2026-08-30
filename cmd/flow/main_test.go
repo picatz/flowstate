@@ -18,6 +18,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/picatz/flowstate/internal/temporaltest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -42,6 +43,14 @@ var devServer *testsuite.DevServer
 var namespaceOrdinal atomic.Int64
 
 func TestMain(m *testing.M) {
+	if handled, err := temporaltest.RunLauncher(); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// testing.Short() reads a flag, and flags are only populated once parsed.
 	// TestMain is the one entry point that runs before the testing package has
 	// done that parsing itself, so it has to be done here first.
@@ -88,15 +97,15 @@ func runPackageTests(m *testing.M) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	started, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
+	started, err := temporaltest.Start(ctx,
 		// No *testing.T exists here to attach a log to, and the per-test clients
 		// below carry one each. Warnings and errors still reach stderr, so a
 		// server that comes up wrong says so.
-		ClientOptions: &client.Options{
+		&client.Options{
 			Logger: log.NewStructuredLogger(slog.New(slog.NewTextHandler(
 				os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))),
 		},
-	})
+	)
 	if err != nil {
 		return 0, fmt.Errorf("starting the Temporal dev server this package shares: %w", err)
 	}

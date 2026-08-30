@@ -530,7 +530,7 @@ func TestWithProtectedResourceChallengeNamesTheMetadataURL(t *testing.T) {
 	require.Contains(t, challenge, `error="invalid_token"`)
 	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`)
 	require.NotContains(t, challenge, "scope=",
-		"D1 is deferred: this slice defines no scope vocabulary to challenge with")
+		"no per-action enforcement point can truthfully name a required scope")
 }
 
 // TestWithProtectedResourceChallengeIgnoresForgedHost is the #1 named risk in
@@ -563,6 +563,49 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`,
 		"a forged Host header changed the advertised metadata URL")
 	require.NotContains(t, challenge, "attacker.example.com")
+}
+
+// TestProtectedResourceChallengeMetadataURLBindsTheDocumentToTheSurface is
+// the shared safety rule used by both Connect and MCP challenge wiring. The
+// negative case is load-bearing: returning MetadataURL unconditionally would
+// pass both positive cases while directing a mismatched surface's client to
+// mint an audience that surface refuses.
+func TestProtectedResourceChallengeMetadataURLBindsTheDocumentToTheSurface(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	for _, test := range []struct {
+		name     string
+		resource string
+		want     string
+	}{
+		{
+			name:     "matching surface resource",
+			resource: pr.Resource(),
+			want:     pr.MetadataURL(),
+		},
+		{
+			name: "unnarrowed surface",
+			want: pr.MetadataURL(),
+		},
+		{
+			name:     "mismatched surface resource",
+			resource: "https://flowstate.example.com/rpc",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, pr.ChallengeMetadataURL(test.resource))
+		})
+	}
+
+	require.Empty(t, (*auth.ProtectedResource)(nil).ChallengeMetadataURL(pr.Resource()),
+		"an unconfigured surface must not advertise a metadata document")
 }
 
 // fetchMetadata serves one GET through the protected-resource handler and

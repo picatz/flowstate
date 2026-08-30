@@ -76,6 +76,9 @@ func runFakePlugin() int {
 	if mode == "deadline" {
 		return runDeadlinePlugin()
 	}
+	if mode == "caller-mode" {
+		return runCallerModePlugin()
+	}
 
 	// The progress-relay conformance fixture is likewise a real SDK plugin
 	// rather than a hand-rolled handler, for the identical reason: it exists

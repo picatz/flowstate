@@ -356,15 +356,15 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // observeTask runs one activity's work inside the task span and the duration
 // measurement, and adds the attempt, which is this driver's alone.
 //
-// The span and the instruments both come from [v1.ObserveTask], the one call
-// the local driver makes too, so the two drivers cannot end up naming an
+// The span and the instruments both come from [v1.ObserveTaskAttempt], the one
+// call the local driver makes too, so the two drivers cannot end up naming an
 // instrument or an attribute key differently — invariant 5 for a measurement
 // rather than for an outcome. What is added here is the attempt attribute and
 // the driver label, both of which only this side can supply.
 //
 // It takes the work rather than returning something to defer, so that an
 // activity whose task panics is recorded as the failure Temporal is about to
-// report rather than as a success. [v1.ObserveTask]'s doc has the whole
+// report rather than as a success. [v1.ObserveTaskAttempt]'s doc has the whole
 // argument, including why nothing on this path recovers the panic.
 //
 // The attempt is the substrate's, so it is asked of the substrate rather than
@@ -375,14 +375,22 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // *not* write this key from its own retry counter, which counts something else.
 // See [v1.StartTaskSpan]'s note on it.
 //
-// The attempt is deliberately *not* a metric attribute, only a span one: it is
-// bounded by a retry policy nobody promises to keep small, and a label whose
-// bound is somebody's configuration is the shape [metricschema] refuses.
+// The attempt is deliberately *not* a metric attribute: it is bounded by a
+// retry policy nobody promises to keep small, and a label whose bound is
+// somebody's configuration is the shape [metricschema] refuses.
+// ObserveTaskAttempt uses only whether it is greater than one to increment one
+// bounded retry series; which attempt it was remains span-only.
 func observeTask(ctx context.Context, task *v1.Task, stepID string, run func(context.Context, trace.Span) (*v1.Node_Outputs, error)) (*v1.Node_Outputs, error) {
-	return v1.ObserveTask(ctx, task, stepID, metricschema.DriverDurable,
+	attempt := 1
+	inActivity := activity.IsActivity(ctx)
+	if inActivity {
+		attempt = int(activity.GetInfo(ctx).Attempt)
+	}
+
+	return v1.ObserveTaskAttempt(ctx, task, stepID, metricschema.DriverDurable, attempt,
 		func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
-			if span.IsRecording() && activity.IsActivity(ctx) {
-				span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, int(activity.GetInfo(ctx).Attempt)))
+			if span.IsRecording() && inActivity {
+				span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, attempt))
 			}
 
 			return run(ctx, span)

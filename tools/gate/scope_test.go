@@ -35,7 +35,7 @@ type forcingCase struct {
 // and the force sets every decision's Run — so CI's jobs run over ./... on a
 // diff that may affect no Go package whatsoever.
 var forcingCases = []forcingCase{
-	{"a markdown-only diff reaches no package", []string{"CLAUDE.md"}, nil, false},
+	{"an unvalidated markdown-only diff reaches no package", []string{"SECURITY.md"}, nil, false},
 	{"an ordinary Go change", []string{"pkg/flowstate/v1/engine/policy.go"}, []string{modulePath + "/pkg/flowstate/v1/engine"}, false},
 	{"a diff whose only Go reach is through the import graph", []string{"proto/flowstate/v1/signal.proto"}, []string{modulePath + "/pkg/flowstate/v1"}, false},
 	{"an examples-only change that still seeds a package", []string{"examples/http/flow.yaml"}, []string{modulePath + "/pkg/flowstate/v1/flowfile"}, false},
