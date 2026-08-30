@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
 	enums "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/sdk/temporal"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -94,6 +96,61 @@ func TestRecordedStepKindLeavesAClassifiedFailureAlone(t *testing.T) {
 	err := activityError("http", v1.NewTaskError("http", v1.ErrorKindUpstream, errors.New("503")), false)
 
 	require.Equal(t, v1.ErrorKindUpstream, recordedStepKind(err))
+}
+
+// TestDurableStepTimeoutTypeOnlyPromotesRetryTimeout is the negative boundary
+// around #1163's RetryState arm. These errors are reconstructed through the
+// SDK's failure converter from the same wire shape the real-server test pins;
+// changing only RetryState must change only the timeout case.
+func TestDurableStepTimeoutTypeOnlyPromotesRetryTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		retryState enums.RetryState
+		kind       v1.ErrorKind
+		imposed    bool
+	}{
+		{name: "schedule-to-close budget", retryState: enums.RETRY_STATE_TIMEOUT, kind: v1.ErrorKindUpstream, imposed: true},
+		{name: "maximum attempts", retryState: enums.RETRY_STATE_MAXIMUM_ATTEMPTS_REACHED, kind: v1.ErrorKindUpstream},
+		{name: "non-retryable failure", retryState: enums.RETRY_STATE_NON_RETRYABLE_FAILURE, kind: v1.ErrorKindInvalidInput},
+		{name: "unrelated application failure", retryState: enums.RETRY_STATE_UNSPECIFIED, kind: v1.ErrorKindUpstream},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := convertedActivityFailure(test.retryState, test.kind)
+
+			timeoutType, imposed := durableStepTimeoutType(err)
+			require.Equal(t, test.imposed, imposed)
+			if imposed {
+				require.Equal(t, enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, timeoutType)
+				require.Equal(t, v1.ErrorKindTimeout, recordedStepKind(err))
+				return
+			}
+
+			require.Equal(t, enums.TIMEOUT_TYPE_UNSPECIFIED, timeoutType)
+			require.Same(t, err, durableStepTimeoutMessage(err, &v1.StepPolicy{}),
+				"a non-timeout application failure must be left untouched")
+			require.Equal(t, test.kind, recordedStepKind(err))
+		})
+	}
+}
+
+func convertedActivityFailure(retryState enums.RetryState, kind v1.ErrorKind) error {
+	failure := &failurepb.Failure{
+		Message: "activity failed",
+		FailureInfo: &failurepb.Failure_ActivityFailureInfo{ActivityFailureInfo: &failurepb.ActivityFailureInfo{
+			ActivityType: &commonpb.ActivityType{Name: "Task"},
+			ActivityId:   "1",
+			RetryState:   retryState,
+		}},
+		Cause: &failurepb.Failure{
+			Message: "the dependency failed",
+			FailureInfo: &failurepb.Failure_ApplicationFailureInfo{ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{
+				Type:         kind.String(),
+				NonRetryable: !kind.Retryable(),
+			}},
+		},
+	}
+
+	return temporal.GetDefaultFailureConverter().FailureToError(failure)
 }
 
 // TestRecordedStepKindKeepsANestedRunsClassification pins that adding the
