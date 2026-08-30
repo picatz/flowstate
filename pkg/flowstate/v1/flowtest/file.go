@@ -935,6 +935,14 @@ func checkScriptedIdentity(p *problems, r site, where string, identity *Scripted
 // step's private intermediate values — there is no field for one — the same
 // restraint the transcript-vs-outputs distinction already draws elsewhere.
 type Expectation struct {
+	// fromEntry records which scalar or collection fields reached this case
+	// from its table entry rather than from the row itself. [mergeExpectation]
+	// sets it on the effective row, and load-time checks use it to judge the
+	// entry once at the key the author wrote instead of once per expanded row
+	// at keys that do not exist. Check accumulates, so its provenance travels
+	// on each [CheckClaim] instead.
+	fromEntry expectationProvenance
+
 	// Outputs, when set, must equal the workflow's declared `outputs:`
 	// exactly — every named output present with the expected value, and no
 	// unexpected one. Ignored when Failed is true, on the same reasoning
@@ -1037,6 +1045,23 @@ type Expectation struct {
 	// claims all hold — where the named fields above merge by override.
 	// Predicates union naturally; values cannot.
 	Check []CheckClaim `yaml:"check"`
+}
+
+// expectationProvenance is the writer of each field in an effective table
+// row. Kept per field because a row may override one entry expectation while
+// inheriting the rest; a mark on the whole expectation would either repeat the
+// inherited mistakes or hide the row's own.
+type expectationProvenance struct {
+	outputs        bool
+	inputs         bool
+	refused        bool
+	idempotencyKey bool
+	failed         bool
+	errorContains  bool
+	compensated    bool
+	ran            bool
+	skipped        bool
+	others         bool
 }
 
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
@@ -1569,6 +1594,13 @@ func stubTargetKey(s *Stub) string {
 // field is allowed to say, named by its position (CLAUDE.md, "diagnostics are a
 // feature"). Empty is fine: it means the `ran:` claim stays open.
 func checkOthers(p *problems, r site, test *Test) {
+	// A table entry's value was judged once before expansion, at the entry's
+	// own key and with the entry's identity. The copy on an effective row has
+	// no row key to point at and must not spend another diagnostic on the same
+	// writer. A row override carries no mark and is still judged here.
+	if test.Expect.fromEntry.others {
+		return
+	}
 	switch test.Expect.Others {
 	case "", OthersSkipped:
 		return

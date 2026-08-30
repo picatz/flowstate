@@ -63,6 +63,12 @@ type CheckClaim struct {
 	// second fold skips a list that already carries a marked claim rather
 	// than doubling the file's claims.
 	fromDefaults bool
+
+	// fromEntry marks a claim [mergeExpectation] copied from a table entry.
+	// The entry is checked once before expansion, where its key and identity
+	// are known; expanded rows skip only that copy while still checking every
+	// claim the row appended itself.
+	fromEntry bool
 }
 
 // UnmarshalYAML accepts both spellings. Key checking is done by hand rather
@@ -141,10 +147,10 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 		// it is known. Judging the copy again would report one mistake once per
 		// case — five hundred diagnostics for one line, spending a bound meant
 		// for five hundred *different* mistakes — while saying less about it.
-		// Only the copies are marked, so nothing goes unjudged: the block's own
-		// pass sees the originals, and a claim inherited from a table entry
-		// carries no mark and is judged here.
-		if claims[i].fromDefaults {
+		// Only the copies are marked, so nothing goes unjudged: each block or
+		// table entry pass sees the originals, while an effective case skips
+		// what an earlier pass already judged.
+		if claims[i].fromDefaults || claims[i].fromEntry {
 			continue
 		}
 		// Nothing rather than the list's own node for an inherited claim a
