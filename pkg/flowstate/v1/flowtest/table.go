@@ -1,5 +1,7 @@
 package flowtest
 
+import "fmt"
+
 // Table entries (#924 slice 2): a `tests:` entry that declares `cases:` is a
 // template, and each row under it is one run merged over that template.
 //
@@ -94,6 +96,14 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 
 			continue
 		}
+		// Judge the expectation fields the entry wrote once, while both its
+		// source path and its identity are still available. mergeExpectation
+		// marks the copies each row inherits, so the ordinary case pass below
+		// skips those copies but continues to judge row-written overrides.
+		entrySite := site{test: entry.Name, at: where}
+		checkOthers(p, entrySite, &entry)
+		checkCheckClaims(p, entrySite.in(where.field("expect").field("check")),
+			fmt.Sprintf("test %q expect", entry.Name), entry.Expect.Check, len(entry.Expect.Check), "")
 
 		for i, row := range entry.Cases {
 			rowWhere := where.field("cases").item(i)
@@ -215,39 +225,54 @@ func mergeExpectation(entry, row Expectation) Expectation {
 	merged := row
 	if merged.Outputs == nil {
 		merged.Outputs = entry.Outputs
+		merged.fromEntry.outputs = entry.Outputs != nil
 	}
 	if merged.Inputs == nil {
 		merged.Inputs = entry.Inputs
+		merged.fromEntry.inputs = entry.Inputs != nil
 	}
 	if merged.Refused == nil {
 		merged.Refused = entry.Refused
+		merged.fromEntry.refused = entry.Refused != nil
 	}
 	if merged.IdempotencyKey == "" {
 		merged.IdempotencyKey = entry.IdempotencyKey
+		merged.fromEntry.idempotencyKey = entry.IdempotencyKey != ""
 	}
 	if merged.Failed == nil {
 		merged.Failed = entry.Failed
+		merged.fromEntry.failed = entry.Failed != nil
 	}
 	if merged.ErrorContains == "" {
 		merged.ErrorContains = entry.ErrorContains
+		merged.fromEntry.errorContains = entry.ErrorContains != ""
 	}
 	if merged.Compensated == nil {
 		merged.Compensated = entry.Compensated
+		merged.fromEntry.compensated = entry.Compensated != nil
 	}
 	if merged.Ran == nil {
 		merged.Ran = entry.Ran
+		merged.fromEntry.ran = entry.Ran != nil
 	}
 	if merged.Skipped == nil {
 		merged.Skipped = entry.Skipped
+		merged.fromEntry.skipped = entry.Skipped != nil
 	}
 	if merged.Others == "" {
 		merged.Others = entry.Others
+		merged.fromEntry.others = entry.Others != ""
 	}
 	// Check is the one accumulating field: the entry's claims and the row's
 	// all hold, entry first (see the field's own doc for why predicates
 	// union where values override). A fresh slice, so rows sharing an entry
 	// cannot append into each other's backing array.
-	merged.Check = append(append([]CheckClaim{}, entry.Check...), row.Check...)
+	inherited := make([]CheckClaim, 0, len(entry.Check)+len(row.Check))
+	for _, claim := range entry.Check {
+		claim.fromEntry = true
+		inherited = append(inherited, claim)
+	}
+	merged.Check = append(inherited, row.Check...)
 
 	return merged
 }

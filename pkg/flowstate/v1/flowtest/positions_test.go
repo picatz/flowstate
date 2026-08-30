@@ -278,19 +278,14 @@ func TestAnUnpositionedProblemStillReadsAsItAlwaysHas(t *testing.T) {
 	assert.Equal(t, path+": declares no tests", problems.Error())
 }
 
-// TestAnInheritedValueIsRefusedWithoutBorrowingACasesPosition is the rule that
-// keeps a position honest, in the direction that is easy to get wrong: the
-// `others:` under test is written once on the table entry and reaches each row
-// by merge, so the row's own lines say nothing about it. Pointing at the row
-// would underline correct text and send an author to fix it.
-//
-// A table entry is the fixture because it is the inheritance this loader still
-// judges per case. The `defaults:` block's own values — a sender, a check
-// claim — are judged where they are written now, which is the stronger answer
-// and the one #1185 landed; an entry's are not, because the row is the only
-// thing that survives expansion. That gap is filed rather than hidden: it is
-// the open thread on this PR.
-func TestAnInheritedValueIsRefusedWithoutBorrowingACasesPosition(t *testing.T) {
+// TestATableExpectationIsJudgedAtEachFieldsWriter is #1184's two mutation
+// directions in one fixture. The entry's invalid `others:` is written once and
+// inherited by one row, while another row overrides that field with its own
+// invalid value. Losing the inherited mark brings the entry problem back for
+// the first row; marking the whole expectation rather than each inherited field
+// hides the second row's problem. Each writer must therefore report exactly
+// once, at its exact key and with its own identity.
+func TestATableExpectationIsJudgedAtEachFieldsWriter(t *testing.T) {
 	t.Parallel()
 
 	source := `
@@ -300,34 +295,78 @@ tests:
     expect:
       others: sometimes
     cases:
-      - name: the row
+      - name: inherits
         expect:
           ran: [a]
+      - name: overrides
+        expect:
+          others: never
 `
 	problems, _ := refuse(t, source)
-	d := only(t, problems)
+	require.Equal(t, 2, problems.Total, "one problem per writer, not per expanded case: %v", problems)
+	require.Len(t, problems.Problems, 2)
 
-	assert.Contains(t, d.Message, `test "tabled/the row" expect.others:`,
-		"the by-name prose is what still identifies an inherited value")
-	assert.Zero(t, d.Line,
-		"a value this document did not write at the case must not be positioned at the case, "+
-			"nor at any node enclosing it")
-	assert.Zero(t, d.Column)
-	assert.Equal(t, "tabled/the row", d.Test, "the case is still named, structurally")
+	byTest := make(map[string]flowtest.Diagnostic, 2)
+	for _, d := range problems.Problems {
+		byTest[d.Test] = d
+	}
+	entry := byTest["tabled"]
+	entryLine, entryColumn := spot(t, source, "sometimes")
+	assert.Equal(t, "tests[0].expect.others", entry.Field)
+	assert.Equal(t, entryLine, entry.Line)
+	assert.Equal(t, entryColumn, entry.Column)
+	assert.Contains(t, entry.Message, `test "tabled" expect.others:`)
 
-	// The positive direction, because an absence assertion is worth nothing
-	// until the thing could have been present: the identical mistake written on
-	// the row itself is positioned exactly.
-	written := strings.Replace(source, "    expect:\n      others: sometimes\n", "", 1)
-	written = strings.Replace(written, "          ran: [a]", "          others: sometimes", 1)
+	row := byTest["tabled/overrides"]
+	rowLine, rowColumn := spot(t, source, "never")
+	assert.Equal(t, "tests[0].cases[1].expect.others", row.Field)
+	assert.Equal(t, rowLine, row.Line)
+	assert.Equal(t, rowColumn, row.Column)
+	assert.Contains(t, row.Message, `test "tabled/overrides" expect.others:`)
+}
 
-	problems, _ = refuse(t, written)
-	// The value, which is what the refusal is about — the key is not what an
-	// author has to change.
-	line, column := spot(t, written, "sometimes")
-	positioned := only(t, problems)
-	assert.Equal(t, line, positioned.Line, "the same mistake, written in the case, must be positioned")
-	assert.Equal(t, column, positioned.Column)
+// TestATableCheckClaimIsJudgedAtItsWriter applies the same provenance rule to
+// the accumulating expectation field. Claims cannot carry one field-level mark
+// because an effective row holds entry and row claims together, so each copied
+// [flowtest.CheckClaim] retains its writer structurally.
+func TestATableCheckClaimIsJudgedAtItsWriter(t *testing.T) {
+	t.Parallel()
+
+	source := `
+tests:
+  - name: tabled
+    workflow: ./workflow.yaml
+    expect:
+      check:
+        - "steps.entry ==="
+    cases:
+      - name: inherits
+      - name: adds its own
+        expect:
+          check:
+            - "steps.row ==="
+`
+	problems, _ := refuse(t, source)
+	require.Equal(t, 2, problems.Total, "one malformed claim per writer: %v", problems)
+	require.Len(t, problems.Problems, 2)
+
+	byTest := make(map[string]flowtest.Diagnostic, 2)
+	for _, d := range problems.Problems {
+		byTest[d.Test] = d
+	}
+	entry := byTest["tabled"]
+	entryLine, entryColumn := spot(t, source, `"steps.entry ==="`)
+	assert.Equal(t, "tests[0].expect.check[0]", entry.Field)
+	assert.Equal(t, entryLine, entry.Line)
+	assert.Equal(t, entryColumn, entry.Column)
+	assert.Contains(t, entry.Message, `test "tabled" expect.check[0]`)
+
+	row := byTest["tabled/adds its own"]
+	rowLine, rowColumn := spot(t, source, `"steps.row ==="`)
+	assert.Equal(t, "tests[0].cases[1].expect.check[0]", row.Field)
+	assert.Equal(t, rowLine, row.Line)
+	assert.Equal(t, rowColumn, row.Column)
+	assert.Contains(t, row.Message, `test "tabled/adds its own" expect.check[1]`)
 }
 
 // TestADefaultsSenderIsJudgedWhereItIsWritten (Codex, #1185): one identity in
@@ -757,6 +796,37 @@ func TestTheProblemsAreBoundedAndTheTotalTravels(t *testing.T) {
 	assert.Equal(t, broken, problems.Total, "every problem is counted even where it is not shown")
 	assert.Len(t, problems.Problems, flowtest.MaxLoadProblems, "the report is not bounded")
 	assert.Contains(t, problems.Error(), path+": 5 more problems were found and 20 are shown")
+}
+
+// TestTableExpectationProvenancePreservesTheBoundAndTotal proves provenance is
+// applied before bounded reporting rather than as a text deduplication over the
+// kept prefix. One entry writer and twenty-five distinct row writers are found;
+// the report keeps twenty and Total retains all twenty-six. The one row that
+// inherits the entry contributes no additional problem.
+func TestTableExpectationProvenancePreservesTheBoundAndTotal(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString("tests:\n  - name: tabled\n    workflow: ./workflow.yaml\n    expect:\n      others: sometimes\n    cases:\n")
+	b.WriteString("      - name: inherits\n")
+	rowProblems := flowtest.MaxLoadProblems + 5
+	for i := range rowProblems {
+		fmt.Fprintf(&b, "      - name: own-%d\n        expect:\n          others: never\n", i)
+	}
+
+	problems, _ := refuse(t, b.String())
+	wantTotal := 1 + rowProblems
+	assert.Equal(t, wantTotal, problems.Total,
+		"Total must count writer problems omitted by the bound, but not inherited copies")
+	assert.Len(t, problems.Problems, flowtest.MaxLoadProblems)
+	assert.Equal(t, "tabled", problems.Problems[0].Test)
+	assert.Equal(t, "tests[0].expect.others", problems.Problems[0].Field)
+	for _, d := range problems.Problems[1:] {
+		assert.Contains(t, d.Test, "tabled/own-")
+		assert.Contains(t, d.Field, ".cases[")
+		assert.NotZero(t, d.Line, "a kept row problem lost its exact position")
+		assert.NotZero(t, d.Column)
+	}
 }
 
 // TestACountBoundStopsTheWorkItBounds (Codex, #1179): collecting every problem
