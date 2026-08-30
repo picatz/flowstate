@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,14 +110,18 @@ func readRepositoryFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("finding repository root: %w", err)
 	}
+	return readRepositoryFileFrom(dir, name)
+}
+
+func readRepositoryFileFrom(dir, name string) ([]byte, error) {
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			path := filepath.Join(dir, filepath.FromSlash(name))
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("reading documentation source %s: %w", name, err)
-			}
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		data, err := os.ReadFile(path)
+		if err == nil {
 			return data, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("reading documentation source %s: %w", name, err)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
