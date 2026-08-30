@@ -169,7 +169,7 @@ reflection approach is not free and does not eliminate selection metadata.
 | Existing source-bearing descriptor set | 487,312 |
 | Generated static binding | 1,066 |
 | Generated selected-field reference | 539 |
-| Pilot Go + generated-reference sources measured by `wc` | 30,626 |
+| Pilot Go + generated-reference sources measured by `wc` | 31,719 |
 
 Warm reference generation took 6.70 µs, 32 allocations, and 3,488 B. `go
 generate ./internal/schemaifacepilot` took 0.34 seconds with a warm Go cache and

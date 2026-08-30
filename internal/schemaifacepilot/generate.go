@@ -16,6 +16,9 @@ func GenerateStaticGet(out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := validateStaticGetTemplate(fields); err != nil {
+		return err
+	}
 	workflow, ok := selectionByName(fields, "workflow_id")
 	if !ok {
 		return fmt.Errorf("schema interface pilot: workflow_id selection missing")
@@ -65,4 +68,16 @@ func (b *StaticGetBinding) Request() *flowstatev1.GetRequest { return b.request 
 	}
 	_, err = out.Write(formatted)
 	return err
+}
+
+func validateStaticGetTemplate(fields []selectedField) error {
+	if len(fields) != 2 {
+		return fmt.Errorf("schema interface pilot: static Get template requires exactly workflow_id and run_id; got %d selections", len(fields))
+	}
+	workflow, workflowOK := selectionByName(fields, "workflow_id")
+	run, runOK := selectionByName(fields, "run_id")
+	if !workflowOK || !runOK || !workflow.selection.Positional || run.selection.Positional {
+		return fmt.Errorf("schema interface pilot: static Get template requires positional workflow_id and flag-based run_id")
+	}
+	return nil
 }

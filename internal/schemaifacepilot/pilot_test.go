@@ -151,6 +151,15 @@ func TestGeneratedStaticBindingIsCurrent(t *testing.T) {
 	assert.Equal(t, string(committedSource), source.String())
 }
 
+func TestStaticTemplateRejectsSelectionEvolutionItCannotRepresent(t *testing.T) {
+	fields, err := selectFields((&flowstatev1.GetRequest{}).ProtoReflect().Descriptor(), GetSelections)
+	require.NoError(t, err)
+	require.ErrorContains(t, validateStaticGetTemplate(append(fields, fields[0])), "requires exactly")
+
+	fields[0].selection.Positional = false
+	require.ErrorContains(t, validateStaticGetTemplate(fields), "requires positional workflow_id")
+}
+
 func BenchmarkConstruction(b *testing.B) {
 	b.Run("runtime-reflection", func(b *testing.B) {
 		for b.Loop() {
