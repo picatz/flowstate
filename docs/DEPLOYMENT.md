@@ -1092,10 +1092,12 @@ claim `k8s.pod.*`, `k8s.deployment.*`, or other Kubernetes topology attributes.
 Set those explicitly in the deployment when they are useful and authoritative.
 
 `OTEL_RESOURCE_ATTRIBUTES` is merged last and therefore overrides both fixed
-defaults and detected values, including `service.instance.id`, `host.name`, and
-`process.pid`; `OTEL_SERVICE_NAME` likewise overrides the built-in service name.
+defaults and detected string values, including `service.instance.id` and
+`host.name`; `OTEL_SERVICE_NAME` likewise overrides the built-in service name.
 This is the supported way for a deployment to provide more authoritative
-identity or topology.
+identity or topology. OTel parses resource attributes supplied through the
+environment as strings, so do not use it to replace typed attributes such as the
+integer-valued `process.pid`.
 
 The broad `resource.WithProcess` detector is intentionally not used. It exports
 the argument vector, which can contain values such as `--input token=...`, on

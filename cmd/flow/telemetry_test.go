@@ -544,7 +544,6 @@ func TestTelemetryResourceLetsTheEnvironmentWin(t *testing.T) {
 		"deployment.environment=staging",
 		"service.instance.id=deployment-instance",
 		"host.name=deployment-host",
-		"process.pid=4242",
 	}, ","))
 
 	res, err := telemetryResource(t.Context())
@@ -557,8 +556,6 @@ func TestTelemetryResourceLetsTheEnvironmentWin(t *testing.T) {
 		"the deployment must be able to replace the random process identity")
 	require.Equal(t, "deployment-host", attrs["host.name"],
 		"the deployment must be able to replace detected host identity")
-	require.Equal(t, "4242", attrs["process.pid"],
-		"the deployment must be able to replace detected process identity")
 }
 
 // resourceAttributes flattens a resource for assertion.
