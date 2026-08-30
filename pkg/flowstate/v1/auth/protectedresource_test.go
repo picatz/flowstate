@@ -530,7 +530,7 @@ func TestWithProtectedResourceChallengeNamesTheMetadataURL(t *testing.T) {
 	require.Contains(t, challenge, `error="invalid_token"`)
 	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`)
 	require.NotContains(t, challenge, "scope=",
-		"D1 is deferred: this slice defines no scope vocabulary to challenge with")
+		"no per-action enforcement point can truthfully name a required scope")
 }
 
 // TestWithProtectedResourceChallengeIgnoresForgedHost is the #1 named risk in

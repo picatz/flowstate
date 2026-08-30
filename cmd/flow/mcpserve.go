@@ -384,12 +384,18 @@ func mcpServeHandler(
 	limiter := newMCPSessionLimiter(limits.maxSessions, limits.maxSessionRequests, limits.sessionIdle, time.Now)
 
 	authenticated := mcpauth.RequireBearerToken(
-		auth.MCPTokenVerifier(verifier, protectedResource.Resource()),
+		auth.MCPTokenVerifier(verifier, protectedResource.Resource(),
+			auth.WithMCPFailureObserver(func(ctx context.Context, req *http.Request, err error) {
+				if observation, ok := ctx.Value(mcpAuthenticationObservationKey{}).(*mcpAuthenticationObservation); ok {
+					observation.reason = auth.PublicReason(err)
+				}
+			})),
 		&mcpauth.RequireBearerTokenOptions{
 			ResourceMetadataURL: protectedResource.MetadataURL(),
 			// Scopes deliberately empty: see this function's doc, step 3.
 		},
 	)(limiter.wrap(streamable))
+	authenticated = observeMCPAuthenticationFailures(logger, authenticated)
 
 	protection := http.NewCrossOriginProtection()
 
@@ -421,6 +427,43 @@ func logMCPServeSessionTopology(logger *slog.Logger) {
 		"session_storage", mcpServeSessionStorage,
 		"session_affinity_header", mcpSessionHeader,
 		"horizontal_scaling", false)
+}
+
+type mcpAuthenticationObservationKey struct{}
+
+type mcpAuthenticationObservation struct {
+	reason string
+}
+
+// observeMCPAuthenticationFailures records every refusal from the SDK bearer
+// middleware, including a missing Authorization header that it rejects before
+// calling [auth.MCPTokenVerifier]. The verifier contributes [auth.PublicReason]
+// when it ran; the SDK-only paths use fixed classifications rather than its
+// response body, which is peer-visible text and not a logging boundary.
+func observeMCPAuthenticationFailures(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		observation := &mcpAuthenticationObservation{}
+		req = req.WithContext(context.WithValue(req.Context(), mcpAuthenticationObservationKey{}, observation))
+		recorder := &mcpSessionRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, req)
+
+		if recorder.status != http.StatusUnauthorized && recorder.status != http.StatusForbidden {
+			return
+		}
+		reason := observation.reason
+		if reason == "" {
+			if recorder.status == http.StatusUnauthorized {
+				reason = "missing bearer token"
+			} else {
+				reason = "authenticated caller is not permitted on this session"
+			}
+		}
+		logger.WarnContext(req.Context(), "rejected MCP request",
+			"path", req.URL.Path,
+			"peer", req.RemoteAddr,
+			"status", recorder.status,
+			"reason", reason)
+	})
 }
 
 // exactPattern renders a path as an [http.ServeMux] pattern that matches that

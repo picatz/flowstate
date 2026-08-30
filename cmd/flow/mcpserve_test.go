@@ -227,8 +227,8 @@ func (b bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 //
 // Two assertions and the second is as load-bearing as the first. The
 // challenge must name the RFC 9728 document (MCP's own MUST), and it must
-// name *no scope*: #567's D1 is deferred by omission, so a `scope` parameter
-// here would be this surface shipping a vocabulary nobody has decided.
+// name *no scope*: the vocabulary now exists, but no per-action enforcement
+// point can truthfully say which scope this request requires.
 func TestMCPServeChallengesAnUnauthenticatedRequest(t *testing.T) {
 	t.Parallel()
 
@@ -242,8 +242,31 @@ func TestMCPServeChallengesAnUnauthenticatedRequest(t *testing.T) {
 	require.Contains(t, challenge, `resource_metadata="`+fixture.resource.MetadataURL()+`"`,
 		"the 401 must point a client at the metadata document it can bootstrap from")
 	require.NotContains(t, challenge, "scope=",
-		"no scope vocabulary exists yet (#567 D1, deferred by omission); a challenge naming one "+
-			"would ship a spelling that has to migrate")
+		"no per-action enforcement point can truthfully name a required scope")
+	require.Contains(t, fixture.logs.String(), `reason="missing bearer token"`,
+		"the SDK rejects an absent header before calling the token verifier, and that refusal must still be observed")
+}
+
+// TestMCPServeObservesARefusalWithoutLoggingCredentialMaterial is the MCP half
+// of the refusal observability contract. The adapter gives the command the
+// internal cause, and the command records only its public classification.
+func TestMCPServeObservesARefusalWithoutLoggingCredentialMaterial(t *testing.T) {
+	fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+	const secretSubject = "subject-that-must-not-reach-mcp-logs"
+	const secretAudience = "https://audience-that-must-not-reach-mcp-logs.example.test"
+	token := fixture.issuer.WrongAudienceToken(secretAudience, nil, authtest.WithSubject(secretSubject))
+
+	resp := fixture.initialize(t, token, "")
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	logs := fixture.logs.String()
+	require.Contains(t, logs, "rejected MCP request")
+	require.Contains(t, logs, `path=`+fixture.resource.ResourcePath())
+	require.Contains(t, logs, `status=401`)
+	require.Contains(t, logs, `reason="token audience is not accepted"`)
+	require.NotContains(t, logs, token)
+	require.NotContains(t, logs, secretSubject)
+	require.NotContains(t, logs, secretAudience)
 }
 
 // TestMCPServeServesTheMetadataDocumentUnauthenticated: the document the
@@ -370,6 +393,12 @@ func TestMCPServeSessionRefusesAnotherPrincipalsToken(t *testing.T) {
 	hijacked := fixture.initialize(t, bob, sessionID)
 	require.Equal(t, http.StatusForbidden, hijacked.StatusCode,
 		"a session opened by one principal must refuse another's token")
+	logs := fixture.logs.String()
+	require.Contains(t, logs, "rejected MCP request")
+	require.Contains(t, logs, `status=403`)
+	require.Contains(t, logs, `reason="authenticated caller is not permitted on this session"`)
+	require.NotContains(t, logs, alice)
+	require.NotContains(t, logs, bob)
 }
 
 // TestMCPServeSessionsRequireTheirOriginProcess pins the deployment contract,

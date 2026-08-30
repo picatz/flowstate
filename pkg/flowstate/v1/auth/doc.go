@@ -172,6 +172,17 @@
 //	      - claim: ref
 //	        any_of: [refs/heads/main]
 //
+// [Policy], [TrustedIssuer], and [ClaimRule] deliberately remain hand-written
+// Go rather than Protobuf. Proto-first is decided by whether a value travels:
+// a policy is parsed and consulted only in the process that serves requests,
+// while `SignalPolicyRule` claims ride a run's memo and an audit record exists
+// to cross into a sink. Similar-looking claim requirements on
+// those boundaries therefore do not make this in-process policy a wire shape.
+// Its rule-implication and shadow analysis are Go semantics protovalidate could
+// not replace in any case. A proposal to move this policy into the schema must
+// first identify the boundary it needs to cross; resemblance to a schema-owned
+// claims map is not one.
+//
 // # Serving
 //
 // [Authenticator] adapts a [Verifier] to Connect's authentication middleware,
