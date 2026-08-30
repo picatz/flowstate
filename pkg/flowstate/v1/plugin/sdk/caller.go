@@ -24,6 +24,26 @@ type Caller struct {
 	Namespace string
 }
 
+// Mode returns the execution mode the directly connected host established.
+// Missing identities, older hosts that did not send the field, and enum values
+// this SDK does not understand all return WORKLOAD_IDENTITY_MODE_UNSPECIFIED,
+// whose semantic meaning is unknown.
+//
+// This is a fact, not an authorization grant. A task that avoids production
+// side effects during rehearsals must positively require
+// WORKLOAD_IDENTITY_MODE_PRODUCTION; testing only for "not rehearsal" would
+// misclassify an older host's rehearsal as production.
+func (c Caller) Mode() flowstatev1.WorkloadIdentityMode {
+	mode := c.Identity.GetMode()
+	switch mode {
+	case flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
+		flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL:
+		return mode
+	default:
+		return flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_UNSPECIFIED
+	}
+}
+
 // callerKey is the context key [CallerFromContext] reads.
 type callerKey struct{}
 

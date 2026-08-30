@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -127,6 +128,19 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		}
 
 		identity, _ := IdentityFromContext(ctx)
+		if scope.GetLocal() {
+			// RunWithInputs owns Scope.Local and sets it unconditionally. That
+			// makes the local dispatch boundary authoritative even for an
+			// embedder that did not construct its optional identity through the
+			// CLI's NewLocalWorkloadIdentity path. Clone before overriding so one
+			// local call cannot make a context identity sticky for another call.
+			if identity == nil {
+				identity = &flowstatev1.WorkloadIdentity{}
+			} else {
+				identity = proto.Clone(identity).(*flowstatev1.WorkloadIdentity)
+			}
+			identity.Mode = flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL
+		}
 
 		request := &pluginv1.ExecuteRequest{
 			Task: &flowstatev1.Task{

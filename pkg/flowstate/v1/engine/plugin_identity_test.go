@@ -41,7 +41,7 @@ func registerPluginIdentityTask(t *testing.T, needsScope bool) {
 // engine/runtime.go's taskActivities.context and engine/activities.go's Task
 // and TaskInScope — and runs [conformance.PluginIdentityStep] through [engine.Run]
 // on a Temporal test environment.
-func runPluginIdentityDurable(t *testing.T, needsScope bool, identity *v1.WorkloadIdentity) (subject, namespace string, present bool) {
+func runPluginIdentityDurable(t *testing.T, needsScope bool, identity *v1.WorkloadIdentity) (subject, namespace string, mode v1.WorkloadIdentityMode, present bool) {
 	t.Helper()
 	registerPluginIdentityTask(t, needsScope)
 
@@ -62,6 +62,7 @@ func runPluginIdentityDurable(t *testing.T, needsScope bool, identity *v1.Worklo
 	values := out.GetStepValues()["call"].GetNamedValues()
 	return values["subject"].GetLiteral().GetStringValue(),
 		values["namespace"].GetLiteral().GetStringValue(),
+		v1.WorkloadIdentityMode(values["mode"].GetLiteral().GetInt64Value()),
 		values["present"].GetLiteral().GetBoolValue()
 }
 
@@ -75,13 +76,14 @@ func runPluginIdentityDurable(t *testing.T, needsScope bool, identity *v1.Worklo
 func TestPluginTaskObservesCallerDurable(t *testing.T) {
 	for _, needsScope := range []bool{true, false} {
 		t.Run(map[bool]string{true: "TaskInScope", false: "Task"}[needsScope], func(t *testing.T) {
-			subject, namespace, present := runPluginIdentityDurable(t, needsScope, &v1.WorkloadIdentity{
+			subject, namespace, mode, present := runPluginIdentityDurable(t, needsScope, &v1.WorkloadIdentity{
 				Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "team-a",
 			})
 
 			require.True(t, present, "the plugin task's context carried no identity at all")
 			require.Equal(t, "svc-reader", subject)
 			require.Equal(t, "team-a", namespace)
+			require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION, mode)
 		})
 	}
 }
@@ -95,10 +97,10 @@ func TestPluginTaskObservesCallerDurable(t *testing.T) {
 // registration, which is the closure-at-load trap #235's fix guidance names —
 // this is what proves this driver does not fall into it either.
 func TestPluginTaskCallerNotStickyAcrossRunsDurable(t *testing.T) {
-	firstSubject, firstNamespace, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
+	firstSubject, firstNamespace, _, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
 		Subject: "svc-a", Issuer: "https://issuer.example", Namespace: "team-a",
 	})
-	secondSubject, secondNamespace, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
+	secondSubject, secondNamespace, _, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
 		Subject: "svc-b", Issuer: "https://issuer.example", Namespace: "team-b",
 	})
 
@@ -117,9 +119,29 @@ func TestPluginTaskCallerNotStickyAcrossRunsDurable(t *testing.T) {
 // case in plugin_identity_local_test.go, and what a plugin-side
 // sdk.CallerFromContext is written to expect.
 func TestPluginTaskCallerExplicitlyEmptyDurable(t *testing.T) {
-	subject, namespace, present := runPluginIdentityDurable(t, true, nil)
+	subject, namespace, mode, present := runPluginIdentityDurable(t, true, nil)
 
 	require.True(t, present, "a run with no identity must still cross as an explicit empty caller, not as no context value at all")
 	require.Empty(t, subject)
 	require.Empty(t, namespace)
+	require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION, mode,
+		"the durable host knows the execution mode even when no caller identity was established")
+}
+
+// TestPluginTaskCallerModeCannotBeForgedByDurableInput proves the serialized
+// RunState identity is not the authority for plugin transport. A client may
+// send a newer identity message claiming rehearsal (or an unknown future
+// value), but the launched durable host overwrites it with PRODUCTION.
+func TestPluginTaskCallerModeCannotBeForgedByDurableInput(t *testing.T) {
+	for _, claimed := range []v1.WorkloadIdentityMode{
+		v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL,
+		v1.WorkloadIdentityMode(99),
+	} {
+		_, _, mode, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
+			Subject: "svc-reader",
+			Claims:  map[string]string{"mode": "rehearsal"},
+			Mode:    claimed,
+		})
+		require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION, mode)
+	}
 }

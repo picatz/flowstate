@@ -126,11 +126,17 @@ func (i secretIdentity) GetNamespace() string { return i.namespace }
 // plugin boundary — the negative shape [plugin.IdentityFromContext] and the
 // plugin SDK are both written to expect, rather than a caller inventing one.
 func ProtoWorkloadIdentity(identity auth.WorkloadIdentity) *WorkloadIdentity {
+	mode := WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION
+	if identity.IsLocalRehearsal() {
+		mode = WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL
+	}
+
 	return &WorkloadIdentity{
 		Subject:    identity.Subject,
 		Issuer:     identity.Issuer,
 		Claims:     identity.Claims,
 		Namespace:  identity.Namespace,
 		Deployment: identity.Deployment,
+		Mode:       mode,
 	}
 }
