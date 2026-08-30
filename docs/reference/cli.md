@@ -894,6 +894,7 @@ flow mcp serve --listen :8617 \
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--audit-required` | `bool` | `false` | — | fail a request whose authorization decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the trust policy whose issuers may mint tokens for this surface (overrides FLOWSTATE_AUTH_POLICY). Required: there is no anonymous variant of this surface, and --insecure-no-auth is refused here |
 | `--authorization-server <string,...>` | `stringArray` | — | — | an authorization server this deployment advertises as able to mint tokens for --protected-resource. Repeatable; RFC 9728 requires at least one when --protected-resource is given. Each one must already be a kind: oidc issuer in --auth-policy — an authorization server this deployment's own verifier would reject is refused at start-up rather than advertised |
 | `--insecure-no-auth` | `bool` | `false` | — | refused on this surface: an OAuth 2.1 protected resource that authenticates nobody is a contradiction. Use `flow mcp` over stdio for local development |

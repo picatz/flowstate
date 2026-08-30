@@ -151,6 +151,25 @@ Two things, both already-familiar shapes rather than new machinery:
   not at the bare prefix, and that exact URL is what the `WWW-Authenticate`
   challenge names.
 
+### Authorization audit
+
+Every registered tool call that reaches the authenticated handler emits one
+authorization record before its argument parser or tool implementation runs.
+The record names the tool by its full registered name and derives its
+`AuthorizationAction` from the same binding used by authorization conformance;
+it also carries the caller's attested workload identity and the bounded
+operator-chosen issuer-entry name and role that admitted it. It never carries
+the bearer token, token claims, tool arguments, prompts, submitted Flowfile or
+test corpus text, tool output, session id, or caller-chosen JSON-RPC request id.
+
+This records the decision, not the execution outcome. A tool implementation
+that refuses its inputs, returns an error, or observes cancellation after the
+allow still has exactly one truthful allow record. `--audit-required` makes a
+sink failure refuse the call before parsing or mutation; without it, audit is
+always on but best-effort, with stderr as the unconditional sink. The local
+stdio surface has one process-trusted caller rather than a bearer authorization
+decision and does not emit these MCP records.
+
 ### Session topology: one process, one replica
 
 `flow mcp serve` is stateful today. The MCP SDK handler stores every session in
