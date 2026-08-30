@@ -3436,6 +3436,15 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 }
 
 func main() {
+	// Resolved before anything reads it, so every surface that repeats the
+	// version — cobra's own `--version`, telemetry's service.version, the MCP
+	// server's identity, a plugin's host version — answers with what
+	// [resolveVersionInfo] resolves rather than the unstamped "dev" default.
+	// This build path stamps nothing into the ldflags variable, so without
+	// this line `flow --version` said "dev" while `flow version` read the
+	// real build out of debug.ReadBuildInfo: the same fact, two answers.
+	version = resolveVersionInfo().Version
+
 	rootCmd := newRootCommand()
 
 	// We can use a context to handle OS signals like Ctrl+C gracefully, and —

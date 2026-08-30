@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/internal/covbuild"
 )
 
 // runVersionInto runs `flow version` in-process, the same pattern
@@ -118,6 +122,38 @@ func TestRunVersionJSONParsesWithDocumentedFields(t *testing.T) {
 					"setting is a real answer and must never read as a clean tree")
 		})
 	}
+}
+
+// TestDashDashVersionMatchesTheVersionCommand holds the two spellings of
+// "what build is this" to one answer, through the real binary because the fix
+// lives in main(): cobra's --version prints whatever the `version` var holds,
+// and that var's unstamped "dev" default used to reach it while `flow version`
+// read the real build out of debug.ReadBuildInfo — the same fact, two answers,
+// and scripts using the conventional --version got the wrong one.
+func TestDashDashVersionMatchesTheVersionCommand(t *testing.T) {
+	bin := buildFlowBinary(t)
+
+	env := append(os.Environ(), covbuild.Env()...)
+
+	flagCmd := exec.Command(bin, "--version")
+	flagCmd.Env = env
+	flagOut, err := flagCmd.Output()
+	require.NoError(t, err, "flow --version failed")
+
+	jsonCmd := exec.Command(bin, "version", "-o", "json")
+	jsonCmd.Env = env
+	jsonOut, err := jsonCmd.Output()
+	require.NoError(t, err, "flow version -o json failed")
+
+	var info versionInfo
+	require.NoError(t, json.Unmarshal(jsonOut, &info))
+
+	// Cobra's template is "flow version <version>"; the assertion is on the
+	// version value itself, so a template change cannot fail this for a
+	// wording reason.
+	assert.Contains(t, strings.TrimSpace(string(flagOut)), info.Version,
+		"--version and `flow version` disagree about which build this is: %q vs %q",
+		strings.TrimSpace(string(flagOut)), info.Version)
 }
 
 // TestRunVersionJSONRoundTripsIntoVersionInfo is the stricter form of the
