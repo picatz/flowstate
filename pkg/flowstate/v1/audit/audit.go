@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // MaxResourceKeyBytes bounds the one value in a record a caller influences.
@@ -28,7 +29,7 @@ const MaxResourceKeyBytes = 256
 // MaxProvenanceBytes bounds each operator-chosen policy label copied from the
 // attested Principal. These are not token claims, but configuration is still an
 // input to a durable sink and therefore bounded where it is spent.
-const MaxProvenanceBytes = 128
+const MaxProvenanceBytes = auth.MaxPolicyProvenanceBytes
 
 // Emitter writes one record to one sink.
 //

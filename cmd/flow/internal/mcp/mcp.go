@@ -258,6 +258,10 @@ type Deps struct {
 	// process recorder after bearer admission.
 	Audit *audit.Recorder
 
+	// AuditFailure receives the operator-facing detail when a required sink
+	// refuses a decision. The caller sees only a fixed public refusal.
+	AuditFailure func(error)
+
 	// WrapHandler, when set, wraps every tool handler [AddLocalCapabilities]
 	// registers — derived and caller-supplied alike — with the tool's own
 	// name in hand.
@@ -411,7 +415,7 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 		handler = deps.WrapHandler(name, handler)
 	}
 	if deps.Audit != nil {
-		handler = withMCPAudit(deps.Audit, name, handler)
+		handler = withMCPAudit(deps.Audit, deps.AuditFailure, name, handler)
 	}
 
 	return withMCPPrincipal(handler)
@@ -437,7 +441,7 @@ func withMCPPrincipal(next mcp.ToolHandler) mcp.ToolHandler {
 // has happened yet. One allow is therefore complete and true even if the tool
 // later returns an error or its context is cancelled; those are execution
 // outcomes, not revisions to the authorization decision.
-func withMCPAudit(recorder *audit.Recorder, tool string, next mcp.ToolHandler) mcp.ToolHandler {
+func withMCPAudit(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		principal, ok := auth.PrincipalFromContext(ctx)
 		if !ok || principal.IsZero() || principal.IsAnonymous() {
@@ -457,9 +461,12 @@ func withMCPAudit(recorder *audit.Recorder, tool string, next mcp.ToolHandler) m
 			Role:       principal.Role,
 		}); err != nil {
 			// Required audit failure refuses before next, preserving the same
-			// write-ahead guarantee the RPC surface has. ToolError keeps it a
-			// readable tool refusal rather than a transport failure.
-			return ToolError(err), nil
+			// write-ahead guarantee the RPC surface has. Exporter details belong
+			// in the operator log, never in the remotely visible tool result.
+			if reportFailure != nil {
+				reportFailure(err)
+			}
+			return ToolError(errors.New("the authorization decision could not be recorded; try again")), nil
 		}
 
 		return next(ctx, req)

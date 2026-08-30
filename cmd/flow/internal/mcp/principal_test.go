@@ -313,13 +313,20 @@ func TestMCPAuditRefusesBeforeTheHandlerWhenItCannotNameTheDecision(t *testing.T
 	})
 
 	t.Run("required sink failure", func(t *testing.T) {
+		const privateSinkDetail = "collector.internal:4317 unavailable"
 		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(toolAuditEmitterFunc(
-			func(context.Context, *v1.AuditRecord) error { return errors.New("sink unavailable") },
+			func(context.Context, *v1.AuditRecord) error { return errors.New(privateSinkDetail) },
 		)), audit.Required())
 		require.NoError(t, err)
 
 		called := false
-		handler := wrapToolHandler(Deps{Audit: recorder}, "flowstate_validate",
+		var reported error
+		handler := wrapToolHandler(Deps{
+			Audit: recorder,
+			AuditFailure: func(err error) {
+				reported = err
+			},
+		}, "flowstate_validate",
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				called = true
 				return &mcp.CallToolResult{}, nil
@@ -328,6 +335,14 @@ func TestMCPAuditRefusesBeforeTheHandlerWhenItCannotNameTheDecision(t *testing.T
 		require.NoError(t, err)
 		require.True(t, result.IsError)
 		require.False(t, called)
+		require.ErrorContains(t, reported, privateSinkDetail,
+			"the operator-facing failure omitted the sink detail")
+		require.Len(t, result.Content, 1)
+		text, ok := result.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		require.Equal(t, "the authorization decision could not be recorded; try again", text.Text)
+		require.NotContains(t, text.Text, privateSinkDetail,
+			"the remotely visible tool refusal exposed sink details")
 	})
 }
 

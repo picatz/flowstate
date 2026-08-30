@@ -135,7 +135,7 @@ func newMCPServeFixtureForIssuer(
 	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(auditSink))
 	require.NoError(t, err)
 
-	tools, err := mcpServeTools(guard, testTimeout, recorder)
+	tools, err := mcpServeTools(guard, testTimeout, recorder, nil)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(logger, tools, verifier, protectedResource, mcpServeLimits{
@@ -912,7 +912,7 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, maxSessionRequests: 1, sessionIdle: time.Minute}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
 	require.NoError(t, err)
 
 	_, err = mcpServeHandler(slog.Default(), tools, nil, nil, limits)
@@ -1030,7 +1030,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	require.Equal(t, "/", protectedResource.ResourcePath(),
 		"a bare-origin resource is the shape this test exists for")
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),

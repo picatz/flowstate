@@ -783,7 +783,12 @@ func (r *mcpSessionRecorder) Unwrap() http.ResponseWriter {
 // outside and prove that every served handler — tools and resources alike —
 // really is behind it, which is a property of this wiring rather than of the
 // guard itself.
-func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration, recorder *audit.Recorder) (*mcp.Server, error) {
+func mcpServeTools(
+	guard *mcpServeRegistryGuard,
+	testTimeout time.Duration,
+	recorder *audit.Recorder,
+	reportAuditFailure func(error),
+) (*mcp.Server, error) {
 	srv := flowmcp.NewServer(version)
 
 	// The same nil-Temporal-client server `flow mcp` answers Validate,
@@ -800,7 +805,8 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration, reco
 		srv,
 		local,
 		flowmcp.Deps{
-			Audit: recorder,
+			Audit:        recorder,
+			AuditFailure: reportAuditFailure,
 
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
@@ -1077,7 +1083,9 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("configuring the audit trail: %w", err)
 	}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
+		logger.Error("could not record MCP tool authorization decision", "error", err)
+	})
 	if err != nil {
 		return err
 	}
