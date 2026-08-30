@@ -408,7 +408,7 @@ defaults:
 	d := only(t, problems)
 	assert.Contains(t, d.Message, "defaults.sender: names a subject or an issuer without the other")
 	assert.Equal(t, sibling, d.File, "the identity is written in the directory's file, not the suite")
-	assert.Zero(t, d.Line, "a path into another document is not a line in this one")
+	assert.Equal(t, 4, d.Line, "the sibling document tree owns the sender's position")
 
 	// Written in the suite instead: same single refusal, named and positioned
 	// here.
@@ -496,11 +496,11 @@ tests:
 
 	d := only(t, problems)
 	assert.Contains(t, d.Message, "defaults.inputs.region holds the expression")
-	assert.Zero(t, d.Line, "a value written in the sibling file must not be positioned in this one")
-	assert.Zero(t, d.Column)
+	assert.Equal(t, 4, d.Line, "a value written in the sibling file is positioned by that file's tree")
+	assert.Positive(t, d.Column)
 	assert.Equal(t, sibling, d.File,
 		"the problem names the suite, which does not contain the value being refused")
-	assert.Contains(t, problems.Error(), sibling+": ",
+	assert.Contains(t, problems.Error(), sibling+":4:",
 		"the rendered refusal must name the file a reader has to open")
 
 	// The other direction in the same load, which is what makes the
@@ -524,7 +524,7 @@ tests:
 	require.Contains(t, byFile, path)
 
 	assert.Contains(t, byFile[sibling].Message, "defaults.inputs.region")
-	assert.Zero(t, byFile[sibling].Line)
+	assert.Equal(t, 4, byFile[sibling].Line)
 
 	line, column := spot(t, own, "${inputs.version}")
 	assert.Contains(t, byFile[path].Message, "defaults.inputs.version")
@@ -569,7 +569,7 @@ tests:
 	assert.Contains(t, d.Message, "defaults.check[0]")
 	assert.Equal(t, sibling, d.File,
 		"a claim the directory file wrote was reported against the suite that inherited it")
-	assert.Zero(t, d.Line, "an index into another document's list is not a line in this one")
+	assert.Equal(t, 4, d.Line, "the directory's claim is positioned in its own retained tree")
 }
 
 // TestAWhollyInheritedCollectionIsNamedAfterTheFileThatHoldsIt (Codex, #1185):
@@ -704,9 +704,8 @@ tests:
 	require.Contains(t, byFile, sibling, "the directory's claim lost its file: %v", problems)
 	require.Contains(t, byFile, path, "the suite's own claim was attributed elsewhere: %v", problems)
 
-	// The directory's: named after it, and positioned in neither, since an
-	// index into another document is not a line in this one.
-	assert.Zero(t, byFile[sibling].Line)
+	// The directory's: named and positioned in its own document.
+	assert.Equal(t, 4, byFile[sibling].Line)
 	assert.Contains(t, byFile[sibling].Message, "steps.a.value")
 
 	// The suite's own: its exact line and column, which the shared namespace

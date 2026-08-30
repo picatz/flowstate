@@ -880,9 +880,8 @@ type ScriptedIdentity struct {
 // a failure is "positioned to the test file" ([v1.TestCase]); #923 settled it
 // the other way.
 //
-// An identity a case inherited - a signal sender folded in from `defaults:` -
-// is refused with the same words and no position, because this document did not
-// write it. See [document.positionOf].
+// An identity inherited from a sibling `testdefaults.yaml` is positioned by
+// that sibling's retained document tree, never by borrowing a line in the suite.
 //
 // Both rules are fail-closed readings of a policy that would otherwise refuse
 // silently, at a gate, a whole virtual day later:
@@ -1105,6 +1104,31 @@ func LoadSourceAt(data []byte, path string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadSourceAt(data, path, dd)
+}
+
+// LoadSourceAtWithDefaults is [LoadSourceAt] when the caller holds newer bytes
+// for the directory's testdefaults.yaml than the filesystem does. The language
+// server is that caller: diagnostics must describe both live editor buffers,
+// including unsaved defaults, while preserving the loader's one grammar and
+// provenance rules.
+func LoadSourceAtWithDefaults(data []byte, path string, defaults []byte) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%s: %d bytes exceeds the %d byte limit for a test file",
+			path, len(data), MaxTestFileBytes)
+	}
+	defaultsPath := filepath.Join(filepath.Dir(path), DirDefaultsName)
+	dd, err := parseDirDefaults(defaults, defaultsPath)
+	if err != nil {
+		return nil, err
+	}
+	return loadSourceAt(data, path, dd)
+}
+
+// loadSourceAt applies a directory contribution already read and decoded.
+// Both public byte doors above end here, so only the source of the defaults
+// bytes differs; folding and every semantic check remain shared.
+func loadSourceAt(data []byte, path string, dd *dirDefaults) (*File, error) {
 
 	file, refused := parseSourceWith(data, dd, true)
 	if refused != nil {
@@ -1255,7 +1279,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// `stubs:` appends, so afterwards an index alone no longer says which
 	// document wrote the entry it addresses.
 	moved := dd.combineInto(&file)
-	p.wrote(moved.file, moved.paths)
+	p.wrote(moved.file, moved.doc, moved.paths)
 
 	// Vars validate, evaluate and substitute first, before tables expand and
 	// before `defaults:` is checked: a computed var is evaluated exactly once
@@ -1443,8 +1467,9 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 // The two counts exist because merging shifts indices. A case's own stubs come
 // first in the merged list and its own check claims come last, so a merged
 // index inside those runs addresses something the case wrote, and one outside
-// them addresses something it inherited — which has no position in this
-// document, and must not borrow the case's.
+// them addresses something it inherited — which must not borrow the case's
+// position. A directory default has its sibling tree; a case-level inherited
+// value with no source address remains unpositioned.
 type caseSource struct {
 	// path addresses the case in the source.
 	path loc
@@ -1756,9 +1781,9 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 // Named the way the rest of this loader names a diagnostic — the field a
 // reader has to look at (`defaults.inputs.version`,
 // `defaults.stubs[0].returns.reference`, `defaults.sender.claims`) — and
-// positioned at it as well, where this document is the one that wrote it. A
-// default folded in from a directory's `testdefaults.yaml` has no position in
-// this file, and reports none rather than borrowing the suite's.
+// positioned in the document that wrote it. A default folded in from a
+// directory's `testdefaults.yaml` uses that sibling's retained tree rather than
+// borrowing the suite's position.
 // Reports false when the stub count stopped it, which the loader takes as a
 // refusal of the whole document rather than one more diagnostic: an
 // over-limit block is copied into every case a moment later, so this is the

@@ -215,17 +215,18 @@ at all. What they get instead:
 
 | Feature | What you get |
 | --- | --- |
-| **Diagnostics** | Everything the flowtest loader — the same one `flow test` runs — checks: a misspelled key, an unknown stub task, a malformed `starter:`/`sender:`, an over-limit `check:` list, and the rest. A syntax mistake and an unknown key are positioned at goccy's own line and column; a semantic refusal (an unknown stub task, say) anchors at the named case's `name:` line where the message names exactly one case, and at the document start otherwise. |
+| **Diagnostics** | Everything the flowtest loader — the same one `flow test` runs — checks: a misspelled key, a malformed stub or `starter:`/`sender:`, an over-limit `check:` list, and the rest. Syntax, strict-key, and semantic problems use the loader's own positions; there is no case-name/prose heuristic. A problem in an included `testdefaults.yaml` is published on that file's URI and line, including from an unsaved defaults buffer, rather than mapped onto the suite that included it. Live defaults edits revalidate at most 32 open suites; another suite is checked against saved defaults and gets an explicit warning instead of silently creating unbounded per-keystroke work. Up to 32 overflow suites are retained as bounded promotion candidates when tracked suites close. If the saved-defaults fallback finds a suite-specific refusal, it reports the refusal at the overflow suite's start and labels it as a fallback rather than putting disk coordinates on a newer live defaults buffer. A task name absent from the catalog is not diagnosed merely for being absent: tests may provide synthetic tasks, so doing so would be false. |
 | **Completion** | The document's own keys at every level — a suite's `edition`/`vars`/`defaults`/`tests`/`coverage`, a case's `name`/`workflow`/`inputs`/`stubs`/`expect`/…, `expect:`'s own keys (`outputs`, `failed`, `ran`, `check`, …), and the rest of the shape (`defaults:`, a stub's `fails:`, a `signals:` entry, `starter:`/`sender:`, a `check:` claim, a `cases:` row) — plus a stub's `task:` value, completed from the same task registry a workflow step's task name is. `testdefaults.yaml`'s own top level is narrower, since `tests:` and `coverage:` are not legal there. |
 | **Document symbols** | An outline naming every runnable case: an entry with no `cases:` rows by its own `name:`, and an entry that declares rows by `<entry name>/<row name>` for each row — the same identity `flow test`'s own report uses, since an entry with rows is a template the rows are merged over and does not itself run. |
-| **Hover** | A stub's `task:` value, showing the same registry-derived documentation a workflow step's task name shows. Nothing else yet: `expect:`'s keys have no generated, per-field prose to read the way a task's schema does, and hand-writing one here would be a second copy of the struct's own doc comment, free to drift from it. |
+| **Hover** | Every real test-language key, using the same guarded key table completion reads, including `cases:`, `expect:`, `stubs:`, `vars:`, and `testdefaults.yaml`'s narrower root. A stub's `task:` value shows the same registry-derived documentation a workflow step's task name shows; an unknown or synthetic task stays silent rather than inventing documentation. |
 | **Go to definition, formatting, code actions** | Not yet answered for a test file — there is no flowtest analogue of `flowfile.Marshal` for formatting to render against, no suggested-edit machinery for code actions to read, and go-to-definition's one candidate (a case's `workflow:` naming a sibling Flowfile) is unbuilt. |
 
 Everything in that table is derived the same way the workflow table's is: the
 document-shape keys are read by reflection off the `flowtest` package's own
 `yaml:` struct tags — the identical tags the loader's strict decoder consults to
-decide "known" from "unknown field" — so a field added to that package is a key
-completion offers with no change here required to notice.
+decide "known" from "unknown field" — and a two-way guard fails if the table or
+loader changes alone. Completion and key hover read that one table; stub task
+completion and hover read the server's one task registry.
 
 ## Plugin tasks: `flow lsp --plugin-dir`
 
