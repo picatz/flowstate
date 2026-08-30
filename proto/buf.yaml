@@ -7,6 +7,13 @@ breaking:
     - FILE
     - WIRE
 
+  # FILE and WIRE compare descriptors: names, numbers, types, cardinality, and
+  # reservations. They do not prove that a runtime still gives a field the same
+  # meaning. A semantic change needs a focused conformance case that distinguishes
+  # the old and new behavior. If durable artifacts or deployed consumers must span
+  # both meanings, make an explicit compatibility or version/edition decision;
+  # passing this check is not that decision.
+
   # Nothing suppressed, which is the only state this file should be found in
   # for longer than one commit.
   #
