@@ -406,7 +406,7 @@ func TestANarrowedRPCChallengeDoesNotAdvertiseTheOtherSurfacesDocument(t *testin
 				server.URL+"/flowstate.v1.WorkflowService/Run", nil)
 			require.NoError(t, err)
 
-			response, err := http.DefaultClient.Do(request)
+			response, err := server.Client().Do(request)
 			require.NoError(t, err)
 			defer response.Body.Close()
 
@@ -451,7 +451,7 @@ func TestTheOptionsCommuteForTheChallenge(t *testing.T) {
 			server.URL+"/flowstate.v1.WorkflowService/Run", nil)
 		require.NoError(t, err)
 
-		response, err := http.DefaultClient.Do(request)
+		response, err := server.Client().Do(request)
 		require.NoError(t, err)
 		require.NoError(t, response.Body.Close())
 

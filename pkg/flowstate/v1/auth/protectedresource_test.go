@@ -276,7 +276,7 @@ func TestProtectedResourceEscapedPathIsActuallyReachable(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	resp, err := http.Get(server.URL + pr.Path())
+	resp, err := server.Client().Get(server.URL + pr.Path())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -412,7 +412,7 @@ func protectedResourceDocument(t *testing.T, pr *auth.ProtectedResource) map[str
 	server := httptest.NewServer(pr.Handler())
 	t.Cleanup(server.Close)
 
-	resp, err := http.Get(server.URL)
+	resp, err := server.Client().Get(server.URL)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -439,8 +439,16 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 
 	server := httptest.NewServer(pr.Handler())
 	t.Cleanup(server.Close)
+	client := server.Client()
+	// httptest.Server.Close closes idle connections on http.DefaultTransport.
+	// This test runs in parallel with other test servers, so its probes must
+	// use the transport owned by this server rather than that shared global.
+	require.NotNil(t, client.Transport,
+		"a nil client transport would fall back to the shared http.DefaultTransport")
+	require.NotSame(t, http.DefaultTransport, client.Transport,
+		"parallel test-server cleanup must not close the transport carrying these probes")
 
-	get, err := http.Get(server.URL)
+	get, err := client.Get(server.URL)
 	require.NoError(t, err)
 	defer get.Body.Close()
 	require.Equal(t, http.StatusOK, get.StatusCode)
@@ -448,7 +456,7 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, getBody)
 
-	head, err := http.Head(server.URL)
+	head, err := client.Head(server.URL)
 	require.NoError(t, err)
 	defer head.Body.Close()
 	require.Equal(t, http.StatusOK, head.StatusCode)
@@ -458,14 +466,14 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 	require.Equal(t, get.Header.Get("Content-Type"), head.Header.Get("Content-Type"),
 		"HEAD should answer with the same headers GET would")
 
-	post, err := http.Post(server.URL, "application/json", nil)
+	post, err := client.Post(server.URL, "application/json", nil)
 	require.NoError(t, err)
 	defer post.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, post.StatusCode)
 
 	req, err := http.NewRequest(http.MethodOptions, server.URL, nil)
 	require.NoError(t, err)
-	options, err := http.DefaultClient.Do(req)
+	options, err := client.Do(req)
 	require.NoError(t, err)
 	defer options.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, options.StatusCode,
@@ -486,7 +494,7 @@ func TestWithProtectedResourceUnconfiguredChallengeIsUnchanged(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run", nil)
 	require.NoError(t, err)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -513,7 +521,7 @@ func TestWithProtectedResourceChallengeNamesTheMetadataURL(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run", nil)
 	require.NoError(t, err)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -547,7 +555,7 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 	req.Header.Set("Host", "attacker.example.com")
 	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
