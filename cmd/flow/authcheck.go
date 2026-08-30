@@ -74,7 +74,9 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 	}
 	policy, err := auth.ParsePolicy(policyData)
 	if err != nil {
-		return fmt.Errorf("parsing auth policy: %w", err)
+		// Parser diagnostics can quote source excerpts. The policy path may
+		// accidentally name the token file, so no parser detail is safe here.
+		return errors.New("parsing auth policy: policy is malformed")
 	}
 	verifier, err := auth.NewOIDCVerifier(policy)
 	if err != nil {

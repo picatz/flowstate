@@ -238,3 +238,19 @@ func TestAuthCheckNeverEchoesATokenMistakenForAPolicyPath(t *testing.T) {
 	assert.Contains(t, res.Stderr, "policy could not be read")
 	assert.NotContains(t, res.Output(), token)
 }
+
+// TestAuthCheckNeverEchoesATokenReadAsPolicy covers a swapped pair of valid
+// paths. Policy parsers can quote the malformed source, which in this case is
+// the credential itself, so their detailed error must not reach output.
+func TestAuthCheckNeverEchoesATokenReadAsPolicy(t *testing.T) {
+	t.Parallel()
+	issuer := authCheckIssuer(t)
+	token := issuer.MintToken(nil, authtest.WithAudience("flowstate"))
+	tokenPath := writeAuthCheckToken(t, token)
+	policyPath := writeAuthCheckPolicy(t, authCheckEntry("repository", issuer.URL()))
+
+	res := runFlow(t, "auth", "check", "--auth-policy", tokenPath, "--token-file", policyPath)
+	assert.Equal(t, exitCodeFailure, res.ExitCode, res.Output())
+	assert.Contains(t, res.Stderr, "policy is malformed")
+	assert.NotContains(t, res.Output(), token)
+}
