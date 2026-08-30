@@ -203,7 +203,7 @@ func TaskSpanRetryTaskDef(attempts *atomic.Int32) v1.TaskDef {
 		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
 			if attempts.Add(1) == 1 {
 				return nil, v1.NewTaskError(TaskSpanRetryTaskName, v1.ErrorKindUpstream,
-					errors.New("fixture fails on its first attempt"))
+					errors.New("fixture fails on its first attempt with "+TaskSpanSecret))
 			}
 
 			return &v1.Node_Outputs{}, nil

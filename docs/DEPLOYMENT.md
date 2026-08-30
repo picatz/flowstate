@@ -1141,6 +1141,27 @@ drops an unrecognized key and caps a runaway value's cardinality behind an
 `OverflowValue` sentinel rather than losing the measurement — see that
 package's doc comment for the full policy.
 
+**Task-execution metrics**, recorded by the shared task observation both the
+local and durable drivers call (`pkg/flowstate/v1/taskmetrics.go`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.task.duration` | histogram | s | `flowstate.task.name`, `flowstate.task.outcome`, `flowstate.driver`, `error.type` (on failure) | Duration of one task attempt, including a first attempt or retry |
+| `flowstate.task.executions` | counter | — | same as `flowstate.task.duration` | One increment per task attempt, with its terminal outcome |
+| `flowstate.task.retries` | counter | — | `flowstate.task.name`, `flowstate.driver` | One increment when an attempt after the first starts |
+
+`flowstate.task.retries` counts retries, not all attempts: a first attempt adds
+to executions and duration but not retries. A retry increments when its work
+starts, so cancellation during backoff adds nothing, while a started retry is
+counted whether it later succeeds, fails, or panics. Its terminal outcome is
+already represented by `flowstate.task.executions` and
+`flowstate.task.duration`; it does not add another retry series. Divide retries
+by executions for the fraction of task work spent retrying. The attempt number
+itself remains on task spans only — making it a metric label would create one
+series per configured attempt value. Task names pass through the shared
+cardinality limiter; attempt numbers, run/execution/delivery IDs, inputs, error
+messages, and secret values never become labels.
+
 **Temporal SDK metrics** are also live once telemetry is on: `initTelemetry`
 wires a `client.MetricsHandler` (`opentelemetry.NewMetricsHandler`, meter name
 `temporal-sdk`) into both the server's and the worker's Temporal client
@@ -1221,10 +1242,8 @@ split every other `flowstate.*` label in this document follows; see
 `pkg/flowstate/v1/metricschema` for the allowlist and why a run id can never
 reach an instrument.
 
-What is still not here: a step's own retry count as a run-level rollup (the
-task-level duration/executions pair above already carries one measurement per
-attempt) and any label scoped to a tenant rather than a workflow — this
-system has no `ClassConfiguration`-bounded tenant label declared yet, so
+What is still not here: any label scoped to a tenant rather than a workflow —
+this system has no `ClassConfiguration`-bounded tenant label declared yet, so
 "runs per tenant per hour" still means filtering `flow list` or a trace by
 namespace rather than reading one off this table.
 

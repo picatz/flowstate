@@ -2615,7 +2615,7 @@ func (e *causeEnrichedError) Unwrap() error {
 // `activity.GetInfo(ctx).Attempt`, read in engine/activities.go. See
 // [StartTaskSpan]'s doc for why one key carries both and why that is honest.
 func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string, attempt int) (*Node_Outputs, error) {
-	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
+	return ObserveTaskAttempt(ctx, task, stepID, metricschema.DriverLocal, attempt,
 		func(ctx context.Context, span trace.Span) (*Node_Outputs, error) {
 			span.SetAttributes(attribute.Int(SpanAttributeAttempt, attempt))
 			return runStepAttempt(ctx, task, timeout, scope)
