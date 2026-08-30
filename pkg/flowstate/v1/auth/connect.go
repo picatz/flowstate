@@ -93,8 +93,8 @@ func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 //
 // # Why the resource is kept beside its URL
 //
-// pr's own resource identifier is recorded as well as the document's URL, so
-// that [Authenticator.challengeMetadataURL] can tell whether the document
+// pr carries its resource identifier beside the document's URL, so
+// [ProtectedResource.ChallengeMetadataURL] can tell whether the document
 // describes the surface doing the rejecting. A challenge is an instruction —
 // a client that reads "fetch this document" fetches it, asks its authorization
 // server for the audience the document names, and comes back with that token
