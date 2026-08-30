@@ -276,7 +276,7 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.reply(request, s.stackTrace())
 
 	case "scopes":
-		s.reply(request, s.scopeList())
+		s.reply(request, s.scopeList(request.Arguments))
 
 	case "variables":
 		s.reply(request, s.variables(ctx, request.Arguments))
@@ -406,34 +406,45 @@ func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug
 	})
 }
 
-// stackTrace is where the run is, as the one frame it has.
+// stackTrace is the run's shared call chain, translated without reconstructing
+// it from adapter state.
 func (s *Server) stackTrace() stackTraceBody {
-	at, paused := s.session.Paused()
-	if !paused {
+	trace, err := s.session.Backtrace()
+	if err != nil {
 		// An empty stack rather than a refusal: a client asks for this
 		// speculatively, and "the run is not stopped" is exactly what no frames
 		// means.
 		return stackTraceBody{StackFrames: []stackFrame{}}
 	}
 
-	name := at.Step
-	switch {
-	case at.Autopsy:
-		// The run is over and its scope is still readable, which is a real
-		// position to be at and one no step id describes.
-		name = "after the run"
-	case at.Kind != "":
-		name = fmt.Sprintf("%s (%s)", at.Step, at.Kind)
+	frames := make([]stackFrame, 0, len(trace.GetFrames()))
+	for i, frame := range trace.GetFrames() {
+		name := frame.GetStepId()
+		if frame.GetWorkflow() != "" {
+			name = frame.GetWorkflow() + "." + name
+		}
+		if frame.GetKind() != "" {
+			name = fmt.Sprintf("%s (%s)", name, frame.GetKind())
+		}
+		frames = append(frames, stackFrame{ID: i + 1, Name: name})
 	}
 
-	return stackTraceBody{
-		StackFrames: []stackFrame{{ID: runThreadID, Name: name}},
-		TotalFrames: 1,
-	}
+	return stackTraceBody{StackFrames: frames, TotalFrames: len(frames)}
 }
 
 // scopeList is what the paused run can name, one DAP scope per group.
-func (s *Server) scopeList() scopesBody {
+func (s *Server) scopeList(arguments json.RawMessage) scopesBody {
+	var asked struct {
+		FrameID int `json:"frameId"`
+	}
+	_ = json.Unmarshal(arguments, &asked)
+	if asked.FrameID > 1 {
+		// Caller frames identify the chain but are not paused scopes. Returning
+		// the innermost values here would put a correct value under the wrong
+		// frame, which is worse than an explicitly empty pane.
+		return scopesBody{Scopes: []scope{}}
+	}
+
 	groups, err := s.session.Scope()
 	if err != nil {
 		return scopesBody{Scopes: []scope{}}

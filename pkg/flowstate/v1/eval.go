@@ -1737,7 +1737,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// [UndoScopeCall]. A call reached from inside a for_each body or a
 		// parallel branch must not become an escape hatch out of the
 		// concurrency refusal just because a call sits between the two.
-		return runCall(pushWaitAncestor(ctx, node.GetId()), n.Call, scope, undo, placement.IntoCall(), depth+1)
+		return runCall(pushWaitAncestor(ctx, node.GetId()), node.GetId(), NodeKind(node), n.Call, scope, undo, placement.IntoCall(), depth+1)
 
 	default:
 		return nil, fmt.Errorf("unsupported node kind: %T", n)
@@ -1778,7 +1778,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 // the `call:` step itself regardless, since a call has no effect of its own —
 // the compensation belongs on the callee's steps, not on the step that
 // reaches them.
-func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+func runCall(ctx context.Context, callerStep, callerKind string, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	if err := CheckCallDepth(depth); err != nil {
 		return nil, err
 	}
@@ -1819,7 +1819,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 	// `callee.GetName()`, so there is one source and two audiences rather than
 	// two spellings — and the first is what a step boundary reads, because a
 	// run with no secrets configured still has a workflow.
-	calleeCtx := contextWithExecutingWorkflow(ctx, callee.GetName())
+	calleeCtx := contextWithExecutingCall(ctx, callerStep, callerKind, callee.GetName())
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
 		calleeCtx = ContextWithSecretStep(calleeCtx, callee.GetName(), runtime.Step.Run, "")
 	}

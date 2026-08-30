@@ -33,15 +33,39 @@ import "context"
 // running.
 type executingWorkflowKey struct{}
 
+type executingPosition struct {
+	workflow string
+	callers  []*DebugStackFrame
+}
+
 // contextWithExecutingWorkflow returns ctx carrying name as the workflow whose
 // steps are running on it.
 //
 // Unexported deliberately: this is the engine's own bookkeeping, and a caller
 // able to set it could tell a debugger the run is somewhere it is not. The
-// engine sets it at exactly two places, and both are a workflow it is about to
-// interpret.
+// engine sets the root here and moves calls through
+// [contextWithExecutingCall], both immediately before interpreting that
+// workflow.
 func contextWithExecutingWorkflow(ctx context.Context, name string) context.Context {
-	return context.WithValue(ctx, executingWorkflowKey{}, name)
+	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name})
+}
+
+// contextWithExecutingCall moves execution into callee and records the caller
+// frame that reached it. The list is bounded by CheckCallDepth before this is
+// called, and copied so a nested call cannot mutate its parent's context.
+func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, callee string) context.Context {
+	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
+	callers := append([]*DebugStackFrame(nil), position.callers...)
+	callers = append(callers, &DebugStackFrame{
+		Workflow: position.workflow,
+		StepId:   callerStep,
+		Kind:     callerKind,
+	})
+
+	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{
+		workflow: callee,
+		callers:  callers,
+	})
 }
 
 // ExecutingWorkflowFromContext reports which workflow's steps are running on
@@ -60,10 +84,25 @@ func contextWithExecutingWorkflow(ctx context.Context, name string) context.Cont
 // can require — and "not said" must not be read as a name, because two steps
 // that answer to no workflow are not thereby the same step.
 func ExecutingWorkflowFromContext(ctx context.Context) (string, bool) {
-	name, ok := ctx.Value(executingWorkflowKey{}).(string)
-	if !ok || name == "" {
+	position, ok := ctx.Value(executingWorkflowKey{}).(executingPosition)
+	if !ok || position.workflow == "" {
 		return "", false
 	}
 
-	return name, true
+	return position.workflow, true
+}
+
+// ExecutingBacktraceFromContext returns the current frame followed by the
+// caller chain, innermost first. An embedder that drives a Debugger directly
+// still gets the current step, with an unsaid workflow.
+func ExecutingBacktraceFromContext(ctx context.Context, step, kind string) *DebugBacktrace {
+	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
+	frames := make([]*DebugStackFrame, 0, 1+len(position.callers))
+	frames = append(frames, &DebugStackFrame{Workflow: position.workflow, StepId: step, Kind: kind})
+	for i := len(position.callers) - 1; i >= 0; i-- {
+		frame := position.callers[i]
+		frames = append(frames, &DebugStackFrame{Workflow: frame.GetWorkflow(), StepId: frame.GetStepId(), Kind: frame.GetKind()})
+	}
+
+	return &DebugBacktrace{Frames: frames}
 }
