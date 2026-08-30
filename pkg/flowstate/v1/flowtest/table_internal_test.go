@@ -102,6 +102,31 @@ func TestAnEmptyListIsAStatementNotAnAbsence(t *testing.T) {
 	assert.Empty(t, merged.Skipped)
 }
 
+// TestExpandingATableDoesNotNormalizeTheCallersClaims: [Run] expands a
+// Go-built File before making its own shallow copy. A tolerated fence is
+// stripped during entry validation, so that validation must own its claim
+// slice rather than mutate the caller's File — or two concurrent runs race on
+// the same CheckClaim.That.
+func TestExpandingATableDoesNotNormalizeTheCallersClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []Test{{
+		Name:   "table",
+		Expect: Expectation{Check: []CheckClaim{{That: "${true}"}}},
+		Cases:  []Test{{Name: "row"}},
+	}}
+	p := newProblems(nil)
+	expanded, _ := expandTableEntries(p, tests)
+
+	require.Nil(t, p.err())
+	require.Len(t, expanded, 1)
+	require.Len(t, expanded[0].Expect.Check, 1)
+	assert.Equal(t, "${true}", tests[0].Expect.Check[0].That,
+		"expansion normalized a claim through the caller's slice")
+	assert.Equal(t, "true", expanded[0].Expect.Check[0].That,
+		"the effective row did not retain the normalized claim")
+}
+
 func nonZeroExpectation() Expectation {
 	return Expectation{
 		Outputs:        map[string]any{"entry": true},

@@ -1,6 +1,9 @@
 package flowtest
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // Table entries (#924 slice 2): a `tests:` entry that declares `cases:` is a
 // template, and each row under it is one run merged over that template.
@@ -100,6 +103,10 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 		// source path and its identity are still available. mergeExpectation
 		// marks the copies each row inherits, so the ordinary case pass below
 		// skips those copies but continues to judge row-written overrides.
+		// Clone the claims before validation strips a tolerated `${...}` fence:
+		// Run also uses this pass for a Go-built File, and running one must not
+		// mutate the caller's slice or race with another run of the same file.
+		entry.Expect.Check = slices.Clone(entry.Expect.Check)
 		entrySite := site{test: entry.Name, at: where}
 		checkOthers(p, entrySite, &entry)
 		checkCheckClaims(p, entrySite.in(where.field("expect").field("check")),
