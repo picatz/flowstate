@@ -35,12 +35,11 @@ import (
 // verified. See mtls.go's package doc for why that is the seam and not a
 // widened [Verifier] signature.
 type Authenticator struct {
-	verifier                     Verifier
-	peerVerifier                 PeerVerifier
-	observe                      func(context.Context, *http.Request, error)
-	protectedResource            string
-	protectedResourceMetadataURL string
-	expectedResource             string
+	verifier          Verifier
+	peerVerifier      PeerVerifier
+	observe           func(context.Context, *http.Request, error)
+	protectedResource *ProtectedResource
+	expectedResource  string
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -94,8 +93,8 @@ func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 //
 // # Why the resource is kept beside its URL
 //
-// pr's own resource identifier is recorded as well as the document's URL, so
-// that [Authenticator.challengeMetadataURL] can tell whether the document
+// pr carries its resource identifier beside the document's URL, so
+// [ProtectedResource.ChallengeMetadataURL] can tell whether the document
 // describes the surface doing the rejecting. A challenge is an instruction —
 // a client that reads "fetch this document" fetches it, asks its authorization
 // server for the audience the document names, and comes back with that token
@@ -108,8 +107,7 @@ func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 // on picatz/flowstate#1007.
 func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
 	return func(a *Authenticator) {
-		a.protectedResource = pr.Resource()
-		a.protectedResourceMetadataURL = pr.MetadataURL()
+		a.protectedResource = pr
 	}
 }
 
@@ -315,11 +313,7 @@ func (a *Authenticator) unauthenticated(cause error) error {
 // always named: it still accepts every audience its trust policy lists, so
 // the one the document advertises is among them and the instruction is good.
 func (a *Authenticator) challengeMetadataURL() string {
-	if a.expectedResource != "" && a.expectedResource != a.protectedResource {
-		return ""
-	}
-
-	return a.protectedResourceMetadataURL
+	return a.protectedResource.ChallengeMetadataURL(a.expectedResource)
 }
 
 // PrincipalFromContext returns the [Principal] that [Authenticator.Authenticate]

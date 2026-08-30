@@ -245,6 +245,44 @@ func TestMCPServeChallengesAnUnauthenticatedRequest(t *testing.T) {
 		"no per-action enforcement point can truthfully name a required scope")
 	require.Contains(t, fixture.logs.String(), `reason="missing bearer token"`,
 		"the SDK rejects an absent header before calling the token verifier, and that refusal must still be observed")
+
+	// The document named by the challenge describes the exact audience this
+	// MCP surface admits. A second audience on the same trusted issuer entry is
+	// deliberately refused below, proving this is surface binding rather than
+	// only issuer-level verification.
+	metadataRequest, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		fixture.server.URL+fixture.resource.Path(), nil)
+	require.NoError(t, err)
+	metadataResponse, err := fixture.server.Client().Do(metadataRequest)
+	require.NoError(t, err)
+	defer metadataResponse.Body.Close()
+	require.Equal(t, http.StatusOK, metadataResponse.StatusCode)
+
+	var document struct {
+		Resource string `json:"resource"`
+	}
+	require.NoError(t, json.NewDecoder(metadataResponse.Body).Decode(&document))
+	require.Equal(t, mcpServeTestResource, document.Resource)
+
+	accepted := fixture.initialize(t, fixture.goodToken("coherent-agent"), "")
+	require.Equal(t, http.StatusOK, accepted.StatusCode,
+		"a token naming the challenge document's resource must be admitted")
+
+	const secretSubject = "mismatched-claim-that-must-not-leak"
+	mismatchedToken := fixture.issuer.MintToken(nil,
+		authtest.WithSubject(secretSubject), authtest.WithAudience(mcpServeTestOtherResource))
+	refused := fixture.initialize(t, mismatchedToken, "")
+	require.Equal(t, http.StatusUnauthorized, refused.StatusCode,
+		"a policy-trusted token for a different resource must be refused by MCP's surface binding")
+	refusedBody, err := io.ReadAll(refused.Body)
+	require.NoError(t, err)
+	refusedChallenge := refused.Header.Get("WWW-Authenticate")
+	require.Contains(t, refusedChallenge, `resource_metadata="`+fixture.resource.MetadataURL()+`"`)
+	for _, rendered := range []string{refusedChallenge, string(refusedBody), fixture.logs.String()} {
+		require.NotContains(t, rendered, mismatchedToken)
+		require.NotContains(t, rendered, secretSubject)
+		require.NotContains(t, rendered, mcpServeTestOtherResource)
+	}
 }
 
 // TestMCPServeObservesARefusalWithoutLoggingCredentialMaterial is the MCP half
