@@ -2,6 +2,7 @@ package reference
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -45,6 +46,16 @@ func TestPresenceLabelSeparatesRequirednessFromProtobufPresence(t *testing.T) {
 		"a plain proto3 scalar is not required merely because it lacks presence")
 }
 
+func TestReferencePropagatesWriterFailure(t *testing.T) {
+	want := errors.New("disk full")
+	err := GenerateGet(failingWriter{err: want})
+	require.ErrorIs(t, err, want)
+}
+
+func TestEscapeTablePreservesRegexAlternationInOneCell(t *testing.T) {
+	assert.Equal(t, `matching ^(GET\|POST)$`, escapeTable(`matching ^(GET|POST)$`))
+}
+
 func BenchmarkGeneration(b *testing.B) {
 	for b.Loop() {
 		var out bytes.Buffer
@@ -53,3 +64,7 @@ func BenchmarkGeneration(b *testing.B) {
 		}
 	}
 }
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
