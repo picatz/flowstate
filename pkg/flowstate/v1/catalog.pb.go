@@ -340,10 +340,16 @@ func (x *CELFunction) GetSignature() []string {
 // TaskDescription is one task's name and shape.
 type TaskDescription struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Name is the registered task name an author writes, including the plugin
+	// prefix for a plugin task, such as `slack.post`.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Summary is a single line, the same one `flow tasks` prints.
-	Summary string       `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
-	Inputs  []*TaskField `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	Summary string `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
+	// Inputs describes the named values the task accepts in the Flowfile's
+	// vocabulary; empty means the task accepts no named inputs.
+	Inputs []*TaskField `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	// Outputs describes the named values the task declares it returns before any
+	// author-selected output shaping; empty means it declares no named outputs.
 	Outputs []*TaskField `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
 	// NeedsScope reports whether the task must receive every prior step's
 	// outputs and the variables bound by enclosing control flow, on every call.
@@ -431,12 +437,21 @@ type TaskDescription struct {
 	// bump for them: a bump is compared exactly by the same replay guard, and
 	// these say what a task's messages *are* rather than what a task asks to
 	// be trusted with.
-	InputDescriptor  []byte `protobuf:"bytes,10,opt,name=input_descriptor,json=inputDescriptor,proto3" json:"input_descriptor,omitempty"`
-	InputMessage     string `protobuf:"bytes,11,opt,name=input_message,json=inputMessage,proto3" json:"input_message,omitempty"`
+	InputDescriptor []byte `protobuf:"bytes,10,opt,name=input_descriptor,json=inputDescriptor,proto3" json:"input_descriptor,omitempty"`
+	// InputMessage is the fully-qualified protobuf message name within
+	// input_descriptor, or within the reader's own descriptor registry when the
+	// bytes are empty; empty alongside empty bytes declares no input message.
+	InputMessage string `protobuf:"bytes,11,opt,name=input_message,json=inputMessage,proto3" json:"input_message,omitempty"`
+	// OutputDescriptor encodes the output schema as a FileDescriptorProto or
+	// FileDescriptorSet; empty bytes reuse a known output_message or, when that
+	// name is also empty, declare no output message.
 	OutputDescriptor []byte `protobuf:"bytes,12,opt,name=output_descriptor,json=outputDescriptor,proto3" json:"output_descriptor,omitempty"`
-	OutputMessage    string `protobuf:"bytes,13,opt,name=output_message,json=outputMessage,proto3" json:"output_message,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// OutputMessage is the fully-qualified protobuf message name within
+	// output_descriptor, or within the reader's own descriptor registry when the
+	// bytes are empty; empty alongside empty bytes declares no output message.
+	OutputMessage string `protobuf:"bytes,13,opt,name=output_message,json=outputMessage,proto3" json:"output_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TaskDescription) Reset() {
@@ -677,8 +692,10 @@ type PluginDescription struct {
 	SecretSchemes []string `protobuf:"bytes,5,rep,name=secret_schemes,json=secretSchemes,proto3" json:"secret_schemes,omitempty"`
 	// Tasks are the tasks this plugin provides, described exactly as a built-in
 	// task is.
-	Tasks           []*TaskDescription `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
-	ProtocolVersion uint32             `protobuf:"varint,7,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	Tasks []*TaskDescription `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
+	// ProtocolVersion is the wire protocol negotiated with this running plugin;
+	// zero leaves the catalog entry incomplete and unable to be pinned to a run.
+	ProtocolVersion uint32 `protobuf:"varint,7,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	// TaskSchemaDigest is computed over Tasks' descriptor shape — name,
 	// summary, inputs, outputs — deterministically marshaled: the case it
 	// exists to catch is a plugin whose descriptors changed shape while its
@@ -693,7 +710,11 @@ type PluginDescription struct {
 	// and a mismatch is a non-retryable failure: a run already durable when
 	// this field's *meaning* changed must still see the same digest for a
 	// plugin whose descriptors did not change.
-	TaskSchemaDigest   string `protobuf:"bytes,8,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
+	TaskSchemaDigest string `protobuf:"bytes,8,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
+	// DistributionDigest identifies the executable bytes measured for the
+	// running plugin, which runs pin and workers compare exactly. On platforms
+	// without descriptor-backed execution, it identifies the file at the plugin
+	// path immediately before launch rather than proving what the kernel ran.
 	DistributionDigest string `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
 	// ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
 	// ShapesOutputs, DeferredInputs and ExpressionInputs only — the fields
@@ -811,7 +832,8 @@ func (x *PluginDescription) GetClaimsDigest() string {
 // TaskField is one input or output, described in the DSL's vocabulary.
 type TaskField struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Name is the protobuf field name used verbatim as the Flowfile key.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Type is what an author would call it: `string`, `list[string]`,
 	// `map[string, string]`, or `any` where the shape is whatever an expression
 	// produced. Deliberately not the Protobuf type name, which is accurate about

@@ -359,3 +359,51 @@ func TestPluginProtocolProseIsPresent(t *testing.T) {
 		t.Errorf("walk checked only %d plugin protocol declarations; the traversal is incomplete", checked)
 	}
 }
+
+// TestCatalogProseIsPresent keeps every catalog message and field useful to
+// descriptor consumers, generated Go documentation, and editor hovers.
+func TestCatalogProseIsPresent(t *testing.T) {
+	reg, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	file, err := reg.FindFileByPath("flowstate/v1/catalog.proto")
+	if err != nil {
+		t.Fatalf("catalog descriptor: %v", err)
+	}
+
+	var missing []string
+	messageCount := 0
+	fieldCount := 0
+	var checkMessage func(protoreflect.MessageDescriptor)
+	checkMessage = func(message protoreflect.MessageDescriptor) {
+		if message.IsMapEntry() {
+			return
+		}
+		messageCount++
+		if _, ok := CommentOf(message); !ok {
+			missing = append(missing, string(message.FullName()))
+		}
+		for i := 0; i < message.Fields().Len(); i++ {
+			field := message.Fields().Get(i)
+			fieldCount++
+			if _, ok := CommentOf(field); !ok {
+				missing = append(missing, string(field.FullName()))
+			}
+		}
+		for i := 0; i < message.Messages().Len(); i++ {
+			checkMessage(message.Messages().Get(i))
+		}
+	}
+	for i := 0; i < file.Messages().Len(); i++ {
+		checkMessage(file.Messages().Get(i))
+	}
+
+	if messageCount != 6 || fieldCount != 43 {
+		t.Errorf("catalog walk checked %d messages and %d fields; want 6 messages and 43 fields", messageCount, fieldCount)
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("catalog declarations missing leading comments: %s", strings.Join(missing, ", "))
+	}
+}
