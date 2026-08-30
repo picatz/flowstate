@@ -1621,11 +1621,11 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 // resilience of the step it is undoing, and giving it a *different* answer would
 // be one more number written down twice.
 //
-// The scope carries the profile and the run identity, and nothing more. The
-// task's inputs were resolved when the step succeeded, so there is nothing here
-// left to evaluate against a run; what remains unresolved is only what a task
-// evaluates against its own response, which needs no other run scope in either
-// driver.
+// The scope carries the profile, the run identity, and the local driver's
+// host-owned marker, and nothing more. The task's inputs were resolved when the
+// step succeeded, so there is nothing here left to evaluate against a run; what
+// remains unresolved is only what a task evaluates against its own response,
+// which needs no other run scope in either driver.
 //
 // Identity is the exception, for the reason the run scope above carries it
 // (#295): the task-shape policy reads `identity.namespace`, so a compensation
@@ -1637,6 +1637,7 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Identity = RehearsalIdentityFromContext(ctx)
+	scope.Local = true
 	// The step the compensation undoes, which is the id the durable
 	// driver dispatches a compensation with (`executor.runUndoTask` passes
 	// `entry.GetStepId()`) — so the span naming it says the same thing on
