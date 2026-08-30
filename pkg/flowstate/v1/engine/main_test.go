@@ -17,6 +17,7 @@ import (
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/picatz/flowstate/internal/temporaltest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
@@ -41,6 +42,14 @@ var devServer *testsuite.DevServer
 var namespaceOrdinal atomic.Int64
 
 func TestMain(m *testing.M) {
+	if handled, err := temporaltest.RunLauncher(); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// testing.Short() reads a flag, and flags are only populated once parsed.
 	// TestMain is the one entry point that runs before the testing package has
 	// done that parsing itself, so it has to be done here first.
@@ -125,9 +134,7 @@ func runPackageTests(m *testing.M) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	started, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
-		ClientOptions: &client.Options{},
-	})
+	started, err := temporaltest.Start(ctx, &client.Options{})
 	if err != nil {
 		return 0, fmt.Errorf("starting the Temporal dev server this package shares: %w", err)
 	}
