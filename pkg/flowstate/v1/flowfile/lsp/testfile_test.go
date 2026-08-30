@@ -641,6 +641,24 @@ func TestAClosedSuiteCannotConsumeADefaultsDependencySlot(t *testing.T) {
 	assert.Empty(t, s.testSuitesByDefaults)
 }
 
+func TestDefaultsOverflowMembershipIsBounded(t *testing.T) {
+	t.Parallel()
+	s := &FlowfileServer{Logger: discardLogger()}
+	defaultsURI := lsp.DocumentURI("file:///bounded/testdefaults.yaml")
+	for i := range maxTestDefaultsDependents + maxTestDefaultsOverflowMembers + 10 {
+		uri := lsp.DocumentURI(fmt.Sprintf("file:///bounded/suite-%d.test.yaml", i))
+		suite := s.docs.open(uri, 1, validSuite, nil)
+		_, current := s.rememberTestDefaults(suite, defaultsURI)
+		require.True(t, current)
+	}
+
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	assert.Len(t, s.testSuitesByDefaults[defaultsURI], maxTestDefaultsDependents)
+	assert.Len(t, s.testOverflowsByDefaults[defaultsURI], maxTestDefaultsOverflowMembers)
+	assert.Len(t, s.testOverflowBySuite, maxTestDefaultsOverflowMembers)
+}
+
 func TestQuotedKeyUsesTheLoadersPosition(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)

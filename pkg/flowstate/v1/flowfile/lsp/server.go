@@ -524,8 +524,9 @@ func siblingDocumentURI(uri lsp.DocumentURI, name string) lsp.DocumentURI {
 }
 
 const (
-	maxTestDefaultsDependents  = 32
-	codeTestDefaultsDependents = "testdefaults-dependent-limit"
+	maxTestDefaultsDependents      = 32
+	maxTestDefaultsOverflowMembers = 32
+	codeTestDefaultsDependents     = "testdefaults-dependent-limit"
 )
 
 func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.DocumentURI {
@@ -560,11 +561,13 @@ func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.Docu
 	}
 	dependents := s.testSuitesByDefaults[defaults]
 	if len(dependents) >= maxTestDefaultsDependents {
-		if s.testOverflowsByDefaults[defaults] == nil {
-			s.testOverflowsByDefaults[defaults] = make(map[lsp.DocumentURI]bool)
+		if len(s.testOverflowsByDefaults[defaults]) < maxTestDefaultsOverflowMembers {
+			if s.testOverflowsByDefaults[defaults] == nil {
+				s.testOverflowsByDefaults[defaults] = make(map[lsp.DocumentURI]bool)
+			}
+			s.testOverflowsByDefaults[defaults][suite.uri] = true
+			s.testOverflowBySuite[suite.uri] = defaults
 		}
-		s.testOverflowsByDefaults[defaults][suite.uri] = true
-		s.testOverflowBySuite[suite.uri] = defaults
 		return false, true
 	}
 	if dependents == nil {
@@ -619,7 +622,7 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 	for _, publication := range publications {
 		if source != publication.uri {
 			_, tracked := s.testDefaultsBySuite[source]
-			if !tracked && s.testOverflowBySuite[source] == publication.uri {
+			if !tracked {
 				// Overflow membership is retained for bounded promotion, but its
 				// saved defaults result is not a target contributor. Preserve any
 				// suite-specific refusal as an explicitly fallback-owned suite error
@@ -674,16 +677,20 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 		delete(s.testDefaultsBySuite, source)
 		delete(s.testSuitesByDefaults[defaults], source)
 		var candidate lsp.DocumentURI
+		var candidateDoc *document
 		for overflow := range s.testOverflowsByDefaults[defaults] {
-			candidate = overflow
-			break
+			delete(s.testOverflowsByDefaults[defaults], overflow)
+			delete(s.testOverflowBySuite, overflow)
+			if suite, open := s.docs.get(overflow); open && suite.kind == docTestFile {
+				candidate = overflow
+				candidateDoc = suite
+				break
+			}
 		}
-		delete(s.testOverflowsByDefaults[defaults], candidate)
-		delete(s.testOverflowBySuite, candidate)
 		if len(s.testOverflowsByDefaults[defaults]) == 0 {
 			delete(s.testOverflowsByDefaults, defaults)
 		}
-		if suite, open := s.docs.get(candidate); open && suite.kind == docTestFile {
+		if candidateDoc != nil {
 			promoted = candidate
 			promotionDefaults = defaults
 		}
