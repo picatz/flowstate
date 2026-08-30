@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -43,4 +44,31 @@ func TestRunWorkflowTaskSpans(t *testing.T) {
 	}
 
 	conformance.AssertTaskSpans(t, recorder, outputs, err)
+}
+
+// TestRetryingTaskSpans runs the attempt-number case through Temporal's retry
+// scheduler. The shared assertion requires attempts 1 and 2, which proves the
+// durable span reads activity info rather than inferring from time or text.
+func TestRetryingTaskSpans(t *testing.T) {
+	var attempts atomic.Int32
+	registry := v1.DefaultRegistry()
+	require.NoError(t, registry.Register(conformance.TaskSpanRetryTaskDef(&attempts)))
+	t.Cleanup(func() { registry.Unregister(conformance.TaskSpanRetryTaskName) })
+	recorder := conformance.RecordSpans(t)
+
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(engine.Run)
+	env.RegisterActivity(engine.Task)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: conformance.TaskSpanRetryWorkflow()})
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	var outputs *v1.Workflow_StepOutputs
+	if err == nil {
+		outputs = &v1.Workflow_StepOutputs{}
+		require.NoError(t, env.GetWorkflowResult(outputs))
+	}
+
+	conformance.AssertRetryingTaskSpans(t, recorder, outputs, err)
 }

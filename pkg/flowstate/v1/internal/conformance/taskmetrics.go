@@ -207,6 +207,10 @@ func assertDeclaredAttributesOnly(tb testing.TB, collected map[string][]Point) {
 
 		for _, point := range points {
 			for key, value := range point.Attributes {
+				if key == v1.SpanAttributeStepID || key == v1.SpanAttributeAttempt {
+					tb.Fatalf("%s carries span-only %q as a metric label; step ids grow with the workflow and attempt counts grow with retry policy, so either creates deployment-controlled time series",
+						name, key)
+				}
 				if _, no := refused[key]; no {
 					tb.Fatalf("%s carries %q, which metricschema refuses on any instrument: it is minted per event, so one value is one time series",
 						name, key)
