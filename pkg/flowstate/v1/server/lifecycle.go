@@ -596,7 +596,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// an equality that can only answer true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -675,10 +675,11 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// secret.
 	asSubmitted := proto.Equal(submitted, workflow)
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
-		Workflow:    workflow,
-		StepsBudget: int32(s.maxStepsPerRun),
-		Identity:    identity,
-		Inputs:      inputs,
+		Workflow:           workflow,
+		StepsBudget:        int32(s.maxStepsPerRun),
+		Identity:           identity,
+		Inputs:             inputs,
+		MetricWorkflowName: metricWorkflowName(workflow, trusted),
 		PendingSignals: []*v1.PendingSignal{{
 			Name:    req.Msg.GetName(),
 			Payload: payload,

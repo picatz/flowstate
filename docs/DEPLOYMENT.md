@@ -1205,6 +1205,12 @@ these instruments through genuinely different code).
 | `flowstate.run.duration` | histogram | s | `flowstate.workflow.name`, `flowstate.driver`, `flowstate.run.outcome`, `error.type` (on failure) | Duration from start to terminal outcome. Durably this is the segment that ends the run, not the sum of every Continue-As-New segment a long workload took — see `metricschema.InstrumentRunDuration`'s doc for why |
 | `flowstate.run.executions` | counter | — | same as `flowstate.run.duration` | Run completions, by outcome — the "step failure rate" and "runs per workflow" answer this table previously said did not exist |
 
+The `flowstate.workflow.name` attribute is present only when the admitting
+boundary selected a deployment-owned trusted workflow (including registered
+webhooks). Open, ad-hoc submissions still contribute to the run totals and
+outcomes, but omit the name: a request-controlled name must not consume the
+process-wide workflow-name cardinality budget shared by other tenants.
+
 A Continue-As-New segment boundary records neither instrument: it is a
 handover to the next segment, not a completion, and counting it as one would
 make one submission look like several runs. `flowstate.workflow.name` and

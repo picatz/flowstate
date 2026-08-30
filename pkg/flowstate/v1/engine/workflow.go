@@ -334,7 +334,7 @@ const defaultMaxStepsPerRun = 200
 // passed to NewContinueAsNewErrorWithOptions, and a workflow's own dispatch
 // table always points at the registered name.
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
-	workflowName := st.GetWorkflow().GetName()
+	workflowName := st.GetMetricWorkflowName()
 
 	// #917's run-lifecycle metrics. Recorded here, around the whole of this
 	// segment, rather than inside runWorkflow: this is the one function every
@@ -600,10 +600,11 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		pending := drainSignals(ctx, st.Workflow, exec.signals.pending)
 
 		next := &v1.RunState{
-			Workflow:    st.Workflow,
-			Outputs:     carry,
-			StepsBudget: int32(stepsBudget),
-			Frames:      exec.frames,
+			Workflow:           st.Workflow,
+			Outputs:            carry,
+			StepsBudget:        int32(stepsBudget),
+			Frames:             exec.frames,
+			MetricWorkflowName: st.GetMetricWorkflowName(),
 
 			PendingSignals: pending,
 

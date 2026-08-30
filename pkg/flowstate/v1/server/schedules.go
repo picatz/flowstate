@@ -154,7 +154,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -379,10 +379,11 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			}(),
 
 			Args: []any{&v1.RunState{
-				Workflow:    workflow,
-				StepsBudget: int32(s.maxStepsPerRun),
-				Identity:    identity,
-				Inputs:      inputs,
+				Workflow:           workflow,
+				StepsBudget:        int32(s.maxStepsPerRun),
+				Identity:           identity,
+				Inputs:             inputs,
+				MetricWorkflowName: metricWorkflowName(workflow, trusted),
 
 				// How every firing of this schedule started, frozen here for the
 				// reason Identity above is frozen here: there is no caller left to
