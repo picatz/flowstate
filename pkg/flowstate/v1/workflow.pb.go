@@ -3047,9 +3047,9 @@ type ResolvedTaskCapabilities struct {
 	// plane and is refused when the message is present; absence of the whole message
 	// is the old-run compatibility signal.
 	SchemaVersion uint32 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
-	// TaskNames is sorted and unique. The total is additionally bounded by the
-	// specification byte limit; max_items binds the walk's own allocation even for
-	// an in-process message that did not cross a validated RPC boundary.
+	// TaskNames is sorted and unique. The snapshot is included in the specification
+	// and run-state byte limits; max_items is an additional validation constraint on
+	// this field, not a bound imposed on the requirement walk itself.
 	TaskNames     []string `protobuf:"bytes,2,rep,name=task_names,json=taskNames,proto3" json:"task_names,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

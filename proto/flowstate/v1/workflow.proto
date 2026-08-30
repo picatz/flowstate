@@ -2034,9 +2034,9 @@ message ResolvedTaskCapabilities {
   // is the old-run compatibility signal.
   uint32 schema_version = 1 [(buf.validate.field).uint32 = {gt: 0}];
 
-  // TaskNames is sorted and unique. The total is additionally bounded by the
-  // specification byte limit; max_items binds the walk's own allocation even for
-  // an in-process message that did not cross a validated RPC boundary.
+  // TaskNames is sorted and unique. The snapshot is included in the specification
+  // and run-state byte limits; max_items is an additional validation constraint on
+  // this field, not a bound imposed on the requirement walk itself.
   repeated string task_names = 2 [(buf.validate.field).repeated = {
     unique: true
     max_items: 100000
