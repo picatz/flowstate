@@ -164,8 +164,9 @@ message AuditRecord {
   // caller's own error keeps the prose, and that error is not durable.
   AuditDenyCode deny_code = 8 [(buf.validate.field).enum.defined_only = true];
 
-  // The registered MCP tool the decision was made for, by its full schema
-  // name. Exactly one of rpc and mcp_tool is set.
+  // The registered MCP tool the decision was made for, by its full registered
+  // name (for example, flowstate_validate). Exactly one of rpc and mcp_tool is
+  // set.
   //
   // Additive rather than moving rpc into a oneof: rpc predates this field and
   // keeping field 3's cardinality and generated API unchanged preserves old

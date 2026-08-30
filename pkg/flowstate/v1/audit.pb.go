@@ -268,8 +268,9 @@ type AuditRecord struct {
 	// A code and not a message: see the redaction note on this file. The
 	// caller's own error keeps the prose, and that error is not durable.
 	DenyCode AuditDenyCode `protobuf:"varint,8,opt,name=deny_code,json=denyCode,proto3,enum=flowstate.v1.AuditDenyCode" json:"deny_code,omitempty"`
-	// The registered MCP tool the decision was made for, by its full schema
-	// name. Exactly one of rpc and mcp_tool is set.
+	// The registered MCP tool the decision was made for, by its full registered
+	// name (for example, flowstate_validate). Exactly one of rpc and mcp_tool is
+	// set.
 	//
 	// Additive rather than moving rpc into a oneof: rpc predates this field and
 	// keeping field 3's cardinality and generated API unchanged preserves old

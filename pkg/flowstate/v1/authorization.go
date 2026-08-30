@@ -186,12 +186,16 @@ func AuthorizationActionForRPC(rpc string) (AuthorizationAction, error) {
 			"proto/flowstate/v1/authorization.proto when none of them fits", rpc)
 }
 
+// MCPToolPrefix namespaces Flowstate tools when a client aggregates MCP
+// servers. Registration and authorization projection share this spelling.
+const MCPToolPrefix = "flowstate_"
+
 // MCPToolNameForRPC projects one WorkflowService method name onto the MCP tool
 // name that serves it. It is the one projection used by registration,
 // authorization lookup, audit mapping, and their conformance tests.
 func MCPToolNameForRPC(rpc string) string {
 	var b strings.Builder
-	b.WriteString("flowstate_")
+	b.WriteString(MCPToolPrefix)
 	for i, r := range rpc {
 		if r >= 'A' && r <= 'Z' {
 			if i > 0 {

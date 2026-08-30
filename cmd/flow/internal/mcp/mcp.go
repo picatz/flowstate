@@ -48,7 +48,7 @@ import (
 )
 
 // ToolPrefix namespaces the tools, since a client may aggregate servers.
-const ToolPrefix = "flowstate_"
+const ToolPrefix = v1.MCPToolPrefix
 
 // WorkflowServiceName addresses the service whose prose this surface reads.
 const WorkflowServiceName protoreflect.FullName = "flowstate.v1.WorkflowService"
