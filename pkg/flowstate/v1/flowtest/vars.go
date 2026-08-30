@@ -22,14 +22,15 @@ import (
 //
 // # Literals, and expressions over them
 //
-// A var value that is a whole-value `${...}` fence is an expression; every
-// other value is the literal it has always been. That is the workflow's own
-// `vars:` rule (docs/DSL.md), and the fence is required there for the reason
-// it is required here: a var legitimately holds the literal string
-// `"steps.greet.result"`, so the syntax rather than the content has to say
-// which one an author meant.
+// A var value, or a leaf of a YAML-authored map or list, that is a whole-value
+// `${...}` fence is an expression; every other leaf is the literal it has
+// always been. YAML owns a structured value's keys, lengths, and nesting, so a
+// computed leaf can change only that leaf and never the container's shape.
+// That is distinct from a whole-value expression which happens to return a
+// container: CEL owns that container's shape, and the secret-shape refusal
+// below still applies to it unchanged.
 //
-// A computed var reads its siblings and nothing else — `rush_order:
+// A computed leaf reads its siblings and nothing else — `rush_order:
 // ${vars.base_order}` composed from a base stated once — which is the branch
 // the DSL doc left open on purpose ("a dependency sort with a cycle
 // diagnostic… allowing it later is additive"). Evaluation is at load, once,
@@ -81,6 +82,13 @@ import (
 //	a tainted container   | refused  | its SHAPE survives leaf redaction entirely:
 //	                      |          | `${t == 'guess' ? {} : {'x':'y'}}` answers a
 //	                      |          | question about the secret either way
+//	a tainted leaf in a   | per leaf | YAML owns every key, length, and nesting level,
+//	  YAML container      |          | so the fixed parent shape is safe to preserve;
+//	                      |          | the computed leaf is withheld/refused by the
+//	                      |          | same scalar rows above ([redactVarTree])
+//	a container returned | refused  | a nested fence may not replace its YAML leaf
+//	  by a nested fence   |          | with CEL-chosen shape; put fences at the
+//	                      |          | container's scalar leaves instead
 //	a tainted EMPTY       | refused  | emptiness is shape, and the set cannot hold
 //	  string              |          | "" — it occurs at every position of every
 //	                      |          | string — so `${t == 'guess' ? '' : 'x'}`
@@ -93,8 +101,8 @@ import (
 //	what a reference IS   | one      | CEL binds `vars.token` and `vars['token']`
 //	                      | recog-   | to one value, so ONE function answers "which
 //	                      | nizer,   | var does this reference" and every site routes
-//	                      | both     | through it ([readsVar] on an AST node,
-//	                      | spell-   | [varNameInPath] on a rendered path). The list
+//	                      | both     | through it ([readsVar], including rendered
+//	                      | spell-   | witness paths after they are parsed). The list
 //	                      | ings     | of sites is pinned by
 //	                      |          | TestEverySiteRecognisesBothSpellings, which
 //	                      |          | drives each in both and fails when they differ
@@ -140,11 +148,11 @@ import (
 //
 // Two residuals, named rather than claimed away:
 //
-//   - A fence inside a *structured* var value does not evaluate ([checkVars]
-//     refuses it), so the respelling the container refusal points at — the
-//     structure at the position that uses it, with `${vars.x}` at its leaves —
-//     is the only spelling that composes. An expressiveness gap, tracked on
-//     #1072 rather than widened in a review.
+//   - A YAML-authored structured var has fixed shape. Its fenced leaves are
+//     ordinary computed nodes for ordering and taint: a tainted non-empty
+//     string leaf is withheld at that path, while a tainted leaf of any other
+//     kind is refused. A whole-value CEL expression returning a map or list is
+//     still a tainted container and is still refused for its dynamic shape.
 //   - `vars[<expression>]` is refused in the block, because a dependency
 //     decided at evaluation cannot order it or carry a taint. In a *claim* it
 //     is legal and fails closed instead: the error is withheld without naming a
@@ -209,6 +217,11 @@ const maxVarCycles = MaxLoadProblems
 // this repository's direction at every redaction seam.
 const maxWithheldVarStrings = 64
 
+// maxVarExpressions bounds computed leaves as well as top-level computed
+// values. Without a separate bound one map under one top-level name could
+// multiply [maxVarCost] by every leaf the file-size limit can hold.
+const maxVarExpressions = MaxVarsPerFile
+
 // varReference matches a whole-value reference: `${vars.<name>}` and nothing
 // around it. The name grammar is CEL's identifier grammar, because a var must
 // also be reachable as `vars.<name>` inside a check.
@@ -228,6 +241,10 @@ var varTextualRead = regexp.MustCompile(
 type varRead struct {
 	// name is the var read, empty when dynamic.
 	name string
+
+	// path is the complete static path below `vars`, so a leaf can depend on
+	// another leaf without making its whole YAML container cyclic.
+	path varPath
 
 	// dynamic marks `vars[<expression>]` — a read of the block whose subject
 	// is decided at evaluation. Every caller fails closed on it.
@@ -263,27 +280,59 @@ func readsVar(e celast.Expr, bound map[string]bool) (varRead, bool) {
 	if bound[v1.VarsRoot] {
 		return varRead{}, false
 	}
-	switch e.Kind() {
-	case celast.SelectKind:
-		// `vars.x`, and `has(vars.x)` — the same selection marked test-only.
-		if sel := e.AsSelect(); rootsAtVars(sel.Operand()) {
-			return varRead{name: sel.FieldName()}, true
-		}
-	case celast.CallKind:
-		call := e.AsCall()
-		if call.FunctionName() != operatorIndex || len(call.Args()) != 2 || !rootsAtVars(call.Args()[0]) {
-			return varRead{}, false
-		}
-		if index := call.Args()[1]; index.Kind() == celast.LiteralKind {
-			if name, isText := index.AsLiteral().Value().(string); isText {
-				return varRead{name: name, bracket: true}, true
-			}
-		}
 
-		return varRead{dynamic: true, bracket: true}, true
+	path, firstBracket, dynamic, rooted := staticVarPath(e)
+	if !rooted || len(path) == 0 && !dynamic {
+		return varRead{}, false
+	}
+	read := varRead{path: path, dynamic: dynamic, bracket: firstBracket}
+	if len(path) > 0 && !path[0].list {
+		read.name = path[0].key
 	}
 
-	return varRead{}, false
+	return read, true
+}
+
+func staticVarPath(e celast.Expr) (path varPath, firstBracket, dynamic, rooted bool) {
+	switch e.Kind() {
+	case celast.IdentKind:
+		return nil, false, false, e.AsIdent() == v1.VarsRoot
+	case celast.SelectKind:
+		base, bracket, dynamic, ok := staticVarPath(e.AsSelect().Operand())
+		if !ok {
+			return nil, false, false, false
+		}
+
+		return append(base, varPathPart{key: e.AsSelect().FieldName()}), bracket, dynamic, true
+	case celast.CallKind:
+		call := e.AsCall()
+		if call.FunctionName() != operatorIndex || len(call.Args()) != 2 {
+			return nil, false, false, false
+		}
+		base, bracket, alreadyDynamic, ok := staticVarPath(call.Args()[0])
+		if !ok {
+			return nil, false, false, false
+		}
+		if len(base) == 0 {
+			bracket = true
+		}
+		index := call.Args()[1]
+		if index.Kind() != celast.LiteralKind {
+			return base, bracket, true, true
+		}
+		switch value := index.AsLiteral().Value().(type) {
+		case string:
+			return append(base, varPathPart{key: value}), bracket, alreadyDynamic, true
+		case int64:
+			return append(base, varPathPart{index: int(value), list: true}), bracket, alreadyDynamic, true
+		case uint64:
+			return append(base, varPathPart{index: int(value), list: true}), bracket, alreadyDynamic, true
+		default:
+			return base, bracket, true, true
+		}
+	default:
+		return nil, false, false, false
+	}
 }
 
 // operatorIndex is CEL's index operator, which is how `vars['x']` parses.
@@ -343,11 +392,6 @@ func walkVarReads(e celast.Expr, bound map[string]bool, visit func(varRead)) {
 		walkVarReads(comp.LoopStep(), inner, visit)
 		walkVarReads(comp.Result(), inner, visit)
 	}
-}
-
-// rootsAtVars reports whether one node is the bare `vars` root.
-func rootsAtVars(e celast.Expr) bool {
-	return e.Kind() == celast.IdentKind && e.AsIdent() == v1.VarsRoot
 }
 
 // varNameInPath is [readsVar]'s answer for a *rendered* path rather than an
@@ -471,18 +515,13 @@ var varProfileFunctions = sync.OnceValue(func() map[string]bool {
 	return gated
 })
 
-// checkVars validates the block itself: bounded, CEL-addressable names, and —
-// for every value that is not a whole-value fence — literals all the way down.
+// checkVars validates the block itself: bounded, CEL-addressable names, and a
+// whole-value fence at every computed position. A fence may be a top-level
+// value or a leaf of a YAML-authored map/list; mixed text is still refused.
 //
 // Every name is judged rather than the first bad one, and they are judged in
 // sorted order, because a map's iteration order is not something a report may
 // depend on — the rule [checkScriptedIdentity] already states for claims.
-//
-// A value that *is* a whole-value fence is an expression, and is judged by
-// [File.evaluateVars] instead. A fence nested inside a structure is still
-// refused here, and says so in its own words: an expression is the whole value
-// or it is nothing, which is the rule every reference position in this file
-// already follows.
 //
 // Reports false when the count bound stopped it, which the loader takes as a
 // refusal of the whole document: the walk below is per var, and a legal file
@@ -500,14 +539,38 @@ func checkVars(p *problems, vars map[string]any) bool {
 				"vars.%s: a var's name must be a CEL identifier (letters, digits, underscores, "+
 					"not starting with a digit), or `vars.%s` could never be read back", name, name)
 		}
-		if _, fenced := fencedVarValue(vars[name]); fenced {
-			continue
-		}
-		checkNoExpressions(p, site{at: block.field(name)}, v1.VarsRoot+"."+name,
-			varsFenceWholeValues, vars[name], 0)
+		checkVarLeaves(p, site{at: block.field(name)}, v1.VarsRoot+"."+name, vars[name], 0)
 	}
 
 	return true
+}
+
+// checkVarLeaves checks only the fence boundary. Parsing, roots, references,
+// and evaluation are handled once by [File.declareVars] and
+// [File.evaluateVars].
+func checkVarLeaves(p *problems, r site, where string, value any, depth int) {
+	if depth > maxDefaultsDepth {
+		p.report(r, "%s: nests more than %d levels deep, deeper than a var is meant to go", where, maxDefaultsDepth)
+
+		return
+	}
+	switch v := value.(type) {
+	case string:
+		if strings.Contains(v, "${") {
+			if _, fenced := flowfile.SplitFence(v); !fenced {
+				p.report(r, "%s holds the expression %q; a computed leaf must be one whole-value `${...}` expression, "+
+					"with no literal text around it", where, v)
+			}
+		}
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			checkVarLeaves(p, r.in(r.at.field(key)), where+"."+key, v[key], depth+1)
+		}
+	case []any:
+		for i, entry := range v {
+			checkVarLeaves(p, r.in(r.at.item(i)), fmt.Sprintf("%s[%d]", where, i), entry, depth+1)
+		}
+	}
 }
 
 // fencedVarValue reports whether one declared value is an expression, and
@@ -529,6 +592,14 @@ func fencedVarValue(value any) (string, bool) {
 // A varDeclaration is one computed var: the fence as the file wrote it, the
 // expression parsed once, and the siblings it reads.
 type varDeclaration struct {
+	// path is the position below `vars`, used both as the graph node's stable
+	// name and to replace exactly this leaf after evaluation.
+	path varPath
+
+	// spot is that path in the source document, including directory-defaults
+	// provenance.
+	spot site
+
 	// fence is the value as written, `${...}` and all. Every diagnostic about
 	// this var quotes *this* and never the value the expression produced or
 	// read: a computed var can hold a secret's material (see [withheldFrom]),
@@ -543,6 +614,135 @@ type varDeclaration struct {
 
 	// deps are the sibling vars the expression reads, sorted and deduplicated.
 	deps []string
+}
+
+type varPathPart struct {
+	key   string
+	index int
+	list  bool
+}
+
+type varPath []varPathPart
+
+func (p varPath) String() string {
+	var out strings.Builder
+	for i, part := range p {
+		switch {
+		case part.list:
+			fmt.Fprintf(&out, "[%d]", part.index)
+		case i == 0 || varName.MatchString(part.key):
+			if i > 0 {
+				out.WriteByte('.')
+			}
+			out.WriteString(part.key)
+		default:
+			fmt.Fprintf(&out, "[%q]", part.key)
+		}
+	}
+
+	return out.String()
+}
+
+func (p varPath) location() loc {
+	where := at(v1.VarsRoot)
+	for _, part := range p {
+		if part.list {
+			where = where.item(part.index)
+		} else {
+			where = where.field(part.key)
+		}
+	}
+
+	return where
+}
+
+func (p varPath) top() string {
+	if len(p) == 0 {
+		return ""
+	}
+
+	return p[0].key
+}
+
+func pathHasPrefix(path, prefix varPath) bool {
+	if len(prefix) > len(path) {
+		return false
+	}
+	for i := range prefix {
+		if path[i] != prefix[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+type varNode struct {
+	path  varPath
+	spot  site
+	value any
+}
+
+func collectVarNodes(vars map[string]any) map[string]varNode {
+	nodes := map[string]varNode{}
+	var walk func(varPath, any)
+	walk = func(path varPath, value any) {
+		switch v := value.(type) {
+		case map[string]any:
+			for _, key := range slices.Sorted(maps.Keys(v)) {
+				walk(append(slices.Clone(path), varPathPart{key: key}), v[key])
+			}
+		case []any:
+			for i, entry := range v {
+				walk(append(slices.Clone(path), varPathPart{index: i, list: true}), entry)
+			}
+		default:
+			nodes[path.String()] = varNode{path: path, spot: site{at: path.location()}, value: value}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(vars)) {
+		walk(varPath{{key: name}}, vars[name])
+	}
+
+	return nodes
+}
+
+func setVarNode(vars map[string]any, path varPath, value any) {
+	if len(path) == 1 {
+		vars[path[0].key] = value
+
+		return
+	}
+	var current any = vars[path[0].key]
+	for i := 1; i < len(path)-1; i++ {
+		part := path[i]
+		if part.list {
+			current = current.([]any)[part.index]
+		} else {
+			current = current.(map[string]any)[part.key]
+		}
+	}
+	last := path[len(path)-1]
+	if last.list {
+		current.([]any)[last.index] = value
+	} else {
+		current.(map[string]any)[last.key] = value
+	}
+}
+
+func dependenciesFor(reads []varPath, nodes map[string]varNode) []string {
+	deps := map[string]bool{}
+	for _, read := range reads {
+		for id, node := range nodes {
+			// Reading a fixed container depends on all of its leaves. Selecting
+			// from a whole-value computed node depends on that node.
+			if pathHasPrefix(node.path, read) || pathHasPrefix(read, node.path) {
+				deps[id] = true
+			}
+		}
+	}
+
+	return slices.Sorted(maps.Keys(deps))
 }
 
 // withheldVars is what a file's `vars:` withhold: the names a value surface
@@ -588,12 +788,55 @@ func (w withheldVars) covers(path string) bool {
 // not quote, since a name is not a value and an author needs to know which
 // claim to rewrite.
 func (w withheldVars) coveredName(path string) (string, bool) {
-	name, rooted := varNameInPath(path)
-	if !rooted || !slices.Contains(w.names, name) {
+	parsed, issues := varEvaluator().Env()
+	if issues != nil {
+		return "", false
+	}
+	ast, parseIssues := parsed.Parse(path)
+	if parseIssues != nil && parseIssues.Err() != nil {
+		return "", false
+	}
+	read, ok := readsVar(ast.NativeRep().Expr(), map[string]bool{})
+	if !ok || read.dynamic {
 		return "", false
 	}
 
-	return name, true
+	return w.coveredRead(read.path, false)
+}
+
+// coveredRead reports a withheld node at or above read. With includeChildren,
+// reading a fixed parent container also counts; evaluator errors need that
+// fail-closed answer because an expression can derive a fact from a child.
+// Witnesses pass false so the ordinary tree redactor can preserve the literal
+// parent shape and its clean siblings.
+func (w withheldVars) coveredRead(read varPath, includeChildren bool) (string, bool) {
+	for _, name := range w.names {
+		node := parseVarNodePath(name)
+		if node.ok && (pathHasPrefix(read, node.path) || includeChildren && pathHasPrefix(node.path, read)) {
+			return name, true
+		}
+	}
+
+	return "", false
+}
+
+type varNodeSlice struct {
+	path varPath
+	ok   bool
+}
+
+func parseVarNodePath(name string) varNodeSlice {
+	env, err := varEvaluator().Env()
+	if err != nil {
+		return varNodeSlice{}
+	}
+	parsed, issues := env.Parse(v1.VarsRoot + "." + name)
+	if issues != nil && issues.Err() != nil {
+		return varNodeSlice{}
+	}
+	path, _, dynamic, rooted := staticVarPath(parsed.NativeRep().Expr())
+
+	return varNodeSlice{path: path, ok: rooted && !dynamic}
 }
 
 // fileVars is what one case is given of the file's `vars:`: the values a check
@@ -614,8 +857,8 @@ type fileVars struct {
 //
 // # What it costs, in the shape an author chooses
 //
-// Over V declared vars (bounded by [MaxVarsPerFile]) and E dependency edges
-// (E ≤ V², since a var's dependencies are a subset of the block's own names),
+// Over V computed nodes (bounded by [maxVarExpressions]), N literal leaves
+// (bounded by the file and expansion limits), and E dependency edges,
 // the sort is one depth-first walk at O(V+E) and evaluation is exactly V — one
 // per *var*, never one per reference. That distinction is the bound: a diamond
 // (`d` reads `b` and `c`, both reading `a`) evaluates `a` once, and a chain of
@@ -633,6 +876,7 @@ type fileVars struct {
 func (f *File) evaluateVars(p *problems) {
 	block := at(v1.VarsRoot)
 
+	nodes := collectVarNodes(f.Vars)
 	declared := f.declareVars(p)
 	if len(declared) == 0 {
 		return
@@ -640,15 +884,15 @@ func (f *File) evaluateVars(p *problems) {
 
 	order, cycles := varOrder(declared)
 	for _, cycle := range cycles {
-		p.report(site{at: block.field(cycle[0])}, "vars.%s is computed from itself: %s",
-			cycle[0], p.renderVarCycle(cycle))
+		p.report(declared[cycle[0]].spot, "vars.%s is computed from itself: %s",
+			cycle[0], p.renderVarCycle(cycle, declared))
 	}
 
 	// Decided before anything is evaluated, which is what "checkable at load"
 	// means in #1072's record: the seed is a syntactic fact about the document
 	// and the closure is a fact about the dependency graph, so a refusal below
 	// knows what it may not print before there is a value to print.
-	taint := taintedVars(declared, secretHoldingVars(f.Tests))
+	taint := taintedVars(declared, expandSecretHolding(secretHoldingVars(f.Tests), nodes))
 
 	base, err := varEvaluator().Env()
 	if err != nil {
@@ -665,15 +909,15 @@ func (f *File) evaluateVars(p *problems) {
 	// its value, and a var can read nothing else.
 	activation := map[string]any{v1.VarsRoot: f.Vars}
 
-	resolved := make(map[string]bool, len(f.Vars))
-	for _, name := range slices.Sorted(maps.Keys(f.Vars)) {
+	resolved := make(map[string]bool, len(nodes))
+	for _, name := range slices.Sorted(maps.Keys(nodes)) {
 		if _, computed := declared[name]; computed {
 			continue
 		}
 		// A literal is in the activation before anything evaluates, so it is
 		// judged before anything evaluates. There is no moment at which it
 		// exists unprotected and reachable.
-		if refuseUnprotectableVar(p, block, taint, name, f.Vars[name]) {
+		if refuseUnprotectableVar(p, nodes[name].spot.at, taint, name, nodes[name].value) {
 			continue
 		}
 		resolved[name] = true
@@ -694,24 +938,52 @@ func (f *File) evaluateVars(p *problems) {
 
 		value, err := evaluateVar(base, d, activation)
 		if err != nil {
-			p.report(site{at: block.field(name)}, "vars.%s: evaluating %s: %s",
+			p.report(d.spot, "vars.%s: evaluating %s: %s",
 				name, d.fence, scrubbedVarError(err, taint, d.deps))
 
 			continue
+		}
+		if len(d.path) > 1 {
+			switch value.(type) {
+			case map[string]any, []any:
+				p.report(d.spot, "vars.%s is a YAML leaf whose expression produced a container; "+
+					"structured vars keep the map/list shape written in YAML. Put each expression at "+
+					"the leaf it computes, rather than building a dynamic container with CEL", name)
+
+				continue
+			}
 		}
 		// Judged the moment it exists, and *before* it is stored — so it never
 		// enters the activation, and no later evaluation can quote it (Codex,
 		// #1197). Its dependents then skip on the guard above, which is the
 		// cascade rule this loop already follows: the root refusal stands for
 		// the chain.
-		if refuseUnprotectableVar(p, block, taint, name, value) {
+		if refuseUnprotectableVar(p, d.spot.at, taint, name, value) {
 			continue
 		}
-		f.Vars[name] = value
+		setVarNode(f.Vars, d.path, value)
 		resolved[name] = true
 	}
 
-	f.varsWithheld = withheldMaterial(p, block, declared, taint, resolved, f.Vars)
+	values := map[string]any{}
+	for id, node := range collectVarNodes(f.Vars) {
+		values[id] = node.value
+	}
+	f.varsWithheld = withheldMaterial(p, block, declared, taint, resolved, values)
+}
+
+func expandSecretHolding(holding map[string]string, nodes map[string]varNode) map[string]string {
+	expanded := map[string]string{}
+	for name, where := range holding {
+		prefix := varPath{{key: name}}
+		for id, node := range nodes {
+			if pathHasPrefix(node.path, prefix) {
+				expanded[id] = where
+			}
+		}
+	}
+
+	return expanded
 }
 
 // declareVars classifies the block and prepares every computed var: the fence
@@ -721,8 +993,6 @@ func (f *File) evaluateVars(p *problems) {
 // Sorted, so a file with two bad vars reports them in the same order every
 // time — the rule every map walk in this package follows.
 func (f *File) declareVars(p *problems) map[string]*varDeclaration {
-	block := at(v1.VarsRoot)
-
 	base, err := varEvaluator().Env()
 	if err != nil {
 		// Reported by [File.evaluateVars], which meets the same failure a moment
@@ -731,32 +1001,38 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		return nil
 	}
 
+	nodes := collectVarNodes(f.Vars)
 	declared := map[string]*varDeclaration{}
-	for _, name := range slices.Sorted(maps.Keys(f.Vars)) {
-		text, fenced := fencedVarValue(f.Vars[name])
+	for _, id := range slices.Sorted(maps.Keys(nodes)) {
+		node := nodes[id]
+		text, fenced := fencedVarValue(node.value)
 		if !fenced {
 			continue
 		}
-		spot := site{at: block.field(name)}
-		d := &varDeclaration{fence: f.Vars[name].(string)}
-		declared[name] = d
+		spot := node.spot
+		d := &varDeclaration{path: node.path, spot: spot, fence: node.value.(string)}
+		declared[id] = d
 
 		if strings.TrimSpace(text) == "" {
-			p.report(spot, "vars.%s holds an empty expression; write the CEL, or state the value literally", name)
+			p.report(spot, "vars.%s holds an empty expression; write the CEL, or state the value literally", id)
 
 			continue
 		}
 		parsed, issues := base.Parse(text)
 		if issues != nil && issues.Err() != nil {
-			p.report(spot, "vars.%s: %s", name, issues.Err())
+			p.report(spot, "vars.%s: %s", id, issues.Err())
 			// No AST to read edges from, so they are read from the text —
 			// see [textualVarDeps] for why an over-approximation is the safe
 			// direction and a missing edge is not.
-			d.deps = textualVarDeps(text)
+			reads := make([]varPath, 0)
+			for _, name := range textualVarDeps(text) {
+				reads = append(reads, varPath{{key: name}})
+			}
+			d.deps = dependenciesFor(reads, nodes)
 
 			continue
 		}
-		deps, ok := checkVarExpression(p, spot, name, parsed.NativeRep().Expr(), base)
+		reads, ok := checkVarExpression(p, spot, id, parsed.NativeRep().Expr(), base)
 		// Recorded whatever the checks below say, and *before* any of them can
 		// skip this entry (Codex, #1197, eighth). A refusal removes a value
 		// from existence; it must not remove edges from the graph. A var
@@ -766,13 +1042,13 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		// survived validation. Dropping the edge left the backward closure
 		// walking an incomplete graph, and an independent var's evaluator
 		// error printed the plaintext.
-		d.deps = deps
+		d.deps = dependenciesFor(reads, nodes)
 		if !ok {
 			continue
 		}
-		for _, dep := range deps {
-			if _, declaredDep := f.Vars[dep]; !declaredDep {
-				p.report(spot, "vars.%s reads vars.%s, and this file's `vars:` names no %q", name, dep, dep)
+		for _, read := range reads {
+			if _, declaredDep := f.Vars[read.top()]; !declaredDep {
+				p.report(spot, "vars.%s reads vars.%s, and this file's `vars:` names no %q", id, read, read.top())
 				ok = false
 			}
 		}
@@ -780,6 +1056,11 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			continue
 		}
 		d.ast = parsed
+	}
+	if len(declared) > maxVarExpressions {
+		p.report(site{at: at(v1.VarsRoot)}, "this file declares %d computed var leaves, more than the limit of %d",
+			len(declared), maxVarExpressions)
+		return nil
 	}
 
 	return declared
@@ -808,8 +1089,8 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 // under "a rewriter has to know what the grammar binds": `[1,2].map(x, x)`
 // binds `x`, and a walk that did not know it would report the macro's own
 // iteration variable as something the file got wrong.
-func checkVarExpression(p *problems, spot site, name string, root celast.Expr, base *cel.Env) ([]string, bool) {
-	deps := map[string]bool{}
+func checkVarExpression(p *problems, spot site, name string, root celast.Expr, base *cel.Env) ([]varPath, bool) {
+	deps := map[string]varPath{}
 	roots := map[string]bool{}
 	calls := map[string]bool{}
 	block := false
@@ -831,8 +1112,16 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 			switch {
 			case read.dynamic:
 				dynamic = true
+				// The selected value is unknown, but the index expression can
+				// still read statically named vars. Keep those edges: refusing
+				// this declaration must not disconnect secret source material.
+				if e.Kind() == celast.CallKind {
+					for _, arg := range e.AsCall().Args()[1:] {
+						walk(arg, bound)
+					}
+				}
 			default:
-				deps[read.name] = true
+				deps[read.path.String()] = read.path
 				if read.bracket {
 					bracketed[read.name] = true
 				}
@@ -974,7 +1263,12 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 			name, function)
 	}
 
-	return slices.Sorted(maps.Keys(deps)), ok
+	paths := make([]varPath, 0, len(deps))
+	for _, id := range slices.Sorted(maps.Keys(deps)) {
+		paths = append(paths, deps[id])
+	}
+
+	return paths, ok
 }
 
 // evaluateVar runs one expression and converts what came back into the native
@@ -1108,11 +1402,11 @@ func varOrder(declared map[string]*varDeclaration) (order []string, cycles [][]s
 // rather than [DirDefaultsError], which that repair named: that type reports a
 // failure to *read* the sibling file, and the per-value answer the fold
 // carries since #1179 is what can name one hop of a cycle.
-func (p *problems) renderVarCycle(cycle []string) string {
+func (p *problems) renderVarCycle(cycle []string, declared map[string]*varDeclaration) string {
 	hops := make([]string, 0, len(cycle))
 	for _, name := range cycle {
 		hop := v1.VarsRoot + "." + name
-		if file := p.fileOf(site{at: at(v1.VarsRoot).field(name)}); file != "" {
+		if file := p.fileOf(declared[name].spot); file != "" {
 			hop += " (" + file + ")"
 		}
 		hops = append(hops, hop)
@@ -1336,7 +1630,7 @@ func taintedVars(declared map[string]*varDeclaration, holding map[string]string)
 //
 // The diagnostic names the taint path, because "this is derived from a secret"
 // is a claim about a chain an author can only check if they are shown it.
-func refuseUnprotectableVar(p *problems, block loc, taint varTaint, name string, value any) bool {
+func refuseUnprotectableVar(p *problems, spot loc, taint varTaint, name string, value any) bool {
 	if !taint.holds(name) {
 		return false
 	}
@@ -1344,14 +1638,14 @@ func refuseUnprotectableVar(p *problems, block loc, taint varTaint, name string,
 	if !unprotectable {
 		return false
 	}
-	p.report(site{at: block.field(name)},
+	p.report(site{at: spot},
 		"vars.%s is computed from a secret and holds %s; only a non-empty string can be withheld. "+
 			"A value derived from secret material carries it in a form redaction cannot reach — a "+
 			"number's digits, a boolean's truth, a container's shape, an empty string's very "+
 			"emptiness — none of which the redaction set can match, and each of which answers a "+
 			"question about the secret. The chain: %s. Keep the derived value a non-empty string, "+
-			"and express any structure where it is used — a case's `inputs:`, `defaults.inputs:`, "+
-			"a signal payload — where a `${vars.x}` leaf resolves at any depth",
+			"and write the fixed structure in YAML — either in this var with a fence at each scalar "+
+			"leaf, or where it is used in a case's `inputs:`, `defaults.inputs:`, or signal payload",
 		name, kind, taint.path(name))
 
 	return true
@@ -1438,7 +1732,11 @@ func withheldMaterial(p *problems, block loc, declared map[string]*varDeclaratio
 		var material []string
 		collectVarStrings(values[name], 0, &material)
 		if len(material) > maxWithheldVarStrings {
-			p.report(site{at: block.field(name)},
+			spot := block.field(strings.SplitN(name, ".", 2)[0])
+			if d := declared[name]; d != nil {
+				spot = d.spot.at
+			}
+			p.report(site{at: spot},
 				"vars.%s is computed from a secret and holds %d strings, more than the %d one "+
 					"withheld var may contribute to a case's redaction set; keep a value derived from "+
 					"a secret to the shape a fixture needs", name, len(material), maxWithheldVarStrings)

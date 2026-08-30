@@ -36,6 +36,77 @@ outputs:
     value: ${steps.keep.value}
 `
 
+func TestStructuredVarLeavesKeepTheirYAMLShape(t *testing.T) {
+	t.Parallel()
+
+	file, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  seed: ord
+  request:
+    metadata:
+      id: "${vars.seed + '_1'}"
+      copy: "${vars.request.metadata.id + '_copy'}"
+    regions:
+      - eu-west-1
+      - "${vars.request.metadata.copy}"
+tests:
+  - name: loads
+    workflow: ./workflow.yaml
+`))
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"metadata": map[string]any{"id": "ord_1", "copy": "ord_1_copy"},
+		"regions":  []any{"eu-west-1", "ord_1_copy"},
+	}, file.Vars["request"])
+}
+
+func TestStructuredVarLeafCycleNamesTheLeafPath(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  request:
+    first: "${vars.request.second}"
+    second: "${vars.request.first}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vars.request.first → vars.request.second → vars.request.first")
+}
+
+func TestStructuredVarLeafDiagnosticsNameTheLeaf(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"invalid expression", "${vars.seed + }", "vars.request.value:"},
+		{"missing reference", "${vars.missing}", `vars.request.value reads vars.missing`},
+		{"mixed fence", "before ${vars.seed}", "computed leaf must be one whole-value"},
+		{"dynamic container", "${{'chosen': vars.seed}}", "YAML leaf whose expression produced a container"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  seed: x
+  request:
+    value: `+quoteYAML(tc.value)+`
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+`))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 // TestAComputedVarComposesItsSiblings is the feature: a base fixture stated
 // once and a variant built from it, both reaching a case's `inputs:` and a
 // check. Without composition the two orders are two hand-maintained copies of
@@ -479,22 +550,20 @@ steps:
 outputs: {}
 `)
 	path := filepath.Join(dir, "workflow.test.yaml")
-	// The structure lives at the position that *uses* it, with a computed
-	// string var at its leaf — the spelling the container refusal points an
-	// author at, and legal at any depth because resolveVarsInValue substitutes
-	// a whole-value `${vars.x}` wherever it appears in a fixture tree.
+	// YAML owns request's shape; only Authorization computes. This is #1200's
+	// distinction from the refused CEL-built container below.
 	writeFile(t, path, `
 vars:
   token: s3cr3t-value
-  header: "${'Bearer ' + vars.token}"
+  request:
+    Authorization: "${'Bearer ' + vars.token}"
+    Accept: application/json
   region: eu-west-1
 tests:
   - name: the derived values never print
     workflow: ./workflow.yaml
     inputs:
-      headers:
-        Authorization: "${vars.header}"
-        Accept: application/json
+      headers: "${vars.request}"
     secrets:
       env:TOKEN: "${vars.token}"
     stubs:
@@ -504,12 +573,14 @@ tests:
     expect:
       ran: [call, echo]
       check:
-        - that: vars.header == 'nope'
+        - that: vars.request.Authorization == 'nope'
           because: this claim is false on purpose, so its witnesses render
         - that: steps.echo.value == 'nope'
           because: and the leaf, once the fixture has carried it into the run
         - that: inputs.headers.Accept == 'nope'
           because: the untainted leaf of the same structure still shows itself
+        - that: vars.request.Accept == 'nope'
+          because: and the same clean sibling stays visible through the vars root
         - that: vars.region == 'nope'
           because: and so does a var on no path to a secret at all
 `)
@@ -521,7 +592,7 @@ tests:
 	require.NotEmpty(t, c.GetFailures())
 
 	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
-	assert.Contains(t, rendered, "vars.header = [redacted]",
+	assert.Contains(t, rendered, "vars.request.Authorization = [redacted]",
 		"a var computed from a secret must be withheld in a witness, not merely cleared of the secret")
 	assert.Contains(t, rendered, `steps.echo.value = \"[redacted]\"`,
 		"and withheld whole once a fixture has carried it into the run, where no `vars.` name roots it")
@@ -535,6 +606,8 @@ tests:
 	// the untainted leaf of the very structure carrying the tainted one is
 	// still shown, and so is a var on no path to a secret at all.
 	assert.Contains(t, rendered, `inputs.headers.Accept = \"application/json\"`)
+	assert.Contains(t, rendered, `vars.request.Accept = \"application/json\"`,
+		"withholding one computed leaf must preserve and reveal its literal siblings")
 	assert.Contains(t, rendered, `vars.region = \"eu-west-1\"`)
 }
 
@@ -590,6 +663,54 @@ tests:
 		"`Bearer [redacted]` is what the substring backstop alone produces, and it says "+
 			"that a header derived from a secret is a header — which is the shape #1072 "+
 			"repair 4 withholds")
+}
+
+func TestATaintedStructuredLeafIsWithheldFromStubDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: log-header
+inputs:
+  message:
+    type: string
+steps:
+  - id: write
+    log:
+      message: ${inputs.message}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: s3cr3t-value
+  request:
+    header: "${'Bearer ' + vars.token}"
+    method: POST
+  header: "${vars.request.header}"
+tests:
+  - name: an unmatched stub prints no leaf material
+    workflow: ./workflow.yaml
+    inputs:
+      message: "${vars.header}"
+    secrets:
+      env:TOKEN: "${vars.token}"
+    stubs:
+      - task: log
+        where: inputs.message == 'different'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	rendered := fmt.Sprint(c.GetFailures())
+	assert.Contains(t, rendered, v1.SensitiveMarker)
+	assert.NotContains(t, rendered, "s3cr3t-value")
+	assert.NotContains(t, rendered, "Bearer s3cr3t")
 }
 
 // TestASourceOfASecretIsWithheldToo is Codex's scenario on #1197, exactly: a
@@ -674,7 +795,9 @@ func TestASecretDerivedValueRedactionCannotWithholdIsRefused(t *testing.T) {
 		_, err := flowtest.Load(writeInline(t, t.TempDir(), `
 vars:
   token: s3cr3t-value
-  fingerprint: "${size(vars.token)}"
+  request:
+    fingerprint: "${size(vars.token)}"
+    method: POST
 tests:
   - name: never loads
     workflow: ./workflow.yaml
@@ -682,9 +805,9 @@ tests:
       env:TOKEN: "${vars.token}"
 `))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "vars.fingerprint is computed from a secret and holds an integer")
+		assert.Contains(t, err.Error(), "vars.request.fingerprint is computed from a secret and holds an integer")
 		assert.Contains(t, err.Error(), "only a non-empty string can be withheld")
-		assert.Contains(t, err.Error(), `vars.fingerprint → vars.token, which tests[0].secrets["env:TOKEN"] references`,
+		assert.Contains(t, err.Error(), `vars.request.fingerprint → vars.token, which tests[0].secrets["env:TOKEN"] references`,
 			"the refusal names the chain, or its claim is one an author cannot check")
 		assert.NotContains(t, err.Error(), "s3cr3t-value")
 	})
@@ -760,7 +883,7 @@ tests:
 			assert.Contains(t, err.Error(), "a container's shape, an empty string's very emptiness")
 			assert.Contains(t, err.Error(),
 				`vars.shaped → vars.token, which tests[0].secrets["env:TOKEN"] references`)
-			assert.Contains(t, err.Error(), "express any structure where it is used",
+			assert.Contains(t, err.Error(), "write the fixed structure in YAML",
 				"the refusal costs one respelling, so it names it")
 			assert.NotContains(t, err.Error(), "s3cr3t-value")
 		})
@@ -1015,7 +1138,9 @@ outputs: {}
 	writeFile(t, path, `
 vars:
   token: s3cr3t-value
-  header: "${'Bearer ' + vars.token}"
+  request:
+    header: "${'Bearer ' + vars.token}"
+    region: eu-west-1
   region: eu-west-1
 tests:
   - name: an erroring claim says nothing it may not
@@ -1029,9 +1154,9 @@ tests:
     expect:
       ran: [call]
       check:
-        - that: "{'known': 1}[vars.header] == 1"
+        - that: "{'known': 1}[vars.request.header] == 1"
           because: errors on the missing key, whose text carries the key itself
-        - that: "[0][size(vars.header)] == 1"
+        - that: "[0][size(vars.request.header)] == 1"
           because: errors with a length computed inside the claim, which no set ever saw
 `)
 
@@ -1044,7 +1169,7 @@ tests:
 	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
 	assert.Contains(t, rendered, "check errored",
 		"the failure must still be reported, or this hides a real problem")
-	assert.Contains(t, rendered, "withheld: this claim reads vars.header",
+	assert.Contains(t, rendered, "withheld: this claim reads vars.request.header",
 		"the var is named so an author knows which claim to rewrite; a name is not a value")
 	assert.NotContains(t, rendered, "s3cr3t-value")
 	assert.NotContains(t, rendered, "Bearer s3cr3t")
@@ -1128,7 +1253,9 @@ func TestAVarErrorOverATransformedTaintIsWithheldWhole(t *testing.T) {
 	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
 vars:
   token: s3cr3t-value
-  bad: "${[0][size(vars.token)]}"
+  request:
+    bad: "${[0][size(vars.token)]}"
+    clean: literal
 tests:
   - name: never loads
     workflow: ./workflow.yaml
@@ -1141,7 +1268,7 @@ tests:
 	require.True(t, refused)
 	messages := problemMessages(problems)
 
-	assert.Contains(t, messages, "vars.bad: evaluating ${[0][size(vars.token)]}",
+	assert.Contains(t, messages, "vars.request.bad: evaluating ${[0][size(vars.token)]}",
 		"the expression the author wrote is still quoted; it is theirs")
 	assert.Contains(t, messages, "[withheld: this expression reads vars.token, which this file withholds]",
 		"and the dependency that cost it its detail is named, because a name is not a value")
@@ -1430,7 +1557,9 @@ outputs: {}
 			suite: `
 vars:
   token: s3cr3t-value
-  path: "${'./' + vars.token + '.yaml'}"
+  paths:
+    missing: "${'./' + vars.token + '.yaml'}"
+  path: "${vars.paths.missing}"
 tests:
   - name: the workflow is missing
     workflow: "${vars.path}"
@@ -1448,7 +1577,9 @@ tests:
 			suite: `
 vars:
   token: s3cr3t-value
-  path: "${vars.token + '.json'}"
+  paths:
+    missing: "${vars.token + '.json'}"
+  path: "${vars.paths.missing}"
 tests:
   - name: the delivery is missing
     workflow: ./workflow.yaml

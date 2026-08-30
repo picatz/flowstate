@@ -1441,6 +1441,18 @@ func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
 // one is at least visibly broken.
 func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
+	renderedRunErr := "<nil>"
+	if runErr != nil {
+		// Under WithholdAll the task/stub boundary has already shaped the
+		// diagnostic, preserving author-written expressions while withholding
+		// values it could not enumerate. Replacing that safe message wholesale
+		// would erase the only actionable detail. Otherwise this is the outer
+		// substring backstop for material carried here by a computed var.
+		renderedRunErr = runErr.Error()
+		if !sensitive.WithholdAll() {
+			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
+		}
+	}
 
 	failed := runErr != nil
 	switch {
@@ -1449,8 +1461,8 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// expected to fail and did not, or expected to succeed and did not.
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
-			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %v)",
-				*want.Failed, failed, runErr),
+			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %s)",
+				*want.Failed, failed, renderedRunErr),
 		})
 	case want.Failed == nil && failed:
 		// No expectation named this outcome as possible, so the case gets
@@ -1460,15 +1472,15 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
 			Message: fmt.Sprintf(
-				"the run failed unexpectedly, and this case's expect.failed was not set to declare that it should: %v", runErr),
+				"the run failed unexpectedly, and this case's expect.failed was not set to declare that it should: %s", renderedRunErr),
 		})
 	}
 	if want.ErrorContains != "" {
 		if runErr == nil || !strings.Contains(runErr.Error(), want.ErrorContains) {
 			failures = append(failures, &v1.Diagnostic{
 				Field: "expect.error_contains",
-				Message: fmt.Sprintf("expected the run's error to contain %q, got: %v",
-					want.ErrorContains, runErr),
+				Message: fmt.Sprintf("expected the run's error to contain %q, got: %s",
+					want.ErrorContains, renderedRunErr),
 			})
 		}
 	}

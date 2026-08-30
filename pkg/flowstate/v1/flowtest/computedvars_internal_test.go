@@ -249,14 +249,16 @@ func TestReadsVarRecognisesWhatTheGrammarBinds(t *testing.T) {
 		want varRead
 		ok   bool
 	}{
-		"dotted":                {expr: "vars.token", want: varRead{name: "token"}, ok: true},
-		"bracket":               {expr: "vars['token']", want: varRead{name: "token", bracket: true}, ok: true},
-		"bracket, double quote": {expr: `vars["token"]`, want: varRead{name: "token", bracket: true}, ok: true},
+		"dotted":                {expr: "vars.token", want: varRead{name: "token", path: varPath{{key: "token"}}}, ok: true},
+		"bracket":               {expr: "vars['token']", want: varRead{name: "token", path: varPath{{key: "token"}}, bracket: true}, ok: true},
+		"bracket, double quote": {expr: `vars["token"]`, want: varRead{name: "token", path: varPath{{key: "token"}}, bracket: true}, ok: true},
 		"a dynamic index":       {expr: "vars[vars.which]", want: varRead{dynamic: true, bracket: true}, ok: true},
-		"a selection into one":  {expr: "vars.order.region", want: varRead{name: "order"}, ok: false},
-		"the bare root":         {expr: "vars", ok: false},
-		"another root":          {expr: "steps.x", ok: false},
-		"an index of not-vars":  {expr: "other['token']", ok: false},
+		"a selection into one": {expr: "vars.order.region", want: varRead{name: "order", path: varPath{
+			{key: "order"}, {key: "region"},
+		}}, ok: true},
+		"the bare root":        {expr: "vars", ok: false},
+		"another root":         {expr: "steps.x", ok: false},
+		"an index of not-vars": {expr: "other['token']", ok: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -509,6 +511,26 @@ func TestRedactedVarsWithholdsAWithheldVarWhole(t *testing.T) {
 		"a var the file does not withhold is shown, or the autopsy stops being useful")
 }
 
+func TestRedactedVarsWithholdsOnlyATaintedStructuredLeaf(t *testing.T) {
+	t.Parallel()
+
+	vars := fileVars{
+		values: map[string]any{
+			"request": map[string]any{
+				"Authorization": "Bearer s3cr3t",
+				"Accept":        "application/json",
+			},
+		},
+		withheld: withheldVars{names: []string{"request.Authorization"}},
+	}
+
+	shown := redactedVars(vars, sensitiveInputs{}.WithValues("s3cr3t"))
+	request := shown["request"].(map[string]any)
+	assert.Equal(t, sensitiveMarker, request["Authorization"])
+	assert.Equal(t, "application/json", request["Accept"],
+		"the autopsy preserves the literal container and withholds only its tainted leaf")
+}
+
 // TestWithheldCoversAPathAndNotItsNeighbour is the prefix test, written where
 // the answers differ: `vars.token` and `vars.tokenish` share a prefix, and a
 // naive [strings.HasPrefix] withholds a var the file never said to withhold —
@@ -536,4 +558,22 @@ func TestWithheldCoversAPathAndNotItsNeighbour(t *testing.T) {
 	} {
 		assert.Equal(t, want, withheld.covers(path), "covers(%q)", path)
 	}
+}
+
+func TestWithheldLeafCoversItselfAndItsContainerButNotASibling(t *testing.T) {
+	t.Parallel()
+
+	withheld := withheldVars{names: []string{"request.headers.Authorization"}}
+	for path, want := range map[string]bool{
+		"vars.request":                       false,
+		"vars.request.headers":               false,
+		"vars.request.headers.Authorization": true,
+		"vars.request.headers.Accept":        false,
+		"vars.request.other":                 false,
+	} {
+		assert.Equal(t, want, withheld.covers(path), "covers(%q)", path)
+	}
+	name, touched := withheld.coveredRead(varPath{{key: "request"}}, true)
+	assert.True(t, touched, "an evaluator error derived from a parent must still fail closed")
+	assert.Equal(t, "request.headers.Authorization", name)
 }

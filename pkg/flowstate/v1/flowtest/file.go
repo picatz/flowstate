@@ -1847,13 +1847,6 @@ const (
 	// defaultsAreFixtures is #416's rule, in the block it was written for.
 	defaultsAreFixtures fixtureRule = "a test file's `defaults:` is a fixture, so it may not hold an " +
 		"expression. Write the literal value, or move it into the case that needs it"
-
-	// varsFenceWholeValues is the same refusal where an expression *is* legal —
-	// as the whole value, never inside a structure, which is the rule every
-	// reference position in a test file already follows.
-	varsFenceWholeValues fixtureRule = "a var holds a literal, or one whole-value `${...}` expression; " +
-		"a fence inside a structure is not evaluated. State it literally, or build the structure in " +
-		"one expression: `${{'region': vars.base.region}}`"
 )
 
 // checkNoExpressions descends a value and refuses every string that carries a
