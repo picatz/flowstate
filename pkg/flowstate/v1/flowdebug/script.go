@@ -293,16 +293,27 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 		switch command.verb {
 		case "until":
-			target := strings.TrimSpace(rest)
-			if target == "" {
+			id, condition, conditional, err := splitCondition(rest, grammarUntil)
+			if err != nil {
+				report(number, verbColumn, "until: %v", err)
+
+				continue
+			}
+			if id == "" {
 				report(number, verbColumn, "%s", usageUntil)
 
 				continue
 			}
-			checkStepArgument(report, number, line, target, known)
+			// The shape check `break` explains below, for the same grammar.
+			if conditional && strings.TrimSpace(condition) == "" {
+				report(number, verbColumn, "until %s: "+usageCondition, id, grammarUntil)
+
+				continue
+			}
+			checkStepArgument(report, number, line, id, known)
 
 		case "break":
-			id, condition, conditional, err := splitCondition(rest)
+			id, condition, conditional, err := splitCondition(rest, grammarBreak)
 			if err != nil {
 				report(number, verbColumn, "break: %v", err)
 
@@ -322,7 +333,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 			// answerable here is the one shape that is wrong in every scope:
 			// an `if` with nothing after it.
 			if conditional && strings.TrimSpace(condition) == "" {
-				report(number, verbColumn, "break %s: %s", id, usageCondition)
+				report(number, verbColumn, "break %s: "+usageCondition, id, grammarBreak)
 
 				continue
 			}

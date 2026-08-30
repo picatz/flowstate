@@ -2,7 +2,6 @@ package flowdebug
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -66,8 +65,8 @@ var commands = []command{
 		help: "run this step and stop at the next (also: an empty line)"},
 	{verb: "continue", aliases: []string{"c"}, completes: completesNothing,
 		help: "run until the next breakpoint, or to the end"},
-	{verb: "until", aliases: []string{"u"}, argument: "<step-id>", completes: completesStep,
-		help: "run until the step with that id"},
+	{verb: "until", aliases: []string{"u"}, argument: "<step-id> [if <expr>]", completes: completesStep,
+		help: "run until the step with that id, optionally only where the condition holds"},
 	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [if <expr>]", completes: completesStep,
 		help: "stop at that step, always or when the expression holds"},
 	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint,
@@ -98,10 +97,14 @@ var commands = []command{
 // meaning, one place. See CLAUDE.md on a value with one meaning written down
 // twice.
 const (
-	usageUntil     = "until needs a step id: until <step-id>"
-	usageBreak     = "break needs a step id: break <step-id> [if <expr>]"
-	usageInspect   = "inspect needs an expression: inspect steps.build.artifact"
-	usageCondition = "`if` needs an expression: break <step-id> if <expr>"
+	usageUntil   = "until needs a step id: until <step-id> [if <expr>]"
+	usageBreak   = "break needs a step id: break <step-id> [if <expr>]"
+	grammarBreak = "break <step-id> [if <expr>]"
+	grammarUntil = "until <step-id> [if <expr>]"
+	usageInspect = "inspect needs an expression: inspect steps.build.artifact"
+	// usageCondition is completed by the asking verb's grammar, so `break
+	// body if ` and `until body if ` are each corrected in their own words.
+	usageCondition = "`if` needs an expression: %s"
 )
 
 // IsComment reports whether a line is a comment rather than a command.
@@ -182,14 +185,33 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		return true, nil
 
 	case "until":
-		target := strings.TrimSpace(rest)
-		if target == "" {
+		// The same grammar, compiler and refusals as `break`, sharing its
+		// helpers so the two condition-gated verbs cannot drift: an accepted
+		// condition is compiled now, a malformed tail is a refusal rather
+		// than a silent unconditional stop, and the evaluation at arrival is
+		// [Session.conditionHolds] either way.
+		id, condition, conditional, err := splitCondition(rest, grammarUntil)
+		if err != nil {
+			s.printfTone(ToneWarning, "until: %v\n", err)
+
+			return false, nil
+		}
+		if id == "" {
 			s.printfTone(ToneWarning, "%s\n", usageUntil)
 
 			return false, nil
 		}
-		s.record("until " + target)
-		s.resume(modeUntil, target)
+		var compiled *v1.Value
+		if conditional {
+			compiled, err = compileCondition(condition, scope, grammarUntil)
+			if err != nil {
+				s.printfTone(ToneWarning, "until %s: %v\n", id, err)
+
+				return false, nil
+			}
+		}
+		s.record("until " + strings.TrimSpace(rest))
+		s.resumeUntil(modeUntil, id, compiled)
 
 		return true, nil
 
@@ -612,7 +634,7 @@ func (s *Session) showStep(node *v1.Node) {
 // condition gating whether something happens, and the parse is positional — a
 // step legally named `if` is still the id, since the first word always is.
 func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scope) {
-	id, condition, conditional, err := splitCondition(rest)
+	id, condition, conditional, err := splitCondition(rest, grammarBreak)
 	if err != nil {
 		s.printfTone(ToneWarning, "break: %v\n", err)
 
@@ -626,7 +648,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 	at := breakpoint{source: rest}
 	if conditional {
-		compiled, err := compileCondition(condition, scope)
+		compiled, err := compileCondition(condition, scope, grammarBreak)
 		if err != nil {
 			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
 
@@ -673,7 +695,7 @@ func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
 	// it could not be asked. Carrying the old notice over would leave a second
 	// unbound condition skipped in silence, after the prompt said it was set
 	// (Codex, #1116).
-	delete(s.notedUnbound, id)
+	delete(s.notedUnbound, declinedBreakpoint+" "+id)
 
 	return true
 }
@@ -699,7 +721,7 @@ func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
 // So the rule is that a tail is either nothing or a condition. Anything else
 // is a typo, and a typo whose punishment is "your breakpoint means something
 // else now" is one this prompt should not administer quietly.
-func splitCondition(rest string) (id, condition string, conditional bool, err error) {
+func splitCondition(rest, grammar string) (id, condition string, conditional bool, err error) {
 	id, tail := cutWord(strings.TrimLeft(rest, " \t"))
 	tail = strings.TrimLeft(tail, " \t")
 	if tail == "" {
@@ -709,7 +731,7 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 	keyword, expression := cutWord(tail)
 	expression = strings.TrimLeft(expression, " \t")
 	if keyword != "if" {
-		return "", "", false, fmt.Errorf("expected `if` after the step id, got %q: break <step-id> [if <expr>]", keyword)
+		return "", "", false, fmt.Errorf("expected `if` after the step id, got %q: %s", keyword, grammar)
 	}
 
 	// Returned exactly as typed, trailing space included. The completer reads
@@ -724,15 +746,16 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 	return id, expression, true, nil
 }
 
-// compileCondition parses a breakpoint's condition against the run's own
-// profile, returning it in the shape a step's `if:` travels in.
+// compileCondition parses a condition-gated verb's condition against the run's
+// own profile, returning it in the shape a step's `if:` travels in. `grammar`
+// is the asking verb's own spelling, for the empty-condition refusal.
 //
 // A [v1.Value] holding a parsed expression, so that evaluating it is literally
 // [v1.EvalConditionInScope] — the engine's own function — rather than a second
 // implementation that could disagree with it.
-func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
+func compileCondition(expression string, scope *v1.Scope, grammar string) (*v1.Value, error) {
 	if strings.TrimSpace(expression) == "" {
-		return nil, errors.New(usageCondition)
+		return nil, fmt.Errorf(usageCondition, grammar)
 	}
 
 	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())
@@ -876,7 +899,7 @@ func (s *Session) deleteBreakpoint(id string) {
 	s.mu.Lock()
 	_, existed := s.breakpoints[id]
 	delete(s.breakpoints, id)
-	delete(s.notedUnbound, id)
+	delete(s.notedUnbound, declinedBreakpoint+" "+id)
 	s.mu.Unlock()
 
 	s.record("delete " + id)

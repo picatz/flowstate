@@ -22,7 +22,7 @@ import (
 // thing an interrupt must not do, and it disagreed with cancellation at the
 // prompt, which unwinds immediately.
 //
-// Tested at `breakpointHolds` rather than through a run, deliberately.
+// Tested at `conditionHolds` rather than through a run, deliberately.
 // Cancelling before the run starts makes everything fail for other reasons —
 // which is how the first version of this test passed against the defect — and
 // cancelling *during* an evaluation is not something a test can time
@@ -33,7 +33,7 @@ func TestCancellationDuringAConditionIsNotADecline(t *testing.T) {
 
 	scope := v1.NewScope(v1.CurrentProfile, nil)
 
-	condition, err := compileCondition("1 == 1", scope)
+	condition, err := compileCondition("1 == 1", scope, grammarBreak)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestCancellationDuringAConditionIsNotADecline(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	holds, err := session.breakpointHolds(ctx, "body", breakpoint{condition: condition}, scope)
+	holds, err := session.conditionHolds(ctx, declinedBreakpoint, "body", condition, scope)
 
 	if err == nil {
 		t.Fatalf("a cancelled context must not read as an unanswerable condition (holds=%v)", holds)
