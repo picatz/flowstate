@@ -318,8 +318,8 @@ func httpPreparedInputs(ctx context.Context, input map[string]*Value, scope *Sco
 // resolves its own secret inputs and egresses on its own policy. This
 // function has no visibility into a plugin's request and does not cover it —
 // see #963.
-func refuseCleartextCredential(taskInputs *Task_HTTP_Inputs, reqURL *url.URL) error {
-	if !taskCarriesCredential(taskInputs) {
+func refuseCleartextCredential(taskInputs *Task_HTTP_Inputs, headersSpec *Value, reqURL *url.URL) error {
+	if !taskCarriesCredential(taskInputs, headersSpec) {
 		// Neither carries a resolved credential, so there is nothing this
 		// request could leak by going out in the clear.
 		return nil
@@ -343,16 +343,25 @@ func refuseCleartextCredential(taskInputs *Task_HTTP_Inputs, reqURL *url.URL) er
 }
 
 // taskCarriesCredential reports whether taskInputs will attach a
-// worker-resolved credential to the request — a bearer secret reference or a
-// JIT federation target.
+// worker-resolved credential to the request: a bearer secret reference, a JIT
+// federation target, or a reference nested in its headers or structured body.
 //
 // It is the single spelling of "this request carries a credential", shared by
 // the cleartext refusal above (#963 half one) and the `credentials` fact this
 // task marks on the egress-policy context below (#963 half two, see
 // [netpolicy.ContextWithCredentials]) — so the two halves cannot drift apart
 // on what counts as a credential.
-func taskCarriesCredential(taskInputs *Task_HTTP_Inputs) bool {
-	return taskInputs.GetBearer() != nil || taskInputs.GetCredential() != ""
+func taskCarriesCredential(taskInputs *Task_HTTP_Inputs, headersSpec *Value) bool {
+	if taskInputs.GetBearer() != nil || taskInputs.GetCredential() != "" ||
+		ValueHoldsSecretRef(headersSpec) || ValueHoldsSecretRef(taskInputs.GetJson()) {
+		return true
+	}
+	for _, value := range taskInputs.GetForm() {
+		if ValueHoldsSecretRef(value) {
+			return true
+		}
+	}
+	return false
 }
 
 // isLoopbackHost reports whether host names the local machine — literally
@@ -387,23 +396,6 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			return nil, httpInputError(err)
 		}
 
-		// The scrubber exists before the first reference is resolved, because every
-		// value resolved from here on is registered with it: a peer that reflects a
-		// header or a body back is the path that turns a request credential into a
-		// durable output.
-		scrubber := secrets.NewScrubber()
-		reveal := revealSecret(ctx, scrubber)
-
-		bodyText, contentType, err := httpRequestBody(taskInputs, reveal)
-		if err != nil {
-			return nil, httpInputError(err)
-		}
-
-		var body io.Reader
-		if bodyText != "" || taskInputs.Body != nil {
-			body = strings.NewReader(bodyText)
-		}
-
 		// Carry the run's attested identity into the egress policy, so a rule can
 		// scope this request by tenant (#240). It is rendered from the one
 		// WorkloadIdentity the scope carries — the same source the secret-access and
@@ -430,10 +422,12 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// the one detector both read. The mark rides the context the same way
 		// identity does, and is known here because it comes from taskInputs
 		// directly, before any secret has been resolved.
-		credentialed := taskCarriesCredential(taskInputs)
+		credentialed := taskCarriesCredential(taskInputs, headersSpec)
 		ctx = netpolicy.ContextWithCredentials(ctx, credentialed)
 
-		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), requestURL, body)
+		// Build a bodyless request for checks that must happen before any nested
+		// reference is resolved. The request body is immaterial to egress policy.
+		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), requestURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
@@ -458,8 +452,27 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// credential — taskInputs says so directly — so the refusal costs no
 		// secret backend call and no live IdP exchange for a request that will
 		// never be sent. See [refuseCleartextCredential].
-		if err := refuseCleartextCredential(taskInputs, httpReq.URL); err != nil {
+		if err := refuseCleartextCredential(taskInputs, headersSpec, httpReq.URL); err != nil {
 			return nil, err
+		}
+
+		// The scrubber exists before the first reference is resolved, because every
+		// value resolved from here on is registered with it: a peer that reflects a
+		// header or a body back is the path that turns a request credential into a
+		// durable output.
+		scrubber := secrets.NewScrubber()
+		reveal := revealSecret(ctx, scrubber)
+
+		bodyText, contentType, err := httpRequestBody(taskInputs, reveal)
+		if err != nil {
+			return nil, httpInputError(err)
+		}
+		if bodyText != "" || taskInputs.Body != nil {
+			httpReq.Body = io.NopCloser(strings.NewReader(bodyText))
+			httpReq.ContentLength = int64(len(bodyText))
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(bodyText)), nil
+			}
 		}
 
 		// Apply request headers if provided.
