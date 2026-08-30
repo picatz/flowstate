@@ -123,6 +123,46 @@ func TestAnUnconditionalUntilAfterAConditionalOneIsUnconditional(t *testing.T) {
 		"the conditional stop at n == 2, then the plain one at the very next arrival — a leaked condition would eat the second")
 }
 
+// TestEachAcceptedUntilGetsItsOwnDeclinedNotice: the once-only memory behind
+// the declined-arrival notice is per accepted command, not per step forever.
+// A second `until body if <broken>` after a declined first one must warn
+// again — a fresh condition skipped in silence behind a prompt that said it
+// was set is the exact failure the notice exists to prevent (Copilot, #1274).
+func TestEachAcceptedUntilGetsItsOwnDeclinedNotice(t *testing.T) {
+	t.Parallel()
+
+	// A gate step beside the body gives the prompt back on every iteration,
+	// which is what lets a second `until` be typed mid-run at all.
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(
+			"break gate\ncontinue\nuntil body if first.missing\nuntil body if second.missing\ncontinue\n"),
+		Out: &console,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	seen := &ranSteps{}
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, seen))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+
+	looping := &v1.Workflow{Name: "looping", Steps: []*v1.Node{{
+		Id: "each",
+		Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items:    v1.NewLiteralList(0, 1, 2),
+			Iterator: "n",
+			Body:     []*v1.Node{markStep("body"), markStep("gate")},
+		}},
+	}}}
+
+	_, err = v1.Run(ctx, looping)
+	require.NoError(t, err)
+
+	out := console.String()
+	assert.Equal(t, 2, strings.Count(out, "until body: the condition could not be evaluated here"),
+		"two accepted conditions, two notices — the first must not spend the second's")
+}
+
 // TestAConditionalUntilIsRecordedAsTyped: the replay script is the session's
 // decisions written down, and an `until` that stopped at iteration 5,000
 // must reproduce that stop — condition and all — when the script is fed back.

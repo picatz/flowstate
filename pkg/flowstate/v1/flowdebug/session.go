@@ -1579,6 +1579,15 @@ func (s *Session) noteStep(id string, state StepState) {
 // This notice is what makes not-stopping safe rather than silent — see
 // [Session.conditionHolds], which reversed a fail-closed rule on the strength
 // of it.
+// clearDeclined forgets a verb's declined-condition notice for id, so a newly
+// accepted command carrying a fresh condition gets its own one notice.
+func (s *Session) clearDeclined(what, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.notedUnbound, what+" "+id)
+}
+
 func (s *Session) noteDeclined(what, id string, err error) {
 	// Keyed by verb and id together: a breakpoint at `body` and an
 	// `until body if ...` are different questions, and one saying it could

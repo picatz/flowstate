@@ -210,6 +210,12 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 				return false, nil
 			}
 		}
+		// A newly accepted `until` is a new question, so it gets its own
+		// chance to say it could not be asked — the same rule holdBreakpoint
+		// applies when a breakpoint is replaced. Without this, a second
+		// `until body if <broken>` after a declined first one is skipped in
+		// silence, behind a prompt that said it was set (Copilot, #1274).
+		s.clearDeclined(declinedUntil, id)
 		s.record("until " + strings.TrimSpace(rest))
 		s.resumeUntil(modeUntil, id, compiled)
 
