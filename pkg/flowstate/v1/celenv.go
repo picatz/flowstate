@@ -16,6 +16,7 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Flowstate evaluates every CEL expression through this file. Expressions come
@@ -316,23 +317,41 @@ func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.P
 		}
 		// Two goroutines missing on the same key both compile and both store;
 		// the loser's program is garbage. That costs one compilation, which is
-		// the price of not holding a lock across env.Program.
-		e.programs.put(key, prg)
+		// the price of not holding a lock across env.Program. The charge is
+		// the expression's own encoded size — the author-controlled half of
+		// what an entry retains, and a proportional proxy for the compiled
+		// half — measured here on the miss path where a compilation already
+		// dwarfs it.
+		e.programs.put(key, prg, proto.Size(parsed))
 	}
 	return evalProgram(ctx, prg, activation)
 }
 
-// DefaultProgramCacheSize bounds the compiled programs an [Evaluator] retains.
+// DefaultProgramCacheSize bounds how many compiled programs an [Evaluator]
+// retains, and DefaultProgramCacheBytes bounds what they weigh.
 //
-// The bound exists because the number of distinct expression sites a worker
-// evaluates over its lifetime is the deployment's choice, not any one caller's:
-// every loaded specification contributes its sites for as long as runs
-// reference them, across tenants and across time. Least-recently-used eviction
-// keeps the sites current runs are actually iterating; an evicted site is
-// recompiled on next use, so eviction costs a miss and never an answer. At
-// roughly a few kilobytes per compiled program the retained set stays in the
-// low tens of megabytes at worst.
-const DefaultProgramCacheSize = 1024
+// Two bounds because the author controls two resources. The number of
+// distinct expression sites a worker evaluates over its lifetime is the
+// deployment's choice, not any one caller's: every loaded specification
+// contributes its sites for as long as runs reference them, across tenants
+// and across time — that is the entry count. But each site's *size* is the
+// author's too, and an entry count alone is not a memory bound: 1,024 sites
+// near [MaxSpecBytes] would retain on the order of a gigabyte, each entry
+// pinning its specification-owned parsed expression through the key and a
+// compiled program that scales with it, surviving the runs that loaded them
+// (Codex, #1274). So every entry is charged its parsed expression's encoded
+// size against the byte budget, and an expression bigger than the whole
+// budget is simply never cached — it compiles per evaluation, as everything
+// did before the cache, rather than evicting the entire working set to sit
+// alone in it.
+//
+// Least-recently-used eviction under both bounds keeps the sites current
+// runs are actually iterating; an evicted site is recompiled on next use, so
+// eviction costs a miss and never an answer.
+const (
+	DefaultProgramCacheSize  = 1024
+	DefaultProgramCacheBytes = 32 << 20
+)
 
 // programKey identifies a compiled program by what it was compiled from. Both
 // halves are pointer identities: the environment is interned per library set,
@@ -356,19 +375,28 @@ type programCache struct {
 	entries map[programKey]*list.Element
 	order   *list.List // front is most recently used, back is next to evict
 
-	// stores counts put calls. It is what lets a test prove a repeated
-	// evaluation was served rather than recompiled-and-restored: entry count
-	// alone cannot tell those apart, since storing over an existing key
-	// leaves it unchanged — the vacuity a first draft of the cache's own
-	// tests shipped with.
+	// retained sums the charged bytes of everything held, and maxBytes is
+	// the budget it is kept under — [DefaultProgramCacheBytes] when zero,
+	// set smaller only by tests that would otherwise parse megabytes to
+	// reach an eviction.
+	retained int
+	maxBytes int
+
+	// stores counts entries actually stored. It is what lets a test prove a
+	// repeated evaluation was served rather than recompiled-and-restored:
+	// entry count alone cannot tell those apart, since storing over an
+	// existing key leaves it unchanged — the vacuity a first draft of the
+	// cache's own tests shipped with.
 	stores int
 }
 
 // programEntry is what an order element carries: the key rides along so
-// eviction can delete the map entry without a reverse index.
+// eviction can delete the map entry without a reverse index, and the charged
+// bytes so eviction can return them to the budget.
 type programEntry struct {
-	key programKey
-	prg cel.Program
+	key   programKey
+	prg   cel.Program
+	bytes int
 }
 
 // get returns the cached program for key, marking it most recently used.
@@ -384,12 +412,24 @@ func (c *programCache) get(key programKey) (cel.Program, bool) {
 	return elem.Value.(*programEntry).prg, true
 }
 
-// put stores a compiled program for key, evicting the least recently used
-// entry once the cache is full. Storing over an existing key keeps the newest
-// program, so a racing double-compile resolves to one retained entry.
-func (c *programCache) put(key programKey, prg cel.Program) {
+// put stores a compiled program for key charged at the given bytes, evicting
+// least recently used entries until both bounds hold. Storing over an
+// existing key keeps the newest program, so a racing double-compile resolves
+// to one retained entry. A program charged more than the whole budget is not
+// stored at all: its caller compiles per evaluation, which is the pre-cache
+// behavior, instead of the working set being evicted to make room for one
+// tenant's largest expression.
+func (c *programCache) put(key programKey, prg cel.Program, bytes int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	budget := c.maxBytes
+	if budget == 0 {
+		budget = DefaultProgramCacheBytes
+	}
+	if bytes > budget {
+		return
+	}
 
 	c.stores++
 
@@ -399,17 +439,21 @@ func (c *programCache) put(key programKey, prg cel.Program) {
 	}
 
 	if elem, ok := c.entries[key]; ok {
-		elem.Value.(*programEntry).prg = prg
+		entry := elem.Value.(*programEntry)
+		c.retained += bytes - entry.bytes
+		entry.prg, entry.bytes = prg, bytes
 		c.order.MoveToFront(elem)
-		return
+	} else {
+		c.entries[key] = c.order.PushFront(&programEntry{key: key, prg: prg, bytes: bytes})
+		c.retained += bytes
 	}
 
-	c.entries[key] = c.order.PushFront(&programEntry{key: key, prg: prg})
-
-	if c.order.Len() > DefaultProgramCacheSize {
+	for c.order.Len() > DefaultProgramCacheSize || c.retained > budget {
 		oldest := c.order.Back()
+		entry := oldest.Value.(*programEntry)
 		c.order.Remove(oldest)
-		delete(c.entries, oldest.Value.(*programEntry).key)
+		delete(c.entries, entry.key)
+		c.retained -= entry.bytes
 	}
 }
 

@@ -3,6 +3,8 @@ package flowstatev1
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -128,6 +130,67 @@ func TestProgramCacheEvictsTheLeastRecentlyUsedSite(t *testing.T) {
 	// An evicted site is a miss, not a casualty.
 	eval(second)
 	assert.Equal(t, DefaultProgramCacheSize, e.programs.len())
+}
+
+// TestProgramCacheChargesRetainedBytesNotJustEntries: an entry count alone is
+// not a memory bound, because the author controls each expression's size as
+// well as how many there are — 1,024 sites near MaxSpecBytes would retain a
+// gigabyte (Codex, #1274). Each entry is charged its parsed expression's
+// encoded size, and the byte budget evicts long before the count bound would.
+func TestProgramCacheChargesRetainedBytesNotJustEntries(t *testing.T) {
+	t.Parallel()
+
+	e := NewEvaluator()
+	// A test-sized budget; parsing tens of megabytes to overflow the real one
+	// would test the parser's patience rather than the cache's arithmetic.
+	e.programs.maxBytes = 4096
+	ctx := context.Background()
+
+	// Each literal weighs ~1.5KB encoded, so two fit the budget and three do
+	// not — while the entry count stays far below DefaultProgramCacheSize,
+	// which is what proves bytes evict on their own.
+	sites := make([]*expr.ParsedExpr, 3)
+	var env *cel.Env
+	for i := range sites {
+		env, sites[i] = parsedExprForTest(t, e, `"`+strings.Repeat("a", 1500)+`"`)
+		_, err := e.EvalParsed(ctx, env, sites[i], map[string]any{})
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 2, e.programs.len(),
+		"three sites at ~1.5KB each cannot all live under a 4KB budget; the count bound alone would have kept all three")
+	_, oldest := e.programs.entries[programKey{env: env, parsed: sites[0]}]
+	assert.False(t, oldest, "what leaves is the least recently used, same as count eviction")
+	assert.LessOrEqual(t, e.programs.retained, e.programs.maxBytes,
+		"the retained sum never exceeds the budget after put returns")
+
+	// An evicted site still answers — recompiled, not lost.
+	out, err := e.EvalParsed(ctx, env, sites[0], map[string]any{})
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat("a", 1500), out.Value())
+}
+
+// TestAnExpressionBiggerThanTheBudgetIsNotCached: caching one entry by
+// evicting everything else would let a single tenant's largest expression own
+// the whole cache. It is refused instead, and its caller compiles per
+// evaluation exactly as every caller did before the cache existed.
+func TestAnExpressionBiggerThanTheBudgetIsNotCached(t *testing.T) {
+	t.Parallel()
+
+	e := NewEvaluator()
+	e.programs.maxBytes = 64
+	env, parsed := parsedExprForTest(t, e, `"`+strings.Repeat("b", 500)+`" + string(vars.n)`)
+	ctx := context.Background()
+
+	for _, n := range []int64{1, 2} {
+		out, err := e.EvalParsed(ctx, env, parsed, map[string]any{
+			"vars": map[string]any{"n": n},
+		})
+		require.NoError(t, err, "uncached is a cost, never a refusal to answer")
+		assert.Equal(t, strings.Repeat("b", 500)+fmt.Sprint(n), out.Value())
+	}
+	assert.Equal(t, 0, e.programs.len(), "an oversized expression never enters the cache")
+	assert.Equal(t, 0, e.programs.storeCount(), "and never counts as stored, so reuse claims stay honest")
 }
 
 // TestCachedProgramStillEnforcesTheCostBudget is the limit half of the cache's
