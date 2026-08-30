@@ -291,12 +291,44 @@ func (v delegatedPrincipalVerifier) Verify(context.Context, string) (auth.Princi
 	}, nil
 }
 
-// TestMCPTokenVerifierRefusesADelegatedPrincipalFromAnyVerifier is why the
-// adapter kept its own call to the shared refusal after the verifier grew one.
-// Behind an [auth.OIDCVerifier] that call is unreachable — the token never
+// TestBothBearerSurfacesUseOneAdmissionOrder gives a custom Verifier a
+// Principal with two independent defects. Before the shared sequence, Connect
+// refused the delegation claim first while MCP refused the audience first.
+// Holding the same Principal up to both observers makes that ordering
+// divergence visible without depending on either transport's error wrapper.
+func TestBothBearerSurfacesUseOneAdmissionOrder(t *testing.T) {
+	t.Parallel()
+
+	verifier := delegatedPrincipalVerifier{claim: auth.ClaimActor}
+	request := rpcRequest(t, "any-token")
+
+	var rpcObserved error
+	identity, rpcErr := auth.NewAuthenticator(verifier,
+		auth.WithExpectedResource(mcpOtherResource),
+		auth.WithFailureObserver(func(_ context.Context, _ *http.Request, err error) {
+			rpcObserved = err
+		})).Authenticate(t.Context(), request)
+	requireRPCRefused(t, identity, rpcErr)
+
+	var mcpObserved error
+	info, mcpErr := auth.MCPTokenVerifier(verifier, mcpOtherResource,
+		auth.WithMCPFailureObserver(func(_ context.Context, _ *http.Request, err error) {
+			mcpObserved = err
+		}))(t.Context(), "any-token", request)
+	requireRefused(t, info, mcpErr)
+
+	require.ErrorIs(t, rpcObserved, auth.ErrDelegatedToken)
+	require.ErrorIs(t, mcpObserved, auth.ErrDelegatedToken)
+	require.Equal(t, auth.PublicReason(rpcObserved), auth.PublicReason(mcpObserved))
+	require.NotContains(t, mcpErr.Error(), mcpOtherResource,
+		"the public MCP refusal must not expose the expected resource")
+}
+
+// TestMCPTokenVerifierRefusesADelegatedPrincipalFromAnyVerifier proves the
+// shared admission sequence rechecks the Principal after the verifier returns.
+// Behind an [auth.OIDCVerifier] that refusal is unreachable — the token never
 // becomes a Principal — so without a Verifier that admits one, deleting the
-// adapter's check would break nothing any test could see, and the surface
-// would quietly depend on which implementation it happened to be wired with.
+// shared check would break nothing any test could see.
 func TestMCPTokenVerifierRefusesADelegatedPrincipalFromAnyVerifier(t *testing.T) {
 	t.Parallel()
 

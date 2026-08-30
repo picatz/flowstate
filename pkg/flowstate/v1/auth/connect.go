@@ -213,56 +213,15 @@ func NewAuthenticator(verifier Verifier, opts ...AuthenticatorOption) *Authentic
 // carrying both a verified certificate and a bearer token is accepted only
 // when both verify and agree on the same principal — see [ErrAmbiguousIdentity].
 func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (any, error) {
-	// Substituted here rather than in the constructor so that the zero
-	// Authenticator rejects requests too.
-	verifier := a.verifier
-	if verifier == nil {
-		verifier = unconfiguredVerifier{}
-	}
-
 	// An absent or non-bearer Authorization header yields the empty token,
 	// which every Verifier rejects. Requests with no credentials therefore take
 	// the same path as requests with bad ones.
 	rawToken, _ := authn.BearerToken(req)
 
-	tokenPrincipal, tokenErr := verifier.Verify(ctx, rawToken)
-	if tokenErr == nil && tokenPrincipal.IsZero() {
-		// A Verifier that vouches for nobody has not authenticated anyone,
-		// whatever it returned. Reaching a handler with an identity that reads as
-		// unauthenticated is worse than a rejection.
-		tokenErr = fmt.Errorf("%w: verifier returned no identity", ErrNoToken)
-	}
-
-	// Refused here, on the Principal the Verifier returned, and not only inside
-	// [OIDCVerifier.Verify]. That is the seam where the repository's own
-	// verifier performs this refusal, but an Authenticator holds *any*
-	// [Verifier] — a custom implementation that returns a non-zero Principal
-	// carrying a delegation claim would otherwise be admitted here while the
-	// MCP surface refused the same Principal (mcpverifier.go runs the same
-	// helper for exactly this reason). Checking it at the surface as well as in
-	// the default verifier is what keeps the two surfaces symmetric for every
-	// Verifier rather than only for [OIDCVerifier], which is the whole point of
-	// the change this belongs to. Recorded as a token failure, not returned, so
-	// the mTLS paths below treat it as any other invalid token.
-	if tokenErr == nil {
-		if err := refuseDelegationClaims(tokenPrincipal.Claims); err != nil {
-			tokenErr = err
-		}
-	}
-
-	// Recorded as a token failure rather than returned here, so that the mTLS
-	// paths below treat a token for the wrong resource exactly as they treat
-	// any other invalid token: no fallback to the certificate, and no
-	// precedence rule invented for this one check. See [WithExpectedResource]
-	// for why an unset resource narrows nothing.
-	if tokenErr == nil && a.expectedResource != "" && !tokenPrincipal.HasAudience(a.expectedResource) {
-		// The resource is not named in the error: a caller holding a token for
-		// some other service learns its audience was wrong, and does not learn
-		// this deployment's resource identifier from a failure — that is
-		// published in the RFC 9728 document the challenge points at, which is
-		// where a client is meant to read it.
-		tokenErr = fmt.Errorf("%w: the token's audience does not name this resource", ErrInvalidAudience)
-	}
+	// The shared sequence records a token failure rather than returning it, so
+	// the mTLS paths below treat delegation and resource refusals exactly as
+	// every other invalid token: no fallback and no new precedence rule.
+	tokenPrincipal, tokenErr := admitBearer(ctx, a.verifier, rawToken, a.expectedResource, false)
 
 	// req.TLS.VerifiedChains is set by crypto/tls itself, only once the peer's
 	// certificate has been verified against the listener's ClientCAs — nothing

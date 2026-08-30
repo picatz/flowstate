@@ -56,9 +56,9 @@ import (
 //     set, and this says so in the verifier where the reason is legible.
 //
 //   - Scopes is deliberately nil, and no caller of this sets
-//     [mcpauth.RequireBearerTokenOptions.Scopes]. #567's D1 defers the
-//     scope vocabulary by omission: a challenge that named a scope would name
-//     a spelling that has to migrate the day that decision lands.
+//     [mcpauth.RequireBearerTokenOptions.Scopes]. The action vocabulary now
+//     exists, but no per-action enforcement point can truthfully name which
+//     scope this request requires.
 //
 //   - Extra carries the verified [Principal], and nothing else. It is the
 //     Principal and not the raw claims map for the reason the previous note
@@ -87,52 +87,34 @@ import (
 // middleware, so it is drawn from [PublicReason] and names nothing the caller
 // did not already have: never the configured resource, never an issuer,
 // never any part of the token.
-func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
-	return func(ctx context.Context, token string, _ *http.Request) (*mcpauth.TokenInfo, error) {
+func MCPTokenVerifier(v Verifier, resource string, opts ...MCPTokenVerifierOption) mcpauth.TokenVerifier {
+	var settings mcpTokenVerifierSettings
+	for _, opt := range opts {
+		opt(&settings)
+	}
+
+	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
+		refuse := func(err error) (*mcpauth.TokenInfo, error) {
+			if settings.observe != nil {
+				settings.observe(ctx, req, err)
+			}
+			return nil, fmt.Errorf("%w: %s", mcpauth.ErrInvalidToken, PublicReason(err))
+		}
+
 		// Both are programming errors rather than caller errors, and both are
 		// refusals anyway: a surface wired without a verifier or without a
 		// resource to bind to has no way to tell one caller from another, and
 		// the fail-closed answer to "I cannot decide" is no.
 		if v == nil {
-			return nil, fmt.Errorf("%w: this surface has no token verifier configured", mcpauth.ErrInvalidToken)
+			return refuse(fmt.Errorf("%w: this surface has no token verifier configured", ErrInvalidPolicy))
 		}
 		if resource == "" {
-			return nil, fmt.Errorf("%w: this surface has no protected resource configured", mcpauth.ErrInvalidToken)
+			return refuse(fmt.Errorf("%w: this surface has no protected resource configured", ErrInvalidPolicy))
 		}
 
-		principal, err := v.Verify(ctx, token)
+		principal, err := admitBearer(ctx, v, token, resource, true)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s", mcpauth.ErrInvalidToken, PublicReason(err))
-		}
-
-		// [InsecureAnonymousVerifier] admits every caller as the anonymous
-		// principal, which is a development affordance for a loopback Connect
-		// listener and never an identity. It cannot pin a session either —
-		// every caller would share one UserID — so admitting it here would
-		// silently turn session pinning off for the whole surface. cmd/flow
-		// refuses --insecure-no-auth on this command as well; this is the same
-		// refusal in the package that would otherwise have to be trusted to
-		// have made it.
-		if principal.IsAnonymous() {
-			return nil, fmt.Errorf("%w: anonymous access is not available on this surface", mcpauth.ErrInvalidToken)
-		}
-
-		if !principal.HasAudience(resource) {
-			// Named without the resource: a caller holding a token for some
-			// other service learns that the audience was wrong, and does not
-			// learn this deployment's resource identifier from a failure — it
-			// is published in the RFC 9728 document the challenge points at,
-			// which is where a client is meant to read it.
-			return nil, fmt.Errorf("%w: the token's audience does not name this resource", mcpauth.ErrInvalidToken)
-		}
-
-		// Redundant behind an [OIDCVerifier], which refuses a delegated token
-		// before it ever returns a Principal (see delegation.go), and kept
-		// anyway: this adapter accepts any [Verifier], and a surface that
-		// lost the refusal by being handed a different one would be the
-		// asymmetry this call exists to have removed, pointing the other way.
-		if err := refuseDelegationClaims(principal.Claims); err != nil {
-			return nil, fmt.Errorf("%w: %s", mcpauth.ErrInvalidToken, PublicReason(err))
+			return refuse(err)
 		}
 
 		// A Principal with no issuer or no subject cannot produce a session
@@ -141,11 +123,11 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 		// when the recorded userID is non-empty). Refusing is the only answer
 		// that keeps the pin honest.
 		if principal.Issuer == "" || principal.Subject == "" {
-			return nil, fmt.Errorf("%w: the token names no issuer and subject to bind a session to", mcpauth.ErrInvalidToken)
+			return refuse(fmt.Errorf("%w: the token names no issuer and subject to bind a session to", ErrMissingClaim))
 		}
 
 		if principal.ExpiresAt.IsZero() {
-			return nil, fmt.Errorf("%w: the token carries no expiry", mcpauth.ErrInvalidToken)
+			return refuse(fmt.Errorf("%w: the token carries no expiry", ErrMissingClaim))
 		}
 
 		userID, err := MCPSessionUserID(principal)
@@ -155,7 +137,7 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 			// an empty UserID as "do not pin this session at all" — so the
 			// only answer that keeps the pin honest is to refuse. The reason
 			// is generic on purpose: err names a field of the token.
-			return nil, fmt.Errorf("%w: this token cannot be bound to a session", mcpauth.ErrInvalidToken)
+			return refuse(fmt.Errorf("%w: this token cannot be bound to a session", ErrInvalidPolicy))
 		}
 
 		return &mcpauth.TokenInfo{
@@ -163,6 +145,24 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 			UserID:     userID,
 			Extra:      map[string]any{mcpPrincipalKey: heldPrincipal(func() Principal { return principal })},
 		}, nil
+	}
+}
+
+// MCPTokenVerifierOption configures the MCP transport adapter without changing
+// the admission checks it shares with Connect.
+type MCPTokenVerifierOption func(*mcpTokenVerifierSettings)
+
+type mcpTokenVerifierSettings struct {
+	observe func(context.Context, *http.Request, error)
+}
+
+// WithMCPFailureObserver registers a function called with the internal reason
+// each MCP bearer request was rejected. The caller still receives only
+// [PublicReason]. The observer runs on the request path and must not inspect or
+// log the Authorization header, which carries the bearer token.
+func WithMCPFailureObserver(observe func(context.Context, *http.Request, error)) MCPTokenVerifierOption {
+	return func(settings *mcpTokenVerifierSettings) {
+		settings.observe = observe
 	}
 }
 
