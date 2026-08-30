@@ -2,7 +2,9 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -42,6 +44,62 @@ func TestTaskServiceExecuteInstallsCallerBeforeFn(t *testing.T) {
 	require.True(t, gotOK, "Fn ran without a caller installed on its context")
 	assert.Equal(t, "ci", gotCaller.Identity.GetSubject())
 	assert.Equal(t, "team-a", gotCaller.Namespace)
+}
+
+// TestTaskConnectErrorMarksOnlyTheInheritedRequestDeadline proves the SDK's
+// side of #1233: provenance follows the request context, not the status code.
+// That leaves a task's own backend deadline unmarked for the host to classify
+// as Upstream.
+func TestTaskConnectErrorMarksOnlyTheInheritedRequestDeadline(t *testing.T) {
+	t.Parallel()
+
+	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{
+			name: "request deadline",
+			ctx:  expired,
+			err:  context.DeadlineExceeded,
+			want: true,
+		},
+		{
+			name: "plugin-owned deadline while request is live",
+			ctx:  t.Context(),
+			err:  connect.NewError(connect.CodeDeadlineExceeded, errors.New("backend timed out")),
+			want: false,
+		},
+		{
+			name: "unrelated failure after request deadline",
+			ctx:  expired,
+			err:  connect.NewError(connect.CodeUnavailable, errors.New("backend unavailable")),
+			want: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var connectErr *connect.Error
+			require.ErrorAs(t, taskConnectError(test.ctx, test.err), &connectErr)
+
+			got := false
+			for _, detail := range connectErr.Details() {
+				value, detailErr := detail.Value()
+				require.NoError(t, detailErr)
+				if provenance, ok := value.(*pluginv1.TaskErrorProvenance); ok {
+					got = provenance.GetCallerDeadlineExceeded()
+				}
+			}
+			assert.Equal(t, test.want, got)
+		})
+	}
 }
 
 // TestTaskServiceExecuteInstallsCallerEvenWithNoIdentity checks the

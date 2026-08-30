@@ -589,3 +589,19 @@ message ExecuteResponse {
   // rather than guessing. Unset lets the engine apply its own backoff.
   google.protobuf.Duration retry_after = 4;
 }
+
+// TaskErrorProvenance identifies a task failure caused by the request context
+// rather than by the plugin or one of its dependencies. It is attached as an
+// error detail by the SDK and interpreted by the host; plugin authors do not
+// construct it.
+//
+// Connect propagates a caller deadline to the plugin process, where the derived
+// timer can expire before the caller's own timer is observed. Carrying this fact
+// explicitly keeps that one deadline classified the same way on either side of
+// the process boundary without treating a plugin's own DeadlineExceeded status
+// as a caller timeout.
+message TaskErrorProvenance {
+  // CallerDeadlineExceeded reports that the task returned a deadline failure
+  // after the request context's inherited deadline expired.
+  bool caller_deadline_exceeded = 1;
+}

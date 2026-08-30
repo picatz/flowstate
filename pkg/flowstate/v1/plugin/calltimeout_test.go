@@ -5,6 +5,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
 // The three directions [Plugin.callContext] has to get right, and #1130's bug
@@ -25,6 +30,29 @@ import (
 //
 // So all three are written down here together. Read apart they are three
 // timeout tests; read together they are the rule.
+
+// runDeadlinePlugin is a real SDK plugin whose task ends only when the request
+// context does. Its SDK serving path is what attaches the peer-side provenance
+// this test exists to exercise.
+func runDeadlinePlugin() int {
+	err := sdk.Run(context.Background(), sdk.Plugin{
+		Name:    "deadline",
+		Version: "0.0.1",
+		Tasks: []sdk.Task{{
+			Name:   "wait",
+			Input:  &flowstatev1.Task_Log_Inputs{},
+			Output: &flowstatev1.Task_Log_Outputs{},
+			Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}},
+	})
+	if err != nil {
+		return 1
+	}
+	return 0
+}
 
 // TestCallContextKeepsALongerCallerDeadline pins the defect exactly as #1130
 // stated it — a task that would run past DefaultCallTimeout under a two minute
@@ -172,14 +200,14 @@ func TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime(t *testing.T) {
 }
 
 // TestACallWithNoDeadlineStillDiesAtCallTimeout is the backstop over the same
-// real path: the "slow" fixture blocks until its context ends, and with no
-// caller deadline the host's own bound is the only thing that can end it. The
-// wire error identifies that bound without comparing the host's clock to the
-// deadline Connect propagates to the plugin process.
+// real path: the SDK fixture blocks until its context ends, and with no caller
+// deadline the host's own bound is the only thing that can end it. The wire
+// error and its structured provenance identify that bound without comparing
+// the host's clock to the deadline Connect propagates to the plugin process.
 func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(t, pluginDir(t, "slow"))
+	cfg := testConfig(t, pluginDir(t, "deadline"))
 	cfg.CallTimeout = time.Second
 
 	host := openHost(t, cfg)
@@ -202,6 +230,11 @@ func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Fatal("a call with no deadline of its own succeeded, want CallTimeout to end it")
+		}
+		var taskErr *flowstatev1.TaskError
+		require.ErrorAs(t, err, &taskErr)
+		if taskErr.Kind != flowstatev1.ErrorKindTimeout {
+			t.Errorf("call error kind = %s, want %s: %v", taskErr.Kind, flowstatev1.ErrorKindTimeout, err)
 		}
 		const deadlineExceeded = "deadline_exceeded: context deadline exceeded"
 		if !strings.Contains(err.Error(), deadlineExceeded) {

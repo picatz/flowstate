@@ -1047,7 +1047,7 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 
 	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
 	if err != nil {
-		return nil, asConnectError(err)
+		return nil, taskConnectError(ctx, err)
 	}
 
 	return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: outputs}), nil
@@ -1121,7 +1121,7 @@ func (s *taskService) ExecuteStream(
 
 	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
 	if err != nil {
-		return asConnectError(err)
+		return taskConnectError(ctx, err)
 	}
 
 	// Fn has returned, so no goroutine it started should still be calling the

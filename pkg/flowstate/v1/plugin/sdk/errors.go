@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -213,5 +214,34 @@ func asConnectError(err error) error {
 		converted.AddDetail(detail)
 	}
 
+	return converted
+}
+
+// taskConnectError adds the request-context provenance that only the serving
+// side can know. Connect propagates the caller's deadline to ctx, but its wire
+// timer can expire just before the caller's local timer. Without this detail
+// the host cannot distinguish that ordering from a plugin-owned backend
+// deadline, because both otherwise arrive as CodeDeadlineExceeded.
+func taskConnectError(ctx context.Context, err error) error {
+	converted := asConnectError(err)
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) ||
+		(!errors.Is(err, context.DeadlineExceeded) && connect.CodeOf(err) != connect.CodeDeadlineExceeded) {
+		return converted
+	}
+	if errors.Is(err, context.DeadlineExceeded) && connect.CodeOf(converted) != connect.CodeDeadlineExceeded {
+		converted = connect.NewError(connect.CodeDeadlineExceeded, err)
+	}
+
+	var connectErr *connect.Error
+	if !errors.As(converted, &connectErr) {
+		return converted
+	}
+
+	detail, detailErr := connect.NewErrorDetail(&pluginv1.TaskErrorProvenance{
+		CallerDeadlineExceeded: true,
+	})
+	if detailErr == nil {
+		connectErr.AddDetail(detail)
+	}
 	return converted
 }
