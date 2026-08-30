@@ -323,6 +323,13 @@ func (c *compiler) manualPrincipals(n ast.Node, path string) []string {
 
 			continue
 		}
+		if !v1.LooksLikeQualifiedSubject(subject) {
+			c.report(spanOfNode(node), ref{path: p, label: r.label},
+				"%q is not \"<issuer>#<subject>\"; a bare or malformed subject is refused because a "+
+					"subject is only unique within its issuer", subject)
+
+			continue
+		}
 		if _, duplicate := seen[subject]; duplicate {
 			c.report(spanOfNode(node), ref{path: p, label: r.label},
 				"lists %q twice; a principal is either allowed or not, so the second entry does nothing",

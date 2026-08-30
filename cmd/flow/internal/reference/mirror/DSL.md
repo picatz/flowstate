@@ -1672,7 +1672,9 @@ triggers:
 
   - manual:
       require_reason: true                    # a start must say why, recorded on the run
-      allowed_principals: [oncall@example.com] # and be made by one of these attested subjects
+      # Exact stable caller IDs: <issuer>#<subject>. Bare subjects are rejected
+      # because the same subject can exist under more than one trusted issuer.
+      allowed_principals: ["https://issuer.example.com#oncall@example.com"]
 ```
 
 and refusal is something you write down, on one line:
@@ -1695,6 +1697,14 @@ be developed locally is not one anybody will maintain. Enforcement is the server
 the boundary, against an identity it authenticated and the `--reason` the caller gave —
 the same placement `signals:` policy already has, and the same rule that keeps egress
 policy out of the validator.
+
+Each `allowed_principals` entry is the exact stable identity
+`<issuer>#<subject>` established by OIDC or identity-bearing mTLS authentication.
+Existing bare-subject entries are invalid rather than being reinterpreted as global
+subjects; qualify them with the issuer configured in the server's auth policy. The
+`--insecure-no-auth` development identity cannot satisfy a non-empty allowlist. Omit
+the allowlist for an intentionally open development server; never use that posture on
+a shared network.
 
 **Trigger context is readable for behaviour.** A run reads how it started under a root of
 its own:

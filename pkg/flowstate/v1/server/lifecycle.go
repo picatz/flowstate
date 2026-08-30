@@ -835,7 +835,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// through `Run` and not through here — which is the fail-closed direction:
 	// a requirement nothing can satisfy refuses, rather than being waived by the
 	// path that has nowhere to put it.
-	if err := v1.CheckManualStart(workflow, identity.GetSubject(), ""); err != nil {
+	if err := v1.CheckManualStart(workflow, manualStartPrincipal(ctx), ""); err != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied, err)
 	}
 

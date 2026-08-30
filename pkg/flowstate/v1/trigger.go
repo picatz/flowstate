@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/common/types/ref"
 )
@@ -254,20 +255,40 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 		return nil
 	}
 
-	if !manual.GetDenied() {
-		return nil
+	if manual.GetDenied() {
+		if manual.GetRequireReason() {
+			return fmt.Errorf("`manual:` both refuses manual starts and requires a reason for one, which cannot " +
+				"both hold; write `manual: denied` to refuse them, or `require_reason: true` to allow them with a " +
+				"reason recorded")
+		}
+
+		if len(manual.GetAllowedPrincipals()) > 0 {
+			return fmt.Errorf("`manual:` both refuses manual starts and names %d principal(s) allowed to make one, "+
+				"which cannot both hold; write `manual: denied` to refuse them, or list the principals to allow "+
+				"only those", len(manual.GetAllowedPrincipals()))
+		}
 	}
 
-	if manual.GetRequireReason() {
-		return fmt.Errorf("`manual:` both refuses manual starts and requires a reason for one, which cannot " +
-			"both hold; write `manual: denied` to refuse them, or `require_reason: true` to allow them with a " +
-			"reason recorded")
+	principals := manual.GetAllowedPrincipals()
+	if len(principals) > 64 {
+		return fmt.Errorf("`manual.allowed_principals` names %d principals, exceeding the limit of 64; narrow the allowlist",
+			len(principals))
 	}
 
-	if len(manual.GetAllowedPrincipals()) > 0 {
-		return fmt.Errorf("`manual:` both refuses manual starts and names %d principal(s) allowed to make one, "+
-			"which cannot both hold; write `manual: denied` to refuse them, or list the principals to allow "+
-			"only those", len(manual.GetAllowedPrincipals()))
+	seen := make(map[string]struct{}, len(principals))
+	for i, principal := range principals {
+		if utf8.RuneCountInString(principal) > 256 {
+			return fmt.Errorf("`manual.allowed_principals[%d]` exceeds the 256-character limit", i)
+		}
+		if !LooksLikeQualifiedSubject(principal) {
+			return fmt.Errorf("`manual.allowed_principals[%d]` %q is not \"<issuer>#<subject>\"; a bare or malformed subject is refused because a subject is only unique within its issuer",
+				i, principal)
+		}
+		if _, ok := seen[principal]; ok {
+			return fmt.Errorf("`manual.allowed_principals[%d]` lists %q twice; a principal is either allowed or not, so the duplicate does nothing",
+				i, principal)
+		}
+		seen[principal] = struct{}{}
 	}
 
 	return nil
@@ -291,11 +312,11 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 // # Fail closed, in the two places it matters
 //
 // A malformed block ([CheckManualTrigger]) denies rather than being ignored, so a
-// contradiction that reached a server is a refusal and not a permit. And an empty
-// subject against a non-empty `allowed_principals` is denied: a deployment with
-// no identity provider attests every caller as nobody in particular, and a policy
-// that admitted that would admit everyone while reading as if it named three
-// people.
+// contradiction that reached a server is a refusal and not a permit. Bare
+// configured subjects are refused rather than reinterpreted across every issuer.
+// And an empty canonical principal against a non-empty `allowed_principals` is
+// denied: a deployment with no authenticated identity cannot satisfy a policy
+// naming particular callers.
 //
 // # Where this is deliberately not called
 //
@@ -325,8 +346,8 @@ func CheckManualStart(wf *Workflow, principal, reason string) error {
 			// Named separately because the remedy is different in kind: the caller
 			// is not the wrong person, they are nobody, and the fix is on the
 			// deployment rather than in the request.
-			return fmt.Errorf("workflow %q allows a manual start only by %s, and this caller was attested with "+
-				"no subject at all; a start by nobody in particular is refused rather than admitted, so "+
+			return fmt.Errorf("workflow %q allows a manual start only by %s, and this caller has no authenticated "+
+				"issuer-qualified principal; an anonymous start is refused rather than admitted, so "+
 				"authenticate as one of those principals",
 				wf.GetName(), strings.Join(manual.GetAllowedPrincipals(), ", "))
 		}

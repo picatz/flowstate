@@ -271,15 +271,16 @@ type ManualTrigger struct {
 	// absent is the failure. A start with no reason is refused while the person
 	// who has one is still present to give it.
 	RequireReason bool `protobuf:"varint,2,opt,name=require_reason,json=requireReason,proto3" json:"require_reason,omitempty"`
-	// AllowedPrincipals restricts a manual start to these attested subjects,
-	// matched against [WorkloadIdentity.subject] — the caller the server
-	// authenticated, never anything the request asserts about itself.
+	// AllowedPrincipals restricts a manual start to these issuer-qualified
+	// authenticated identities, each written as "<issuer>#<subject>" and matched
+	// exactly against the caller's stable Principal.ID. Neither half comes from
+	// the request: OIDC and mTLS authentication establish both.
 	//
 	// Empty means every authenticated caller, which is today's behavior and what
 	// a workflow with no `manual:` block keeps. Non-empty is a closed set: a
-	// subject that is not in it is refused, including the empty subject an
-	// unauthenticated deployment attests, because a policy that admits "nobody
-	// in particular" is a policy that admits everyone.
+	// qualified principal that is not in it is refused. Bare subjects are invalid,
+	// not global aliases: a subject is unique only within its issuer. Missing,
+	// zero, and insecure anonymous development identities cannot satisfy the set.
 	AllowedPrincipals []string `protobuf:"bytes,3,rep,name=allowed_principals,json=allowedPrincipals,proto3" json:"allowed_principals,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
@@ -1059,11 +1060,12 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\bTriggers\x12?\n" +
 	"\bschedule\x18\x01 \x01(\v2\x1d.flowstate.v1.ScheduleTriggerB\x04\xe2A\x01\x01R\bschedule\x12F\n" +
 	"\bwebhooks\x18\x02 \x03(\v2\x1c.flowstate.v1.WebhookTriggerB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10 R\bwebhooks\x129\n" +
-	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xa0\x01\n" +
+	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xae\x01\n" +
 	"\rManualTrigger\x12\x1c\n" +
 	"\x06denied\x18\x01 \x01(\bB\x04\xe2A\x01\x01R\x06denied\x12+\n" +
-	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12D\n" +
-	"\x12allowed_principals\x18\x03 \x03(\tB\x15\xe2A\x01\x01\xbaH\x0e\x92\x01\v\x10@\"\ar\x05\x10\x01\x18\x80\x02R\x11allowedPrincipals\"\x9d\x01\n" +
+	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12R\n" +
+	"\x12allowed_principals\x18\x03 \x03(\tB#\xe2A\x01\x01\xbaH\x1c\x92\x01\x19\x10@\x18\x01\"\x13r\x11\x10\x01\x18\x80\x022\n" +
+	"^[^#]+#.+$R\x11allowedPrincipals\"\x9d\x01\n" +
 	"\x0eTriggerContext\x12\x1b\n" +
 	"\x04kind\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18 R\x04kind\x12\x1b\n" +
 	"\x04name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04name\x12&\n" +

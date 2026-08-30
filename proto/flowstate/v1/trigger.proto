@@ -120,23 +120,26 @@ message ManualTrigger {
   // who has one is still present to give it.
   bool require_reason = 2 [(google.api.field_behavior) = OPTIONAL];
 
-  // AllowedPrincipals restricts a manual start to these attested subjects,
-  // matched against [WorkloadIdentity.subject] — the caller the server
-  // authenticated, never anything the request asserts about itself.
+  // AllowedPrincipals restricts a manual start to these issuer-qualified
+  // authenticated identities, each written as "<issuer>#<subject>" and matched
+  // exactly against the caller's stable Principal.ID. Neither half comes from
+  // the request: OIDC and mTLS authentication establish both.
   //
   // Empty means every authenticated caller, which is today's behavior and what
   // a workflow with no `manual:` block keeps. Non-empty is a closed set: a
-  // subject that is not in it is refused, including the empty subject an
-  // unauthenticated deployment attests, because a policy that admits "nobody
-  // in particular" is a policy that admits everyone.
+  // qualified principal that is not in it is refused. Bare subjects are invalid,
+  // not global aliases: a subject is unique only within its issuer. Missing,
+  // zero, and insecure anonymous development identities cannot satisfy the set.
   repeated string allowed_principals = 3 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).repeated = {
       max_items: 64
+      unique: true
       items: {
         string: {
           min_len: 1
           max_len: 256
+          pattern: "^[^#]+#.+$"
         }
       }
     }
