@@ -377,6 +377,9 @@ func TestCatalogProseIsPresent(t *testing.T) {
 	fieldCount := 0
 	var checkMessage func(protoreflect.MessageDescriptor)
 	checkMessage = func(message protoreflect.MessageDescriptor) {
+		if message.IsMapEntry() {
+			return
+		}
 		messageCount++
 		if _, ok := CommentOf(message); !ok {
 			missing = append(missing, string(message.FullName()))
