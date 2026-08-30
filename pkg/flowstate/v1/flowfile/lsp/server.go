@@ -577,6 +577,17 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 			return
 		}
 	}
+	if defaultsURI, tracked := s.testDefaultsBySuite[source]; tracked {
+		if openDefaults, ok := s.docs.get(defaultsURI); ok {
+			usesOpenBuffer := false
+			for _, guard := range guards {
+				usesOpenBuffer = usesOpenBuffer || guard == openDefaults
+			}
+			if !usesOpenBuffer {
+				return
+			}
+		}
+	}
 	if s.testDiagnosticsBySource == nil {
 		s.testDiagnosticsBySource = make(map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic)
 	}
@@ -593,18 +604,6 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 	}
 	next := make(map[lsp.DocumentURI][]lsp.Diagnostic, len(publications))
 	for _, publication := range publications {
-		// A suite may have loaded saved defaults immediately before the editor
-		// opened that defaults document. Do not let the older analysis race
-		// back onto the now-authoritative live buffer.
-		if open, ok := s.docs.get(publication.uri); source != publication.uri && ok && open.kind == docTestDefaults {
-			usesOpenBuffer := false
-			for _, guard := range guards {
-				usesOpenBuffer = usesOpenBuffer || guard == open
-			}
-			if !usesOpenBuffer && s.testDefaultsBySuite[source] == publication.uri {
-				continue
-			}
-		}
 		next[publication.uri] = publication.diagnostics
 		touched[publication.uri] = true
 		if s.testSourcesByTarget[publication.uri] == nil {

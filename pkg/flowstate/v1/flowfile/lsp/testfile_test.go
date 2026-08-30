@@ -513,6 +513,26 @@ func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
 	assert.Equal(t, "current", s.testDiagnosticsBySource[uri][uri][0].Message)
 }
 
+func TestSavedDefaultsAnalysisCannotReplaceASuiteAfterDefaultsOpen(t *testing.T) {
+	t.Parallel()
+	s := &FlowfileServer{Logger: discardLogger()}
+	suiteURI := lsp.DocumentURI("file:///stale/suite.test.yaml")
+	defaultsURI := lsp.DocumentURI("file:///stale/testdefaults.yaml")
+	suite := s.docs.open(suiteURI, 1, validSuite, nil)
+	s.docs.open(defaultsURI, 1, "defaults: {}\n", nil)
+	s.testDefaultsBySuite = map[lsp.DocumentURI]lsp.DocumentURI{suiteURI: defaultsURI}
+	s.testDiagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic{
+		suiteURI: {suiteURI: []lsp.Diagnostic{{Code: codeTestFile, Message: "current live result"}}},
+	}
+
+	s.publishTestDiagnostics(t.Context(), nil, suiteURI, []diagnosticPublication{{
+		uri: suiteURI, diagnostics: []lsp.Diagnostic{{Code: codeTestFile, Message: "stale saved result"}},
+	}}, suite)
+
+	require.Len(t, s.testDiagnosticsBySource[suiteURI][suiteURI], 1)
+	assert.Equal(t, "current live result", s.testDiagnosticsBySource[suiteURI][suiteURI][0].Message)
+}
+
 func TestAClosedSuiteCannotConsumeADefaultsDependencySlot(t *testing.T) {
 	t.Parallel()
 	s := &FlowfileServer{Logger: discardLogger()}
