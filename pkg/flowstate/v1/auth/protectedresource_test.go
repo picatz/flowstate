@@ -443,6 +443,8 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 	// httptest.Server.Close closes idle connections on http.DefaultTransport.
 	// This test runs in parallel with other test servers, so its probes must
 	// use the transport owned by this server rather than that shared global.
+	require.NotNil(t, client.Transport,
+		"a nil client transport would fall back to the shared http.DefaultTransport")
 	require.NotSame(t, http.DefaultTransport, client.Transport,
 		"parallel test-server cleanup must not close the transport carrying these probes")
 
