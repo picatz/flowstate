@@ -205,6 +205,31 @@ func TestABrokenDefaultsFileIsPublishedOnItsOwnURI(t *testing.T) {
 	assert.NotEqual(t, documentStart, d.Range)
 }
 
+func TestAnOpenDefaultsSyntaxDiagnosticWinsOverAnIncludingSuiteDuplicate(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
+	suiteURI := "file://" + filepath.Join(dir, "suite.test.yaml")
+	c.open(string(defaultsURI), "defaults:\n  stubs: [\n")
+	c.open(suiteURI, validSuite)
+
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			p := c.published[i]
+			if p.URI != defaultsURI || len(p.Diagnostics) == 0 {
+				continue
+			}
+			return p.Diagnostics[0].Code == codeYAMLSyntax
+		}
+		return false
+	}, time.Second, time.Millisecond,
+		"the directly open document must deterministically own the duplicate diagnostic code")
+}
+
 func TestAnUnsavedDefaultsBufferOwnsItsSemanticDiagnosticAndClearsIt(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)

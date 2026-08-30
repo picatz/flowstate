@@ -564,11 +564,23 @@ func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bo
 		uris = append(uris, uri)
 	}
 	slices.Sort(uris)
+	sources := make([]lsp.DocumentURI, 0, len(s.testDiagnosticsBySource))
+	for source := range s.testDiagnosticsBySource {
+		sources = append(sources, source)
+	}
+	slices.Sort(sources)
 	out := make([]lsp.PublishDiagnosticsParams, 0, len(uris))
 	for _, uri := range uris {
 		var diagnostics []lsp.Diagnostic
 		seen := map[string]bool{}
-		for _, byURI := range s.testDiagnosticsBySource {
+		ordered := slices.Clone(sources)
+		// A directly open document owns the code for an otherwise identical
+		// diagnostic an including suite also reports on its URI.
+		if own := slices.Index(ordered, uri); own >= 0 {
+			ordered[0], ordered[own] = ordered[own], ordered[0]
+		}
+		for _, source := range ordered {
+			byURI := s.testDiagnosticsBySource[source]
 			for _, d := range byURI[uri] {
 				key := fmt.Sprintf("%d:%d:%d:%d:%s", d.Range.Start.Line, d.Range.Start.Character,
 					d.Range.End.Line, d.Range.End.Character, d.Message)
