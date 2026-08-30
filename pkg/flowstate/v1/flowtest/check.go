@@ -163,7 +163,10 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 			// has once the inherited ones ahead of it are subtracted.
 			spot = r.in(r.at.item(i - inherited))
 		case inheritedFrom != "":
-			spot = r.writtenIn(inheritedFrom)
+			// Directory claims are prepended without filtering, so i is also
+			// the index in the sibling's own list. Keep that source address
+			// beside the owning file; the loader retains both document trees.
+			spot = r.in(r.at.item(i)).writtenIn(inheritedFrom)
 		}
 		if inner, fenced := flowfile.SplitFence(claims[i].That); fenced {
 			claims[i].That = inner

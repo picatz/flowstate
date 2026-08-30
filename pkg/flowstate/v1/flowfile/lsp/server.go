@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"runtime/debug"
+	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/sourcegraph/jsonrpc2"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
 // A FlowfileServer answers Language Server Protocol requests about Flowfiles.
@@ -49,6 +54,15 @@ type FlowfileServer struct {
 	Tasks *v1.Registry
 
 	docs documentStore
+
+	// testDiagnosticsBySource retains each open test document's contribution
+	// to every URI it diagnoses. A suite may diagnose its included
+	// testdefaults.yaml; aggregation prevents one clean suite from clearing a
+	// defaults problem another open suite still reports, and lets closing the
+	// source retract only its own contribution.
+	testDiagnosticsMu       sync.Mutex
+	testDiagnosticsBySource map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic
+	testDefaultsBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 
 	// initialized and shuttingDown track the protocol lifecycle. The spec
 	// requires rejecting requests before initialize and after shutdown, and an
@@ -195,7 +209,28 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
+		doc, wasOpen := s.docs.get(params.TextDocument.URI)
 		s.docs.close(params.TextDocument.URI)
+		if wasOpen && doc.isTestDocument() {
+			for _, publication := range s.clearTestDiagnostics(params.TextDocument.URI) {
+				s.notify(ctx, conn, publication)
+			}
+			// Closing an unsaved defaults buffer returns its dependent suites to
+			// the saved file. Re-run them now; retaining the live-buffer answer
+			// until a suite happens to change would leave stale diagnostics.
+			if doc.kind == docTestDefaults {
+				for _, source := range s.testDiagnosticSourcesFor(doc.uri) {
+					suite, ok := s.docs.get(source)
+					if !ok || suite.kind != docTestFile {
+						continue
+					}
+					for _, publication := range s.publishTestDiagnostics(source, diagnoseTestPublications(suite, nil)) {
+						s.notify(ctx, conn, publication)
+					}
+				}
+			}
+			return nil, nil
+		}
 		// Diagnostics belong to the editor's problem list until the server
 		// clears them, and a closed document's problems are no longer actionable.
 		s.notify(ctx, conn, lsp.PublishDiagnosticsParams{
@@ -416,6 +451,37 @@ func (s *FlowfileServer) awaitDoc(ctx context.Context, conn *jsonrpc2.Conn, uri 
 // reported earlier. Skipping the notification when a document becomes clean leaves
 // the editor showing errors the author has already fixed.
 func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *document) {
+	if doc.isTestDocument() {
+		var included *document
+		if doc.kind == docTestFile {
+			if path, ok := doc.filesystemPath(); ok {
+				defaultsURI := fileURI(filepath.Join(filepath.Dir(path), flowtest.DirDefaultsName))
+				s.rememberTestDefaults(doc.uri, defaultsURI)
+				included, _ = s.docs.get(defaultsURI)
+			}
+		}
+		for _, params := range s.publishTestDiagnostics(doc.uri, diagnoseTestPublications(doc, included)) {
+			s.logger().Debug("published diagnostics",
+				"uri", params.URI, "version", doc.version, "count", len(params.Diagnostics))
+			s.notify(ctx, conn, params)
+		}
+		// A live defaults edit changes every open suite that includes it. Re-run
+		// those suites through the same loader with this buffer; otherwise the
+		// editor would keep diagnostics from the saved defaults until each suite
+		// happened to change too.
+		if doc.kind == docTestDefaults {
+			for _, source := range s.testDiagnosticSourcesFor(doc.uri) {
+				suite, ok := s.docs.get(source)
+				if !ok || suite.kind != docTestFile {
+					continue
+				}
+				for _, params := range s.publishTestDiagnostics(source, diagnoseTestPublications(suite, doc)) {
+					s.notify(ctx, conn, params)
+				}
+			}
+		}
+		return
+	}
 	diagnostics := diagnose(doc)
 	s.logger().Debug("published diagnostics",
 		"uri", doc.uri, "version", doc.version, "count", len(diagnostics))
@@ -423,6 +489,110 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		URI:         doc.uri,
 		Diagnostics: diagnostics,
 	})
+}
+
+func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.DocumentURI {
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	var sources []lsp.DocumentURI
+	for source, defaults := range s.testDefaultsBySuite {
+		if defaults == target {
+			sources = append(sources, source)
+		}
+	}
+	slices.Sort(sources)
+	return sources
+}
+
+func (s *FlowfileServer) rememberTestDefaults(suite, defaults lsp.DocumentURI) {
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	if s.testDefaultsBySuite == nil {
+		s.testDefaultsBySuite = make(map[lsp.DocumentURI]lsp.DocumentURI)
+	}
+	s.testDefaultsBySuite[suite] = defaults
+}
+
+// publishTestDiagnostics replaces source's cached contributions and returns
+// the aggregate publications for every URI whose answer may have changed.
+func (s *FlowfileServer) publishTestDiagnostics(source lsp.DocumentURI, publications []diagnosticPublication) []lsp.PublishDiagnosticsParams {
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	if s.testDiagnosticsBySource == nil {
+		s.testDiagnosticsBySource = make(map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic)
+	}
+	touched := map[lsp.DocumentURI]bool{source: true}
+	for uri := range s.testDiagnosticsBySource[source] {
+		touched[uri] = true
+	}
+	next := make(map[lsp.DocumentURI][]lsp.Diagnostic, len(publications))
+	for _, publication := range publications {
+		next[publication.uri] = publication.diagnostics
+		touched[publication.uri] = true
+	}
+	s.testDiagnosticsBySource[source] = next
+	return sourceFirst(source, s.aggregateTestDiagnostics(touched))
+}
+
+// clearTestDiagnostics removes a closed document's contributions and returns
+// the aggregates needed to retract them without erasing another suite's.
+func (s *FlowfileServer) clearTestDiagnostics(source lsp.DocumentURI) []lsp.PublishDiagnosticsParams {
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	touched := map[lsp.DocumentURI]bool{source: true}
+	for uri := range s.testDiagnosticsBySource[source] {
+		touched[uri] = true
+	}
+	delete(s.testDiagnosticsBySource, source)
+	delete(s.testDefaultsBySuite, source)
+	return sourceFirst(source, s.aggregateTestDiagnostics(touched))
+}
+
+func sourceFirst(source lsp.DocumentURI, publications []lsp.PublishDiagnosticsParams) []lsp.PublishDiagnosticsParams {
+	for i := range publications {
+		if publications[i].URI == source {
+			publications[0], publications[i] = publications[i], publications[0]
+			break
+		}
+	}
+	return publications
+}
+
+func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bool) []lsp.PublishDiagnosticsParams {
+	uris := make([]lsp.DocumentURI, 0, len(touched))
+	for uri := range touched {
+		uris = append(uris, uri)
+	}
+	slices.Sort(uris)
+	out := make([]lsp.PublishDiagnosticsParams, 0, len(uris))
+	for _, uri := range uris {
+		var diagnostics []lsp.Diagnostic
+		seen := map[string]bool{}
+		for _, byURI := range s.testDiagnosticsBySource {
+			for _, d := range byURI[uri] {
+				key := fmt.Sprintf("%d:%d:%d:%d:%s", d.Range.Start.Line, d.Range.Start.Character,
+					d.Range.End.Line, d.Range.End.Character, d.Message)
+				if !seen[key] {
+					seen[key] = true
+					diagnostics = append(diagnostics, d)
+				}
+			}
+		}
+		if diagnostics == nil {
+			diagnostics = []lsp.Diagnostic{}
+		}
+		slices.SortStableFunc(diagnostics, func(a, b lsp.Diagnostic) int {
+			if a.Range.Start.Line != b.Range.Start.Line {
+				return a.Range.Start.Line - b.Range.Start.Line
+			}
+			if a.Range.Start.Character != b.Range.Start.Character {
+				return a.Range.Start.Character - b.Range.Start.Character
+			}
+			return strings.Compare(a.Message, b.Message)
+		})
+		out = append(out, lsp.PublishDiagnosticsParams{URI: uri, Diagnostics: diagnostics})
+	}
+	return out
 }
 
 // notify sends a notification, logging a failure rather than propagating it: there

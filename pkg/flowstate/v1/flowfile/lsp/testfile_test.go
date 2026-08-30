@@ -1,16 +1,19 @@
 package lsp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// A `*.test.yaml` in the editor (#1110 slice 1): checked by the loader
+// A `*.test.yaml` in the editor: checked by the loader
 // `flow test` runs, never by the workflow grammar. The negative direction is
 // the one that was live: before the document kind existed, a test file
 // attached to this server drew a workflow's diagnostics — `tests:` an unknown
@@ -62,11 +65,10 @@ func TestATestFilesUnknownKeyIsPositioned(t *testing.T) {
 		"the diagnostic is not on the line holding the mistake")
 }
 
-// TestASemanticRefusalAnchorsAtTheNamedTest: the loader's prose errors carry
-// no position, so one naming a test anchors at that test's `name:` line — a
-// deliberate slice-1 heuristic (#1110), and only where the name is
-// unambiguous.
-func TestASemanticRefusalAnchorsAtTheNamedTest(t *testing.T) {
+// TestASemanticRefusalUsesTheLoadersPosition: the position-carrying loader
+// points at the value it refused; the LSP no longer searches diagnostic prose
+// for a case name and guesses its name: line.
+func TestASemanticRefusalUsesTheLoadersPosition(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
 	c.initialize()
@@ -94,8 +96,8 @@ tests:
 
 	lines := strings.Split(text, "\n")
 	require.Less(t, d.Range.Start.Line, len(lines))
-	assert.Contains(t, lines[d.Range.Start.Line], "replays wrongly",
-		"the diagnostic did not anchor at the named test")
+	assert.Contains(t, lines[d.Range.Start.Line], "signature: sometimes",
+		"the diagnostic did not use the loader-owned value position")
 }
 
 // TestTheWorkflowFeaturesStayQuietOnATestFile: none of these six answer a
@@ -116,12 +118,10 @@ func TestTheWorkflowFeaturesStayQuietOnATestFile(t *testing.T) {
 
 	c.open("file:///quiet.test.yaml", validSuite)
 
-	// (4,8) sits inside the *key* "task" of a stub entry, not its value —
-	// not a position hoverTestDocument answers (only a stub's task *value*
-	// has a registry entry to look up) — and the workflow grammar has
-	// nothing to say about it either.
-	assert.Nil(t, c.hover("file:///quiet.test.yaml", 4, 8),
-		"hover answered a position that is neither a stub's task value nor something the workflow grammar would know")
+	// The key gets the test language's own answer, never the workflow's.
+	h := c.hover("file:///quiet.test.yaml", 4, 8)
+	require.NotNil(t, h)
+	assert.Contains(t, hoverText(h), "task name this replaces")
 
 	// Completion at the same position offers the test language's own
 	// stub-level keys (task, step, where, ...), never the workflow's. The
@@ -145,9 +145,10 @@ func TestTheWorkflowFeaturesStayQuietOnATestFile(t *testing.T) {
 		"code actions answered a test document — nothing here computes one yet")
 }
 
-// TestTheDirectoryDefaultsFileIsNeverAWorkflow: `testdefaults.yaml` gets
-// syntax feedback and nothing else in slice 1 — and above all, not the
-// workflow grammar's opinion of a `defaults:` block.
+// TestTheDirectoryDefaultsFileIsNeverAWorkflow: a standalone
+// `testdefaults.yaml` gets syntax feedback but not fold-dependent semantic
+// diagnostics — and above all, not the workflow grammar's opinion of a
+// `defaults:` block. Its completion and hover are covered separately.
 func TestTheDirectoryDefaultsFileIsNeverAWorkflow(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
@@ -170,14 +171,10 @@ defaults:
 		"a syntax error is still reported, as itself")
 }
 
-// TestABrokenDefaultsFileIsNotAnchoredOnTheSuite (Codex, #1109): a yaml.Error
-// from the sibling testdefaults.yaml carries the DEFAULTS file's position, so
-// mapping it onto this buffer lands a squiggle on an unrelated token, with
-// the parser's bare message hiding which file is broken. It anchors at the
-// suite's document start instead, the message carrying the sibling's path,
-// position and excerpt — the one case the excerpt earns its place, since the
-// editor is not showing that file.
-func TestABrokenDefaultsFileIsNotAnchoredOnTheSuite(t *testing.T) {
+// TestABrokenDefaultsFileIsPublishedOnItsOwnURI: the loader owns both source
+// position and provenance, and the protocol carries the latter on the
+// publishDiagnostics notification rather than mapping it onto the suite.
+func TestABrokenDefaultsFileIsPublishedOnItsOwnURI(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
 	c.initialize()
@@ -186,14 +183,139 @@ func TestABrokenDefaultsFileIsNotAnchoredOnTheSuite(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "testdefaults.yaml"),
 		[]byte("defaults:\n  stubs: [\n"), 0o600))
 
-	params := c.open("file://"+dir+"/suite.test.yaml", validSuite)
-	require.Len(t, params.Diagnostics, 1)
-	d := params.Diagnostics[0]
+	suiteURI := "file://" + dir + "/suite.test.yaml"
+	c.open(suiteURI, validSuite)
+	var defaults lsp.PublishDiagnosticsParams
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, published := range c.published {
+			if strings.HasSuffix(string(published.URI), "/testdefaults.yaml") && len(published.Diagnostics) > 0 {
+				defaults = published
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	require.Len(t, defaults.Diagnostics, 1)
+	d := defaults.Diagnostics[0]
 	assert.Equal(t, codeTestFile, d.Code)
-	assert.Contains(t, d.Message, "testdefaults.yaml",
-		"the message must name the broken sibling file")
-	assert.Equal(t, documentStart, d.Range,
-		"a sibling file's own position must never index this buffer's lines")
+	assert.Contains(t, string(defaults.URI), "testdefaults.yaml")
+	assert.Equal(t, 1, d.Range.Start.Line)
+	assert.NotEqual(t, documentStart, d.Range)
+}
+
+func TestAnUnsavedDefaultsBufferOwnsItsSemanticDiagnosticAndClearsIt(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsURI := "file://" + dir + "/testdefaults.yaml"
+	suiteURI := "file://" + dir + "/suite.test.yaml"
+	bad := "defaults:\n  stubs:\n    - returns: {}\n"
+	c.open(defaultsURI, bad)
+	c.open(suiteURI, validSuite)
+
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			p := c.published[i]
+			if p.URI == lsp.DocumentURI(defaultsURI) && len(p.Diagnostics) > 0 {
+				return p.Diagnostics[0].Range.Start.Line == 2 &&
+					strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+
+	good := "defaults:\n  stubs:\n    - task: log\n      returns: {}\n"
+	c.change(defaultsURI, good, 2)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			p := c.published[i]
+			if p.URI == lsp.DocumentURI(defaultsURI) {
+				return len(p.Diagnostics) == 0
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+}
+
+func TestClosingDefaultsReturnsDependentSuitesToTheSavedFile(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+	defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
+	suiteURI := "file://" + filepath.Join(dir, "suite.test.yaml")
+	require.NoError(t, os.WriteFile(defaultsPath,
+		[]byte("defaults:\n  stubs:\n    - task: log\n      returns: {}\n"), 0o600))
+
+	c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
+	c.open(suiteURI, validSuite)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == defaultsURI {
+				return len(c.published[i].Diagnostics) > 0
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+
+	wait := c.expectPublish()
+	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: defaultsURI},
+	}))
+	c.await(wait)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == defaultsURI {
+				return len(c.published[i].Diagnostics) == 0
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+}
+
+func TestQuotedKeyUsesTheLoadersPosition(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	text := "defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: x\n    stubs:\n      - \"task\":\n        returns: {}\n"
+	params := c.open("file:///quoted-unknown.test.yaml", text)
+	require.NotEmpty(t, params.Diagnostics)
+	d := params.Diagnostics[0]
+	assert.Equal(t, 5, d.Range.Start.Line)
+	assert.Contains(t, d.Message, "names neither a task nor a step")
+	assert.NotContains(t, d.Message, "API_KEY")
+}
+
+func TestTestDocumentRequestsHonorCancellationAndBounds(t *testing.T) {
+	t.Parallel()
+	tooLarge := newDocument("file:///bounded.test.yaml", 1, strings.Repeat("x", maxDocumentBytes+1), nil)
+	assert.Empty(t, completeAt(tooLarge, lsp.Position{}).Items)
+	assert.Nil(t, hoverAt(tooLarge, lsp.Position{}))
+	diagnostics := diagnose(tooLarge)
+	require.Len(t, diagnostics, 1)
+	assert.Equal(t, codeTooLarge, diagnostics[0].Code)
+
+	var store documentStore
+	uri := lsp.DocumentURI("file:///cancelled.test.yaml")
+	store.beginBuild(uri)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	doc, ok := store.await(ctx, nil, uri)
+	assert.False(t, ok)
+	assert.Nil(t, doc)
+	store.endBuild(uri)
 }
 
 // TestASuitesOwnErrorIsNotMistakenForTheDefaultsFile (Codex, #1109) is the

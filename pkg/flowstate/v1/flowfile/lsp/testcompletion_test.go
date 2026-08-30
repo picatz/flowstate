@@ -253,6 +253,19 @@ func TestCompletionWalksQuotedTestGrammarKeysSemantically(t *testing.T) {
 		"a quoted fixture-data key containing colon/comment text reopened the test grammar")
 }
 
+func TestCompletionSurvivesAMalformedPartialTestEdit(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	text := "tests:\n  - name: x\n    expect:\n      err\n    stubs: [\n"
+	c.open("file:///partial.test.yaml", text)
+	got := c.complete("file:///partial.test.yaml", 3, len("      err"))
+	assert.Contains(t, labels(got.Items), "error_contains")
+	for _, item := range got.Items {
+		assert.NotContains(t, item.Documentation, "secret-value")
+	}
+}
+
 // TestTheTransitionMapNamesOnlyRealKeys holds [testLevelChildren] to the
 // derived key tables in both the direction it states and the one it omits.
 // Every transition names a key its parent level really has — so the map

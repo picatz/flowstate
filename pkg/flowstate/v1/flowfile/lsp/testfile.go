@@ -2,7 +2,9 @@ package lsp
 
 import (
 	"errors"
-	"regexp"
+	"fmt"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sourcegraph/go-lsp"
@@ -10,143 +12,169 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
-// A `*.test.yaml` in the editor, checked by the loader `flow test` runs
-// (#1110 slice 1): the same refusal, at the keystroke instead of the run.
-//
-// The check is [flowtest.LoadSourceAt] against the live buffer — unsaved
-// edits are exactly what a diagnostic has to reflect — with the document's
-// own path deciding the semantics Load's path decides: the directory's
-// `testdefaults.yaml` folds in, and a case's `workflow:` is required. One
-// loader, two callers, so the editor can never disagree with `flow test`
-// about the same file.
-//
-// What slice 1 does not do: the loader's semantic errors carry prose and no
-// position, so they anchor best-effort — at the named test's `name:` line
-// where the message names exactly one, at the top of the document otherwise.
-// Slice 2 is the loader owning positions (#1110), and it deletes the
-// heuristic rather than growing it.
-
 // codeTestFile marks a diagnostic produced by the flowtest loader.
 const codeTestFile = "flowtest-load"
 
-// diagnoseTestDocument reports what `flow test` would refuse about a test
-// document, and nothing a workflow's checks would say about it.
-func diagnoseTestDocument(doc *document) []carriedDiagnostic {
-	set := &diagnosticSet{}
-
-	if doc.kind == docTestDefaults {
-		// The shared fixture file gets syntax feedback only in slice 1 — its
-		// semantic rules read the directory off disk, which is not this
-		// buffer. What it must never get is a workflow's diagnostics.
-		if doc.parseErr != nil {
-			set.add(yamlDiagnostic(doc, doc.parseErr, codeYAMLSyntax))
-		}
-		return set.sorted()
-	}
-
-	var err error
-	path, hasPath := doc.filesystemPath()
-	if hasPath {
-		_, err = flowtest.LoadSourceAt([]byte(doc.text), path)
-	} else {
-		// An untitled buffer has no directory for testdefaults.yaml or a
-		// relative `workflow:` to mean anything against, so it gets the
-		// byte-door semantics — the same answer a `call:` step gets from an
-		// untitled workflow.
-		_, err = flowtest.LoadSource([]byte(doc.text))
-	}
-	if err == nil {
-		return set.sorted()
-	}
-
-	// A refusal that originated in the directory's testdefaults.yaml is
-	// carried whole at the top of this document, never through
-	// [yamlDiagnostic]: its yaml.Error position indexes the DEFAULTS file's
-	// lines, so mapped onto this buffer it lands on an unrelated token, with
-	// the parser's bare message hiding which file is broken (Codex, #1109).
-	// The full error keeps the sibling's path, position and rendered excerpt
-	// — the one case where the excerpt earns its place, because the editor
-	// is not showing that file — and the suite's document start is the
-	// honest anchor for a problem fixed in a different buffer.
-	//
-	// Asked of the error rather than of its prose: a message *containing*
-	// "testdefaults.yaml" is not the same fact as a refusal that *came from*
-	// one, and reading the text for it misfiled a case named
-	// `testdefaults.yaml`, and every suite under a directory whose name
-	// contains the string, as errors in a sibling file (Codex, #1109).
-	if _, fromDefaults := errors.AsType[*flowtest.DirDefaultsError](err); fromDefaults {
-		set.add(lsp.Diagnostic{
-			Range:    documentStart,
-			Severity: lsp.Error,
-			Source:   diagnosticSource,
-			Code:     codeTestFile,
-			Message:  err.Error(),
-		})
-
-		return set.sorted()
-	}
-
-	// One loader error is the whole report, exactly as one syntax error is
-	// for a workflow: everything the loader checks after the failure point
-	// never ran, and diagnostics for checks that never ran would be guesses.
-	d := yamlDiagnostic(doc, err, codeTestFile)
-	if hasPath {
-		// The loader prefixes its errors with the path for a terminal reader;
-		// the editor is already looking at the file.
-		d.Message = strings.TrimPrefix(d.Message, path+": ")
-	}
-	if d.Range == documentStart {
-		if rng, ok := anchorAtNamedTest(doc, d.Message); ok {
-			d.Range = rng
-		}
-	}
-	set.add(d)
-
-	return set.sorted()
+// A diagnosticPublication is one LSP document's share of a test-suite load.
+// A suite can produce diagnostics owned by its sibling testdefaults.yaml, and
+// LSP puts the URI on the publication rather than on each diagnostic.
+type diagnosticPublication struct {
+	uri         lsp.DocumentURI
+	diagnostics []lsp.Diagnostic
 }
 
-// namedTestPattern finds the test a loader message names: every semantic
-// refusal about one case spells it `test "<name>"`.
-var namedTestPattern = regexp.MustCompile(`test "((?:[^"\\]|\\.)+)"`)
-
-// anchorAtNamedTest places an unpositioned loader message on the `name:` line
-// of the test it names, when the document has exactly one.
-//
-// A heuristic, deliberately timid: it anchors only on an unambiguous match,
-// because a diagnostic on the wrong line is worse than one at the top. It
-// reads the raw lines rather than a parsed model — the model may be exactly
-// what failed to build.
-func anchorAtNamedTest(doc *document, message string) (lsp.Range, bool) {
-	m := namedTestPattern.FindStringSubmatch(message)
-	if m == nil {
-		return lsp.Range{}, false
-	}
-	name := m[1]
-
-	found := lsp.Range{}
-	matches := 0
-	for i, line := range strings.Split(doc.text, "\n") {
-		key := strings.Index(line, "name:")
-		if key < 0 {
+// diagnoseTestDocument is the same-document projection used by diagnose and
+// package-level tests. Protocol publication uses diagnoseTestPublications so a
+// problem written in testdefaults.yaml is sent to that URI rather than mapped
+// onto an unrelated line in the suite.
+func diagnoseTestDocument(doc *document) []carriedDiagnostic {
+	for _, publication := range diagnoseTestPublications(doc, nil) {
+		if publication.uri != doc.uri {
 			continue
 		}
-		value := strings.Trim(strings.TrimSpace(line[key+len("name:"):]), `"'`)
-		if value != name {
-			continue
+		out := make([]carriedDiagnostic, 0, len(publication.diagnostics))
+		for _, d := range publication.diagnostics {
+			out = append(out, carriedDiagnostic{published: d})
 		}
-		matches++
-		start := key + len("name:")
-		for start < len(line) && line[start] == ' ' {
-			start++
-		}
-		found = lsp.Range{
-			Start: lsp.Position{Line: i, Character: start},
-			End:   lsp.Position{Line: i, Character: len(line)},
-		}
+		return out
 	}
-	if matches != 1 {
-		return lsp.Range{}, false
+	return []carriedDiagnostic{}
+}
+
+// diagnoseTestPublications runs the flowtest loader on the live suite buffer.
+// includedDefaults, when non-nil, is the open sibling defaults buffer; otherwise
+// LoadSourceAt reads the bounded file from disk. No test grammar is implemented
+// here: the loader supplies the problems, positions, and source ownership.
+func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPublication {
+	if doc.tooLarge {
+		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{{
+			Range: documentStart, Severity: lsp.Warning, Source: diagnosticSource, Code: codeTooLarge,
+			Message: fmt.Sprintf("file is %d bytes, larger than the %d byte limit this server analyzes; it is not being checked",
+				len(doc.text), maxDocumentBytes),
+		}}}}
 	}
 
-	return found, true
+	// A defaults document is validated semantically when a suite includes it;
+	// on its own there is no effective case to fold it into. Its strict YAML
+	// shape is still checked directly, and completion/hover answer its language.
+	if doc.kind == docTestDefaults {
+		if doc.parseErr == nil {
+			return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{}}}
+		}
+		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{
+			yamlDiagnostic(doc, doc.parseErr, codeYAMLSyntax),
+		}}}
+	}
+
+	path, hasPath := doc.filesystemPath()
+	var err error
+	switch {
+	case !hasPath:
+		_, err = flowtest.LoadSource([]byte(doc.text))
+	case includedDefaults != nil:
+		_, err = flowtest.LoadSourceAtWithDefaults([]byte(doc.text), path, []byte(includedDefaults.text))
+	default:
+		_, err = flowtest.LoadSourceAt([]byte(doc.text), path)
+	}
+	if err == nil {
+		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{}}}
+	}
+
+	var problems *flowtest.Diagnostics
+	if errors.As(err, &problems) {
+		byURI := map[lsp.DocumentURI][]lsp.Diagnostic{doc.uri: {}}
+		for _, problem := range problems.Problems {
+			uri := doc.uri
+			if problem.File != "" && (!hasPath || filepath.Clean(problem.File) != filepath.Clean(path)) {
+				uri = fileURI(problem.File)
+			}
+			source := sourceForTestDiagnostic(doc, includedDefaults, uri, problem.File)
+			byURI[uri] = append(byURI[uri], lsp.Diagnostic{
+				Range:    testProblemRange(source, problem.Line, problem.Column),
+				Severity: lsp.Error,
+				Source:   diagnosticSource,
+				Code:     codeTestFile,
+				Message:  problem.Message,
+			})
+		}
+		if problems.Total > len(problems.Problems) {
+			byURI[doc.uri] = append(byURI[doc.uri], lsp.Diagnostic{
+				Range: documentStart, Severity: lsp.Warning, Source: diagnosticSource, Code: codeTestFile,
+				Message: fmt.Sprintf("%d more test-file problems were found and %d are shown",
+					problems.Total-len(problems.Problems), len(problems.Problems)),
+			})
+		}
+		return sortedTestPublications(doc.uri, byURI)
+	}
+
+	// A sibling defaults syntax/read refusal predates the structured semantic
+	// collection, but its typed owner and goccy token are still authoritative.
+	var defaultsErr *flowtest.DirDefaultsError
+	if errors.As(err, &defaultsErr) {
+		uri := fileURI(defaultsErr.Path)
+		source := sourceForTestDiagnostic(doc, includedDefaults, uri, defaultsErr.Path)
+		owner := newDocument(uri, 0, source, doc.tasks)
+		d := yamlDiagnostic(owner, defaultsErr.Err, codeTestFile)
+		return []diagnosticPublication{
+			{uri: doc.uri, diagnostics: []lsp.Diagnostic{}},
+			{uri: uri, diagnostics: []lsp.Diagnostic{d}},
+		}
+	}
+
+	// File-size and filesystem errors have no source position to claim.
+	message := err.Error()
+	if hasPath {
+		message = strings.TrimPrefix(message, path+": ")
+	}
+	return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{{
+		Range: documentStart, Severity: lsp.Error, Source: diagnosticSource, Code: codeTestFile, Message: message,
+	}}}}
+}
+
+func sortedTestPublications(own lsp.DocumentURI, byURI map[lsp.DocumentURI][]lsp.Diagnostic) []diagnosticPublication {
+	other := make([]lsp.DocumentURI, 0, len(byURI)-1)
+	for uri := range byURI {
+		if uri != own {
+			other = append(other, uri)
+		}
+	}
+	slices.Sort(other)
+	out := []diagnosticPublication{{uri: own, diagnostics: byURI[own]}}
+	for _, uri := range other {
+		out = append(out, diagnosticPublication{uri: uri, diagnostics: byURI[uri]})
+	}
+	return out
+}
+
+func sourceForTestDiagnostic(doc, defaults *document, uri lsp.DocumentURI, path string) string {
+	if uri == doc.uri {
+		return doc.text
+	}
+	if defaults != nil && uri == defaults.uri {
+		return defaults.text
+	}
+	data, ok := readCalleeSource(path)
+	if !ok {
+		return ""
+	}
+	return string(data)
+}
+
+// testProblemRange converts the loader's one-based rune column to LSP's
+// zero-based UTF-16 column. With no source text it keeps the exact line and a
+// conservative point; it never guesses an enclosing token.
+func testProblemRange(source string, line, column int) lsp.Range {
+	if line <= 0 {
+		return documentStart
+	}
+	line--
+	character := max(column-1, 0)
+	lines := strings.Split(source, "\n")
+	if line < len(lines) {
+		runes := []rune(lines[line])
+		character = min(character, len(runes))
+		character = utf16Len(string(runes[:character]))
+	}
+	start := lsp.Position{Line: line, Character: character}
+	return lsp.Range{Start: start, End: start}
 }
