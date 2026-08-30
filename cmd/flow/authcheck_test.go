@@ -207,3 +207,20 @@ func TestAuthCheckNeverEchoesAPositionalToken(t *testing.T) {
 	assert.Nil(t, cmd.Flags().Lookup("token"), "a raw-token flag would put the credential in argv and completion")
 	assert.NotContains(t, strings.Fields(cmd.Use), "<token>")
 }
+
+// TestAuthCheckNeverEchoesATokenMistakenForAFilePath is the less obvious argv
+// misuse: --token-file is a legitimate flag, so its value reaches the file
+// source, whose ordinary error names the path. Here that path may itself be the
+// credential, and the command must discard the underlying error rather than
+// print it.
+func TestAuthCheckNeverEchoesATokenMistakenForAFilePath(t *testing.T) {
+	t.Parallel()
+	issuer := authCheckIssuer(t)
+	policy := writeAuthCheckPolicy(t, authCheckEntry("repository", issuer.URL()))
+	token := issuer.MintToken(nil, authtest.WithAudience("flowstate"))
+
+	res := runFlow(t, "auth", "check", "--auth-policy", policy, "--token-file", token)
+	assert.Equal(t, exitCodeFailure, res.ExitCode, res.Output())
+	assert.Contains(t, res.Stderr, "credential could not be read")
+	assert.NotContains(t, res.Output(), token)
+}

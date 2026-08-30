@@ -95,7 +95,7 @@ Check a bearer token against a trust policy
 flow auth check [flags]
 ```
 
-Verify one bearer token against a trust policy using the same signature, lifetime, audience, and claim-matching path as `flow server`. The token is read only from a file or stdin: there is deliberately no token argument or --token flag, because credentials in argv leak through process listings, shell history, logs, and completion. Output names only the policy entry that admitted the token, or the policy entries that made it ambiguous; it never prints token claims. This is a concrete-token probe, not a static proof that every possible token matches at most one entry: check each representative caller before deploying a policy change.
+Verify one bearer token against a trust policy using the same OIDC verifier and issuer-rule matching path as `flow server`. This diagnoses policy-entry overlap; it does not simulate the server's surface-specific --rpc-resource check. The token is read only from a file or stdin: there is deliberately no token argument or --token flag, because credentials in argv leak through process listings, shell history, logs, and completion. Output names only the policy entry that admitted the token, or the policy entries that made it ambiguous; it never prints token claims. This is a concrete-token probe, not a static proof that every possible token matches at most one entry: check each representative caller before deploying a policy change.
 
 Examples:
 

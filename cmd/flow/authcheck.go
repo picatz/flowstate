@@ -30,8 +30,9 @@ func newAuthCheckCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Check a bearer token against a trust policy",
-		Long: "Verify one bearer token against a trust policy using the same signature, lifetime, " +
-			"audience, and claim-matching path as `flow server`. The token is read only from a file " +
+		Long: "Verify one bearer token against a trust policy using the same OIDC verifier and " +
+			"issuer-rule matching path as `flow server`. This diagnoses policy-entry overlap; it does " +
+			"not simulate the server's surface-specific --rpc-resource check. The token is read only from a file " +
 			"or stdin: there is deliberately no token argument or --token flag, because credentials " +
 			"in argv leak through process listings, shell history, logs, and completion. Output names " +
 			"only the policy entry that admitted the token, or the policy entries that made it ambiguous; " +
@@ -112,7 +113,11 @@ func authCheckToken(cmd *cobra.Command, path string) (string, error) {
 	if path != stdinArg {
 		token, err := credentialsource.NewFileSource(path).Token(cmd.Context())
 		if err != nil {
-			return "", fmt.Errorf("reading token file: %w", err)
+			// credentialsource's error names path. That is useful for ordinary
+			// clients and unsafe here: a caller can accidentally paste the token
+			// itself as --token-file's value, making the "path" the credential we
+			// promised never to copy into diagnostics.
+			return "", errors.New("reading token file: credential could not be read; check --token-file")
 		}
 		raw, ok := token.Bearer()
 		if !ok {
