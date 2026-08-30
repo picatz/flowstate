@@ -1083,6 +1083,11 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("configuring the audit trail: %w", err)
 	}
 
+	// After every exit from this point, including handler construction and
+	// listener failures. On graceful shutdown the defer runs only after the
+	// HTTP server has drained, so the batch includes in-flight decisions.
+	defer flushAudit()
+
 	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
 		logger.Error("could not record MCP tool authorization decision", "error", err)
 	})

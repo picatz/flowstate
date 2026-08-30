@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -952,6 +953,50 @@ func TestStdioMCPCommandDeclaresNoListener(t *testing.T) {
 		require.Nil(t, serve.Flags().Lookup(flag),
 			"`flow mcp serve` must not declare --%s: the tool it would govern is not served here", flag)
 	}
+}
+
+// TestMCPServeFlushesAuditOnAnErrorAfterInitialization covers the early-exit
+// half of the shutdown contract. A listener failure happens after the audit
+// provider exists but before the HTTP server can drain anything; buffered
+// records and exporter resources still have to be flushed on that path.
+func TestMCPServeFlushesAuditOnAnErrorAfterInitialization(t *testing.T) {
+	isolateAudit(t)
+
+	issuer := authCheckIssuer(t)
+	const resource = "https://flowstate.example.com/mcp"
+	policy := writeAuthCheckPolicy(t, auth.TrustedIssuer{
+		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{resource},
+	})
+
+	recorder, err := audit.NewRecorder(audit.WithoutStderr())
+	require.NoError(t, err)
+	flushed := false
+	auditState.mu.Lock()
+	auditState.started = true
+	auditState.recorder = recorder
+	auditState.shutdown = func(context.Context) { flushed = true }
+	auditState.mu.Unlock()
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, occupied.Close()) })
+
+	root := newRootCommand()
+	serve, _, err := root.Find([]string{"mcp", "serve"})
+	require.NoError(t, err)
+	serve.SetContext(t.Context())
+	for name, value := range map[string]string{
+		"auth-policy":          policy,
+		"protected-resource":   resource,
+		"authorization-server": issuer.URL(),
+		"listen":               occupied.Addr().String(),
+	} {
+		require.NoError(t, serve.Flags().Set(name, value))
+	}
+
+	err = runMCPServe(serve, nil)
+	require.ErrorContains(t, err, "listening on")
+	require.True(t, flushed, "an exit after audit initialization abandoned the audit provider")
 }
 
 // TestMCPSessionLimiterReleasesASlotTheSDKDoesNotKnow is Codex's finding on
