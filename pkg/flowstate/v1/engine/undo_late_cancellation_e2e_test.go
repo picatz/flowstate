@@ -63,6 +63,9 @@ func TestRunWorkflowUndoOnLateCancellationDurable(t *testing.T) {
 
 	for index, outline := range conformance.UndoLateCancellationCases(undoPlaceholderBase, taskName, "outline") {
 		t.Run(outline.Name, func(t *testing.T) {
+			testCtx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+			defer cancel()
+
 			base, recorded := conformance.NewUndoServer(t)
 			message := fmt.Sprintf("late-cancel-%d", index)
 			test := conformance.UndoLateCancellationCases(base, taskName, message)[index]
@@ -81,7 +84,7 @@ func TestRunWorkflowUndoOnLateCancellationDurable(t *testing.T) {
 			})
 
 			workflowID := fmt.Sprintf("undo-late-cancel-%d", index)
-			run, err := temporalClient.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
+			run, err := temporalClient.ExecuteWorkflow(testCtx, client.StartWorkflowOptions{
 				ID:        workflowID,
 				TaskQueue: engine.RunTaskQueueName,
 			}, engine.Run, &v1.RunState{Workflow: test.Workflow})
@@ -89,24 +92,19 @@ func TestRunWorkflowUndoOnLateCancellationDurable(t *testing.T) {
 
 			select {
 			case <-h.started:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the final activity never started")
+			case <-testCtx.Done():
+				t.Fatalf("the final activity never started: %v", testCtx.Err())
 			}
 
-			require.NoError(t, temporalClient.CancelWorkflow(t.Context(), workflowID, run.GetRunID()))
-
-			historyCtx, cancelHistory := context.WithTimeout(t.Context(), 30*time.Second)
-			defer cancelHistory()
-			cancelRequestedID := waitForActivityCancelRequest(t, historyCtx, temporalClient, workflowID, run.GetRunID())
+			require.NoError(t, temporalClient.CancelWorkflow(testCtx, workflowID, run.GetRunID()))
+			cancelRequestedID := waitForActivityCancelRequest(t, testCtx, temporalClient, workflowID, run.GetRunID())
 
 			// The cancellation is now in workflow history while the final activity
 			// is still running. Let that activity succeed inside precisely the
 			// window WaitForCancellation keeps open.
 			release()
 
-			getCtx, cancelGet := context.WithTimeout(t.Context(), 30*time.Second)
-			defer cancelGet()
-			err = run.Get(getCtx, nil)
+			err = run.Get(testCtx, nil)
 			require.Error(t, err,
 				"a run stopped while its last activity succeeded reported success")
 			require.True(t, temporal.IsCanceledError(err),
@@ -123,7 +121,7 @@ func TestRunWorkflowUndoOnLateCancellationDurable(t *testing.T) {
 			require.Equal(t, test.Recorded, recorded(),
 				"the effects that happened are not what late cancellation should have produced")
 
-			assertLateCancellationHistory(t, temporalClient, workflowID, run.GetRunID(), cancelRequestedID)
+			assertLateCancellationHistory(t, testCtx, temporalClient, workflowID, run.GetRunID(), cancelRequestedID)
 		})
 	}
 }
@@ -147,11 +145,11 @@ func waitForActivityCancelRequest(t *testing.T, ctx context.Context, temporalCli
 	return 0
 }
 
-func assertLateCancellationHistory(t *testing.T, temporalClient client.Client, workflowID, runID string, scheduledID int64) {
+func assertLateCancellationHistory(t *testing.T, ctx context.Context, temporalClient client.Client, workflowID, runID string, scheduledID int64) {
 	t.Helper()
 
 	var cancelRequested, completed, workflowCanceled int64
-	history := temporalClient.GetWorkflowHistory(t.Context(), workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	history := temporalClient.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 	for history.HasNext() {
 		event, err := history.Next()
 		require.NoError(t, err)
