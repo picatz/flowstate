@@ -115,6 +115,27 @@ func TestStripeVerificationDoesNotHashASenderSizedTimestamp(t *testing.T) {
 	require.LessOrEqual(t, *hashed, len(body)+32)
 }
 
+// TestStripeVerificationBoundsCommaDelimitedFields pins the field-count bound,
+// not merely the signature-count bound. strings.Split used to allocate and walk
+// every empty field before the verifier retained at most eight v1 signatures, so
+// a comma-filled header could turn the listener's 1 MiB byte allowance into a
+// million-element allocation on every routed or decoy verification.
+func TestStripeVerificationBoundsCommaDelimitedFields(t *testing.T) {
+	key := secrets.NewSecret(secrets.NewRef("env", "WEBHOOK_SECRET"), "shh")
+	body := []byte(`{"id":"evt_1"}`)
+	now := time.Now()
+	header := SignStripeBody(key, body, now) + strings.Repeat(",", 1<<20)
+
+	err := verifyStripe(key, map[string]string{StripeSignatureHeader: header}, body, now)
+	require.ErrorContains(t, err, "contains more than")
+
+	allocations := testing.AllocsPerRun(10, func() {
+		_ = verifyStripe(key, map[string]string{StripeSignatureHeader: header}, body, now)
+	})
+	require.Less(t, allocations, float64(100),
+		"verification allocated in proportion to the comma-delimited field count")
+}
+
 // verifyTrigger builds a well-formed trigger declaring exactly the schemes
 // named, each bound to key, for [TestVerifyWebhookDeliverySpendsConstantWork].
 func verifyTrigger(schemes ...string) *WebhookTrigger {
