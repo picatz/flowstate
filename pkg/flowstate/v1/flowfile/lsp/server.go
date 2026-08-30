@@ -63,6 +63,7 @@ type FlowfileServer struct {
 	// source retract only its own contribution.
 	testDiagnosticsMu       sync.Mutex
 	testDiagnosticsBySource map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic
+	testSourcesByTarget     map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 	testDefaultsBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 	testSuitesByDefaults    map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 
@@ -174,6 +175,9 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			return nil, err
 		}
 		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text, s.tasks())
+		if doc.kind == docTestDefaults {
+			s.dropSavedDefaultsContributions(doc.uri)
+		}
 		s.publish(ctx, conn, doc)
 		return nil, nil
 
@@ -584,14 +588,33 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 	if s.testDiagnosticsBySource == nil {
 		s.testDiagnosticsBySource = make(map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic)
 	}
+	if s.testSourcesByTarget == nil {
+		s.testSourcesByTarget = make(map[lsp.DocumentURI]map[lsp.DocumentURI]bool)
+	}
 	touched := map[lsp.DocumentURI]bool{source: true}
 	for uri := range s.testDiagnosticsBySource[source] {
 		touched[uri] = true
+		delete(s.testSourcesByTarget[uri], source)
+		if len(s.testSourcesByTarget[uri]) == 0 {
+			delete(s.testSourcesByTarget, uri)
+		}
 	}
 	next := make(map[lsp.DocumentURI][]lsp.Diagnostic, len(publications))
 	for _, publication := range publications {
+		// An overflow suite may have loaded saved defaults immediately before
+		// the editor opened that defaults document. Do not let the older
+		// analysis race back onto the now-authoritative live buffer.
+		if source != publication.uri && s.testDefaultsBySuite[source] != publication.uri {
+			if open, ok := s.docs.get(publication.uri); ok && open.kind == docTestDefaults {
+				continue
+			}
+		}
 		next[publication.uri] = publication.diagnostics
 		touched[publication.uri] = true
+		if s.testSourcesByTarget[publication.uri] == nil {
+			s.testSourcesByTarget[publication.uri] = make(map[lsp.DocumentURI]bool)
+		}
+		s.testSourcesByTarget[publication.uri][source] = true
 	}
 	s.testDiagnosticsBySource[source] = next
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
@@ -607,6 +630,10 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	touched := map[lsp.DocumentURI]bool{source: true}
 	for uri := range s.testDiagnosticsBySource[source] {
 		touched[uri] = true
+		delete(s.testSourcesByTarget[uri], source)
+		if len(s.testSourcesByTarget[uri]) == 0 {
+			delete(s.testSourcesByTarget, uri)
+		}
 	}
 	delete(s.testDiagnosticsBySource, source)
 	if defaults, ok := s.testDefaultsBySuite[source]; ok {
@@ -618,6 +645,25 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	}
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
 		s.notify(ctx, conn, publication)
+	}
+}
+
+// dropSavedDefaultsContributions retracts disk-derived diagnostics before an
+// opened defaults buffer becomes authoritative. Tracked suites are immediately
+// revalidated against that buffer; overflow suites suppress their saved-file
+// contribution while it remains open.
+func (s *FlowfileServer) dropSavedDefaultsContributions(target lsp.DocumentURI) {
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	for source := range s.testSourcesByTarget[target] {
+		if source == target || s.testDefaultsBySuite[source] == target {
+			continue
+		}
+		delete(s.testDiagnosticsBySource[source], target)
+		delete(s.testSourcesByTarget[target], source)
+	}
+	if len(s.testSourcesByTarget[target]) == 0 {
+		delete(s.testSourcesByTarget, target)
 	}
 }
 
@@ -637,16 +683,15 @@ func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bo
 		uris = append(uris, uri)
 	}
 	slices.Sort(uris)
-	sources := make([]lsp.DocumentURI, 0, len(s.testDiagnosticsBySource))
-	for source := range s.testDiagnosticsBySource {
-		sources = append(sources, source)
-	}
-	slices.Sort(sources)
 	out := make([]lsp.PublishDiagnosticsParams, 0, len(uris))
 	for _, uri := range uris {
 		var diagnostics []lsp.Diagnostic
 		seen := map[string]bool{}
-		ordered := slices.Clone(sources)
+		ordered := make([]lsp.DocumentURI, 0, len(s.testSourcesByTarget[uri]))
+		for source := range s.testSourcesByTarget[uri] {
+			ordered = append(ordered, source)
+		}
+		slices.Sort(ordered)
 		// A directly open document owns the code for an otherwise identical
 		// diagnostic an including suite also reports on its URI.
 		if own := slices.Index(ordered, uri); own >= 0 {

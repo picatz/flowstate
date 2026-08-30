@@ -401,6 +401,50 @@ func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T)
 	t.Fatal("the open defaults document never published diagnostics")
 }
 
+func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+	defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
+	require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
+
+	for i := range maxTestDefaultsDependents {
+		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
+		c.open(uri, validSuite)
+	}
+	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
+	c.open(overflow, validSuite)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == lsp.DocumentURI(overflow) {
+				return len(c.published[i].Diagnostics) == 1 &&
+					c.published[i].Diagnostics[0].Code == codeTestDefaultsDependents
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+
+	c.open(string(defaultsURI), "defaults: {}\n")
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == defaultsURI {
+				return len(c.published[i].Diagnostics) == 0
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond, "opening defaults retained an overflow suite's saved-file error")
+	c.server.testDiagnosticsMu.Lock()
+	assert.NotContains(t, c.server.testSourcesByTarget[defaultsURI], lsp.DocumentURI(overflow),
+		"the target index retained the retracted overflow contribution")
+	c.server.testDiagnosticsMu.Unlock()
+}
+
 func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
 	t.Parallel()
 	s := &FlowfileServer{Logger: discardLogger()}
