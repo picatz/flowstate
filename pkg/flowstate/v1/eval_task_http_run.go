@@ -570,19 +570,18 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
 			}
 
-			// The policy's own per-host rate bound (#912 phase two). Checked
-			// before the two classifications below, because it is neither of
-			// the things they decide: the request was permitted and was never
-			// sent, so it is not a denial and its outcome is not unknown — a
-			// bucket that refuses cannot have reached the peer. Classifying it
-			// as UpstreamUnknown on a POST would make a request nobody made
-			// look like one that might have taken effect.
+			// The policy's own per-host rate bound (#912 phase two). On the
+			// initial hop the request was never sent, so retrying is safe. A
+			// refused redirect hop is different: an earlier hop reached its
+			// peer, and replaying a non-idempotent original request may repeat
+			// its side effect. Let the unknown-outcome safeguard classify that
+			// case unless the author explicitly allowed such retries.
 			//
 			// RateLimited is retryable and carries the bucket's own wait, so
 			// this rides the machinery a 429's Retry-After already rides
 			// (#1180): both drivers read RetryAfter off the error and schedule
 			// the next attempt from it. Nothing blocks in the activity.
-			if rateLimited {
+			if rateLimited && (!limited.AfterRedirect || taskInputs.GetRetryOnUnknownOutcome() || retriableTransportFailure(taskInputs.GetMethod(), err)) {
 				rateErr := NewTaskError("http", ErrorKindRateLimited, fmt.Errorf(
 					"%s %s was held back by this worker's own rate limit for %s of %g requests per second per process: %w",
 					taskInputs.GetMethod(), taskInputs.GetUrl(), limited.Host, limited.RequestsPerSecond, err))

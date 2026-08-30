@@ -3,7 +3,9 @@ package flowstatev1
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,6 +110,53 @@ func Test_httpTask_perHostRateLimit(t *testing.T) {
 			require.NoError(t, err)
 		}
 	})
+}
+
+func Test_httpTask_rateLimitedRedirectDoesNotReplayNonIdempotentRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		retryOnUnknownOutcome bool
+		wantKind              ErrorKind
+	}{
+		{name: "protected by default", wantKind: ErrorKindUpstreamUnknown},
+		{name: "author explicitly permits retry", retryOnUnknownOutcome: true, wantKind: ErrorKindRateLimited},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var starts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/start" {
+					starts.Add(1)
+					http.Redirect(w, r, "/next", http.StatusTemporaryRedirect)
+					return
+				}
+				t.Fatal("rate-limited redirect hop unexpectedly reached the server")
+			}))
+			t.Cleanup(server.Close)
+
+			serverURL, err := url.Parse(server.URL)
+			require.NoError(t, err)
+			policy, err := netpolicy.New(
+				netpolicy.WithAllowLoopback(),
+				netpolicy.WithTimeout(5*time.Second),
+				netpolicy.WithMaxRequestsPerSecondPerProcess(serverURL.Hostname(), 1),
+			)
+			require.NoError(t, err)
+
+			inputs := map[string]any{
+				"url":    server.URL + "/start",
+				"method": "POST",
+			}
+			if tc.retryOnUnknownOutcome {
+				inputs["retry_on_unknown_outcome"] = true
+			}
+			_, err = taskFuncHTTP(policy)(t.Context(), NewNamedValues(inputs), nil)
+
+			var taskErr *TaskError
+			require.ErrorAs(t, err, &taskErr)
+			require.Equal(t, tc.wantKind, taskErr.Kind)
+			require.EqualValues(t, 1, starts.Load(), "the original operation was sent exactly once")
+		})
+	}
 }
 
 // Test_httpTask_rateLimitIsClassifiedBeforeScrubbing pins the ordering the http
