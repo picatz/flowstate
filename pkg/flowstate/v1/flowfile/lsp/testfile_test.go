@@ -413,6 +413,11 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 	for i := range maxTestDefaultsDependents {
 		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
 		c.open(uri, validSuite)
+		require.Eventually(t, func() bool {
+			c.server.testDiagnosticsMu.Lock()
+			defer c.server.testDiagnosticsMu.Unlock()
+			return c.server.testDefaultsBySuite[lsp.DocumentURI(uri)] == defaultsURI
+		}, time.Second, time.Millisecond)
 	}
 	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
 	c.open(overflow, validSuite)
