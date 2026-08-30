@@ -2090,10 +2090,9 @@ func failureError(
 	// above already follows and the schema states: `kind` is "always set
 	// alongside Message" (service.proto), and leaving it empty made the one
 	// failure this branch exists for the one failure a programmatic consumer
-	// could read nothing structural from. [v1.ErrorKindTimeout] is what
-	// engine.recordedStepKind answers for the step-level shape of this (#915),
-	// and a run-level timeout is that same fact one scope out — so it is the
-	// same word rather than a second one meaning the same thing.
+	// could read nothing structural from. It must not reuse the retryable
+	// [v1.ErrorKindTimeout] that engine.recordedStepKind answers for a step:
+	// restarting a whole run can repeat effects from steps that already finished.
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		return timeoutFailure(status, timeoutErr.TimeoutType())
@@ -2116,14 +2115,13 @@ func failureError(
 // (service.proto), and this branch — the one shape of failure with nothing in
 // the chain to read a classification back out of — was the one leaving it
 // empty, so the only failure an agent could read nothing structural from was a
-// timeout. [v1.ErrorKindTimeout] is what engine.recordedStepKind answers for
-// the step-level shape of this (#915); a run-level timeout is that same fact
-// one scope out, so it is the same word rather than a second one meaning the
-// same thing, and the message is what says which scope.
+// timeout. A whole-run timeout has its own permanent kind: unlike retrying a
+// step attempt, restarting the run can repeat effects from an already-completed
+// prefix whose outcome is known only to the workload's operator.
 func timeoutFailure(status v1.RunResponse_Status, kind enums.TimeoutType) *v1.RunResponse_Error {
 	return &v1.RunResponse_Error{
 		Message: status.String() + ": timed out (" + timeoutKindText(kind) + ")",
-		Kind:    v1.ErrorKindTimeout.String(),
+		Kind:    v1.ErrorKindRunTimeout.String(),
 	}
 }
 

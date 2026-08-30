@@ -81,6 +81,14 @@ const (
 	// the rehearsal that exists to predict it.
 	ErrorKindTimeout ErrorKind = "Timeout"
 
+	// ErrorKindRunTimeout indicates the durable substrate ended the whole run
+	// because its execution or run budget expired. Unlike [ErrorKindTimeout],
+	// retrying here means starting the workload again rather than retrying one
+	// step attempt. Earlier steps may already have applied non-idempotent effects,
+	// so the safe answer is permanent: an operator must decide whether a new run
+	// is appropriate.
+	ErrorKindRunTimeout ErrorKind = "RunTimeout"
+
 	// ErrorKindInternal indicates a defect in Flowstate itself. These are
 	// retried, on the assumption that a genuine defect is better surfaced by
 	// exhausting attempts than by being silently swallowed.
@@ -144,6 +152,7 @@ func PermanentErrorKinds() []ErrorKind {
 		ErrorKindPolicyDenied,
 		ErrorKindLimitExceeded,
 		ErrorKindUpstreamUnknown,
+		ErrorKindRunTimeout,
 	}
 }
 
@@ -246,7 +255,8 @@ func ParseErrorKind(s string) (ErrorKind, bool) {
 	switch ErrorKind(s) {
 	case ErrorKindInvalidInput, ErrorKindUnknownTask, ErrorKindExpression,
 		ErrorKindPolicyDenied, ErrorKindLimitExceeded, ErrorKindUpstreamUnknown,
-		ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
+		ErrorKindUpstream, ErrorKindTimeout, ErrorKindRunTimeout, ErrorKindInternal,
+		ErrorKindRateLimited:
 		return ErrorKind(s), true
 	default:
 		return "", false
