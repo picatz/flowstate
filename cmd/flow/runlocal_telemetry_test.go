@@ -133,6 +133,39 @@ func (c *traceCollector) names() []string {
 	return names
 }
 
+// taskAttemptAttributes reduces exported task spans to the two attributes this
+// issue adds. Reading the OTLP messages, rather than an SDK recorder, proves the
+// values survived batching, encoding, and the exporter boundary.
+func (c *traceCollector) taskAttemptAttributes(t *testing.T, taskName string) map[string]int64 {
+	t.Helper()
+
+	got := map[string]int64{}
+	for _, span := range c.exported() {
+		if span.GetName() != v1.TaskSpanName(taskName) {
+			continue
+		}
+
+		var stepID string
+		var attempt int64
+		for _, attr := range span.GetAttributes() {
+			switch attr.GetKey() {
+			case v1.SpanAttributeStepID:
+				stepID = attr.GetValue().GetStringValue()
+			case v1.SpanAttributeAttempt:
+				attempt = attr.GetValue().GetIntValue()
+			}
+		}
+		require.NotEmpty(t, stepID, "an exported task span carries no step id: %v", span)
+		require.Positive(t, attempt, "an exported task span carries no positive attempt: %v", span)
+		if _, exists := got[stepID]; exists {
+			t.Fatalf("more than one exported task span claims step %q", stepID)
+		}
+		got[stepID] = attempt
+	}
+
+	return got
+}
+
 // tracedLocalWorkflow is a workload with two task steps, so a trace that
 // arrives with one span is distinguishable from one that arrives whole.
 const tracedLocalWorkflow = `edition: v2026.3
@@ -190,6 +223,8 @@ func TestALocalRunExportsItsTaskSpans(t *testing.T) {
 	require.Equal(t, 2, count,
 		"a local run with OTEL_EXPORTER_OTLP_ENDPOINT set exported %d %s spans, want one per task step; everything that arrived: %v",
 		count, want, names)
+	require.Equal(t, map[string]int64{"first": 1, "second": 1}, collector.taskAttemptAttributes(t, "log"),
+		"the OTLP exporter changed or omitted the task-attempt identity")
 }
 
 // TestATaskInvocationExportsItsTaskSpan is the same claim for the other verb

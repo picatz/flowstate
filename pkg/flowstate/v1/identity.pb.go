@@ -22,9 +22,69 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// RunState is the durable workflow state used by the Temporal Run entrypoint.
-// It allows the workflow to continue-as-new while carrying only the minimal
-// required subset of previously produced outputs for the remaining steps.
+// WorkloadIdentityMode says whether the host executing a workload established
+// this call as production or as a rehearsal.
+//
+// UNSPECIFIED is deliberately the zero value and means unknown. A plugin built
+// after this field was added receives it from an older host, rather than
+// silently reading an old-host rehearsal as production. Plugins that gate side
+// effects on this fact must admit only PRODUCTION, not merely reject REHEARSAL.
+type WorkloadIdentityMode int32
+
+const (
+	// UNSPECIFIED means the host did not establish a mode, the identity was absent,
+	// or the receiver does not understand the value. It is never evidence of a
+	// production call.
+	WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_UNSPECIFIED WorkloadIdentityMode = 0
+	// PRODUCTION means the directly connected host established this as a durable
+	// execution rather than a local rehearsal.
+	WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION WorkloadIdentityMode = 1
+	// REHEARSAL means the directly connected host established this as a local,
+	// unattested rehearsal.
+	WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL WorkloadIdentityMode = 2
+)
+
+// Enum value maps for WorkloadIdentityMode.
+var (
+	WorkloadIdentityMode_name = map[int32]string{
+		0: "WORKLOAD_IDENTITY_MODE_UNSPECIFIED",
+		1: "WORKLOAD_IDENTITY_MODE_PRODUCTION",
+		2: "WORKLOAD_IDENTITY_MODE_REHEARSAL",
+	}
+	WorkloadIdentityMode_value = map[string]int32{
+		"WORKLOAD_IDENTITY_MODE_UNSPECIFIED": 0,
+		"WORKLOAD_IDENTITY_MODE_PRODUCTION":  1,
+		"WORKLOAD_IDENTITY_MODE_REHEARSAL":   2,
+	}
+)
+
+func (x WorkloadIdentityMode) Enum() *WorkloadIdentityMode {
+	p := new(WorkloadIdentityMode)
+	*p = x
+	return p
+}
+
+func (x WorkloadIdentityMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WorkloadIdentityMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[0].Descriptor()
+}
+
+func (WorkloadIdentityMode) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[0]
+}
+
+func (x WorkloadIdentityMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WorkloadIdentityMode.Descriptor instead.
+func (WorkloadIdentityMode) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+}
+
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
@@ -100,7 +160,23 @@ type WorkloadIdentity struct {
 	// So the two are load-bearing for different decisions. `namespace` decides who
 	// may act on a run; `deployment` is one of the attributes a policy may use to
 	// decide what a run may reach.
-	Deployment    string `protobuf:"bytes,5,opt,name=deployment,proto3" json:"deployment,omitempty"`
+	Deployment string `protobuf:"bytes,5,opt,name=deployment,proto3" json:"deployment,omitempty"`
+	// Mode is operational context, not a credential or an identity claim. When
+	// this identity is sent to a plugin, the host that launched and is directly
+	// connected to that plugin establishes the value; a plugin must not derive
+	// it from subject, claims, task input, or any workflow-authored value.
+	//
+	// Absence from an older host decodes as UNSPECIFIED (unknown), never
+	// PRODUCTION. Unknown enum values must be treated the same way. A plugin
+	// whose side effect is safe only in production therefore checks
+	// mode == PRODUCTION; checking only mode != REHEARSAL is unsafe.
+	//
+	// Today's transport is a host-launched process over a private Unix socket,
+	// so the launched host is authoritative for this fact. A future remote
+	// plugin transport must authenticate the host and preserve that authority,
+	// or replace this value with UNSPECIFIED rather than relay a caller-supplied
+	// one.
+	Mode          WorkloadIdentityMode `protobuf:"varint,6,opt,name=mode,proto3,enum=flowstate.v1.WorkloadIdentityMode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -170,11 +246,18 @@ func (x *WorkloadIdentity) GetDeployment() string {
 	return ""
 }
 
+func (x *WorkloadIdentity) GetMode() WorkloadIdentityMode {
+	if x != nil {
+		return x.Mode
+	}
+	return WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_UNSPECIFIED
+}
+
 var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x9b\x02\n" +
+	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xd3\x02\n" +
 	"\x10WorkloadIdentity\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
 	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12\\\n" +
@@ -182,10 +265,15 @@ const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\tnamespace\x18\x04 \x01(\tR\tnamespace\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x05 \x01(\tR\n" +
-	"deployment\x1a9\n" +
+	"deployment\x126\n" +
+	"\x04mode\x18\x06 \x01(\x0e2\".flowstate.v1.WorkloadIdentityModeR\x04mode\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\xac\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x8b\x01\n" +
+	"\x14WorkloadIdentityMode\x12&\n" +
+	"\"WORKLOAD_IDENTITY_MODE_UNSPECIFIED\x10\x00\x12%\n" +
+	"!WORKLOAD_IDENTITY_MODE_PRODUCTION\x10\x01\x12$\n" +
+	" WORKLOAD_IDENTITY_MODE_REHEARSAL\x10\x02B\xac\x01\n" +
 	"\x10com.flowstate.v1B\rIdentityProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -200,18 +288,21 @@ func file_flowstate_v1_identity_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_identity_proto_rawDescData
 }
 
+var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_flowstate_v1_identity_proto_goTypes = []any{
-	(*WorkloadIdentity)(nil), // 0: flowstate.v1.WorkloadIdentity
-	nil,                      // 1: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(WorkloadIdentityMode)(0), // 0: flowstate.v1.WorkloadIdentityMode
+	(*WorkloadIdentity)(nil),  // 1: flowstate.v1.WorkloadIdentity
+	nil,                       // 2: flowstate.v1.WorkloadIdentity.ClaimsEntry
 }
 var file_flowstate_v1_identity_proto_depIdxs = []int32{
-	1, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
+	0, // 1: flowstate.v1.WorkloadIdentity.mode:type_name -> flowstate.v1.WorkloadIdentityMode
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_identity_proto_init() }
@@ -224,13 +315,14 @@ func file_flowstate_v1_identity_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_identity_proto_rawDesc), len(file_flowstate_v1_identity_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_flowstate_v1_identity_proto_goTypes,
 		DependencyIndexes: file_flowstate_v1_identity_proto_depIdxs,
+		EnumInfos:         file_flowstate_v1_identity_proto_enumTypes,
 		MessageInfos:      file_flowstate_v1_identity_proto_msgTypes,
 	}.Build()
 	File_flowstate_v1_identity_proto = out.File

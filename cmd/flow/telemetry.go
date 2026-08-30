@@ -256,6 +256,23 @@ var instanceID = sync.OnceValues(uuid.NewRandom)
 // path can carry a username or a deployment's directory layout, and the
 // executable's name already answers the question anyone is asking.
 func telemetryResource(ctx context.Context) (*resource.Resource, error) {
+	return telemetryResourceWith(ctx,
+		resource.WithHost(),
+		resource.WithContainer(),
+		resource.WithProcessPID(),
+		resource.WithProcessExecutableName(),
+		resource.WithProcessRuntimeName(),
+		resource.WithProcessRuntimeVersion(),
+	)
+}
+
+// telemetryResourceWith separates the resource merge contract from the
+// platform detectors. Empty or partial detection must still leave the fixed
+// service identity intact, and attributes a detector did return must survive
+// unless the deployment overrides them. Keeping that contract here also makes
+// those two directions testable without depending on the test host's cgroups or
+// hostname.
+func telemetryResourceWith(ctx context.Context, detected ...resource.Option) (*resource.Resource, error) {
 	attrs := []attribute.KeyValue{
 		semconv.ServiceName("flowstate"),
 		semconv.ServiceVersion(version),
@@ -269,17 +286,13 @@ func telemetryResource(ctx context.Context) (*resource.Resource, error) {
 		attrs = append(attrs, semconv.ServiceInstanceID(id.String()))
 	}
 
-	res, err := resource.New(ctx,
-		resource.WithTelemetrySDK(),
-		resource.WithHost(),
-		resource.WithContainer(),
-		resource.WithProcessPID(),
-		resource.WithProcessExecutableName(),
-		resource.WithProcessRuntimeName(),
-		resource.WithProcessRuntimeVersion(),
+	options := []resource.Option{resource.WithTelemetrySDK()}
+	options = append(options, detected...)
+	options = append(options,
 		resource.WithAttributes(attrs...),
 		resource.WithFromEnv(),
 	)
+	res, err := resource.New(ctx, options...)
 	if err != nil {
 		if !errors.Is(err, resource.ErrPartialResource) && !errors.Is(err, resource.ErrSchemaURLConflict) {
 			return nil, fmt.Errorf("describing this process to the collector: %w", err)

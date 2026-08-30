@@ -1257,18 +1257,11 @@ func dslCandidates(level, prefix string, replace lsp.Range) []lsp.CompletionItem
 // after its colon, which is what distinguishes completing a key from completing
 // its value.
 func keyAndPosition(line string, col int) (key string, inValue bool) {
-	m := keyLine.FindStringSubmatch(line)
-	if m == nil {
+	m, ok := scanKeyLine(line)
+	if !ok {
 		return "", false
 	}
-	after := len(m[1]) + len(m[2]) + len(m[3])
-	offset := strings.Index(line[after:], ":")
-	if offset < 0 {
-		// Unreachable given the pattern matched, but a negative index here would
-		// silently classify every position as a value.
-		return m[3], false
-	}
-	return m[3], col > after+offset
+	return m.key, col > m.colon
 }
 
 // wordBefore returns the partial word the cursor is typing and the range it should

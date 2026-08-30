@@ -999,6 +999,12 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		if err := CheckSubmissionSize(w, bound); err != nil {
 			return nil, err
 		}
+		// Before eval can perform even its first task. The check reads the
+		// context-scoped registry that dispatch reads, so a rehearsal using a
+		// run-only registry cannot borrow tasks from the process-wide one.
+		if err := CheckTaskCapabilitiesIn(ctx, w); err != nil {
+			return nil, err
+		}
 
 		return eval(ctx, w, bound)
 	})
@@ -1621,11 +1627,11 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 // resilience of the step it is undoing, and giving it a *different* answer would
 // be one more number written down twice.
 //
-// The scope carries the profile and the run identity, and nothing more. The
-// task's inputs were resolved when the step succeeded, so there is nothing here
-// left to evaluate against a run; what remains unresolved is only what a task
-// evaluates against its own response, which needs no other run scope in either
-// driver.
+// The scope carries the profile, the run identity, and the local driver's
+// host-owned marker, and nothing more. The task's inputs were resolved when the
+// step succeeded, so there is nothing here left to evaluate against a run; what
+// remains unresolved is only what a task evaluates against its own response,
+// which needs no other run scope in either driver.
 //
 // Identity is the exception, for the reason the run scope above carries it
 // (#295): the task-shape policy reads `identity.namespace`, so a compensation
@@ -1637,6 +1643,7 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Identity = RehearsalIdentityFromContext(ctx)
+	scope.Local = true
 	// The step the compensation undoes, which is the id the durable
 	// driver dispatches a compensation with (`executor.runUndoTask` passes
 	// `entry.GetStepId()`) — so the span naming it says the same thing on
@@ -1736,7 +1743,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// [UndoScopeCall]. A call reached from inside a for_each body or a
 		// parallel branch must not become an escape hatch out of the
 		// concurrency refusal just because a call sits between the two.
-		return runCall(pushWaitAncestor(ctx, node.GetId()), n.Call, scope, undo, placement.IntoCall(), depth+1)
+		return runCall(pushWaitAncestor(ctx, node.GetId()), node.GetId(), NodeKind(node), n.Call, scope, undo, placement.IntoCall(), depth+1)
 
 	default:
 		return nil, fmt.Errorf("unsupported node kind: %T", n)
@@ -1777,7 +1784,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 // the `call:` step itself regardless, since a call has no effect of its own —
 // the compensation belongs on the callee's steps, not on the step that
 // reaches them.
-func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+func runCall(ctx context.Context, callerStep, callerKind string, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	if err := CheckCallDepth(depth); err != nil {
 		return nil, err
 	}
@@ -1818,7 +1825,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 	// `callee.GetName()`, so there is one source and two audiences rather than
 	// two spellings — and the first is what a step boundary reads, because a
 	// run with no secrets configured still has a workflow.
-	calleeCtx := contextWithExecutingWorkflow(ctx, callee.GetName())
+	calleeCtx := contextWithExecutingCall(ctx, callerStep, callerKind, callee.GetName())
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
 		calleeCtx = ContextWithSecretStep(calleeCtx, callee.GetName(), runtime.Step.Run, "")
 	}
@@ -2410,7 +2417,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// them apart by whether a cause is present at all.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, timeouts.ScheduleToClose,
-			fmt.Errorf("schedule-to-close timeout of %s reached", timeouts.ScheduleToClose))
+			&scheduleToCloseTimeoutCause{timeout: timeouts.ScheduleToClose})
 		defer cancel()
 	}
 
@@ -2448,11 +2455,44 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// to run at test speed rather than spend the backoff for real.
 		select {
 		case <-ctx.Done():
+			// Keep the failure that was waiting to be retried as the cause. The
+			// schedule-to-close budget is the fact that ended the step, but the
+			// dependency's last answer is still the evidence explaining what the
+			// retry loop was doing when the budget ran out. Temporal preserves the
+			// same cause when its server expires this budget during backoff; dropping
+			// it here made the local rehearsal strictly less informative.
+			var overall *scheduleToCloseTimeoutCause
+			if errors.As(context.Cause(ctx), &overall) {
+				return nil, &scheduleToCloseTimeoutError{timeout: timeouts.ScheduleToClose, err: err}
+			}
 			return nil, withCancellationCause(ctx, ctx.Err())
 		case <-ClockFromContext(ctx).After(delay):
 		}
 	}
 }
+
+// scheduleToCloseTimeoutCause distinguishes this step's overall budget from an
+// outer run deadline that may stop the same derived context first.
+type scheduleToCloseTimeoutCause struct{ timeout time.Duration }
+
+func (e *scheduleToCloseTimeoutCause) Error() string {
+	return fmt.Sprintf("schedule-to-close timeout of %s reached", e.timeout)
+}
+
+// scheduleToCloseTimeoutError reports that the overall step budget, rather
+// than the last attempt, ended a local retry loop. Its cause remains the last
+// attempt's structured failure so errors.As can still recover the dependency's
+// classification; [ClassifyError] deliberately recognizes this outer fact first.
+type scheduleToCloseTimeoutError struct {
+	timeout time.Duration
+	err     error
+}
+
+func (e *scheduleToCloseTimeoutError) Error() string {
+	return fmt.Sprintf("schedule-to-close timeout of %s reached: %v", e.timeout, e.err)
+}
+
+func (e *scheduleToCloseTimeoutError) Unwrap() error { return e.err }
 
 // withCancellationCause enriches err with the reason ctx (or the timeout
 // nearest to it) was given for stopping, when that reason is more specific
@@ -2582,7 +2622,7 @@ func (e *causeEnrichedError) Unwrap() error {
 // `activity.GetInfo(ctx).Attempt`, read in engine/activities.go. See
 // [StartTaskSpan]'s doc for why one key carries both and why that is honest.
 func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string, attempt int) (*Node_Outputs, error) {
-	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
+	return ObserveTaskAttempt(ctx, task, stepID, metricschema.DriverLocal, attempt,
 		func(ctx context.Context, span trace.Span) (*Node_Outputs, error) {
 			span.SetAttributes(attribute.Int(SpanAttributeAttempt, attempt))
 			return runStepAttempt(ctx, task, timeout, scope)

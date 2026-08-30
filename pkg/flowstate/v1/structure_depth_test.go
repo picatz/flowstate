@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -83,6 +84,21 @@ func TestCheckStructureDepthBothDirections(t *testing.T) {
 	require.Error(t, err, "a structure one level past the bound must be refused")
 	require.Contains(t, err.Error(), "32",
 		"the refusal must name the bound so an author has a number to act on")
+}
+
+func TestCheckStructureDepthBoundsDeepControlFlowWithoutRecursiveTraversal(t *testing.T) {
+	t.Parallel()
+
+	var body []*v1.Node
+	for range 50_000 {
+		body = []*v1.Node{{Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Body: body}}}}
+	}
+	wf := &v1.Workflow{Name: "deep-control-flow", Steps: body}
+
+	require.Less(t, proto.Size(wf), v1.MaxSpecBytes,
+		"the regression must fit under the byte precheck that runs before structure validation")
+	require.NoError(t, v1.CheckStructureDepth(wf),
+		"control-flow depth chosen by a wire caller must not become Go recursion depth")
 }
 
 // TestCollectNodeRefsFailsClosedPastTheDepthBound is the CAN-compaction half

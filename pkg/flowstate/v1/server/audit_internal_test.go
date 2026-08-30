@@ -16,6 +16,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // The behavioural half of the audit claims. auditseam_test.go proves every RPC
@@ -44,8 +45,15 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: running}, WithAudit(recorderFor(t, sink)))
+		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+			Issuer:     "https://issuer.example",
+			IssuerName: "production-issuer",
+			Subject:    "agent-1",
+			Role:       "operator",
+			Claims:     map[string]any{"private": "claim-value"},
+		})
 
-		_, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+		_, err := s.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
 		require.NoError(t, err)
 
 		record := sink.only(t)
@@ -55,6 +63,9 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		require.Equal(t, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, record.GetResourceKind())
 		require.Equal(t, "orders-1", record.GetResourceKey())
 		require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, record.GetDenyCode())
+		require.Equal(t, "production-issuer", record.GetIssuerName())
+		require.Equal(t, "operator", record.GetRole())
+		require.Empty(t, record.GetIdentity().GetClaims())
 		require.NotNil(t, record.GetDecidedAt())
 	})
 
@@ -200,6 +211,42 @@ func TestARequiredRecordThatCannotBeWrittenStopsTheMutation(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	require.Equal(t, 1, fake.signals)
+}
+
+// TestASignalPolicyDenialIsAuditedAsADenial: tenancy is only the first half of
+// Signal's authorization. A name-level policy refusal must not leave behind an
+// allow record for a delivery that never happened.
+func TestASignalPolicyDenialIsAuditedAsADenial(t *testing.T) {
+	t.Parallel()
+
+	protocol, err := converter.GetDefaultDataConverter().ToPayload(currentSignalProtocol)
+	require.NoError(t, err)
+
+	fake := &fakeRunClient{
+		describe: &workflowservice.DescribeWorkflowExecutionResponse{
+			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+				Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
+				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+				Memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{
+					signalProtocolMemoKey: protocol,
+				}},
+			},
+		},
+	}
+
+	sink := &recordingEmitter{}
+	s := mustNew(t, fake, WithAudit(recorderFor(t, sink)))
+
+	_, err = s.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: "orders-1",
+		Name:       v1.DebugSignal,
+	}))
+	require.Error(t, err)
+	require.Zero(t, fake.signals, "the policy refused the signal before delivery")
+
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
+	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, record.GetDenyCode())
 }
 
 func recorderFor(t *testing.T, sink audit.Emitter) *audit.Recorder {

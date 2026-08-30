@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins
+.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -57,6 +57,12 @@ endef
 # branch; PR CI runs the full list as the gate that decides. See CLAUDE.md.
 gate:
 	go run ./tools/gate
+
+# Build the complete release payload locally without publishing it. VERSION is
+# deliberately required rather than inferred from a moving branch; the release
+# workflow supplies the immutable tag after checking that it names this commit.
+release-artifacts:
+	go run ./tools/release -version "$(VERSION)"
 
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:

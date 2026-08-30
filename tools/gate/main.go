@@ -74,8 +74,8 @@ const (
 func main() {
 	// One flag, because there is one thing to choose: who is asking. The
 	// local tier runs the legs; CI asks only which of its jobs this diff can
-	// reach and decides the rest itself. Both answers come from the same
-	// analyse() call below, which is the point — see ci.go.
+	// reach and decides the rest itself. Both answers come from analyse,
+	// with local-only test-data package seeding explained there — see ci.go.
 	ci := flag.Bool("ci", false, "print the CI job plan for this diff and write it to $GITHUB_OUTPUT, rather than running the local legs")
 	event := flag.String("event", os.Getenv("GITHUB_EVENT_NAME"), "the GitHub event name; anything other than pull_request forces every job to run")
 	flag.Parse()
@@ -108,7 +108,13 @@ type analysis struct {
 // analyse is the one computation. The local tier turns it into legs; the CI
 // tier turns it into jobs. Nothing else in this repository is allowed a second
 // opinion about which packages a diff reaches.
-func analyse() (analysis, error) {
+//
+// seedRepoTestData is local-only. It maps data read by tests to the narrow
+// package set the local test leg should execute. CI already selects its full
+// test job from p.repoTestData; adding those readers to affected there would
+// incorrectly make a data-only diff look like a Go change and select the
+// staticcheck and vulncheck jobs too.
+func analyse(seedRepoTestData bool) (analysis, error) {
 	// Root the whole run at the repository top level so the gate behaves
 	// identically from any working directory.
 	root, err := gitOutput("rev-parse", "--show-toplevel")
@@ -174,12 +180,13 @@ func analyse() (analysis, error) {
 		// test-import expansion carries them the rest of the way.
 		//
 		// The same is true of the repository-level data p.repoTestData
-		// names — Markdown under docs/, README.md, AGENTS.md — and it
-		// bites harder there, because such a diff usually moves no .go
-		// file at all: docs/README.md alone resolves to no package, so
-		// without this seeding the local gate ran no test leg and the
-		// author heard about an incomplete index from CI instead
-		// (#708). Read the test sources at most once for both.
+		// names — Markdown under docs/, README.md, AGENTS.md and the
+		// repository-owned agent configuration — and it bites harder
+		// there, because such a diff usually moves no .go file at all:
+		// docs/README.md alone resolves to no package, so without this
+		// seeding the local gate ran no test leg and the author heard about
+		// an incomplete index from CI instead (#708). Read the test sources
+		// at most once for both.
 		var testSrc map[string][]byte
 		sources := func() map[string][]byte {
 			if testSrc == nil {
@@ -195,7 +202,7 @@ func analyse() (analysis, error) {
 			}
 		}
 
-		if p.repoTestData {
+		if seedRepoTestData && p.repoTestData {
 			repoDataDeps = repoDataDepPackages(sources(), p.repoDataRoots)
 			for _, ip := range repoDataDeps {
 				changedSet[ip] = true
@@ -221,7 +228,7 @@ func analyse() (analysis, error) {
 // never fails on a finding — a wrong answer here is a job that did not run, and
 // the verdict job is what turns that into a red required check.
 func runCI(event string) error {
-	a, err := analyse()
+	a, err := analyse(false)
 	if err != nil {
 		return err
 	}
@@ -239,7 +246,7 @@ func runCI(event string) error {
 }
 
 func run() error {
-	a, err := analyse()
+	a, err := analyse(true)
 	if err != nil {
 		return err
 	}

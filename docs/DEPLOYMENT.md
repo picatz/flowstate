@@ -1039,14 +1039,21 @@ tenant's namespace (`FlowstateServer`'s `Priority{FairnessKey: namespace}` —
 so it covers every task a run goes on to schedule and survives
 Continue-As-New. That part is verified and correctly wired.
 
-What it is **not** is a verified enforcement guarantee. Temporal marks
-`Priority`/fairness as an experimental SDK feature, and whether the key
-actually changes scheduling order — versus being carried and ignored — is a
-property of your Temporal server version and configuration, not of anything
-Flowstate controls. The honest claim is: **the key is set correctly; whether
-it is enforced is a property of your Temporal deployment.** Don't take "we set
-a fairness key" as "one tenant cannot crowd out another" without checking
-your Temporal version's fairness support.
+Temporal made Task Queue Priority and Fairness GA in Server 1.31+. Priority is
+enabled by default there; Fairness is not. A self-hosted deployment enables it
+with `matching.enableFairness: true` at Task Queue, Namespace, or cluster scope.
+Temporal Cloud enables it per Namespace, where it is a paid feature. Flowstate
+does not change either setting.
+
+This is still **not** an isolation guarantee. Fairness is weighted and
+approximate within each Task Queue partition, does not account for tasks already
+dispatched to workers, and is not guaranteed across Worker Deployment versions.
+Flowstate supplies the authenticated tenant as the key and leaves its weight at
+Temporal's default; deployment-side weight overrides and per-key rate limits
+remain operator controls. The honest claim is: **the key is set correctly;
+whether and how it is enforced is a property of your Temporal deployment.**
+Don't take "we set a fairness key" as "one tenant cannot crowd out another"
+without Server 1.31+ and Fairness enabled.
 
 For the volume dimension — one tenant submitting so many runs that Temporal
 itself falls over, as opposed to one tenant's runs sitting ahead of another's
@@ -1064,6 +1071,39 @@ and is unchanged. It is not in tension with the outbound bound described under
 control knows that some third-party API publishes a limit, so there is nothing
 there to surface rather than reimplement, and the bound that does exist for it
 is the API's own 429.
+
+## Telemetry resource identity
+
+Every exported span, metric, and log identifies the emitting binary with
+`service.name`, `service.version`, and, when the operating system can supply
+randomness, a random `service.instance.id`. The instance ID is created once per
+process: all signal providers in one process share it, and a restart gets a new
+one. It is deliberately not derived from a hostname or PID, both of which can
+be shared or reused. If random identity generation fails, Flowstate warns and
+omits that attribute rather than failing the workload or substituting a shared
+fake identity.
+
+Flowstate also uses the OTel SDK's built-in detectors for `host.name`,
+`container.id` (when the platform exposes a supported cgroup container ID),
+`process.pid`, `process.executable.name`, `process.runtime.name`, and
+`process.runtime.version`. Missing host or container data is simply omitted.
+There is no Kubernetes API or downward-API detector here, so Flowstate does not
+claim `k8s.pod.*`, `k8s.deployment.*`, or other Kubernetes topology attributes.
+Set those explicitly in the deployment when they are useful and authoritative.
+
+`OTEL_RESOURCE_ATTRIBUTES` is merged last and therefore overrides both fixed
+defaults and detected string values, including `service.instance.id` and
+`host.name`; `OTEL_SERVICE_NAME` likewise overrides the built-in service name.
+This is the supported way for a deployment to provide more authoritative
+identity or topology. OTel parses resource attributes supplied through the
+environment as strings, so do not use it to replace typed attributes such as the
+integer-valued `process.pid`.
+
+The broad `resource.WithProcess` detector is intentionally not used. It exports
+the argument vector, which can contain values such as `--input token=...`, on
+every telemetry signal. Flowstate also omits the executable path, process owner,
+runtime description, and durable host ID: those values add private or
+unnecessarily long-lived identity without helping distinguish a running copy.
 
 ## Metrics
 
@@ -1133,6 +1173,27 @@ through `pkg/flowstate/v1/metricschema` before reaching an instrument, which
 drops an unrecognized key and caps a runaway value's cardinality behind an
 `OverflowValue` sentinel rather than losing the measurement — see that
 package's doc comment for the full policy.
+
+**Task-execution metrics**, recorded by the shared task observation both the
+local and durable drivers call (`pkg/flowstate/v1/taskmetrics.go`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.task.duration` | histogram | s | `flowstate.task.name`, `flowstate.task.outcome`, `flowstate.driver`, `error.type` (on failure) | Duration of one task attempt, including a first attempt or retry |
+| `flowstate.task.executions` | counter | — | same as `flowstate.task.duration` | One increment per task attempt, with its terminal outcome |
+| `flowstate.task.retries` | counter | — | `flowstate.task.name`, `flowstate.driver` | One increment when an attempt after the first starts |
+
+`flowstate.task.retries` counts retries, not all attempts: a first attempt adds
+to executions and duration but not retries. A retry increments when its work
+starts, so cancellation during backoff adds nothing, while a started retry is
+counted whether it later succeeds, fails, or panics. Its terminal outcome is
+already represented by `flowstate.task.executions` and
+`flowstate.task.duration`; it does not add another retry series. Divide retries
+by executions for the fraction of task work spent retrying. The attempt number
+itself remains on task spans only — making it a metric label would create one
+series per configured attempt value. Task names pass through the shared
+cardinality limiter; attempt numbers, run/execution/delivery IDs, inputs, error
+messages, and secret values never become labels.
 
 **Temporal SDK metrics** are also live once telemetry is on: `initTelemetry`
 wires a `client.MetricsHandler` (`opentelemetry.NewMetricsHandler`, meter name
@@ -1220,10 +1281,8 @@ split every other `flowstate.*` label in this document follows; see
 `pkg/flowstate/v1/metricschema` for the allowlist and why a run id can never
 reach an instrument.
 
-What is still not here: a step's own retry count as a run-level rollup (the
-task-level duration/executions pair above already carries one measurement per
-attempt) and any label scoped to a tenant rather than a workflow — this
-system has no `ClassConfiguration`-bounded tenant label declared yet, so
+What is still not here: any label scoped to a tenant rather than a workflow —
+this system has no `ClassConfiguration`-bounded tenant label declared yet, so
 "runs per tenant per hour" still means filtering `flow list` or a trace by
 namespace rather than reading one off this table.
 
@@ -1236,25 +1295,31 @@ previously undashboarded, which left the slot-exhaustion runbook below's
 
 ## Audit trail
 
-`flow server` and `flow server dev` write down every authorization decision —
-allow and deny alike — before the mutation the decision permits. This is not
-telemetry: it is unconditional, it is not sampled, and it does not depend on
-`OTEL_*` being configured at all. picatz/flowstate#1018 is the design; this is
-the part of it an operator turns a knob on.
+`flow server`, `flow server dev`, and authenticated `flow mcp serve` write down
+every authorization decision — allow and deny alike — before the mutation the
+decision permits. This is not telemetry: it is unconditional, it is not
+sampled, and it does not depend on `OTEL_*` being configured at all.
+picatz/flowstate#1018 is the design; this is the part of it an operator turns a
+knob on. Local `flow mcp` over stdio makes no bearer authorization decision and
+therefore emits no MCP authorization record.
 
 **What is recorded.** One record per decision, keyed by the closed
 `AuthorizationAction` vocabulary (`proto/flowstate/v1/authorization.proto`)
 rather than a second list of verbs — the audited surface is every action a
-WorkflowService RPC actually reaches, derived from the same bindings
-`TestEveryRPCHasExactlyOneAuthorizationAction` already checks, so a new RPC
-cannot arrive unaudited without that test failing first. Each record carries
-the action, the allow/deny decision, the RPC name, the caller's attested
-`WorkloadIdentity` (absent when the deployment runs `--insecure-no-auth`), the
-kind and id of the resource addressed (a workflow id, a schedule name, or a
-namespace), the server's own clock, and — on a denial — a code from a small
-closed set (`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`).
-There is no free-text field: no error message, no request payload, no
-specification. That is deliberate, not an oversight — see
+WorkflowService RPC or registered MCP tool actually reaches, derived from the
+same bindings the RPC and MCP conformance tests check, so a new operation
+cannot arrive unaudited without a test failing first. Each record carries the
+action, the allow/deny decision, exactly one operation name (`rpc` or
+`mcp_tool`), the caller's attested `WorkloadIdentity` (absent when a Connect
+deployment runs `--insecure-no-auth`), the bounded operator-chosen trusted
+issuer name and role that admitted the caller, the kind and id of the resource
+addressed (a workflow id, a schedule name, or a namespace), the server's own
+clock, and — on a denial — a code from a small closed set
+(`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`,
+`POLICY_DENIED`). There is no free-text field: no error message, request
+payload, specification, token, claims, MCP arguments or results, prompt,
+session id, or JSON-RPC request id. One record is the correlation unit for one
+resolved operation decision. That is deliberate, not an oversight — see
 `pkg/flowstate/v1/audit`'s package doc and `proto/flowstate/v1/audit.proto`'s
 file comment for why a scrubber was rejected in favor of a record with nothing
 in it for a scrubber to catch.
@@ -1300,9 +1365,13 @@ default here is a line of JSON on stderr per decision.
 mutation it authorizes, because the record's subject is the decision, not what
 happened afterward: "this caller was authorized for `workload.signal` on run X
 at server time T" is true the instant the check returns, whether or not
-Temporal goes on to deliver the signal. This trail therefore cannot answer
-"did the signal actually reach the run" — the run's own timeline and Temporal's
-event history are the artifacts for that question, not this one.
+Temporal goes on to deliver the signal. The same is true when an allowed MCP
+tool later returns an execution error or its context is cancelled: the one
+allow record remains truthful and no second outcome record is emitted. This
+trail therefore cannot answer "did the signal actually reach the run" or "did
+the tool finish" — the run's own timeline, Temporal's event history, and
+ordinary execution diagnostics are the artifacts for those questions, not
+this one.
 
 ## Worker capacity
 

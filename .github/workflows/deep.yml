@@ -671,9 +671,10 @@ jobs:
   # it with a channel receive on every exit a scope can take -- the newest
   # and least-settled concurrency in the tree, per #495.
   #
-  # The "goroutineleak" runtime/pprof profile is GA in Go 1.26 but gated
-  # behind GOEXPERIMENT=goroutineleakprofile at build time, so it is off in
-  # every other job; this is the one place in the repo that turns it on.
+  # The "goroutineleak" runtime/pprof profile was experimental in Go 1.26 and
+  # is generally available in the Go 1.27 toolchain this repository pins. Go
+  # 1.27 deleted the goroutineleakprofile GOEXPERIMENT setting, so asking for
+  # the old experiment is a toolchain error rather than enabling the profile.
   # TestAsyncCoroutinesDoNotLeak (pkg/flowstate/v1/engine) drives every
   # tests.AsyncCases scenario -- including the failing and
   # continue_on_error cases whose scope has to join on the way out -- against
@@ -699,13 +700,11 @@ jobs:
       - name: Goroutine leak check on the async coroutine drain
         id: leakcheck
         continue-on-error: true
-        env:
-          GOEXPERIMENT: goroutineleakprofile
         run: |
           set -o pipefail
           GOMEMLIMIT=1GiB go test -timeout 900s -run TestAsyncCoroutinesDoNotLeak -v ./pkg/flowstate/v1/engine/ 2>&1 | tee goroutineleak.log
 
-      - name: File an issue for a leak
+      - name: File an issue for a leak or harness failure
         if: steps.leakcheck.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -713,14 +712,20 @@ jobs:
         run: |
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
-          title="deep-tier: async coroutine leak detected"
+          if grep -qF 'a coroutine started by engine.startAsync was never joined' goroutineleak.log; then
+            title="deep-tier: async coroutine leak detected"
+            finding="The weekly deep tier's goroutine leak check found a coroutine started by \`engine.startAsync\` (pkg/flowstate/v1/engine/async.go) that the runtime can prove will never run again."
+          else
+            title="deep-tier: the goroutine leak harness failed"
+            finding="The weekly deep tier's goroutine leak job failed without reporting a coroutine leak. This is a harness, toolchain, setup, timeout, or dependency failure; it is not evidence that the runtime found a leak."
+          fi
           if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
-            echo "an open issue already covers the async coroutine leak; not filing another"
+            echo "an open issue already covers '${title}'; not filing another"
             exit 0
           fi
           body=$(mktemp)
           {
-            echo "The weekly deep tier's goroutine leak check found a coroutine started by \`engine.startAsync\` (pkg/flowstate/v1/engine/async.go) that the runtime can prove will never run again."
+            echo "$finding"
             echo
             echo "Produced by workflow run: ${RUN_URL}"
             echo
@@ -733,15 +738,15 @@ jobs:
             echo "Reproduce:"
             echo
             echo '```'
-            echo "GOEXPERIMENT=goroutineleakprofile GOMEMLIMIT=1GiB go test -timeout 900s -run TestAsyncCoroutinesDoNotLeak -v ./pkg/flowstate/v1/engine/"
+            echo "GOMEMLIMIT=1GiB go test -timeout 900s -run TestAsyncCoroutinesDoNotLeak -v ./pkg/flowstate/v1/engine/"
             echo '```'
           } > "$body"
           gh issue create --title "$title" --label deep-tier --body-file "$body"
 
-      - name: A leak fails the job
+      - name: A failed leak check fails the job
         if: steps.leakcheck.outcome == 'failure'
         run: |
-          echo "::error::the goroutine leak check found a coroutine that will never run again; see the deep-tier issue filed by this run"
+          echo "::error::the goroutine leak check failed; its issue distinguishes a reported leak from a harness or toolchain failure"
           exit 1
 
   # The same scan the PR lane runs, on a clock instead of a diff: advisories

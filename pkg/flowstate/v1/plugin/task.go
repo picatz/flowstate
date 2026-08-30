@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -127,6 +128,19 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		}
 
 		identity, _ := IdentityFromContext(ctx)
+		if scope.GetLocal() {
+			// RunWithInputs owns Scope.Local and sets it unconditionally. That
+			// makes the local dispatch boundary authoritative even for an
+			// embedder that did not construct its optional identity through the
+			// CLI's NewLocalWorkloadIdentity path. Clone before overriding so one
+			// local call cannot make a context identity sticky for another call.
+			if identity == nil {
+				identity = &flowstatev1.WorkloadIdentity{}
+			} else {
+				identity = proto.Clone(identity).(*flowstatev1.WorkloadIdentity)
+			}
+			identity.Mode = flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL
+		}
 
 		request := &pluginv1.ExecuteRequest{
 			Task: &flowstatev1.Task{
@@ -650,9 +664,13 @@ func scrubFieldValue(
 // error.
 func taskError(task, plugin string, err error, scrubber *secrets.Scrubber) error {
 	kind := kindForCode(err)
+	callerDeadlineExceeded := callerDeadlineExceededFromDetails(err)
+	if callerDeadlineExceeded {
+		kind = flowstatev1.ErrorKindTimeout
+	}
 
 	verdict, said := verdictFromDetails(err)
-	if said {
+	if said && !callerDeadlineExceeded {
 		switch {
 		case verdict.unknownOutcome:
 			// Named explicitly rather than inferred from "permanent and the code
@@ -687,11 +705,37 @@ func taskError(task, plugin string, err error, scrubber *secrets.Scrubber) error
 	scrubbed := scrubber.ScrubError(err)
 
 	taskErr := flowstatev1.NewTaskError(task, kind, fmt.Errorf("plugin %q: %w", plugin, scrubbed))
-	if said && verdict.retryable {
+	if said && verdict.retryable && !callerDeadlineExceeded {
 		taskErr.RetryAfter = verdict.retryAfter
 	}
 
 	return taskErr
+}
+
+// callerDeadlineExceededFromDetails reads the serving side's account that the
+// request context's inherited deadline, rather than a plugin-owned backend
+// deadline, ended the task. The distinction cannot be recovered from
+// CodeDeadlineExceeded itself, so an absent or malformed detail means no claim.
+func callerDeadlineExceededFromDetails(err error) bool {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return false
+	}
+	if connectErr.Code() != connect.CodeDeadlineExceeded {
+		return false
+	}
+
+	for _, detail := range connectErr.Details() {
+		value, err := detail.Value()
+		if err != nil {
+			continue
+		}
+		provenance, ok := value.(*pluginv1.TaskErrorProvenance)
+		if ok && provenance.GetCallerDeadlineExceeded() {
+			return true
+		}
+	}
+	return false
 }
 
 // kindForCode maps a Connect status code onto the engine's error kinds.

@@ -662,7 +662,14 @@ message Frame {
   Value loop_state = 6;
 }
 
+// RunState is the durable workflow state used by the Temporal Run entrypoint.
+// It allows the workflow to continue-as-new while carrying only the minimal
+// required subset of previously produced outputs for the remaining steps.
 message RunState {
+  // Workflow is the compiled specification this state executes. It is required,
+  // fixed for the run's lifetime, carried unchanged across Continue-As-New, and
+  // counted as part of the durable-state size bound rather than reloaded from a
+  // mutable source.
   Workflow workflow = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
@@ -818,6 +825,9 @@ message TimelineEntry {
   // is the set that answers "what did the workload do": a step started, a step
   // ended one of the ways a step can end, the run waited, the run handed over.
   enum Kind {
+    // KIND_UNSPECIFIED means the producer did not classify an event. The server
+    // never emits it; consumers should treat it as unknown, not infer a kind
+    // from the entry's other fields.
     KIND_UNSPECIFIED = 0;
 
     // KIND_STEP_SCHEDULED is a step's work being handed to a worker. One per
@@ -897,6 +907,8 @@ message TimelineEntry {
   // Time is when Temporal recorded the event.
   google.protobuf.Timestamp time = 2;
 
+  // Kind classifies the recorded event. Server-produced entries always use a
+  // non-zero value; KIND_UNSPECIFIED denotes an unclassified producer value.
   Kind kind = 3 [(buf.validate.field).enum.defined_only = true];
 
   // Step is the label the interpreter wrote onto the command — the step's

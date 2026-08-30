@@ -32,6 +32,7 @@ const (
 	attrAction       = "flowstate.audit.action"
 	attrDecision     = "flowstate.audit.decision"
 	attrRPC          = "flowstate.audit.rpc"
+	attrMCPTool      = "flowstate.audit.mcp.tool"
 	attrResourceKind = "flowstate.audit.resource.kind"
 	attrResourceKey  = "flowstate.audit.resource.key"
 	attrDenyCode     = "flowstate.audit.deny_code"
@@ -39,7 +40,8 @@ const (
 	attrIssuer       = "flowstate.audit.identity.issuer"
 	attrNamespace    = "flowstate.audit.identity.namespace"
 	attrDeployment   = "flowstate.audit.identity.deployment"
-	attrClaims       = "flowstate.audit.identity.claims"
+	attrIssuerName   = "flowstate.audit.identity.issuer_name"
+	attrRole         = "flowstate.audit.identity.role"
 )
 
 // NewLogEmitter sends records through an audit-owned LoggerProvider.
@@ -87,10 +89,21 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	attrs := []attribute.KeyValue{
 		attribute.String(attrAction, record.GetAction().String()),
 		attribute.String(attrDecision, record.GetDecision().String()),
-		attribute.String(attrRPC, record.GetRpc()),
 		attribute.String(attrResourceKind, record.GetResourceKind().String()),
 		attribute.String(attrResourceKey, record.GetResourceKey()),
 		attribute.String(attrDenyCode, record.GetDenyCode().String()),
+	}
+	if record.GetRpc() != "" {
+		attrs = append(attrs, attribute.String(attrRPC, record.GetRpc()))
+	}
+	if record.GetMcpTool() != "" {
+		attrs = append(attrs, attribute.String(attrMCPTool, record.GetMcpTool()))
+	}
+	if record.GetIssuerName() != "" {
+		attrs = append(attrs, attribute.String(attrIssuerName, record.GetIssuerName()))
+	}
+	if record.GetRole() != "" {
+		attrs = append(attrs, attribute.String(attrRole, record.GetRole()))
 	}
 
 	if identity := record.GetIdentity(); identity != nil {
@@ -100,18 +113,6 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 			attribute.String(attrNamespace, identity.GetNamespace()),
 			attribute.String(attrDeployment, identity.GetDeployment()),
 		)
-
-		if claims := identity.GetClaims(); len(claims) > 0 {
-			// Already bounded by WorkloadIdentity's own schema — 32 pairs, and
-			// only the claims an operator configured as relevant — so this
-			// copies what was attested rather than deciding again what may be
-			// carried.
-			pairs := make([]attribute.KeyValue, 0, len(claims))
-			for key, value := range claims {
-				pairs = append(pairs, attribute.String(key, value))
-			}
-			attrs = append(attrs, attribute.Map(attrClaims, pairs...))
-		}
 	}
 
 	out.AddAttributes(attrs...)

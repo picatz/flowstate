@@ -237,7 +237,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// the zero case, reached by a workflow that had in fact declared a
 	// policy. Sharing the one encoding function with [Run] is what makes
 	// that impossible to reintroduce by editing one path and not the other.
-	signalEntry, err := signalPolicyMemoEntry(ctx, workflow, inputs)
+	signalEntry, err := policyMemoEntries(ctx, workflow, inputs)
 	if err != nil {
 		// Symmetric with Run's own refusal: an InvalidArgument covers a
 		// caller-supplied input that a rule's subject_from cannot resolve to
@@ -303,15 +303,15 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// the reason its comment gives at length: [FlowstateServer.validateSpecification]
 	// pins the deployment's plugin selection onto this specification above, so a
 	// question asked before that would be answered about a message that had not
-	// finished being assembled. Whole-message equality, so a transformation nobody
-	// has thought of yet costs a caller the precise view rather than costing them
-	// a secret.
+	// finished being assembled. [specificationAsSubmitted] excludes only the
+	// control-plane task snapshot; any executable transformation still costs a
+	// caller the precise view rather than costing them a secret.
 	//
 	// Before the create rather than after it, because the value below is what
 	// `Args` carries into every firing and nothing between here and the response
 	// touches it — computing it after would read the same message and say so less
 	// clearly.
-	asSubmitted := proto.Equal(submitted, workflow)
+	asSubmitted := specificationAsSubmitted(submitted, workflow)
 
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID:               scheduleIDFor(namespace, name),

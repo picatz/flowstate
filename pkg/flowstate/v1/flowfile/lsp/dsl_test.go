@@ -280,8 +280,8 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	// it is the vocabulary that is being compared rather than any one occurrence.
 	emitted := map[string]bool{}
 	for _, line := range strings.Split(source, "\n") {
-		if m := keyLine.FindStringSubmatch(line); m != nil {
-			emitted[m[3]] = true
+		if m, ok := scanKeyLine(line); ok {
+			emitted[m.key] = true
 		}
 	}
 
@@ -1525,13 +1525,13 @@ func positionOfKey(t *testing.T, src, key string, minIndent int, after string) l
 			continue
 		}
 
-		m := keyLine.FindStringSubmatch(line)
-		if m == nil || m[3] != key || len(m[1])+len(m[2]) < minIndent {
+		m, ok := scanKeyLine(line)
+		if !ok || m.key != key || m.keyStart < minIndent {
 			continue
 		}
 		return lsp.Position{
 			Line:      i,
-			Character: utf16Len(m[1]+m[2]) + 1,
+			Character: utf16Len(line[:m.keyStart]) + 1,
 		}
 	}
 	t.Fatalf("test source declares no key %q", key)

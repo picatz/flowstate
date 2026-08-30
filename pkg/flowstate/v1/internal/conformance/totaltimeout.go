@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,8 +51,8 @@ import (
 // run-level message. Holding both drivers to one string would mean inventing a
 // transport-shaped sentence in the package that exists to keep transports out.
 // What both can be held to is what an author can act on: the step fails, a
-// `continue_on_error:` tolerates it, the failure is readable, and it happened
-// after a couple of attempts rather than after fifty.
+// `continue_on_error:` tolerates it, the failure is readable, and the budget
+// stops the pending retry with most of the fifty-attempt list unspent.
 
 // TotalTimeoutTaskName is the name [TotalTimeoutTaskDef] registers under.
 const TotalTimeoutTaskName = "test.total_timeout"
@@ -64,10 +65,10 @@ const TotalTimeoutFailure = "the dependency is still refusing"
 // TotalTimeoutBudget is the `total_timeout:` [TotalTimeoutWorkflow] declares.
 //
 // Small enough that the local driver — which spends its backoff on a real
-// clock — reaches it in well under a second, and the durable driver's test
-// environment skips to it. Long enough that [TotalTimeoutRetryInterval] fits
-// inside it several times over, which is what makes the attempt count the case
-// counts a meaningful number rather than a rounding of one.
+// clock — reaches it in well under a second. A real Temporal server may leave
+// the first retry pending until this budget expires (the server, unlike
+// testsuite, does not auto-fire this sub-second retry); retry_timeout_e2e_test.go
+// pins that its resulting RetryState is TIMEOUT rather than attempt exhaustion.
 const TotalTimeoutBudget = 300 * time.Millisecond
 
 // TotalTimeoutAttempt is the `timeout:` beside it: one attempt, well inside the
@@ -156,6 +157,25 @@ func TotalTimeoutWorkflow(workflowName, stepID string) *v1.Workflow {
 	}
 }
 
+// TotalTimeoutFailureWorkflow is [TotalTimeoutWorkflow] without tolerance, so
+// each driver exposes the classification and run-level message for the same
+// budget expiry the tolerated case records as a step output.
+func TotalTimeoutFailureWorkflow(workflowName, stepID string) *v1.Workflow {
+	wf := TotalTimeoutWorkflow(workflowName, stepID)
+	wf.Steps[0].Policy.ContinueOnError = false
+	return wf
+}
+
+// TotalTimeoutExhaustionWorkflow fails after one attempt, before its generous
+// overall budget can lapse. It is the negative case: the dependency failure,
+// not total_timeout:, must remain the terminal fact.
+func TotalTimeoutExhaustionWorkflow(workflowName, stepID string) *v1.Workflow {
+	wf := TotalTimeoutFailureWorkflow(workflowName, stepID)
+	wf.Steps[0].Policy.Retry.MaxAttempts = 1
+	wf.Steps[0].Policy.TotalTimeout = durationpb.New(5 * time.Second)
+	return wf
+}
+
 // AssertTotalTimeoutEndedTheStep is the shared assertion over what
 // [TotalTimeoutWorkflow]'s step recorded, so both drivers are held to one
 // wording of the claim rather than to two.
@@ -168,11 +188,14 @@ func AssertTotalTimeoutEndedTheStep(t *testing.T, driver string, outputs *v1.Nod
 			"%s apart; a tolerated budget expiry has to be readable as ${steps.<id>.%s} on both drivers",
 			driver, TotalTimeoutBudget, TotalTimeoutAttempts, TotalTimeoutRetryInterval, v1.StepErrorOutput)
 	}
+	if !strings.Contains(recorded, TotalTimeoutFailure) {
+		t.Errorf("%s discarded the last attempt's dependency failure when the overall budget ended the step: %q",
+			driver, recorded)
+	}
 
-	if attempts < 2 {
-		t.Errorf("%s stopped the step after %d attempt(s), before its retry: could run at all — this case "+
-			"has to reach the budget *through* the retry loop, or it proves nothing about a bound across "+
-			"attempts", driver, attempts)
+	if attempts < 1 {
+		t.Errorf("%s ended the step without running its dependency once; a timeout before any attempt does not exercise a budget across retries",
+			driver)
 	}
 
 	if attempts > TotalTimeoutAttemptCeiling {
@@ -180,6 +203,41 @@ func AssertTotalTimeoutEndedTheStep(t *testing.T, driver string, outputs *v1.Nod
 			"honours the budget stops on the clock with most of its %d-attempt list unspent, and one that "+
 			"ignores the key spends the list and looks exactly like an ordinary exhausted retry",
 			driver, attempts, TotalTimeoutBudget, TotalTimeoutAttempts)
+	}
+}
+
+// AssertTotalTimeoutFailure checks the operator-facing half of the same shared
+// case: the configured overall budget is the terminal fact and therefore owns
+// both the Timeout classification and the run-level sentence. The tolerated
+// assertion above independently pins that the dependency failure underneath it
+// was preserved rather than replaced.
+func AssertTotalTimeoutFailure(t *testing.T, driver string, kind v1.ErrorKind, message string) {
+	t.Helper()
+
+	if kind != v1.ErrorKindTimeout {
+		t.Errorf("%s classified a lapsed %s total_timeout: as %q, want %q",
+			driver, TotalTimeoutBudget, kind, v1.ErrorKindTimeout)
+	}
+	if !strings.Contains(message, TotalTimeoutBudget.String()) {
+		t.Errorf("%s did not report the configured %s overall budget in its terminal message: %q",
+			driver, TotalTimeoutBudget, message)
+	}
+}
+
+// AssertTotalTimeoutLeavesAttemptExhaustionAlone is the negative counterpart:
+// a retryable application failure whose attempt limit arrives first is still
+// the dependency's Upstream failure, with no overall-budget relabelling.
+func AssertTotalTimeoutLeavesAttemptExhaustionAlone(t *testing.T, driver string, kind v1.ErrorKind, message string) {
+	t.Helper()
+
+	if kind != v1.ErrorKindUpstream {
+		t.Errorf("%s relabelled ordinary attempt exhaustion as %q, want %q", driver, kind, v1.ErrorKindUpstream)
+	}
+	if !strings.Contains(message, TotalTimeoutFailure) {
+		t.Errorf("%s discarded the dependency failure on ordinary attempt exhaustion: %q", driver, message)
+	}
+	if strings.Contains(message, "overall budget") || strings.Contains(message, "schedule-to-close") {
+		t.Errorf("%s reported an overall-budget timeout that did not happen: %q", driver, message)
 	}
 }
 

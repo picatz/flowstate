@@ -91,6 +91,12 @@ var exemptScopeConstruction = map[string]string{
 		"composed, since the resolved key is what composes it. The scope is never an activity argument: the literal is " +
 		"digested into the id and discarded, and nothing inside a run ever reads the block.",
 
+	"pkg/flowstate/v1/server/server.go#debugPolicyMemoEntry": "the same shape as ResolveSignalPolicySubjects below, for the " +
+		"`debug:` stanza: it resolves `subject:` expressions at submit, against the run's bound inputs, before the run " +
+		"exists and so before there is a run identity to carry. The scope is discarded once the policy is encoded into " +
+		"the memo; it is never an activity argument, and the identity a debug policy decides on is the *asker's*, " +
+		"attested at delivery.",
+
 	"pkg/flowstate/v1/signalpolicy.go#ResolveSignalPolicySubjects": "resolves `subject_from:` expressions in the server, at " +
 		"submit, against the run's inputs — before the run exists and so before there is a run identity to carry. The scope " +
 		"is never an activity argument, and the identity a signal policy decides on is the *sender's*, attested at delivery.",

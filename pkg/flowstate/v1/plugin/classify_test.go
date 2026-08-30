@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -65,6 +67,11 @@ func TestKindForCode(t *testing.T) {
 			want: flowstatev1.ErrorKindUpstream,
 		},
 		{
+			name: "a plugin-owned deadline is transient upstream failure",
+			err:  connect.NewError(connect.CodeDeadlineExceeded, errors.New("backend timed out")),
+			want: flowstatev1.ErrorKindUpstream,
+		},
+		{
 			name: "cancellation reported by the plugin is not the task's fault",
 			err:  connect.NewError(connect.CodeCanceled, errors.New("x")),
 			want: flowstatev1.ErrorKindUpstream,
@@ -99,6 +106,53 @@ func TestKindForCode(t *testing.T) {
 			if got := kindForCode(test.err); got != test.want {
 				t.Errorf("kindForCode(%v) = %s, want %s", test.err, got, test.want)
 			}
+		})
+	}
+}
+
+// TestTaskErrorClassifiesCallerDeadlineInEitherRaceOrdering pins #1233 without
+// racing clocks. The local ordering returns context.DeadlineExceeded directly;
+// the peer ordering returns the same inherited deadline as a Connect status
+// carrying the serving side's provenance detail. A plugin-owned deadline has
+// the identical status but no provenance and must remain Upstream.
+func TestTaskErrorClassifiesCallerDeadlineInEitherRaceOrdering(t *testing.T) {
+	t.Parallel()
+
+	peerDeadline := connect.NewError(connect.CodeDeadlineExceeded, errors.New("context deadline exceeded"))
+	detail, err := connect.NewErrorDetail(&pluginv1.TaskErrorProvenance{CallerDeadlineExceeded: true})
+	require.NoError(t, err)
+	peerDeadline.AddDetail(detail)
+
+	tests := []struct {
+		name string
+		err  error
+		want flowstatev1.ErrorKind
+	}{
+		{
+			name: "host timer observed first",
+			err:  context.DeadlineExceeded,
+			want: flowstatev1.ErrorKindTimeout,
+		},
+		{
+			name: "propagated peer timer observed first",
+			err:  peerDeadline,
+			want: flowstatev1.ErrorKindTimeout,
+		},
+		{
+			name: "plugin-owned backend deadline",
+			err:  connect.NewError(connect.CodeDeadlineExceeded, errors.New("backend timed out")),
+			want: flowstatev1.ErrorKindUpstream,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := taskError("some_task", "some-plugin", test.err, secrets.NewScrubber())
+			var taskErr *flowstatev1.TaskError
+			require.ErrorAs(t, got, &taskErr)
+			assert.Equal(t, test.want, taskErr.Kind)
 		})
 	}
 }

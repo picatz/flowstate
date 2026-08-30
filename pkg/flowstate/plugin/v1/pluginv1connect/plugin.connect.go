@@ -164,6 +164,8 @@ func (UnimplementedPluginServiceHandler) Health(context.Context, *connect.Reques
 
 // SecretServiceClient is a client for the flowstate.plugin.v1.SecretService service.
 type SecretServiceClient interface {
+	// Resolve asks the plugin to resolve one opaque secret reference under the
+	// workload identity and tenant context carried in the request.
 	Resolve(context.Context, *connect.Request[v1.ResolveRequest]) (*connect.Response[v1.ResolveResponse], error)
 }
 
@@ -199,6 +201,8 @@ func (c *secretServiceClient) Resolve(ctx context.Context, req *connect.Request[
 
 // SecretServiceHandler is an implementation of the flowstate.plugin.v1.SecretService service.
 type SecretServiceHandler interface {
+	// Resolve asks the plugin to resolve one opaque secret reference under the
+	// workload identity and tenant context carried in the request.
 	Resolve(context.Context, *connect.Request[v1.ResolveRequest]) (*connect.Response[v1.ResolveResponse], error)
 }
 
@@ -234,6 +238,8 @@ func (UnimplementedSecretServiceHandler) Resolve(context.Context, *connect.Reque
 
 // TaskServiceClient is a client for the flowstate.plugin.v1.TaskService service.
 type TaskServiceClient interface {
+	// Execute runs one task to completion. On failure, the plugin may attach an
+	// ExecuteResponse error detail to classify retry safety and timing.
 	Execute(context.Context, *connect.Request[v1.ExecuteRequest]) (*connect.Response[v1.ExecuteResponse], error)
 	// ExecuteStream is Execute, plus the phases a plugin passes through while it
 	// runs: the host reads a stream of zero or more TaskProgress messages
@@ -310,6 +316,8 @@ func (c *taskServiceClient) ExecuteStream(ctx context.Context, req *connect.Requ
 
 // TaskServiceHandler is an implementation of the flowstate.plugin.v1.TaskService service.
 type TaskServiceHandler interface {
+	// Execute runs one task to completion. On failure, the plugin may attach an
+	// ExecuteResponse error detail to classify retry safety and timing.
 	Execute(context.Context, *connect.Request[v1.ExecuteRequest]) (*connect.Response[v1.ExecuteResponse], error)
 	// ExecuteStream is Execute, plus the phases a plugin passes through while it
 	// runs: the host reads a stream of zero or more TaskProgress messages

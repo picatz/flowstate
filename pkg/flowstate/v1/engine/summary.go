@@ -210,6 +210,10 @@ const runVarsSummary = "run vars"
 // against what the worker actually has.
 const pluginAdmissionSummary = "plugin admission"
 
+// taskCapabilityAdmissionSummary labels the activity that checks every task a
+// run may reach against what the worker actually has.
+const taskCapabilityAdmissionSummary = "task capability admission"
+
 // withSummary returns ctx with the activity summary set, leaving every other
 // activity option exactly as it was.
 //

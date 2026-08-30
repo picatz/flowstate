@@ -63,6 +63,31 @@ func TestInstrumentNamesAreDistinctAndNamespaced(t *testing.T) {
 	require.Len(t, metricschema.InstrumentNames(), len(metricschema.Instruments))
 }
 
+// TestTaskRetriesHasNoAttemptOrExecutionIdentityDimension pins the cardinality
+// decision specific to the retry instrument. A declaration alone is not proof
+// that recording follows it — the both-driver manual-reader case proves the
+// collected attributes — but this is the schema-side failure when somebody
+// proposes splitting the counter by an attempt, run, or execution identifier.
+func TestTaskRetriesHasNoAttemptOrExecutionIdentityDimension(t *testing.T) {
+	t.Parallel()
+
+	instrument, ok := metricschema.InstrumentByName(metricschema.InstrumentTaskRetries)
+	require.True(t, ok)
+	require.ElementsMatch(t,
+		[]string{metricschema.TaskName, metricschema.Driver},
+		instrument.Keys,
+		"retries need only bounded task and driver dimensions; attempt identity remains on spans")
+
+	for _, key := range instrument.Keys {
+		class, allowed := metricschema.Classification(key)
+		require.True(t, allowed)
+		require.Contains(t,
+			[]metricschema.Class{metricschema.ClassConfiguration, metricschema.ClassConstruction},
+			class,
+			"retry metric key %q is not cardinality-bounded", key)
+	}
+}
+
 // TestEveryInstrumentCreatedInTheRepositoryIsDeclared is the second direction,
 // and the one that would catch an instrument nobody wrote down.
 //

@@ -31,10 +31,16 @@
 // everything structural, by way of the catalog: a task's field names, types, and
 // required-ness come from protovalidate rules on the schema.
 //
-// The one thing that could change this is a custom protoc option carrying
-// documentation into the descriptor set. That would be worth it only for prose
-// that has nowhere else to live; today every sentence a reader needs is already
-// a Go value.
+// The task-policy reference is the source-level exception: its canonical file
+// form is a Go struct, and neither its comments nor YAML tags are available as a
+// live registry. The generator parses that exact struct and refuses fields it
+// cannot document, rather than introducing a second schema or reading policy
+// values.
+//
+// The one thing that could change the descriptor-backed surfaces is a custom
+// protoc option carrying documentation into the descriptor set. That would be
+// worth it only for prose that has nowhere else to live; today their sentences
+// already live in the Go registries the product uses.
 //
 // # Why a package, and why it is handed its sources
 //
@@ -114,6 +120,10 @@ type Sources struct {
 	// unset: one cell of the env-var table, and the only fact in it this package
 	// cannot read from what it was handed.
 	DefaultAddress string
+
+	// TaskPolicy is extracted from TaskPolicyConfig, the exact Go struct the
+	// strict YAML decoder reads.
+	TaskPolicy PolicyReference
 }
 
 // Generator renders the reference from one set of sources.
@@ -144,6 +154,9 @@ func New(src Sources) (*Generator, error) {
 	}
 	if src.DefaultAddress == "" {
 		missing = append(missing, "DefaultAddress")
+	}
+	if len(src.TaskPolicy.Fields) == 0 {
+		missing = append(missing, "TaskPolicy")
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("generating the reference needs these sources, which were not given: %s",
@@ -192,6 +205,7 @@ func (g *Generator) Documents() []Document {
 		{Name: "envvars.md", Render: g.renderEnvVarReference},
 		{Name: "diagnostics.md", Render: g.renderDiagnosticCodeReference},
 		{Name: "cel.md", Render: g.renderCELReference},
+		{Name: "task-policy.md", Render: g.renderTaskPolicyReference},
 	}
 }
 

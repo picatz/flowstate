@@ -209,6 +209,35 @@ tests:
 	require.Contains(t, report.GetRefused(), "testdefaults.yaml")
 }
 
+func TestLoadSourceAtWithDefaultsUsesTheProvidedLiveBytes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suite.test.yaml")
+	suite := []byte("defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: x\n")
+
+	_, err := flowtest.LoadSourceAtWithDefaults(suite, path, []byte("defaults:\n  stubs:\n    - returns: {}\n"))
+	require.Error(t, err)
+	var diagnostics *flowtest.Diagnostics
+	require.ErrorAs(t, err, &diagnostics)
+	require.NotEmpty(t, diagnostics.Problems)
+	assert.Equal(t, filepath.Join(dir, flowtest.DirDefaultsName), diagnostics.Problems[0].File)
+	assert.Positive(t, diagnostics.Problems[0].Line)
+	assert.Contains(t, diagnostics.Problems[0].Message, "names neither a task nor a step")
+
+	_, err = flowtest.LoadSourceAtWithDefaults(suite, path, []byte("defaults:\n  stubs:\n    - task: log\n      returns: {}\n"))
+	require.NoError(t, err)
+}
+
+func TestLoadDirDefaultsSourceUsesTheStrictDefaultsShape(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), flowtest.DirDefaultsName)
+	require.NoError(t, flowtest.LoadDirDefaultsSource([]byte("defaults: {}\n"), path))
+
+	err := flowtest.LoadDirDefaultsSource([]byte("tests: []\n"), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown field "tests"`)
+}
+
 // TestNoDirectoryFileMeansNothingChanges: the overwhelmingly common shape.
 func TestNoDirectoryFileMeansNothingChanges(t *testing.T) {
 	t.Parallel()

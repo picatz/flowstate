@@ -22,6 +22,34 @@ type DebuggerCase struct {
 	// goroutines and the order is the schedule's business; asserting one would
 	// be asserting something neither driver promises.
 	Offered []string
+
+	// Held is the step ids a *durable* debug lease can hold this run at, in
+	// order — #928's stage 2.
+	//
+	// Always a subsequence of [Offered], never a superset, and the two callers
+	// hold it to that from opposite sides: the local one asserts every id here
+	// was really offered, and the durable one asserts a lease takes effect
+	// where this says it does. A durable driver holding somewhere the local
+	// driver does not stop would be the drivers disagreeing about which
+	// boundaries a run has, which is exactly what this corpus exists to catch.
+	//
+	// # Why it is ever shorter
+	//
+	// A lease names one holder and one position, and the durable driver takes
+	// one only where the run *has* a single representable position — the
+	// `susp == 0` boundaries, the same set Continue-As-New may suspend at and
+	// the same set `RunProgress` answers about. A `switch:` arm, a `parallel:`
+	// branch and a loop body are all at several positions at once as far as
+	// suspension is concerned, and [v1.DebugPosition] carries no `path` for
+	// precisely that reason ("a position that needed one would be a run held in
+	// two places, which is not a state this seam can be in", debug.proto).
+	//
+	// The local driver has no such constraint: it holds a goroutine, so it can
+	// stop each branch where that branch is. So the asymmetry is a real
+	// property of the two mechanisms rather than a gap, and it is written down
+	// here — beside the list it differs from — rather than left to be
+	// rediscovered by whoever notices the two counts do not match.
+	Held []string
 }
 
 // DebuggerCases hold both drivers to one answer about a run that is being
@@ -77,6 +105,7 @@ func DebuggerCases() []DebuggerCase {
 				ExpectedOutputs: held("first", "second", "third"),
 			},
 			Offered: []string{"first", "second", "third"},
+			Held:    []string{"first", "second", "third"},
 		},
 		{
 			// The sharp one. [v1.Debugger.BeforeStep] is documented as being
@@ -105,6 +134,12 @@ func DebuggerCases() []DebuggerCase {
 				ExpectedOutputs: held("before", "after"),
 			},
 			Offered: []string{"before", "after"},
+
+			// The same two, because a skipped step is not a boundary on either
+			// driver: the condition decides first, and only a step that is
+			// going to run reaches the seam. A lease held at a step nothing
+			// will do would stop a run at a place it is not.
+			Held: []string{"before", "after"},
 		},
 		{
 			// Once per iteration, which is the claim a set could not make and
@@ -150,6 +185,59 @@ func DebuggerCases() []DebuggerCase {
 				}),
 			},
 			Offered: []string{"each", "touch", "touch", "touch"},
+
+			// The loop, and not its body. A `for_each:` body runs at a deeper
+			// suspend level than the step that declares it — the engine will
+			// not Continue-As-New inside one — so it has no representable
+			// position for a lease to name. The local driver stops three times
+			// here and a durable lease stops once, which is the asymmetry
+			// [DebuggerCase.Held] exists to state rather than leave for
+			// somebody to find.
+			Held: []string{"each"},
+		},
+		{
+			// The asymmetry with nothing else going on, so that the difference
+			// between the two lists is the whole of what this case is about.
+			//
+			// A `switch:` is the sequential member of the family — one arm
+			// runs, deterministically, so the offers are a fact rather than a
+			// race — and its body is at a deeper suspend level exactly as a
+			// loop's is. Written with a `parallel:` this case could not state
+			// an order at all; written with a `for_each:` it would repeat the
+			// one above.
+			Case: Case{
+				Name: "a switch is a boundary and the arm it takes is not",
+				Workflow: &v1.Workflow{
+					Name:    "debug-switch",
+					Profile: v1.CurrentProfile,
+					Steps: []*v1.Node{
+						says("before", "one"),
+						{
+							Id: "route",
+							Kind: &v1.Node_Switch{Switch: &v1.Switch{
+								Value: v1.NewLiteral("go"),
+								Cases: []*v1.Switch_Case{{
+									Values: []*v1.Value{v1.NewLiteral("go")},
+									Steps:  []*v1.Node{says("chosen", "two")},
+								}},
+							}},
+						},
+					},
+				},
+				// A `switch:` records which arm it took beside the value it
+				// matched, so the step that is not a pause point still has
+				// outputs. Stated exactly rather than loosely, for the reason
+				// the loop case above states its encoding: this corpus is
+				// about boundaries, and a case that declined to pin what a
+				// step produced would be a place the two drivers could
+				// quietly diverge while a test watched.
+				ExpectedOutputs: withStep(held("before", "chosen"), "route", map[string]*v1.Value{
+					"value": v1.NewLiteral("go"),
+					"case":  v1.NewLiteral("go"),
+				}),
+			},
+			Offered: []string{"before", "route", "chosen"},
+			Held:    []string{"before", "route"},
 		},
 	}
 }

@@ -33,9 +33,9 @@ func TestAFailedRunSaysWhy(t *testing.T) {
 	fixture := newTenantFixture(t)
 	startWorker(t, fixture.temporal)
 
-	// An unknown task fails permanently and for a reason the engine words itself, so
-	// the message this returns should be the engine's sentence rather than
-	// Temporal's envelope around it.
+	// A known task's input expression fails permanently, so capability admission
+	// accepts the run and the message this returns should be the engine's sentence
+	// rather than Temporal's envelope around it.
 	//
 	// No `continue_on_error`: the point is the *run's* failure, not a step's
 	// tolerated one.
@@ -44,12 +44,9 @@ func TestAFailedRunSaysWhy(t *testing.T) {
 			Name: "fails",
 			Steps: []*v1.Node{{
 				Id: "boom",
-				// Inputs are required by the schema even for a task that does not
-				// exist, so the run reaches the engine and fails there rather than
-				// being refused at submit — which is the path under test.
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "nosuchtask",
-					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")},
+					Name:   "log",
+					Inputs: map[string]*v1.Value{"message": v1.NewExpr("string(1 / 0)")},
 				}},
 			}},
 		},
@@ -85,7 +82,7 @@ func TestAFailedRunSaysWhy(t *testing.T) {
 	// wrong with it. Asserted on the parts an author would search for rather than on
 	// the whole sentence, since the wording around them belongs to the engine.
 	assert.Contains(t, failure, "boom", "the reason does not name the step that failed")
-	assert.Contains(t, failure, "nosuchtask", "the reason does not say what went wrong")
+	assert.Contains(t, failure, "division by zero", "the reason does not say what went wrong")
 
 	// Temporal's envelope names the workflow type, the id and the run id — all of
 	// which the caller already has, and none of which is a reason. The innermost
@@ -101,7 +98,7 @@ func TestAFailedRunSaysWhy(t *testing.T) {
 	// Temporal's own wire, and server.go's failureError reading its Type back —
 	// to land on GetResponse.Error.kind, which is what `flow get -o json` and
 	// every MCP tool result actually render.
-	assert.Equal(t, v1.ErrorKindUnknownTask.String(), got.GetError().GetKind(),
+	assert.Equal(t, v1.ErrorKindExpression.String(), got.GetError().GetKind(),
 		"the run's classification did not survive the round trip to GetResponse")
 }
 
