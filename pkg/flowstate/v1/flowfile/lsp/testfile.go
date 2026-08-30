@@ -80,6 +80,12 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 	}
 
 	path, hasPath := doc.filesystemPath()
+	defaultsPath := ""
+	defaultsURI := lsp.DocumentURI("")
+	if hasPath {
+		defaultsPath = filepath.Join(filepath.Dir(path), flowtest.DirDefaultsName)
+		defaultsURI = siblingDocumentURI(doc.uri, flowtest.DirDefaultsName)
+	}
 	var err error
 	switch {
 	case !hasPath:
@@ -100,6 +106,8 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 			uri := doc.uri
 			if includedDefaults != nil && sameTestSource(problem.File, includedDefaults) {
 				uri = includedDefaults.uri
+			} else if problem.File != "" && defaultsPath != "" && filepath.Clean(problem.File) == filepath.Clean(defaultsPath) {
+				uri = defaultsURI
 			} else if problem.File != "" && (!hasPath || filepath.Clean(problem.File) != filepath.Clean(path)) {
 				uri = fileURI(problem.File)
 			}
@@ -129,6 +137,8 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		uri := fileURI(defaultsErr.Path)
 		if includedDefaults != nil && sameTestSource(defaultsErr.Path, includedDefaults) {
 			uri = includedDefaults.uri
+		} else if defaultsPath != "" && filepath.Clean(defaultsErr.Path) == filepath.Clean(defaultsPath) {
+			uri = defaultsURI
 		}
 		source := sourceForTestDiagnostic(doc, includedDefaults, uri, defaultsErr.Path)
 		owner := newDocument(uri, 0, source, doc.tasks)

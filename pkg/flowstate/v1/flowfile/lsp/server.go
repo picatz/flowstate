@@ -66,7 +66,7 @@ type FlowfileServer struct {
 	testSourcesByTarget     map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 	testDefaultsBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 	testSuitesByDefaults    map[lsp.DocumentURI]map[lsp.DocumentURI]bool
-	testOverflowByDefaults  map[lsp.DocumentURI]lsp.DocumentURI
+	testOverflowsByDefaults map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 	testOverflowBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 
 	// initialized and shuttingDown track the protocol lifecycle. The spec
@@ -552,7 +552,7 @@ func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.Docu
 	if s.testDefaultsBySuite == nil {
 		s.testDefaultsBySuite = make(map[lsp.DocumentURI]lsp.DocumentURI)
 		s.testSuitesByDefaults = make(map[lsp.DocumentURI]map[lsp.DocumentURI]bool)
-		s.testOverflowByDefaults = make(map[lsp.DocumentURI]lsp.DocumentURI)
+		s.testOverflowsByDefaults = make(map[lsp.DocumentURI]map[lsp.DocumentURI]bool)
 		s.testOverflowBySuite = make(map[lsp.DocumentURI]lsp.DocumentURI)
 	}
 	if previous, ok := s.testDefaultsBySuite[suite.uri]; ok {
@@ -560,10 +560,11 @@ func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.Docu
 	}
 	dependents := s.testSuitesByDefaults[defaults]
 	if len(dependents) >= maxTestDefaultsDependents {
-		if s.testOverflowByDefaults[defaults] == "" {
-			s.testOverflowByDefaults[defaults] = suite.uri
-			s.testOverflowBySuite[suite.uri] = defaults
+		if s.testOverflowsByDefaults[defaults] == nil {
+			s.testOverflowsByDefaults[defaults] = make(map[lsp.DocumentURI]bool)
 		}
+		s.testOverflowsByDefaults[defaults][suite.uri] = true
+		s.testOverflowBySuite[suite.uri] = defaults
 		return false, true
 	}
 	if dependents == nil {
@@ -617,10 +618,10 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 	for _, publication := range publications {
 		if source != publication.uri {
 			_, tracked := s.testDefaultsBySuite[source]
-			if !tracked && s.testOverflowBySuite[source] != publication.uri {
-				// Only the single bounded promotion candidate retains an overflow
-				// suite's saved defaults result. Other overflow suites contribute
-				// their own warning without growing target aggregation work.
+			if !tracked && s.testOverflowBySuite[source] == publication.uri {
+				// Overflow membership is retained for bounded promotion, but its
+				// saved defaults result is not a target contributor. The tracked set
+				// owns defaults diagnostics without making aggregation grow with N.
 				continue
 			}
 		}
@@ -662,9 +663,16 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	if defaults, ok := s.testDefaultsBySuite[source]; ok {
 		delete(s.testDefaultsBySuite, source)
 		delete(s.testSuitesByDefaults[defaults], source)
-		candidate := s.testOverflowByDefaults[defaults]
-		delete(s.testOverflowByDefaults, defaults)
+		var candidate lsp.DocumentURI
+		for overflow := range s.testOverflowsByDefaults[defaults] {
+			candidate = overflow
+			break
+		}
+		delete(s.testOverflowsByDefaults[defaults], candidate)
 		delete(s.testOverflowBySuite, candidate)
+		if len(s.testOverflowsByDefaults[defaults]) == 0 {
+			delete(s.testOverflowsByDefaults, defaults)
+		}
 		if suite, open := s.docs.get(candidate); open && suite.kind == docTestFile {
 			promoted = candidate
 			promotionDefaults = defaults
@@ -675,7 +683,10 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	}
 	if defaults, ok := s.testOverflowBySuite[source]; ok {
 		delete(s.testOverflowBySuite, source)
-		delete(s.testOverflowByDefaults, defaults)
+		delete(s.testOverflowsByDefaults[defaults], source)
+		if len(s.testOverflowsByDefaults[defaults]) == 0 {
+			delete(s.testOverflowsByDefaults, defaults)
+		}
 	}
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
 		s.notify(ctx, conn, publication)

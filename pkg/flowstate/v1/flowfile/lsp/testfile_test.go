@@ -298,6 +298,29 @@ func TestIncludedDefaultsRetainTheEditorsLocalhostURI(t *testing.T) {
 	}, time.Second, time.Millisecond)
 }
 
+func TestSavedDefaultsRetainTheSuitesLocalhostURI(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+	defaultsURI := lsp.DocumentURI("file://localhost" + defaultsPath)
+	suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
+	require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
+	c.open(suiteURI, validSuite)
+
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == defaultsURI {
+				return len(c.published[i].Diagnostics) > 0
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+}
+
 func TestSiblingDocumentURIRetainsFileSpelling(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -387,6 +410,22 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 		}
 		return false
 	}, time.Second, time.Millisecond)
+	overflow2 := "file://" + filepath.Join(dir, "overflow-2.test.yaml")
+	c.open(overflow2, validSuite)
+	require.Eventually(t, func() bool {
+		c.server.testDiagnosticsMu.Lock()
+		defer c.server.testDiagnosticsMu.Unlock()
+		return c.server.testOverflowBySuite[lsp.DocumentURI(overflow2)] == defaultsURI
+	}, time.Second, time.Millisecond)
+	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(overflow)},
+	}))
+	require.Eventually(t, func() bool {
+		c.server.testDiagnosticsMu.Lock()
+		defer c.server.testDiagnosticsMu.Unlock()
+		_, open := c.server.testOverflowBySuite[lsp.DocumentURI(overflow)]
+		return !open
+	}, time.Second, time.Millisecond)
 
 	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
 		TextDocument: lsp.TextDocumentIdentifier{URI: firstSuite},
@@ -394,13 +433,13 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.server.testDiagnosticsMu.Lock()
 		defer c.server.testDiagnosticsMu.Unlock()
-		return c.server.testDefaultsBySuite[lsp.DocumentURI(overflow)] == defaultsURI
+		return c.server.testDefaultsBySuite[lsp.DocumentURI(overflow2)] == defaultsURI
 	}, time.Second, time.Millisecond, "the bounded overflow candidate was not promoted")
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == lsp.DocumentURI(overflow) {
+			if c.published[i].URI == lsp.DocumentURI(overflow2) {
 				return len(c.published[i].Diagnostics) == 0
 			}
 		}
@@ -492,8 +531,8 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 		return len(c.server.testDiagnosticsBySource[lsp.DocumentURI(overflow2)][lsp.DocumentURI(overflow2)]) == 1
 	}, time.Second, time.Millisecond)
 	c.server.testDiagnosticsMu.Lock()
-	assert.LessOrEqual(t, len(c.server.testSourcesByTarget[defaultsURI]), maxTestDefaultsDependents+1,
-		"overflow contributors grew target aggregation beyond the tracked set and one candidate")
+	assert.LessOrEqual(t, len(c.server.testSourcesByTarget[defaultsURI]), maxTestDefaultsDependents,
+		"overflow contributors grew target aggregation beyond the tracked set")
 	c.server.testDiagnosticsMu.Unlock()
 
 	c.open(string(defaultsURI), "defaults: {}\n")
@@ -508,8 +547,8 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 		return false
 	}, time.Second, time.Millisecond, "opening defaults retained an overflow suite's saved-file error")
 	c.server.testDiagnosticsMu.Lock()
-	assert.Contains(t, c.server.testSourcesByTarget[defaultsURI], lsp.DocumentURI(overflow),
-		"the target index did not retain the hidden saved-file contribution")
+	assert.NotContains(t, c.server.testSourcesByTarget[defaultsURI], lsp.DocumentURI(overflow),
+		"the target index retained an overflow saved-file contribution")
 	c.server.testDiagnosticsMu.Unlock()
 
 	wait := c.expectPublish()
