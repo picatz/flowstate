@@ -57,10 +57,11 @@ func TestTaskConnectErrorMarksOnlyTheInheritedRequestDeadline(t *testing.T) {
 	defer cancel()
 
 	tests := []struct {
-		name string
-		ctx  context.Context
-		err  error
-		want bool
+		name        string
+		ctx         context.Context
+		err         error
+		want        bool
+		wantUnknown bool
 	}{
 		{
 			name: "request deadline",
@@ -80,6 +81,13 @@ func TestTaskConnectErrorMarksOnlyTheInheritedRequestDeadline(t *testing.T) {
 			err:  connect.NewError(connect.CodeUnavailable, errors.New("backend unavailable")),
 			want: false,
 		},
+		{
+			name:        "explicit unknown outcome after request deadline",
+			ctx:         expired,
+			err:         OutcomeUnknown("commit status: %w", context.DeadlineExceeded),
+			want:        false,
+			wantUnknown: true,
+		},
 	}
 
 	for _, test := range tests {
@@ -90,14 +98,19 @@ func TestTaskConnectErrorMarksOnlyTheInheritedRequestDeadline(t *testing.T) {
 			require.ErrorAs(t, taskConnectError(test.ctx, test.err), &connectErr)
 
 			got := false
+			gotUnknown := false
 			for _, detail := range connectErr.Details() {
 				value, detailErr := detail.Value()
 				require.NoError(t, detailErr)
 				if provenance, ok := value.(*pluginv1.TaskErrorProvenance); ok {
 					got = provenance.GetCallerDeadlineExceeded()
 				}
+				if response, ok := value.(*pluginv1.ExecuteResponse); ok {
+					gotUnknown = response.GetUnknownOutcome()
+				}
 			}
 			assert.Equal(t, test.want, got)
+			assert.Equal(t, test.wantUnknown, gotUnknown)
 		})
 	}
 }

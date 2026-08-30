@@ -224,13 +224,21 @@ func asConnectError(err error) error {
 // deadline, because both otherwise arrive as CodeDeadlineExceeded.
 func taskConnectError(ctx context.Context, err error) error {
 	converted := asConnectError(err)
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) ||
-		(!errors.Is(err, context.DeadlineExceeded) && connect.CodeOf(err) != connect.CodeDeadlineExceeded) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) || !errors.Is(err, context.DeadlineExceeded) {
 		return converted
 	}
-	if errors.Is(err, context.DeadlineExceeded) && connect.CodeOf(converted) != connect.CodeDeadlineExceeded {
-		converted = connect.NewError(connect.CodeDeadlineExceeded, err)
+
+	// An SDK classification or an author-supplied Connect status is the
+	// plugin's explicit account of its own operation and wins even when its
+	// cause is the request deadline. In particular, OutcomeUnknown must remain
+	// non-retryable: relabelling it Timeout could perform a mutation twice.
+	var classifiedErr *classified
+	var authoredConnectErr *connect.Error
+	if errors.As(err, &classifiedErr) || errors.As(err, &authoredConnectErr) {
+		return converted
 	}
+
+	converted = connect.NewError(connect.CodeDeadlineExceeded, err)
 
 	var connectErr *connect.Error
 	if !errors.As(converted, &connectErr) {
