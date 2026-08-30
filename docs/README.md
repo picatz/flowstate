@@ -31,6 +31,7 @@ it.
 | [CLI_DESIGN.md](CLI_DESIGN.md) | The layer under CLI.md: the actual design tokens, views and symbols a new command or view is checked against. The *design language*. |
 | [reference/cli.md](reference/cli.md) | *Generated.* Every command and flag, derived from the cobra tree the binary builds. |
 | [reference/envvars.md](reference/envvars.md) | *Generated.* Every environment variable this build reads, held to the tree by a test. |
+| [reference/task-policy.md](reference/task-policy.md) | *Generated.* The task-shape policy YAML fields, derived from the exact Go struct the strict decoder reads. |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Putting Flowstate somewhere real: the four-tier isolation model, and each topology as commands and unit files. Read it before sharing a Temporal namespace. |
 | [AUTHORIZATION_FRESHNESS.md](AUTHORIZATION_FRESHNESS.md) | How a deployment orders policy changes, detects rollback and split-brain across a fleet, and what the protected-resource route may and may not reveal about the policy behind it. |
 | [MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md) | Authorizing an agent when `flow mcp` is reachable over HTTP rather than over stdio. |
@@ -44,6 +45,7 @@ it.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The six layers, the invariants a change is checked against, and the tenancy, secret and plugin models. Read the invariants before a structural change. |
 | [VISION.md](VISION.md) | Intent that is *not built yet*, recorded so it survives the sessions that had it. |
 | [CI.md](CI.md) | What the three verification tiers run, what decides it, and the repository settings the design depends on. |
+| [agents/README.md](agents/README.md) | The shared Claude Code, Codex, and Amp configuration layers, where guidance lives, and the structural checks that keep them aligned. |
 
 ## Internal
 

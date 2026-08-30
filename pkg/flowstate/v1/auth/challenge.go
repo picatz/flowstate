@@ -20,7 +20,7 @@ import "strings"
 //     trust-policy detail [publicReason] exists to withhold.
 //   - "resource_metadata", RFC 9728 section 5.1, naming the protected-resource
 //     document — when there is one *and it describes this surface*; see
-//     [Authenticator.challengeMetadataURL].
+//     [ProtectedResource.ChallengeMetadataURL].
 //
 // No "scope", and the reason has moved on from the one this comment used to
 // give. #567's D1 is answered — the vocabulary exists, in the schema, and

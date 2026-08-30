@@ -33,6 +33,12 @@ import (
 // than by accident continuing to pass.
 var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// maxCaseWallTime is the real-time backstop for a case whose virtual clock
+// cannot make progress, such as an untimed signal wait with no matching script.
+const maxCaseWallTime = 30 * time.Second
+
+var errCaseWallTime = errors.New("case wall-clock limit exceeded")
+
 // RunOptions is what a caller may vary about a suite run. The zero value is
 // the run every door has always performed: every case, written order only,
 // report labelled by whatever the door knows.
@@ -219,8 +225,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		l, identity := loaderFor(&test)
+		caseCtx := ctx
+		cancel := func() {}
+		if opts.Debugger == nil {
+			caseCtx, cancel = caseContextWithin(ctx, maxCaseWallTime)
+		}
 
-		result, spec, transcript, account := schedules.run(ctx,
+		result, spec, transcript, account := schedules.run(caseCtx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
 				// The account is recorded only for runs whose account is
 				// kept. Under an exploring budget, [scheduleAccumulator.run]
@@ -238,6 +249,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				return runCase(ctx, &test, l.deliveryPath, l.load, record,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
+		cancel()
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
@@ -505,6 +517,13 @@ func RunSourceWith(ctx context.Context, label string, workflowSource, testSource
 	})
 }
 
+// caseContextWithin gives every schedule explored for one non-interactive case
+// a shared real-time backstop.
+func caseContextWithin(base context.Context, wallTime time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(base, wallTime,
+		fmt.Errorf("%w after %s", errCaseWallTime, wallTime))
+}
+
 // runCase runs one test and reports its verdict. load resolves the workflow
 // this case runs against — from a sibling file for [RunFile], from bytes
 // submitted directly for [RunSource] — which is the entire seam between the
@@ -680,7 +699,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
 	// timing can put a real task's Fn in this run's path. See [caseRegistry].
-	ctx = v1.NewContextWithRegistry(ctx, caseRegistry(stubs, v1.SensitiveInputNames(workflow)))
+	registry, err := caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow)
+	if err != nil {
+		caseError("%s", err)
+		return
+	}
+	ctx = v1.NewContextWithRegistry(ctx, registry)
 
 	inputs := v1.NewNamedValues(test.Inputs)
 
@@ -911,6 +935,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// them (issue #453), and `expect.ran`/`expect.skipped` read the same record,
 	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
+	if errors.Is(context.Cause(ctx), errCaseWallTime) {
+		caseError("%s", context.Cause(ctx))
+		result.Passed = false
+
+		return
+	}
 
 	// An abandoned run is not a verdict about the workflow, whatever the case
 	// expected. `quit` ends the run wherever it stands, so a case declaring
@@ -1030,8 +1060,10 @@ func swapRegistry(taskNames []string) func() {
 
 // caseRegistry returns the registry one case executes against: every task this
 // build registers, with its Fn replaced by the case's stub or by a fail-closed
-// refusal, plus a synthetic definition for any stubbed name the build does not
-// have.
+// refusal, plus a synthetic definition for every workflow requirement the build
+// does not have. That includes an intentionally unstubbed plugin task on a
+// skipped branch: capability admission can establish that dispatch has a
+// fail-closed implementation without making the branch run.
 //
 // A fresh registry per case rather than a mutation of the shared one. That is
 // what makes `flow test`'s central promise — no task runs for real — a
@@ -1041,7 +1073,7 @@ func swapRegistry(taskNames []string) func() {
 // and nothing this case does can leak into anyone else's. Issue #195 is what
 // happens without it — a real DNS lookup escaped a supposedly stubbed http task
 // under concurrency, because a swapped global is only ever swapped for a window.
-func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool) *v1.Registry {
+func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool, workflow *v1.Workflow) (*v1.Registry, error) {
 	registry := v1.NewRegistry()
 
 	// Every task this build registers, stubbed or not, which is what makes
@@ -1066,7 +1098,18 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name, sensitiveInputNames)})
 	}
 
-	return registry
+	required, err := v1.RequiredTaskNames(workflow)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range required {
+		if _, already := registry.Lookup(name); already {
+			continue
+		}
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name)})
+	}
+
+	return registry, nil
 }
 
 // unstubbedTaskFn is what a registered task's Fn becomes for the duration of
@@ -1416,6 +1459,18 @@ func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
 // one is at least visibly broken.
 func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
+	renderedRunErr := "<nil>"
+	if runErr != nil {
+		// Under WithholdAll the task/stub boundary has already shaped the
+		// diagnostic, preserving author-written expressions while withholding
+		// values it could not enumerate. Replacing that safe message wholesale
+		// would erase the only actionable detail. Otherwise this is the outer
+		// substring backstop for material carried here by a computed var.
+		renderedRunErr = runErr.Error()
+		if !sensitive.WithholdAll() {
+			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
+		}
+	}
 
 	failed := runErr != nil
 	switch {
@@ -1424,8 +1479,8 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// expected to fail and did not, or expected to succeed and did not.
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
-			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %v)",
-				*want.Failed, failed, runErr),
+			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %s)",
+				*want.Failed, failed, renderedRunErr),
 		})
 	case want.Failed == nil && failed:
 		// No expectation named this outcome as possible, so the case gets
@@ -1435,15 +1490,15 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
 			Message: fmt.Sprintf(
-				"the run failed unexpectedly, and this case's expect.failed was not set to declare that it should: %v", runErr),
+				"the run failed unexpectedly, and this case's expect.failed was not set to declare that it should: %s", renderedRunErr),
 		})
 	}
 	if want.ErrorContains != "" {
 		if runErr == nil || !strings.Contains(runErr.Error(), want.ErrorContains) {
 			failures = append(failures, &v1.Diagnostic{
 				Field: "expect.error_contains",
-				Message: fmt.Sprintf("expected the run's error to contain %q, got: %v",
-					want.ErrorContains, runErr),
+				Message: fmt.Sprintf("expected the run's error to contain %q, got: %s",
+					want.ErrorContains, renderedRunErr),
 			})
 		}
 	}

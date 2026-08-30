@@ -1,0 +1,23 @@
+name: "flowstate/v1/identity.proto"
+package: "flowstate.v1"
+syntax: "proto3"
+message_type: {
+  name: "WorkloadIdentity"
+  field: { name: "subject" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }
+  field: { name: "issuer" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING }
+  field: {
+    name: "claims"
+    number: 3
+    label: LABEL_REPEATED
+    type: TYPE_MESSAGE
+    type_name: ".flowstate.v1.WorkloadIdentity.ClaimsEntry"
+  }
+  field: { name: "namespace" number: 4 label: LABEL_OPTIONAL type: TYPE_STRING }
+  field: { name: "deployment" number: 5 label: LABEL_OPTIONAL type: TYPE_STRING }
+  nested_type: {
+    name: "ClaimsEntry"
+    field: { name: "key" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }
+    field: { name: "value" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING }
+    options: { map_entry: true }
+  }
+}

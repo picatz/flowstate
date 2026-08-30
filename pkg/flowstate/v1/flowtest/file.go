@@ -202,6 +202,11 @@ const (
 	// declare.
 	MaxSecretsPerTest = 200
 
+	// MaxChecksPerTest bounds how many CEL claims one effective test may
+	// evaluate. The written pieces are checked before table and defaults
+	// expansion can multiply them, then the effective case is checked again.
+	MaxChecksPerTest = 200
+
 	// MaxAllowUnreachedPerFile bounds how many `coverage.allow_unreached`
 	// entries one file may declare. A workflow has few branches a suite cannot
 	// reach, and a file recording hundreds is a record that has stopped meaning
@@ -875,9 +880,8 @@ type ScriptedIdentity struct {
 // a failure is "positioned to the test file" ([v1.TestCase]); #923 settled it
 // the other way.
 //
-// An identity a case inherited - a signal sender folded in from `defaults:` -
-// is refused with the same words and no position, because this document did not
-// write it. See [document.positionOf].
+// An identity inherited from a sibling `testdefaults.yaml` is positioned by
+// that sibling's retained document tree, never by borrowing a line in the suite.
 //
 // Both rules are fail-closed readings of a policy that would otherwise refuse
 // silently, at a gate, a whole virtual day later:
@@ -930,6 +934,14 @@ func checkScriptedIdentity(p *problems, r site, where string, identity *Scripted
 // step's private intermediate values — there is no field for one — the same
 // restraint the transcript-vs-outputs distinction already draws elsewhere.
 type Expectation struct {
+	// fromEntry records which scalar or collection fields reached this case
+	// from its table entry rather than from the row itself. [mergeExpectation]
+	// sets it on the effective row, and load-time checks use it to judge the
+	// entry once at the key the author wrote instead of once per expanded row
+	// at keys that do not exist. Check accumulates, so its provenance travels
+	// on each [CheckClaim] instead.
+	fromEntry expectationProvenance
+
 	// Outputs, when set, must equal the workflow's declared `outputs:`
 	// exactly — every named output present with the expected value, and no
 	// unexpected one. Ignored when Failed is true, on the same reasoning
@@ -1034,6 +1046,23 @@ type Expectation struct {
 	Check []CheckClaim `yaml:"check"`
 }
 
+// expectationProvenance is the writer of each field in an effective table
+// row. Kept per field because a row may override one entry expectation while
+// inheriting the rest; a mark on the whole expectation would either repeat the
+// inherited mistakes or hide the row's own.
+type expectationProvenance struct {
+	outputs        bool
+	inputs         bool
+	refused        bool
+	idempotencyKey bool
+	failed         bool
+	errorContains  bool
+	compensated    bool
+	ran            bool
+	skipped        bool
+	others         bool
+}
+
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
 // point of the field is to state absence, so there is exactly one thing to say.
 const OthersSkipped = "skipped"
@@ -1075,6 +1104,31 @@ func LoadSourceAt(data []byte, path string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadSourceAt(data, path, dd)
+}
+
+// LoadSourceAtWithDefaults is [LoadSourceAt] when the caller holds newer bytes
+// for the directory's testdefaults.yaml than the filesystem does. The language
+// server is that caller: diagnostics must describe both live editor buffers,
+// including unsaved defaults, while preserving the loader's one grammar and
+// provenance rules.
+func LoadSourceAtWithDefaults(data []byte, path string, defaults []byte) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%s: %d bytes exceeds the %d byte limit for a test file",
+			path, len(data), MaxTestFileBytes)
+	}
+	defaultsPath := filepath.Join(filepath.Dir(path), DirDefaultsName)
+	dd, err := parseDirDefaults(defaults, defaultsPath)
+	if err != nil {
+		return nil, err
+	}
+	return loadSourceAt(data, path, dd)
+}
+
+// loadSourceAt applies a directory contribution already read and decoded.
+// Both public byte doors above end here, so only the source of the defaults
+// bytes differs; folding and every semantic check remain shared.
+func loadSourceAt(data []byte, path string, dd *dirDefaults) (*File, error) {
 
 	file, refused := parseSourceWith(data, dd, true)
 	if refused != nil {
@@ -1225,7 +1279,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// `stubs:` appends, so afterwards an index alone no longer says which
 	// document wrote the entry it addresses.
 	moved := dd.combineInto(&file)
-	p.wrote(moved.file, moved.paths)
+	p.wrote(moved.file, moved.doc, moved.paths)
 
 	// Vars validate, evaluate and substitute first, before tables expand and
 	// before `defaults:` is checked: a computed var is evaluated exactly once
@@ -1249,21 +1303,27 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// Done here rather than at run time so everything downstream — the
 	// per-test checks below, coverage, `--run`, the Go subtests — keeps
 	// reading one flat list of effective cases and needs no notion of a table.
-	expanded, sources := expandTableEntries(p, file.Tests)
-	file.Tests = expanded
+	expandedCount := 0
+	for _, test := range file.Tests {
+		if test.Cases == nil {
+			expandedCount++
 
-	// The bound is on the runs, not on the written entries: a row is a whole
-	// case, so an entry with four hundred rows costs what four hundred cases
-	// cost. Checked after expansion for that reason, and the diagnostic says
-	// "once its rows are counted" because the limit is otherwise confusing to
-	// read in a file whose `tests:` list is three items long.
-	if len(file.Tests) > MaxTestsPerFile {
+			continue
+		}
+		expandedCount += len(test.Cases)
+	}
+	if expandedCount > MaxTestsPerFile {
+		// Count before expansion: [mergeRow] copies inherited stubs and
+		// checks into each row, so checking only the finished slice would do
+		// the amplification this limit exists to prevent before refusing it.
 		p.report(site{at: tests},
 			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
-			len(file.Tests), MaxTestsPerFile)
+			expandedCount, MaxTestsPerFile)
 
 		return nil, p.err()
 	}
+	expanded, sources := expandTableEntries(p, file.Tests)
+	file.Tests = expanded
 
 	// Validated then merged before anything below bounds or checks a case, so
 	// every per-test check runs against the effective test a case actually
@@ -1319,6 +1379,13 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		if len(test.Secrets) > MaxSecretsPerTest {
 			p.report(r.in(source.path.field("secrets")), "test %q declares %d secrets, more than the limit of %d",
 				test.Name, len(test.Secrets), MaxSecretsPerTest)
+
+			continue
+		}
+		if len(test.Expect.Check) > MaxChecksPerTest {
+			p.report(r.in(source.path.field("expect").field("check")),
+				"test %q declares %d checks, more than the limit of %d",
+				test.Name, len(test.Expect.Check), MaxChecksPerTest)
 
 			continue
 		}
@@ -1400,8 +1467,9 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 // The two counts exist because merging shifts indices. A case's own stubs come
 // first in the merged list and its own check claims come last, so a merged
 // index inside those runs addresses something the case wrote, and one outside
-// them addresses something it inherited — which has no position in this
-// document, and must not borrow the case's.
+// them addresses something it inherited — which must not borrow the case's
+// position. A directory default has its sibling tree; a case-level inherited
+// value with no source address remains unpositioned.
 type caseSource struct {
 	// path addresses the case in the source.
 	path loc
@@ -1551,6 +1619,13 @@ func stubTargetKey(s *Stub) string {
 // field is allowed to say, named by its position (CLAUDE.md, "diagnostics are a
 // feature"). Empty is fine: it means the `ran:` claim stays open.
 func checkOthers(p *problems, r site, test *Test) {
+	// A table entry's value was judged once before expansion, at the entry's
+	// own key and with the entry's identity. The copy on an effective row has
+	// no row key to point at and must not spend another diagnostic on the same
+	// writer. A row override carries no mark and is still judged here.
+	if test.Expect.fromEntry.others {
+		return
+	}
 	switch test.Expect.Others {
 	case "", OthersSkipped:
 		return
@@ -1706,9 +1781,9 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 // Named the way the rest of this loader names a diagnostic — the field a
 // reader has to look at (`defaults.inputs.version`,
 // `defaults.stubs[0].returns.reference`, `defaults.sender.claims`) — and
-// positioned at it as well, where this document is the one that wrote it. A
-// default folded in from a directory's `testdefaults.yaml` has no position in
-// this file, and reports none rather than borrowing the suite's.
+// positioned in the document that wrote it. A default folded in from a
+// directory's `testdefaults.yaml` uses that sibling's retained tree rather than
+// borrowing the suite's position.
 // Reports false when the stub count stopped it, which the loader takes as a
 // refusal of the whole document rather than one more diagnostic: an
 // over-limit block is copied into every case a moment later, so this is the
@@ -1725,6 +1800,12 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 	if len(d.Stubs) > MaxDefaultStubs {
 		p.report(site{at: base.field("stubs")},
 			"defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+
+		return false
+	}
+	if len(d.Check) > MaxChecksPerTest {
+		p.report(site{at: base.field("check")},
+			"defaults declares %d checks, more than the limit of %d", len(d.Check), MaxChecksPerTest)
 
 		return false
 	}
@@ -1791,13 +1872,6 @@ const (
 	// defaultsAreFixtures is #416's rule, in the block it was written for.
 	defaultsAreFixtures fixtureRule = "a test file's `defaults:` is a fixture, so it may not hold an " +
 		"expression. Write the literal value, or move it into the case that needs it"
-
-	// varsFenceWholeValues is the same refusal where an expression *is* legal —
-	// as the whole value, never inside a structure, which is the rule every
-	// reference position in a test file already follows.
-	varsFenceWholeValues fixtureRule = "a var holds a literal, or one whole-value `${...}` expression; " +
-		"a fence inside a structure is not evaluated. State it literally, or build the structure in " +
-		"one expression: `${{'region': vars.base.region}}`"
 )
 
 // checkNoExpressions descends a value and refuses every string that carries a

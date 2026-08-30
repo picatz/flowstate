@@ -92,6 +92,11 @@ var foldClassification = map[string]foldedField{
 		why: "the fold's own bookkeeping: it *is* the answer to which document wrote a value, " +
 			"so it is not itself a value the fold moves",
 	},
+	"dirDefaults.doc": {
+		class: notFolded,
+		why: "the sibling's parsed source tree is diagnostic bookkeeping retained for exact positions, " +
+			"not a value folded into the suite",
+	},
 	"dirDefaults.vars": {
 		class: movedUnchanged,
 		why: "keyed, and the fold copies each name to the same name — `vars.region` addresses " +

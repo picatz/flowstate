@@ -5,7 +5,6 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
-	"github.com/goccy/go-yaml/parser"
 )
 
 // maxExpandedNodes and maxExpansionDepth bound a *.test.yaml the same shape
@@ -15,7 +14,7 @@ import (
 // "bound anything that consumes untrusted input"), and an alias may be
 // referenced many times, so a short document can expand into an enormous one
 // — a billion-laughs document has a depth of one per alias and multiplies
-// breadth at every level, which is exactly the shape [checkExpansionBounds]
+// breadth at every level, which is exactly the shape [checkExpansionBoundsIn]
 // exists to catch: counted by total nodes reached, not by how deep any one
 // chain of references goes.
 //
@@ -72,30 +71,11 @@ func decodeStrict(data []byte, into any) (err error) {
 	return yaml.UnmarshalWithOptions(data, into, yaml.Strict())
 }
 
-// checkExpansionBounds parses data only as far as the AST — never as far as
-// yaml.Unmarshal, which resolves every alias into the destination value
-// before any check written against that destination gets a chance to run —
-// and refuses a document whose alias expansion would exceed
-// [maxExpandedNodes] or [maxExpansionDepth].
-//
-// A parse failure here is not reported: [Load]'s own yaml.Unmarshal call
-// reports the same malformed-YAML error in the shape a caller already
-// expects, and reporting it twice, once from each of two parsers, would be
-// the same fact said two different ways depending on which one happened to
-// notice first.
-func checkExpansionBounds(data []byte) error {
-	file, err := parser.ParseBytes(data, 0)
-	if err != nil {
-		return nil
-	}
-
-	return checkExpansionBoundsIn(file)
-}
-
-// checkExpansionBoundsIn is [checkExpansionBounds] for a caller that has
-// already parsed the document — the suite loader, which keeps the tree to
-// answer where a diagnostic belongs (position.go) and would otherwise parse the
-// same bytes twice, once per reader, on every load.
+// checkExpansionBoundsIn refuses a parsed document whose alias expansion would
+// exceed [maxExpandedNodes] or [maxExpansionDepth]. Callers parse only as far as
+// the AST before this check — never as far as yaml.Unmarshal, which resolves
+// aliases into the destination before a destination-level bound can run. The
+// suite and defaults loaders retain that same tree for diagnostic positions.
 func checkExpansionBoundsIn(file *ast.File) error {
 	anchors := map[string]ast.Node{}
 	for _, doc := range file.Docs {

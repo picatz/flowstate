@@ -300,7 +300,7 @@ func TestOpenToleratesStdoutNoise(t *testing.T) {
 func TestStderrFloodIsRateLimited(t *testing.T) {
 	t.Parallel()
 
-	var logged strings.Builder
+	var logged capturedLogs
 	cfg := testConfig(t, pluginDir(t, "stderr-flood"))
 	cfg.MaxStderrLinesPerMinute = 5
 	cfg.Logger = newCapturingLogger(t, &logged)

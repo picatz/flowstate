@@ -3110,6 +3110,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	// against, without needing a throwaway Go program to find out.
 	keysCmd := newKeysCommand()
 	jwtCmd := newJWTCommand()
+	authCmd := newAuthCommand()
 
 	// Version command, answering "which build" the way a bug report or an
 	// agent transcript needs to: see version.go for why this is a verb rather
@@ -3204,15 +3205,18 @@ flow mcp --plugin-dir ./plugins`,
 			"because they would spend this process's own credential on a caller's behalf. What is " +
 			"served is what answers in this process and reaches nothing — flowstate_validate, " +
 			"flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs " +
-			"replace every task implementation before a step executes.\n\n" +
+			"replace every task implementation before a step executes. Sessions and their limits " +
+			"live only in this process: run one replica, and expect a restart to invalidate active " +
+			"sessions. A load-balanced fleet is not a supported horizontally scalable deployment.\n\n" +
 			"Flowstate is not an authorization server: it issues no tokens, runs no authorization " +
 			"or token endpoint, and verifies nothing it did not receive from the identity provider " +
-			"an operator configured. No scope vocabulary is advertised or challenged for yet, and a " +
+			"an operator configured. The protected-resource document advertises the schema-owned " +
+			"scope vocabulary, but no request enforces or challenges for a scope yet, and a " +
 			"token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than " +
 			"read as its bare subject. See docs/MCP_AUTHORIZATION.md.",
 		Args: cobra.NoArgs,
 		RunE: runMCPServe,
-		Example: `# Behind a TLS-terminating proxy, advertising one identity provider:
+		Example: `# One replica behind a TLS-terminating proxy, advertising one identity provider:
 flow mcp serve --listen 127.0.0.1:8617 \
   --auth-policy /etc/flowstate/policy.yaml \
   --protected-resource https://flowstate.example.com/mcp \
@@ -3302,6 +3306,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
+	authCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	jwtCmd.GroupID = "development"
@@ -3400,6 +3405,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
+	rootCmd.AddCommand(authCmd)
 
 	// The whole stack in one command, under `server` because that is where
 	// somebody looking for a server looks. Everything it is lives in

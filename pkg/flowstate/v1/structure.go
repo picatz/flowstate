@@ -125,61 +125,99 @@ const maxStructureWalkNodes = 100_000
 func CheckStructureDepth(wf *Workflow) error {
 	var violation *ValueSite
 	var violationChain []string
-	var chain []string
 	nodesLeft := maxStructureWalkNodes
 	exhausted := false
 
-	var walk func(w *Workflow, callDepth int)
-	walk = func(w *Workflow, callDepth int) {
-		if violation != nil || exhausted {
-			return
-		}
-		WalkWorkflow(w, Walk{
-			Value: func(site ValueSite) {
-				if violation != nil {
-					return
-				}
+	type frame struct {
+		workflow  *Workflow
+		nodes     []*Node
+		callDepth int
+		chain     []string
+	}
+	stack := []frame{{workflow: wf, nodes: wf.GetSteps()}}
+
+	for len(stack) > 0 && violation == nil && !exhausted {
+		last := len(stack) - 1
+		current := stack[last]
+		stack = stack[:last]
+
+		// Workflow-level values belong to every inlined callee too. Reuse the
+		// shared direct-value helpers without entering the recursive node
+		// traversal this bounded validator must avoid.
+		if current.workflow != nil {
+			valueWalk := Walk{Value: func(site ValueSite) {
 				if structureDepth(site.Value, 0) > MaxStructureDepth {
 					s := site
 					violation = &s
-					violationChain = slices.Clone(chain)
+					violationChain = slices.Clone(current.chain)
 				}
-			},
-			Node: func(node *Node) {
-				if violation != nil || exhausted {
-					return
-				}
-				if nodesLeft <= 0 {
-					exhausted = true
-					return
-				}
-				nodesLeft--
+			}}
+			walkWorkflowValuesBeforeSteps(current.workflow, valueWalk)
+			walkWorkflowValuesAfterSteps(current.workflow, valueWalk)
+			if violation != nil {
+				break
+			}
+		}
 
-				call, ok := node.GetKind().(*Node_Call)
-				if !ok {
-					return
-				}
-				callee := call.Call.GetWorkflow()
-				if callee == nil {
-					return
-				}
+		for i := len(current.nodes) - 1; i >= 0; i-- {
+			stack = append(stack, frame{
+				nodes:     []*Node{current.nodes[i]},
+				callDepth: current.callDepth,
+				chain:     current.chain,
+			})
+		}
+		for len(stack) > 0 && stack[len(stack)-1].workflow == nil && violation == nil && !exhausted {
+			last = len(stack) - 1
+			nodeFrame := stack[last]
+			stack = stack[:last]
+			node := nodeFrame.nodes[0]
+			if node == nil {
+				continue
+			}
+			if nodesLeft <= 0 {
+				exhausted = true
+				break
+			}
+			nodesLeft--
 
-				nextDepth := callDepth + 1
-				if err := CheckCallDepth(nextDepth); err != nil {
-					// A call chain this deep is refused at execution by
-					// CheckCallDepth itself, regardless of what this walk
-					// would find beneath it — descending further would only
-					// be inspecting a callee nothing will ever run.
-					return
+			walkNodeValues(node, Walk{Value: func(site ValueSite) {
+				if violation == nil && structureDepth(site.Value, 0) > MaxStructureDepth {
+					s := site
+					violation = &s
+					violationChain = slices.Clone(nodeFrame.chain)
 				}
+			}})
+			if violation != nil {
+				break
+			}
 
-				chain = append(chain, node.GetId())
-				walk(callee, nextDepth)
-				chain = chain[:len(chain)-1]
-			},
-		})
+			var children [][]*Node
+			switch kind := node.GetKind().(type) {
+			case *Node_ForEach:
+				children = append(children, kind.ForEach.GetBody())
+			case *Node_Loop:
+				children = append(children, kind.Loop.GetBody())
+			case *Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					children = append(children, branch.GetSteps())
+				}
+			case *Node_Switch:
+				children = append(children, SwitchBodies(kind.Switch)...)
+			case *Node_Call:
+				callee := kind.Call.GetWorkflow()
+				nextDepth := nodeFrame.callDepth + 1
+				if callee != nil && CheckCallDepth(nextDepth) == nil {
+					chain := append(slices.Clone(nodeFrame.chain), node.GetId())
+					stack = append(stack, frame{workflow: callee, nodes: callee.GetSteps(), callDepth: nextDepth, chain: chain})
+				}
+			}
+			for i := len(children) - 1; i >= 0; i-- {
+				for j := len(children[i]) - 1; j >= 0; j-- {
+					stack = append(stack, frame{nodes: []*Node{children[i][j]}, callDepth: nodeFrame.callDepth, chain: nodeFrame.chain})
+				}
+			}
+		}
 	}
-	walk(wf, 0)
 
 	if exhausted && violation == nil {
 		return fmt.Errorf(

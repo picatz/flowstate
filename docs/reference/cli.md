@@ -79,6 +79,39 @@ flow audit -o json examples/ | jq '.totals'
 |---|---|---|---|---|
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
+## `flow auth`
+
+Diagnose caller authentication against a trust policy
+
+```
+flow auth [command]
+```
+
+## `flow auth check`
+
+Check a bearer token against a trust policy
+
+```
+flow auth check [flags]
+```
+
+Verify one bearer token against a trust policy using the same OIDC verifier and issuer-rule matching path as `flow server`. This diagnoses policy-entry overlap; it does not simulate the server's surface-specific --rpc-resource check. The token is read only from a file or stdin: there is deliberately no token argument or --token flag, because credentials in argv leak through process listings, shell history, logs, and completion. Output names only the policy entry that admitted the token, or the policy entries that made it ambiguous; it never prints token claims. This is a concrete-token probe, not a static proof that every possible token matches at most one entry: check each representative caller before deploying a policy change.
+
+Examples:
+
+```sh
+# Check a projected workload token without putting it in argv:
+flow auth check --auth-policy trust.yaml --token-file /var/run/secrets/tokens/flowstate
+
+# Read a token from stdin instead:
+flow auth check --auth-policy trust.yaml --token-file - < "$TOKEN_FILE"
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--auth-policy <string>` | `string` | — | — | path to the trust policy to check (required) |
+| `--token-file <string>` | `string` | — | — | path containing the bearer token, or "-" to read stdin (required; the token itself is never accepted in argv) |
+
 ## `flow breaking`
 
 Report workflows whose declared inputs or outputs broke a contract
@@ -838,14 +871,14 @@ flow mcp serve [flags]
 
 Serve the Model Context Protocol over streamable HTTP, requiring every caller to present a bearer token this deployment's own trust policy accepts and whose audience names this resource specifically (RFC 8707 section 2). A request with no token is answered 401 with a WWW-Authenticate header naming the RFC 9728 protected resource metadata document, which this command also serves, so a compliant MCP client can bootstrap from the refusal alone.
 
-This is a different surface from `flow mcp`, not a transport switch on it. Over stdio there is exactly one caller and it is the process that spawned this one, which is what makes every posture flag there a decision taken once at start-up; over HTTP there are many callers and those flags would silently change meaning. So the tools that execute or dispatch anything are not served here: flowstate_run_local is absent, because over HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent because they would spend this process's own credential on a caller's behalf. What is served is what answers in this process and reaches nothing — flowstate_validate, flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs replace every task implementation before a step executes.
+This is a different surface from `flow mcp`, not a transport switch on it. Over stdio there is exactly one caller and it is the process that spawned this one, which is what makes every posture flag there a decision taken once at start-up; over HTTP there are many callers and those flags would silently change meaning. So the tools that execute or dispatch anything are not served here: flowstate_run_local is absent, because over HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent because they would spend this process's own credential on a caller's behalf. What is served is what answers in this process and reaches nothing — flowstate_validate, flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs replace every task implementation before a step executes. Sessions and their limits live only in this process: run one replica, and expect a restart to invalidate active sessions. A load-balanced fleet is not a supported horizontally scalable deployment.
 
-Flowstate is not an authorization server: it issues no tokens, runs no authorization or token endpoint, and verifies nothing it did not receive from the identity provider an operator configured. No scope vocabulary is advertised or challenged for yet, and a token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than read as its bare subject. See docs/MCP_AUTHORIZATION.md.
+Flowstate is not an authorization server: it issues no tokens, runs no authorization or token endpoint, and verifies nothing it did not receive from the identity provider an operator configured. The protected-resource document advertises the schema-owned scope vocabulary, but no request enforces or challenges for a scope yet, and a token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than read as its bare subject. See docs/MCP_AUTHORIZATION.md.
 
 Examples:
 
 ```sh
-# Behind a TLS-terminating proxy, advertising one identity provider:
+# One replica behind a TLS-terminating proxy, advertising one identity provider:
 flow mcp serve --listen 127.0.0.1:8617 \
   --auth-policy /etc/flowstate/policy.yaml \
   --protected-resource https://flowstate.example.com/mcp \
@@ -861,13 +894,14 @@ flow mcp serve --listen :8617 \
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--audit-required` | `bool` | `false` | — | fail a request whose authorization decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the trust policy whose issuers may mint tokens for this surface (overrides FLOWSTATE_AUTH_POLICY). Required: there is no anonymous variant of this surface, and --insecure-no-auth is refused here |
 | `--authorization-server <string,...>` | `stringArray` | — | — | an authorization server this deployment advertises as able to mint tokens for --protected-resource. Repeatable; RFC 9728 requires at least one when --protected-resource is given. Each one must already be a kind: oidc issuer in --auth-policy — an authorization server this deployment's own verifier would reject is refused at start-up rather than advertised |
 | `--insecure-no-auth` | `bool` | `false` | — | refused on this surface: an OAuth 2.1 protected resource that authenticates nobody is a contradiction. Use `flow mcp` over stdio for local development |
 | `--listen <string>` | `string` | `127.0.0.1:8617` | — | address to serve the MCP surface on. Anything but a loopback address requires --tls-cert-file/--tls-key-file, or --tls-terminated-upstream when a proxy in front of this process already terminates TLS: a bearer token on a cleartext connection that leaves this machine is a credential handed to whatever is in between |
 | `--max-request-bytes <int64>` | `int64` | `1048576` | — | largest request body this surface will read, in bytes. A request over the limit is refused with 413 rather than buffered |
-| `--max-session-requests <int>` | `int` | `8` | — | how many requests one MCP session may have in flight at once. A request past the limit is refused with 503: --max-sessions bounds how many sessions exist and says nothing about how many connections one of them is replayed over |
-| `--max-sessions <int>` | `int` | `32` | — | how many MCP sessions may be open at once. A request that would open one past the limit is refused with 503; sessions idle for 5m0s are closed and their slots returned |
+| `--max-session-requests <int>` | `int` | `8` | — | how many requests one MCP session may have in flight in this process at once. A request past the limit is refused with 503: --max-sessions bounds how many sessions exist and says nothing about how many connections one of them is replayed over |
+| `--max-sessions <int>` | `int` | `32` | — | how many MCP sessions may be open in this process at once. A request that would open one past the limit is refused with 503; sessions idle for 5m0s are closed and their slots returned |
 | `--protected-resource <string>` | `string` | — | `FLOWSTATE_PROTECTED_RESOURCE` | the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as (overrides FLOWSTATE_PROTECTED_RESOURCE). No fragment, no trailing slash. Given together with one or more --authorization-server, this deployment serves RFC 9728 protected resource metadata at /.well-known/oauth-protected-resource, plus this resource's own path if it has one (RFC 9728 section 3.1's well-known-URI construction — a resource ending in /mcp serves its document at /.well-known/oauth-protected-resource/mcp, not at the bare prefix), and every 401 challenge names that exact document. Required on this command: this surface is the protected resource, so without one there is nothing to bind a token's audience to and `flow mcp serve` refuses to start rather than serving an unauthenticated MCP endpoint |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--test-timeout <duration>` | `duration` | `2m0s` | — | how long one flowstate_test call may run before it is stopped and reported as timed out. A submitted workflow can park forever on its own — a `wait_for_signal:` with no timeout and no scripted signal never completes — and while one runs, every other tool and resource on this surface waits for it |

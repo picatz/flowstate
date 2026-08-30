@@ -30,6 +30,7 @@ nothing here is worth learning twice.
 | `break <step-id> if <expr>` | stop there only when the expression holds |
 | `delete <step-id>`, `d` | remove that breakpoint |
 | `breakpoints` | list them |
+| `backtrace`, `bt` | list the current step and the `call:` chain that reached it |
 | `inspect <expr>`, `p` | evaluate a CEL expression against the paused run |
 | `complete <partial-command>` | list what could be written at the end of that text |
 | `scope` | list what the run can name right now |

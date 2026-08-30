@@ -392,6 +392,12 @@ type TrustedIssuer struct {
 	MaxTokenAge time.Duration `json:"max_token_age,omitempty" yaml:"max_token_age,omitempty"`
 }
 
+// MaxPolicyProvenanceBytes is the largest trusted-issuer name or role that can
+// be preserved exactly in an authorization audit record. Policy validation
+// refuses larger labels rather than letting the audit seam truncate two
+// distinct policy rows or roles to the same provenance.
+const MaxPolicyProvenanceBytes = 128
+
 // ClaimRule requires that a claim in a verified token equals one of a set of
 // values.
 //
@@ -794,6 +800,14 @@ func AdmitsBearerTokens(policy *Policy) bool {
 func (t TrustedIssuer) validate() error {
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
+	}
+	if len(t.Name) > MaxPolicyProvenanceBytes {
+		return fmt.Errorf("name is %d bytes, over the %d byte audit provenance limit",
+			len(t.Name), MaxPolicyProvenanceBytes)
+	}
+	if len(t.Role) > MaxPolicyProvenanceBytes {
+		return fmt.Errorf("role is %d bytes, over the %d byte audit provenance limit",
+			len(t.Role), MaxPolicyProvenanceBytes)
 	}
 
 	switch t.kind() {
@@ -1405,12 +1419,12 @@ func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window life
 func (r ClaimRule) check(claims map[string]any) error {
 	value, ok := claims[r.Claim]
 	if !ok {
-		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf}
+		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf)}
 	}
 
 	found := claimStrings(value)
 	if len(found) == 0 {
-		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf, Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
+		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf), Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
 	}
 
 	// Exclusion is checked before acceptance so that a rule carrying both
@@ -1421,7 +1435,7 @@ func (r ClaimRule) check(claims map[string]any) error {
 		if slices.Contains(r.NoneOf, candidate) {
 			return &ClaimMismatchError{
 				Claim:        r.Claim,
-				Want:         r.AnyOf,
+				Want:         slices.Clone(r.AnyOf),
 				Got:          truncate(strings.Join(found, ", "), maxClaimValueLength),
 				RefusedValue: truncate(candidate, maxClaimValueLength),
 			}
@@ -1442,7 +1456,7 @@ func (r ClaimRule) check(claims map[string]any) error {
 
 	return &ClaimMismatchError{
 		Claim: r.Claim,
-		Want:  r.AnyOf,
+		Want:  slices.Clone(r.AnyOf),
 		Got:   truncate(strings.Join(found, ", "), maxClaimValueLength),
 	}
 }

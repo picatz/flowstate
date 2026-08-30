@@ -63,6 +63,12 @@ type CheckClaim struct {
 	// second fold skips a list that already carries a marked claim rather
 	// than doubling the file's claims.
 	fromDefaults bool
+
+	// fromEntry marks a claim [mergeExpectation] copied from a table entry.
+	// The entry is checked once before expansion, where its key and identity
+	// are known; expanded rows skip only that copy while still checking every
+	// claim the row appended itself.
+	fromEntry bool
 }
 
 // UnmarshalYAML accepts both spellings. Key checking is done by hand rather
@@ -141,10 +147,10 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 		// it is known. Judging the copy again would report one mistake once per
 		// case — five hundred diagnostics for one line, spending a bound meant
 		// for five hundred *different* mistakes — while saying less about it.
-		// Only the copies are marked, so nothing goes unjudged: the block's own
-		// pass sees the originals, and a claim inherited from a table entry
-		// carries no mark and is judged here.
-		if claims[i].fromDefaults {
+		// Only the copies are marked, so nothing goes unjudged: each block or
+		// table entry pass sees the originals, while an effective case skips
+		// what an earlier pass already judged.
+		if claims[i].fromDefaults || claims[i].fromEntry {
 			continue
 		}
 		// Nothing rather than the list's own node for an inherited claim a
@@ -157,7 +163,10 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 			// has once the inherited ones ahead of it are subtracted.
 			spot = r.in(r.at.item(i - inherited))
 		case inheritedFrom != "":
-			spot = r.writtenIn(inheritedFrom)
+			// Directory claims are prepended without filtering, so i is also
+			// the index in the sibling's own list. Keep that source address
+			// beside the owning file; the loader retains both document trees.
+			spot = r.in(r.at.item(i)).writtenIn(inheritedFrom)
 		}
 		if inner, fenced := flowfile.SplitFence(claims[i].That); fenced {
 			claims[i].That = inner
@@ -280,14 +289,36 @@ func redactedVars(vars fileVars, sensitive sensitiveInputs) map[string]any {
 			out[name] = "[withheld]"
 			continue
 		}
-		if vars.withheld.holds(name) {
-			out[name] = sensitiveMarker
-			continue
-		}
-		out[name] = redactSubstringsTree(sensitive.RedactTree(value), sensitive)
+		out[name] = redactVarTree(varPath{{key: name}}, value, vars.withheld, sensitive)
 	}
 
 	return out
+}
+
+func redactVarTree(path varPath, value any, withheld withheldVars, sensitive sensitiveInputs) any {
+	if withheld.holds(path.String()) {
+		return sensitiveMarker
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, entry := range v {
+			redactedKey, _ := sensitive.RedactTree(key).(string)
+			out[sensitive.RedactSubstrings(redactedKey)] = redactVarTree(
+				append(slices.Clone(path), varPathPart{key: key}), entry, withheld, sensitive)
+		}
+
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, entry := range v {
+			out[i] = redactVarTree(append(slices.Clone(path), varPathPart{index: i, list: true}), entry, withheld, sensitive)
+		}
+
+		return out
+	default:
+		return redactSubstringsTree(sensitive.RedactTree(value), sensitive)
+	}
 }
 
 // redactSubstringsTree applies [v1.SensitiveValues.RedactSubstrings] to every string a
@@ -449,8 +480,10 @@ func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (
 		switch {
 		case read.dynamic:
 			dynamic = true
-		case found == "" && slices.Contains(withheld.names, read.name):
-			found = read.name
+		case found == "":
+			if name, covered := withheld.coveredRead(read.path, true); covered {
+				found = name
+			}
 		}
 	})
 	if found != "" {

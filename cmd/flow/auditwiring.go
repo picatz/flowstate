@@ -20,11 +20,11 @@ import (
 // follow rather than a second spelling.
 const auditRequiredFlag = "audit-required"
 
-// addAuditRequiredFlag registers --audit-required on a server command.
+// addAuditRequiredFlag registers --audit-required on a serving command.
 //
-// Called once per command (`flow server`, `flow server dev`) rather than
-// shared through a persistent flag on a parent, in the same shape every other
-// server-only flag in this file takes.
+// Called once per command (`flow server`, `flow server dev`, `flow mcp serve`)
+// rather than shared through a persistent flag on a parent, in the same shape
+// every other serving-only flag in this file takes.
 func addAuditRequiredFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool(auditRequiredFlag, false,
 		"fail a request whose authorization decision could not be written to every audit sink, "+

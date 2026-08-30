@@ -381,6 +381,148 @@ func signalPolicyRuleToYAML(rule *v1.SignalPolicyRule) (yaml.MapSlice, error) {
 	return doc, nil
 }
 
+// validateDebug reports what is wrong with the declared `debug:` stanza.
+//
+// It asks [validatePolicyRules] the same questions [validateSignals] asks of a
+// signal's policy, because the stanza compiles to the same [v1.SignalPolicy]
+// and a debug policy laxer than a signal policy for the same words would be
+// drift in the direction that matters — the narrowing check in particular is
+// what stops whoever started a run from naming themselves as the caller
+// allowed to pause it.
+//
+// The one question it does not ask is the one [validateSignals] opens with: a
+// signal policy for a name nothing waits for is a misspelling, and there is no
+// analogue here, because what `debug:` governs is the run rather than a name
+// written somewhere else in the file.
+func validateDebug(wf *v1.Workflow) Diagnostics {
+	policy := wf.GetDebug()
+	if policy == nil {
+		// Absent is a workflow that is simply not debuggable durably
+		// ([v1.Workflow.Debug]'s fail-closed zero case), which is the state
+		// every workflow in the tree is in and not a fault to report.
+		return nil
+	}
+
+	return validatePolicyRules("debug", policy)
+}
+
+// reservedSignalWaitDiagnostic reports a wait on a name the engine reserved, or
+// nothing when the name is the author's.
+//
+// Asked per waiting step rather than over [v1.SignalNames], because that
+// function answers with names and a diagnostic has to point at a *place*: the
+// step id and the key the author actually wrote are what turn this from "some
+// step in this file" into an underlined token. The two spellings are named
+// apart for the reason `validateWait`'s `timeout:` already is — a bare field
+// makes `Locate` find the outer span first.
+//
+// Reported here as well as refused at submit ([v1.CheckReservedSignalNames]),
+// because a diagnostic in an author's editor with a line and a column is the
+// version of this refusal somebody can act on — the standard
+// `flowfile/validate.go` sets. The rule is a property of the file rather than of
+// a deployment: which names the engine owns is decided by this build, not by
+// configuration.
+func reservedSignalWaitDiagnostic(id string, wait *v1.Wait) (Diagnostic, bool) {
+	name, field := wait.GetSignal().GetName(), "wait_for_signal.name"
+	if name == "" {
+		name, field = wait.GetSignalBatch().GetName(), "wait_for_signals.name"
+	}
+
+	if name == "" || !v1.IsReservedSignalName(name) {
+		return Diagnostic{}, false
+	}
+
+	return Diagnostic{
+		Step:  id,
+		Field: field,
+		Message: "names a signal beginning " + v1.ReservedSignalPrefix +
+			", which belongs to the engine; an ask to pause this run for debugging travels on one " +
+			"of those channels and would answer this wait instead. Rename the signal",
+	}, true
+}
+
+// validateReservedSignalNames reports a `signals:` policy declared for a name
+// the engine reserved.
+//
+// The waiting half is [reservedSignalWaitDiagnostic], reported from
+// `validateWait` where the step is known. This half stays whole-workflow because
+// the map key *is* the place: `signals.<name>` is a path the position index
+// already carries.
+func validateReservedSignalNames(wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+
+	for _, name := range sortedPolicyNames(wf.GetSignals()) {
+		if !v1.IsReservedSignalName(name) {
+			continue
+		}
+
+		ds = append(ds, Diagnostic{
+			Field: fieldPath("signals", name),
+			Message: "declares a policy for a name beginning " + v1.ReservedSignalPrefix +
+				", which belongs to the engine; who may debug this workflow is the `debug:` stanza, " +
+				"not a policy under a reserved signal name",
+		})
+	}
+
+	return ds
+}
+
+// validatePolicyRules is the per-rule half of [validateSignals], asked of one
+// policy under the field path that carries it.
+//
+// Extracted when `debug:` became a second stanza compiling to the same message
+// — one checker, two call sites, the rule CLAUDE.md states for exactly the
+// pair of surfaces that would otherwise drift apart.
+func validatePolicyRules(field string, policy *v1.SignalPolicy) Diagnostics {
+	var ds Diagnostics
+
+	for i, rule := range policy.GetAllow() {
+		interpolated := rule.GetSubjectFrom() != nil
+
+		if rule.GetSubject() == "" && !interpolated && rule.GetNamespace() == "" && len(rule.GetClaims()) == 0 {
+			ds = append(ds, Diagnostic{
+				Field: indexPath(fieldPath(field, "allow"), i),
+				Message: "sets no `subject:`, `namespace:`, or `claims:`, so it matches every sender; " +
+					"give it something to check, or remove the rule",
+			})
+		}
+		if subject := rule.GetSubject(); subject != "" && !v1.LooksLikeQualifiedSubject(subject) {
+			ds = append(ds, Diagnostic{
+				Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
+				Message: "is not \"<issuer>#<subject>\"; a bare subject is refused because a subject " +
+					"is only unique within its issuer",
+			})
+		}
+
+		// The narrowing check. A rule whose subject: is an expression lets
+		// whoever starts the run decide what it resolves to, by choosing
+		// what they submit for the input the expression reads — so a rule
+		// that interpolates and sets nothing else lets them name
+		// themselves as their own approver. It must be accompanied by
+		// something the run's inputs cannot reach.
+		//
+		// Asked of [v1.SubjectFromIsNarrowed] rather than restated here,
+		// because the server refuses the same shape at submit and a
+		// validator that disagreed with it would report a file as fine and
+		// then have it refused — see that function on why `namespace:` is
+		// not one of the constraints that counts, however much it looks
+		// like one.
+		if interpolated && !v1.SubjectFromIsNarrowed(policy, rule) {
+			ds = append(ds, Diagnostic{
+				Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
+				Message: "is an expression resolved from this run's own inputs, but nothing alongside " +
+					"it narrows who that may name; whoever starts the run chooses that input, so as " +
+					"written they may name themselves as their own approver; add a `claims:` entry to " +
+					"the rule, or `distinct_from_starter: true` to the policy, or write the subject " +
+					"as a literal. A `namespace:` does not narrow this — every sender that reaches " +
+					"the check is already in the run's own namespace",
+			})
+		}
+	}
+
+	return ds
+}
+
 // validateSignals reports what is wrong with the declared `signals:` block
 // beyond what the schema's own per-field rules already catch — a policy for a
 // name no `wait_for_signal:` waits for, and a rule with nothing on it to
@@ -411,49 +553,7 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 			continue
 		}
 
-		for i, rule := range declared[name].GetAllow() {
-			interpolated := rule.GetSubjectFrom() != nil
-
-			if rule.GetSubject() == "" && !interpolated && rule.GetNamespace() == "" && len(rule.GetClaims()) == 0 {
-				ds = append(ds, Diagnostic{
-					Field: indexPath(fieldPath(field, "allow"), i),
-					Message: "sets no `subject:`, `namespace:`, or `claims:`, so it matches every sender; " +
-						"give it something to check, or remove the rule",
-				})
-			}
-			if subject := rule.GetSubject(); subject != "" && !v1.LooksLikeQualifiedSubject(subject) {
-				ds = append(ds, Diagnostic{
-					Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
-					Message: "is not \"<issuer>#<subject>\"; a bare subject is refused because a subject " +
-						"is only unique within its issuer",
-				})
-			}
-
-			// The narrowing check. A rule whose subject: is an expression lets
-			// whoever starts the run decide what it resolves to, by choosing
-			// what they submit for the input the expression reads — so a rule
-			// that interpolates and sets nothing else lets them name
-			// themselves as their own approver. It must be accompanied by
-			// something the run's inputs cannot reach.
-			//
-			// Asked of [v1.SubjectFromIsNarrowed] rather than restated here,
-			// because the server refuses the same shape at submit and a
-			// validator that disagreed with it would report a file as fine and
-			// then have it refused — see that function on why `namespace:` is
-			// not one of the constraints that counts, however much it looks
-			// like one.
-			if interpolated && !v1.SubjectFromIsNarrowed(declared[name], rule) {
-				ds = append(ds, Diagnostic{
-					Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
-					Message: "is an expression resolved from this run's own inputs, but nothing alongside " +
-						"it narrows who that may name; whoever starts the run chooses that input, so as " +
-						"written they may name themselves as their own approver; add a `claims:` entry to " +
-						"the rule, or `distinct_from_starter: true` to the policy, or write the subject " +
-						"as a literal. A `namespace:` does not narrow this — every sender that reaches " +
-						"the check is already in the run's own namespace",
-				})
-			}
-		}
+		ds = append(ds, validatePolicyRules(field, declared[name])...)
 	}
 
 	return ds

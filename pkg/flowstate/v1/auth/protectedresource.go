@@ -393,12 +393,32 @@ func (p *ProtectedResource) ResourcePath() string {
 
 // MetadataURL is where this deployment serves its RFC 9728 document — always
 // derived from the configured resource, never from a request. It is what
-// [WithProtectedResource] adds to an [Authenticator]'s 401 challenge, and
-// what cmd/flow mounts [Handler] at.
+// cmd/flow mounts [Handler] at. A challenge should use
+// [ProtectedResource.ChallengeMetadataURL] instead, so it cannot direct a
+// client to mint a token for a different resource than the rejecting surface
+// accepts.
 func (p *ProtectedResource) MetadataURL() string {
 	if p == nil {
 		return ""
 	}
+	return p.metadataURL
+}
+
+// ChallengeMetadataURL returns the RFC 9728 metadata URL this resource may
+// advertise in a challenge from a surface bound to resource. It returns
+// nothing when the document describes a different resource: following that
+// instruction would make a client mint precisely the audience the surface
+// refuses, producing a discovery loop rather than a usable credential.
+//
+// An empty resource means the surface has not narrowed issuer-wide audiences,
+// so the document remains a truthful instruction. This preserves Connect's
+// migration behavior while giving MCP the same rule without replacing either
+// transport's challenge renderer.
+func (p *ProtectedResource) ChallengeMetadataURL(resource string) string {
+	if p == nil || (resource != "" && resource != p.resource) {
+		return ""
+	}
+
 	return p.metadataURL
 }
 

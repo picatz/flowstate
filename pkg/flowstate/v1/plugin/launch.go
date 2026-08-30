@@ -157,6 +157,18 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	}
 	defer stderrW.Close()
 
+	// Open stdin ourselves so every descriptor os/exec will rebuild in the
+	// child exists before a pinned image is moved above that scratch range. A
+	// nil Stdin makes os/exec open /dev/null later, after the bound is chosen.
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		hostPipeW.Close()
+		stdoutR.Close()
+		stderrR.Close()
+		return nil, pluginError(found.Name, found.Path, fmt.Errorf("%w: stdin: %w", ErrLaunch, err))
+	}
+	defer stdin.Close()
+
 	// The token exists for this launch only. Nothing persists it, and a restart
 	// mints a new one, so a token that leaked stops being useful the moment the
 	// process it belonged to ends.
@@ -182,7 +194,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	cmd.Args = []string{found.Path}
 	cmd.Dir = socketDir
 	cmd.Env = pluginEnv(cfg, socketPath, token)
-	cmd.Stdin = nil
+	cmd.Stdin = stdin
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
 	cmd.ExtraFiles = []*os.File{hostPipeR}
@@ -193,6 +205,16 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	// how long "asks" lasts before os/exec stops asking.
 	cmd.Cancel = func() error { return terminateProcess(cmd.Process, false) }
 	cmd.WaitDelay = cfg.ShutdownGrace
+
+	if image != nil && image.pinned {
+		if err := image.prepareForExec([]*os.File{stdin, stdoutW, stderrW, hostPipeR}); err != nil {
+			hostPipeW.Close()
+			stdoutR.Close()
+			stderrR.Close()
+			return nil, pluginError(found.Name, found.Path, fmt.Errorf("%w: preparing pinned image: %w", ErrLaunch, err))
+		}
+		cmd.Path = image.execPath
+	}
 
 	if err := cmd.Start(); err != nil {
 		hostPipeW.Close()

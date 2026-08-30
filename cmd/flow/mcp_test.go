@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 
@@ -113,20 +115,38 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 	registered := registeredToolNames(t)
 	require.NotEmpty(t, registered)
 
-	for name := range registered {
-		if documentedLocalTools[name] {
-			action, err := v1.AuthorizationActionForMCPTool(name)
-			require.NoError(t, err,
-				"%q is registered and no authorization action names it", name)
-			require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
-
-			continue
+	bound := map[string]v1.AuthorizationAction{}
+	for _, binding := range v1.AuthorizationActionBindings() {
+		tools := append([]string(nil), binding.GetMcpTools()...)
+		for _, rpc := range binding.GetRpcs() {
+			tools = append(tools, v1.MCPToolNameForRPC(rpc))
 		}
+		for _, name := range tools {
+			previous, seen := bound[name]
+			require.False(t, seen, "%q is bound to both %s and %s; an MCP tool has one action",
+				name, previous, binding.GetAction())
+			bound[name] = binding.GetAction()
+		}
+	}
 
-		action, err := v1.AuthorizationActionForRPC(rpcNameOfTool(name))
+	for name := range registered {
+		action, err := v1.AuthorizationActionForMCPTool(name)
 		require.NoError(t, err,
-			"%q projects an rpc that no authorization action names", name)
+			"%q is registered and no authorization action names it", name)
+		require.Equal(t, bound[name], action)
 		require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
+
+		// The audit mapping is the same lookup, exercised through the actual
+		// recorder rather than inferred from it. A registered tool whose audit
+		// subject cannot produce exactly one record fails beside registration.
+		var sink mcpAuditEmitter
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink))
+		require.NoError(t, err)
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{MCPTool: name}))
+		require.Len(t, sink.records, 1)
+		require.Equal(t, name, sink.records[0].GetMcpTool())
+		require.Empty(t, sink.records[0].GetRpc())
+		require.Equal(t, action, sink.records[0].GetAction())
 	}
 
 	for _, binding := range v1.AuthorizationActionBindings() {
@@ -139,6 +159,16 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 					"listing it here is a second spelling of flowmcp.ToolName", tool)
 		}
 	}
+}
+
+type mcpAuditEmitter struct {
+	records []*v1.AuditRecord
+}
+
+func (e *mcpAuditEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
+	e.records = append(e.records, record)
+
+	return nil
 }
 
 // documentedLocalTools names every tool on this surface that is not the

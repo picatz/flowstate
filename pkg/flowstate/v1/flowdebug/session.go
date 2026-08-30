@@ -544,6 +544,11 @@ type promptSubject struct {
 	// Empty at an autopsy, and empty on a run carrying no runtime position.
 	workflow string
 
+	// backtrace is the current step followed by the call sites that reached
+	// it, from the engine's execution context. It is captured with the scope so
+	// every front reads the same stop even if the run resumes concurrently.
+	backtrace *v1.DebugBacktrace
+
 	// redactText and redactValue are the withholding that was in force when
 	// this pause began, captured with the scope rather than read when an
 	// answer is returned.
@@ -760,8 +765,10 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	// rather than as a name. See [Position.Workflow].
 	workflow, _ := v1.ExecutingWorkflowFromContext(ctx)
 
+	kind := v1.NodeKind(node)
 	s.prompting(promptSubject{
-		scope: scope, step: node.GetId(), kind: NodeKind(node), workflow: workflow,
+		scope: scope, step: node.GetId(), kind: kind, workflow: workflow,
+		backtrace: v1.ExecutingBacktraceFromContext(ctx, node.GetId(), kind),
 	})
 	defer s.prompting(promptSubject{})
 
@@ -1023,7 +1030,7 @@ func (s *Session) announce(node *v1.Node) {
 		at = fmt.Sprintf("   t=%s", elapsed)
 	}
 
-	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), NodeKind(node), at)
+	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), v1.NodeKind(node), at)
 }
 
 // Close releases the session's reader.
