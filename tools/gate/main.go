@@ -174,12 +174,13 @@ func analyse() (analysis, error) {
 		// test-import expansion carries them the rest of the way.
 		//
 		// The same is true of the repository-level data p.repoTestData
-		// names — Markdown under docs/, README.md, AGENTS.md — and it
-		// bites harder there, because such a diff usually moves no .go
-		// file at all: docs/README.md alone resolves to no package, so
-		// without this seeding the local gate ran no test leg and the
-		// author heard about an incomplete index from CI instead
-		// (#708). Read the test sources at most once for both.
+		// names — Markdown under docs/, README.md, AGENTS.md and the
+		// repository-owned agent configuration — and it bites harder
+		// there, because such a diff usually moves no .go file at all:
+		// docs/README.md alone resolves to no package, so without this
+		// seeding the local gate ran no test leg and the author heard about
+		// an incomplete index from CI instead (#708). Read the test sources
+		// at most once for both.
 		var testSrc map[string][]byte
 		sources := func() map[string][]byte {
 			if testSrc == nil {

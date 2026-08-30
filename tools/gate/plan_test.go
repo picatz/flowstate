@@ -302,7 +302,7 @@ func TestBuildPlan(t *testing.T) {
 				docs:          true,
 				examples:      true,
 				repoTestData:  true,
-				repoDataRoots: []string{"docs"},
+				repoDataRoots: []string{agentConfigDataRoot, "docs"},
 				reasons: map[string]string{
 					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
@@ -322,6 +322,34 @@ func TestBuildPlan(t *testing.T) {
 			got := buildPlan(tt.changed)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildPlan(%v)\n got %+v\nwant %+v", tt.changed, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAgentConfigurationPathsReachStructuralTests covers the repository-owned
+// surfaces whose contract is about directory parity and complete sets rather
+// than one file read. A one-sided skill edit, Amp setting, Claude adapter, or
+// archived guidance change must all seed tools/agentconfig locally.
+func TestAgentConfigurationPathsReachStructuralTests(t *testing.T) {
+	t.Parallel()
+
+	for _, changed := range []string{
+		".agents/skills/comms-review/SKILL.md",
+		".amp/settings.json",
+		"CLAUDE.md",
+		".agent-history/skills/comms-review/SKILL.md",
+	} {
+		t.Run(changed, func(t *testing.T) {
+			p := buildPlan([]string{changed})
+			if !p.repoTestData {
+				t.Fatal("agent configuration must be repository test data")
+			}
+			if !reflect.DeepEqual(p.repoDataRoots, []string{agentConfigDataRoot}) {
+				t.Fatalf("repoDataRoots = %v, want [%q]", p.repoDataRoots, agentConfigDataRoot)
+			}
+			if got := repoDataDepPackages(nil, p.repoDataRoots); !reflect.DeepEqual(got, []string{agentConfigPkg}) {
+				t.Fatalf("repoDataDepPackages = %v, want [%q]", got, agentConfigPkg)
 			}
 		})
 	}
@@ -685,8 +713,8 @@ func TestRepoDataDepPackages(t *testing.T) {
 		m + "/cmd/flow": []byte("const docsDir = \"../../docs\"\nconst referenceDir = \"../../docs/reference\""),
 		// pkg/flowstate/v1/flowfile/readme_test.go.
 		m + "/pkg/flowstate/v1/flowfile": []byte(`os.ReadFile(filepath.Join(root, "docs", "ARCHITECTURE.md"))`),
-		// pkg/flowstate/v1/agentsmd_test.go.
-		m + "/pkg/flowstate/v1": []byte(`os.ReadFile("../../../AGENTS.md")`),
+		// tools/agentconfig/agentconfig_test.go.
+		m + "/tools/agentconfig": []byte(`os.ReadFile(filepath.Join(root, "AGENTS.md"))`),
 		// A doc comment naming a document, with no test reading one:
 		// prose is not a data dependency.
 		m + "/pkg/flowstate/v1/engine": []byte(`// The retry defaults docs/DSL.md describes.`),
@@ -698,8 +726,8 @@ func TestRepoDataDepPackages(t *testing.T) {
 	got := repoDataDepPackages(testSrc, []string{"AGENTS.md", "README.md", "docs"})
 	want := []string{
 		m + "/cmd/flow",
-		m + "/pkg/flowstate/v1",
 		m + "/pkg/flowstate/v1/flowfile",
+		m + "/tools/agentconfig",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("repoDataDepPackages = %v, want %v", got, want)
@@ -728,17 +756,16 @@ func TestRepoDataDepPackagesIsNotEveryPackage(t *testing.T) {
 }
 
 // TestRepoDataRootsScopeTheSeed is why the roots are recorded per diff rather
-// than folded into one fixed pattern. pkg/flowstate/v1's tests read AGENTS.md,
-// and most of this module imports that package — so seeding AGENTS.md's readers
-// on a documentation change would expand a docs edit into a near-full run for a
-// dependency it does not have. Each root reaches its own readers and no others.
+// than folded into one fixed pattern. tools/agentconfig reads AGENTS.md, but a
+// docs edit has no dependency on that package. Each root reaches its own readers
+// and no others.
 func TestRepoDataRootsScopeTheSeed(t *testing.T) {
 	t.Parallel()
 
 	const m = modulePath
 	testSrc := map[string][]byte{
-		m + "/cmd/flow":         []byte(`const docsDir = "../../docs"`),
-		m + "/pkg/flowstate/v1": []byte(`os.ReadFile("../../../AGENTS.md")`),
+		m + "/cmd/flow":          []byte(`const docsDir = "../../docs"`),
+		m + "/tools/agentconfig": []byte(`os.ReadFile(filepath.Join(root, "AGENTS.md"))`),
 	}
 
 	for _, tc := range []struct {
@@ -747,7 +774,7 @@ func TestRepoDataRootsScopeTheSeed(t *testing.T) {
 		want    string
 	}{
 		{changed: "docs/DEPLOYMENT.md", root: "docs", want: m + "/cmd/flow"},
-		{changed: "AGENTS.md", root: "AGENTS.md", want: m + "/pkg/flowstate/v1"},
+		{changed: "AGENTS.md", root: "AGENTS.md", want: m + "/tools/agentconfig"},
 	} {
 		t.Run(tc.changed, func(t *testing.T) {
 			p := buildPlan([]string{tc.changed})
