@@ -563,10 +563,12 @@ if !ok || caller.Mode() != flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MO
 
 Do not write `mode != REHEARSAL`. `UNSPECIFIED` is the zero value on purpose and
 means unknown: a new plugin receives it from an older host that never sent the
-field, from a missing identity, and from an enum value the SDK does not
-understand. All of those must remain non-production. A new host's additive field
-is ignored by an old plugin, so old-host/new-plugin and new-host/old-plugin
-pairings both remain wire compatible without making absence mean production.
+field, from a request that omitted identity entirely, and from an enum value the
+SDK does not understand. All of those must remain non-production. A current host
+still sends an explicit empty identity with the host-established mode when no
+caller authenticated. A new host's additive field is ignored by an old plugin,
+so old-host/new-plugin and new-host/old-plugin pairings both remain wire
+compatible without making absence mean production.
 
 The value is authoritative only on today's directly launched, private Unix
 socket transport. It is set from the local host's unforgeable in-process

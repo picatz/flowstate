@@ -161,10 +161,10 @@ type WorkloadIdentity struct {
 	// may act on a run; `deployment` is one of the attributes a policy may use to
 	// decide what a run may reach.
 	Deployment string `protobuf:"bytes,5,opt,name=deployment,proto3" json:"deployment,omitempty"`
-	// Mode is an operational fact established by the host that launched and is
-	// directly connected to the plugin. It is not a credential or an identity
-	// claim, and a plugin must not derive it from subject, claims, task input, or
-	// any workflow-authored value.
+	// Mode is operational context, not a credential or an identity claim. When
+	// this identity is sent to a plugin, the host that launched and is directly
+	// connected to that plugin establishes the value; a plugin must not derive
+	// it from subject, claims, task input, or any workflow-authored value.
 	//
 	// Absence from an older host decodes as UNSPECIFIED (unknown), never
 	// PRODUCTION. Unknown enum values must be treated the same way. A plugin

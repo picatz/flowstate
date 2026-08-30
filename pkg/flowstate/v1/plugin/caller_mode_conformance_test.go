@@ -42,8 +42,8 @@ func runCallerModePlugin() int {
 }
 
 // TestCallerModeHostSDKConformance proves the host request, protocol wire, SDK
-// request handler, and public accessor agree. UNKNOWN and unknown future enum
-// values remain UNKNOWN rather than falling through to production.
+// request handler, and public accessor agree. Unspecified and unknown future
+// enum values remain unknown rather than falling through to production.
 func TestCallerModeHostSDKConformance(t *testing.T) {
 	t.Parallel()
 	host := openHost(t, testConfig(t, pluginDir(t, "caller-mode")))
@@ -77,4 +77,36 @@ func TestCallerModeHostSDKConformance(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLocalDriverOverridesAnOrdinaryIdentityMode is the public-embedder case:
+// Run marks its scope local regardless of how the optional context identity was
+// constructed. The real host adapter must turn that host-owned fact into
+// REHEARSAL before the real SDK plugin sees it, rather than trusting the
+// ordinary identity's production value.
+func TestLocalDriverOverridesAnOrdinaryIdentityMode(t *testing.T) {
+	host := openHost(t, testConfig(t, pluginDir(t, "caller-mode")))
+	require.Len(t, host.TaskDefs(), 1)
+
+	registry := flowstatev1.NewRegistry()
+	require.NoError(t, registry.Register(host.TaskDefs()[0]))
+	ctx := flowstatev1.NewContextWithRegistry(t.Context(), registry)
+	ctx = NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{
+		Subject: "embedder",
+		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
+	})
+
+	outputs, err := flowstatev1.Run(ctx, &flowstatev1.Workflow{
+		Name: "local-embedder-mode",
+		Steps: []*flowstatev1.Node{{
+			Id: "read",
+			Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{
+				Name: "caller-mode.read",
+			}},
+		}},
+	})
+	require.NoError(t, err)
+
+	got := outputs.GetStepValues()["read"].GetNamedValues()["mode"].GetLiteral().GetInt64Value()
+	require.Equal(t, int64(flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL), got)
 }
