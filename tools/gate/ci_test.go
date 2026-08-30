@@ -54,12 +54,33 @@ func mustSkip(t *testing.T, ds map[string]decision, jobs ...string) {
 	}
 }
 
-// TestAMarkdownOnlyDiffReachesNothing is the case this whole mechanism exists
-// for: PR #659 changed CLAUDE.md alone and ran appearance, fuzz-smoke, proto,
-// staticcheck and test. None of those can be affected by that file.
-func TestAMarkdownOnlyDiffReachesNothing(t *testing.T) {
-	ds := decide(t, []string{"CLAUDE.md"}, nil, "pull_request")
+// TestAnUnvalidatedMarkdownOnlyDiffReachesNothing is the case this whole
+// mechanism exists for: a prose file no test reads cannot affect any job.
+// CLAUDE.md no longer belongs in this case because tools/agentconfig validates
+// that adapter and its relationship to the shared contract.
+func TestAnUnvalidatedMarkdownOnlyDiffReachesNothing(t *testing.T) {
+	ds := decide(t, []string{"SECURITY.md"}, nil, "pull_request")
 	mustSkip(t, ds, "test", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
+}
+
+func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
+	for _, f := range []string{
+		".agents/skills/comms-review/SKILL.md",
+		".claude/skills/comms-review/SKILL.md",
+		".amp/settings.json",
+		"CLAUDE.md",
+		"AGENT_FIELD_NOTES_LEGACY.md",
+	} {
+		t.Run(f, func(t *testing.T) {
+			// CI does not seed test-data readers into affected: the full
+			// test job already covers them, while treating the synthetic
+			// package as Go affected would also run staticcheck and
+			// vulncheck. analyse(false) is the production path.
+			ds := decide(t, []string{f}, nil, "pull_request")
+			mustRun(t, ds, "test")
+			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
+		})
+	}
 }
 
 // TestEveryDecisionSaysWhy holds both answers to the same standard the local
@@ -117,8 +138,8 @@ func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 // TestReadmeOrArchitectureOnlyStillReachesTheTestJob is the regression for a
 // Codex P2 on #688: cmd/flow/commands_test.go reads README.md's command
 // table, pkg/flowstate/v1/flowfile/readme_test.go compiles the Flowfiles
-// embedded in README.md and docs/ARCHITECTURE.md, pkg/flowstate/v1/agentsmd_test.go
-// reads AGENTS.md, and cmd/flow/docs_test.go reads and validates every file
+// embedded in README.md and docs/ARCHITECTURE.md, tools/agentconfig validates
+// AGENTS.md, and cmd/flow/docs_test.go reads and validates every file
 // under docs/reference/ — five files read with os.ReadFile rather than an
 // import, so a diff touching only one of them moved neither a Go package,
 // examples/, nor proto/, and reached no job at all before p.repoTestData
