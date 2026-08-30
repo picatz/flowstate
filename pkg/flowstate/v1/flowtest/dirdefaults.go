@@ -99,6 +99,15 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 	return parseDirDefaults(data, path)
 }
 
+// LoadDirDefaultsSource validates testdefaults.yaml bytes through the same
+// strict parser, expansion bounds, and decoder [LoadSourceAt] uses when a suite
+// includes them. It deliberately stops before folding: semantic rules that
+// require an effective case remain owned by the suite load.
+func LoadDirDefaultsSource(data []byte, path string) error {
+	_, err := parseDirDefaults(data, path)
+	return err
+}
+
 // parseDirDefaults is the byte seam behind [loadDirDefaults]. Keeping the
 // strict decode and expansion checks here lets an editor validate an unsaved
 // testdefaults.yaml through the same loader as the suite beside it, without

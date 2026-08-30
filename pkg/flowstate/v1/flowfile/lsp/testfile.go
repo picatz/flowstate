@@ -55,14 +55,27 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 	}
 
 	// A defaults document is validated semantically when a suite includes it;
-	// on its own there is no effective case to fold it into. Its strict YAML
-	// shape is still checked directly, and completion/hover answer its language.
+	// on its own there is no effective case to fold it into. Its strict shape
+	// still goes through the loader, not the LSP's YAML parser alone.
 	if doc.kind == docTestDefaults {
-		if doc.parseErr == nil {
+		path, ok := doc.filesystemPath()
+		if !ok {
+			path = string(doc.uri)
+		}
+		err := flowtest.LoadDirDefaultsSource([]byte(doc.text), path)
+		if err == nil {
 			return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{}}}
 		}
+		var defaultsErr *flowtest.DirDefaultsError
+		if errors.As(err, &defaultsErr) {
+			err = defaultsErr.Err
+		}
+		code := codeTestFile
+		if doc.parseErr != nil {
+			code = codeYAMLSyntax
+		}
 		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{
-			yamlDiagnostic(doc, doc.parseErr, codeYAMLSyntax),
+			yamlDiagnostic(doc, err, code),
 		}}}
 	}
 

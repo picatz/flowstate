@@ -450,18 +450,29 @@ func (s *FlowfileServer) awaitDoc(ctx context.Context, conn *jsonrpc2.Conn, uri 
 func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *document) {
 	if doc.isTestDocument() {
 		var included *document
+		var openDefaults *document
 		tracked := true
 		if doc.kind == docTestFile {
 			if path, ok := doc.filesystemPath(); ok {
 				defaultsURI := fileURI(filepath.Join(filepath.Dir(path), flowtest.DirDefaultsName))
-				tracked = s.rememberTestDefaults(doc.uri, defaultsURI)
+				var current bool
+				tracked, current = s.rememberTestDefaults(doc, defaultsURI)
+				if !current {
+					return
+				}
+				openDefaults, _ = s.docs.get(defaultsURI)
 				if tracked {
-					included, _ = s.docs.get(defaultsURI)
+					included = openDefaults
 				}
 			}
 		}
 		publications := diagnoseTestPublications(doc, included)
 		if !tracked {
+			// The saved defaults are honest input for the overflow suite, but a
+			// problem from them is not a problem in the newer open buffer.
+			if openDefaults != nil {
+				publications = publications[:1]
+			}
 			publications[0].diagnostics = append(publications[0].diagnostics, lsp.Diagnostic{
 				Range: documentStart, Severity: lsp.Warning, Source: diagnosticSource, Code: codeTestDefaultsDependents,
 				Message: fmt.Sprintf("this suite is beyond the %d open-suite limit for live testdefaults.yaml revalidation; saved defaults are checked instead", maxTestDefaultsDependents),
@@ -515,27 +526,31 @@ func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.
 // rememberTestDefaults records a suite for live-buffer revalidation. The bound
 // limits one defaults keystroke to a fixed number of suite parses; callers that
 // do not fit use the saved defaults and publish an explicit warning.
-func (s *FlowfileServer) rememberTestDefaults(suite, defaults lsp.DocumentURI) bool {
+func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.DocumentURI) (tracked, current bool) {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
+	open, ok := s.docs.get(suite.uri)
+	if !ok || open != suite {
+		return false, false
+	}
 	if s.testDefaultsBySuite == nil {
 		s.testDefaultsBySuite = make(map[lsp.DocumentURI]lsp.DocumentURI)
 		s.testSuitesByDefaults = make(map[lsp.DocumentURI]map[lsp.DocumentURI]bool)
 	}
-	if previous, ok := s.testDefaultsBySuite[suite]; ok {
-		return previous == defaults
+	if previous, ok := s.testDefaultsBySuite[suite.uri]; ok {
+		return previous == defaults, true
 	}
 	dependents := s.testSuitesByDefaults[defaults]
 	if len(dependents) >= maxTestDefaultsDependents {
-		return false
+		return false, true
 	}
 	if dependents == nil {
 		dependents = make(map[lsp.DocumentURI]bool)
 		s.testSuitesByDefaults[defaults] = dependents
 	}
-	s.testDefaultsBySuite[suite] = defaults
-	dependents[suite] = true
-	return true
+	s.testDefaultsBySuite[suite.uri] = defaults
+	dependents[suite.uri] = true
+	return true, true
 }
 
 // publishTestDiagnostics replaces source's cached contributions and publishes

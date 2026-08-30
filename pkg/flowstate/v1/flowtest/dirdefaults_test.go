@@ -228,6 +228,16 @@ func TestLoadSourceAtWithDefaultsUsesTheProvidedLiveBytes(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestLoadDirDefaultsSourceUsesTheStrictDefaultsShape(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), flowtest.DirDefaultsName)
+	require.NoError(t, flowtest.LoadDirDefaultsSource([]byte("defaults: {}\n"), path))
+
+	err := flowtest.LoadDirDefaultsSource([]byte("tests: []\n"), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown field "tests"`)
+}
+
 // TestNoDirectoryFileMeansNothingChanges: the overwhelmingly common shape.
 func TestNoDirectoryFileMeansNothingChanges(t *testing.T) {
 	t.Parallel()

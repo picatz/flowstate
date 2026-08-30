@@ -147,9 +147,9 @@ func TestTheWorkflowFeaturesStayQuietOnATestFile(t *testing.T) {
 }
 
 // TestTheDirectoryDefaultsFileIsNeverAWorkflow: a standalone
-// `testdefaults.yaml` gets syntax feedback but not fold-dependent semantic
-// diagnostics — and above all, not the workflow grammar's opinion of a
-// `defaults:` block. Its completion and hover are covered separately.
+// `testdefaults.yaml` gets strict loader feedback but not fold-dependent
+// semantic diagnostics — and above all, not the workflow grammar's opinion of
+// a `defaults:` block. Its completion and hover are covered separately.
 func TestTheDirectoryDefaultsFileIsNeverAWorkflow(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
@@ -170,6 +170,11 @@ defaults:
 	require.Len(t, broken.Diagnostics, 1)
 	assert.Equal(t, codeYAMLSyntax, broken.Diagnostics[0].Code,
 		"a syntax error is still reported, as itself")
+
+	unknown := c.open("file:///dir3/testdefaults.yaml", "tests: []\n")
+	require.Len(t, unknown.Diagnostics, 1)
+	assert.Equal(t, codeTestFile, unknown.Diagnostics[0].Code)
+	assert.Contains(t, unknown.Diagnostics[0].Message, `unknown field "tests"`)
 }
 
 // TestABrokenDefaultsFileIsPublishedOnItsOwnURI: the loader owns both source
@@ -328,6 +333,37 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 	assert.Contains(t, params.Diagnostics[0].Message, "saved defaults are checked instead")
 }
 
+func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+	defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
+	require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
+	assert.Empty(t, c.open(string(defaultsURI), "defaults: {}\n").Diagnostics)
+
+	for i := range maxTestDefaultsDependents {
+		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
+		assert.Empty(t, c.open(uri, validSuite).Diagnostics)
+	}
+	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
+	params := c.open(overflow, validSuite)
+	require.Len(t, params.Diagnostics, 1)
+	assert.Equal(t, codeTestDefaultsDependents, params.Diagnostics[0].Code)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := len(c.published) - 1; i >= 0; i-- {
+		if c.published[i].URI == defaultsURI {
+			assert.Empty(t, c.published[i].Diagnostics,
+				"the overflow suite mapped a saved-file error onto the newer open buffer")
+			return
+		}
+	}
+	t.Fatal("the open defaults document never published diagnostics")
+}
+
 func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
 	t.Parallel()
 	s := &FlowfileServer{Logger: discardLogger()}
@@ -345,6 +381,20 @@ func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
 
 	require.Len(t, s.testDiagnosticsBySource[uri][uri], 1)
 	assert.Equal(t, "current", s.testDiagnosticsBySource[uri][uri][0].Message)
+}
+
+func TestAClosedSuiteCannotConsumeADefaultsDependencySlot(t *testing.T) {
+	t.Parallel()
+	s := &FlowfileServer{Logger: discardLogger()}
+	uri := lsp.DocumentURI("file:///closed/suite.test.yaml")
+	suite := s.docs.open(uri, 1, validSuite, nil)
+	s.docs.close(uri)
+
+	tracked, current := s.rememberTestDefaults(suite, "file:///closed/testdefaults.yaml")
+	assert.False(t, tracked)
+	assert.False(t, current)
+	assert.Empty(t, s.testDefaultsBySuite)
+	assert.Empty(t, s.testSuitesByDefaults)
 }
 
 func TestQuotedKeyUsesTheLoadersPosition(t *testing.T) {
