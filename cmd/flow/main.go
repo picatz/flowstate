@@ -3110,6 +3110,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	// against, without needing a throwaway Go program to find out.
 	keysCmd := newKeysCommand()
 	jwtCmd := newJWTCommand()
+	authCmd := newAuthCommand()
 
 	// Version command, answering "which build" the way a bug report or an
 	// agent transcript needs to: see version.go for why this is a verb rather
@@ -3302,6 +3303,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
+	authCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	jwtCmd.GroupID = "development"
@@ -3400,6 +3402,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
+	rootCmd.AddCommand(authCmd)
 
 	// The whole stack in one command, under `server` because that is where
 	// somebody looking for a server looks. Everything it is lives in
