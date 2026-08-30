@@ -507,6 +507,32 @@ func WalkNode(node *Node, w Walk) {
 	if w.Node != nil {
 		w.Node(node)
 	}
+	walkNodeValues(node, w)
+
+	switch kind := node.GetKind().(type) {
+	case *Node_ForEach:
+		WalkNodes(kind.ForEach.GetBody(), w)
+
+	case *Node_Loop:
+		WalkNodes(kind.Loop.GetBody(), w)
+
+	case *Node_Parallel:
+		for _, branch := range kind.Parallel.GetBranches() {
+			WalkNodes(branch.GetSteps(), w)
+		}
+
+	case *Node_Switch:
+		for _, body := range SwitchBodies(kind.Switch) {
+			WalkNodes(body, w)
+		}
+	}
+}
+
+// walkNodeValues visits every value held directly by node without descending
+// into nested steps. Keeping this as the value-position authority lets bounded
+// iterative validators inspect adversarial control-flow depth without creating
+// a second enumeration of the schema's value positions.
+func walkNodeValues(node *Node, w Walk) {
 
 	id := node.GetId()
 
@@ -535,18 +561,11 @@ func WalkNode(node *Node, w Walk) {
 	switch kind := node.GetKind().(type) {
 	case *Node_ForEach:
 		w.value(ValueSite{Slot: SlotForEachItems, Step: id, Value: kind.ForEach.GetItems()})
-		WalkNodes(kind.ForEach.GetBody(), w)
 
 	case *Node_Loop:
 		w.value(ValueSite{Slot: SlotLoopUntil, Step: id, Value: kind.Loop.GetUntil()})
 		w.value(ValueSite{Slot: SlotLoopInitial, Step: id, Value: kind.Loop.GetInitial()})
 		w.value(ValueSite{Slot: SlotLoopUpdate, Step: id, Value: kind.Loop.GetUpdate()})
-		WalkNodes(kind.Loop.GetBody(), w)
-
-	case *Node_Parallel:
-		for _, branch := range kind.Parallel.GetBranches() {
-			WalkNodes(branch.GetSteps(), w)
-		}
 
 	case *Node_Switch:
 		w.value(ValueSite{Slot: SlotSwitchValue, Step: id, Value: kind.Switch.GetValue()})
@@ -561,10 +580,6 @@ func WalkNode(node *Node, w Walk) {
 				})
 			}
 		}
-		for _, body := range SwitchBodies(kind.Switch) {
-			WalkNodes(body, w)
-		}
-
 	case *Node_Wait:
 		w.value(ValueSite{Slot: SlotWaitUntil, Step: id, Value: kind.Wait.GetUntil()})
 		w.value(ValueSite{Slot: SlotWaitSleep, Step: id, Value: kind.Wait.GetDurationExpr()})
