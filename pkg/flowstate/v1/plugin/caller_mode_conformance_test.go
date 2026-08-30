@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -19,20 +20,37 @@ func runCallerModePlugin() int {
 		Name:        "caller-mode",
 		Version:     "0.0.1",
 		Description: "reports the host-established caller mode",
-		Tasks: []sdk.Task{{
-			Name:   "read",
-			Input:  &flowstatev1.Task_Log_Inputs{},
-			Output: &flowstatev1.Task_Log_Outputs{},
-			Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
-				caller, ok := sdk.CallerFromContext(ctx)
-				if !ok {
-					return nil, sdk.InvalidInput("caller missing")
-				}
-				return &flowstatev1.Node_Outputs{NamedValues: map[string]*flowstatev1.Value{
-					"mode": flowstatev1.NewLiteral(int64(caller.Mode())),
-				}}, nil
+		Tasks: []sdk.Task{
+			{
+				Name:   "read",
+				Input:  &flowstatev1.Task_Log_Inputs{},
+				Output: &flowstatev1.Task_Log_Outputs{},
+				Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+					caller, ok := sdk.CallerFromContext(ctx)
+					if !ok {
+						return nil, sdk.InvalidInput("caller missing")
+					}
+					return &flowstatev1.Node_Outputs{NamedValues: map[string]*flowstatev1.Value{
+						"mode": flowstatev1.NewLiteral(int64(caller.Mode())),
+					}}, nil
+				},
 			},
-		}},
+			{
+				Name:   "require_rehearsal",
+				Input:  &flowstatev1.Task_Log_Inputs{},
+				Output: &flowstatev1.Task_Log_Outputs{},
+				Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+					caller, ok := sdk.CallerFromContext(ctx)
+					if !ok {
+						return nil, sdk.InvalidInput("caller missing")
+					}
+					if caller.Mode() != flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL {
+						return nil, sdk.InvalidInput("compensation caller is not rehearsal")
+					}
+					return &flowstatev1.Node_Outputs{}, nil
+				},
+			},
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "caller-mode fixture: %v\n", err)
@@ -47,7 +65,7 @@ func runCallerModePlugin() int {
 func TestCallerModeHostSDKConformance(t *testing.T) {
 	t.Parallel()
 	host := openHost(t, testConfig(t, pluginDir(t, "caller-mode")))
-	require.Len(t, host.TaskDefs(), 1)
+	require.Len(t, host.TaskDefs(), 2)
 	def := host.TaskDefs()[0]
 
 	for _, test := range []struct {
@@ -86,7 +104,7 @@ func TestCallerModeHostSDKConformance(t *testing.T) {
 // ordinary identity's production value.
 func TestLocalDriverOverridesAnOrdinaryIdentityMode(t *testing.T) {
 	host := openHost(t, testConfig(t, pluginDir(t, "caller-mode")))
-	require.Len(t, host.TaskDefs(), 1)
+	require.Len(t, host.TaskDefs(), 2)
 
 	registry := flowstatev1.NewRegistry()
 	require.NoError(t, registry.Register(host.TaskDefs()[0]))
@@ -109,4 +127,53 @@ func TestLocalDriverOverridesAnOrdinaryIdentityMode(t *testing.T) {
 
 	got := outputs.GetStepValues()["read"].GetNamedValues()["mode"].GetLiteral().GetInt64Value()
 	require.Equal(t, int64(flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL), got)
+}
+
+// TestLocalCompensationOverridesAnOrdinaryIdentityMode covers the separately
+// constructed compensation scope. It must preserve the host-owned local marker
+// so an ordinary context identity cannot make an undo call look like production
+// after the successful step's scope has gone away.
+func TestLocalCompensationOverridesAnOrdinaryIdentityMode(t *testing.T) {
+	host := openHost(t, testConfig(t, pluginDir(t, "caller-mode")))
+	require.Len(t, host.TaskDefs(), 2)
+
+	registry := flowstatev1.NewRegistry()
+	for _, def := range host.TaskDefs() {
+		require.NoError(t, registry.Register(def))
+	}
+	require.NoError(t, registry.Register(flowstatev1.TaskDef{
+		Name: "fail",
+		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			return nil, errors.New("force compensation")
+		},
+	}))
+	ctx := flowstatev1.NewContextWithRegistry(t.Context(), registry)
+	ctx = NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{
+		Subject: "embedder",
+		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
+	})
+
+	_, err := flowstatev1.Run(ctx, &flowstatev1.Workflow{
+		Name: "local-compensation-mode",
+		Steps: []*flowstatev1.Node{
+			{
+				Id: "read",
+				Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{
+					Name: "caller-mode.read",
+				}},
+				Undo: &flowstatev1.Compensation{Task: &flowstatev1.Task{
+					Name: "caller-mode.require_rehearsal",
+				}},
+			},
+			{
+				Id: "fail",
+				Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{
+					Name: "fail",
+				}},
+			},
+		},
+	})
+	require.ErrorContains(t, err, "force compensation")
+	require.ErrorContains(t, err, `undid "read"`)
+	require.NotContains(t, err.Error(), "compensation caller is not rehearsal")
 }
