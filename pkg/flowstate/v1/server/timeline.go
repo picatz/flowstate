@@ -10,6 +10,8 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -144,6 +146,11 @@ const (
 	// plainly — see [v1.GetTimelineResponse.Truncated].
 	maxTimelineScan = 60_000
 
+	// maxTimelineRequests independently bounds calls to Temporal. Event and
+	// entry limits cannot provide this bound because Temporal chooses how many
+	// events a page contains.
+	maxTimelineRequests = 100
+
 	// maxTimelineFailureBytes bounds one failure message.
 	//
 	// A failure's message is the one thing reported here whose length is chosen
@@ -229,73 +236,101 @@ func (s *FlowstateServer) GetTimeline(
 	// path, charged to whoever asked.
 	inFlight := map[int64]*activityInFlight{}
 
-	history := temporal.GetWorkflowHistory(ctx, execution.GetWorkflowId(), execution.GetRunId(),
-		// Never a long poll. Waiting for a new event would turn a read into a
-		// held connection, on the one verb meant to be safe to point an agent
-		// at unattended.
-		false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	// Use the paginated API rather than the SDK iterator: the iterator hides page
+	// fetches, so it cannot enforce the independent backend-request budget this
+	// read path needs. Resolve the namespace through the same tenant mapping as
+	// authorization; pool mappings are immutable after server construction.
+	_, temporalNamespace, err := s.clientAndTemporalNamespaceFor(s.identityFor(ctx).GetNamespace())
+	if err != nil {
+		return nil, err
+	}
 
 	after := req.Msg.GetAfterEventId()
 	scanned := 0
 	assembled := 0
 	ended := false
 
-	for history.HasNext() {
-		if scanned >= maxTimelineScan || len(out.Entries) >= limit {
+	var nextPageToken []byte
+	requests := 0
+	for {
+		if scanned >= maxTimelineScan || len(out.Entries) >= limit || requests >= maxTimelineRequests {
 			out.Truncated = true
 			break
 		}
 
-		event, err := history.Next()
+		requests++
+		page, err := temporal.WorkflowService().GetWorkflowExecutionHistory(ctx,
+			&workflowservice.GetWorkflowExecutionHistoryRequest{
+				Namespace:              temporalNamespace,
+				Execution:              execution,
+				NextPageToken:          nextPageToken,
+				MaximumPageSize:        int32(min(maxTimelineScan-scanned, 1000)),
+				WaitNewEvent:           false,
+				HistoryEventFilterType: enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT,
+			})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("reading run history: %w", err))
 		}
-		scanned++
-
-		// Where this run sits in the chain, off the history's own first event.
-		// Both directions, because forward alone is a trap: omitting a run id
-		// resolves the latest segment, whose successor is by definition empty.
-		if started := event.GetWorkflowExecutionStartedEventAttributes(); started != nil {
-			out.PreviousRunId = started.GetContinuedExecutionRunId()
-			out.FirstRunId = started.GetFirstExecutionRunId()
+		events, err := timelineHistoryEvents(page)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("decoding run history: %w", err))
 		}
-		if next := event.GetWorkflowExecutionContinuedAsNewEventAttributes().GetNewExecutionRunId(); next != "" {
-			out.NextRunId = next
-		}
+		nextPageToken = page.GetNextPageToken()
 
-		entry := s.timelineEntry(event, inFlight)
-		if entry == nil {
-			continue
-		}
-		// The run reached its own ending, which is the claim [v1.GetTimelineResponse.Truncated]
-		// is checked against. Recorded from the walk rather than from what was
-		// reported, so a resumption that skips past the ending still knows the
-		// account is whole.
-		if entry.GetKind() == v1.TimelineEntry_KIND_RUN_ENDED ||
-			entry.GetKind() == v1.TimelineEntry_KIND_RUN_CONTINUED {
-			ended = true
-		}
+		for _, event := range events {
+			scanned++
 
-		// Skipped after the joins are made, never before: the scheduling a
-		// resumption walks past is what names the rows it will report.
-		if entry.GetEventId() <= after {
-			continue
+			// Where this run sits in the chain, off the history's own first event.
+			// Both directions, because forward alone is a trap: omitting a run id
+			// resolves the latest segment, whose successor is by definition empty.
+			if started := event.GetWorkflowExecutionStartedEventAttributes(); started != nil {
+				out.PreviousRunId = started.GetContinuedExecutionRunId()
+				out.FirstRunId = started.GetFirstExecutionRunId()
+			}
+			if next := event.GetWorkflowExecutionContinuedAsNewEventAttributes().GetNewExecutionRunId(); next != "" {
+				out.NextRunId = next
+			}
+
+			entry := s.timelineEntry(event, inFlight)
+			if entry == nil {
+				continue
+			}
+			// The run reached its own ending, which is the claim [v1.GetTimelineResponse.Truncated]
+			// is checked against. Recorded from the walk rather than from what was
+			// reported, so a resumption that skips past the ending still knows the
+			// account is whole.
+			if entry.GetKind() == v1.TimelineEntry_KIND_RUN_ENDED ||
+				entry.GetKind() == v1.TimelineEntry_KIND_RUN_CONTINUED {
+				ended = true
+			}
+
+			// Skipped after the joins are made, never before: the scheduling a
+			// resumption walks past is what names the rows it will report.
+			if entry.GetEventId() <= after {
+				continue
+			}
+
+			// Counted as the answer is assembled rather than measured afterwards,
+			// because a response refused for being too large is a question nobody
+			// gets an answer to. Stopping short is a truncation, which this already
+			// has a way to report — and never on the first entry, or a single
+			// oversized row would make a run unreadable rather than clipped.
+			size := proto.Size(entry)
+			if !timelineFits(assembled, size, len(out.Entries)) {
+				out.Truncated = true
+
+				break
+			}
+			assembled += size
+
+			out.Entries = append(out.Entries, entry)
+			if scanned >= maxTimelineScan || len(out.Entries) >= limit {
+				break
+			}
 		}
-
-		// Counted as the answer is assembled rather than measured afterwards,
-		// because a response refused for being too large is a question nobody
-		// gets an answer to. Stopping short is a truncation, which this already
-		// has a way to report — and never on the first entry, or a single
-		// oversized row would make a run unreadable rather than clipped.
-		size := proto.Size(entry)
-		if !timelineFits(assembled, size, len(out.Entries)) {
-			out.Truncated = true
-
+		if len(nextPageToken) == 0 {
 			break
 		}
-		assembled += size
-
-		out.Entries = append(out.Entries, entry)
 	}
 
 	// Whether the walk reached the end of what was there, checked two ways
@@ -325,6 +360,34 @@ func (s *FlowstateServer) GetTimeline(
 	}
 
 	return connect.NewResponse(out), nil
+}
+
+func timelineHistoryEvents(page *workflowservice.GetWorkflowExecutionHistoryResponse) ([]*historypb.HistoryEvent, error) {
+	if page.GetHistory() != nil {
+		return page.GetHistory().GetEvents(), nil
+	}
+
+	var events []*historypb.HistoryEvent
+	for _, blob := range page.GetRawHistory() {
+		if blob == nil || len(blob.GetData()) == 0 {
+			continue
+		}
+		history := new(historypb.History)
+		var err error
+		switch blob.GetEncodingType() {
+		case enums.ENCODING_TYPE_PROTO3:
+			err = proto.Unmarshal(blob.GetData(), history)
+		case enums.ENCODING_TYPE_JSON:
+			err = protojson.Unmarshal(blob.GetData(), history)
+		default:
+			err = fmt.Errorf("unsupported history encoding %s", blob.GetEncodingType())
+		}
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, history.GetEvents()...)
+	}
+	return events, nil
 }
 
 // segmentClosed reports whether this execution has finished, which is what
