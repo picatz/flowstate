@@ -1405,12 +1405,12 @@ func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window life
 func (r ClaimRule) check(claims map[string]any) error {
 	value, ok := claims[r.Claim]
 	if !ok {
-		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf}
+		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf)}
 	}
 
 	found := claimStrings(value)
 	if len(found) == 0 {
-		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf, Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
+		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf), Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
 	}
 
 	// Exclusion is checked before acceptance so that a rule carrying both
@@ -1421,7 +1421,7 @@ func (r ClaimRule) check(claims map[string]any) error {
 		if slices.Contains(r.NoneOf, candidate) {
 			return &ClaimMismatchError{
 				Claim:        r.Claim,
-				Want:         r.AnyOf,
+				Want:         slices.Clone(r.AnyOf),
 				Got:          truncate(strings.Join(found, ", "), maxClaimValueLength),
 				RefusedValue: truncate(candidate, maxClaimValueLength),
 			}
@@ -1442,7 +1442,7 @@ func (r ClaimRule) check(claims map[string]any) error {
 
 	return &ClaimMismatchError{
 		Claim: r.Claim,
-		Want:  r.AnyOf,
+		Want:  slices.Clone(r.AnyOf),
 		Got:   truncate(strings.Join(found, ", "), maxClaimValueLength),
 	}
 }
