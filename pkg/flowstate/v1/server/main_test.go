@@ -290,6 +290,14 @@ func stepsScheduled(ctx context.Context, temporal client.Client, workflowID stri
 		if attributes == nil {
 			continue
 		}
+		switch attributes.GetActivityType().GetName() {
+		case "Task", "TaskWithPrev", "TaskInScope", "TaskAuthorized", "TaskInScopeAuthorized":
+			// Step dispatch; decode its first argument below.
+		default:
+			// Admission and vars activities are not steps and carry different
+			// input shapes.
+			continue
+		}
 
 		payloads := attributes.GetInput().GetPayloads()
 		if len(payloads) == 0 {

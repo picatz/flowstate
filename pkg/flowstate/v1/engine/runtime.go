@@ -26,10 +26,11 @@ import (
 // which the last worker to be constructed won. One thing carrying everything one
 // worker owns cannot disagree with itself about which worker it belongs to.
 type TaskRuntimeConfig struct {
-	store   *secrets.Store
-	policy  *auth.SecretPolicy
-	broker  *auth.Broker
-	catalog *v1.PluginCatalog
+	store     *secrets.Store
+	policy    *auth.SecretPolicy
+	broker    *auth.Broker
+	catalog   *v1.PluginCatalog
+	taskNames []string
 }
 
 // NewTaskRuntimeConfig validates and assembles worker task capabilities.
