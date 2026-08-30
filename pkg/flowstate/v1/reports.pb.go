@@ -715,10 +715,12 @@ type ScheduleDivergenceReport struct {
 	// Truncated reports that the diverging schedule spent its whole decision
 	// budget, so what it explored is only the part before the bound.
 	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
-	// WrittenOrder and Seeded are the two renderings the comparison was made
-	// over — the observable account of each run, for a person reading the
-	// failure rather than replaying it.
-	WrittenOrder  string `protobuf:"bytes,5,opt,name=written_order,json=writtenOrder,proto3" json:"written_order,omitempty"`
+	// WrittenOrder is the baseline rendering used for the comparison: the
+	// observable account of the ordinary run, for a person reading the failure
+	// rather than replaying it.
+	WrittenOrder string `protobuf:"bytes,5,opt,name=written_order,json=writtenOrder,proto3" json:"written_order,omitempty"`
+	// Seeded is the corresponding observable account produced by [seed]. It may
+	// contain task output and must be handled with the same trust as test output.
 	Seeded        string `protobuf:"bytes,6,opt,name=seeded,proto3" json:"seeded,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
