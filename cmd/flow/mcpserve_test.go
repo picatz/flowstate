@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
@@ -54,6 +56,7 @@ type mcpServeFixture struct {
 	issuer   *authtest.Issuer
 	resource *auth.ProtectedResource
 	logs     *bytes.Buffer
+	audit    *mcpServeAuditEmitter
 
 	// guard is the one the served surface was built with, kept so a test can
 	// hold its lock from outside and prove a handler really is behind it.
@@ -128,8 +131,11 @@ func newMCPServeFixtureForIssuer(
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	guard := newMCPServeRegistryGuard()
+	auditSink := &mcpServeAuditEmitter{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(auditSink))
+	require.NoError(t, err)
 
-	tools, err := mcpServeTools(guard, testTimeout)
+	tools, err := mcpServeTools(guard, testTimeout, recorder)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(logger, tools, verifier, protectedResource, mcpServeLimits{
@@ -144,8 +150,28 @@ func newMCPServeFixtureForIssuer(
 	t.Cleanup(server.Close)
 
 	return &mcpServeFixture{
-		server: server, issuer: issuer, resource: protectedResource, logs: logs, guard: guard,
+		server: server, issuer: issuer, resource: protectedResource, logs: logs, audit: auditSink, guard: guard,
 	}
+}
+
+type mcpServeAuditEmitter struct {
+	mu      sync.Mutex
+	records []*v1.AuditRecord
+}
+
+func (e *mcpServeAuditEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.records = append(e.records, record)
+
+	return nil
+}
+
+func (e *mcpServeAuditEmitter) Records() []*v1.AuditRecord {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return append([]*v1.AuditRecord(nil), e.records...)
 }
 
 // endpoint is where the MCP surface answers: the resource's own path, which is
@@ -619,6 +645,26 @@ func TestMCPServeServesAReducedToolList(t *testing.T) {
 		"flowstate_debug is served for the identical reason: it drives the same stubbed run, and "+
 			"a finite script cannot hold it open — an exhausted script resumes the run, so the "+
 			"bound that ends a flowstate_test call ends this one (#928 slice 3)")
+
+	// Call every tool with an empty document. Some correctly return a tool
+	// refusal because their required arguments are absent; authorization is
+	// write-ahead of parsing, so each still owes exactly one decision record.
+	for name := range served {
+		_, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name:      name,
+			Arguments: map[string]any{},
+		})
+		require.NoError(t, err, "calling registered tool %q reached a transport failure", name)
+	}
+
+	recorded := map[string]int{}
+	for _, record := range fixture.audit.Records() {
+		recorded[record.GetMcpTool()]++
+	}
+	require.Len(t, recorded, len(served), "a served tool emitted no authorization decision")
+	for name := range served {
+		require.Equal(t, 1, recorded[name], "%q emitted other than one authorization decision", name)
+	}
 }
 
 // TestMCPServeReachesTheRequestByteBound crosses the byte bound rather than
@@ -777,6 +823,17 @@ func TestMCPServeLeaksNoTokenMaterial(t *testing.T) {
 
 	rendered := renderEveryShape(result)
 	require.NotContains(t, rendered, token, "the token reached a tool result")
+	require.Len(t, fixture.audit.Records(), 1,
+		"one admitted tools/call did not produce exactly one authorization record")
+	record := fixture.audit.Records()[0]
+	require.Equal(t, flowmcp.ToolName("Validate"), record.GetMcpTool())
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE, record.GetAction())
+	require.Equal(t, "agent", record.GetIdentity().GetSubject())
+	require.Equal(t, "agent-idp", record.GetIssuerName())
+	auditRendering := renderEveryShape(record)
+	require.NotContains(t, auditRendering, token, "the token reached the audit record")
+	require.NotContains(t, auditRendering, "message: hello",
+		"a Flowfile argument reached the audit record")
 
 	// And a refused token must not reach the log either — the failure path is
 	// the one that has a reason to mention what it refused.
@@ -855,7 +912,7 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, maxSessionRequests: 1, sessionIdle: time.Minute}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil)
 	require.NoError(t, err)
 
 	_, err = mcpServeHandler(slog.Default(), tools, nil, nil, limits)
@@ -973,7 +1030,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	require.Equal(t, "/", protectedResource.ResourcePath(),
 		"a bare-origin resource is the shape this test exists for")
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),

@@ -186,18 +186,42 @@ func AuthorizationActionForRPC(rpc string) (AuthorizationAction, error) {
 			"proto/flowstate/v1/authorization.proto when none of them fits", rpc)
 }
 
+// MCPToolNameForRPC projects one WorkflowService method name onto the MCP tool
+// name that serves it. It is the one projection used by registration,
+// authorization lookup, audit mapping, and their conformance tests.
+func MCPToolNameForRPC(rpc string) string {
+	var b strings.Builder
+	b.WriteString("flowstate_")
+	for i, r := range rpc {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+
+	return b.String()
+}
+
 // AuthorizationActionForMCPTool answers which action authorizes one MCP tool,
-// whether the tool is an RPC's projection or one of the two that are not.
+// whether the tool is an RPC's projection or one that exists only on MCP.
 //
-// The projection rule lives with the surface that owns it (mcp.ToolName), so
-// what this takes is the RPC name a caller already resolved plus the tool name
-// itself; see cmd/flow's TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction,
-// which is where registration can be seen and therefore where the pairing is
-// held honest.
+// RPC projections are derived through [MCPToolNameForRPC] rather than copied
+// into AuthorizationActionBinding.mcp_tools. The latter remains only the
+// explicit list of tools no RPC projects, while callers get one total lookup
+// that cannot accidentally audit a tool under a different action than the one
+// authorization assigns it.
 func AuthorizationActionForMCPTool(tool string) (AuthorizationAction, error) {
 	for _, binding := range authorizationActionBindings {
 		if slices.Contains(binding.GetMcpTools(), tool) {
 			return binding.GetAction(), nil
+		}
+		for _, rpc := range binding.GetRpcs() {
+			if MCPToolNameForRPC(rpc) == tool {
+				return binding.GetAction(), nil
+			}
 		}
 	}
 

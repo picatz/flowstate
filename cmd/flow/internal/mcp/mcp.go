@@ -29,8 +29,8 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -40,6 +40,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
@@ -251,6 +252,12 @@ type Deps struct {
 	// is not. See remoteCatalogCall.
 	RemoteCatalogAddress string
 
+	// Audit records each registered tool's authorization decision at the last
+	// shared seam before its handler runs. Nil on stdio, whose local process
+	// makes no bearer authorization decision; flow mcp serve supplies the
+	// process recorder after bearer admission.
+	Audit *audit.Recorder
+
 	// WrapHandler, when set, wraps every tool handler [AddLocalCapabilities]
 	// registers — derived and caller-supplied alike — with the tool's own
 	// name in hand.
@@ -396,15 +403,18 @@ func AddLocalCapabilities(
 	addResources(srv, local, deps)
 }
 
-// wrapToolHandler applies [Deps.WrapHandler] when one was given, and is the
-// identity otherwise.
+// wrapToolHandler installs the verified principal, records the authorization
+// decision when this is the authenticated HTTP surface, and only then reaches
+// the caller's process-state guard and the tool itself.
 func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHandler {
-	handler = withMCPPrincipal(handler)
-	if deps.WrapHandler == nil {
-		return handler
+	if deps.WrapHandler != nil {
+		handler = deps.WrapHandler(name, handler)
+	}
+	if deps.Audit != nil {
+		handler = withMCPAudit(deps.Audit, name, handler)
 	}
 
-	return deps.WrapHandler(name, handler)
+	return withMCPPrincipal(handler)
 }
 
 // withMCPPrincipal installs the verified, token-free caller on the same
@@ -417,6 +427,41 @@ func withMCPPrincipal(next mcp.ToolHandler) mcp.ToolHandler {
 				ctx = auth.ContextWithPrincipal(ctx, principal)
 			}
 		}
+		return next(ctx, req)
+	}
+}
+
+// withMCPAudit is the authoritative MCP tool-authorization seam: the SDK has
+// resolved a registered tool and bearer admission has installed its attested,
+// token-free Principal, while neither argument parsing nor the tool's mutation
+// has happened yet. One allow is therefore complete and true even if the tool
+// later returns an error or its context is cancelled; those are execution
+// outcomes, not revisions to the authorization decision.
+func withMCPAudit(recorder *audit.Recorder, tool string, next mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		principal, ok := auth.PrincipalFromContext(ctx)
+		if !ok || principal.IsZero() || principal.IsAnonymous() {
+			// Unreachable on flow mcp serve: the shared admission sequence
+			// refuses all three before the SDK resolves a tool. Fail closed if
+			// wiring ever violates that invariant, and do not invent an identity
+			// for the audit record.
+			return ToolError(errors.New("MCP tool authorization reached no authenticated caller")), nil
+		}
+
+		identity := v1.ProtoWorkloadIdentity(auth.IdentityFromPrincipal(
+			principal, principal.Namespace, ""))
+		if err := recorder.Allow(ctx, audit.Subject{
+			MCPTool:    tool,
+			Identity:   identity,
+			IssuerName: principal.IssuerName,
+			Role:       principal.Role,
+		}); err != nil {
+			// Required audit failure refuses before next, preserving the same
+			// write-ahead guarantee the RPC surface has. ToolError keeps it a
+			// readable tool refusal rather than a transport failure.
+			return ToolError(err), nil
+		}
+
 		return next(ctx, req)
 	}
 }
@@ -482,19 +527,7 @@ func AddTools(
 // ToolName renders an RPC name as a tool name: GetCatalog becomes
 // flowstate_get_catalog, which is the casing MCP tools conventionally use.
 func ToolName(rpc string) string {
-	var b strings.Builder
-	b.WriteString(ToolPrefix)
-	for i, r := range rpc {
-		if r >= 'A' && r <= 'Z' {
-			if i > 0 {
-				b.WriteByte('_')
-			}
-			r += 'a' - 'A'
-		}
-		b.WriteRune(r)
-	}
-
-	return b.String()
+	return v1.MCPToolNameForRPC(rpc)
 }
 
 // ServiceMethod is one RPC, as the tool derivation needs it.

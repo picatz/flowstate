@@ -18,6 +18,7 @@ import (
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -170,6 +171,7 @@ func addMCPServeFlags(cmd *cobra.Command) {
 		"resource, so without one there is nothing to bind a token's audience to and `flow mcp "+
 		"serve` refuses to start rather than serving an unauthenticated MCP endpoint")
 	addTLSFlags(cmd)
+	addAuditRequiredFlag(cmd)
 
 	cmd.Flags().Int64("max-request-bytes", mcpServeDefaultMaxRequestBytes,
 		"largest request body this surface will read, in bytes. A request over the limit is "+
@@ -215,6 +217,7 @@ type mcpServeFlags struct {
 	maxSessions            int
 	maxSessionRequests     int
 	testTimeout            time.Duration
+	auditRequired          bool
 	protectedResourceFlags protectedResourceFlags
 	tls                    tlsFlags
 }
@@ -228,6 +231,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 	maxSessions, _ := cmd.Flags().GetInt("max-sessions")
 	maxSessionRequests, _ := cmd.Flags().GetInt("max-session-requests")
 	testTimeout, _ := cmd.Flags().GetDuration("test-timeout")
+	auditRequired, _ := cmd.Flags().GetBool(auditRequiredFlag)
 
 	return mcpServeFlags{
 		listen:                 listen,
@@ -238,6 +242,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 		maxSessions:            maxSessions,
 		maxSessionRequests:     maxSessionRequests,
 		testTimeout:            testTimeout,
+		auditRequired:          auditRequired,
 		protectedResourceFlags: protectedResourceFlagsOf(cmd),
 		tls:                    tlsFlagsOf(cmd),
 	}
@@ -778,7 +783,7 @@ func (r *mcpSessionRecorder) Unwrap() http.ResponseWriter {
 // outside and prove that every served handler — tools and resources alike —
 // really is behind it, which is a property of this wiring rather than of the
 // guard itself.
-func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) (*mcp.Server, error) {
+func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration, recorder *audit.Recorder) (*mcp.Server, error) {
 	srv := flowmcp.NewServer(version)
 
 	// The same nil-Temporal-client server `flow mcp` answers Validate,
@@ -795,6 +800,7 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) (*mc
 		srv,
 		local,
 		flowmcp.Deps{
+			Audit: recorder,
 
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
@@ -1066,7 +1072,12 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout)
+	recorder, err := startAudit(cmd.Context(), flags.auditRequired)
+	if err != nil {
+		return fmt.Errorf("configuring the audit trail: %w", err)
+	}
+
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder)
 	if err != nil {
 		return err
 	}

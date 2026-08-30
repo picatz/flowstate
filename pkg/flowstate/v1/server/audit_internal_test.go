@@ -16,6 +16,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // The behavioural half of the audit claims. auditseam_test.go proves every RPC
@@ -44,8 +45,15 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: running}, WithAudit(recorderFor(t, sink)))
+		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+			Issuer:     "https://issuer.example",
+			IssuerName: "production-issuer",
+			Subject:    "agent-1",
+			Role:       "operator",
+			Claims:     map[string]any{"private": "claim-value"},
+		})
 
-		_, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+		_, err := s.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
 		require.NoError(t, err)
 
 		record := sink.only(t)
@@ -55,6 +63,9 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		require.Equal(t, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, record.GetResourceKind())
 		require.Equal(t, "orders-1", record.GetResourceKey())
 		require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, record.GetDenyCode())
+		require.Equal(t, "production-issuer", record.GetIssuerName())
+		require.Equal(t, "operator", record.GetRole())
+		require.Empty(t, record.GetIdentity().GetClaims())
 		require.NotNil(t, record.GetDecidedAt())
 	})
 

@@ -1289,25 +1289,31 @@ previously undashboarded, which left the slot-exhaustion runbook below's
 
 ## Audit trail
 
-`flow server` and `flow server dev` write down every authorization decision —
-allow and deny alike — before the mutation the decision permits. This is not
-telemetry: it is unconditional, it is not sampled, and it does not depend on
-`OTEL_*` being configured at all. picatz/flowstate#1018 is the design; this is
-the part of it an operator turns a knob on.
+`flow server`, `flow server dev`, and authenticated `flow mcp serve` write down
+every authorization decision — allow and deny alike — before the mutation the
+decision permits. This is not telemetry: it is unconditional, it is not
+sampled, and it does not depend on `OTEL_*` being configured at all.
+picatz/flowstate#1018 is the design; this is the part of it an operator turns a
+knob on. Local `flow mcp` over stdio makes no bearer authorization decision and
+therefore emits no MCP authorization record.
 
 **What is recorded.** One record per decision, keyed by the closed
 `AuthorizationAction` vocabulary (`proto/flowstate/v1/authorization.proto`)
 rather than a second list of verbs — the audited surface is every action a
-WorkflowService RPC actually reaches, derived from the same bindings
-`TestEveryRPCHasExactlyOneAuthorizationAction` already checks, so a new RPC
-cannot arrive unaudited without that test failing first. Each record carries
-the action, the allow/deny decision, the RPC name, the caller's attested
-`WorkloadIdentity` (absent when the deployment runs `--insecure-no-auth`), the
-kind and id of the resource addressed (a workflow id, a schedule name, or a
-namespace), the server's own clock, and — on a denial — a code from a small
-closed set (`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`).
-There is no free-text field: no error message, no request payload, no
-specification. That is deliberate, not an oversight — see
+WorkflowService RPC or registered MCP tool actually reaches, derived from the
+same bindings the RPC and MCP conformance tests check, so a new operation
+cannot arrive unaudited without a test failing first. Each record carries the
+action, the allow/deny decision, exactly one operation name (`rpc` or
+`mcp_tool`), the caller's attested `WorkloadIdentity` (absent when a Connect
+deployment runs `--insecure-no-auth`), the bounded operator-chosen trusted
+issuer name and role that admitted the caller, the kind and id of the resource
+addressed (a workflow id, a schedule name, or a namespace), the server's own
+clock, and — on a denial — a code from a small closed set
+(`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`,
+`POLICY_DENIED`). There is no free-text field: no error message, request
+payload, specification, token, claims, MCP arguments or results, prompt,
+session id, or JSON-RPC request id. One record is the correlation unit for one
+resolved operation decision. That is deliberate, not an oversight — see
 `pkg/flowstate/v1/audit`'s package doc and `proto/flowstate/v1/audit.proto`'s
 file comment for why a scrubber was rejected in favor of a record with nothing
 in it for a scrubber to catch.
@@ -1353,9 +1359,13 @@ default here is a line of JSON on stderr per decision.
 mutation it authorizes, because the record's subject is the decision, not what
 happened afterward: "this caller was authorized for `workload.signal` on run X
 at server time T" is true the instant the check returns, whether or not
-Temporal goes on to deliver the signal. This trail therefore cannot answer
-"did the signal actually reach the run" — the run's own timeline and Temporal's
-event history are the artifacts for that question, not this one.
+Temporal goes on to deliver the signal. The same is true when an allowed MCP
+tool later returns an execution error or its context is cancelled: the one
+allow record remains truthful and no second outcome record is emitted. This
+trail therefore cannot answer "did the signal actually reach the run" or "did
+the tool finish" — the run's own timeline, Temporal's event history, and
+ordinary execution diagnostics are the artifacts for those questions, not
+this one.
 
 ## Worker capacity
 
