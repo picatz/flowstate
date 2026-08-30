@@ -42,7 +42,7 @@ func testGenerator(t *testing.T) *Generator {
 		DefaultAddress: "127.0.0.1:8080",
 		TaskPolicy: PolicyReference{
 			Description: "test policy",
-			Fields:      []PolicyField{{Name: "allow", Type: "sequence of strings"}},
+			Fields:      []PolicyField{{Name: "allow", Type: "sequence of string"}},
 		},
 	})
 	require.NoError(t, err)
