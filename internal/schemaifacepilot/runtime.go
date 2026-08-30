@@ -62,8 +62,8 @@ func (b *RuntimeBinding) Apply(positionals map[protoreflect.Name]string, validat
 			reflection.Set(field.descriptor, protoreflect.ValueOfString(value))
 			continue
 		}
-		if b.flags.Changed(selection.SurfaceName) {
-			reflection.Set(field.descriptor, protoreflect.ValueOfString(*b.values[selection.ProtoName]))
+		if value := *b.values[selection.ProtoName]; b.flags.Changed(selection.SurfaceName) && value != "" {
+			reflection.Set(field.descriptor, protoreflect.ValueOfString(value))
 		}
 	}
 	if validate != nil {

@@ -35,6 +35,16 @@ func TestGeneratedReferenceIsCurrentAndHasNoInventedProse(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(docs.String(), " | — | "))
 }
 
+func TestPresenceLabelSeparatesRequirednessFromProtobufPresence(t *testing.T) {
+	request := (&flowstatev1.GetRequest{}).ProtoReflect().Descriptor()
+	assert.Equal(t, "required", presenceLabel(request.Fields().ByName("workflow_id")))
+	assert.Equal(t, "optional; unset stays absent", presenceLabel(request.Fields().ByName("run_id")))
+
+	response := (&flowstatev1.GetResponse{}).ProtoReflect().Descriptor()
+	assert.Equal(t, "optional; unset uses the scalar zero value", presenceLabel(response.Fields().ByName("workflow_id")),
+		"a plain proto3 scalar is not required merely because it lacks presence")
+}
+
 func BenchmarkGeneration(b *testing.B) {
 	for b.Loop() {
 		var out bytes.Buffer

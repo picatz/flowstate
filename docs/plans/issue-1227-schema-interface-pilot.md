@@ -127,7 +127,7 @@ The fixture tests establish these outcomes:
 | Unknown, unspecified, or server-owned exposure classification | Construction/generation error. No custom schema exposure option was introduced. |
 | Selected field renamed, moved, or removed | Construction/generation error. This is a CLI compatibility event despite wire compatibility. |
 | Surface-name collision | Construction/generation error. |
-| Optional scalar | Supported; unset remains absent and changed-empty remains present, then validation decides validity. |
+| Optional scalar | Supported; unset and explicitly empty remain absent, matching `runGet`; a changed non-empty value is present, then validation decides validity. |
 | Real oneof | Rejected. Proto3 optional's synthetic oneof is accepted. |
 | Repeated, map, message, enum, numeric, or other non-string shape | Rejected. The pilot does not flatten or invent parsers. Enum symbol evolution therefore cannot silently alter CLI behavior. |
 | Schema default | Rejected; command defaults stay explicit. |
@@ -167,15 +167,15 @@ reflection approach is not free and does not eliminate selection metadata.
 | Stripped runtime helper binary | 15,778,055 (+12,288) |
 | Stripped runtime + source-info reference binary | 16,281,863 (+516,096 vs static) |
 | Existing source-bearing descriptor set | 487,312 |
-| Generated static binding | 1,049 |
+| Generated static binding | 1,066 |
 | Generated selected-field reference | 539 |
-| Pilot Go + generated-reference sources measured by `wc` | 27,768 |
+| Pilot Go + generated-reference sources measured by `wc` | 28,969 |
 
 Warm reference generation took 7.83 µs, 30 allocations, and 2,864 B. `go
 generate ./internal/schemaifacepilot` took 0.34 seconds with a warm Go cache and
 62.74 seconds / 324,712 KiB maximum RSS after `go clean -cache`; almost all of
 the cold cost is compiling the generator's existing Flowstate/Protobuf
-dependency graph. That is real CI/developer toolchain cost for 1,588 generated
+dependency graph. That is real CI/developer toolchain cost for 1,605 generated
 bytes, even though incremental cost is small.
 
 ## Testability and authority

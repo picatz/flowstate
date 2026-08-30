@@ -47,10 +47,6 @@ func GenerateGet(out io.Writer) error {
 	fmt.Fprintln(out, "|---|---|---|---|---|---|")
 	for _, selection := range schemaifacepilot.GetSelections {
 		field := linked.Fields().ByName(selection.ProtoName)
-		presence := "required"
-		if field.HasPresence() {
-			presence = "optional; unset stays absent"
-		}
 		constraints := fieldConstraints(field)
 		if len(constraints) == 0 {
 			constraints = []string{"—"}
@@ -62,10 +58,21 @@ func GenerateGet(out io.Writer) error {
 			}
 		}
 		fmt.Fprintf(out, "| %s | `%s` | %s | %s | %s | %s |\n",
-			surfaceSpelling(selection), selection.ProtoName, presence,
+			surfaceSpelling(selection), selection.ProtoName, presenceLabel(field),
 			strings.Join(constraints, "; "), escapeTable(prose), escapeTable(selection.Usage))
 	}
 	return nil
+}
+
+func presenceLabel(field protoreflect.FieldDescriptor) string {
+	switch {
+	case flowstatev1.RequiredInput(field):
+		return "required"
+	case field.HasPresence():
+		return "optional; unset stays absent"
+	default:
+		return "optional; unset uses the scalar zero value"
+	}
 }
 
 func fieldConstraints(field protoreflect.FieldDescriptor) []string {

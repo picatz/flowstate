@@ -24,7 +24,7 @@ func NewStaticGetBinding(flags *pflag.FlagSet) *StaticGetBinding {
 
 func (b *StaticGetBinding) Apply(workflowID string) error {
 	b.request.WorkflowId = workflowID
-	if b.flags.Changed("run-id") {
+	if b.flags.Changed("run-id") && b.runID != "" {
 		b.request.RunId = proto.String(b.runID)
 	}
 	return flowstatev1.Validate(b.request)

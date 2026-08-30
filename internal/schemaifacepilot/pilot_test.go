@@ -70,6 +70,10 @@ func TestOptionalPresenceAndEarlyValidation(t *testing.T) {
 			require.NoError(t, err)
 			assert.Nil(t, request.RunId, "an unset optional flag must remain absent")
 
+			request, err = pilot.apply(t, []string{"--run-id="})
+			require.NoError(t, err)
+			assert.Nil(t, request.RunId, "an explicitly empty optional flag matches production and remains absent")
+
 			request, err = pilot.apply(t, []string{"--run-id", "not-a-uuid"})
 			require.ErrorContains(t, err, "run_id")
 			assert.NotNil(t, request.RunId, "a changed optional flag must be present even when invalid")
@@ -189,7 +193,7 @@ func BenchmarkApply(b *testing.B) {
 	b.Run("generated-static", func(b *testing.B) {
 		for b.Loop() {
 			staticBinding.request.WorkflowId = "example"
-			if staticFlags.Changed("run-id") {
+			if staticFlags.Changed("run-id") && staticBinding.runID != "" {
 				staticBinding.request.RunId = proto.String(staticBinding.runID)
 			}
 		}
