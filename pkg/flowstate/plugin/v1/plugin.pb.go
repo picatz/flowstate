@@ -1307,6 +1307,62 @@ func (x *ExecuteResponse) GetRetryAfter() *durationpb.Duration {
 	return nil
 }
 
+// TaskErrorProvenance identifies a task failure caused by the request context
+// rather than by the plugin or one of its dependencies. It is attached as an
+// error detail by the SDK and interpreted by the host; plugin authors do not
+// construct it.
+//
+// Connect propagates a caller deadline to the plugin process, where the derived
+// timer can expire before the caller's own timer is observed. Carrying this fact
+// explicitly keeps that one deadline classified the same way on either side of
+// the process boundary without treating a plugin's own DeadlineExceeded status
+// as a caller timeout.
+type TaskErrorProvenance struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// CallerDeadlineExceeded reports that the task returned a deadline failure
+	// after the request context's inherited deadline expired.
+	CallerDeadlineExceeded bool `protobuf:"varint,1,opt,name=caller_deadline_exceeded,json=callerDeadlineExceeded,proto3" json:"caller_deadline_exceeded,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *TaskErrorProvenance) Reset() {
+	*x = TaskErrorProvenance{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskErrorProvenance) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskErrorProvenance) ProtoMessage() {}
+
+func (x *TaskErrorProvenance) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskErrorProvenance.ProtoReflect.Descriptor instead.
+func (*TaskErrorProvenance) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *TaskErrorProvenance) GetCallerDeadlineExceeded() bool {
+	if x != nil {
+		return x.CallerDeadlineExceeded
+	}
+	return false
+}
+
 var File_flowstate_plugin_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
@@ -1379,7 +1435,9 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\tretryable\x18\x02 \x01(\bR\tretryable\x12'\n" +
 	"\x0funknown_outcome\x18\x03 \x01(\bR\x0eunknownOutcome\x12:\n" +
 	"\vretry_after\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\n" +
-	"retryAfter*t\n" +
+	"retryAfter\"O\n" +
+	"\x13TaskErrorProvenance\x128\n" +
+	"\x18caller_deadline_exceeded\x18\x01 \x01(\bR\x16callerDeadlineExceeded*t\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -1414,7 +1472,7 @@ func file_flowstate_plugin_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_flowstate_plugin_v1_plugin_proto_goTypes = []any{
 	(Capability)(0),               // 0: flowstate.plugin.v1.Capability
 	(TaskPhase)(0),                // 1: flowstate.plugin.v1.TaskPhase
@@ -1432,32 +1490,33 @@ var file_flowstate_plugin_v1_plugin_proto_goTypes = []any{
 	(*TaskProgress)(nil),          // 13: flowstate.plugin.v1.TaskProgress
 	(*ExecuteRequest)(nil),        // 14: flowstate.plugin.v1.ExecuteRequest
 	(*ExecuteResponse)(nil),       // 15: flowstate.plugin.v1.ExecuteResponse
-	(*v1.SecretRef)(nil),          // 16: flowstate.v1.SecretRef
-	(*v1.WorkloadIdentity)(nil),   // 17: flowstate.v1.WorkloadIdentity
-	(*durationpb.Duration)(nil),   // 18: google.protobuf.Duration
-	(*v1.Task)(nil),               // 19: flowstate.v1.Task
-	(*v1.Scope)(nil),              // 20: flowstate.v1.Scope
-	(*v1.Node_Outputs)(nil),       // 21: flowstate.v1.Node.Outputs
+	(*TaskErrorProvenance)(nil),   // 16: flowstate.plugin.v1.TaskErrorProvenance
+	(*v1.SecretRef)(nil),          // 17: flowstate.v1.SecretRef
+	(*v1.WorkloadIdentity)(nil),   // 18: flowstate.v1.WorkloadIdentity
+	(*durationpb.Duration)(nil),   // 19: google.protobuf.Duration
+	(*v1.Task)(nil),               // 20: flowstate.v1.Task
+	(*v1.Scope)(nil),              // 21: flowstate.v1.Scope
+	(*v1.Node_Outputs)(nil),       // 22: flowstate.v1.Node.Outputs
 }
 var file_flowstate_plugin_v1_plugin_proto_depIdxs = []int32{
 	0,  // 0: flowstate.plugin.v1.PluginManifest.capabilities:type_name -> flowstate.plugin.v1.Capability
 	4,  // 1: flowstate.plugin.v1.PluginManifest.tasks:type_name -> flowstate.plugin.v1.TaskManifest
 	3,  // 2: flowstate.plugin.v1.DescribeResponse.manifest:type_name -> flowstate.plugin.v1.PluginManifest
 	2,  // 3: flowstate.plugin.v1.HealthResponse.status:type_name -> flowstate.plugin.v1.HealthResponse.Status
-	16, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
-	17, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	18, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
-	19, // 7: flowstate.plugin.v1.ExecuteStreamRequest.task:type_name -> flowstate.v1.Task
-	20, // 8: flowstate.plugin.v1.ExecuteStreamRequest.scope:type_name -> flowstate.v1.Scope
-	17, // 9: flowstate.plugin.v1.ExecuteStreamRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	17, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
+	18, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	19, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
+	20, // 7: flowstate.plugin.v1.ExecuteStreamRequest.task:type_name -> flowstate.v1.Task
+	21, // 8: flowstate.plugin.v1.ExecuteStreamRequest.scope:type_name -> flowstate.v1.Scope
+	18, // 9: flowstate.plugin.v1.ExecuteStreamRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
 	13, // 10: flowstate.plugin.v1.ExecuteStreamResponse.progress:type_name -> flowstate.plugin.v1.TaskProgress
 	15, // 11: flowstate.plugin.v1.ExecuteStreamResponse.response:type_name -> flowstate.plugin.v1.ExecuteResponse
 	1,  // 12: flowstate.plugin.v1.TaskProgress.phase:type_name -> flowstate.plugin.v1.TaskPhase
-	19, // 13: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
-	20, // 14: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
-	17, // 15: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	21, // 16: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
-	18, // 17: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
+	20, // 13: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
+	21, // 14: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
+	18, // 15: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	22, // 16: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
+	19, // 17: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
 	5,  // 18: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
 	7,  // 19: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
 	9,  // 20: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
@@ -1490,7 +1549,7 @@ func file_flowstate_plugin_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_plugin_v1_plugin_proto_rawDesc), len(file_flowstate_plugin_v1_plugin_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   3,
 		},
