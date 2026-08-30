@@ -22,15 +22,19 @@ import (
 func TestPendingActivitiesProjectWhatTemporalReports(t *testing.T) {
 	t.Parallel()
 
+	scheduledAt := timestamppb.New(time.Date(2026, 7, 31, 4, 0, 0, 0, time.UTC))
 	retryAt := timestamppb.New(time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC))
 
 	out, _ := mustNew(t, nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
 		PendingActivities: []*workflowpb.PendingActivityInfo{
 			{
-				State:                   enumspb.PENDING_ACTIVITY_STATE_SCHEDULED,
-				Attempt:                 5,
-				LastFailure:             &failurepb.Failure{Message: "task \"http\" failed: connection refused"},
-				ScheduledTime:           retryAt,
+				State:       enumspb.PENDING_ACTIVITY_STATE_SCHEDULED,
+				Attempt:     5,
+				LastFailure: &failurepb.Failure{Message: "task \"http\" failed: connection refused"},
+				// Deliberately distinct to prove exact field selection. The
+				// faithful Temporal state fixtures in the conformance test below
+				// keep these equal during retry backoff.
+				ScheduledTime:           scheduledAt,
 				NextAttemptScheduleTime: retryAt,
 			},
 		},
