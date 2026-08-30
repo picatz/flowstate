@@ -275,6 +275,43 @@ func TestAnUnsavedDefaultsBufferOwnsItsSemanticDiagnosticAndClearsIt(t *testing.
 	}, time.Second, time.Millisecond)
 }
 
+func TestIncludedDefaultsRetainTheEditorsLocalhostURI(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsURI := lsp.DocumentURI("file://localhost" + filepath.Join(dir, "testdefaults.yaml"))
+	suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
+	c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
+	c.open(suiteURI, validSuite)
+
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			p := c.published[i]
+			if p.URI == defaultsURI && len(p.Diagnostics) > 0 {
+				return strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+}
+
+func TestSiblingDocumentURIRetainsFileSpelling(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		uri  lsp.DocumentURI
+		want lsp.DocumentURI
+	}{
+		{"file://localhost/tmp/suite.test.yaml", "file://localhost/tmp/testdefaults.yaml"},
+		{"file:///tmp/a%20b/suite.test.yaml", "file:///tmp/a%20b/testdefaults.yaml"},
+		{"file://C:/work/suite.test.yaml", "file://C:/work/testdefaults.yaml"},
+	} {
+		assert.Equal(t, tc.want, siblingDocumentURI(tc.uri, "testdefaults.yaml"))
+	}
+}
+
 func TestClosingDefaultsReturnsDependentSuitesToTheSavedFile(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)

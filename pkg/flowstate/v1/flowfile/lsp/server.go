@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
@@ -453,8 +454,8 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		var openDefaults *document
 		tracked := true
 		if doc.kind == docTestFile {
-			if path, ok := doc.filesystemPath(); ok {
-				defaultsURI := fileURI(filepath.Join(filepath.Dir(path), flowtest.DirDefaultsName))
+			if _, ok := doc.filesystemPath(); ok {
+				defaultsURI := siblingDocumentURI(doc.uri, flowtest.DirDefaultsName)
 				var current bool
 				tracked, current = s.rememberTestDefaults(doc, defaultsURI)
 				if !current {
@@ -505,6 +506,20 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		URI:         doc.uri,
 		Diagnostics: diagnostics,
 	})
+}
+
+// siblingDocumentURI retains the client's spelling of a local file URI while
+// replacing its basename. In particular, file://localhost and Windows-drive
+// authorities must keep matching the URI under which the editor opened the
+// sibling buffer; filesystemPath normalization is for loader I/O, not identity.
+func siblingDocumentURI(uri lsp.DocumentURI, name string) lsp.DocumentURI {
+	u, err := url.Parse(string(uri))
+	if err != nil {
+		return uri
+	}
+	u.Path = filepath.ToSlash(filepath.Join(filepath.Dir(u.Path), name))
+	u.RawPath = ""
+	return lsp.DocumentURI(u.String())
 }
 
 const (

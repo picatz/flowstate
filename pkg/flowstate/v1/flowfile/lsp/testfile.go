@@ -98,7 +98,9 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		byURI := map[lsp.DocumentURI][]lsp.Diagnostic{doc.uri: {}}
 		for _, problem := range problems.Problems {
 			uri := doc.uri
-			if problem.File != "" && (!hasPath || filepath.Clean(problem.File) != filepath.Clean(path)) {
+			if includedDefaults != nil && sameTestSource(problem.File, includedDefaults) {
+				uri = includedDefaults.uri
+			} else if problem.File != "" && (!hasPath || filepath.Clean(problem.File) != filepath.Clean(path)) {
 				uri = fileURI(problem.File)
 			}
 			source := sourceForTestDiagnostic(doc, includedDefaults, uri, problem.File)
@@ -125,6 +127,9 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 	var defaultsErr *flowtest.DirDefaultsError
 	if errors.As(err, &defaultsErr) {
 		uri := fileURI(defaultsErr.Path)
+		if includedDefaults != nil && sameTestSource(defaultsErr.Path, includedDefaults) {
+			uri = includedDefaults.uri
+		}
 		source := sourceForTestDiagnostic(doc, includedDefaults, uri, defaultsErr.Path)
 		owner := newDocument(uri, 0, source, doc.tasks)
 		d := yamlDiagnostic(owner, defaultsErr.Err, codeTestFile)
@@ -142,6 +147,11 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 	return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{{
 		Range: documentStart, Severity: lsp.Error, Source: diagnosticSource, Code: codeTestFile, Message: message,
 	}}}}
+}
+
+func sameTestSource(path string, doc *document) bool {
+	docPath, ok := doc.filesystemPath()
+	return ok && filepath.Clean(path) == filepath.Clean(docPath)
 }
 
 func sortedTestPublications(own lsp.DocumentURI, byURI map[lsp.DocumentURI][]lsp.Diagnostic) []diagnosticPublication {
