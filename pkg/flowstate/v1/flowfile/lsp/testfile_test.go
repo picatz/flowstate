@@ -484,6 +484,17 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 		}
 		return false
 	}, time.Second, time.Millisecond)
+	overflow2 := "file://" + filepath.Join(dir, "overflow-2.test.yaml")
+	c.open(overflow2, validSuite)
+	require.Eventually(t, func() bool {
+		c.server.testDiagnosticsMu.Lock()
+		defer c.server.testDiagnosticsMu.Unlock()
+		return len(c.server.testDiagnosticsBySource[lsp.DocumentURI(overflow2)][lsp.DocumentURI(overflow2)]) == 1
+	}, time.Second, time.Millisecond)
+	c.server.testDiagnosticsMu.Lock()
+	assert.LessOrEqual(t, len(c.server.testSourcesByTarget[defaultsURI]), maxTestDefaultsDependents+1,
+		"overflow contributors grew target aggregation beyond the tracked set and one candidate")
+	c.server.testDiagnosticsMu.Unlock()
 
 	c.open(string(defaultsURI), "defaults: {}\n")
 	require.Eventually(t, func() bool {
@@ -555,6 +566,25 @@ func TestSavedDefaultsAnalysisCannotReplaceASuiteAfterDefaultsOpen(t *testing.T)
 
 	require.Len(t, s.testDiagnosticsBySource[suiteURI][suiteURI], 1)
 	assert.Equal(t, "current live result", s.testDiagnosticsBySource[suiteURI][suiteURI][0].Message)
+}
+
+func TestCloseCleanupDoesNotDeleteAReopenedTestDocument(t *testing.T) {
+	t.Parallel()
+	s := &FlowfileServer{Logger: discardLogger()}
+	uri := lsp.DocumentURI("file:///reopened/suite.test.yaml")
+	reopened := s.docs.open(uri, 2, validSuite, nil)
+	s.testDiagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic{
+		uri: {uri: []lsp.Diagnostic{{Code: codeTestFile, Message: "reopened"}}},
+	}
+
+	promoted := s.clearTestDiagnostics(t.Context(), nil, uri)
+
+	assert.Empty(t, promoted)
+	current, ok := s.docs.get(uri)
+	assert.True(t, ok)
+	assert.Same(t, reopened, current)
+	require.Len(t, s.testDiagnosticsBySource[uri][uri], 1)
+	assert.Equal(t, "reopened", s.testDiagnosticsBySource[uri][uri][0].Message)
 }
 
 func TestAClosedSuiteCannotConsumeADefaultsDependencySlot(t *testing.T) {

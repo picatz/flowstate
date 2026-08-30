@@ -615,6 +615,15 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 	}
 	next := make(map[lsp.DocumentURI][]lsp.Diagnostic, len(publications))
 	for _, publication := range publications {
+		if source != publication.uri {
+			_, tracked := s.testDefaultsBySuite[source]
+			if !tracked && s.testOverflowBySuite[source] != publication.uri {
+				// Only the single bounded promotion candidate retains an overflow
+				// suite's saved defaults result. Other overflow suites contribute
+				// their own warning without growing target aggregation work.
+				continue
+			}
+		}
 		next[publication.uri] = publication.diagnostics
 		touched[publication.uri] = true
 		if s.testSourcesByTarget[publication.uri] == nil {
@@ -633,6 +642,12 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI) lsp.DocumentURI {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
+	// A later didOpen may already have installed and published a new generation
+	// for this URI while the old didClose handler was waiting for this lock.
+	// Its cache and dependency state belong to the reopened document.
+	if _, reopened := s.docs.get(source); reopened {
+		return ""
+	}
 	touched := map[lsp.DocumentURI]bool{source: true}
 	for uri := range s.testDiagnosticsBySource[source] {
 		touched[uri] = true
