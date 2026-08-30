@@ -699,11 +699,18 @@ func newSurface(cmd *cobra.Command) *ui.UI {
 // environment already carries: `--no-color` is the most explicit ask there is, and
 // a flag typed on this invocation must not lose to a variable exported for every
 // invocation.
+//
+// CLICOLOR_FORCE is overridden alongside, because colorprofile only lets
+// NO_COLOR win where the stream is a terminal: through a pipe the NO_COLOR
+// branch is never reached and CLICOLOR_FORCE=1 forces colour anyway — exactly
+// the stream a person adds `--no-color` for. Overridden to "0" rather than
+// filtered out of the slice, so it is the same append-last mechanism as
+// NO_COLOR and not a second one that edits the environment.
 func environForSurface(cmd *cobra.Command) []string {
 	environ := os.Environ()
 
 	if noColor, _ := cmd.Flags().GetBool("no-color"); noColor {
-		environ = append(environ, "NO_COLOR=1")
+		environ = append(environ, "NO_COLOR=1", "CLICOLOR_FORCE=0")
 	}
 
 	return environ
