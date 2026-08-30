@@ -159,6 +159,8 @@ const (
 	DebugCommandVerb_DEBUG_COMMAND_VERB_QUIT DebugCommandVerb = 11
 	// List the commands.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_HELP DebugCommandVerb = 12
+	// List the current step and the `call:` chain that reached it.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_BACKTRACE DebugCommandVerb = 13
 )
 
 // Enum value maps for DebugCommandVerb.
@@ -177,6 +179,7 @@ var (
 		10: "DEBUG_COMMAND_VERB_INFO",
 		11: "DEBUG_COMMAND_VERB_QUIT",
 		12: "DEBUG_COMMAND_VERB_HELP",
+		13: "DEBUG_COMMAND_VERB_BACKTRACE",
 	}
 	DebugCommandVerb_value = map[string]int32{
 		"DEBUG_COMMAND_VERB_UNSPECIFIED": 0,
@@ -192,6 +195,7 @@ var (
 		"DEBUG_COMMAND_VERB_INFO":        10,
 		"DEBUG_COMMAND_VERB_QUIT":        11,
 		"DEBUG_COMMAND_VERB_HELP":        12,
+		"DEBUG_COMMAND_VERB_BACKTRACE":   13,
 	}
 )
 
@@ -371,6 +375,129 @@ func (x *DebugPosition) GetDeclaration() int32 {
 	return 0
 }
 
+// DebugStackFrame is one level of a paused run's call chain.
+//
+// Frames are ordered innermost first, as DAP and conventional backtraces
+// present them. The first frame is the step about to run; every later frame is
+// the caller's `call:` step. A workflow can nest calls only to MaxCallDepth, so
+// the engine bounds this list where it is built rather than relying on each
+// front to impose a different limit.
+//
+// Only the first frame is paused and therefore has a readable DebugScope.
+// Caller frames identify how execution arrived; retaining their live scopes
+// would keep values reachable after the engine left those scopes and would
+// turn this value message into a serialization of live interpreter state.
+type DebugStackFrame struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Workflow is the workflow that owns [step_id]. Empty means the producer did
+	// not know, with the same meaning as [DebugPosition.workflow].
+	Workflow string `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	// StepId is the current step for the first frame and the `call:` step for a
+	// caller frame.
+	StepId string `protobuf:"bytes,2,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	// Kind is the shared NodeKind spelling, including the call description on a
+	// caller frame rather than an adapter-specific label.
+	Kind          string `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugStackFrame) Reset() {
+	*x = DebugStackFrame{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugStackFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugStackFrame) ProtoMessage() {}
+
+func (x *DebugStackFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugStackFrame.ProtoReflect.Descriptor instead.
+func (*DebugStackFrame) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *DebugStackFrame) GetWorkflow() string {
+	if x != nil {
+		return x.Workflow
+	}
+	return ""
+}
+
+func (x *DebugStackFrame) GetStepId() string {
+	if x != nil {
+		return x.StepId
+	}
+	return ""
+}
+
+func (x *DebugStackFrame) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+// DebugBacktrace is the bounded call chain for one paused position.
+type DebugBacktrace struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Frames        []*DebugStackFrame     `protobuf:"bytes,1,rep,name=frames,proto3" json:"frames,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugBacktrace) Reset() {
+	*x = DebugBacktrace{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugBacktrace) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugBacktrace) ProtoMessage() {}
+
+func (x *DebugBacktrace) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugBacktrace.ProtoReflect.Descriptor instead.
+func (*DebugBacktrace) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DebugBacktrace) GetFrames() []*DebugStackFrame {
+	if x != nil {
+		return x.Frames
+	}
+	return nil
+}
+
 // DebugStep is one row of a run's step list.
 type DebugStep struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -419,7 +546,7 @@ type DebugStep struct {
 
 func (x *DebugStep) Reset() {
 	*x = DebugStep{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[1]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -431,7 +558,7 @@ func (x *DebugStep) String() string {
 func (*DebugStep) ProtoMessage() {}
 
 func (x *DebugStep) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[1]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -444,7 +571,7 @@ func (x *DebugStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugStep.ProtoReflect.Descriptor instead.
 func (*DebugStep) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DebugStep) GetWorkflow() string {
@@ -538,7 +665,7 @@ type DebugStepWindow struct {
 
 func (x *DebugStepWindow) Reset() {
 	*x = DebugStepWindow{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[2]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -550,7 +677,7 @@ func (x *DebugStepWindow) String() string {
 func (*DebugStepWindow) ProtoMessage() {}
 
 func (x *DebugStepWindow) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[2]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -563,7 +690,7 @@ func (x *DebugStepWindow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugStepWindow.ProtoReflect.Descriptor instead.
 func (*DebugStepWindow) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DebugStepWindow) GetSteps() []*DebugStep {
@@ -653,7 +780,7 @@ type DebugBinding struct {
 
 func (x *DebugBinding) Reset() {
 	*x = DebugBinding{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[3]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -665,7 +792,7 @@ func (x *DebugBinding) String() string {
 func (*DebugBinding) ProtoMessage() {}
 
 func (x *DebugBinding) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[3]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -678,7 +805,7 @@ func (x *DebugBinding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugBinding.ProtoReflect.Descriptor instead.
 func (*DebugBinding) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *DebugBinding) GetName() string {
@@ -803,7 +930,7 @@ type DebugScopeGroup struct {
 
 func (x *DebugScopeGroup) Reset() {
 	*x = DebugScopeGroup{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[4]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -815,7 +942,7 @@ func (x *DebugScopeGroup) String() string {
 func (*DebugScopeGroup) ProtoMessage() {}
 
 func (x *DebugScopeGroup) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[4]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -828,7 +955,7 @@ func (x *DebugScopeGroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugScopeGroup.ProtoReflect.Descriptor instead.
 func (*DebugScopeGroup) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DebugScopeGroup) GetGroup() string {
@@ -878,7 +1005,7 @@ type DebugScope struct {
 
 func (x *DebugScope) Reset() {
 	*x = DebugScope{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[5]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -890,7 +1017,7 @@ func (x *DebugScope) String() string {
 func (*DebugScope) ProtoMessage() {}
 
 func (x *DebugScope) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[5]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -903,7 +1030,7 @@ func (x *DebugScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugScope.ProtoReflect.Descriptor instead.
 func (*DebugScope) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DebugScope) GetGroups() []*DebugScopeGroup {
@@ -965,7 +1092,7 @@ type DebugCommand struct {
 
 func (x *DebugCommand) Reset() {
 	*x = DebugCommand{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[6]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -977,7 +1104,7 @@ func (x *DebugCommand) String() string {
 func (*DebugCommand) ProtoMessage() {}
 
 func (x *DebugCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[6]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -990,7 +1117,7 @@ func (x *DebugCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugCommand.ProtoReflect.Descriptor instead.
 func (*DebugCommand) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{6}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DebugCommand) GetVerb() DebugCommandVerb {
@@ -1079,7 +1206,7 @@ type DebugSession struct {
 
 func (x *DebugSession) Reset() {
 	*x = DebugSession{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[7]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1091,7 +1218,7 @@ func (x *DebugSession) String() string {
 func (*DebugSession) ProtoMessage() {}
 
 func (x *DebugSession) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[7]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1104,7 +1231,7 @@ func (x *DebugSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugSession.ProtoReflect.Descriptor instead.
 func (*DebugSession) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{7}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DebugSession) GetSessionId() string {
@@ -1160,7 +1287,13 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x18\n" +
 	"\aautopsy\x18\x04 \x01(\bR\aautopsy\x12.\n" +
 	"\vdeclaration\x18\x05 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x00R\vdeclaration\x88\x01\x01B\x0e\n" +
-	"\f_declaration\"\xbb\x01\n" +
+	"\f_declaration\"Z\n" +
+	"\x0fDebugStackFrame\x12\x1a\n" +
+	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x17\n" +
+	"\astep_id\x18\x02 \x01(\tR\x06stepId\x12\x12\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\"G\n" +
+	"\x0eDebugBacktrace\x125\n" +
+	"\x06frames\x18\x01 \x03(\v2\x1d.flowstate.v1.DebugStackFrameR\x06frames\"\xbb\x01\n" +
 	"\tDebugStep\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12)\n" +
 	"\vdeclaration\x18\x02 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\vdeclaration\x12\x10\n" +
@@ -1214,7 +1347,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x15DEBUG_STEP_STATE_DONE\x10\x03\x12\x1e\n" +
 	"\x1aDEBUG_STEP_STATE_TOLERATED\x10\x04\x12\x1b\n" +
 	"\x17DEBUG_STEP_STATE_FAILED\x10\x05\x12\x1c\n" +
-	"\x18DEBUG_STEP_STATE_SKIPPED\x10\x06*\xa9\x03\n" +
+	"\x18DEBUG_STEP_STATE_SKIPPED\x10\x06*\xcb\x03\n" +
 	"\x10DebugCommandVerb\x12\"\n" +
 	"\x1eDEBUG_COMMAND_VERB_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DEBUG_COMMAND_VERB_STEP\x10\x01\x12\x1f\n" +
@@ -1229,7 +1362,8 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x17DEBUG_COMMAND_VERB_INFO\x10\n" +
 	"\x12\x1b\n" +
 	"\x17DEBUG_COMMAND_VERB_QUIT\x10\v\x12\x1b\n" +
-	"\x17DEBUG_COMMAND_VERB_HELP\x10\fB\xa9\x01\n" +
+	"\x17DEBUG_COMMAND_VERB_HELP\x10\f\x12 \n" +
+	"\x1cDEBUG_COMMAND_VERB_BACKTRACE\x10\rB\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"DebugProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
@@ -1246,37 +1380,40 @@ func file_flowstate_v1_debug_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_flowstate_v1_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_flowstate_v1_debug_proto_goTypes = []any{
 	(DebugStepState)(0),           // 0: flowstate.v1.DebugStepState
 	(DebugCommandVerb)(0),         // 1: flowstate.v1.DebugCommandVerb
 	(*DebugPosition)(nil),         // 2: flowstate.v1.DebugPosition
-	(*DebugStep)(nil),             // 3: flowstate.v1.DebugStep
-	(*DebugStepWindow)(nil),       // 4: flowstate.v1.DebugStepWindow
-	(*DebugBinding)(nil),          // 5: flowstate.v1.DebugBinding
-	(*DebugScopeGroup)(nil),       // 6: flowstate.v1.DebugScopeGroup
-	(*DebugScope)(nil),            // 7: flowstate.v1.DebugScope
-	(*DebugCommand)(nil),          // 8: flowstate.v1.DebugCommand
-	(*DebugSession)(nil),          // 9: flowstate.v1.DebugSession
-	(*RunAddress)(nil),            // 10: flowstate.v1.RunAddress
-	(*WorkloadIdentity)(nil),      // 11: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
+	(*DebugStackFrame)(nil),       // 3: flowstate.v1.DebugStackFrame
+	(*DebugBacktrace)(nil),        // 4: flowstate.v1.DebugBacktrace
+	(*DebugStep)(nil),             // 5: flowstate.v1.DebugStep
+	(*DebugStepWindow)(nil),       // 6: flowstate.v1.DebugStepWindow
+	(*DebugBinding)(nil),          // 7: flowstate.v1.DebugBinding
+	(*DebugScopeGroup)(nil),       // 8: flowstate.v1.DebugScopeGroup
+	(*DebugScope)(nil),            // 9: flowstate.v1.DebugScope
+	(*DebugCommand)(nil),          // 10: flowstate.v1.DebugCommand
+	(*DebugSession)(nil),          // 11: flowstate.v1.DebugSession
+	(*RunAddress)(nil),            // 12: flowstate.v1.RunAddress
+	(*WorkloadIdentity)(nil),      // 13: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
 }
 var file_flowstate_v1_debug_proto_depIdxs = []int32{
-	0,  // 0: flowstate.v1.DebugStep.state:type_name -> flowstate.v1.DebugStepState
-	3,  // 1: flowstate.v1.DebugStepWindow.steps:type_name -> flowstate.v1.DebugStep
-	5,  // 2: flowstate.v1.DebugScopeGroup.bindings:type_name -> flowstate.v1.DebugBinding
-	6,  // 3: flowstate.v1.DebugScope.groups:type_name -> flowstate.v1.DebugScopeGroup
-	1,  // 4: flowstate.v1.DebugCommand.verb:type_name -> flowstate.v1.DebugCommandVerb
-	10, // 5: flowstate.v1.DebugSession.run:type_name -> flowstate.v1.RunAddress
-	11, // 6: flowstate.v1.DebugSession.attached_by:type_name -> flowstate.v1.WorkloadIdentity
-	12, // 7: flowstate.v1.DebugSession.attached_at:type_name -> google.protobuf.Timestamp
-	12, // 8: flowstate.v1.DebugSession.lease_expires_at:type_name -> google.protobuf.Timestamp
-	9,  // [9:9] is the sub-list for method output_type
-	9,  // [9:9] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	3,  // 0: flowstate.v1.DebugBacktrace.frames:type_name -> flowstate.v1.DebugStackFrame
+	0,  // 1: flowstate.v1.DebugStep.state:type_name -> flowstate.v1.DebugStepState
+	5,  // 2: flowstate.v1.DebugStepWindow.steps:type_name -> flowstate.v1.DebugStep
+	7,  // 3: flowstate.v1.DebugScopeGroup.bindings:type_name -> flowstate.v1.DebugBinding
+	8,  // 4: flowstate.v1.DebugScope.groups:type_name -> flowstate.v1.DebugScopeGroup
+	1,  // 5: flowstate.v1.DebugCommand.verb:type_name -> flowstate.v1.DebugCommandVerb
+	12, // 6: flowstate.v1.DebugSession.run:type_name -> flowstate.v1.RunAddress
+	13, // 7: flowstate.v1.DebugSession.attached_by:type_name -> flowstate.v1.WorkloadIdentity
+	14, // 8: flowstate.v1.DebugSession.attached_at:type_name -> google.protobuf.Timestamp
+	14, // 9: flowstate.v1.DebugSession.lease_expires_at:type_name -> google.protobuf.Timestamp
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_debug_proto_init() }
@@ -1287,19 +1424,19 @@ func file_flowstate_v1_debug_proto_init() {
 	file_flowstate_v1_identity_proto_init()
 	file_flowstate_v1_run_proto_init()
 	file_flowstate_v1_debug_proto_msgTypes[0].OneofWrappers = []any{}
-	file_flowstate_v1_debug_proto_msgTypes[2].OneofWrappers = []any{}
-	file_flowstate_v1_debug_proto_msgTypes[3].OneofWrappers = []any{
+	file_flowstate_v1_debug_proto_msgTypes[4].OneofWrappers = []any{}
+	file_flowstate_v1_debug_proto_msgTypes[5].OneofWrappers = []any{
 		(*DebugBinding_Rendered)(nil),
 		(*DebugBinding_Error)(nil),
 	}
-	file_flowstate_v1_debug_proto_msgTypes[7].OneofWrappers = []any{}
+	file_flowstate_v1_debug_proto_msgTypes[9].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_debug_proto_rawDesc), len(file_flowstate_v1_debug_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   8,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

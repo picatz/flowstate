@@ -10,6 +10,16 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
+func TestDebugSchemaAdvertisesTheSharedBacktraceCommand(t *testing.T) {
+	t.Parallel()
+
+	properties := debugInputSchema()["properties"].(map[string]any)
+	commands := properties["commands"].(map[string]any)
+	description := commands["description"].(string)
+	assert.Contains(t, description, "`backtrace`",
+		"the MCP front accepts the shared command but does not advertise it")
+}
+
 // TestTheSchemaSaysWhatTheServerWillRefuse pins the required derivation review
 // asked for: a client validating {} against the advertised schema must be
 // refused client-side where the tool boundary would refuse it, from the same

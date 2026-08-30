@@ -232,8 +232,8 @@ func TestTheVerbsCompleteAndTheAutopsysAreFewer(t *testing.T) {
 		[][]string{{"b"}})
 
 	require.Len(t, console.answers, 1)
-	assert.Equal(t, []string{"break ", "breakpoints"}, texts(console.answers[0]),
-		"both verbs starting with `b`, and the one taking an argument written with its space")
+	assert.Equal(t, []string{"break ", "breakpoints", "backtrace"}, texts(console.answers[0]),
+		"all verbs starting with `b`, and the one taking an argument written with its space")
 
 	// The autopsy's own prompt, over a finished run. Asked from inside it, as
 	// every other question here is: the answer depends on the session knowing

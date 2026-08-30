@@ -567,10 +567,12 @@ breakpoints named after a step. A line breakpoint is answered rather than
 ignored, unverified and carrying that reason, so an editor shows a hollow marker
 instead of a filled one you would wait at forever.
 
-Two more consequences of the same seam, so nothing here is discovered: a stack
-frame names the step and cannot be navigated to, and a run is one thread even
-where a `parallel:` block is running several steps at once — the debugger
-deliberately does not stop inside one.
+Two more consequences of the same seam, so nothing here is discovered: stack
+frames name the current step and every `call:` site that reached it, but cannot
+be navigated to; only the innermost frame has a readable scope because it is the
+one actually paused. A run is one thread even where a `parallel:` block is
+running several steps at once — the debugger deliberately does not stop inside
+one.
 
 ### Visual Studio Code
 
