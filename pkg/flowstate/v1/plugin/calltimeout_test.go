@@ -6,37 +6,14 @@ import (
 	"time"
 )
 
-// The three directions [Plugin.callContext] has to get right, and #1130's bug
-// was one of them going unasked for as long as the package existed.
-//
-// The host stacked Config.CallTimeout on top of whatever deadline the caller
-// already carried, so the shorter of the two won. Two of the three directions
-// were covered — a caller with a shorter deadline (which the host was not the
-// reason for), and a caller with none at all
-// (TestTaskServiceExecuteStreamIsBoundedByCallTimeout, service_test.go). The
-// third, a caller whose deadline is *longer* than the host's bound, is the one
-// every real step takes, because both drivers hand a plugin task a deadline
-// drawn from its step's `timeout:` — and it was the one nothing asked. Thirty
-// seconds is far enough out that no fixture in this package ever reached it,
-// which is CLAUDE.md's "a bound nothing reaches is a bound nothing tests"
-// wearing its other face: a bound nothing reaches is also a bound nothing
-// notices is wrong.
-//
-// So all three are written down here together. Read apart they are three
-// timeout tests; read together they are the rule.
+// These tests cover all deadline relationships: a caller deadline longer than,
+// shorter than, or absent relative to Config.CallTimeout. The first two must
+// select the earlier deadline, while the last must still acquire a deadline.
 
-// TestCallContextKeepsALongerCallerDeadline pins the defect exactly as #1130
-// stated it — a task that would run past DefaultCallTimeout under a two minute
-// caller deadline — without spending thirty seconds to do it.
-//
-// It asserts on the deadline callContext hands the call rather than on how long
-// a call takes, which is what makes the literal 30 seconds affordable to pin:
-// the sleeping version of this claim is
-// [TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime] below, at bounds a
-// test suite can wait for. Both are needed. This one would still pass if
-// nothing ever used the context it returns; that one would still pass against
-// a CallTimeout raised to cover its own fixture.
-func TestCallContextKeepsALongerCallerDeadline(t *testing.T) {
+// TestCallContextCapsALongerCallerDeadline checks the literal default without
+// making the suite wait for it. The subprocess test below proves the returned
+// context actually governs plugin work using smaller bounds.
+func TestCallContextCapsALongerCallerDeadline(t *testing.T) {
 	t.Parallel()
 
 	p := &Plugin{cfg: Config{CallTimeout: DefaultCallTimeout}}
@@ -51,21 +28,13 @@ func TestCallContextKeepsALongerCallerDeadline(t *testing.T) {
 
 	deadline, ok := callCtx.Deadline()
 	if !ok {
-		t.Fatal("the call context carries no deadline, want the caller's own")
+		t.Fatal("the call context carries no deadline, want the host's bound")
 	}
 
 	remaining := time.Until(deadline)
-	if remaining <= DefaultCallTimeout {
-		t.Errorf("the call was left %s, want the caller's %s — the host's %s bound was applied "+
-			"beneath a deadline the caller had already chosen (#1130)",
-			remaining, budget, DefaultCallTimeout)
-	}
-
-	// And the caller's deadline is the one that survived, rather than some
-	// third number: a host that raised its own bound to two minutes would
-	// satisfy the check above and still be deciding this for the author.
-	if want, _ := ctx.Deadline(); !deadline.Equal(want) {
-		t.Errorf("call deadline = %s, want the caller's own %s", deadline, want)
+	if remaining > DefaultCallTimeout {
+		t.Errorf("the call was left %s, want no more than the host's %s bound",
+			remaining, DefaultCallTimeout)
 	}
 }
 
@@ -90,14 +59,8 @@ func TestCallContextBoundsACallerWithNoDeadline(t *testing.T) {
 	}
 }
 
-// TestCallContextKeepsAShorterCallerDeadline is the direction the old rule was
-// defending, and it still holds — a step with a five second `timeout:` must not
-// wait thirty seconds for a plugin.
-//
-// It holds for a different reason than it used to, which is why it is worth
-// asserting rather than assuming: nothing shortens the caller's deadline any
-// more, it is simply passed through, and a passed-through five seconds is five
-// seconds.
+// TestCallContextKeepsAShorterCallerDeadline ensures a step with a five second
+// `timeout:` does not wait for the host's longer bound.
 func TestCallContextKeepsAShorterCallerDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -121,16 +84,9 @@ func TestCallContextKeepsAShorterCallerDeadline(t *testing.T) {
 	}
 }
 
-// TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime is the same claim
-// against a real plugin process, over the whole path a step takes: a task that
-// works for longer than the host's CallTimeout completes, because its caller
-// said it could.
-//
-// The elapsed check is the bound being *reached* rather than merely not
-// exceeded — CLAUDE.md's rule for a bound, one directory over from the paging
-// case that taught it. A fixture that answered instantly would satisfy "the
-// call succeeded" whether the host's bound had been skipped or not.
-func TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime(t *testing.T) {
+// TestACallIsCappedByCallTimeoutWhenCallerAllowsMoreTime proves the host bound
+// reaches the real plugin subprocess path, even when the step permits longer.
+func TestACallIsCappedByCallTimeoutWhenCallerAllowsMoreTime(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(t, pluginDir(t, "sleepy"))
@@ -151,22 +107,19 @@ func TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	outputs, err := defs[0].Fn(ctx, nil, nil)
+	_, err := defs[0].Fn(ctx, nil, nil)
 	elapsed := time.Since(start)
 
-	if err != nil {
-		t.Fatalf("a %s task under a caller allowing 30s failed after %s against a %s CallTimeout, "+
-			"want the caller's deadline to govern (#1130): %v",
-			sleepyTaskDuration, elapsed, cfg.CallTimeout, err)
+	if err == nil {
+		t.Fatalf("a %s task under a caller allowing 30s succeeded after %s against a %s CallTimeout, want the host bound to end it",
+			sleepyTaskDuration, elapsed, cfg.CallTimeout)
 	}
 
-	if elapsed < sleepyTaskDuration {
-		t.Errorf("the call returned after %s, before its %s of work could have finished; "+
-			"the fixture is not proving what it was written to prove", elapsed, sleepyTaskDuration)
+	if elapsed < cfg.CallTimeout {
+		t.Errorf("the call returned after %s, before its %s CallTimeout; something other than the host bound ended it", elapsed, cfg.CallTimeout)
 	}
-
-	if got := outputs.GetNamedValues()["result"].GetLiteral().GetStringValue(); got != "awake" {
-		t.Errorf("result = %q, want %q", got, "awake")
+	if elapsed >= sleepyTaskDuration {
+		t.Errorf("the call returned after %s, want it stopped before the plugin completed %s of work", elapsed, sleepyTaskDuration)
 	}
 }
 

@@ -28,8 +28,8 @@ import (
 //
 // What these return is better than the raw client for the same reason a caller
 // would otherwise have to build it themselves: no call through one is ever
-// unbounded — a caller's own deadline governs, and a caller that brought none
-// gets the host's [Config.CallTimeout] (see [Plugin.callContext]) — it refuses
+// unbounded — the earlier of a caller's own deadline and the host's
+// [Config.CallTimeout] governs (see [Plugin.callContext]) — it refuses
 // a capability the plugin did not advertise, and it resolves the current
 // process on every call, so it keeps working across a restart instead of
 // holding a connection to a process that has gone.
@@ -126,9 +126,8 @@ func (s taskService) Execute(
 // hands back — including this one — is bounded, so a plugin that opens a
 // stream and then never sends a terminal ExecuteStreamResponse cannot hold
 // the call open indefinitely. Which bound ends it is [Plugin.callContext]'s
-// answer rather than this method's: the caller's own deadline when it brought
-// one, and Config.CallTimeout when it did not — the shape that would
-// otherwise run forever, and the one
+// answer rather than this method's: the earlier of the caller's deadline and
+// Config.CallTimeout. That is the shape
 // [TestTaskServiceExecuteStreamIsBoundedByCallTimeout] pins.
 //
 // The bounded context is kept alive for exactly that reason: it is not
