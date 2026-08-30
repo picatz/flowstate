@@ -71,16 +71,16 @@ type debugConsole struct {
 	// while a person is actually typing an answer.
 	raw int
 
-	// sink is the terminal being painted, or nil where the console was built
-	// over a plain stream — which is every test that drives the editor over a
-	// pipe.
+	// measure is the size of the terminal being painted, asked on demand. It is
+	// nil where the console was built over a plain stream — which is every test
+	// that drives the editor over a pipe.
 	//
 	// The *output*, not the input in `raw` above, and the distinction is the
-	// whole reason this is a second field: `flow run local --debug` reads a
+	// whole reason this is a separate source: `flow run local --debug` reads a
 	// terminal stdin and paints stderr, so the descriptor a line is read from
 	// and the one it is drawn on are genuinely two. Size is a property of the
 	// second. See [debugConsole.size].
-	sink *os.File
+	measure func() (width, height int, ok bool)
 }
 
 // size is the terminal's, asked now.
@@ -91,16 +91,37 @@ type debugConsole struct {
 // that wraps. ok is false where there is no terminal to measure, which is
 // every console built over a pipe.
 func (c *debugConsole) size() (width, height int, ok bool) {
-	if c.sink == nil {
+	if c.measure == nil {
 		return 0, 0, false
 	}
 
-	width, height, err := term.GetSize(int(c.sink.Fd()))
-	if err != nil {
+	width, height, ok = c.measure()
+	if !ok || width <= 0 || height <= 0 {
 		return 0, 0, false
 	}
 
 	return width, height, true
+}
+
+// setSizeSource installs the one measurement path shared by the editor and
+// the panes, and applies its first measurement at attach time.
+func (c *debugConsole) setSizeSource(measure func() (width, height int, ok bool)) {
+	c.measure = measure
+	c.refreshSize()
+}
+
+// refreshSize tells the editor how much terminal it actually has. A failed
+// measurement, an invalid size, or a SetSize repaint error does not fail the
+// read: sizing is an interactive improvement, not a reason to turn a working
+// debug prompt into a failed run. There is deliberately no diagnostic written
+// into the terminal whose line editor may be repainting.
+func (c *debugConsole) refreshSize() {
+	width, height, ok := c.size()
+	if !ok {
+		return
+	}
+
+	_ = c.terminal.SetSize(width, height)
 }
 
 // readingRaw puts the terminal into raw mode for one read and gives it back.
@@ -257,11 +278,16 @@ func attachDebugConsole(in io.Reader, out io.Writer, theme ui.Theme) (console *d
 		io.Writer
 	}{Reader: in, Writer: out}, prompt, int(file.Fd()))
 
-	// The terminal being painted, for the layout the panes are drawn against.
-	// Set here rather than taken by [newDebugConsole], because it is the one
-	// thing on this type that is genuinely about a *terminal* — which is this
-	// function's half of the split that constructor's doc describes.
-	console.sink = sink
+	// The terminal being painted, measured once now for the editor and again on
+	// demand for both the editor and the panes. Set here rather than taken by
+	// [newDebugConsole], because it is the one thing on this type that is
+	// genuinely about a *terminal* — which is this function's half of the split
+	// that constructor's doc describes.
+	console.setSizeSource(func() (width, height int, ok bool) {
+		width, height, err := term.GetSize(int(sink.Fd()))
+
+		return width, height, err == nil
+	})
 
 	return console, func() {
 		once.Do(func() { _ = term.Restore(int(file.Fd()), sane) })
@@ -298,6 +324,10 @@ func (c *debugConsole) SetCompleter(complete func(line string, pos int) flowdebu
 func (c *debugConsole) Prompt() (string, error) {
 	// Raw for the length of this read and no longer — see [debugConsole.raw].
 	defer c.readingRaw()()
+
+	// A session can wait between prompts for hours. Ask again here rather than
+	// teaching the command another signal lifecycle just to notice the resize.
+	c.refreshSize()
 
 	line, err := c.terminal.ReadLine()
 	if err != nil {
