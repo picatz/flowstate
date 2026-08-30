@@ -274,7 +274,9 @@ type ManualTrigger struct {
 	// AllowedPrincipals restricts a manual start to these issuer-qualified
 	// authenticated identities, each written as "<issuer>#<subject>" and matched
 	// exactly against the caller's stable Principal.ID. Neither half comes from
-	// the request: OIDC and mTLS authentication establish both.
+	// the request: OIDC and mTLS authentication establish both. The spelling has
+	// exactly one "#" separator; an identity with "#" in either half cannot be
+	// represented ambiguously and is therefore refused by an allowlist.
 	//
 	// Empty means every authenticated caller, which is today's behavior and what
 	// a workflow with no `manual:` block keeps. Non-empty is a closed set: a
@@ -1060,12 +1062,11 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\bTriggers\x12?\n" +
 	"\bschedule\x18\x01 \x01(\v2\x1d.flowstate.v1.ScheduleTriggerB\x04\xe2A\x01\x01R\bschedule\x12F\n" +
 	"\bwebhooks\x18\x02 \x03(\v2\x1c.flowstate.v1.WebhookTriggerB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10 R\bwebhooks\x129\n" +
-	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xae\x01\n" +
+	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xb1\x01\n" +
 	"\rManualTrigger\x12\x1c\n" +
 	"\x06denied\x18\x01 \x01(\bB\x04\xe2A\x01\x01R\x06denied\x12+\n" +
-	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12R\n" +
-	"\x12allowed_principals\x18\x03 \x03(\tB#\xe2A\x01\x01\xbaH\x1c\x92\x01\x19\x10@\x18\x01\"\x13r\x11\x10\x01\x18\x80\x022\n" +
-	"^[^#]+#.+$R\x11allowedPrincipals\"\x9d\x01\n" +
+	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12U\n" +
+	"\x12allowed_principals\x18\x03 \x03(\tB&\xe2A\x01\x01\xbaH\x1f\x92\x01\x1c\x10@\x18\x01\"\x16r\x14\x10\x01\x18\xc0\x022\r^[^#]+#[^#]+$R\x11allowedPrincipals\"\x9d\x01\n" +
 	"\x0eTriggerContext\x12\x1b\n" +
 	"\x04kind\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18 R\x04kind\x12\x1b\n" +
 	"\x04name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04name\x12&\n" +

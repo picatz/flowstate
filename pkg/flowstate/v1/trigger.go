@@ -277,8 +277,8 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 
 	seen := make(map[string]struct{}, len(principals))
 	for i, principal := range principals {
-		if utf8.RuneCountInString(principal) > 256 {
-			return fmt.Errorf("`manual.allowed_principals[%d]` exceeds the 256-character limit", i)
+		if utf8.RuneCountInString(principal) > 320 {
+			return fmt.Errorf("`manual.allowed_principals[%d]` exceeds the 320-character limit", i)
 		}
 		if !LooksLikeQualifiedSubject(principal) {
 			return fmt.Errorf("`manual.allowed_principals[%d]` %q is not \"<issuer>#<subject>\"; a bare or malformed subject is refused because a subject is only unique within its issuer",

@@ -123,7 +123,9 @@ message ManualTrigger {
   // AllowedPrincipals restricts a manual start to these issuer-qualified
   // authenticated identities, each written as "<issuer>#<subject>" and matched
   // exactly against the caller's stable Principal.ID. Neither half comes from
-  // the request: OIDC and mTLS authentication establish both.
+  // the request: OIDC and mTLS authentication establish both. The spelling has
+  // exactly one "#" separator; an identity with "#" in either half cannot be
+  // represented ambiguously and is therefore refused by an allowlist.
   //
   // Empty means every authenticated caller, which is today's behavior and what
   // a workflow with no `manual:` block keeps. Non-empty is a closed set: a
@@ -138,8 +140,8 @@ message ManualTrigger {
       items: {
         string: {
           min_len: 1
-          max_len: 256
-          pattern: "^[^#]+#.+$"
+          max_len: 320
+          pattern: "^[^#]+#[^#]+$"
         }
       }
     }

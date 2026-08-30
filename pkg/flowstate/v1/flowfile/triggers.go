@@ -302,6 +302,12 @@ func (c *compiler) manualPrincipals(n ast.Node, path string) []string {
 
 		return nil
 	}
+	if len(nodes) > 64 {
+		c.report(spanOfNode(resolved), r,
+			"names %d principals, exceeding the limit of 64; narrow the allowlist", len(nodes))
+
+		return nil
+	}
 
 	out := make([]string, 0, len(nodes))
 	seen := make(map[string]struct{}, len(nodes))

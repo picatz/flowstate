@@ -1700,6 +1700,8 @@ policy out of the validator.
 
 Each `allowed_principals` entry is the exact stable identity
 `<issuer>#<subject>` established by OIDC or identity-bearing mTLS authentication.
+That spelling has exactly one `#` separator; an identity containing `#` in either
+half cannot be represented ambiguously and therefore cannot satisfy an allowlist.
 Existing bare-subject entries are invalid rather than being reinterpreted as global
 subjects; qualify them with the issuer configured in the server's auth policy. The
 `--insecure-no-auth` development identity cannot satisfy a non-empty allowlist. Omit

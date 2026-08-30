@@ -36,6 +36,16 @@ func TestCheckManualStartMatchesTheWholeQualifiedPrincipal(t *testing.T) {
 	}
 }
 
+func TestCheckManualStartRefusesAmbiguousQualifiedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	// Principal.ID cannot distinguish ("mesh", "x#y") from ("mesh#x", "y").
+	// Refusing the resulting multi-separator configuration makes both identities
+	// fail closed rather than allowing either one under an ambiguous spelling.
+	err := v1.CheckManualStart(manualWorkflow("mesh#x#y"), "mesh#x#y", "")
+	require.ErrorContains(t, err, "<issuer>#<subject>")
+}
+
 func TestCheckManualTriggerRequiresBoundedQualifiedUniquePrincipals(t *testing.T) {
 	t.Parallel()
 
@@ -54,12 +64,13 @@ func TestCheckManualTriggerRequiresBoundedQualifiedUniquePrincipals(t *testing.T
 		{name: "bare subject", principals: []string{"runner"}, want: "<issuer>#<subject>"},
 		{name: "empty issuer", principals: []string{"#runner"}, want: "<issuer>#<subject>"},
 		{name: "empty subject", principals: []string{"https://issuer.example.com#"}, want: "<issuer>#<subject>"},
+		{name: "ambiguous separator", principals: []string{"mesh#x#y"}, want: "<issuer>#<subject>"},
 		{name: "duplicate", principals: []string{
 			"https://issuer.example.com#runner",
 			"https://issuer.example.com#runner",
 		}, want: "twice"},
 		{name: "too many", principals: tooMany, want: "limit of 64"},
-		{name: "entry too long", principals: []string{"https://issuer.example.com#" + strings.Repeat("x", 257)}, want: "256-character"},
+		{name: "entry too long", principals: []string{"https://issuer.example.com#" + strings.Repeat("x", 321)}, want: "320-character"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := v1.CheckManualTrigger(&v1.ManualTrigger{AllowedPrincipals: test.principals})
@@ -84,6 +95,7 @@ func TestManualTriggerSchemaRequiresQualifiedUniquePrincipals(t *testing.T) {
 		{name: "qualified", principals: []string{"https://issuer.example.com#runner"}},
 		{name: "bare", principals: []string{"runner"}, wantError: true},
 		{name: "malformed", principals: []string{"#runner"}, wantError: true},
+		{name: "ambiguous separator", principals: []string{"mesh#x#y"}, wantError: true},
 		{name: "empty", principals: []string{""}, wantError: true},
 		{name: "duplicate", principals: []string{
 			"https://issuer.example.com#runner",

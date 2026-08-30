@@ -95,6 +95,9 @@ func TestQualifiedSubjectAndLooksLikeQualifiedSubject(t *testing.T) {
 	require.False(t, v1.LooksLikeQualifiedSubject("sub@example.com"), "no '#' at all")
 	require.False(t, v1.LooksLikeQualifiedSubject("#sub@example.com"), "empty issuer before '#'")
 	require.False(t, v1.LooksLikeQualifiedSubject("https://issuer.example.com#"), "empty subject after '#'")
+	require.False(t, v1.LooksLikeQualifiedSubject("mesh#x#y"), "more than one '#' is ambiguous")
+	require.Error(t, v1.Validate(&v1.SignalPolicyRule{Subject: "mesh#x#y"}),
+		"the descriptor must enforce the same unambiguous spelling")
 }
 
 // TestSignalPolicyAllowsRuleIsAnAndOfItsSetFields checks that a rule naming

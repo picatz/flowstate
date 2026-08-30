@@ -114,7 +114,7 @@ func TestManualAllowedPrincipalsDocumentationIsIssuerQualified(t *testing.T) {
 	if !ok {
 		t.Fatal("manual allowed_principals has no descriptor documentation")
 	}
-	for _, want := range []string{"<issuer>#<subject>", "Principal.ID", "Bare subjects are invalid"} {
+	for _, want := range []string{"<issuer>#<subject>", "Principal.ID", "exactly one", "Bare subjects are invalid"} {
 		if !strings.Contains(comment, want) {
 			t.Errorf("manual allowed_principals descriptor documentation does not contain %q:\n%s", want, comment)
 		}

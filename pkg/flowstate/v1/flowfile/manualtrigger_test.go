@@ -139,6 +139,11 @@ steps:
 func TestManualContradictionsAreRefusedWithAPosition(t *testing.T) {
 	t.Parallel()
 
+	tooManyPrincipals := make([]string, 65)
+	for i := range tooManyPrincipals {
+		tooManyPrincipals[i] = "issuer#" + strconv.Itoa(i)
+	}
+
 	for _, test := range []struct {
 		name   string
 		source string
@@ -181,6 +186,22 @@ func TestManualContradictionsAreRefusedWithAPosition(t *testing.T) {
     allowed_principals: [ops@example.com]
 `,
 			want: "<issuer>#<subject>",
+		},
+		{
+			name: "an ambiguous principal",
+			source: `triggers:
+  manual:
+    allowed_principals: [mesh#x#y]
+`,
+			want: "<issuer>#<subject>",
+		},
+		{
+			name: "too many principals",
+			source: `triggers:
+  manual:
+    allowed_principals: [` + strings.Join(tooManyPrincipals, ", ") + `]
+`,
+			want: "limit of 64",
 		},
 		{
 			name: "a principal listed twice",
