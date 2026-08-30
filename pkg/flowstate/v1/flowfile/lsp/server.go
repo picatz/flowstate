@@ -175,9 +175,6 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			return nil, err
 		}
 		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text, s.tasks())
-		if doc.kind == docTestDefaults {
-			s.dropSavedDefaultsContributions(doc.uri)
-		}
 		s.publish(ctx, conn, doc)
 		return nil, nil
 
@@ -473,11 +470,6 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		}
 		publications := diagnoseTestPublications(doc, included)
 		if !tracked {
-			// The saved defaults are honest input for the overflow suite, but a
-			// problem from them is not a problem in the newer open buffer.
-			if openDefaults != nil {
-				publications = publications[:1]
-			}
 			publications[0].diagnostics = append(publications[0].diagnostics, lsp.Diagnostic{
 				Range: documentStart, Severity: lsp.Warning, Source: diagnosticSource, Code: codeTestDefaultsDependents,
 				Message: fmt.Sprintf("this suite is beyond the %d open-suite limit for live testdefaults.yaml revalidation; saved defaults are checked instead", maxTestDefaultsDependents),
@@ -609,7 +601,7 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 			for _, guard := range guards {
 				usesOpenBuffer = usesOpenBuffer || guard == open
 			}
-			if !usesOpenBuffer {
+			if !usesOpenBuffer && s.testDefaultsBySuite[source] == publication.uri {
 				continue
 			}
 		}
@@ -652,25 +644,6 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	}
 }
 
-// dropSavedDefaultsContributions retracts disk-derived diagnostics before an
-// opened defaults buffer becomes authoritative. Tracked suites are immediately
-// revalidated against that buffer; overflow suites suppress their saved-file
-// contribution while it remains open.
-func (s *FlowfileServer) dropSavedDefaultsContributions(target lsp.DocumentURI) {
-	s.testDiagnosticsMu.Lock()
-	defer s.testDiagnosticsMu.Unlock()
-	for source := range s.testSourcesByTarget[target] {
-		if source == target || s.testDefaultsBySuite[source] == target {
-			continue
-		}
-		delete(s.testDiagnosticsBySource[source], target)
-		delete(s.testSourcesByTarget[target], source)
-	}
-	if len(s.testSourcesByTarget[target]) == 0 {
-		delete(s.testSourcesByTarget, target)
-	}
-}
-
 func sourceFirst(source lsp.DocumentURI, publications []lsp.PublishDiagnosticsParams) []lsp.PublishDiagnosticsParams {
 	for i := range publications {
 		if publications[i].URI == source {
@@ -702,6 +675,12 @@ func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bo
 			ordered[0], ordered[own] = ordered[own], ordered[0]
 		}
 		for _, source := range ordered {
+			// Overflow suites retain their saved-file result while a live defaults
+			// buffer is open so closing it can restore disk diagnostics without
+			// unbounded reparsing, but that hidden result does not diagnose live text.
+			if open, ok := s.docs.get(uri); source != uri && ok && open.kind == docTestDefaults && s.testDefaultsBySuite[source] != uri {
+				continue
+			}
 			byURI := s.testDiagnosticsBySource[source]
 			for _, d := range byURI[uri] {
 				key := fmt.Sprintf("%d:%d:%d:%d:%s", d.Range.Start.Line, d.Range.Start.Character,

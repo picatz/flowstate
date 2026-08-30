@@ -358,16 +358,30 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 	c := newClient(t)
 	c.initialize()
 	dir := t.TempDir()
+	defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
 
 	for i := range maxTestDefaultsDependents {
 		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
-		assert.Empty(t, c.open(uri, validSuite).Diagnostics)
+		c.open(uri, validSuite)
+		require.Eventually(t, func() bool {
+			c.server.testDiagnosticsMu.Lock()
+			defer c.server.testDiagnosticsMu.Unlock()
+			return c.server.testDefaultsBySuite[lsp.DocumentURI(uri)] == defaultsURI
+		}, time.Second, time.Millisecond)
 	}
 	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
-	params := c.open(overflow, validSuite)
-	require.Len(t, params.Diagnostics, 1)
-	assert.Equal(t, codeTestDefaultsDependents, params.Diagnostics[0].Code)
-	assert.Contains(t, params.Diagnostics[0].Message, "saved defaults are checked instead")
+	c.open(overflow, validSuite)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == lsp.DocumentURI(overflow) {
+				return len(c.published[i].Diagnostics) == 1 &&
+					c.published[i].Diagnostics[0].Code == codeTestDefaultsDependents
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
 }
 
 func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T) {
@@ -382,12 +396,26 @@ func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T)
 
 	for i := range maxTestDefaultsDependents {
 		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
-		assert.Empty(t, c.open(uri, validSuite).Diagnostics)
+		c.open(uri, validSuite)
+		require.Eventually(t, func() bool {
+			c.server.testDiagnosticsMu.Lock()
+			defer c.server.testDiagnosticsMu.Unlock()
+			return c.server.testDefaultsBySuite[lsp.DocumentURI(uri)] == defaultsURI
+		}, time.Second, time.Millisecond)
 	}
 	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
-	params := c.open(overflow, validSuite)
-	require.Len(t, params.Diagnostics, 1)
-	assert.Equal(t, codeTestDefaultsDependents, params.Diagnostics[0].Code)
+	c.open(overflow, validSuite)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == lsp.DocumentURI(overflow) {
+				return len(c.published[i].Diagnostics) == 1 &&
+					c.published[i].Diagnostics[0].Code == codeTestDefaultsDependents
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -445,9 +473,25 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 		return false
 	}, time.Second, time.Millisecond, "opening defaults retained an overflow suite's saved-file error")
 	c.server.testDiagnosticsMu.Lock()
-	assert.NotContains(t, c.server.testSourcesByTarget[defaultsURI], lsp.DocumentURI(overflow),
-		"the target index retained the retracted overflow contribution")
+	assert.Contains(t, c.server.testSourcesByTarget[defaultsURI], lsp.DocumentURI(overflow),
+		"the target index did not retain the hidden saved-file contribution")
 	c.server.testDiagnosticsMu.Unlock()
+
+	wait := c.expectPublish()
+	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: defaultsURI},
+	}))
+	c.await(wait)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == defaultsURI {
+				return len(c.published[i].Diagnostics) > 0
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond, "closing defaults did not restore the overflow suite's saved-file error")
 }
 
 func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
