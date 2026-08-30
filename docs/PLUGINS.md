@@ -544,6 +544,37 @@ reach a plugin's task is `--plugin-dir` registering the host into that registry
 told the task exists, so the declaration is inert — not because it is
 unimplemented, but because nothing asked.
 
+## Distinguishing a rehearsal from production
+
+Every task request carries `flowstate.v1.WorkloadIdentity.mode`, an operational
+fact set by the host that launched the plugin. In Go, read its normalized value
+through `sdk.Caller.Mode()`; in another language, read the same enum directly
+from `ExecuteRequest.identity.mode`. This exposes a fact to the plugin. It does
+not grant authority, change host policy, or make the identity a credential.
+
+The safe test is a positive one:
+
+```go
+caller, ok := sdk.CallerFromContext(ctx)
+if !ok || caller.Mode() != flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION {
+	return nil, sdk.PermissionDenied("this operation requires an established production caller mode")
+}
+```
+
+Do not write `mode != REHEARSAL`. `UNSPECIFIED` is the zero value on purpose and
+means unknown: a new plugin receives it from an older host that never sent the
+field, from a missing identity, and from an enum value the SDK does not
+understand. All of those must remain non-production. A new host's additive field
+is ignored by an old plugin, so old-host/new-plugin and new-host/old-plugin
+pairings both remain wire compatible without making absence mean production.
+
+The value is authoritative only on today's directly launched, private Unix
+socket transport. It is set from the local host's unforgeable in-process
+rehearsal marker or from the durable driver itself, never from claims or task
+input. A future remote-plugin transport must authenticate the host and preserve
+that property; otherwise it must deliver `UNSPECIFIED`, not forward a mode
+supplied by a workflow or remote caller.
+
 ## Classifying failures
 
 Whether a step is retried is decided by the error your task returns, and only
