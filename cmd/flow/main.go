@@ -2479,7 +2479,11 @@ flow validate examples/hello-world/workflow.yaml`,
 			"who is this run's own starter is refused by `distinct_from_starter:` on both. It " +
 			"remains a rehearsal, and says so: nothing attested it, and the gate's own " +
 			"`sender.local` output reads true." + runDocumentHelp,
-		Args: cobra.MinimumNArgs(1),
+		// Exactly one, as `flow run` and `flow compile` already hold: MinimumNArgs
+		// ran the first file and silently dropped the rest, so a habit carried
+		// over from the variadic `flow validate` — `flow run local examples/*/workflow.yaml`
+		// — rehearsed one workflow and reported success for the lot.
+		Args: cobra.ExactArgs(1),
 		RunE: runLocalWorkflow,
 		Example: `# Run a workflow locally:
 flow run local examples/hello-world/workflow.yaml
