@@ -141,19 +141,19 @@ func CheckStructureDepth(wf *Workflow) error {
 		current := stack[last]
 		stack = stack[:last]
 
-		// Workflow-level values belong to every inlined callee too. A shallow
-		// copy lets the shared value-position walk inspect them without entering
-		// the recursive node traversal this bounded validator must avoid.
+		// Workflow-level values belong to every inlined callee too. Reuse the
+		// shared direct-value helpers without entering the recursive node
+		// traversal this bounded validator must avoid.
 		if current.workflow != nil {
-			shallow := *current.workflow
-			shallow.Steps = nil
-			WalkWorkflow(&shallow, Walk{Value: func(site ValueSite) {
+			valueWalk := Walk{Value: func(site ValueSite) {
 				if structureDepth(site.Value, 0) > MaxStructureDepth {
 					s := site
 					violation = &s
 					violationChain = slices.Clone(current.chain)
 				}
-			}})
+			}}
+			walkWorkflowValuesBeforeSteps(current.workflow, valueWalk)
+			walkWorkflowValuesAfterSteps(current.workflow, valueWalk)
 			if violation != nil {
 				break
 			}

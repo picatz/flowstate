@@ -397,7 +397,12 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 	if wf == nil {
 		return
 	}
+	walkWorkflowValuesBeforeSteps(wf, w)
+	WalkNodes(wf.GetSteps(), w)
+	walkWorkflowValuesAfterSteps(wf, w)
+}
 
+func walkWorkflowValuesBeforeSteps(wf *Workflow, w Walk) {
 	for _, declaration := range wf.GetDeclaredInputs() {
 		name := declaration.GetName()
 		w.value(ValueSite{Slot: SlotInputDefault, Name: name, Value: declaration.GetDefault()})
@@ -407,9 +412,9 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
 		w.value(ValueSite{Slot: SlotWorkflowVar, Name: name, Value: wf.GetVars()[name]})
 	}
+}
 
-	WalkNodes(wf.GetSteps(), w)
-
+func walkWorkflowValuesAfterSteps(wf *Workflow, w Walk) {
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		name := declaration.GetName()
 		w.value(ValueSite{Slot: SlotDeclaredOutput, Name: name, Value: declaration.GetValue()})
