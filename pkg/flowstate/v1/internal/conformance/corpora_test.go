@@ -93,6 +93,7 @@ func corpusSizes() map[string]int {
 		"TriggerContextCases":             len(TriggerContextCases()),
 		"UndoCallCases":                   len(UndoCallCases(standIn)),
 		"UndoCancellationCases":           len(UndoCancellationCases(standIn)),
+		"UndoLateCancellationCases":       len(UndoLateCancellationCases(standIn, "log", "stop")),
 		"UndoCases":                       len(UndoCases(standIn)),
 		"UndoLoopCases":                   len(UndoLoopCases(standIn)),
 		"UndoPlacementCases":              len(UndoPlacementCases(standIn)),
