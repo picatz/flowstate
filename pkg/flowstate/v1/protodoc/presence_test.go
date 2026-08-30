@@ -480,3 +480,74 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		t.Errorf("run/report declarations missing leading comments: %s", strings.Join(missing, ", "))
 	}
 }
+
+// TestTaskProtocolProseIsPresent keeps every task declaration useful to the
+// registry, generated Go documentation, task reference, and editor hovers.
+func TestTaskProtocolProseIsPresent(t *testing.T) {
+	reg, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	file, err := reg.FindFileByPath("flowstate/v1/task.proto")
+	if err != nil {
+		t.Fatalf("task protocol descriptor: %v", err)
+	}
+
+	var missing []string
+	checked := 0
+	check := func(descriptor protoreflect.Descriptor) {
+		checked++
+		if _, ok := CommentOf(descriptor); !ok {
+			missing = append(missing, string(descriptor.FullName()))
+		}
+	}
+	checkEnum := func(enum protoreflect.EnumDescriptor) {
+		check(enum)
+		for i := 0; i < enum.Values().Len(); i++ {
+			check(enum.Values().Get(i))
+		}
+	}
+	var checkMessage func(protoreflect.MessageDescriptor)
+	checkMessage = func(message protoreflect.MessageDescriptor) {
+		if message.IsMapEntry() {
+			return
+		}
+		check(message)
+		for i := 0; i < message.Fields().Len(); i++ {
+			check(message.Fields().Get(i))
+		}
+		for i := 0; i < message.Oneofs().Len(); i++ {
+			if oneof := message.Oneofs().Get(i); !oneof.IsSynthetic() {
+				check(oneof)
+			}
+		}
+		for i := 0; i < message.Enums().Len(); i++ {
+			checkEnum(message.Enums().Get(i))
+		}
+		for i := 0; i < message.Messages().Len(); i++ {
+			checkMessage(message.Messages().Get(i))
+		}
+	}
+
+	for i := 0; i < file.Messages().Len(); i++ {
+		checkMessage(file.Messages().Get(i))
+	}
+	for i := 0; i < file.Enums().Len(); i++ {
+		checkEnum(file.Enums().Get(i))
+	}
+	for i := 0; i < file.Services().Len(); i++ {
+		service := file.Services().Get(i)
+		check(service)
+		for j := 0; j < service.Methods().Len(); j++ {
+			check(service.Methods().Get(j))
+		}
+	}
+
+	if checked != 34 {
+		t.Errorf("task protocol walk checked %d declarations; want 34", checked)
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("task protocol declarations missing leading comments: %s", strings.Join(missing, ", "))
+	}
+}

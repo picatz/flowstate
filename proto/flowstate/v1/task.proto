@@ -40,6 +40,9 @@ message Task {
   // which one was meant. A capability that emits nothing is how this language says
   // "this produces nothing you can read".
   message Log {
+    // Inputs describes one message written to the run's durable log. Omitting
+    // level records the message at info level, and fields may be absent when the
+    // message has no structured attributes.
     message Inputs {
       // Message is the line a person reads. It is the whole point, so it is the
       // only required input.
@@ -90,8 +93,14 @@ message Task {
       // Unspecified reads as LEVEL_INFO, so a `log:` that says nothing about level
       // is the ordinary case rather than an error.
       LEVEL_UNSPECIFIED = 0;
+
+      // Info records ordinary progress or operational context.
       LEVEL_INFO = 1;
+
+      // Warn records a condition worth attention without changing task success.
       LEVEL_WARN = 2;
+
+      // Error records an error condition but does not itself fail the task or run.
       LEVEL_ERROR = 3;
     }
 
@@ -133,6 +142,9 @@ message Task {
   //
   // This is obviously useful, but also dangerous since it's just SSRF (Server-Side Request Forgery) in disguise.
   message HTTP {
+    // Inputs describes the outbound request and how its response is accepted and
+    // shaped. Secret references remain unresolved until worker-side use; absent
+    // optional controls use the defaults documented on their fields.
     message Inputs {
       // Url is where the request goes, written as an absolute URI.
       //
@@ -299,6 +311,10 @@ message Task {
       // method because it cannot have taken effect.
       optional bool retry_on_unknown_outcome = 11;
     }
+
+    // Outputs contains response data only after the response is accepted as
+    // successful. Json is absent unless parsing was requested, and output shaping
+    // may replace these defaults with the selected values.
     message Outputs {
       // StatusCode is the status the response carried.
       //

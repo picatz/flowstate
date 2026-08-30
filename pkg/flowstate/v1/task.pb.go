@@ -36,9 +36,12 @@ const (
 	// Unspecified reads as LEVEL_INFO, so a `log:` that says nothing about level
 	// is the ordinary case rather than an error.
 	Task_Log_LEVEL_UNSPECIFIED Task_Log_Level = 0
-	Task_Log_LEVEL_INFO        Task_Log_Level = 1
-	Task_Log_LEVEL_WARN        Task_Log_Level = 2
-	Task_Log_LEVEL_ERROR       Task_Log_Level = 3
+	// Info records ordinary progress or operational context.
+	Task_Log_LEVEL_INFO Task_Log_Level = 1
+	// Warn records a condition worth attention without changing task success.
+	Task_Log_LEVEL_WARN Task_Log_Level = 2
+	// Error records an error condition but does not itself fail the task or run.
+	Task_Log_LEVEL_ERROR Task_Log_Level = 3
 )
 
 // Enum value maps for Task_Log_Level.
@@ -264,6 +267,9 @@ func (*Task_HTTP) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 1}
 }
 
+// Inputs describes one message written to the run's durable log. Omitting
+// level records the message at info level, and fields may be absent when the
+// message has no structured attributes.
 type Task_Log_Inputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Message is the line a person reads. It is the whole point, so it is the
@@ -384,6 +390,9 @@ func (*Task_Log_Outputs) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 0, 1}
 }
 
+// Inputs describes the outbound request and how its response is accepted and
+// shaped. Secret references remain unresolved until worker-side use; absent
+// optional controls use the defaults documented on their fields.
 type Task_HTTP_Inputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Url is where the request goes, written as an absolute URI.
@@ -654,6 +663,9 @@ func (x *Task_HTTP_Inputs) GetRetryOnUnknownOutcome() bool {
 	return false
 }
 
+// Outputs contains response data only after the response is accepted as
+// successful. Json is absent unless parsing was requested, and output shaping
+// may replace these defaults with the selected values.
 type Task_HTTP_Outputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// StatusCode is the status the response carried.
