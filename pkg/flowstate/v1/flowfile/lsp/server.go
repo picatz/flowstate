@@ -66,6 +66,8 @@ type FlowfileServer struct {
 	testSourcesByTarget     map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 	testDefaultsBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 	testSuitesByDefaults    map[lsp.DocumentURI]map[lsp.DocumentURI]bool
+	testOverflowByDefaults  map[lsp.DocumentURI]lsp.DocumentURI
+	testOverflowBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 
 	// initialized and shuttingDown track the protocol lifecycle. The spec
 	// requires rejecting requests before initialize and after shutdown, and an
@@ -215,7 +217,10 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		doc, wasOpen := s.docs.get(params.TextDocument.URI)
 		s.docs.close(params.TextDocument.URI)
 		if wasOpen && doc.isTestDocument() {
-			s.clearTestDiagnostics(ctx, conn, params.TextDocument.URI)
+			promoted := s.clearTestDiagnostics(ctx, conn, params.TextDocument.URI)
+			if suite, ok := s.docs.get(promoted); ok {
+				s.publish(ctx, conn, suite)
+			}
 			// Closing an unsaved defaults buffer returns its dependent suites to
 			// the saved file. Re-run them now; retaining the live-buffer answer
 			// until a suite happens to change would leave stale diagnostics.
@@ -547,12 +552,18 @@ func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.Docu
 	if s.testDefaultsBySuite == nil {
 		s.testDefaultsBySuite = make(map[lsp.DocumentURI]lsp.DocumentURI)
 		s.testSuitesByDefaults = make(map[lsp.DocumentURI]map[lsp.DocumentURI]bool)
+		s.testOverflowByDefaults = make(map[lsp.DocumentURI]lsp.DocumentURI)
+		s.testOverflowBySuite = make(map[lsp.DocumentURI]lsp.DocumentURI)
 	}
 	if previous, ok := s.testDefaultsBySuite[suite.uri]; ok {
 		return previous == defaults, true
 	}
 	dependents := s.testSuitesByDefaults[defaults]
 	if len(dependents) >= maxTestDefaultsDependents {
+		if s.testOverflowByDefaults[defaults] == "" {
+			s.testOverflowByDefaults[defaults] = suite.uri
+			s.testOverflowBySuite[suite.uri] = defaults
+		}
 		return false, true
 	}
 	if dependents == nil {
@@ -619,7 +630,7 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 
 // clearTestDiagnostics removes a closed document's contributions and publishes
 // the aggregates needed to retract them without erasing another suite's.
-func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI) {
+func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI) lsp.DocumentURI {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
 	touched := map[lsp.DocumentURI]bool{source: true}
@@ -631,16 +642,30 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 		}
 	}
 	delete(s.testDiagnosticsBySource, source)
+	var promoted lsp.DocumentURI
 	if defaults, ok := s.testDefaultsBySuite[source]; ok {
 		delete(s.testDefaultsBySuite, source)
 		delete(s.testSuitesByDefaults[defaults], source)
+		candidate := s.testOverflowByDefaults[defaults]
+		delete(s.testOverflowByDefaults, defaults)
+		delete(s.testOverflowBySuite, candidate)
+		if suite, open := s.docs.get(candidate); open && suite.kind == docTestFile {
+			s.testDefaultsBySuite[candidate] = defaults
+			s.testSuitesByDefaults[defaults][candidate] = true
+			promoted = candidate
+		}
 		if len(s.testSuitesByDefaults[defaults]) == 0 {
 			delete(s.testSuitesByDefaults, defaults)
 		}
 	}
+	if defaults, ok := s.testOverflowBySuite[source]; ok {
+		delete(s.testOverflowBySuite, source)
+		delete(s.testOverflowByDefaults, defaults)
+	}
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
 		s.notify(ctx, conn, publication)
 	}
+	return promoted
 }
 
 func sourceFirst(source lsp.DocumentURI, publications []lsp.PublishDiagnosticsParams) []lsp.PublishDiagnosticsParams {

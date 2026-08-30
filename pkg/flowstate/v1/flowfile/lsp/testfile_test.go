@@ -359,9 +359,14 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 	c.initialize()
 	dir := t.TempDir()
 	defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
+	c.open(string(defaultsURI), "defaults: {}\n")
 
+	var firstSuite lsp.DocumentURI
 	for i := range maxTestDefaultsDependents {
 		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
+		if i == 0 {
+			firstSuite = lsp.DocumentURI(uri)
+		}
 		c.open(uri, validSuite)
 		require.Eventually(t, func() bool {
 			c.server.testDiagnosticsMu.Lock()
@@ -382,6 +387,25 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 		}
 		return false
 	}, time.Second, time.Millisecond)
+
+	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: firstSuite},
+	}))
+	require.Eventually(t, func() bool {
+		c.server.testDiagnosticsMu.Lock()
+		defer c.server.testDiagnosticsMu.Unlock()
+		return c.server.testDefaultsBySuite[lsp.DocumentURI(overflow)] == defaultsURI
+	}, time.Second, time.Millisecond, "the bounded overflow candidate was not promoted")
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			if c.published[i].URI == lsp.DocumentURI(overflow) {
+				return len(c.published[i].Diagnostics) == 0
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond, "the promoted suite retained its limit warning")
 }
 
 func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T) {
