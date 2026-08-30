@@ -169,6 +169,9 @@ func testProblemRange(source string, line, column int) lsp.Range {
 	}
 	line--
 	character := max(column-1, 0)
+	if source == "" {
+		character = 0
+	}
 	lines := strings.Split(source, "\n")
 	if line < len(lines) {
 		runes := []rune(lines[line])

@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -310,6 +311,42 @@ func TestClosingDefaultsReturnsDependentSuitesToTheSavedFile(t *testing.T) {
 	}, time.Second, time.Millisecond)
 }
 
+func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+
+	for i := range maxTestDefaultsDependents {
+		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
+		assert.Empty(t, c.open(uri, validSuite).Diagnostics)
+	}
+	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
+	params := c.open(overflow, validSuite)
+	require.Len(t, params.Diagnostics, 1)
+	assert.Equal(t, codeTestDefaultsDependents, params.Diagnostics[0].Code)
+	assert.Contains(t, params.Diagnostics[0].Message, "saved defaults are checked instead")
+}
+
+func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
+	t.Parallel()
+	s := &FlowfileServer{Logger: discardLogger()}
+	uri := lsp.DocumentURI("file:///stale/testdefaults.yaml")
+	stale := s.docs.open(uri, 1, "defaults:\n  stubs: [\n", nil)
+	current := s.docs.change(uri, 2, []lsp.TextDocumentContentChangeEvent{{Text: "defaults: {}\n"}}, nil)
+	require.NotNil(t, current)
+	s.testDiagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic{
+		uri: {uri: []lsp.Diagnostic{{Code: codeYAMLSyntax, Message: "current"}}},
+	}
+
+	s.publishTestDiagnostics(t.Context(), nil, uri, []diagnosticPublication{{
+		uri: uri, diagnostics: []lsp.Diagnostic{{Code: codeTestFile, Message: "stale"}},
+	}}, stale)
+
+	require.Len(t, s.testDiagnosticsBySource[uri][uri], 1)
+	assert.Equal(t, "current", s.testDiagnosticsBySource[uri][uri][0].Message)
+}
+
 func TestQuotedKeyUsesTheLoadersPosition(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
@@ -341,6 +378,13 @@ func TestTestDocumentRequestsHonorCancellationAndBounds(t *testing.T) {
 	assert.False(t, ok)
 	assert.Nil(t, doc)
 	store.endBuild(uri)
+}
+
+func TestAProblemRangeWithoutSourceUsesAConservativeCharacter(t *testing.T) {
+	t.Parallel()
+	rng := testProblemRange("", 7, 200)
+	assert.Equal(t, 6, rng.Start.Line)
+	assert.Zero(t, rng.Start.Character)
 }
 
 // TestASuitesOwnErrorIsNotMistakenForTheDefaultsFile (Codex, #1109) is the

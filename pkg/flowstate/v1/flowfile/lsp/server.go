@@ -63,6 +63,7 @@ type FlowfileServer struct {
 	testDiagnosticsMu       sync.Mutex
 	testDiagnosticsBySource map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic
 	testDefaultsBySuite     map[lsp.DocumentURI]lsp.DocumentURI
+	testSuitesByDefaults    map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 
 	// initialized and shuttingDown track the protocol lifecycle. The spec
 	// requires rejecting requests before initialize and after shutdown, and an
@@ -212,9 +213,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		doc, wasOpen := s.docs.get(params.TextDocument.URI)
 		s.docs.close(params.TextDocument.URI)
 		if wasOpen && doc.isTestDocument() {
-			for _, publication := range s.clearTestDiagnostics(params.TextDocument.URI) {
-				s.notify(ctx, conn, publication)
-			}
+			s.clearTestDiagnostics(ctx, conn, params.TextDocument.URI)
 			// Closing an unsaved defaults buffer returns its dependent suites to
 			// the saved file. Re-run them now; retaining the live-buffer answer
 			// until a suite happens to change would leave stale diagnostics.
@@ -224,9 +223,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 					if !ok || suite.kind != docTestFile {
 						continue
 					}
-					for _, publication := range s.publishTestDiagnostics(source, diagnoseTestPublications(suite, nil)) {
-						s.notify(ctx, conn, publication)
-					}
+					s.publishTestDiagnostics(ctx, conn, source, diagnoseTestPublications(suite, nil), suite)
 				}
 			}
 			return nil, nil
@@ -453,18 +450,28 @@ func (s *FlowfileServer) awaitDoc(ctx context.Context, conn *jsonrpc2.Conn, uri 
 func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *document) {
 	if doc.isTestDocument() {
 		var included *document
+		tracked := true
 		if doc.kind == docTestFile {
 			if path, ok := doc.filesystemPath(); ok {
 				defaultsURI := fileURI(filepath.Join(filepath.Dir(path), flowtest.DirDefaultsName))
-				s.rememberTestDefaults(doc.uri, defaultsURI)
-				included, _ = s.docs.get(defaultsURI)
+				tracked = s.rememberTestDefaults(doc.uri, defaultsURI)
+				if tracked {
+					included, _ = s.docs.get(defaultsURI)
+				}
 			}
 		}
-		for _, params := range s.publishTestDiagnostics(doc.uri, diagnoseTestPublications(doc, included)) {
-			s.logger().Debug("published diagnostics",
-				"uri", params.URI, "version", doc.version, "count", len(params.Diagnostics))
-			s.notify(ctx, conn, params)
+		publications := diagnoseTestPublications(doc, included)
+		if !tracked {
+			publications[0].diagnostics = append(publications[0].diagnostics, lsp.Diagnostic{
+				Range: documentStart, Severity: lsp.Warning, Source: diagnosticSource, Code: codeTestDefaultsDependents,
+				Message: fmt.Sprintf("this suite is beyond the %d open-suite limit for live testdefaults.yaml revalidation; saved defaults are checked instead", maxTestDefaultsDependents),
+			})
 		}
+		guards := []*document{doc}
+		if included != nil {
+			guards = append(guards, included)
+		}
+		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		// A live defaults edit changes every open suite that includes it. Re-run
 		// those suites through the same loader with this buffer; otherwise the
 		// editor would keep diagnostics from the saved defaults until each suite
@@ -475,9 +482,7 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 				if !ok || suite.kind != docTestFile {
 					continue
 				}
-				for _, params := range s.publishTestDiagnostics(source, diagnoseTestPublications(suite, doc)) {
-					s.notify(ctx, conn, params)
-				}
+				s.publishTestDiagnostics(ctx, conn, source, diagnoseTestPublications(suite, doc), suite, doc)
 			}
 		}
 		return
@@ -491,33 +496,61 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 	})
 }
 
+const (
+	maxTestDefaultsDependents  = 32
+	codeTestDefaultsDependents = "testdefaults-dependent-limit"
+)
+
 func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.DocumentURI {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
-	var sources []lsp.DocumentURI
-	for source, defaults := range s.testDefaultsBySuite {
-		if defaults == target {
-			sources = append(sources, source)
-		}
+	sources := make([]lsp.DocumentURI, 0, len(s.testSuitesByDefaults[target]))
+	for source := range s.testSuitesByDefaults[target] {
+		sources = append(sources, source)
 	}
 	slices.Sort(sources)
 	return sources
 }
 
-func (s *FlowfileServer) rememberTestDefaults(suite, defaults lsp.DocumentURI) {
+// rememberTestDefaults records a suite for live-buffer revalidation. The bound
+// limits one defaults keystroke to a fixed number of suite parses; callers that
+// do not fit use the saved defaults and publish an explicit warning.
+func (s *FlowfileServer) rememberTestDefaults(suite, defaults lsp.DocumentURI) bool {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
 	if s.testDefaultsBySuite == nil {
 		s.testDefaultsBySuite = make(map[lsp.DocumentURI]lsp.DocumentURI)
+		s.testSuitesByDefaults = make(map[lsp.DocumentURI]map[lsp.DocumentURI]bool)
+	}
+	if previous, ok := s.testDefaultsBySuite[suite]; ok {
+		return previous == defaults
+	}
+	dependents := s.testSuitesByDefaults[defaults]
+	if len(dependents) >= maxTestDefaultsDependents {
+		return false
+	}
+	if dependents == nil {
+		dependents = make(map[lsp.DocumentURI]bool)
+		s.testSuitesByDefaults[defaults] = dependents
 	}
 	s.testDefaultsBySuite[suite] = defaults
+	dependents[suite] = true
+	return true
 }
 
-// publishTestDiagnostics replaces source's cached contributions and returns
-// the aggregate publications for every URI whose answer may have changed.
-func (s *FlowfileServer) publishTestDiagnostics(source lsp.DocumentURI, publications []diagnosticPublication) []lsp.PublishDiagnosticsParams {
+// publishTestDiagnostics replaces source's cached contributions and publishes
+// every URI whose aggregate may have changed. The store guards reject stale
+// analyses; publishing while the diagnostics lock is held keeps notification
+// order identical to cache-update order under concurrent document changes.
+func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI, publications []diagnosticPublication, guards ...*document) {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
+	for _, guard := range guards {
+		current, ok := s.docs.get(guard.uri)
+		if !ok || current != guard {
+			return
+		}
+	}
 	if s.testDiagnosticsBySource == nil {
 		s.testDiagnosticsBySource = make(map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic)
 	}
@@ -531,12 +564,14 @@ func (s *FlowfileServer) publishTestDiagnostics(source lsp.DocumentURI, publicat
 		touched[publication.uri] = true
 	}
 	s.testDiagnosticsBySource[source] = next
-	return sourceFirst(source, s.aggregateTestDiagnostics(touched))
+	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
+		s.notify(ctx, conn, publication)
+	}
 }
 
-// clearTestDiagnostics removes a closed document's contributions and returns
+// clearTestDiagnostics removes a closed document's contributions and publishes
 // the aggregates needed to retract them without erasing another suite's.
-func (s *FlowfileServer) clearTestDiagnostics(source lsp.DocumentURI) []lsp.PublishDiagnosticsParams {
+func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI) {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
 	touched := map[lsp.DocumentURI]bool{source: true}
@@ -544,8 +579,16 @@ func (s *FlowfileServer) clearTestDiagnostics(source lsp.DocumentURI) []lsp.Publ
 		touched[uri] = true
 	}
 	delete(s.testDiagnosticsBySource, source)
-	delete(s.testDefaultsBySuite, source)
-	return sourceFirst(source, s.aggregateTestDiagnostics(touched))
+	if defaults, ok := s.testDefaultsBySuite[source]; ok {
+		delete(s.testDefaultsBySuite, source)
+		delete(s.testSuitesByDefaults[defaults], source)
+		if len(s.testSuitesByDefaults[defaults]) == 0 {
+			delete(s.testSuitesByDefaults, defaults)
+		}
+	}
+	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
+		s.notify(ctx, conn, publication)
+	}
 }
 
 func sourceFirst(source lsp.DocumentURI, publications []lsp.PublishDiagnosticsParams) []lsp.PublishDiagnosticsParams {
