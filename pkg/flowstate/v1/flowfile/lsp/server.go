@@ -643,6 +643,7 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	}
 	delete(s.testDiagnosticsBySource, source)
 	var promoted lsp.DocumentURI
+	var promotionDefaults lsp.DocumentURI
 	if defaults, ok := s.testDefaultsBySuite[source]; ok {
 		delete(s.testDefaultsBySuite, source)
 		delete(s.testSuitesByDefaults[defaults], source)
@@ -650,11 +651,10 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 		delete(s.testOverflowByDefaults, defaults)
 		delete(s.testOverflowBySuite, candidate)
 		if suite, open := s.docs.get(candidate); open && suite.kind == docTestFile {
-			s.testDefaultsBySuite[candidate] = defaults
-			s.testSuitesByDefaults[defaults][candidate] = true
 			promoted = candidate
+			promotionDefaults = defaults
 		}
-		if len(s.testSuitesByDefaults[defaults]) == 0 {
+		if len(s.testSuitesByDefaults[defaults]) == 0 && promoted == "" {
 			delete(s.testSuitesByDefaults, defaults)
 		}
 	}
@@ -664,6 +664,10 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	}
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
 		s.notify(ctx, conn, publication)
+	}
+	if promoted != "" {
+		s.testDefaultsBySuite[promoted] = promotionDefaults
+		s.testSuitesByDefaults[promotionDefaults][promoted] = true
 	}
 	return promoted
 }
