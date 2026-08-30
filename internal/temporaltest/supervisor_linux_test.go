@@ -84,6 +84,25 @@ func TestSupervisorPreservesOrdinaryShutdown(t *testing.T) {
 	}, 5*time.Second, 25*time.Millisecond, "owned Temporal server PID %d survived ordinary shutdown", serverPID)
 }
 
+func TestSupervisorStopsOwnedServerWhenTerminated(t *testing.T) {
+	harness := startHarness(t)
+	serverPID, serverStart := temporalProcess(t, harness.cmd.Process.Pid, harness.hostPort)
+	t.Cleanup(func() { killProcessInstance(serverPID, serverStart) })
+
+	supervisorPID, _, ok := processIdentity(serverPID)
+	require.True(t, ok, "reading the owned server's supervisor PID")
+	require.NotEqual(t, harness.cmd.Process.Pid, supervisorPID, "Temporal was not started through the supervisor")
+	supervisor, err := os.FindProcess(supervisorPID)
+	require.NoError(t, err)
+	require.NoError(t, supervisor.Signal(syscall.SIGTERM))
+
+	require.Eventually(t, func() bool {
+		return !sameProcessInstance(serverPID, serverStart)
+	}, 10*time.Second, 25*time.Millisecond, "owned Temporal server PID %d survived supervisor termination", serverPID)
+	_ = harness.stdin.Close()
+	_ = harness.cmd.Wait()
+}
+
 type runningHarness struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
