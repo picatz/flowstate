@@ -1446,15 +1446,14 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// engine would then run in a different form, which is precisely the claim the
 	// field promises not to make.
 	//
-	// Compared by value, whole, rather than reported as "was there a trusted
-	// entry" or narrowed to the fields a client's redaction happens to read
-	// today. A deployment that registers the identical specification a caller
-	// submits has substituted nothing observable and keeps the caller's precise
-	// view; anything else — a substitution, a pin, a normalization added next
-	// year — answers false without needing to be enumerated here. That is the
-	// fail-closed direction: a transformation nobody thought to list still costs
-	// a caller a precise view rather than costing them a secret.
-	asSubmitted := proto.Equal(submitted, workflow)
+	// Compared by value rather than reported as "was there a trusted entry" or
+	// narrowed to the fields a client's redaction happens to read today. The one
+	// exception is the task-capability snapshot: it is control-plane attestation
+	// about this program, not an executable transformation of the program. The
+	// helper strips only that field. A plugin selection or any future
+	// normalization still answers false unless its owner makes an equally explicit
+	// semantic decision here, preserving the fail-closed direction.
+	asSubmitted := specificationAsSubmitted(submitted, workflow)
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
 		Workflow:    workflow,
@@ -1541,6 +1540,17 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	), nil
 }
 
+func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
+	if submitted == nil || executed == nil {
+		return submitted == nil && executed == nil
+	}
+	want := proto.Clone(submitted).(*v1.Workflow)
+	got := proto.Clone(executed).(*v1.Workflow)
+	want.ResolvedTaskCapabilities = nil
+	got.ResolvedTaskCapabilities = nil
+	return proto.Equal(want, got)
+}
+
 // validateSubmission is the submission-validation pipeline shared by
 // [FlowstateServer.Run] and the create branch of
 // [FlowstateServer.SignalWithStart] — credential targets, the declared signal
@@ -1607,6 +1617,14 @@ func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[stri
 func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	if err := s.pinPlugins(wf); err != nil {
 		return err
+	}
+	// The registry is the task capability source of truth for this process, the
+	// same one GetCatalog reports and workers dispatch from. Resolve after
+	// plugins are pinned so a missing plugin is reported as that deployment
+	// problem rather than only as one of its task names being absent.
+	if err := v1.ResolveTaskCapabilities(wf, v1.DefaultRegistry()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+			"resolving task capabilities before durable execution: %w", err))
 	}
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {

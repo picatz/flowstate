@@ -862,10 +862,10 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// comment gives at length: [FlowstateServer.validateSubmission] pins the
 	// deployment's plugin selection onto this specification above, so a question
 	// asked before that would be answered about a message that had not finished
-	// being assembled. Whole-message equality, so a transformation nobody has
-	// thought of yet costs a caller the precise view rather than costing them a
-	// secret.
-	asSubmitted := proto.Equal(submitted, workflow)
+	// being assembled. [specificationAsSubmitted] excludes only the control-plane
+	// task snapshot; any executable transformation still costs a caller the
+	// precise view rather than costing them a secret.
+	asSubmitted := specificationAsSubmitted(submitted, workflow)
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
 		Workflow:    workflow,
 		StepsBudget: int32(s.maxStepsPerRun),

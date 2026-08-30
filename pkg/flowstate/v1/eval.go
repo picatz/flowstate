@@ -999,6 +999,12 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		if err := CheckSubmissionSize(w, bound); err != nil {
 			return nil, err
 		}
+		// Before eval can perform even its first task. The check reads the
+		// context-scoped registry that dispatch reads, so a rehearsal using a
+		// run-only registry cannot borrow tasks from the process-wide one.
+		if err := CheckTaskCapabilitiesIn(ctx, w); err != nil {
+			return nil, err
+		}
 
 		return eval(ctx, w, bound)
 	})
