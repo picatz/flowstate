@@ -7,4 +7,4 @@ GetRequest is the request message for getting a workflow run.
 | CLI input | Request field | Presence | Schema constraints | Schema field prose | Command-owned usage |
 |---|---|---|---|---|---|
 | `[workflow-id]` | `workflow_id` | required | — | — | workflow whose run should be reported |
-| `--run-id` | `run_id` | optional; unset stays absent | UUID | — | ask about one attempt of the workload; unset asks about whichever is current |
+| `--run-id` | `run_id` | optional; unset stays absent | a UUID | — | ask about one attempt of the workload; unset asks about whichever is current |

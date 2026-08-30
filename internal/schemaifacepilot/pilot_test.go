@@ -23,9 +23,7 @@ func TestRuntimeAndStaticBindTheSameSelectedFields(t *testing.T) {
 	runtimeBinding, err := NewRuntimeBinding(&flowstatev1.GetRequest{}, GetSelections, runtimeFlags)
 	require.NoError(t, err)
 	require.NoError(t, runtimeFlags.Parse([]string{"--run-id", validRunID}))
-	require.NoError(t, runtimeBinding.Apply(map[protoreflect.Name]string{"workflow_id": "example"}, func(message proto.Message) error {
-		return flowstatev1.Validate(message)
-	}))
+	require.NoError(t, runtimeBinding.Apply(map[protoreflect.Name]string{"workflow_id": "example"}))
 
 	staticFlags := pflag.NewFlagSet("static", pflag.ContinueOnError)
 	staticBinding := NewStaticGetBinding(staticFlags)
@@ -49,9 +47,7 @@ func TestOptionalPresenceAndEarlyValidation(t *testing.T) {
 				binding, err := NewRuntimeBinding(&flowstatev1.GetRequest{}, GetSelections, flags)
 				require.NoError(t, err)
 				require.NoError(t, flags.Parse(args))
-				err = binding.Apply(map[protoreflect.Name]string{"workflow_id": "example"}, func(message proto.Message) error {
-					return flowstatev1.Validate(message)
-				})
+				err = binding.Apply(map[protoreflect.Name]string{"workflow_id": "example"})
 				return binding.Message().(*flowstatev1.GetRequest), err
 			},
 		},
@@ -91,7 +87,7 @@ func TestExposureIsAllowlistOnlyAndFailsClosed(t *testing.T) {
 	binding, err := NewRuntimeBinding(message, []Selection{selection}, flags)
 	require.NoError(t, err)
 	require.NoError(t, flags.Parse([]string{"--safe", "chosen"}))
-	require.NoError(t, binding.Apply(nil, nil))
+	require.NoError(t, binding.Apply(nil))
 
 	assert.Equal(t, "chosen", message.Get(descriptor.Fields().ByName("safe")).String())
 	for _, name := range []protoreflect.Name{"newly_added", "identity", "credential", "policy", "server_owned", "output_only"} {
@@ -194,7 +190,7 @@ func BenchmarkApply(b *testing.B) {
 
 	b.Run("runtime-reflection", func(b *testing.B) {
 		for b.Loop() {
-			if err := runtimeBinding.Apply(map[protoreflect.Name]string{"workflow_id": "example"}, nil); err != nil {
+			if err := runtimeBinding.apply(map[protoreflect.Name]string{"workflow_id": "example"}, false); err != nil {
 				b.Fatal(err)
 			}
 		}

@@ -3,6 +3,7 @@ package schemaifacepilot
 import (
 	"fmt"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -50,7 +51,11 @@ func NewRuntimeBinding(message proto.Message, selections []Selection, flags *pfl
 // Apply writes the command-owned positional values and changed flags, then
 // invokes the same validator the caller would otherwise invoke. Optional flags
 // remain absent when unset.
-func (b *RuntimeBinding) Apply(positionals map[protoreflect.Name]string, validate func(proto.Message) error) error {
+func (b *RuntimeBinding) Apply(positionals map[protoreflect.Name]string) error {
+	return b.apply(positionals, true)
+}
+
+func (b *RuntimeBinding) apply(positionals map[protoreflect.Name]string, validate bool) error {
 	reflection := b.message.ProtoReflect()
 	for _, field := range b.fields {
 		selection := field.selection
@@ -66,8 +71,8 @@ func (b *RuntimeBinding) Apply(positionals map[protoreflect.Name]string, validat
 			reflection.Set(field.descriptor, protoreflect.ValueOfString(value))
 		}
 	}
-	if validate != nil {
-		return validate(b.message)
+	if validate {
+		return flowstatev1.Validate(b.message)
 	}
 	return nil
 }

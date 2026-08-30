@@ -107,7 +107,8 @@ positional status, and command-owned exposure classification.
 - **Reference generation:** lives in a separate package so importing a binding
   does not pull in the 487,312-byte source-bearing descriptor artifact. It
   combines selected surface metadata with linked descriptor shape,
-  Protovalidate rules, and source-bearing prose.
+  the shared `FieldConstraints` vocabulary (extended with its missing UUID
+  phrase), and source-bearing prose.
 - **Validation:** both pilots call `v1.Validate`; the server code and Connect
   interceptor are untouched.
 
@@ -168,14 +169,14 @@ reflection approach is not free and does not eliminate selection metadata.
 | Stripped runtime + source-info reference binary | 16,281,863 (+516,096 vs static) |
 | Existing source-bearing descriptor set | 487,312 |
 | Generated static binding | 1,066 |
-| Generated selected-field reference | 539 |
-| Pilot Go + generated-reference sources measured by `wc` | 31,719 |
+| Generated selected-field reference | 541 |
+| Pilot Go + generated-reference sources measured by `wc` | 31,552 |
 
-Warm reference generation took 6.70 µs, 32 allocations, and 3,488 B. `go
+Warm reference generation took 6.16 µs, 32 allocations, and 3,488 B. `go
 generate ./internal/schemaifacepilot` took 0.34 seconds with a warm Go cache and
 62.74 seconds / 324,712 KiB maximum RSS after `go clean -cache`; almost all of
 the cold cost is compiling the generator's existing Flowstate/Protobuf
-dependency graph. That is real CI/developer toolchain cost for 1,605 generated
+dependency graph. That is real CI/developer toolchain cost for 1,607 generated
 bytes, even though incremental cost is small.
 
 ## Testability and authority
@@ -188,7 +189,10 @@ remain the proof of tenant authorization and served-boundary validation; this
 pilot neither replaces nor mocks them.
 
 No schema, server, Cobra hierarchy, generated CLI reference, CEL registry,
-authorization policy, billing setting, or production behavior changed.
+authorization policy, billing setting, or executable request behavior changed.
+The one durable shared change is that `FieldConstraints` now renders the UUID
+rule as `a UUID`; the pilot consumes that source instead of maintaining a
+second rule inspection.
 
 ## Follow-up boundary
 

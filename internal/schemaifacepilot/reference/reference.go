@@ -79,12 +79,7 @@ func presenceLabel(field protoreflect.FieldDescriptor) string {
 }
 
 func fieldConstraints(field protoreflect.FieldDescriptor) []string {
-	constraints := flowstatev1.FieldConstraints(field)
-	rules := flowstatev1.FieldRules(field)
-	if rules != nil && rules.GetString().GetUuid() {
-		constraints = append(constraints, "UUID")
-	}
-	return constraints
+	return flowstatev1.FieldConstraints(field)
 }
 
 func surfaceSpelling(selection schemaifacepilot.Selection) string {
