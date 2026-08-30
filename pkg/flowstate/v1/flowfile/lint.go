@@ -625,6 +625,10 @@ func readsSteps(slot v1.ValueSlot) bool {
 	case v1.SlotWorkflowVar,
 		v1.SlotConcurrencyKey,
 		v1.SlotSignalSubject,
+		// A `debug:` rule's computed `subject:` is resolved at submit, by the
+		// server freezing the policy into the run's memo — earlier even than a
+		// signal policy's is consulted, and long before any step has run.
+		v1.SlotDebugSubject,
 		v1.SlotWebhookIdempotencyKey,
 		v1.SlotWebhookArgument,
 		v1.SlotWebhookVerify,

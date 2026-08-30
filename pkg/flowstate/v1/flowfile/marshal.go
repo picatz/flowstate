@@ -112,6 +112,20 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "signals", Value: written})
 	}
 
+	// Beside it, in the position the parser reads it. Written through the same
+	// one function a signal's policy is written through, which is what keeps
+	// `flow fmt` an exact inverse for both: a second writer that learned about
+	// a key the parser reads — or forgot one — is the asymmetric marshal
+	// signals.go's package doc names as a command that silently deletes an
+	// author's policy.
+	if debug := wf.GetDebug(); debug != nil {
+		written, err := signalPolicyToYAML(debug)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "debug", Value: written})
+	}
+
 	// Written before steps, which is where an author writes it and so where a reader
 	// looks for it: a value every step can reach belongs above the steps that reach it.
 	if len(wf.GetVars()) > 0 {

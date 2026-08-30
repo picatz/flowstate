@@ -2,10 +2,13 @@ package flowtest
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"maps"
 	"path/filepath"
 	"slices"
+
+	"github.com/goccy/go-yaml/parser"
 )
 
 // `testdefaults.yaml` (#1072, slice 3): the values every suite in one
@@ -51,6 +54,7 @@ type dirDefaults struct {
 	// answers "which document" for the whole of its work at once, so nothing
 	// downstream has to ask a possibly-nil directory the same question twice.
 	path string
+	doc  *document
 }
 
 // DirDefaultsError reports that the thing that could not be read was a
@@ -85,16 +89,40 @@ func (e *DirDefaultsError) Unwrap() error { return e.Err }
 // size-bounded before reading, alias-expansion-bounded before parsing.
 func loadDirDefaults(dir string) (*dirDefaults, error) {
 	path := filepath.Join(dir, DirDefaultsName)
-	refuse := func(err error) error { return &DirDefaultsError{Path: path, Err: err} }
-
 	data, err := readBounded(path, MaxTestFileBytes, "directory defaults file")
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, &DirDefaultsError{Path: path, Err: err}
+	}
+	return parseDirDefaults(data, path)
+}
+
+// LoadDirDefaultsSource validates testdefaults.yaml bytes through the same
+// strict parser, expansion bounds, and decoder [LoadSourceAt] uses when a suite
+// includes them. It deliberately stops before folding: semantic rules that
+// require an effective case remain owned by the suite load.
+func LoadDirDefaultsSource(data []byte, path string) error {
+	_, err := parseDirDefaults(data, path)
+	return err
+}
+
+// parseDirDefaults is the byte seam behind [loadDirDefaults]. Keeping the
+// strict decode and expansion checks here lets an editor validate an unsaved
+// testdefaults.yaml through the same loader as the suite beside it, without
+// writing the live buffer to disk or implementing the defaults grammar again.
+func parseDirDefaults(data []byte, path string) (*dirDefaults, error) {
+	refuse := func(err error) error { return &DirDefaultsError{Path: path, Err: err} }
+	if len(data) > MaxTestFileBytes {
+		return nil, refuse(fmt.Errorf("%d bytes exceeds the %d byte limit for a directory defaults file",
+			len(data), MaxTestFileBytes))
+	}
+	parsed, err := parser.ParseBytes(data, 0)
+	if err != nil {
 		return nil, refuse(err)
 	}
-	if err := checkExpansionBounds(data); err != nil {
+	if err := checkExpansionBoundsIn(parsed); err != nil {
 		return nil, refuse(err)
 	}
 
@@ -106,6 +134,7 @@ func loadDirDefaults(dir string) (*dirDefaults, error) {
 		return nil, refuse(err)
 	}
 	dd.path = path
+	dd.doc = newDocument(parsed)
 
 	return &dd, nil
 }
@@ -122,10 +151,11 @@ type contribution struct {
 	// file is the document the directory's values were written in, empty when
 	// the directory stated none.
 	file string
+	doc  *document
 
 	// paths are the values the fold moved unchanged, addressable in file at the
 	// very path they have here. [problems.wrote] takes these, and a problem at
-	// or under one of them is attributed to file and left unpositioned.
+	// or under one of them is attributed to file and positioned in doc.
 	paths []loc
 
 	// ownChecks and ownStubs are how many claims and stubs the *suite's* own
@@ -205,6 +235,7 @@ func (dd *dirDefaults) combineInto(file *File) contribution {
 		return moved
 	}
 	moved.file = dd.path
+	moved.doc = dd.doc
 
 	var contributed []loc
 	if len(dd.Vars) > 0 {

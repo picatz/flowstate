@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/cel-go/common/types/ref"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -98,6 +99,24 @@ func (s *Session) Paused() (Position, bool) {
 		Workflow: subject.workflow,
 		Autopsy:  subject.autopsy,
 	}, true
+}
+
+// Backtrace returns the paused run's current step and caller chain, innermost
+// first. The schema owns the shape because DAP consumes it now and the durable
+// attach surface will cross a Flowstate wire later.
+func (s *Session) Backtrace() (*v1.DebugBacktrace, error) {
+	s.mu.Lock()
+	subject := s.at
+	s.mu.Unlock()
+
+	if subject.scope == nil {
+		return nil, ErrNotPaused
+	}
+	if subject.autopsy || subject.backtrace == nil {
+		return &v1.DebugBacktrace{}, nil
+	}
+
+	return proto.Clone(subject.backtrace).(*v1.DebugBacktrace), nil
 }
 
 // Evaluate answers one CEL expression against the scope the run is paused in,

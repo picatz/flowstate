@@ -35,7 +35,9 @@
 // a well-meant addition here: the record is redacted structurally rather than
 // scrubbed. It has no field a payload, an error message or a specification
 // could be placed in, so there is nothing in it for a scrubber to be
-// best-effort about. Do not add one; add the code to AuditDenyCode instead.
+// best-effort about. MCP arguments, prompts, session and request identifiers,
+// and tool results are absent for the same reason. Do not add free text; add a
+// closed code to AuditDenyCode instead.
 //
 // # The boundary
 //

@@ -728,39 +728,55 @@ vars:
   endpoint: "${'https://api.' + vars.region + '.example.com/v1'}"
 ```
 
+A fence may also occupy a scalar leaf of a map or list written in YAML. YAML owns the keys, lengths, and nesting; each fence computes only its leaf, in the same dependency order and under the same cost and taint rules as a top-level computed var:
+
+```yaml
+vars:
+  token: test-token
+  request:
+    headers:
+      Authorization: "${'Bearer ' + vars.token}"
+      Accept: application/json
+    regions:
+      - eu-west-1
+      - "${vars.request.headers.Accept == 'application/json' ? 'us-east-1' : 'eu-central-1'}"
+```
+
+A nested fence may not return a map or list: that would let CEL replace a YAML leaf with dynamic shape. Put fences at the scalar leaves instead. A top-level CEL-built container keeps its existing rules, including refusal when tainted; `${vars.token == 'guess' ? {} : {'x': 'y'}}` cannot evade the shape protection by moving under a YAML key.
+
 The rules, each with the reason it exists:
 
 - **A computed var reads its sibling vars and nothing else.** No `steps` (the block is evaluated before any case runs, so nothing has produced anything), no `inputs` (a file's vars are shared by every case and a case's `inputs:` are its own), no `run` or `trigger`. Each is refused in its own words.
 - **Evaluation is in dependency order, once per var.** A cycle is refused at load, naming the path: `vars.a → vars.b → vars.a`. Where a directory's `testdefaults.yaml` is in play the diagnostic names the file each hop was written in, because a cycle can exist in neither document on its own.
 - **The environment is library-less and deterministic.** A file's vars are not bound to a workflow — `defaults.workflow` and a case's own `workflow:` may name different files in one suite — so a var that compiled under one case's profile and failed under another's would make load-time evaluation depend on which case you looked at. A call needing a profile library (`json_parse`, `split`, `base64.encode`) is therefore a load-time refusal naming the function; write it in `expect.check:`, which compiles under the case's own profile.
-- **Bounded by cost, per expression and across the file.** Each var's expression spends at most `MaxVarsPerFile`-th of the budget one ordinary expression gets, so a file declaring the maximum 200 vars spends, in total, what a single expression elsewhere in the system may.
+- **Bounded by cost, per expression and across the file.** A file may hold at most 200 computed values, counting fenced leaves as well as top-level fences. Each spends at most one two-hundredth of the budget one ordinary expression gets, so the whole block spends, in total, what a single expression elsewhere in the system may.
 - **A var on any path to a secret is withheld, and one redaction cannot withhold is refused.** If a var's value stands in for a secret — it is referenced from a case's `secrets:` — the taint spreads through the dependency graph in *both* directions, to a fixed point: every var computed from it, and every var it was computed *from*. The source material of a secret is secret, so `derived: "${'Bearer ' + vars.token}"` named from `secrets:` withholds `vars.token` as well as `vars.derived`. The taint follows references rather than values, which is what makes it answerable when the file loads.
 
   The contract in one sentence: **a value derived from secret material is withheld where it is a non-empty string, and refused into existence where it is anything else** — because anything else can carry the secret in a form redaction cannot reach: its digits, its truth, its shape, its very emptiness.
 
-  A tainted **non-empty string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else — including a check's own evaluator error, which carries its operands. Everything else is a load-time refusal naming the chain that taints it. A **number or boolean** — `${size(vars.token)}` — has nothing in it to match once a fixture has carried it into a run, and a length is a fact about a secret in its own right. A **container** leaks by shape, which survives leaf redaction completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality oracle whose answer is whether the map is empty, and clearing every string inside it changes nothing about that — so a tainted container is refused whatever its leaves are. The **empty string** is the same oracle without the container: the redaction set cannot hold `""`, since it occurs at every position of every string, so `${vars.token == 'guess' ? '' : 'x'}` renders `""` beside a `[redacted]` sibling.
+  A tainted **non-empty string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else — including a check's own evaluator error, which carries its operands. Everything else is a load-time refusal naming the chain that taints it. A **number or boolean** — `${size(vars.token)}` — has nothing in it to match once a fixture has carried it into a run, and a length is a fact about a secret in its own right. A **CEL-built container** leaks by shape, which survives leaf redaction completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality oracle whose answer is whether the map is empty, and clearing every string inside it changes nothing about that — so a tainted CEL-built container is refused whatever its leaves are. A YAML-authored container is different: its shape is literal, and each computed leaf is withheld or refused according to its own value while clean sibling leaves remain visible. The **empty string** is the same oracle without the container: the redaction set cannot hold `""`, since it occurs at every position of every string, so `${vars.token == 'guess' ? '' : 'x'}` renders `""` beside a `[redacted]` sibling.
 
   Each var is judged the moment it evaluates, before any var that reads it — so a value redaction cannot withhold never enters the block at all, and no later expression's error can quote it. A refused var's dependents do not evaluate and add no diagnostics of their own; the root refusal stands for the chain, while an unrelated problem elsewhere in the file is still reported.
 
-  The refusal costs one respelling, and says so: keep the derived value a string and express the structure at the position that *uses* it, where a `${vars.x}` leaf resolves at any depth, inside lists, and through `defaults.inputs:`.
+  The refusal costs one respelling, and says so: keep the shape in YAML and compute only scalar leaves. The YAML may live in the var itself, or at the position that uses it, where a `${vars.x}` reference resolves at any depth, inside lists, and through `defaults.inputs:`.
 
   ```yaml
   vars:
     token: s3cr3t
-    header: "${'Bearer ' + vars.token}"     # a string: withheld wherever it prints
+    headers:
+      Authorization: "${'Bearer ' + vars.token}" # this leaf is withheld
+      Accept: application/json                   # this leaf remains visible
   tests:
     - name: the structure lives where it is used
       inputs:
-        headers:
-          Authorization: "${vars.header}"
-          Accept: application/json          # untainted, and still shown
+        headers: "${vars.headers}"
   ```
 
   A var on no path to any secret is untouched, so `${size(vars.hostlist)}` and a map of hostnames stay ordinary fixtures.
 
   The cost, stated: a benign var that merely contributed to a secret is withheld too — a `"Bearer"` prefix, a port — and refused if it is not a string. Fail closed is the posture; a token minus its prefix is still a token.
 
-A fence *inside* a structure is still refused, and so is a mixed string (`"https://${vars.host}/v1"`): a partial substitution would be a template language this file deliberately is not. Build the combined text in a var — `"${'https://' + vars.host + '/v1'}"` — and reference that.
+A mixed string (`"https://${vars.host}/v1"`) is still refused: a partial substitution would be a template language this file deliberately is not. A fence at a scalar leaf must occupy that whole leaf. Build the combined text in the expression — `"${'https://' + vars.host + '/v1'}"`.
 
 **One asymmetry, stated because it is load-bearing**: inside a stub's `where:` and `returns:`, `vars.` keeps meaning the *workflow's* own `vars:` block — those expressions evaluate against the run's scope, and a load-time substitution there would silently hijack that meaning. A stub speaks the run's language; everywhere else in the test file, `vars.` is the file's.
 

@@ -33,6 +33,8 @@ const (
 type Capability int32
 
 const (
+	// Unspecified is not a usable capability. Manifests containing it are rejected
+	// rather than treating an absent capability as permission to use a service.
 	Capability_CAPABILITY_UNSPECIFIED Capability = 0
 	// Resolves secret references. See SecretService.
 	Capability_CAPABILITY_SECRETS Capability = 1
@@ -120,10 +122,14 @@ func (Capability) EnumDescriptor() ([]byte, []int) {
 type TaskPhase int32
 
 const (
-	TaskPhase_TASK_PHASE_UNSPECIFIED      TaskPhase = 0
-	TaskPhase_TASK_PHASE_REQUESTING       TaskPhase = 1
+	// Unspecified carries no progress and is dropped by the host.
+	TaskPhase_TASK_PHASE_UNSPECIFIED TaskPhase = 0
+	// Requesting means the task is sending or awaiting an outbound request.
+	TaskPhase_TASK_PHASE_REQUESTING TaskPhase = 1
+	// ReadingResponse means the task is consuming a response from its dependency.
 	TaskPhase_TASK_PHASE_READING_RESPONSE TaskPhase = 2
-	TaskPhase_TASK_PHASE_CALLING_PLUGIN   TaskPhase = 3
+	// CallingPlugin means execution is waiting across a plugin process boundary.
+	TaskPhase_TASK_PHASE_CALLING_PLUGIN TaskPhase = 3
 )
 
 // Enum value maps for TaskPhase.
@@ -169,9 +175,12 @@ func (TaskPhase) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{1}
 }
 
+// Status is the plugin's current ability to accept capability-specific calls.
 type HealthResponse_Status int32
 
 const (
+	// Unspecified is classified as not serving. A healthy plugin should
+	// affirmatively report serving.
 	HealthResponse_STATUS_UNSPECIFIED HealthResponse_Status = 0
 	// Serving means requests will be attempted.
 	HealthResponse_STATUS_SERVING HealthResponse_Status = 1
@@ -341,13 +350,21 @@ type TaskManifest struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Summary is one line, shown by `flow tasks` and in editor completion.
 	Summary string `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
-	// Inputs and outputs are serialized FileDescriptorProtos plus the full name of
-	// the message within them, so the engine can validate inputs against the
-	// plugin's own schema without compiling the plugin's code.
-	InputDescriptor  []byte `protobuf:"bytes,3,opt,name=input_descriptor,json=inputDescriptor,proto3" json:"input_descriptor,omitempty"`
-	InputMessage     string `protobuf:"bytes,4,opt,name=input_message,json=inputMessage,proto3" json:"input_message,omitempty"`
+	// InputDescriptor is a serialized FileDescriptorProto or FileDescriptorSet
+	// containing the input message's schema and any dependencies the host does
+	// not already provide. When input_message is set, empty bytes mean the host
+	// already has every required descriptor.
+	InputDescriptor []byte `protobuf:"bytes,3,opt,name=input_descriptor,json=inputDescriptor,proto3" json:"input_descriptor,omitempty"`
+	// InputMessage is the input message's fully qualified protobuf name. The host
+	// resolves it from input_descriptor and its own descriptor registry.
+	InputMessage string `protobuf:"bytes,4,opt,name=input_message,json=inputMessage,proto3" json:"input_message,omitempty"`
+	// OutputDescriptor is a serialized FileDescriptorProto or FileDescriptorSet
+	// for the task's output schema, with the same dependency and empty-value rules
+	// as input_descriptor.
 	OutputDescriptor []byte `protobuf:"bytes,5,opt,name=output_descriptor,json=outputDescriptor,proto3" json:"output_descriptor,omitempty"`
-	OutputMessage    string `protobuf:"bytes,6,opt,name=output_message,json=outputMessage,proto3" json:"output_message,omitempty"`
+	// OutputMessage is the output message's fully qualified protobuf name. The host
+	// resolves it from output_descriptor and its own descriptor registry.
+	OutputMessage string `protobuf:"bytes,6,opt,name=output_message,json=outputMessage,proto3" json:"output_message,omitempty"`
 	// DeferredInputs are inputs whose expressions the task evaluates itself, in a
 	// scope the workflow does not have. See TaskDef in the engine for why this must
 	// be declared rather than inferred.
@@ -569,6 +586,8 @@ func (x *TaskManifest) GetShapesOutputs() bool {
 	return false
 }
 
+// DescribeRequest carries host facts a plugin may use before advertising its
+// manifest.
 type DescribeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// HostVersion tells the plugin what it is talking to, so a plugin can refuse an
@@ -615,9 +634,12 @@ func (x *DescribeRequest) GetHostVersion() string {
 	return ""
 }
 
+// DescribeResponse carries the plugin's identity and capabilities. The host
+// validates the manifest before making any capability-specific call.
 type DescribeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Manifest      *PluginManifest        `protobuf:"bytes,1,opt,name=manifest,proto3" json:"manifest,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Manifest is the plugin's required identity and capability declaration.
+	Manifest      *PluginManifest `protobuf:"bytes,1,opt,name=manifest,proto3" json:"manifest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -659,6 +681,8 @@ func (x *DescribeResponse) GetManifest() *PluginManifest {
 	return nil
 }
 
+// HealthRequest is empty because health applies to the plugin process and its
+// dependencies, not to one task or tenant.
 type HealthRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -695,9 +719,14 @@ func (*HealthRequest) Descriptor() ([]byte, []int) {
 	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{4}
 }
 
+// HealthResponse distinguishes a reachable plugin that can serve from one whose
+// own dependency is unavailable.
 type HealthResponse struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Status HealthResponse_Status  `protobuf:"varint,1,opt,name=status,proto3,enum=flowstate.plugin.v1.HealthResponse_Status" json:"status,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Status is recorded for diagnostics. Any value other than STATUS_SERVING is
+	// classified as not serving; that classification does not itself gate
+	// capability calls or restart a reachable process.
+	Status HealthResponse_Status `protobuf:"varint,1,opt,name=status,proto3,enum=flowstate.plugin.v1.HealthResponse_Status" json:"status,omitempty"`
 	// Message explains a non-serving status, for the operator. It must not contain
 	// credential material: this is logged.
 	Message       string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
@@ -749,6 +778,8 @@ func (x *HealthResponse) GetMessage() string {
 	return ""
 }
 
+// ResolveRequest identifies the secret and the host-established workload context
+// under which it may be read.
 type ResolveRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Ref is the secret to resolve. Its scheme is one the plugin advertised.
@@ -816,6 +847,8 @@ func (x *ResolveRequest) GetIdentity() *v1.WorkloadIdentity {
 	return nil
 }
 
+// ResolveResponse returns secret material to the worker activity that requested
+// it, optionally with a plugin-defined validity period.
 type ResolveResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Value is the resolved secret. A plugin must not log it, and must not include
@@ -877,11 +910,19 @@ func (x *ResolveResponse) GetExpiresIn() *durationpb.Duration {
 // require of a distinct RPC's request type. The fields are identical and mean
 // the same thing; see ExecuteRequest for what each one is.
 type ExecuteStreamRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Task          *v1.Task               `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
-	Scope         *v1.Scope              `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
-	Identity      *v1.WorkloadIdentity   `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
-	Namespace     string                 `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Task is the task with host-resolved inputs, except for inputs the manifest
+	// declared deferred for the plugin to evaluate.
+	Task *v1.Task `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
+	// Scope is present only when the manifest declares that the task needs the
+	// workflow's expression scope.
+	Scope *v1.Scope `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	// Identity is the host-established identity under which the task runs.
+	Identity *v1.WorkloadIdentity `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
+	// Namespace is the host-established tenant boundary for the task call. It is
+	// empty when the host has no tenant namespace, including the default local
+	// rehearsal posture.
+	Namespace     string `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -952,6 +993,9 @@ func (x *ExecuteStreamRequest) GetNamespace() string {
 // result — see [Plugin.taskFunc]'s handling in plugin/task.go.
 type ExecuteStreamResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
+	// Message is one stream frame: either a best-effort progress update or the
+	// single terminal response.
+	//
 	// Types that are valid to be assigned to Message:
 	//
 	//	*ExecuteStreamResponse_Progress
@@ -1050,8 +1094,10 @@ func (*ExecuteStreamResponse_Response) isExecuteStreamResponse_Message() {}
 // and broadly readable, which is exactly where nothing derived from a task's
 // own inputs may go.
 type TaskProgress struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Phase         TaskPhase              `protobuf:"varint,1,opt,name=phase,proto3,enum=flowstate.plugin.v1.TaskPhase" json:"phase,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Phase is the closed, non-sensitive status forwarded to activity heartbeat
+	// history; unspecified values are discarded.
+	Phase         TaskPhase `protobuf:"varint,1,opt,name=phase,proto3,enum=flowstate.plugin.v1.TaskPhase" json:"phase,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1093,6 +1139,8 @@ func (x *TaskProgress) GetPhase() TaskPhase {
 	return TaskPhase_TASK_PHASE_UNSPECIFIED
 }
 
+// ExecuteRequest carries one task invocation and the host-established context the
+// plugin may use to evaluate or authorize it.
 type ExecuteRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Task is the step's task, with its inputs already resolved unless the manifest
@@ -1101,10 +1149,13 @@ type ExecuteRequest struct {
 	// Scope is what the task's own expressions evaluate against, sent only when the
 	// manifest declared needs_scope.
 	Scope *v1.Scope `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
-	// Identity is who the workload acts as, and namespace the tenant it belongs to,
-	// so a plugin task can authorize what it does on the workload's behalf.
-	Identity      *v1.WorkloadIdentity `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
-	Namespace     string               `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// Identity is who the workload acts as, so a plugin task can authorize what it
+	// does on the workload's behalf.
+	Identity *v1.WorkloadIdentity `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
+	// Namespace is the host-established tenant boundary for the task call. It is
+	// empty when the host has no tenant namespace, including the default local
+	// rehearsal posture.
+	Namespace     string `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1167,6 +1218,8 @@ func (x *ExecuteRequest) GetNamespace() string {
 	return ""
 }
 
+// ExecuteResponse carries successful task outputs and the plugin's retry advice
+// when execution instead returns an application error.
 type ExecuteResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Outputs are the task's results, matching the manifest's output message.
@@ -1254,6 +1307,62 @@ func (x *ExecuteResponse) GetRetryAfter() *durationpb.Duration {
 	return nil
 }
 
+// TaskErrorProvenance identifies a task failure caused by the request context
+// rather than by the plugin or one of its dependencies. It is attached as an
+// error detail by the SDK and interpreted by the host; plugin authors do not
+// construct it.
+//
+// Connect propagates a caller deadline to the plugin process, where the derived
+// timer can expire before the caller's own timer is observed. Carrying this fact
+// explicitly keeps that one deadline classified the same way on either side of
+// the process boundary without treating a plugin's own DeadlineExceeded status
+// as a caller timeout.
+type TaskErrorProvenance struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// CallerDeadlineExceeded reports that the task returned a deadline failure
+	// after the request context's inherited deadline expired.
+	CallerDeadlineExceeded bool `protobuf:"varint,1,opt,name=caller_deadline_exceeded,json=callerDeadlineExceeded,proto3" json:"caller_deadline_exceeded,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *TaskErrorProvenance) Reset() {
+	*x = TaskErrorProvenance{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskErrorProvenance) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskErrorProvenance) ProtoMessage() {}
+
+func (x *TaskErrorProvenance) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskErrorProvenance.ProtoReflect.Descriptor instead.
+func (*TaskErrorProvenance) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *TaskErrorProvenance) GetCallerDeadlineExceeded() bool {
+	if x != nil {
+		return x.CallerDeadlineExceeded
+	}
+	return false
+}
+
 var File_flowstate_plugin_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
@@ -1326,7 +1435,9 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\tretryable\x18\x02 \x01(\bR\tretryable\x12'\n" +
 	"\x0funknown_outcome\x18\x03 \x01(\bR\x0eunknownOutcome\x12:\n" +
 	"\vretry_after\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\n" +
-	"retryAfter*t\n" +
+	"retryAfter\"O\n" +
+	"\x13TaskErrorProvenance\x128\n" +
+	"\x18caller_deadline_exceeded\x18\x01 \x01(\bR\x16callerDeadlineExceeded*t\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -1361,7 +1472,7 @@ func file_flowstate_plugin_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_flowstate_plugin_v1_plugin_proto_goTypes = []any{
 	(Capability)(0),               // 0: flowstate.plugin.v1.Capability
 	(TaskPhase)(0),                // 1: flowstate.plugin.v1.TaskPhase
@@ -1379,32 +1490,33 @@ var file_flowstate_plugin_v1_plugin_proto_goTypes = []any{
 	(*TaskProgress)(nil),          // 13: flowstate.plugin.v1.TaskProgress
 	(*ExecuteRequest)(nil),        // 14: flowstate.plugin.v1.ExecuteRequest
 	(*ExecuteResponse)(nil),       // 15: flowstate.plugin.v1.ExecuteResponse
-	(*v1.SecretRef)(nil),          // 16: flowstate.v1.SecretRef
-	(*v1.WorkloadIdentity)(nil),   // 17: flowstate.v1.WorkloadIdentity
-	(*durationpb.Duration)(nil),   // 18: google.protobuf.Duration
-	(*v1.Task)(nil),               // 19: flowstate.v1.Task
-	(*v1.Scope)(nil),              // 20: flowstate.v1.Scope
-	(*v1.Node_Outputs)(nil),       // 21: flowstate.v1.Node.Outputs
+	(*TaskErrorProvenance)(nil),   // 16: flowstate.plugin.v1.TaskErrorProvenance
+	(*v1.SecretRef)(nil),          // 17: flowstate.v1.SecretRef
+	(*v1.WorkloadIdentity)(nil),   // 18: flowstate.v1.WorkloadIdentity
+	(*durationpb.Duration)(nil),   // 19: google.protobuf.Duration
+	(*v1.Task)(nil),               // 20: flowstate.v1.Task
+	(*v1.Scope)(nil),              // 21: flowstate.v1.Scope
+	(*v1.Node_Outputs)(nil),       // 22: flowstate.v1.Node.Outputs
 }
 var file_flowstate_plugin_v1_plugin_proto_depIdxs = []int32{
 	0,  // 0: flowstate.plugin.v1.PluginManifest.capabilities:type_name -> flowstate.plugin.v1.Capability
 	4,  // 1: flowstate.plugin.v1.PluginManifest.tasks:type_name -> flowstate.plugin.v1.TaskManifest
 	3,  // 2: flowstate.plugin.v1.DescribeResponse.manifest:type_name -> flowstate.plugin.v1.PluginManifest
 	2,  // 3: flowstate.plugin.v1.HealthResponse.status:type_name -> flowstate.plugin.v1.HealthResponse.Status
-	16, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
-	17, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	18, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
-	19, // 7: flowstate.plugin.v1.ExecuteStreamRequest.task:type_name -> flowstate.v1.Task
-	20, // 8: flowstate.plugin.v1.ExecuteStreamRequest.scope:type_name -> flowstate.v1.Scope
-	17, // 9: flowstate.plugin.v1.ExecuteStreamRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	17, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
+	18, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	19, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
+	20, // 7: flowstate.plugin.v1.ExecuteStreamRequest.task:type_name -> flowstate.v1.Task
+	21, // 8: flowstate.plugin.v1.ExecuteStreamRequest.scope:type_name -> flowstate.v1.Scope
+	18, // 9: flowstate.plugin.v1.ExecuteStreamRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
 	13, // 10: flowstate.plugin.v1.ExecuteStreamResponse.progress:type_name -> flowstate.plugin.v1.TaskProgress
 	15, // 11: flowstate.plugin.v1.ExecuteStreamResponse.response:type_name -> flowstate.plugin.v1.ExecuteResponse
 	1,  // 12: flowstate.plugin.v1.TaskProgress.phase:type_name -> flowstate.plugin.v1.TaskPhase
-	19, // 13: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
-	20, // 14: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
-	17, // 15: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	21, // 16: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
-	18, // 17: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
+	20, // 13: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
+	21, // 14: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
+	18, // 15: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	22, // 16: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
+	19, // 17: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
 	5,  // 18: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
 	7,  // 19: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
 	9,  // 20: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
@@ -1437,7 +1549,7 @@ func file_flowstate_plugin_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_plugin_v1_plugin_proto_rawDesc), len(file_flowstate_plugin_v1_plugin_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

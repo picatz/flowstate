@@ -209,12 +209,15 @@ message RunResponse {
   // Substitution is the loudest way the two can differ and not the only one. A
   // server also *transforms* what it runs: it writes its own selection of plugin
   // versions onto the specification before the engine sees it, and may normalize
-  // or expand more of it later. So this is whole-message equality between the
-  // request as it arrived and the specification handed to the engine, answered
-  // after every one of those steps rather than at the substitution alone. Reading
-  // it as "the parts a client's redaction happens to consult" would be a list
-  // somebody has to extend for every transformation added afterwards, and it
-  // would answer true the first time nobody did.
+  // or expand more of it later. So this compares the request as it arrived with
+  // the specification handed to the engine, answered after every one of those
+  // steps rather than at the substitution alone. The one excluded field is
+  // Workflow.resolved_task_capabilities when the caller omitted it: that is the
+  // control plane's attestation about an otherwise unchanged program, not an
+  // executable transformation or a declaration a client redacts against. A
+  // caller-supplied value in that field is still a difference when the server
+  // overwrites it. Any future exclusion requires the same explicit semantic
+  // decision here; this is not a field list derived from today's client.
   //
   // Three answers, not two, which is why this is `optional`. True means the
   // executed specification is the submitted one, so a client may trust its own

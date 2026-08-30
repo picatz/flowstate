@@ -68,7 +68,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "concurrency", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -837,6 +837,17 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// flowfile/signals.go and [v1.Workflow.Signals].
 	if f, found := fields.get("signals"); found {
 		workflow.Signals = c.signals(f.value, "signals", ref{path: "signals", label: "signals"})
+	}
+
+	// And who may pause a durable run of it under a debug lease, read here
+	// beside `signals:` because that is where the owner's decision put it and
+	// because it answers the same shape of question about the same outside
+	// world. One policy rather than a map: a signal policy is per name and
+	// there is exactly one thing to debug — this run. See flowfile/signals.go,
+	// whose grammar this shares entirely, and [v1.Workflow.Debug] for why the
+	// zero case here denies where `signals:`'s allows.
+	if f, found := fields.get("debug"); found {
+		workflow.Debug = c.signalPolicy(f.value, "debug", ref{path: "debug", label: "debug"})
 	}
 
 	// Read before steps, because every step's expressions may reference these and a

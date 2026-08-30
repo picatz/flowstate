@@ -6,9 +6,28 @@ import "buf/validate/validate.proto";
 
 option go_package = "flowstatev1";
 
-// RunState is the durable workflow state used by the Temporal Run entrypoint.
-// It allows the workflow to continue-as-new while carrying only the minimal
-// required subset of previously produced outputs for the remaining steps.
+// WorkloadIdentityMode says whether the host executing a workload established
+// this call as production or as a rehearsal.
+//
+// UNSPECIFIED is deliberately the zero value and means unknown. A plugin built
+// after this field was added receives it from an older host, rather than
+// silently reading an old-host rehearsal as production. Plugins that gate side
+// effects on this fact must admit only PRODUCTION, not merely reject REHEARSAL.
+enum WorkloadIdentityMode {
+  // UNSPECIFIED means the host did not establish a mode, the identity was absent,
+  // or the receiver does not understand the value. It is never evidence of a
+  // production call.
+  WORKLOAD_IDENTITY_MODE_UNSPECIFIED = 0;
+
+  // PRODUCTION means the directly connected host established this as a durable
+  // execution rather than a local rehearsal.
+  WORKLOAD_IDENTITY_MODE_PRODUCTION = 1;
+
+  // REHEARSAL means the directly connected host established this as a local,
+  // unattested rehearsal.
+  WORKLOAD_IDENTITY_MODE_REHEARSAL = 2;
+}
+
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
@@ -97,4 +116,21 @@ message WorkloadIdentity {
   // may act on a run; `deployment` is one of the attributes a policy may use to
   // decide what a run may reach.
   string deployment = 5;
+
+  // Mode is operational context, not a credential or an identity claim. When
+  // this identity is sent to a plugin, the host that launched and is directly
+  // connected to that plugin establishes the value; a plugin must not derive
+  // it from subject, claims, task input, or any workflow-authored value.
+  //
+  // Absence from an older host decodes as UNSPECIFIED (unknown), never
+  // PRODUCTION. Unknown enum values must be treated the same way. A plugin
+  // whose side effect is safe only in production therefore checks
+  // mode == PRODUCTION; checking only mode != REHEARSAL is unsafe.
+  //
+  // Today's transport is a host-launched process over a private Unix socket,
+  // so the launched host is authoritative for this fact. A future remote
+  // plugin transport must authenticate the host and preserve that authority,
+  // or replace this value with UNSPECIFIED rather than relay a caller-supplied
+  // one.
+  WorkloadIdentityMode mode = 6;
 }

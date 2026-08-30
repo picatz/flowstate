@@ -21,6 +21,17 @@ const flowtestPkg = modulePath + "/pkg/flowstate/v1/flowtest"
 // affected, its output can have moved. See needsDocs.
 const cmdFlowPkg = modulePath + "/cmd/flow"
 
+// agentConfigPkg structurally validates the repository-owned guidance, skill,
+// host-adapter and Amp-settings surfaces. Those directories are test data as a
+// set, so no import or individual os.ReadFile call can express the dependency.
+const agentConfigPkg = modulePath + "/tools/agentconfig"
+
+// agentConfigDataRoot is a synthetic repository-data root. It groups the
+// portable and host-specific agent configuration that agentConfigPkg validates
+// as one contract rather than pretending each mirrored directory is an
+// independent test dependency.
+const agentConfigDataRoot = "agent-config"
+
 // The example plugin's schema and the descriptor set built from it, which is
 // how that plugin's field comments reach an editor's hover (#723). Both are
 // named here rather than at their two use sites, so the trigger and the
@@ -66,15 +77,17 @@ type plan struct {
 	docs     bool // reference mirror + generated docs drift
 	examples bool // flow fix --check, flow test, flow breaking
 
-	// repoTestData means a repository-level file some test reads with
-	// os.ReadFile, rather than imports, changed: README.md, AGENTS.md, or
-	// any Markdown under docs/. None is a Go source file and none is under
-	// examples/, so nothing above puts any of them in front of the import
-	// graph or the #589 data-dependency seeding — but
+	// repoTestData means repository-level data validated by tests rather
+	// than imports changed: README.md, AGENTS.md, any Markdown under docs/,
+	// or the agent configuration grouped by agentConfigDataRoot. None is a
+	// Go source file and none is under examples/, so nothing above puts any
+	// of them in front of the import graph or the #589 data-dependency
+	// seeding — but
 	// cmd/flow/commands_test.go reads README.md's command table,
 	// pkg/flowstate/v1/flowfile/readme_test.go compiles the Flowfiles
 	// embedded in README.md and docs/ARCHITECTURE.md,
-	// pkg/flowstate/v1/agentsmd_test.go reads AGENTS.md, and
+	// tools/agentconfig validates AGENTS.md and the host-specific surfaces,
+	// and
 	// cmd/flow/docs_test.go reads and validates every file under
 	// docs/reference/. A change to any of them can make the test that reads
 	// it fail or go stale without moving a single Go file, the same shape
@@ -96,12 +109,12 @@ type plan struct {
 	repoTestData bool
 
 	// repoDataRoots names which of those roots this diff actually touched
-	// ("docs", "README.md", "AGENTS.md"), so the local tier can seed the
-	// packages that read *those* rather than every package that reads any
-	// of them. Without it a docs/DEPLOYMENT.md edit would pull in
-	// pkg/flowstate/v1 because its tests read AGENTS.md — true, unrelated,
-	// and expensive, since most of the module imports it. Sorted and
-	// deduplicated; empty exactly when repoTestData is false.
+	// ("docs", "README.md", "AGENTS.md", or agentConfigDataRoot), so the
+	// local tier can seed the packages that read *those* rather than every
+	// package that reads any of them. Without it a docs/DEPLOYMENT.md edit
+	// would pull in tools/agentconfig because that package reads AGENTS.md —
+	// true, unrelated, and avoidable. Sorted and deduplicated; empty exactly
+	// when repoTestData is false.
 	repoDataRoots []string
 
 	// appearance means the diff could move a recorded golden: styled
@@ -508,11 +521,14 @@ func exampleDataDepPackages(testSrc map[string][]byte) []string {
 }
 
 // repoDataRoot reports which repository-level data root a changed path belongs
-// to, or "" for a path that is not test data of this kind. The three roots are
-// the ones p.repoTestData's doc lists; docs/ is a tree, the other two are
-// single files.
+// to, or "" for a path that is not test data of this kind. docs/ is a tree;
+// README.md and AGENTS.md are single files; agentConfigDataRoot groups the
+// mirrored directories, adapters, settings and preserved guidance that
+// tools/agentconfig validates as one structural contract.
 func repoDataRoot(f string) string {
 	switch {
+	case isAgentConfigData(f):
+		return agentConfigDataRoot
 	case f == "README.md", f == "AGENTS.md":
 		return f
 	case strings.HasPrefix(f, "docs/") && strings.HasSuffix(f, ".md"):
@@ -520,6 +536,16 @@ func repoDataRoot(f string) string {
 	default:
 		return ""
 	}
+}
+
+func isAgentConfigData(f string) bool {
+	return strings.HasPrefix(f, ".agents/") ||
+		strings.HasPrefix(f, ".claude/") ||
+		strings.HasPrefix(f, ".amp/") ||
+		strings.HasPrefix(f, ".agent-history/") ||
+		f == "CLAUDE.md" ||
+		f == "AGENT_FIELD_NOTES.md" ||
+		f == "AGENT_FIELD_NOTES_LEGACY.md"
 }
 
 // repoDataDepPattern builds the literal matcher for the roots a diff actually
@@ -533,13 +559,11 @@ func repoDataRoot(f string) string {
 // cmd/flow/docs_test.go's `"../../docs/reference"`, and the README.md and
 // AGENTS.md paths cmd/flow/commands_test.go,
 // pkg/flowstate/v1/flowfile/readme_test.go and
-// pkg/flowstate/v1/agentsmd_test.go open.
+// tools/agentconfig/agentconfig_test.go open.
 //
-// It is per-root rather than one fixed pattern because the roots have very
-// different blast radii: pkg/flowstate/v1's tests read AGENTS.md, and most of
-// this module imports that package, so folding AGENTS.md's readers into a
-// docs-only diff would turn a documentation edit into a near-full run for a
-// dependency it does not have.
+// It is per-root rather than one fixed pattern because the roots have different
+// readers: tools/agentconfig reads AGENTS.md, but a docs-only diff has no
+// dependency on that package.
 //
 // This is the seeding half of what p.repoTestData already did for CI. Before
 // #708's docs index there was nothing under docs/ whose *content* a test
@@ -552,6 +576,9 @@ func repoDataRoot(f string) string {
 func repoDataDepPattern(roots []string) *regexp.Regexp {
 	alternatives := make([]string, 0, len(roots))
 	for _, root := range roots {
+		if root == agentConfigDataRoot {
+			continue
+		}
 		if root == "docs" {
 			// A tree: "docs" itself (the bare segment handed to
 			// filepath.Join) or anything under it.
@@ -562,6 +589,9 @@ func repoDataDepPattern(roots []string) *regexp.Regexp {
 		alternatives = append(alternatives, regexp.QuoteMeta(root)+`"`)
 	}
 
+	if len(alternatives) == 0 {
+		return nil
+	}
 	return regexp.MustCompile(`"(\.\./)*(` + strings.Join(alternatives, "|") + `)`)
 }
 
@@ -574,7 +604,25 @@ func repoDataDepPackages(testSrc map[string][]byte, roots []string) []string {
 		return nil
 	}
 
-	return dataDepPackages(testSrc, repoDataDepPattern(roots))
+	seen := map[string]bool{}
+	var out []string
+	for _, root := range roots {
+		if root == agentConfigDataRoot {
+			seen[agentConfigPkg] = true
+			out = append(out, agentConfigPkg)
+			break
+		}
+	}
+	if pattern := repoDataDepPattern(roots); pattern != nil {
+		for _, pkg := range dataDepPackages(testSrc, pattern) {
+			if !seen[pkg] {
+				seen[pkg] = true
+				out = append(out, pkg)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // dataDepPackages is the shared loop: every package in testSrc whose test

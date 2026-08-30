@@ -146,8 +146,43 @@ func ParseConfig(data []byte) (Config, error) {
 	if err := yaml.UnmarshalWithOptions(data, &cfg, yaml.Strict()); err != nil {
 		return Config{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
+	if err := rejectNullAllowlists(data, cfg); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
+}
+
+// rejectNullAllowlists preserves the distinction the typed decode cannot:
+// goccy/go-yaml decodes both an absent list and an explicitly null list to a
+// nil slice. For allow-shaped fields that ambiguity would fail open, because a
+// nil slice means "keep the unrestricted default". Re-decoding into a map
+// retains key presence, allowing null to be refused just like an empty list.
+func rejectNullAllowlists(data []byte, cfg Config) error {
+	var raw struct {
+		Egress map[string]any `yaml:"egress" json:"egress"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+	}
+
+	fields := []struct {
+		name  string
+		isNil bool
+	}{
+		{"schemes", cfg.Egress.Schemes == nil},
+		{"allow_networks", cfg.Egress.AllowNetworks == nil},
+		{"allow_ports", cfg.Egress.AllowPorts == nil},
+		{"allow", cfg.Egress.Allow == nil},
+	}
+	for _, field := range fields {
+		if _, present := raw.Egress[field.name]; present && field.isNil {
+			return fmt.Errorf("%w: %s is null; delete the key to keep the default, or provide a non-empty allowlist",
+				ErrInvalidPolicy, field.name)
+		}
+	}
+
+	return nil
 }
 
 // Policy builds the policy the file describes, by way of [Options] and [New].

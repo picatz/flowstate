@@ -160,6 +160,10 @@ const (
 	// The resource exists and belongs to another tenant, or records no tenant
 	// that this caller could be. FlowstateServer.ownedBy answering false.
 	AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH AuditDenyCode = 3
+	// The caller may address the resource, but a policy governing the requested
+	// operation refused it. FlowstateServer.authorizeSignal's name-level policy
+	// check is the first emitter.
+	AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED AuditDenyCode = 4
 )
 
 // Enum value maps for AuditDenyCode.
@@ -169,12 +173,14 @@ var (
 		1: "AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE",
 		2: "AUDIT_DENY_CODE_RESOURCE_NOT_FOUND",
 		3: "AUDIT_DENY_CODE_TENANT_MISMATCH",
+		4: "AUDIT_DENY_CODE_POLICY_DENIED",
 	}
 	AuditDenyCode_value = map[string]int32{
 		"AUDIT_DENY_CODE_UNSPECIFIED":          0,
 		"AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE": 1,
 		"AUDIT_DENY_CODE_RESOURCE_NOT_FOUND":   2,
 		"AUDIT_DENY_CODE_TENANT_MISMATCH":      3,
+		"AUDIT_DENY_CODE_POLICY_DENIED":        4,
 	}
 )
 
@@ -210,7 +216,10 @@ func (AuditDenyCode) EnumDescriptor() ([]byte, []int) {
 // Every field is set by the server. The only value here a caller influences at
 // all is resource_key, which is the identifier they addressed — bounded below,
 // and an identifier is not a payload: without it the record cannot say which
-// run was reached, which is the question an audit trail exists to answer.
+// run was reached, which is the question an audit trail exists to answer. RPC
+// and MCP tool names are accepted only after resolving them against the
+// server's registered, authorization-bound operation table; the caller's raw
+// tools/call name is never copied here.
 type AuditRecord struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The action authorized, from the deployment's one closed vocabulary.
@@ -231,11 +240,10 @@ type AuditRecord struct {
 	// Who asked, as this deployment attested them — not as they described
 	// themselves.
 	//
-	// The same WorkloadIdentity a run is started with, from the same call, and
-	// already bounded for a durable sink by its own schema: only the claims an
-	// operator configured are copied, and nothing secret may appear in it. That
-	// bound is not a coincidence to rely on quietly — it is the reason this
-	// field can be an identity rather than a subject string.
+	// The identity coordinates come from the same attested WorkloadIdentity a
+	// run is started with, but claims are always removed before emission. Claims
+	// may be relevant to workload policy; their values are not needed to say who
+	// made which authorization decision and never belong in this trail.
 	//
 	// Absent for a decision made about an unauthenticated caller, which a
 	// deployment started with --insecure-no-auth can have.
@@ -259,7 +267,30 @@ type AuditRecord struct {
 	//
 	// A code and not a message: see the redaction note on this file. The
 	// caller's own error keeps the prose, and that error is not durable.
-	DenyCode      AuditDenyCode `protobuf:"varint,8,opt,name=deny_code,json=denyCode,proto3,enum=flowstate.v1.AuditDenyCode" json:"deny_code,omitempty"`
+	DenyCode AuditDenyCode `protobuf:"varint,8,opt,name=deny_code,json=denyCode,proto3,enum=flowstate.v1.AuditDenyCode" json:"deny_code,omitempty"`
+	// The registered MCP tool the decision was made for, by its full registered
+	// name (for example, flowstate_validate). Exactly one of rpc and mcp_tool is
+	// set.
+	//
+	// Additive rather than moving rpc into a oneof: rpc predates this field and
+	// keeping field 3's cardinality and generated API unchanged preserves old
+	// records and readers under both Buf FILE and WIRE compatibility. The
+	// message-level rule gives new writers the same exclusivity a oneof would
+	// have without changing the old field's contract.
+	//
+	// This is the registered name after authorization-action lookup, never the
+	// untrusted tools/call string before lookup. Arguments, prompts and results
+	// are deliberately absent from this record.
+	McpTool string `protobuf:"bytes,9,opt,name=mcp_tool,json=mcpTool,proto3" json:"mcp_tool,omitempty"`
+	// The operator-chosen trusted-issuer entry that admitted the caller.
+	// Unlike identity.issuer, which names who signed the credential, this names
+	// the exact policy row that accepted it. It is bounded before emission; it
+	// never comes from a token claim.
+	IssuerName string `protobuf:"bytes,10,opt,name=issuer_name,json=issuerName,proto3" json:"issuer_name,omitempty"`
+	// The role the same trusted-issuer entry assigned to the caller. Empty when
+	// the policy assigned none. It is bounded before emission and never copied
+	// from a token claim.
+	Role          string `protobuf:"bytes,11,opt,name=role,proto3" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -350,23 +381,52 @@ func (x *AuditRecord) GetDenyCode() AuditDenyCode {
 	return AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED
 }
 
+func (x *AuditRecord) GetMcpTool() string {
+	if x != nil {
+		return x.McpTool
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetIssuerName() string {
+	if x != nil {
+		return x.IssuerName
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
 var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8b\x04\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa7\b\n" +
 	"\vAuditRecord\x12E\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
-	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\bdecision\x120\n" +
-	"\x03rpc\x18\x03 \x01(\tB\x1e\xbaH\x1br\x19\x10\x01\x18@2\x13^[A-Z][A-Za-z0-9]*$R\x03rpc\x12:\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\bdecision\x12\xb2\x01\n" +
+	"\x03rpc\x18\x03 \x01(\tB\x9f\x01\xbaH\x9b\x01\xba\x01\x97\x01\n" +
+	"\x10audit_record.rpc\x12:rpc must be empty or a bounded WorkflowService method name\x1aGthis == '' || (size(this) <= 64 && this.matches('^[A-Z][A-Za-z0-9]*$'))R\x03rpc\x12:\n" +
 	"\bidentity\x18\x04 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\x12N\n" +
 	"\rresource_kind\x18\x05 \x01(\x0e2\x1f.flowstate.v1.AuditResourceKindB\b\xbaH\x05\x82\x01\x02\x10\x01R\fresourceKind\x12+\n" +
 	"\fresource_key\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\vresourceKey\x12A\n" +
 	"\n" +
 	"decided_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\tdecidedAt\x12B\n" +
-	"\tdeny_code\x18\b \x01(\x0e2\x1b.flowstate.v1.AuditDenyCodeB\b\xbaH\x05\x82\x01\x02\x10\x01R\bdenyCode*b\n" +
+	"\tdeny_code\x18\b \x01(\x0e2\x1b.flowstate.v1.AuditDenyCodeB\b\xbaH\x05\x82\x01\x02\x10\x01R\bdenyCode\x12\xbc\x01\n" +
+	"\bmcp_tool\x18\t \x01(\tB\xa0\x01\xbaH\x9c\x01\xba\x01\x98\x01\n" +
+	"\x15audit_record.mcp_tool\x128mcp_tool must be empty or a bounded registered tool name\x1aEthis == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))R\amcpTool\x12)\n" +
+	"\vissuer_name\x18\n" +
+	" \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\n" +
+	"issuerName\x12\x1c\n" +
+	"\x04role\x18\v \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x04role:\x8e\x01\xbaH\x8a\x01\x1a\x87\x01\n" +
+	"\x16audit_record.operation\x12Bexactly one of rpc or mcp_tool must identify the audited operation\x1a)(this.rpc != '') != (this.mcp_tool != '')*b\n" +
 	"\rAuditDecision\x12\x1e\n" +
 	"\x1aAUDIT_DECISION_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14AUDIT_DECISION_ALLOW\x10\x01\x12\x17\n" +
@@ -375,12 +435,13 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x1fAUDIT_RESOURCE_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17AUDIT_RESOURCE_KIND_RUN\x10\x01\x12 \n" +
 	"\x1cAUDIT_RESOURCE_KIND_SCHEDULE\x10\x02\x12!\n" +
-	"\x1dAUDIT_RESOURCE_KIND_NAMESPACE\x10\x03*\xa7\x01\n" +
+	"\x1dAUDIT_RESOURCE_KIND_NAMESPACE\x10\x03*\xca\x01\n" +
 	"\rAuditDenyCode\x12\x1f\n" +
 	"\x1bAUDIT_DENY_CODE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE\x10\x01\x12&\n" +
 	"\"AUDIT_DENY_CODE_RESOURCE_NOT_FOUND\x10\x02\x12#\n" +
-	"\x1fAUDIT_DENY_CODE_TENANT_MISMATCH\x10\x03B\xa9\x01\n" +
+	"\x1fAUDIT_DENY_CODE_TENANT_MISMATCH\x10\x03\x12!\n" +
+	"\x1dAUDIT_DENY_CODE_POLICY_DENIED\x10\x04B\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"AuditProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

@@ -178,6 +178,12 @@ func NewLocalWorkloadIdentity(subject, issuer, namespace, deployment string, cla
 	}
 }
 
+// IsLocalRehearsal reports whether this identity was created by
+// [NewLocalWorkloadIdentity]. It exposes the fact without exposing a setter:
+// the unexported marker remains the trust source, and an identity assembled by
+// a caller or decoded from a wire message cannot make this return true.
+func (w WorkloadIdentity) IsLocalRehearsal() bool { return w.local }
+
 // IsZero reports whether the identity is unset.
 func (w WorkloadIdentity) IsZero() bool {
 	return w.Subject == "" && w.Issuer == "" && w.Namespace == "" && w.Deployment == "" && len(w.Claims) == 0

@@ -185,6 +185,156 @@ func walked(t *testing.T, steps ...string) (*client, *flowdebug.Session, <-chan 
 	return c, session, finished
 }
 
+// called is a real local run stopped first at a call and then in its callee.
+// It exists separately from walked because a call chain is engine state: a
+// test that assembled frames at the adapter would prove the divergence this
+// package is forbidden to introduce.
+func called(t *testing.T) (*client, <-chan error) {
+	t.Helper()
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	finished := make(chan error, 1)
+	go func() {
+		<-server.Launched()
+		_, runErr := v1.Run(v1.NewContextWithDebugger(t.Context(), session), &v1.Workflow{
+			Name: "caller",
+			Steps: []*v1.Node{{
+				Id: "invoke",
+				Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+					Name:  "callee",
+					Steps: []*v1.Node{{Id: "inside", Kind: &v1.Node_Value{Value: v1.NewLiteral(1)}}},
+				}}},
+			}},
+		})
+		finished <- runErr
+	}()
+
+	return c, finished
+}
+
+func TestStackTraceUsesTheCoresCallChain(t *testing.T) {
+	t.Parallel()
+
+	c, finished := called(t)
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	// Step over the caller's call boundary and stop at the callee's first
+	// step. The adapter asks the session for the resulting chain; it does not
+	// infer one from the inventory or from ids.
+	c.send(4, "next", map[string]any{"threadId": 1})
+	c.await("response", "next")
+	c.await("event", "stopped")
+	c.send(5, "stackTrace", map[string]any{"threadId": 1})
+	trace := c.await("response", "stackTrace")
+	frames := trace["body"].(map[string]any)["stackFrames"].([]any)
+	require.Len(t, frames, 2)
+	assert.Equal(t, "callee.inside (value)", frames[0].(map[string]any)["name"])
+	assert.Equal(t, `caller.invoke (call "callee")`, frames[1].(map[string]any)["name"],
+		"a caller frame names its callee without embedding the callee's workflow spec")
+	c.send(6, "stackTrace", map[string]any{"threadId": 1, "startFrame": 1, "levels": 1})
+	window := c.await("response", "stackTrace")["body"].(map[string]any)
+	assert.Equal(t, float64(2), window["totalFrames"])
+	windowFrames := window["stackFrames"].([]any)
+	require.Len(t, windowFrames, 1)
+	assert.Equal(t, `caller.invoke (call "callee")`, windowFrames[0].(map[string]any)["name"])
+
+	// A missing or malformed frame cannot inherit the current frame's values.
+	// DAP input is an external boundary, and zero is not a stack frame id this
+	// adapter issued.
+	c.send(7, "scopes", map[string]any{})
+	missingScopes := c.await("response", "scopes")
+	assert.Empty(t, missingScopes["body"].(map[string]any)["scopes"])
+	c.send(8, "scopes", "not-an-object")
+	malformedScopes := c.await("response", "scopes")
+	assert.Empty(t, malformedScopes["body"].(map[string]any)["scopes"])
+
+	// The chain knows the caller, but only the innermost frame is paused. An
+	// empty caller scope is the honest answer; reusing the callee's scope would
+	// put correct values under the wrong frame.
+	c.send(9, "scopes", map[string]any{"frameId": 2})
+	callerScopes := c.await("response", "scopes")
+	assert.Empty(t, callerScopes["body"].(map[string]any)["scopes"])
+
+	c.send(10, "evaluate", map[string]any{"frameId": 2, "expression": "steps"})
+	callerEvaluation := c.await("response", "evaluate")
+	assert.Equal(t, false, callerEvaluation["success"],
+		"an evaluation for a caller frame was answered from the callee's scope")
+
+	c.send(11, "continue", map[string]any{"threadId": 1})
+	c.await("response", "continue")
+	select {
+	case err := <-finished:
+		require.NoError(t, err)
+	case <-time.After(20 * time.Second):
+		t.Fatal("the called run did not finish")
+	}
+}
+
+func TestAnAutopsyKeepsAFrameForItsReadableScope(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		<-server.Launched()
+		scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+			StepValues: map[string]*v1.Node_Outputs{"built": {}},
+		})
+		session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
+	}()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(3, "stackTrace", map[string]any{"threadId": 1})
+	trace := c.await("response", "stackTrace")
+	frames := trace["body"].(map[string]any)["stackFrames"].([]any)
+	require.Len(t, frames, 1)
+	assert.Equal(t, "after the run", frames[0].(map[string]any)["name"])
+
+	c.send(4, "scopes", map[string]any{"frameId": 1})
+	scopes := c.await("response", "scopes")
+	assert.NotEmpty(t, scopes["body"].(map[string]any)["scopes"],
+		"the autopsy frame did not address the finished run's retained scope")
+
+	c.send(5, "continue", map[string]any{"threadId": 1})
+	c.await("response", "continue")
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the autopsy did not leave")
+	}
+}
+
 // TestAnEditorCanStepARun is the conversation, end to end: initialize,
 // configure, stop, step, and read where the run is.
 func TestAnEditorCanStepARun(t *testing.T) {

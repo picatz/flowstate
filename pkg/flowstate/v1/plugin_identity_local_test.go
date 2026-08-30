@@ -18,7 +18,7 @@ import (
 // [v1.Registry] rather than the process-global one so this test needs no
 // coordination with anything else that registers a task for the life of the
 // binary.
-func runPluginIdentityLocal(t *testing.T, identity auth.WorkloadIdentity) (subject, namespace string, present bool) {
+func runPluginIdentityLocal(t *testing.T, identity auth.WorkloadIdentity) (subject, namespace string, mode v1.WorkloadIdentityMode, present bool) {
 	t.Helper()
 
 	registry := v1.NewRegistry()
@@ -38,6 +38,7 @@ func runPluginIdentityLocal(t *testing.T, identity auth.WorkloadIdentity) (subje
 	values := out.GetStepValues()["call"].GetNamedValues()
 	return values["subject"].GetLiteral().GetStringValue(),
 		values["namespace"].GetLiteral().GetStringValue(),
+		v1.WorkloadIdentityMode(values["mode"].GetLiteral().GetInt64Value()),
 		values["present"].GetLiteral().GetBoolValue()
 }
 
@@ -48,13 +49,14 @@ func runPluginIdentityLocal(t *testing.T, identity auth.WorkloadIdentity) (subje
 // TestPluginTaskObservesCallerDurable in engine/plugin_identity_test.go is
 // the other.
 func TestPluginTaskObservesCallerLocal(t *testing.T) {
-	subject, namespace, present := runPluginIdentityLocal(t, auth.WorkloadIdentity{
-		Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "team-a",
-	})
+	subject, namespace, mode, present := runPluginIdentityLocal(t, auth.NewLocalWorkloadIdentity(
+		"svc-reader", "https://issuer.example", "team-a", "local", nil,
+	))
 
 	require.True(t, present, "the plugin task's context carried no identity at all")
 	require.Equal(t, "svc-reader", subject)
 	require.Equal(t, "team-a", namespace)
+	require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL, mode)
 }
 
 // TestPluginTaskCallerNotStickyAcrossRunsLocal is the tenancy direction and
@@ -65,12 +67,12 @@ func TestPluginTaskObservesCallerLocal(t *testing.T) {
 // installed at load time (the closure-at-load trap) would make the second run
 // see the first run's caller, or a caller that never changes at all.
 func TestPluginTaskCallerNotStickyAcrossRunsLocal(t *testing.T) {
-	firstSubject, firstNamespace, _ := runPluginIdentityLocal(t, auth.WorkloadIdentity{
-		Subject: "svc-a", Issuer: "https://issuer.example", Namespace: "team-a",
-	})
-	secondSubject, secondNamespace, _ := runPluginIdentityLocal(t, auth.WorkloadIdentity{
-		Subject: "svc-b", Issuer: "https://issuer.example", Namespace: "team-b",
-	})
+	firstSubject, firstNamespace, _, _ := runPluginIdentityLocal(t, auth.NewLocalWorkloadIdentity(
+		"svc-a", "https://issuer.example", "team-a", "local", nil,
+	))
+	secondSubject, secondNamespace, _, _ := runPluginIdentityLocal(t, auth.NewLocalWorkloadIdentity(
+		"svc-b", "https://issuer.example", "team-b", "local", nil,
+	))
 
 	require.Equal(t, "svc-a", firstSubject)
 	require.Equal(t, "team-a", firstNamespace)
@@ -87,9 +89,29 @@ func TestPluginTaskCallerNotStickyAcrossRunsLocal(t *testing.T) {
 // what a plugin-side [plugin.IdentityFromContext] and the SDK's
 // sdk.CallerFromContext both see when nobody authenticated the run.
 func TestPluginTaskCallerExplicitlyEmptyLocal(t *testing.T) {
-	subject, namespace, present := runPluginIdentityLocal(t, auth.WorkloadIdentity{})
+	subject, namespace, mode, present := runPluginIdentityLocal(t,
+		auth.NewLocalWorkloadIdentity("", "", "", "", nil))
 
 	require.True(t, present, "an unestablished identity must still cross as an explicit empty caller, not as no context value at all")
 	require.Empty(t, subject)
 	require.Empty(t, namespace)
+	require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL, mode,
+		"the host still knows an unauthenticated local call is a rehearsal")
+}
+
+// TestProtoWorkloadIdentityModeComesOnlyFromTheLocalMarker pins the host trust
+// source. Claims and ordinary exported fields can be supplied by callers; none
+// can manufacture REHEARSAL. Only auth.NewLocalWorkloadIdentity's unexported
+// in-process marker can.
+func TestProtoWorkloadIdentityModeComesOnlyFromTheLocalMarker(t *testing.T) {
+	claimed := v1.ProtoWorkloadIdentity(auth.WorkloadIdentity{
+		Subject: "caller",
+		Claims:  map[string]string{"mode": "rehearsal", "local": "true"},
+	})
+	require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION, claimed.GetMode())
+
+	local := v1.ProtoWorkloadIdentity(auth.NewLocalWorkloadIdentity(
+		"caller", "issuer", "team-a", "local", map[string]string{"mode": "production"},
+	))
+	require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL, local.GetMode())
 }

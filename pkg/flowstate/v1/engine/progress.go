@@ -2,6 +2,7 @@ package engine
 
 import (
 	"strings"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
@@ -85,6 +86,16 @@ type progress struct {
 	// segment — a snapshot that dropped something must keep saying so, not only
 	// in the query that caught it in the act.
 	loopStateTruncated bool
+
+	// debugLease is the lease holding the run at this position, or nil.
+	//
+	// Rendered into [progress.currentDetailsMarkdown] and deliberately nowhere
+	// else: [v1.RunProgress] is answered to clients and growing it a field is a
+	// public message pinned by `buf breaking` from the moment it lands, which
+	// #928 stages for `flow debug attach` — the RPC that will have to answer
+	// "who holds this run" anyway. Until then the fact is on the surface #753
+	// already established for a run's position, which costs no schema.
+	debugLease *v1.DebugSession
 }
 
 // entityStateMaxLoopEntries bounds how many concurrently active loops'
@@ -226,7 +237,36 @@ func (p *progress) currentDetailsMarkdown() string {
 		b.WriteByte('`')
 	}
 
+	// A held run says so, and says which lease and until when — the two facts
+	// an operator meeting a stopped workload needs first. The *holder* is
+	// deliberately not here: a session id is derived from a run id and a
+	// counter and so shares the safe grammar this function's own comment relies
+	// on for step ids, while an attested subject is bounded but not
+	// grammar-constrained, and rendering one into markdown would be exactly the
+	// crossing that comment is careful about. Who holds it is on the expiry
+	// timer's summary (plain text, see `debugLeaseSummary`) and on the signal
+	// delivery in history, where it is a typed field rather than prose.
+	if p.debugLease != nil {
+		b.WriteString(" — held by debug lease `")
+		b.WriteString(p.debugLease.GetSessionId())
+		b.WriteString("` until ")
+		b.WriteString(p.debugLease.GetLeaseExpiresAt().AsTime().Format(time.RFC3339))
+	}
+
 	return b.String()
+}
+
+// setDebugLease records the lease holding the run here, or clears it.
+//
+// Nil-safe on the receiver like every other setter on this type, because a
+// concurrent branch deliberately carries no progress and a lease taken at a
+// boundary must not have to ask which kind of executor it is on.
+func (p *progress) setDebugLease(lease *v1.DebugSession) {
+	if p == nil {
+		return
+	}
+
+	p.debugLease = lease
 }
 
 // ancestors returns the steps enclosing the step the run is currently inside,
