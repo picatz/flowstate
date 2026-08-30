@@ -1,14 +1,19 @@
 package conformance
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -158,13 +163,15 @@ func TaskSpanExpectedOutputs() *v1.Workflow_StepOutputs {
 // differently.
 const taskSpanPrefix = "flowstate.task/"
 
-// TaskSpanNode is one `flowstate.*` span reduced to what both drivers must say
-// the same way: its name, and the name of the nearest `flowstate.*` span above
-// it — empty where there is none, so a Temporal activity span sitting in
-// between changes nothing.
+// TaskSpanNode is one task span reduced to what both drivers must say the same
+// way: its name, nearest task-span parent, step id, and attempt number. Parent
+// is empty where there is none, so a Temporal activity span sitting between
+// two first-party spans changes nothing.
 type TaskSpanNode struct {
-	Name   string
-	Parent string
+	Name    string
+	Parent  string
+	StepID  string
+	Attempt int64
 }
 
 // ExpectedTaskSpans is the tree a [TaskSpanWorkflow] run opens, under either
@@ -175,10 +182,80 @@ type TaskSpanNode struct {
 // walked them wrongly.
 func ExpectedTaskSpans() []TaskSpanNode {
 	return []TaskSpanNode{
-		{Name: v1.TaskSpanName("log")},
-		{Name: v1.TaskSpanName("log")},
-		{Name: v1.TaskSpanName("log")},
+		{Name: v1.TaskSpanName("log"), StepID: "announce", Attempt: 1},
+		{Name: v1.TaskSpanName("log"), StepID: "note", Attempt: 1},
+		{Name: v1.TaskSpanName("log"), StepID: "note", Attempt: 1},
 	}
+}
+
+// TaskSpanRetryTaskName is the fixture task used to distinguish a real attempt
+// number from a constant positive value.
+const TaskSpanRetryTaskName = "test.task_span_retry"
+
+// TaskSpanRetryStepID is the step whose two attempts both drivers trace.
+const TaskSpanRetryStepID = "retrying"
+
+// TaskSpanRetryTaskDef fails once and then succeeds. The counter is supplied by
+// the driver test so the fixture has no process-global state of its own.
+func TaskSpanRetryTaskDef(attempts *atomic.Int32) v1.TaskDef {
+	return v1.TaskDef{
+		Name: TaskSpanRetryTaskName,
+		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+			if attempts.Add(1) == 1 {
+				return nil, v1.NewTaskError(TaskSpanRetryTaskName, v1.ErrorKindUpstream,
+					errors.New("fixture fails on its first attempt"))
+			}
+
+			return &v1.Node_Outputs{}, nil
+		},
+	}
+}
+
+// TaskSpanRetryWorkflow makes the retry fast while still using each driver's
+// actual retry mechanism. A pair of spans numbered 1 and 2 proves the local
+// loop and Temporal activity info are the sources, rather than a hard-coded
+// positive value that the ordinary success case could not distinguish.
+func TaskSpanRetryWorkflow() *v1.Workflow {
+	return &v1.Workflow{
+		Name:    "task-span-retry",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id:   TaskSpanRetryStepID,
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: TaskSpanRetryTaskName}},
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{
+				MaxAttempts:        2,
+				InitialInterval:    durationpb.New(time.Millisecond),
+				BackoffCoefficient: 1,
+				MaxInterval:        durationpb.New(time.Millisecond),
+			}},
+		}},
+	}
+}
+
+// AssertRetryingTaskSpans requires one span per attempt with the durable fact
+// each driver owns: the local retry-loop counter or Temporal's activity info.
+func AssertRetryingTaskSpans(tb testing.TB, recorder *tracetest.SpanRecorder, outputs *v1.Workflow_StepOutputs, err error) {
+	tb.Helper()
+
+	if err != nil {
+		tb.Fatalf("the retrying run failed: %v", err)
+	}
+	if want := (&v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{TaskSpanRetryStepID: {}}}); !proto.Equal(want, outputs) {
+		tb.Fatalf("the retrying run produced %v, want %v", outputs, want)
+	}
+
+	got := recordedTaskSpans(recorder)
+	want := []TaskSpanNode{
+		{Name: v1.TaskSpanName(TaskSpanRetryTaskName), StepID: TaskSpanRetryStepID, Attempt: 1},
+		{Name: v1.TaskSpanName(TaskSpanRetryTaskName), StepID: TaskSpanRetryStepID, Attempt: 2},
+	}
+	sortTaskSpans(got)
+	sortTaskSpans(want)
+	if !sameTaskSpans(got, want) {
+		tb.Fatalf("retrying task spans are %v, want %v; every span recorded: %v", got, want, spanNames(recorder))
+	}
+
+	assertTaskSpanAttributes(tb, recorder)
 }
 
 // AssertTaskSpans is the shared assertion both drivers make.
@@ -201,10 +278,8 @@ func AssertTaskSpans(tb testing.TB, recorder *tracetest.SpanRecorder, outputs *v
 		tb.Fatalf("the run opened %d flowstate spans (%v), want %d (%v) — every span recorded: %v",
 			len(got), got, len(want), want, spanNames(recorder))
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			tb.Fatalf("flowstate span tree is %v, want %v", got, want)
-		}
+	if !sameTaskSpans(got, want) {
+		tb.Fatalf("flowstate span tree is %v, want %v", got, want)
 	}
 
 	assertTaskSpanAttributes(tb, recorder)
@@ -249,8 +324,6 @@ func assertTaskSpanAttributes(tb testing.TB, recorder *tracetest.SpanRecorder) {
 		}
 
 		named := false
-		stepped := false
-		attempted := false
 		for _, attr := range stub.Attributes {
 			if _, ok := allowed[string(attr.Key)]; !ok {
 				tb.Fatalf("%s carries %q, which is not in the vocabulary both drivers share; add it to pkg/flowstate/v1/taskspan.go so the other driver spells it the same way",
@@ -262,20 +335,10 @@ func assertTaskSpanAttributes(tb testing.TB, recorder *tracetest.SpanRecorder) {
 					tb.Fatalf("%s names task %q in its attributes", stub.Name, attr.Value.AsString())
 				}
 			}
-			if string(attr.Key) == v1.SpanAttributeStepID && attr.Value.AsString() != "" {
-				stepped = true
-			}
-			if string(attr.Key) == v1.SpanAttributeAttempt && attr.Value.AsInt64() > 0 {
-				attempted = true
-			}
 		}
 		if !named {
 			tb.Fatalf("%s carries no %s, so nothing but the span's own name says what ran",
 				stub.Name, v1.SpanAttributeTaskName)
-		}
-		if !stepped || !attempted {
-			tb.Fatalf("%s must carry a non-empty %s and positive %s on every attempt", stub.Name,
-				v1.SpanAttributeStepID, v1.SpanAttributeAttempt)
 		}
 	}
 }
@@ -302,6 +365,14 @@ func recordedTaskSpans(recorder *tracetest.SpanRecorder) []TaskSpanNode {
 		}
 
 		node := TaskSpanNode{Name: stub.Name}
+		for _, attr := range stub.Attributes {
+			switch string(attr.Key) {
+			case v1.SpanAttributeStepID:
+				node.StepID = attr.Value.AsString()
+			case v1.SpanAttributeAttempt:
+				node.Attempt = attr.Value.AsInt64()
+			}
+		}
 		for parent := stub.Parent; parent.IsValid(); {
 			above, ok := byID[parent.SpanID()]
 			if !ok {
@@ -329,16 +400,36 @@ func sortTaskSpans(nodes []TaskSpanNode) {
 		if nodes[i].Name != nodes[j].Name {
 			return nodes[i].Name < nodes[j].Name
 		}
+		if nodes[i].StepID != nodes[j].StepID {
+			return nodes[i].StepID < nodes[j].StepID
+		}
+		if nodes[i].Attempt != nodes[j].Attempt {
+			return nodes[i].Attempt < nodes[j].Attempt
+		}
 
 		return nodes[i].Parent < nodes[j].Parent
 	})
 }
 
-// String renders one node for a failure message that reads like a tree.
-func (n TaskSpanNode) String() string {
-	if n.Parent == "" {
-		return n.Name
+func sameTaskSpans(got, want []TaskSpanNode) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
 	}
 
-	return fmt.Sprintf("%s under %s", n.Name, n.Parent)
+	return true
+}
+
+// String renders one node for a failure message that reads like a tree.
+func (n TaskSpanNode) String() string {
+	detail := fmt.Sprintf("%s step=%s attempt=%d", n.Name, n.StepID, n.Attempt)
+	if n.Parent == "" {
+		return detail
+	}
+
+	return fmt.Sprintf("%s under %s", detail, n.Parent)
 }
