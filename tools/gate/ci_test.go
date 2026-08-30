@@ -72,6 +72,10 @@ func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
 		"AGENT_FIELD_NOTES_LEGACY.md",
 	} {
 		t.Run(f, func(t *testing.T) {
+			// CI does not seed test-data readers into affected: the full
+			// test job already covers them, while treating the synthetic
+			// package as Go affected would also run staticcheck and
+			// vulncheck. analyse(false) is the production path.
 			ds := decide(t, []string{f}, nil, "pull_request")
 			mustRun(t, ds, "test")
 			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
