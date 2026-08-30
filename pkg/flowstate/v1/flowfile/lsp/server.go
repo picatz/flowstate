@@ -615,13 +615,20 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 		}
 	}
 	next := make(map[lsp.DocumentURI][]lsp.Diagnostic, len(publications))
+	var overflowDiagnostics []lsp.Diagnostic
 	for _, publication := range publications {
 		if source != publication.uri {
 			_, tracked := s.testDefaultsBySuite[source]
 			if !tracked && s.testOverflowBySuite[source] == publication.uri {
 				// Overflow membership is retained for bounded promotion, but its
-				// saved defaults result is not a target contributor. The tracked set
-				// owns defaults diagnostics without making aggregation grow with N.
+				// saved defaults result is not a target contributor. Preserve any
+				// suite-specific refusal as an explicitly fallback-owned suite error
+				// without making target aggregation grow with N.
+				for _, diagnostic := range publication.diagnostics {
+					diagnostic.Range = documentStart
+					diagnostic.Message = "saved testdefaults.yaml fallback: " + diagnostic.Message
+					overflowDiagnostics = append(overflowDiagnostics, diagnostic)
+				}
 				continue
 			}
 		}
@@ -631,6 +638,9 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 			s.testSourcesByTarget[publication.uri] = make(map[lsp.DocumentURI]bool)
 		}
 		s.testSourcesByTarget[publication.uri][source] = true
+	}
+	if len(overflowDiagnostics) > 0 {
+		next[source] = append(next[source], overflowDiagnostics...)
 	}
 	s.testDiagnosticsBySource[source] = next
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {

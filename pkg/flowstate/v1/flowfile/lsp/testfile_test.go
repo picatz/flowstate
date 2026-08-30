@@ -404,8 +404,7 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 		defer c.mu.Unlock()
 		for i := len(c.published) - 1; i >= 0; i-- {
 			if c.published[i].URI == lsp.DocumentURI(overflow) {
-				return len(c.published[i].Diagnostics) == 1 &&
-					c.published[i].Diagnostics[0].Code == codeTestDefaultsDependents
+				return diagnosticsHaveCode(c.published[i].Diagnostics, codeTestDefaultsDependents)
 			}
 		}
 		return false
@@ -473,8 +472,11 @@ func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T)
 		defer c.mu.Unlock()
 		for i := len(c.published) - 1; i >= 0; i-- {
 			if c.published[i].URI == lsp.DocumentURI(overflow) {
-				return len(c.published[i].Diagnostics) == 1 &&
-					c.published[i].Diagnostics[0].Code == codeTestDefaultsDependents
+				hasFallback := false
+				for _, diagnostic := range c.published[i].Diagnostics {
+					hasFallback = hasFallback || strings.HasPrefix(diagnostic.Message, "saved testdefaults.yaml fallback:")
+				}
+				return hasFallback && diagnosticsHaveCode(c.published[i].Diagnostics, codeTestDefaultsDependents)
 			}
 		}
 		return false
@@ -517,8 +519,7 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 		defer c.mu.Unlock()
 		for i := len(c.published) - 1; i >= 0; i-- {
 			if c.published[i].URI == lsp.DocumentURI(overflow) {
-				return len(c.published[i].Diagnostics) == 1 &&
-					c.published[i].Diagnostics[0].Code == codeTestDefaultsDependents
+				return diagnosticsHaveCode(c.published[i].Diagnostics, codeTestDefaultsDependents)
 			}
 		}
 		return false
@@ -528,7 +529,7 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.server.testDiagnosticsMu.Lock()
 		defer c.server.testDiagnosticsMu.Unlock()
-		return len(c.server.testDiagnosticsBySource[lsp.DocumentURI(overflow2)][lsp.DocumentURI(overflow2)]) == 1
+		return diagnosticsHaveCode(c.server.testDiagnosticsBySource[lsp.DocumentURI(overflow2)][lsp.DocumentURI(overflow2)], codeTestDefaultsDependents)
 	}, time.Second, time.Millisecond)
 	c.server.testDiagnosticsMu.Lock()
 	assert.LessOrEqual(t, len(c.server.testSourcesByTarget[defaultsURI]), maxTestDefaultsDependents,
@@ -671,6 +672,15 @@ func TestTestDocumentRequestsHonorCancellationAndBounds(t *testing.T) {
 	assert.False(t, ok)
 	assert.Nil(t, doc)
 	store.endBuild(uri)
+}
+
+func diagnosticsHaveCode(diagnostics []lsp.Diagnostic, code string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAProblemRangeWithoutSourceUsesAConservativeCharacter(t *testing.T) {
