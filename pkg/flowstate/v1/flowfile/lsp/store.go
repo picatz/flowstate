@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -246,8 +247,9 @@ const (
 
 // A documentStore holds the documents an editor has open, keyed by URI.
 type documentStore struct {
-	mu   sync.Mutex
-	docs map[lsp.DocumentURI]*document
+	mu          sync.Mutex
+	docs        map[lsp.DocumentURI]*document
+	localByPath map[string]lsp.DocumentURI
 
 	// building counts the document notifications in flight per URI: incremented
 	// before the parse starts, decremented once the result is in docs.
@@ -417,8 +419,12 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 	defer s.mu.Unlock()
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
+		s.localByPath = make(map[string]lsp.DocumentURI)
 	}
 	s.docs[uri] = doc
+	if path, ok := doc.filesystemPath(); ok {
+		s.localByPath[filepath.Clean(path)] = uri
+	}
 	s.wakeLocked()
 	return doc
 }
@@ -493,10 +499,28 @@ func (s *documentStore) get(uri lsp.DocumentURI) (*document, bool) {
 	return doc, ok
 }
 
+// getByFilesystemPath finds an open local document independent of whether the
+// client spelled its URI with an empty or localhost authority.
+func (s *documentStore) getByFilesystemPath(path string) (*document, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	uri, ok := s.localByPath[filepath.Clean(path)]
+	if !ok {
+		return nil, false
+	}
+	doc, ok := s.docs[uri]
+	return doc, ok
+}
+
 // close forgets a document.
 func (s *documentStore) close(uri lsp.DocumentURI) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if doc := s.docs[uri]; doc != nil {
+		if path, ok := doc.filesystemPath(); ok && s.localByPath[filepath.Clean(path)] == uri {
+			delete(s.localByPath, filepath.Clean(path))
+		}
+	}
 	delete(s.docs, uri)
 	// Woken because the store changed, the same as every other mutation here: a
 	// waiter re-reads and decides for itself. It is the one mutation that can

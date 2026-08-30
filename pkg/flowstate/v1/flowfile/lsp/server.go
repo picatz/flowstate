@@ -225,7 +225,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			// the saved file. Re-run them now; retaining the live-buffer answer
 			// until a suite happens to change would leave stale diagnostics.
 			if doc.kind == docTestDefaults {
-				for _, source := range s.testDiagnosticSourcesFor(doc.uri) {
+				for _, source := range s.testDiagnosticSourcesFor(testDefaultsDependencyURI(doc)) {
 					suite, ok := s.docs.get(source)
 					if !ok || suite.kind != docTestFile {
 						continue
@@ -460,14 +460,15 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		var openDefaults *document
 		tracked := true
 		if doc.kind == docTestFile {
-			if _, ok := doc.filesystemPath(); ok {
-				defaultsURI := siblingDocumentURI(doc.uri, flowtest.DirDefaultsName)
+			if path, ok := doc.filesystemPath(); ok {
+				defaultsPath := filepath.Join(filepath.Dir(path), flowtest.DirDefaultsName)
+				defaultsURI := fileURI(defaultsPath)
 				var current bool
 				tracked, current = s.rememberTestDefaults(doc, defaultsURI)
 				if !current {
 					return
 				}
-				openDefaults, _ = s.docs.get(defaultsURI)
+				openDefaults, _ = s.docs.getByFilesystemPath(defaultsPath)
 				if tracked {
 					included = openDefaults
 				}
@@ -490,7 +491,7 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		// editor would keep diagnostics from the saved defaults until each suite
 		// happened to change too.
 		if doc.kind == docTestDefaults {
-			for _, source := range s.testDiagnosticSourcesFor(doc.uri) {
+			for _, source := range s.testDiagnosticSourcesFor(testDefaultsDependencyURI(doc)) {
 				suite, ok := s.docs.get(source)
 				if !ok || suite.kind != docTestFile {
 					continue
@@ -521,6 +522,13 @@ func siblingDocumentURI(uri lsp.DocumentURI, name string) lsp.DocumentURI {
 	u.Path = filepath.ToSlash(filepath.Join(filepath.Dir(u.Path), name))
 	u.RawPath = ""
 	return lsp.DocumentURI(u.String())
+}
+
+func testDefaultsDependencyURI(doc *document) lsp.DocumentURI {
+	if path, ok := doc.filesystemPath(); ok {
+		return fileURI(path)
+	}
+	return doc.uri
 }
 
 const (
@@ -593,7 +601,8 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 		}
 	}
 	if defaultsURI, tracked := s.testDefaultsBySuite[source]; tracked {
-		if openDefaults, ok := s.docs.get(defaultsURI); ok {
+		defaultsPath, hasPath := (&document{uri: defaultsURI}).filesystemPath()
+		if openDefaults, ok := s.docs.getByFilesystemPath(defaultsPath); hasPath && ok {
 			usesOpenBuffer := false
 			for _, guard := range guards {
 				usesOpenBuffer = usesOpenBuffer || guard == openDefaults
@@ -746,10 +755,9 @@ func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bo
 			ordered[0], ordered[own] = ordered[own], ordered[0]
 		}
 		for _, source := range ordered {
-			// Overflow suites retain their saved-file result while a live defaults
-			// buffer is open so closing it can restore disk diagnostics without
-			// unbounded reparsing, but that hidden result does not diagnose live text.
-			if open, ok := s.docs.get(uri); source != uri && ok && open.kind == docTestDefaults && s.testDefaultsBySuite[source] != uri {
+			// A target contribution from an untracked suite is a saved-file
+			// fallback, not a diagnosis of the newer open defaults buffer.
+			if open, ok := s.docs.get(uri); source != uri && ok && open.kind == docTestDefaults && s.testDefaultsBySuite[source] != testDefaultsDependencyURI(open) {
 				continue
 			}
 			byURI := s.testDiagnosticsBySource[source]

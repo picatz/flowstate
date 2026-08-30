@@ -284,6 +284,28 @@ func TestIncludedDefaultsRetainTheEditorsLocalhostURI(t *testing.T) {
 	suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
 	c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
 	c.open(suiteURI, validSuite)
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := len(c.published) - 1; i >= 0; i-- {
+			p := c.published[i]
+			if p.URI == defaultsURI && len(p.Diagnostics) > 0 {
+				return strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+}
+
+func TestIncludedDefaultsMatchMixedLocalURIForms(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+	dir := t.TempDir()
+	defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
+	suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
+	c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
+	c.open(suiteURI, validSuite)
 
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
