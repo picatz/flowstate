@@ -419,6 +419,8 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 	defer s.mu.Unlock()
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
+	}
+	if s.localByPath == nil {
 		s.localByPath = make(map[string]lsp.DocumentURI)
 	}
 	s.docs[uri] = doc
@@ -481,7 +483,13 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}
+	if s.localByPath == nil {
+		s.localByPath = make(map[string]lsp.DocumentURI)
+	}
 	s.docs[uri] = doc
+	if path, ok := doc.filesystemPath(); ok {
+		s.localByPath[filepath.Clean(path)] = uri
+	}
 	s.wakeLocked()
 	return doc
 }
