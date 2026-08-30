@@ -117,9 +117,23 @@ func Test_httpTask_rateLimitedRedirectDoesNotReplayNonIdempotentRequest(t *testi
 		name                  string
 		retryOnUnknownOutcome bool
 		wantKind              ErrorKind
+		wantMessage           string
 	}{
-		{name: "protected by default", wantKind: ErrorKindUpstreamUnknown},
-		{name: "author explicitly permits retry", retryOnUnknownOutcome: true, wantKind: ErrorKindRateLimited},
+		{
+			name:     "protected by default",
+			wantKind: ErrorKindUpstreamUnknown,
+			// Named rather than left to the kind: the generic unknown-outcome
+			// message says the request got no response, which is the one thing
+			// that is not true here, so the wrong branch would still produce
+			// the right kind.
+			wantMessage: "was redirected and the next hop was held back",
+		},
+		{
+			name:                  "author explicitly permits retry",
+			retryOnUnknownOutcome: true,
+			wantKind:              ErrorKindRateLimited,
+			wantMessage:           "was held back by this worker's own rate limit",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var starts atomic.Int32
@@ -129,7 +143,9 @@ func Test_httpTask_rateLimitedRedirectDoesNotReplayNonIdempotentRequest(t *testi
 					http.Redirect(w, r, "/next", http.StatusTemporaryRedirect)
 					return
 				}
-				t.Fatal("rate-limited redirect hop unexpectedly reached the server")
+				// t.Error rather than t.Fatal: this runs on the server's
+				// goroutine, and FailNow from there does not stop the test.
+				t.Error("rate-limited redirect hop unexpectedly reached the server")
 			}))
 			t.Cleanup(server.Close)
 
@@ -154,6 +170,7 @@ func Test_httpTask_rateLimitedRedirectDoesNotReplayNonIdempotentRequest(t *testi
 			var taskErr *TaskError
 			require.ErrorAs(t, err, &taskErr)
 			require.Equal(t, tc.wantKind, taskErr.Kind)
+			require.Contains(t, taskErr.Error(), tc.wantMessage)
 			require.EqualValues(t, 1, starts.Load(), "the original operation was sent exactly once")
 		})
 	}
