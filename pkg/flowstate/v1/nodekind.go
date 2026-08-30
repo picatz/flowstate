@@ -30,7 +30,7 @@ func NodeKind(node *Node) string {
 	case *Node_Switch:
 		return "switch"
 	case *Node_Call:
-		return fmt.Sprintf("call %q", kind.Call.GetWorkflow())
+		return fmt.Sprintf("call %q", kind.Call.GetWorkflow().GetName())
 	default:
 		return "step"
 	}

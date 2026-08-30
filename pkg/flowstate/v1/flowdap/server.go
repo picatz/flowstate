@@ -273,7 +273,7 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.reply(request, threadsBody{Threads: []thread{{ID: runThreadID, Name: "run"}}})
 
 	case "stackTrace":
-		s.reply(request, s.stackTrace())
+		s.reply(request, s.stackTrace(request.Arguments))
 
 	case "scopes":
 		s.reply(request, s.scopeList(request.Arguments))
@@ -408,12 +408,33 @@ func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug
 
 // stackTrace is the run's shared call chain, translated without reconstructing
 // it from adapter state.
-func (s *Server) stackTrace() stackTraceBody {
+func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
+	var asked struct {
+		StartFrame int `json:"startFrame"`
+		Levels     int `json:"levels"`
+	}
+	if len(arguments) != 0 {
+		if err := json.Unmarshal(arguments, &asked); err != nil || asked.StartFrame < 0 || asked.Levels < 0 {
+			return stackTraceBody{StackFrames: []stackFrame{}}
+		}
+	}
+
 	trace, err := s.session.Backtrace()
 	if err != nil {
 		// An empty stack rather than a refusal: a client asks for this
 		// speculatively, and "the run is not stopped" is exactly what no frames
 		// means.
+		return stackTraceBody{StackFrames: []stackFrame{}}
+	}
+	if len(trace.GetFrames()) == 0 {
+		if at, paused := s.session.Paused(); paused && at.Autopsy {
+			// An autopsy has no current step or call chain, but it does retain a
+			// readable scope. Keep the synthetic frame DAP requires as the address
+			// for that scope; it describes adapter presentation, not engine state.
+			frames := []stackFrame{{ID: 1, Name: "after the run"}}
+			return stackTraceBody{StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels), TotalFrames: 1}
+		}
+
 		return stackTraceBody{StackFrames: []stackFrame{}}
 	}
 
@@ -429,7 +450,22 @@ func (s *Server) stackTrace() stackTraceBody {
 		frames = append(frames, stackFrame{ID: i + 1, Name: name})
 	}
 
-	return stackTraceBody{StackFrames: frames, TotalFrames: len(frames)}
+	return stackTraceBody{
+		StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels),
+		TotalFrames: len(frames),
+	}
+}
+
+func frameWindow(frames []stackFrame, start, levels int) []stackFrame {
+	if start >= len(frames) {
+		return []stackFrame{}
+	}
+	end := len(frames)
+	if levels > 0 && levels < len(frames)-start {
+		end = start + levels
+	}
+
+	return frames[start:end]
 }
 
 // scopeList is what the paused run can name, one DAP scope per group.
@@ -437,11 +473,11 @@ func (s *Server) scopeList(arguments json.RawMessage) scopesBody {
 	var asked struct {
 		FrameID int `json:"frameId"`
 	}
-	_ = json.Unmarshal(arguments, &asked)
-	if asked.FrameID > 1 {
+	if err := json.Unmarshal(arguments, &asked); err != nil || asked.FrameID != 1 {
 		// Caller frames identify the chain but are not paused scopes. Returning
-		// the innermost values here would put a correct value under the wrong
-		// frame, which is worse than an explicitly empty pane.
+		// the innermost values for those, a missing frame, or malformed input
+		// would put a correct value under the wrong frame, which is worse than
+		// an explicitly empty pane.
 		return scopesBody{Scopes: []scope{}}
 	}
 
@@ -541,8 +577,21 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 func (s *Server) evaluate(ctx context.Context, request inbound) {
 	var asked struct {
 		Expression string `json:"expression"`
+		FrameID    *int   `json:"frameId"`
 	}
-	_ = json.Unmarshal(request.Arguments, &asked)
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+		s.fail(request, "invalid evaluate arguments")
+
+		return
+	}
+	if asked.FrameID != nil && *asked.FrameID != 1 {
+		// Caller frames carry only call-chain identity. Evaluating against the
+		// innermost scope for one would put a real callee value under a caller,
+		// the same misattribution scopeList refuses.
+		s.fail(request, "that stack frame has no readable scope")
+
+		return
+	}
 
 	text, _, err := s.session.Evaluate(ctx, asked.Expression)
 	if err != nil {
