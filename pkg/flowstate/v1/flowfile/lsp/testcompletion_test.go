@@ -220,6 +220,39 @@ func TestCompletionStopsAtTheAuthorsOwnData(t *testing.T) {
 		"a fixture map named stubs had its task: value completed from the registry")
 }
 
+func TestCompletionWalksQuotedTestGrammarKeysSemantically(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	text := "\"t\\u0065sts\":\n" +
+		"  - \"na\\u006de\": the case\n" +
+		"    \"exp\\u0065ct\": # structural comment\n" +
+		"      \n"
+	c.open("file:///quoted.test.yaml", text)
+	got := labels(c.complete("file:///quoted.test.yaml", 3, 6).Items)
+	assert.Contains(t, got, "outputs")
+
+	text = "\"tests\":\n" +
+		"  - \"name\": the case\n" +
+		"    \"stubs\":\n" +
+		"      - \"ta\\u0073k\": lo\n"
+	c.open("file:///quoted-stub.test.yaml", text)
+	got = labels(c.complete("file:///quoted-stub.test.yaml", 3, len(`      - "ta\u0073k": lo`)).Items)
+	assert.Contains(t, got, "log",
+		"keyAndPosition did not decode the escaped quoted key at its value position")
+
+	text = "\"tests\":\n" +
+		"  - \"name\": the case\n" +
+		"    \"inputs\": # fixture data begins here\n" +
+		"      \"expect: not grammar # still a key\":\n" +
+		"        \n"
+	c.open("file:///quoted-fixture.test.yaml", text)
+	got = labels(c.complete("file:///quoted-fixture.test.yaml", 4, 8).Items)
+	assert.Empty(t, got,
+		"a quoted fixture-data key containing colon/comment text reopened the test grammar")
+}
+
 // TestTheTransitionMapNamesOnlyRealKeys holds [testLevelChildren] to the
 // derived key tables in both the direction it states and the one it omits.
 // Every transition names a key its parent level really has — so the map

@@ -366,7 +366,7 @@ steps:
 // matter what path says.
 //
 // keyPath itself does keep walking past a continuation line to the enclosing
-// keys (outline.go's keyPath skips any line keyLine does not match and keeps
+// keys (outline.go's keyPath skips any line scanKeyLine does not match and keeps
 // looking for a shallower-indented one), so path here is ["steps", "sleep"]
 // as if the query were a value directly under `sleep:`, but bindsClock's
 // `steps` case tests the *key*, not the path's last element, so a continuation
