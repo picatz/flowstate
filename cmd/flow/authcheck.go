@@ -67,11 +67,14 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 
 	policyData, err := os.ReadFile(policyPath)
 	if err != nil {
-		return fmt.Errorf("reading auth policy: %w", err)
+		// As with --token-file below, do not copy a path-bearing error into
+		// diagnostics. A caller can accidentally swap the two flag values and
+		// make the auth-policy "path" the credential itself.
+		return errors.New("reading auth policy: policy could not be read; check --auth-policy")
 	}
 	policy, err := auth.ParsePolicy(policyData)
 	if err != nil {
-		return fmt.Errorf("parsing auth policy %s: %w", policyPath, err)
+		return fmt.Errorf("parsing auth policy: %w", err)
 	}
 	verifier, err := auth.NewOIDCVerifier(policy)
 	if err != nil {

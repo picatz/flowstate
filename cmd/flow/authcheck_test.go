@@ -224,3 +224,17 @@ func TestAuthCheckNeverEchoesATokenMistakenForAFilePath(t *testing.T) {
 	assert.Contains(t, res.Stderr, "credential could not be read")
 	assert.NotContains(t, res.Output(), token)
 }
+
+// TestAuthCheckNeverEchoesATokenMistakenForAPolicyPath covers the corresponding
+// flag-value swap. os.ReadFile errors include their path, so the command must
+// not wrap the underlying error when that "path" may be the raw credential.
+func TestAuthCheckNeverEchoesATokenMistakenForAPolicyPath(t *testing.T) {
+	t.Parallel()
+	issuer := authCheckIssuer(t)
+	token := issuer.MintToken(nil, authtest.WithAudience("flowstate"))
+
+	res := runFlow(t, "auth", "check", "--auth-policy", token, "--token-file", writeAuthCheckToken(t, token))
+	assert.Equal(t, exitCodeFailure, res.ExitCode, res.Output())
+	assert.Contains(t, res.Stderr, "policy could not be read")
+	assert.NotContains(t, res.Output(), token)
+}
