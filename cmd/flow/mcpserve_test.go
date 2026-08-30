@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,21 @@ func newMCPServeFixtureWith(
 
 	issuer := authtest.NewIssuer()
 	t.Cleanup(func() { _ = issuer.Close() })
+
+	return newMCPServeFixtureForIssuer(t, issuer, maxSessions, maxRequestBytes, testTimeout)
+}
+
+// newMCPServeFixtureForIssuer builds one independently stateful handler that
+// trusts issuer. Two calls with the same issuer model two replicas of one
+// deployment: authentication agrees while process-local MCP sessions do not.
+func newMCPServeFixtureForIssuer(
+	t *testing.T,
+	issuer *authtest.Issuer,
+	maxSessions int,
+	maxRequestBytes int64,
+	testTimeout time.Duration,
+) *mcpServeFixture {
+	t.Helper()
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
 		Name:      "agent-idp",
@@ -353,6 +369,131 @@ func TestMCPServeSessionRefusesAnotherPrincipalsToken(t *testing.T) {
 	hijacked := fixture.initialize(t, bob, sessionID)
 	require.Equal(t, http.StatusForbidden, hijacked.StatusCode,
 		"a session opened by one principal must refuse another's token")
+}
+
+// TestMCPServeSessionsRequireTheirOriginProcess pins the deployment contract,
+// not merely the implementation detail behind it. Authentication is shared by
+// all three handlers, but the SDK session map and Flowstate's limiter maps are
+// newly allocated with each handler. That is both a second replica and a
+// restarted process: neither knows an id minted by the first.
+func TestMCPServeSessionsRequireTheirOriginProcess(t *testing.T) {
+	t.Parallel()
+
+	issuer := authtest.NewIssuer()
+	t.Cleanup(func() { _ = issuer.Close() })
+
+	first := newMCPServeFixtureForIssuer(t, issuer,
+		mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout)
+	secondReplica := newMCPServeFixtureForIssuer(t, issuer,
+		mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout)
+
+	token := first.goodToken("agent")
+	opened := first.initialize(t, token, "")
+	require.Equal(t, http.StatusOK, opened.StatusCode)
+
+	sessionID := opened.Header.Get(mcpSessionHeader)
+	require.NotEmpty(t, sessionID)
+
+	onOrigin := first.initialize(t, token, sessionID)
+	require.NotEqual(t, http.StatusNotFound, onOrigin.StatusCode,
+		"the process that minted the session id must still recognize it")
+
+	onOtherReplica := secondReplica.initialize(t, token, sessionID)
+	require.Equal(t, http.StatusNotFound, onOtherReplica.StatusCode,
+		"a load balancer must route an existing session back to the process that minted it")
+
+	// A fresh handler under the identical deployment identity is what a
+	// restarted process is: tokens still verify, but active sessions are gone.
+	restarted := newMCPServeFixtureForIssuer(t, issuer,
+		mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout)
+	afterRestart := restarted.initialize(t, token, sessionID)
+	require.Equal(t, http.StatusNotFound, afterRestart.StatusCode,
+		"restarting flow mcp serve must invalidate process-local sessions")
+}
+
+// TestMCPServePinsAdvertisedProtocolRevisions turns a go-sdk minor update into
+// an explicit protocol review. The SDK supports 2026-07-28, but this handler is
+// intentionally stateful, so server/discover must advertise the exact legacy
+// set it can actually serve and must not claim the stateless target revision.
+func TestMCPServePinsAdvertisedProtocolRevisions(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{` +
+		`"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+		`"io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},` +
+		`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, fixture.endpoint(), strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+fixture.goodToken("agent"))
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	req.Header.Set("Mcp-Method", "server/discover")
+
+	resp, err := fixture.server.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	payload := raw
+	if start := bytes.Index(raw, []byte("data: ")); start >= 0 {
+		payload = raw[start+len("data: "):]
+		if end := bytes.IndexByte(payload, '\n'); end >= 0 {
+			payload = payload[:end]
+		}
+	}
+
+	var result struct {
+		Result struct {
+			SupportedVersions []string `json:"supportedVersions"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &result), "server/discover response: %s", raw)
+	require.Equal(t, []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"},
+		result.Result.SupportedVersions)
+	require.NotContains(t, result.Result.SupportedVersions, "2026-07-28",
+		"2026-07-28 removes protocol sessions and is only valid on the SDK's stateless HTTP handler")
+}
+
+// TestMCPServeSessionTopologyContractStaysVisible couples the executable
+// diagnostic, CLI help, and hand-written operator guide. A future change may
+// make this surface stateless, but it must update all three claims together.
+func TestMCPServeSessionTopologyContractStaysVisible(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	logMCPServeSessionTopology(slog.New(slog.NewTextHandler(&logs, nil)))
+	for _, claim := range []string{
+		"level=WARN",
+		"session_storage=" + mcpServeSessionStorage,
+		"session_affinity_header=" + mcpSessionHeader,
+		"horizontal_scaling=false",
+	} {
+		require.Contains(t, logs.String(), claim)
+	}
+
+	root := newRootCommand()
+	serve, _, err := root.Find([]string{"mcp", "serve"})
+	require.NoError(t, err)
+	require.Contains(t, serve.Long, "run one replica")
+	require.Contains(t, serve.Long, "restart to invalidate active sessions")
+
+	doc, err := os.ReadFile("../../docs/MCP_AUTHORIZATION.md")
+	require.NoError(t, err)
+	for _, claim := range []string{
+		"Session topology: one process, one replica",
+		"`session_storage=process_memory`",
+		"`session_affinity_header=Mcp-Session-Id`",
+		"`horizontal_scaling=false`",
+		"`2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`",
+		"building a distributed session store",
+	} {
+		require.Contains(t, string(doc), claim)
+	}
 }
 
 // TestMCPServeServesAReducedToolList is the "absent, not disabled" claim,

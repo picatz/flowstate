@@ -141,6 +141,11 @@ const (
 // only moment [mcpSessionLimiter] has anything to decide.
 const mcpSessionHeader = "Mcp-Session-Id"
 
+// mcpServeSessionStorage is the operator-facing spelling for the state model
+// this command actually runs. It is emitted at startup and pinned in tests so
+// a process-local handler cannot quietly be presented as a shared service.
+const mcpServeSessionStorage = "process_memory"
+
 // addMCPServeFlags declares the serve surface's own flags.
 //
 // Its own set rather than the parent command's: cobra's local flags are not
@@ -171,7 +176,7 @@ func addMCPServeFlags(cmd *cobra.Command) {
 			"refused with 413 rather than buffered")
 
 	cmd.Flags().Int("max-session-requests", mcpServeDefaultMaxSessionRequests,
-		"how many requests one MCP session may have in flight at once. A request past the limit "+
+		"how many requests one MCP session may have in flight in this process at once. A request past the limit "+
 			"is refused with 503: --max-sessions bounds how many sessions exist and says nothing "+
 			"about how many connections one of them is replayed over")
 
@@ -182,7 +187,7 @@ func addMCPServeFlags(cmd *cobra.Command) {
 			"resource on this surface waits for it")
 
 	cmd.Flags().Int("max-sessions", mcpServeDefaultMaxSessions,
-		"how many MCP sessions may be open at once. A request that would open one past the "+
+		"how many MCP sessions may be open in this process at once. A request that would open one past the "+
 			"limit is refused with 503; sessions idle for "+mcpServeSessionIdleTimeout.String()+
 			" are closed and their slots returned")
 
@@ -336,9 +341,10 @@ type mcpServeLimits struct {
 //     The 401 it writes carries `WWW-Authenticate: Bearer resource_metadata=…`
 //     naming the document mounted at step 5 — PR-1's mechanism
 //     ([auth.ProtectedResource.MetadataURL]), reused rather than a second
-//     challenge built here. No `scope` parameter: #567's D1 is deferred by
-//     omission, so [mcpauth.RequireBearerTokenOptions.Scopes] stays empty and
-//     the middleware emits no scope at all.
+//     challenge built here. The protected-resource document advertises the
+//     schema-owned scope vocabulary, but no request enforces a scope yet, so
+//     [mcpauth.RequireBearerTokenOptions.Scopes] stays empty and the middleware
+//     emits no `scope` challenge parameter.
 //  4. **The session bound**, inside authentication so that an unauthenticated
 //     caller can never consume a session slot — a bound an anonymous peer can
 //     exhaust is a denial of service with extra steps.
@@ -404,6 +410,17 @@ func mcpServeHandler(
 	mux.Handle(protectedResource.Path(), protectedResource.Handler())
 
 	return maxRequestBodyBytes(mux, limits.maxRequestBytes), nil
+}
+
+// logMCPServeSessionTopology makes the process-local deployment contract an
+// executable startup diagnostic. It is a warning because a second replica or
+// a restart does not merely change capacity: it makes an existing session id
+// unknown unless every request remains on the process that minted it.
+func logMCPServeSessionTopology(logger *slog.Logger) {
+	logger.Warn("MCP sessions are process-local; run one replica and expect restarts to invalidate active sessions",
+		"session_storage", mcpServeSessionStorage,
+		"session_affinity_header", mcpSessionHeader,
+		"horizontal_scaling", false)
 }
 
 // exactPattern renders a path as an [http.ServeMux] pattern that matches that
@@ -1065,6 +1082,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		"max_request_bytes", flags.maxRequestBytes,
 		"max_sessions", flags.maxSessions,
 		"max_session_requests", flags.maxSessionRequests)
+	logMCPServeSessionTopology(logger)
 
 	serveErr := make(chan error, 1)
 	go func() {

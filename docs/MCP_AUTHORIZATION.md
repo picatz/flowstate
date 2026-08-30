@@ -130,6 +130,7 @@ Two things, both already-familiar shapes rather than new machinery:
   point a client at a door the policy itself keeps locked.
 
   ```sh
+  # Run exactly one flow mcp serve replica.
   flow mcp serve --listen 127.0.0.1:8617 \
     --auth-policy /etc/flowstate/policy.yaml \
     --protected-resource https://flowstate.example.com/mcp \
@@ -149,6 +150,45 @@ Two things, both already-familiar shapes rather than new machinery:
   `https://flowstate.example.com/.well-known/oauth-protected-resource/mcp`,
   not at the bare prefix, and that exact URL is what the `WWW-Authenticate`
   challenge names.
+
+### Session topology: one process, one replica
+
+`flow mcp serve` is stateful today. The MCP SDK handler stores every session in
+this process's memory, and Flowstate's `--max-sessions` and
+`--max-session-requests` accounting is another process-local map. A restart
+therefore invalidates every active session. A request carrying an existing
+`Mcp-Session-Id` after a restart reaches a handler that has never seen that ID
+and is refused as an unknown session.
+
+Run **one replica**. A load-balanced fleet is not a supported horizontally
+scalable deployment: without session affinity, a request initialized on replica
+A can reach replica B, where its ID is unknown. If an operator temporarily runs
+more than one replica anyway, the load balancer must record which backend minted
+each `Mcp-Session-Id` and route every request carrying that ID back to that exact
+backend. Merely hashing the header is insufficient unless that routing scheme
+also guarantees the initializer landed on the same backend. Restarts still lose
+the mapping's server-side session, so affinity supplies routing, not durability.
+
+The limits are per process too. Two processes configured with
+`--max-sessions=32` may admit 64 sessions in aggregate, and
+`--max-session-requests=8` permits eight in-flight requests for the same local
+session on the process that owns it. No process observes or enforces a fleet-wide
+total. The startup warning reports this contract as structured fields:
+`session_storage=process_memory`,
+`session_affinity_header=Mcp-Session-Id`, and `horizontal_scaling=false`.
+
+This is also the protocol boundary. The current stateful handler answers
+`server/discover` but advertises only the legacy revisions it can serve over
+HTTP: `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`. The
+2026-07-28 revision is the target for removing this constraint, not a capability
+this deployment claims today. That revision removes protocol-level sessions:
+metadata is carried per request, each message is its own POST, there is no GET
+stream or DELETE termination, no `Mcp-Session-Id`, no `Last-Event-ID` resumption,
+and closing a request's SSE stream is cancellation. Moving to that stateless
+shape should delete the need for affinity; building a distributed session store
+for the legacy shape is deliberately not the plan. A go-sdk update can change
+this protocol surface, so tests pin the exact revisions the running handler
+advertises.
 
 The audience identifiers are intentionally not interchangeable. Connect RPC uses
 `--rpc-resource` / `FLOWSTATE_RPC_RESOURCE`; remote MCP uses
@@ -234,7 +274,8 @@ says plainly what it is missing.
   token endpoint, no PKCE verification performed here, no refresh tokens
   issued. Every one of those stays the operator's identity provider's job. If
   a deployment has no IdP, HTTP MCP is not available to it today —
-  `--insecure-no-auth` covers loopback development only.
+  `--insecure-no-auth` is refused on this command, and `flow mcp` over stdio is
+  the supported local shape.
 - **A scope vocabulary, and nothing that enforces it.** #567's D1 is
   answered: the action list is in the schema
   (`proto/flowstate/v1/authorization.proto`), one closed enum whose value
