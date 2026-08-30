@@ -88,8 +88,8 @@ type debugConsole struct {
 // Asked rather than remembered because a debugging session outlives the
 // measurement `ui.Detect` takes when the command starts: a person resizes a
 // window while a run is held, and a layout drawn against the old number is one
-// that wraps. ok is false where there is no terminal to measure, which is
-// every console built over a pipe.
+// that wraps. ok is false where no size source was installed, as with a console
+// built directly over a pipe.
 func (c *debugConsole) size() (width, height int, ok bool) {
 	if c.measure == nil {
 		return 0, 0, false
