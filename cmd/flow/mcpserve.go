@@ -382,16 +382,17 @@ func mcpServeHandler(
 	)
 
 	limiter := newMCPSessionLimiter(limits.maxSessions, limits.maxSessionRequests, limits.sessionIdle, time.Now)
+	resource := protectedResource.Resource()
 
 	authenticated := mcpauth.RequireBearerToken(
-		auth.MCPTokenVerifier(verifier, protectedResource.Resource(),
+		auth.MCPTokenVerifier(verifier, resource,
 			auth.WithMCPFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 				if observation, ok := ctx.Value(mcpAuthenticationObservationKey{}).(*mcpAuthenticationObservation); ok {
 					observation.reason = auth.PublicReason(err)
 				}
 			})),
 		&mcpauth.RequireBearerTokenOptions{
-			ResourceMetadataURL: protectedResource.MetadataURL(),
+			ResourceMetadataURL: protectedResource.ChallengeMetadataURL(resource),
 			// Scopes deliberately empty: see this function's doc, step 3.
 		},
 	)(limiter.wrap(streamable))

@@ -35,12 +35,11 @@ import (
 // verified. See mtls.go's package doc for why that is the seam and not a
 // widened [Verifier] signature.
 type Authenticator struct {
-	verifier                     Verifier
-	peerVerifier                 PeerVerifier
-	observe                      func(context.Context, *http.Request, error)
-	protectedResource            string
-	protectedResourceMetadataURL string
-	expectedResource             string
+	verifier          Verifier
+	peerVerifier      PeerVerifier
+	observe           func(context.Context, *http.Request, error)
+	protectedResource *ProtectedResource
+	expectedResource  string
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -108,8 +107,7 @@ func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 // on picatz/flowstate#1007.
 func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
 	return func(a *Authenticator) {
-		a.protectedResource = pr.Resource()
-		a.protectedResourceMetadataURL = pr.MetadataURL()
+		a.protectedResource = pr
 	}
 }
 
@@ -315,11 +313,7 @@ func (a *Authenticator) unauthenticated(cause error) error {
 // always named: it still accepts every audience its trust policy lists, so
 // the one the document advertises is among them and the instruction is good.
 func (a *Authenticator) challengeMetadataURL() string {
-	if a.expectedResource != "" && a.expectedResource != a.protectedResource {
-		return ""
-	}
-
-	return a.protectedResourceMetadataURL
+	return a.protectedResource.ChallengeMetadataURL(a.expectedResource)
 }
 
 // PrincipalFromContext returns the [Principal] that [Authenticator.Authenticate]

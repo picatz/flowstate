@@ -565,6 +565,49 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 	require.NotContains(t, challenge, "attacker.example.com")
 }
 
+// TestProtectedResourceChallengeMetadataURLBindsTheDocumentToTheSurface is
+// the shared safety rule used by both Connect and MCP challenge wiring. The
+// negative case is load-bearing: returning MetadataURL unconditionally would
+// pass both positive cases while directing a mismatched surface's client to
+// mint an audience that surface refuses.
+func TestProtectedResourceChallengeMetadataURLBindsTheDocumentToTheSurface(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	for _, test := range []struct {
+		name     string
+		resource string
+		want     string
+	}{
+		{
+			name:     "matching surface resource",
+			resource: pr.Resource(),
+			want:     pr.MetadataURL(),
+		},
+		{
+			name: "unnarrowed surface",
+			want: pr.MetadataURL(),
+		},
+		{
+			name:     "mismatched surface resource",
+			resource: "https://flowstate.example.com/rpc",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, pr.ChallengeMetadataURL(test.resource))
+		})
+	}
+
+	require.Empty(t, (*auth.ProtectedResource)(nil).ChallengeMetadataURL(pr.Resource()),
+		"an unconfigured surface must not advertise a metadata document")
+}
+
 // fetchMetadata serves one GET through the protected-resource handler and
 // returns the response, so a test can assert on what an anonymous client
 // actually receives rather than on what the constructor computed.
