@@ -1446,15 +1446,15 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// engine would then run in a different form, which is precisely the claim the
 	// field promises not to make.
 	//
-	// Compared by value, whole, rather than reported as "was there a trusted
-	// entry" or narrowed to the fields a client's redaction happens to read
-	// today. A deployment that registers the identical specification a caller
-	// submits has substituted nothing observable and keeps the caller's precise
-	// view; anything else — a substitution, a pin, a normalization added next
-	// year — answers false without needing to be enumerated here. That is the
-	// fail-closed direction: a transformation nobody thought to list still costs
-	// a caller a precise view rather than costing them a secret.
-	asSubmitted := proto.Equal(submitted, workflow)
+	// Compared by value rather than reported as "was there a trusted entry" or
+	// narrowed to the fields a client's redaction happens to read today. The one
+	// exception is a task-capability snapshot the caller omitted: it is
+	// control-plane attestation about this program, not an executable
+	// transformation of the program. A caller-supplied snapshot still makes the
+	// answer false when the server overwrites it. A plugin selection or any future
+	// normalization still answers false unless its owner makes an equally explicit
+	// semantic decision here, preserving the fail-closed direction.
+	asSubmitted := specificationAsSubmitted(submitted, workflow)
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
 		Workflow:    workflow,
@@ -1541,6 +1541,18 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	), nil
 }
 
+func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
+	if submitted == nil || executed == nil {
+		return submitted == nil && executed == nil
+	}
+	if submitted.GetResolvedTaskCapabilities() != nil {
+		return false
+	}
+	got := proto.Clone(executed).(*v1.Workflow)
+	got.ResolvedTaskCapabilities = nil
+	return proto.Equal(submitted, got)
+}
+
 // validateSubmission is the submission-validation pipeline shared by
 // [FlowstateServer.Run] and the create branch of
 // [FlowstateServer.SignalWithStart] — credential targets, the declared signal
@@ -1605,8 +1617,27 @@ func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[stri
 // What stays in validateSubmission is what a submission brings: the inputs, and
 // the size of the pair. Those cannot be asked without a delivery.
 func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
+	// Bound the untrusted message before any recursive semantic walk. The size
+	// check is repeated below after control-plane fields are written, because
+	// those bytes must fit too; the structure check need not be repeated because
+	// plugin and task resolution add no executable nodes or values.
+	if err := v1.CheckSpecSize(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := v1.CheckStructureDepth(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	if err := s.pinPlugins(wf); err != nil {
 		return err
+	}
+	// The registry is the task capability source of truth for this process, the
+	// same one GetCatalog reports and workers dispatch from. Resolve after
+	// plugins are pinned so a missing plugin is reported as that deployment
+	// problem rather than only as one of its task names being absent.
+	if err := v1.ResolveTaskCapabilities(wf, v1.DefaultRegistry()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+			"resolving task capabilities before durable execution: %w", err))
 	}
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
@@ -1686,17 +1717,6 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// Refusing at submit turns that into a sentence an author can act on. The
 	// engine keeps its own check for what this one cannot predict.
 	if err := v1.CheckSpecSize(wf); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	// A Flowfile can never compile a structure this deep — the compiler
-	// refuses it directly, with a position — but a specification built by
-	// hand and submitted straight to this RPC arrives without a compiler in
-	// front of it. Every walk this package runs over a structure later
-	// (secret authority, reference collection for Continue-As-New, encoding
-	// a request body) reads [v1.MaxStructureDepth], so a value nested past it
-	// is refused here rather than under-inspected by all of them.
-	if err := v1.CheckStructureDepth(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
