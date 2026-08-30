@@ -97,9 +97,15 @@ func PinnedTaskCapabilities(wf *Workflow) ([]string, bool, error) {
 // same context-scoped registry task dispatch will use, so a rehearsal never
 // borrows capabilities from the process-wide registry it cannot execute.
 func CheckTaskCapabilitiesIn(ctx context.Context, wf *Workflow) error {
-	required, err := RequiredTaskNames(wf)
+	required, pinned, err := PinnedTaskCapabilities(wf)
 	if err != nil {
 		return err
+	}
+	if !pinned {
+		required, err = RequiredTaskNames(wf)
+		if err != nil {
+			return err
+		}
 	}
 	return CheckTaskCapabilitiesAvailable(required, TaskNamesIn(ctx))
 }
