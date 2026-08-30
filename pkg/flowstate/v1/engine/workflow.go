@@ -24,9 +24,11 @@ type ErrRunFailed struct {
 	// records for the same failure.
 	//
 	// It travels as a field rather than as a wrapped cause because this type has
-	// no Unwrap on purpose: Temporal's failure converter walks the unwrap chain
-	// into the failure it persists, and what this deliberately flattens must stay
-	// flattened.
+	// no general wrapped cause: Temporal's failure converter walks the unwrap
+	// chain into the failure it persists, and what this deliberately flattens
+	// must stay flattened. The sole exception is a ScheduleToClose expiry during
+	// retry backoff, whose last application failure is retained below as the
+	// structured evidence for the budget judgement (#1163).
 	Recorded string
 
 	// recordedFromTask reports whether Recorded came from a classified task
@@ -64,11 +66,18 @@ type ErrRunFailed struct {
 	// [classifyRunError], which is what puts it where a client can read it —
 	// this field only carries it there.
 	Kind v1.ErrorKind
+
+	// cause is populated only for #1163's server shape. Most run failures remain
+	// deliberately flattened; this one must retain the last attempt's classified
+	// dependency failure beneath the outer Timeout classification.
+	cause error
 }
 
 func (e *ErrRunFailed) Error() string {
 	return fmt.Sprintf("engine: flowstate run failed: %s", e.Message)
 }
+
+func (e *ErrRunFailed) Unwrap() error { return e.cause }
 
 // errorKind reports e's classification, defaulting to [v1.ErrorKindInternal]
 // when nothing along the way classified it — the same default
@@ -195,13 +204,20 @@ func failedAt(err error, position string) error {
 	// The step's own account — an exhausted loop's iterations, a failed switch's
 	// selection — read off the raw error at the one site it is raised (that
 	// step's own nodeFailed). A propagating re-wrap hands this function an
-	// [ErrRunFailed], which has no Unwrap on purpose, so the assertion fails
-	// there and the record stays with the entry it belongs to.
+	// [ErrRunFailed], which does not implement StepFailureRecord, so the assertion
+	// fails there and the record stays with the entry it belongs to.
 	var recordedOwn *v1.Node_Outputs
 	if account, ok := err.(v1.StepFailureRecord); ok {
 		// The envelope-free text this driver already extracted, never the
 		// error's own words: see [v1.StepFailureRecord].
 		recordedOwn = account.Record(recorded)
+	}
+
+	var cause error
+	if inner != nil {
+		cause = inner.cause
+	} else if retained, expired := durableStepBackoffApplicationFailure(err); expired {
+		cause = retained
 	}
 
 	return &ErrRunFailed{
@@ -210,6 +226,7 @@ func failedAt(err error, position string) error {
 		recordedFromTask: fromTask,
 		recordedOwn:      recordedOwn,
 		Kind:             recordedStepKind(err),
+		cause:            cause,
 	}
 }
 
@@ -270,15 +287,13 @@ func recordedStepError(err error) (string, bool) {
 // non-nil error it does not otherwise recognize) is the right answer for a
 // failure that crossed the boundary in a shape nothing here expected.
 //
-// A [temporal.TimeoutError] is checked before the application error, and the
+// [durableStepTimeoutType] is checked before the application error, and the
 // order is the same line [durableStepTimeoutMessage] draws for the same reason,
-// stated there at length: a schedule-to-close budget that expires after a
-// retryable failure wraps the last attempt's [temporal.ApplicationError] as the
-// timeout's own cause, and `errors.As` walks straight through to find it — so
-// asking about an application error first answers with the stale prior
-// attempt's classification and hides that the budget is what ended the step.
-// The message and the kind must name the same fact, and they now decide it the
-// same way round.
+// stated there at length: whether Temporal returns a TimeoutError around the
+// last attempt or an ActivityError with RetryState TIMEOUT, errors.As can still
+// reach the stale [temporal.ApplicationError] underneath — so asking about the
+// application error first hides that the budget ended the step. The message and
+// kind must name the same fact, and they decide it in one helper.
 //
 // Every timeout type is one answer, not only the two a step's policy names.
 // [durableStepTimeoutMessage] returns err untranslated for schedule-to-start
@@ -293,8 +308,7 @@ func recordedStepKind(err error) v1.ErrorKind {
 		return run.Kind
 	}
 
-	var timeoutErr *temporal.TimeoutError
-	if errors.As(err, &timeoutErr) {
+	if _, imposed := durableStepTimeoutType(err); imposed {
 		return v1.ErrorKindTimeout
 	}
 
@@ -835,6 +849,7 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 			Recorded:         inner.Recorded,
 			recordedFromTask: inner.recordedFromTask,
 			Kind:             inner.Kind,
+			cause:            inner.cause,
 		}
 	}
 

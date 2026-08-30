@@ -997,30 +997,44 @@ func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
 // than an error — the origin sentence differs per type, because the two types
 // are set by two different keys.
 //
-// Only a [temporal.TimeoutError] counts, for the reason
-// [durableStepTimeoutMessage]'s doc gives at length, and it is read before
-// anything else in the chain.
-//
-// # A shape this deliberately does not claim to cover
-//
-// Temporal raises a TimeoutError when a deadline reaches an attempt that is *in
-// flight*. A ScheduleToClose budget running out during a *backoff* is a
-// different shape: the server has the last attempt's failure in hand, so it
-// stops retrying and returns that, with `RetryState` distinguishing "the budget
-// ran out" from "the attempts ran out" and nothing else doing so. That case
-// reads today as the dependency's own error with no mention of the budget, and
-// it is not fixed here: `testsuite`'s environment leaves RetryState Unspecified
-// on the error it hands back, so an arm reading it could be written and could
-// not be tested, and an untested claim about a substrate's error shape is
-// exactly the kind this repository has been wrong about before. Tracked as a
-// follow-up rather than landed on a guess.
+// A [temporal.TimeoutError] is the shape when a deadline reaches an attempt in
+// flight. When ScheduleToClose expires during retry backoff, the server instead
+// retains the last attempt's [temporal.ApplicationError] inside a
+// [temporal.ActivityError] whose RetryState is RETRY_STATE_TIMEOUT. When the
+// prior attempt itself timed out, the server instead returns a ScheduleToClose
+// TimeoutError. A real dev server pins both shapes in retry_timeout_e2e_test.go;
+// recognizing only the retained-application shape leaves maximum-attempt,
+// non-retryable, and unrelated application failures under their own
+// classifications.
 func durableStepTimeoutType(err error) (enumspb.TimeoutType, bool) {
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		return timeoutErr.TimeoutType(), true
 	}
 
+	if _, expired := durableStepBackoffApplicationFailure(err); expired {
+		return enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, true
+	}
+
 	return enumspb.TIMEOUT_TYPE_UNSPECIFIED, false
+}
+
+// durableStepBackoffApplicationFailure identifies the server shape whose
+// retained application failure needs to survive as the overall timeout's
+// structured cause. RetryState is the only discriminator for the
+// ScheduleToClose budget that expired while no attempt was in flight.
+func durableStepBackoffApplicationFailure(err error) (*temporal.ApplicationError, bool) {
+	var activityErr *temporal.ActivityError
+	if !errors.As(err, &activityErr) || activityErr.RetryState() != enumspb.RETRY_STATE_TIMEOUT {
+		return nil, false
+	}
+
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(activityErr.Unwrap(), &applicationErr) {
+		return nil, false
+	}
+
+	return applicationErr, true
 }
 
 // durableStepTimeoutError carries [durableStepTimeoutMessage]'s translated

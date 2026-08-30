@@ -2410,7 +2410,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// them apart by whether a cause is present at all.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, timeouts.ScheduleToClose,
-			fmt.Errorf("schedule-to-close timeout of %s reached", timeouts.ScheduleToClose))
+			&scheduleToCloseTimeoutCause{timeout: timeouts.ScheduleToClose})
 		defer cancel()
 	}
 
@@ -2448,11 +2448,44 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// to run at test speed rather than spend the backoff for real.
 		select {
 		case <-ctx.Done():
+			// Keep the failure that was waiting to be retried as the cause. The
+			// schedule-to-close budget is the fact that ended the step, but the
+			// dependency's last answer is still the evidence explaining what the
+			// retry loop was doing when the budget ran out. Temporal preserves the
+			// same cause when its server expires this budget during backoff; dropping
+			// it here made the local rehearsal strictly less informative.
+			var overall *scheduleToCloseTimeoutCause
+			if errors.As(context.Cause(ctx), &overall) {
+				return nil, &scheduleToCloseTimeoutError{timeout: timeouts.ScheduleToClose, err: err}
+			}
 			return nil, withCancellationCause(ctx, ctx.Err())
 		case <-ClockFromContext(ctx).After(delay):
 		}
 	}
 }
+
+// scheduleToCloseTimeoutCause distinguishes this step's overall budget from an
+// outer run deadline that may stop the same derived context first.
+type scheduleToCloseTimeoutCause struct{ timeout time.Duration }
+
+func (e *scheduleToCloseTimeoutCause) Error() string {
+	return fmt.Sprintf("schedule-to-close timeout of %s reached", e.timeout)
+}
+
+// scheduleToCloseTimeoutError reports that the overall step budget, rather
+// than the last attempt, ended a local retry loop. Its cause remains the last
+// attempt's structured failure so errors.As can still recover the dependency's
+// classification; [ClassifyError] deliberately recognizes this outer fact first.
+type scheduleToCloseTimeoutError struct {
+	timeout time.Duration
+	err     error
+}
+
+func (e *scheduleToCloseTimeoutError) Error() string {
+	return fmt.Sprintf("schedule-to-close timeout of %s reached: %v", e.timeout, e.err)
+}
+
+func (e *scheduleToCloseTimeoutError) Unwrap() error { return e.err }
 
 // withCancellationCause enriches err with the reason ctx (or the timeout
 // nearest to it) was given for stopping, when that reason is more specific
