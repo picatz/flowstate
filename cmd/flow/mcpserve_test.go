@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -440,11 +441,22 @@ func TestMCPServePinsAdvertisedProtocolRevisions(t *testing.T) {
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	payload := raw
-	if start := bytes.Index(raw, []byte("data: ")); start >= 0 {
-		payload = raw[start+len("data: "):]
-		if end := bytes.IndexByte(payload, '\n'); end >= 0 {
-			payload = payload[:end]
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		var data []string
+		scanner := bufio.NewScanner(bytes.NewReader(raw))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" && len(data) > 0 {
+				break
+			}
+			field, value, found := strings.Cut(line, ":")
+			if found && field == "data" {
+				data = append(data, strings.TrimPrefix(value, " "))
+			}
 		}
+		require.NoError(t, scanner.Err())
+		require.NotEmpty(t, data, "server/discover SSE response: %s", raw)
+		payload = []byte(strings.Join(data, "\n"))
 	}
 
 	var result struct {
