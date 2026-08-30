@@ -300,7 +300,8 @@ func redactVarTree(path varPath, value any, withheld withheldVars, sensitive sen
 	case map[string]any:
 		out := make(map[string]any, len(v))
 		for key, entry := range v {
-			out[sensitive.RedactSubstrings(key)] = redactVarTree(
+			redactedKey, _ := sensitive.RedactTree(key).(string)
+			out[sensitive.RedactSubstrings(redactedKey)] = redactVarTree(
 				append(slices.Clone(path), varPathPart{key: key}), entry, withheld, sensitive)
 		}
 

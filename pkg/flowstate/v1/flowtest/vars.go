@@ -324,8 +324,14 @@ func staticVarPath(e celast.Expr) (path varPath, firstBracket, dynamic, rooted b
 		case string:
 			return append(base, varPathPart{key: value}), bracket, alreadyDynamic, true
 		case int64:
+			if len(base) == 0 {
+				return base, bracket, true, true
+			}
 			return append(base, varPathPart{index: int(value), list: true}), bracket, alreadyDynamic, true
 		case uint64:
+			if len(base) == 0 {
+				return base, bracket, true, true
+			}
 			return append(base, varPathPart{index: int(value), list: true}), bracket, alreadyDynamic, true
 		default:
 			return base, bracket, true, true
@@ -624,13 +630,20 @@ type varPathPart struct {
 
 type varPath []varPathPart
 
+var celReservedIdentifiers = map[string]bool{
+	"false": true,
+	"in":    true,
+	"null":  true,
+	"true":  true,
+}
+
 func (p varPath) String() string {
 	var out strings.Builder
 	for i, part := range p {
 		switch {
 		case part.list:
 			fmt.Fprintf(&out, "[%d]", part.index)
-		case i == 0 || varName.MatchString(part.key):
+		case i == 0 || varName.MatchString(part.key) && !celReservedIdentifiers[part.key]:
 			if i > 0 {
 				out.WriteByte('.')
 			}
@@ -1112,6 +1125,11 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 			switch {
 			case read.dynamic:
 				dynamic = true
+				if len(read.path) > 0 {
+					// The final selection is unknown, but its static base is
+					// known. Keep every leaf below it in the dependency graph.
+					deps[read.path.String()] = read.path
+				}
 				// The selected value is unknown, but the index expression can
 				// still read statically named vars. Keep those edges: refusing
 				// this declaration must not disconnect secret source material.

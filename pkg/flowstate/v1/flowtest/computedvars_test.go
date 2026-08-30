@@ -107,6 +107,29 @@ tests:
 	}
 }
 
+func TestRefusedDynamicLeafIndexKeepsItsStaticTaintBase(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  request:
+    token: s3cr3t-value
+  which: token
+  secret: "${vars.request[vars.which]}"
+  bad: "${{}[vars.request.token]}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: "${vars.secret}"
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "indexes `vars` with an expression")
+	assert.Contains(t, err.Error(), "withheld: this expression reads vars.request.token",
+		"refusing the dynamic index must not disconnect its static base from the taint graph")
+	assert.NotContains(t, err.Error(), "s3cr3t-value")
+}
+
 // TestAComputedVarComposesItsSiblings is the feature: a base fixture stated
 // once and a variant built from it, both reaching a case's `inputs:` and a
 // check. Without composition the two orders are two hand-maintained copies of

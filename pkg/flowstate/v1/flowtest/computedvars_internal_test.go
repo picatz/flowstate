@@ -253,6 +253,7 @@ func TestReadsVarRecognisesWhatTheGrammarBinds(t *testing.T) {
 		"bracket":               {expr: "vars['token']", want: varRead{name: "token", path: varPath{{key: "token"}}, bracket: true}, ok: true},
 		"bracket, double quote": {expr: `vars["token"]`, want: varRead{name: "token", path: varPath{{key: "token"}}, bracket: true}, ok: true},
 		"a dynamic index":       {expr: "vars[vars.which]", want: varRead{dynamic: true, bracket: true}, ok: true},
+		"a numeric root index":  {expr: "vars[0]", want: varRead{dynamic: true, bracket: true}, ok: true},
 		"a selection into one": {expr: "vars.order.region", want: varRead{name: "order", path: varPath{
 			{key: "order"}, {key: "region"},
 		}}, ok: true},
@@ -531,6 +532,19 @@ func TestRedactedVarsWithholdsOnlyATaintedStructuredLeaf(t *testing.T) {
 		"the autopsy preserves the literal container and withholds only its tainted leaf")
 }
 
+func TestRedactedVarsStillRedactsAnExactSensitiveMapKey(t *testing.T) {
+	t.Parallel()
+
+	vars := fileVars{values: map[string]any{
+		"request": map[string]any{"zq": "visible"},
+	}}
+
+	shown := redactedVars(vars, sensitiveInputs{}.WithValues("zq"))
+	request := shown["request"].(map[string]any)
+	assert.Equal(t, map[string]any{v1.SensitiveMarker: "visible"}, request,
+		"an exact sensitive key below the substring floor must still redact")
+}
+
 // TestWithheldCoversAPathAndNotItsNeighbour is the prefix test, written where
 // the answers differ: `vars.token` and `vars.tokenish` share a prefix, and a
 // naive [strings.HasPrefix] withholds a var the file never said to withhold —
@@ -576,4 +590,21 @@ func TestWithheldLeafCoversItselfAndItsContainerButNotASibling(t *testing.T) {
 	name, touched := withheld.coveredRead(varPath{{key: "request"}}, true)
 	assert.True(t, touched, "an evaluator error derived from a parent must still fail closed")
 	assert.Equal(t, "request.headers.Authorization", name)
+}
+
+func TestWithheldLeafPathQuotesACELReservedMapKey(t *testing.T) {
+	t.Parallel()
+
+	path := varPath{{key: "request"}, {key: "true"}}
+	assert.Equal(t, `request["true"]`, path.String())
+
+	withheld := withheldVars{names: []string{path.String()}}
+	name, covered := withheld.coveredName(`vars.request["true"]`)
+	assert.True(t, covered)
+	assert.Equal(t, `request["true"]`, name)
+
+	name, covered = claimReadsWithheld(v1.DefaultEvaluator(),
+		`[0][size(vars.request["true"])] == 1`, withheld)
+	assert.True(t, covered, "a transformed evaluator error must fail closed for a reserved-key leaf")
+	assert.Equal(t, `request["true"]`, name)
 }
