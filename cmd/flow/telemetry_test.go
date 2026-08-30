@@ -32,6 +32,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -412,7 +413,37 @@ func TestTelemetryResourceIdentifiesThisCopy(t *testing.T) {
 		"which copy of flowstate this is, without an operator wiring the downward API")
 	require.Contains(t, attrs, "host.name")
 	require.Contains(t, attrs, "process.pid")
+	require.Contains(t, attrs, "process.executable.name")
 	require.Contains(t, attrs, "process.runtime.name")
+}
+
+func TestTelemetryResourceKeepsDetectedAttributesAndToleratesTheirAbsence(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	for _, test := range []struct {
+		name     string
+		detected []attribute.KeyValue
+	}{
+		{name: "absent"},
+		{name: "present", detected: []attribute.KeyValue{attribute.String("host.name", "detected-host")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			res, err := telemetryResourceWith(t.Context(), resource.WithAttributes(test.detected...))
+			require.NoError(t, err)
+
+			attrs := resourceAttributes(res.Attributes())
+			require.Equal(t, "flowstate", attrs["service.name"],
+				"an empty detector must not erase the fixed service identity")
+			if len(test.detected) == 0 {
+				require.NotContains(t, attrs, "host.name",
+					"absent detector data must remain absent rather than be invented")
+			} else {
+				require.Equal(t, "detected-host", attrs["host.name"],
+					"an attribute the detector found was dropped while merging the resource")
+			}
+		})
+	}
 }
 
 // TestTheResourceCarriesNoCommandArguments is the negative direction, and it is
@@ -437,6 +468,16 @@ func TestTheResourceCarriesNoCommandArguments(t *testing.T) {
 	require.NotContains(t, attrs, "process.command_line")
 	require.NotContains(t, attrs, "process.executable.path",
 		"a path carries a username and a deployment's layout; the name answers the question")
+	require.NotContains(t, attrs, "process.owner",
+		"a username is not needed to identify the emitting process")
+	require.NotContains(t, attrs, "process.runtime.description",
+		"the runtime name and version carry the useful identity without a free-form description")
+	require.NotContains(t, attrs, "host.id",
+		"a durable machine identifier is broader and longer-lived than this process needs")
+	for key := range attrs {
+		require.False(t, strings.HasPrefix(key, "k8s."),
+			"Kubernetes topology %q was inferred without a Kubernetes resource detector", key)
+	}
 }
 
 // TestTheInstanceIDIsStableWithinTheProcess pins the property that makes the id
@@ -455,6 +496,11 @@ func TestTheInstanceIDIsStableWithinTheProcess(t *testing.T) {
 	id := resourceAttributes(first.Attributes())["service.instance.id"]
 	require.NotEmpty(t, id)
 	require.Equal(t, id, resourceAttributes(second.Attributes())["service.instance.id"])
+	parsed, err := uuid.Parse(id)
+	require.NoError(t, err)
+	require.Equal(t, uuid.Version(4), parsed.Version(),
+		"the process instance must be a fresh random identity, not a hostname or reusable pid")
+	require.Equal(t, uuid.RFC4122, parsed.Variant())
 }
 
 // TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand covers the path a
@@ -494,7 +540,11 @@ func TestTelemetryResourceLetsTheEnvironmentWin(t *testing.T) {
 	telemetryOff(t)
 
 	t.Setenv("OTEL_SERVICE_NAME", "flowstate-eu")
-	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=staging")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", strings.Join([]string{
+		"deployment.environment=staging",
+		"service.instance.id=deployment-instance",
+		"host.name=deployment-host",
+	}, ","))
 
 	res, err := telemetryResource(t.Context())
 	require.NoError(t, err)
@@ -502,6 +552,10 @@ func TestTelemetryResourceLetsTheEnvironmentWin(t *testing.T) {
 	attrs := resourceAttributes(res.Attributes())
 	require.Equal(t, "flowstate-eu", attrs["service.name"], "OTEL_SERVICE_NAME must override the built-in name")
 	require.Equal(t, "staging", attrs["deployment.environment"])
+	require.Equal(t, "deployment-instance", attrs["service.instance.id"],
+		"the deployment must be able to replace the random process identity")
+	require.Equal(t, "deployment-host", attrs["host.name"],
+		"the deployment must be able to replace detected host identity")
 }
 
 // resourceAttributes flattens a resource for assertion.

@@ -1072,6 +1072,39 @@ control knows that some third-party API publishes a limit, so there is nothing
 there to surface rather than reimplement, and the bound that does exist for it
 is the API's own 429.
 
+## Telemetry resource identity
+
+Every exported span, metric, and log identifies the emitting binary with
+`service.name`, `service.version`, and, when the operating system can supply
+randomness, a random `service.instance.id`. The instance ID is created once per
+process: all signal providers in one process share it, and a restart gets a new
+one. It is deliberately not derived from a hostname or PID, both of which can
+be shared or reused. If random identity generation fails, Flowstate warns and
+omits that attribute rather than failing the workload or substituting a shared
+fake identity.
+
+Flowstate also uses the OTel SDK's built-in detectors for `host.name`,
+`container.id` (when the platform exposes a supported cgroup container ID),
+`process.pid`, `process.executable.name`, `process.runtime.name`, and
+`process.runtime.version`. Missing host or container data is simply omitted.
+There is no Kubernetes API or downward-API detector here, so Flowstate does not
+claim `k8s.pod.*`, `k8s.deployment.*`, or other Kubernetes topology attributes.
+Set those explicitly in the deployment when they are useful and authoritative.
+
+`OTEL_RESOURCE_ATTRIBUTES` is merged last and therefore overrides both fixed
+defaults and detected string values, including `service.instance.id` and
+`host.name`; `OTEL_SERVICE_NAME` likewise overrides the built-in service name.
+This is the supported way for a deployment to provide more authoritative
+identity or topology. OTel parses resource attributes supplied through the
+environment as strings, so do not use it to replace typed attributes such as the
+integer-valued `process.pid`.
+
+The broad `resource.WithProcess` detector is intentionally not used. It exports
+the argument vector, which can contain values such as `--input token=...`, on
+every telemetry signal. Flowstate also omits the executable path, process owner,
+runtime description, and durable host ID: those values add private or
+unnecessarily long-lived identity without helping distinguish a running copy.
+
 ## Metrics
 
 Telemetry is OTLP push, gated per signal on the standard `OTEL_*` environment
