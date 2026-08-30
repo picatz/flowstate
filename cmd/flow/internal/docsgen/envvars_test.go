@@ -40,6 +40,10 @@ func testGenerator(t *testing.T) *Generator {
 		FlagName:       func(f *pflag.Flag) string { return "--" + f.Name },
 		MCPTools:       []MCPTool{{Name: "flowstate_validate"}},
 		DefaultAddress: "127.0.0.1:8080",
+		TaskPolicy: PolicyReference{
+			Description: "test policy",
+			Fields:      []PolicyField{{Name: "allow", Type: "sequence of strings"}},
+		},
 	})
 	require.NoError(t, err)
 
