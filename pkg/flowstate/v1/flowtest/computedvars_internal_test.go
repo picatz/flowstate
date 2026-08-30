@@ -207,6 +207,37 @@ func declaredFrom(t *testing.T, fence string) map[string]*varDeclaration {
 	return file.declareVars(newProblems(nil))
 }
 
+func TestVarDependenciesStopAtWholeFileEdgeBound(t *testing.T) {
+	t.Parallel()
+
+	nodes := map[string]varNode{
+		"big[0]": {path: varPath{{key: "big"}, {index: 0, list: true}}},
+		"big[1]": {path: varPath{{key: "big"}, {index: 1, list: true}}},
+		"big[2]": {path: varPath{{key: "big"}, {index: 2, list: true}}},
+	}
+	remaining := 2
+	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, &remaining)
+
+	assert.False(t, withinBound)
+	assert.Nil(t, deps)
+	assert.Zero(t, remaining)
+}
+
+func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
+	t.Parallel()
+
+	leaves := make([]any, maxVarExpressions+1)
+	for i := range leaves {
+		leaves[i] = "${size(vars.big)}"
+	}
+	file := &File{Vars: map[string]any{"big": leaves}}
+	p := newProblems(nil)
+
+	assert.Nil(t, file.declareVars(p))
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "more than 200 computed var leaves")
+}
+
 // TestEverySiteRecognisesBothSpellings is the audit. `vars.token` and
 // `vars['token']` are the same value to CEL, so every site that asks which var
 // an expression references must answer the same for both — and the two that did

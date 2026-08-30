@@ -222,6 +222,12 @@ const maxWithheldVarStrings = 64
 // multiply [maxVarCost] by every leaf the file-size limit can hold.
 const maxVarExpressions = MaxVarsPerFile
 
+// maxVarDependencyEdges bounds the graph material retained across computed
+// leaves. The expanded-node bound is also a safe whole-file edge budget: a
+// structured value may be large, but repeatedly reading that value must not
+// multiply its leaves into quadratic memory.
+const maxVarDependencyEdges = maxExpandedNodes
+
 // varReference matches a whole-value reference: `${vars.<name>}` and nothing
 // around it. The name grammar is CEL's identifier grammar, because a var must
 // also be reachable as `vars.<name>` inside a check.
@@ -743,19 +749,23 @@ func setVarNode(vars map[string]any, path varPath, value any) {
 	}
 }
 
-func dependenciesFor(reads []varPath, nodes map[string]varNode) []string {
+func dependenciesFor(reads []varPath, nodes map[string]varNode, remaining *int) ([]string, bool) {
 	deps := map[string]bool{}
 	for _, read := range reads {
 		for id, node := range nodes {
 			// Reading a fixed container depends on all of its leaves. Selecting
 			// from a whole-value computed node depends on that node.
-			if pathHasPrefix(node.path, read) || pathHasPrefix(read, node.path) {
+			if (pathHasPrefix(node.path, read) || pathHasPrefix(read, node.path)) && !deps[id] {
+				if *remaining == 0 {
+					return nil, false
+				}
 				deps[id] = true
+				*remaining--
 			}
 		}
 	}
 
-	return slices.Sorted(maps.Keys(deps))
+	return slices.Sorted(maps.Keys(deps)), true
 }
 
 // withheldVars is what a file's `vars:` withhold: the names a value surface
@@ -1006,6 +1016,18 @@ func expandSecretHolding(holding map[string]string, nodes map[string]varNode) ma
 // Sorted, so a file with two bad vars reports them in the same order every
 // time — the rule every map walk in this package follows.
 func (f *File) declareVars(p *problems) map[string]*varDeclaration {
+	nodes := collectVarNodes(f.Vars)
+	computed := 0
+	for _, node := range nodes {
+		if _, fenced := fencedVarValue(node.value); fenced {
+			computed++
+			if computed > maxVarExpressions {
+				p.report(site{at: at(v1.VarsRoot)}, "this file declares more than %d computed var leaves", maxVarExpressions)
+				return nil
+			}
+		}
+	}
+
 	base, err := varEvaluator().Env()
 	if err != nil {
 		// Reported by [File.evaluateVars], which meets the same failure a moment
@@ -1014,8 +1036,8 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		return nil
 	}
 
-	nodes := collectVarNodes(f.Vars)
 	declared := map[string]*varDeclaration{}
+	remainingEdges := maxVarDependencyEdges
 	for _, id := range slices.Sorted(maps.Keys(nodes)) {
 		node := nodes[id]
 		text, fenced := fencedVarValue(node.value)
@@ -1041,7 +1063,12 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			for _, name := range textualVarDeps(text) {
 				reads = append(reads, varPath{{key: name}})
 			}
-			d.deps = dependenciesFor(reads, nodes)
+			var withinBound bool
+			d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
+			if !withinBound {
+				p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges", maxVarDependencyEdges)
+				return nil
+			}
 
 			continue
 		}
@@ -1055,7 +1082,12 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		// survived validation. Dropping the edge left the backward closure
 		// walking an incomplete graph, and an independent var's evaluator
 		// error printed the plaintext.
-		d.deps = dependenciesFor(reads, nodes)
+		var withinBound bool
+		d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
+		if !withinBound {
+			p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges", maxVarDependencyEdges)
+			return nil
+		}
 		if !ok {
 			continue
 		}
@@ -1070,12 +1102,6 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		}
 		d.ast = parsed
 	}
-	if len(declared) > maxVarExpressions {
-		p.report(site{at: at(v1.VarsRoot)}, "this file declares %d computed var leaves, more than the limit of %d",
-			len(declared), maxVarExpressions)
-		return nil
-	}
-
 	return declared
 }
 
