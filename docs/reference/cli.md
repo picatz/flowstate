@@ -79,6 +79,39 @@ flow audit -o json examples/ | jq '.totals'
 |---|---|---|---|---|
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
+## `flow auth`
+
+Diagnose caller authentication against a trust policy
+
+```
+flow auth [command]
+```
+
+## `flow auth check`
+
+Check a bearer token against a trust policy
+
+```
+flow auth check [flags]
+```
+
+Verify one bearer token against a trust policy using the same signature, lifetime, audience, and claim-matching path as `flow server`. The token is read only from a file or stdin: there is deliberately no token argument or --token flag, because credentials in argv leak through process listings, shell history, logs, and completion. Output names only the policy entry that admitted the token, or the policy entries that made it ambiguous; it never prints token claims. This is a concrete-token probe, not a static proof that every possible token matches at most one entry: check each representative caller before deploying a policy change.
+
+Examples:
+
+```sh
+# Check a projected workload token without putting it in argv:
+flow auth check --auth-policy trust.yaml --token-file /var/run/secrets/tokens/flowstate
+
+# Read a token from stdin instead:
+flow auth check --auth-policy trust.yaml --token-file - < "$TOKEN_FILE"
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--auth-policy <string>` | `string` | — | — | path to the trust policy to check (required) |
+| `--token-file <string>` | `string` | — | — | path containing the bearer token, or "-" to read stdin (required; the token itself is never accepted in argv) |
+
 ## `flow breaking`
 
 Report workflows whose declared inputs or outputs broke a contract
