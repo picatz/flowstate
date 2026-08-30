@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"sync"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
@@ -91,16 +92,23 @@ func startAudit(ctx context.Context, required bool) (*audit.Recorder, error) {
 // stays the only place that decides whether this has already run.
 func initAudit(ctx context.Context, required bool) (*audit.Recorder, func(context.Context), error) {
 	opts := []audit.Option{}
+	shutdowns := []func(context.Context){}
 	if required {
 		opts = append(opts, audit.Required())
+	} else {
+		// Best-effort auditing must not turn a stalled process logger into RPC
+		// backpressure. Keep the unconditional stderr floor, but put its writes
+		// behind a bounded queue; Required mode deliberately retains the
+		// synchronous default because returning success must prove the write.
+		stderr, flush := audit.NewAsyncWriterEmitter(os.Stderr, audit.DefaultWriterQueueSize)
+		opts = append(opts, audit.WithoutStderr(), audit.WithEmitter(stderr))
+		shutdowns = append(shutdowns, func(ctx context.Context) { _ = flush(ctx) })
 	}
 
 	config, err := telemetryConfigFromEnv()
 	if err != nil {
 		return nil, nil, err
 	}
-
-	shutdown := func(context.Context) {}
 
 	if config.logs {
 		res, err := telemetryResource(ctx)
@@ -127,7 +135,7 @@ func initAudit(ctx context.Context, required bool) (*audit.Recorder, func(contex
 
 		provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(processor), sdklog.WithResource(res))
 		opts = append(opts, audit.WithEmitter(audit.NewLogEmitter(provider)))
-		shutdown = func(ctx context.Context) { _ = provider.Shutdown(ctx) }
+		shutdowns = append(shutdowns, func(ctx context.Context) { _ = provider.Shutdown(ctx) })
 	}
 
 	recorder, err := audit.NewRecorder(opts...)
@@ -135,18 +143,22 @@ func initAudit(ctx context.Context, required bool) (*audit.Recorder, func(contex
 		return nil, nil, err
 	}
 
+	shutdown := func(ctx context.Context) {
+		for _, stop := range shutdowns {
+			stop(ctx)
+		}
+	}
 	return recorder, shutdown, nil
 }
 
 // flushAudit pushes whatever the audit OTel sink has buffered before the
-// process leaves.
+// process leaves, including records accepted by the asynchronous best-effort
+// stderr sink.
 //
 // Mirrors [flushTelemetry]: best-effort, safe to call when auditing was never
-// started, and safe to call twice. The stderr sink needs no flush — every write
-// is synchronous — so this only matters when OTel logs are configured and
-// running a non-required (batched) processor; the required path already
-// exported synchronously at every call, and Shutdown here is only closing the
-// exporter's connection cleanly.
+// started, and safe to call twice. Required stderr and OTel paths already
+// export synchronously at every call; shutdown still closes connections and
+// gives the best-effort stderr queue a bounded chance to drain.
 func flushAudit() {
 	auditState.mu.Lock()
 	shutdown := auditState.shutdown

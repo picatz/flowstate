@@ -25,6 +25,11 @@ import (
 // handed rather than assuming somebody else did.
 const MaxResourceKeyBytes = 256
 
+// DefaultWriterQueueSize is the number of audit records the best-effort
+// stderr sink can hold while its writer is unavailable. Once full, new records
+// are dropped rather than applying an unbounded writer delay to RPC handlers.
+const DefaultWriterQueueSize = 256
+
 // Emitter writes one record to one sink.
 //
 // The error is the reason this interface exists rather than an
@@ -280,6 +285,84 @@ func NewWriterEmitter(w io.Writer) Emitter {
 	}
 
 	return &writerEmitter{w: w}
+}
+
+// NewAsyncWriterEmitter writes records on a background goroutine through a
+// bounded queue. Emit never waits for the writer: a full queue is reported as
+// an error, which a best-effort Recorder deliberately swallows. The returned
+// flush waits for records already accepted into the queue, subject to ctx.
+//
+// This emitter is for best-effort mode only. Required auditing must use
+// [NewWriterEmitter], where completion of Emit proves the record was written.
+func NewAsyncWriterEmitter(w io.Writer, queueSize int) (Emitter, func(context.Context) error) {
+	if w == nil {
+		return nil, func(context.Context) error { return nil }
+	}
+	if queueSize <= 0 {
+		queueSize = DefaultWriterQueueSize
+	}
+
+	e := &asyncWriterEmitter{
+		w:     w,
+		queue: make(chan asyncWriterItem, queueSize),
+	}
+	go e.run()
+	return e, e.flush
+}
+
+type asyncWriterItem struct {
+	line    []byte
+	flushed chan error
+}
+
+type asyncWriterEmitter struct {
+	w     io.Writer
+	queue chan asyncWriterItem
+}
+
+func (e *asyncWriterEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
+	line, err := protojson.MarshalOptions{}.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("audit: marshaling the record: %w", err)
+	}
+
+	select {
+	case e.queue <- asyncWriterItem{line: append(line, '\n')}:
+		return nil
+	default:
+		return errors.New("audit: writer queue is full")
+	}
+}
+
+func (e *asyncWriterEmitter) run() {
+	for item := range e.queue {
+		var err error
+		if item.line != nil {
+			_, err = e.w.Write(item.line)
+			if err != nil {
+				err = fmt.Errorf("audit: writing the record: %w", err)
+			}
+		}
+		if item.flushed != nil {
+			item.flushed <- err
+		}
+	}
+}
+
+func (e *asyncWriterEmitter) flush(ctx context.Context) error {
+	flushed := make(chan error, 1)
+	select {
+	case e.queue <- asyncWriterItem{flushed: flushed}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case err := <-flushed:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type writerEmitter struct {

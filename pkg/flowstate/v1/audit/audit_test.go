@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -209,6 +210,50 @@ func TestARequiredSinksFailureIsTheCallersFailure(t *testing.T) {
 	require.False(t, advisory.Required())
 	require.NoError(t, advisory.Allow(t.Context(), subject),
 		"a deployment that did not ask for a required sink does not get its collector's outage")
+}
+
+// TestAsyncWriterBoundsBackpressure is the availability half of best-effort
+// auditing: a logging consumer that stops draining may occupy the one writer
+// goroutine and fill a finite queue, but it cannot occupy an RPC handler.
+func TestAsyncWriterBoundsBackpressure(t *testing.T) {
+	t.Parallel()
+
+	w := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	emitter, flush := audit.NewAsyncWriterEmitter(w, 1)
+	record := &v1.AuditRecord{}
+
+	require.NoError(t, emitter.Emit(t.Context(), record))
+	select {
+	case <-w.entered:
+	case <-time.After(time.Second):
+		t.Fatal("the writer goroutine did not receive the first record")
+	}
+
+	// One record waits in the bounded queue. The next is dropped immediately
+	// rather than waiting behind the blocked writer.
+	require.NoError(t, emitter.Emit(t.Context(), record))
+	started := time.Now()
+	require.Error(t, emitter.Emit(t.Context(), record))
+	require.Less(t, time.Since(started), 100*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, flush(ctx), context.DeadlineExceeded)
+
+	close(w.release)
+	require.NoError(t, flush(t.Context()))
+}
+
+type blockingWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
 }
 
 // TestARequiredRecorderMustHaveASink refuses the one combination that would be

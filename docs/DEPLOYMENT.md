@@ -1279,7 +1279,10 @@ traded for a complete trail, and it is why the OTel sink switches from an
 ordinary batch processor to a synchronous one under `--audit-required` — a
 batch processor's export happens after the request has already been answered,
 so a "required" sink backed by one would prove nothing at the decision point.
-Stderr needs no such switch; every write to it is already synchronous.
+Stderr follows the same trade: in the default mode records enter a bounded
+background queue, and a full queue drops a record rather than blocking the RPC
+on a stalled logging consumer. Under `--audit-required`, stderr writes are
+synchronous so returning success proves that the record was written.
 
 The default is auditing **on**, best-effort — every deployment gets a stderr
 trail from the moment it starts serving, and nothing has to be configured to
