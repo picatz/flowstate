@@ -228,27 +228,21 @@ tests:
 	require.Contains(t, err.Error(), "mixes text with a vars reference")
 }
 
-// TestAVarHoldingANestedExpressionIsRefused: the fence rule is a whole-value
-// rule. `computed: ${vars.other}` is an expression and is evaluated (see
-// computedvars_test.go); a fence *inside* a structure is neither a literal nor
-// something anything evaluates, so it is refused — and says so in its own
-// words rather than in the `defaults:` block's (#1072, repair 5).
-func TestAVarHoldingANestedExpressionIsRefused(t *testing.T) {
+// TestAVarHoldingANestedExpressionEvaluates is #1200's language boundary: YAML
+// owns the map shape and the fence computes only its leaf.
+func TestAVarHoldingANestedExpressionEvaluates(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+	file, err := flowtest.Load(writeInline(t, t.TempDir(), `
 vars:
   other: plain
   order: {id: "${vars.other}"}
 tests:
-  - name: never loads
+  - name: loads
     workflow: ./workflow.yaml
 `))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "vars.order.id")
-	require.Contains(t, err.Error(), "a var holds a literal, or one whole-value")
-	require.NotContains(t, err.Error(), "`defaults:` is a fixture",
-		"a var refused for a nested fence was told about the `defaults:` block until #1072")
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"id": "plain"}, file.Vars["order"])
 }
 
 func TestAVarWithAnUnaddressableNameIsRefused(t *testing.T) {

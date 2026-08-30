@@ -286,14 +286,36 @@ func redactedVars(vars fileVars, sensitive sensitiveInputs) map[string]any {
 			out[name] = "[withheld]"
 			continue
 		}
-		if vars.withheld.holds(name) {
-			out[name] = sensitiveMarker
-			continue
-		}
-		out[name] = redactSubstringsTree(sensitive.RedactTree(value), sensitive)
+		out[name] = redactVarTree(varPath{{key: name}}, value, vars.withheld, sensitive)
 	}
 
 	return out
+}
+
+func redactVarTree(path varPath, value any, withheld withheldVars, sensitive sensitiveInputs) any {
+	if withheld.holds(path.String()) {
+		return sensitiveMarker
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, entry := range v {
+			redactedKey, _ := sensitive.RedactTree(key).(string)
+			out[sensitive.RedactSubstrings(redactedKey)] = redactVarTree(
+				append(slices.Clone(path), varPathPart{key: key}), entry, withheld, sensitive)
+		}
+
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, entry := range v {
+			out[i] = redactVarTree(append(slices.Clone(path), varPathPart{index: i, list: true}), entry, withheld, sensitive)
+		}
+
+		return out
+	default:
+		return redactSubstringsTree(sensitive.RedactTree(value), sensitive)
+	}
 }
 
 // redactSubstringsTree applies [v1.SensitiveValues.RedactSubstrings] to every string a
@@ -455,8 +477,10 @@ func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (
 		switch {
 		case read.dynamic:
 			dynamic = true
-		case found == "" && slices.Contains(withheld.names, read.name):
-			found = read.name
+		case found == "":
+			if name, covered := withheld.coveredRead(read.path, true); covered {
+				found = name
+			}
 		}
 	})
 	if found != "" {
