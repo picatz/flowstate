@@ -1448,9 +1448,10 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	//
 	// Compared by value rather than reported as "was there a trusted entry" or
 	// narrowed to the fields a client's redaction happens to read today. The one
-	// exception is the task-capability snapshot: it is control-plane attestation
-	// about this program, not an executable transformation of the program. The
-	// helper strips only that field. A plugin selection or any future
+	// exception is a task-capability snapshot the caller omitted: it is
+	// control-plane attestation about this program, not an executable
+	// transformation of the program. A caller-supplied snapshot still makes the
+	// answer false when the server overwrites it. A plugin selection or any future
 	// normalization still answers false unless its owner makes an equally explicit
 	// semantic decision here, preserving the fail-closed direction.
 	asSubmitted := specificationAsSubmitted(submitted, workflow)
@@ -1544,11 +1545,12 @@ func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
 	if submitted == nil || executed == nil {
 		return submitted == nil && executed == nil
 	}
-	want := proto.Clone(submitted).(*v1.Workflow)
+	if submitted.GetResolvedTaskCapabilities() != nil {
+		return false
+	}
 	got := proto.Clone(executed).(*v1.Workflow)
-	want.ResolvedTaskCapabilities = nil
 	got.ResolvedTaskCapabilities = nil
-	return proto.Equal(want, got)
+	return proto.Equal(submitted, got)
 }
 
 // validateSubmission is the submission-validation pipeline shared by
@@ -1615,6 +1617,17 @@ func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[stri
 // What stays in validateSubmission is what a submission brings: the inputs, and
 // the size of the pair. Those cannot be asked without a delivery.
 func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
+	// Bound the untrusted message before any recursive semantic walk. The size
+	// check is repeated below after control-plane fields are written, because
+	// those bytes must fit too; the structure check need not be repeated because
+	// plugin and task resolution add no executable nodes or values.
+	if err := v1.CheckSpecSize(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := v1.CheckStructureDepth(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	if err := s.pinPlugins(wf); err != nil {
 		return err
 	}
@@ -1704,17 +1717,6 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// Refusing at submit turns that into a sentence an author can act on. The
 	// engine keeps its own check for what this one cannot predict.
 	if err := v1.CheckSpecSize(wf); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	// A Flowfile can never compile a structure this deep — the compiler
-	// refuses it directly, with a position — but a specification built by
-	// hand and submitted straight to this RPC arrives without a compiler in
-	// front of it. Every walk this package runs over a structure later
-	// (secret authority, reference collection for Continue-As-New, encoding
-	// a request body) reads [v1.MaxStructureDepth], so a value nested past it
-	// is refused here rather than under-inspected by all of them.
-	if err := v1.CheckStructureDepth(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
