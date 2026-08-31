@@ -188,6 +188,9 @@ func TestWithValuesHoldsAOneRuneValueToTheSubstringFloor(t *testing.T) {
 
 	require.True(t, set.IsSensitive("e"),
 		"the value comparison holds at every length: a rendered value equal to the plaintext still redacts")
+	require.Equal(t, SensitiveMarker, set.RedactTree("e"),
+		"and the redaction itself, not only set membership: a value equal to the plaintext "+
+			"renders as the marker at any length")
 	require.Equal(t, "authenticated: true", set.RedactSubstrings("authenticated: true"),
 		"a one-rune plaintext must not join the substring backstop: replacing every occurrence "+
 			"of one rune is a shredder, not a redaction")

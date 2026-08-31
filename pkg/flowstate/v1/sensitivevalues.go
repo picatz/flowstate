@@ -339,10 +339,18 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 		// was trying to read — and the substituted markers were themselves
 		// shredded, nesting `[redacted]` inside `[redacted]`. The value
 		// comparison above still holds at every length, so a rendered value
-		// *equal* to the plaintext redacts exactly as before; only the
-		// composite-string backstop declines, and a one-rune leaf is the
-		// case where that backstop protects nothing the comparison has not
-		// already caught.
+		// *equal* to the plaintext redacts exactly as before.
+		//
+		// What the floor concedes, it concedes deliberately and in the open:
+		// a one-rune plaintext embedded in a *composite* string — the
+		// `"Bearer " + value` shape the backstop exists for — now prints,
+		// because there is no third option: redacting one rune everywhere it
+		// occurs is the shredder above, and withholding the whole rendering
+		// destroys the same diagnostic by a different door. This is the
+		// standing every non-root descendant of a declared `sensitive:`
+		// input already has (the walk above applies the identical floor to
+		// them), extended to the values this path adds; a fixture that needs
+		// the composite backstop uses a plaintext of two runes or more.
 		if utf8.RuneCountInString(plaintext) >= minSensitiveSubstringRunes {
 			state.substrings = append(state.substrings, plaintext)
 		}
