@@ -561,6 +561,20 @@ Run by hand it prints a banner saying so and waits — like `flow lsp`, it is me
 to be launched by an editor rather than typed. For a terminal debugger, use
 `flow run local --debug`, which is the same session behind the same commands.
 
+Plugin-backed workflows use the same explicit launch posture as the language
+server. Pass an absolute plugin directory in the editor's adapter arguments:
+
+```console
+$ flow dap --plugin-dir /usr/local/lib/flowstate/plugins
+```
+
+The adapter launches those plugins before it validates the `program` from the
+launch request and holds them for the debug session. It deliberately ignores
+`$FLOWSTATE_PLUGIN_DIR` and refuses relative directories: an opened workspace
+must not choose which executable an editor launches. `flow dap` executes the
+debuggee, so it does not accept `--plugin-catalog`; catalog-only task definitions
+cannot execute.
+
 **Breakpoints are step ids, not source lines.** The debugger is handed steps and
 not files — the engine calls it with a node, and a node carries an `id` and no
 position — so there is nothing to hang a gutter dot on. Set them as *function*

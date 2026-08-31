@@ -220,6 +220,66 @@ outputs: {}
 	conn.await("event", "terminated")
 }
 
+// TestFlowDAPAcceptsAPluginTask proves the editor front reaches the same launched
+// plugin registry and worker-side secret runtime as `flow run local
+// --plugin-dir`. The example plugin contributes both the task and the example:
+// provider; resolving through it proves the adapter did not launch the host with
+// a nil registry or execute without installing the resulting task runtime.
+func TestFlowDAPAcceptsAPluginTask(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	policy := filepath.Join(dir, "auth.yaml")
+	t.Setenv("EXAMPLE_SECRET_API_KEY", "dap-test-token")
+	require.NoError(t, os.WriteFile(policy, []byte(`issuers:
+  - name: local
+    issuer: https://issuer.example
+    audiences: [flowstate]
+    algorithms: [RS256]
+secrets:
+  allow: ['true']
+`), 0o600))
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: plugin-debug
+steps:
+  - id: hello
+    example.greet:
+      greeting: Hello
+      name: debugger
+      token: ${secret('example:api-key')}
+outputs: {}
+`), 0o600))
+
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap",
+		"--plugin-dir", buildExamplePluginDir(t),
+		"--auth-policy", policy)
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+	conn.await("response", "initialize")
+	conn.await("event", "initialized")
+	conn.send("launch", map[string]any{"program": workflow})
+	conn.await("response", "launch")
+	conn.send("configurationDone", nil)
+	conn.await("response", "configurationDone")
+	entry := conn.await("event", "stopped")
+	assert.Equal(t, "entry", entry["body"].(map[string]any)["reason"],
+		"the plugin-backed workflow did not reach a debuggable run")
+
+	conn.send("continue", map[string]any{"threadId": 1})
+	conn.await("response", "continue")
+	conn.await("event", "terminated")
+}
+
 // TestFlowDAPValidatesBeforeItRunsAnything is the side effect somebody cannot
 // take back.
 //

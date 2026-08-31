@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,7 +17,57 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
+
+type scheduleCreateRecorder struct {
+	flowstatev1connect.UnimplementedWorkflowServiceHandler
+
+	request *v1.CreateScheduleRequest
+}
+
+func (r *scheduleCreateRecorder) CreateSchedule(_ context.Context, req *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error) {
+	r.request = req.Msg
+
+	return connect.NewResponse(&v1.CreateScheduleResponse{Schedule: &v1.ScheduleDescription{}}), nil
+}
+
+// TestScheduleCreateChecksPluginTasksAgainstACatalog proves submission accepts
+// plugin descriptors without launching plugin code in the CLI process. The
+// server receiving the compiled task is the join: merely exposing the flag
+// would pass even if workflow loading still used the built-in registry.
+func TestScheduleCreateChecksPluginTasksAgainstACatalog(t *testing.T) {
+	bin := buildFlowBinary(t)
+	catalog := pluginCatalogFor(t, bin)
+
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: plugin-schedule
+triggers:
+  schedule:
+    every: 1h
+steps:
+  - id: hello
+    example.greet:
+      greeting: Hello
+      name: schedule
+outputs: {}
+`), 0o600))
+
+	recorder := &scheduleCreateRecorder{}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(recorder))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	res := runFlowBinary(t, bin, "schedule", "create", workflow,
+		"--"+pluginCatalogFlag, catalog, "--address", server.URL, "--output", "json")
+	require.NoError(t, res.Err, "a scheduled plugin task was refused:\n%s", res.Output())
+	require.NotNil(t, recorder.request, "schedule creation never reached the server")
+	require.Len(t, recorder.request.GetWorkflow().GetSteps(), 1)
+	assert.Equal(t, "example.greet", recorder.request.GetWorkflow().GetSteps()[0].GetTask().GetName())
+}
 
 // backfillCommand is a command carrying only the flag under test.
 //

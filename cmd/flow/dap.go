@@ -29,7 +29,7 @@ const dapBanner = "flow dap speaks the Debug Adapter Protocol over stdio and is 
 
 // newDAPCommand builds `flow dap`.
 func newDAPCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "dap",
 		Short: "Debug a workflow from an editor, over the Debug Adapter Protocol",
 		Long: "Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and " +
@@ -48,10 +48,32 @@ flow dap
 # The terminal debugger, for a person:
 flow run local --debug examples/hello-world/workflow.yaml`,
 	}
+
+	addEditorPluginFlags(cmd)
+	addSecretFlags(cmd)
+	addLocalRehearsalFlags(cmd)
+
+	return cmd
 }
 
 // runDAP serves one debug session.
 func runDAP(cmd *cobra.Command, _ []string) error {
+	// Build the provider registry before the plugin host, as the worker and
+	// `flow run local` do. A plugin can contribute both a task and a secrets
+	// backend, and the runtime below must resolve through the registry that host
+	// registered into rather than a second, empty one.
+	providers, err := localSecretProviders(cmd)
+	if err != nil {
+		return fmt.Errorf("configuring secrets for the debug adapter: %w", err)
+	}
+	defer providers.close()
+
+	catalog, closePlugins, err := startPlugins(cmd, providers.registry)
+	if err != nil {
+		return fmt.Errorf("starting plugins for the debug adapter: %w", err)
+	}
+	defer closePlugins()
+
 	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), dapBanner)
 
 	// Where the session's prose goes once there is a client to send it to.
@@ -144,9 +166,22 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 
 			return
 		}
+		if err := v1.ResolvePlugins(workflow, catalog); err != nil {
+			exit = 1
+			server.Output(fmt.Sprintf("flowdap: resolving plugins before this run: %v\n", err))
+
+			return
+		}
 
 		ctx := v1.NewContextWithDebugger(cmd.Context(), session)
 		ctx = v1.NewContextWithRunObserver(ctx, session)
+		ctx, err = withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
+		if err != nil {
+			exit = 1
+			server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
+
+			return
+		}
 
 		if _, err := v1.RunWithInputs(ctx, workflow, nil); err != nil {
 			exit = 1

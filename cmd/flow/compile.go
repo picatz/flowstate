@@ -35,7 +35,9 @@ func newCompileCommand() *cobra.Command {
 		Use:   "compile [workflow-file]",
 		Short: "Print the workflow specification a Flowfile compiles to",
 		Long: "Compile a Flowfile and write the resulting workflow specification to standard " +
-			"output, executing nothing and contacting no server.\n\n" +
+			"output, executing no workflow step and contacting no server. `--plugin-dir` does " +
+			"launch those plugin binaries to read their task descriptors; use `--plugin-catalog` " +
+			"to compile against the same descriptors without starting a process.\n\n" +
 			"This is the sibling of `flow validate` and the two answer different questions. " +
 			"`flow validate` answers whether a file is correct, and its answer is the list of " +
 			"problems. This answers what a correct file becomes, and its answer is the " +
@@ -77,6 +79,8 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'`,
 	// means everywhere else in this CLI: the fields are the schema's, addressable
 	// by name, with no encoder of this command's own between them and a reader.
 	addOutputFlag(cmd)
+	addPluginFlags(cmd)
+	addPluginCatalogFlag(cmd)
 
 	return cmd
 }
@@ -94,6 +98,20 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
+	}
+
+	_, closePlugins, err := startPlugins(cmd, nil)
+	if err != nil {
+		if isUsageError(err) {
+			return err
+		}
+
+		return fmt.Errorf("--plugin-dir names what this file is compiled against, and one of those plugins would not start: %w", err)
+	}
+	defer closePlugins()
+
+	if _, err := loadPluginCatalog(cmd); err != nil {
+		return fmt.Errorf("--%s names what this file is compiled against, and it could not be read: %w", pluginCatalogFlag, err)
 	}
 
 	path := args[0]

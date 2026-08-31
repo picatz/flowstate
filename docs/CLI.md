@@ -281,6 +281,19 @@ Two habits follow for anything else that reaches this shape:
   intended is almost always obvious there and almost never obvious in the expression
   that produced it. `--paused` exists so that answer arrives before anything fires.
 
+A scheduled Flowfile that names plugin tasks is checked against a saved catalog:
+
+```console
+$ flow schedule create workflow.yaml --plugin-catalog plugins.lock.json
+```
+
+Scheduling executes no plugin in the CLI process, so it does not take
+`--plugin-dir`; the catalog is the reviewable descriptor source, while the server
+and workers remain responsible for resolving and executing the deployment's
+plugins. Offline compilation accepts either posture: `flow compile --plugin-dir`
+for a developer with the binaries, or `flow compile --plugin-catalog` for CI and
+review without executing plugin code.
+
 ## Interactive surfaces are optional, never required
 
 Anything the CLI can do interactively it can also do non-interactively, because the
