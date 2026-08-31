@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/interpreter"
@@ -141,6 +142,20 @@ func httpResponseEnv(profile string) (*cel.Env, error) {
 		return nil, err
 	}
 
+	// Interned per base, and the base is what makes that sound: it is already
+	// interned per library set by [Evaluator.Env], and the extension below is
+	// the same single declaration every time, so extended is a pure function
+	// of base. Identity is also what this exists for, not just economy: the
+	// program cache keys on the environment *pointer* ([Evaluator.EvalParsed]),
+	// so before this a fresh Extend per invocation meant a spec's `expect:` or
+	// `outputs:` expression missed that cache on every iteration and retry
+	// while depositing an entry nothing could ever hit again (Codex, #1274).
+	// The key space is the interned bases, bounded by construction the same
+	// way [Evaluator.envs] is.
+	if cached, ok := httpResponseEnvs.Load(base); ok {
+		return cached.(*cel.Env), nil
+	}
+
 	// One variable, and everything about the response hangs from it.
 	//
 	// These names are *system-chosen* and injected into an author's namespace,
@@ -158,8 +173,14 @@ func httpResponseEnv(profile string) (*cel.Env, error) {
 		return nil, fmt.Errorf("create HTTP outputs CEL environment: %w", err)
 	}
 
-	return env, nil
+	actual, _ := httpResponseEnvs.LoadOrStore(base, env)
+	return actual.(*cel.Env), nil
 }
+
+// httpResponseEnvs interns [httpResponseEnv]'s extension per base environment;
+// see the comment inside it for why identity, not just construction cost, is
+// the point.
+var httpResponseEnvs sync.Map // map[*cel.Env]*cel.Env
 
 // revealSecret returns the [revealFunc] the http task resolves references
 // through: authorized and resolved from the activity's own execution context, and

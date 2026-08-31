@@ -280,6 +280,23 @@ func TestEvalParsedIsSafeForConcurrentUse(t *testing.T) {
 	assert.LessOrEqual(t, e.programs.storeCount(), 8, "reuse must dominate; a store per evaluation means the cache never served")
 }
 
+// TestHTTPResponseEnvironmentKeepsOneIdentityPerBase pins the identity the
+// program cache keys on for the http task's own expressions. The extended
+// environment is a pure function of the interned base, so two asks must
+// answer the same pointer — a fresh Extend per invocation reads identically
+// to a caller but misses the cache on every iteration and retry while
+// depositing entries nothing can ever hit again (Codex, #1274).
+func TestHTTPResponseEnvironmentKeepsOneIdentityPerBase(t *testing.T) {
+	t.Parallel()
+
+	first, err := httpResponseEnv(CurrentProfile)
+	require.NoError(t, err)
+	second, err := httpResponseEnv(CurrentProfile)
+	require.NoError(t, err)
+	assert.Same(t, first, second,
+		"one base, one extension, one pointer — anything else is a cache key that never repeats")
+}
+
 // TestEvalParsedRefusesANilExpression keeps the guard that predates the cache:
 // nil is a caller bug, named before any key is built from it.
 func TestEvalParsedRefusesANilExpression(t *testing.T) {
