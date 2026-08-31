@@ -98,7 +98,7 @@ Duration constructors, available to every expression: `days`, `hours`, `minutes`
 Inside a wait's own expressions (`sleep:`, `wait_until:`, and a signal's
 `timeout:`) and nowhere else, `now` is bound to the evaluation moment.
 
-CEL libraries every expression reaches: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`.
+CEL libraries every expression reaches: `bindings`, `comprehensions`, `digest`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`.
 
 ### Functions
 
@@ -114,6 +114,7 @@ arity, and whether it is written on a namespace or a value — as Signature.
 | `transformList` | `comprehensions` | macro | `[1, 2].transformList(i, v, v * 2)` | — |
 | `transformMap` | `comprehensions` | macro | `{'a': 1}.transformMap(k, v, v * 10)` | — |
 | `transformMapEntry` | `comprehensions` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` | — |
+| `digest.sha256` | `digest` | function | — | `digest.sha256(bytes) -> string`<br>`digest.sha256(string) -> string` |
 | `base64.decode` | `encoders` | function | — | `base64.decode(string) -> bytes` |
 | `base64.encode` | `encoders` | function | — | `base64.encode(bytes) -> string` |
 | `json.encode` | `encoders` | function | — | `json.encode(dyn) -> string` |

@@ -273,8 +273,8 @@ func TestHTTPOutputsAreCancellable(t *testing.T) {
 // fact, and a single `upperAscii` would keep passing while the other ten went.
 //
 // It does not discriminate evenly, and that is worth writing down rather than
-// leaving to be discovered. Reintroducing the old environment fails seven of these
-// ten; `bindings`, `comprehensions` and `json` still pass, the first two because
+// leaving to be discovered. Reintroducing the old environment fails eight of these
+// eleven; `bindings`, `comprehensions` and `json` still pass, the first two because
 // their macros expand into core comprehensions that need no library at run time, and
 // `json` because it was the one library the old environment had. So those three
 // cases are documentation of the membership rather than a guard on it.
@@ -287,6 +287,7 @@ func TestTheHTTPTaskSpeaksTheProfilesDialect(t *testing.T) {
 		want    string
 	}{
 		{library: "strings", expr: `'ok'.upperAscii()`, want: "OK"},
+		{library: "digest", expr: `digest.sha256(response.body)`, want: ContentDigest([]byte(`{"n": [3, 1, 2]}`))},
 		{library: "encoders", expr: `base64.encode(b'hi')`, want: "aGk="},
 		{library: "regex", expr: `regex.replace('a-b', '-', '+')`, want: "a+b"},
 		{library: "lists", expr: `string(json_parse(response.body).n.sort()[0])`, want: "1"},
