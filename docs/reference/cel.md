@@ -17,7 +17,7 @@ library to a future build must not change what an expression already stored
 in a run's specification means, so a profile is a fixed, named membership
 rather than "everything this build happens to have."
 
-- **`2026.1`** (what this build evaluates against) admits: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`
+- **`2026.1`** (what this build evaluates against) admits: `bindings`, `comprehensions`, `digest`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`
 
 ## Functions and macros
 
@@ -42,6 +42,7 @@ a macro, so this column is derived from it directly.
 | `comprehensions` | `transformList` | macro | `[1, 2].transformList(i, v, v * 2)` | — |
 | `comprehensions` | `transformMap` | macro | `{'a': 1}.transformMap(k, v, v * 10)` | — |
 | `comprehensions` | `transformMapEntry` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` | — |
+| `digest` | `digest.sha256` | function | — | `digest.sha256(bytes) -> string`<br>`digest.sha256(string) -> string` |
 | `encoders` | `base64.decode` | function | — | `base64.decode(string) -> bytes` |
 | `encoders` | `base64.encode` | function | — | `base64.encode(bytes) -> string` |
 | `encoders` | `json.encode` | function | — | `json.encode(dyn) -> string` |
@@ -189,6 +190,14 @@ steps.paid.value.map(o, o.amount_cents).sum()
 steps.factors.value.reduce(p, v, 1, p * v)
 ```
 
+### Naming content by its SHA-256 digest
+
+`digest.sha256` returns Flowstate's canonical `sha256:<lower-case hex>` content digest for a string's UTF-8 bytes or a bytes value. Use it for checksums, content identity, and stable idempotency components. A plain digest proves that two byte sequences match; it does not prove who supplied them. It is not a signature, MAC, password hash, or credential-protection mechanism.
+
+```cel
+digest.sha256(response.body)
+```
+
 ### Building one message from several values
 
 `format` is an operator on a string, defined at the CEL level and pinned by the profile, filling `%s` and `%d` verbs from the argument list in order.
@@ -196,4 +205,3 @@ steps.factors.value.reduce(p, v, 1, p * v)
 ```cel
 "%s has %d item(s) over %.2f".format(["cart", 3, 19.5])
 ```
-
