@@ -851,8 +851,12 @@ func verdictFromDetails(err error) (pluginVerdict, bool) {
 			retryable:      response.GetRetryable(),
 			unknownOutcome: response.GetUnknownOutcome(),
 		}
-		if d := response.GetRetryAfter().AsDuration(); d > 0 && d <= maxPluginRetryAfter {
-			verdict.retryAfter = d
+		if d := response.GetRetryAfter().AsDuration(); d > 0 {
+			// Keep an untrusted plugin from parking a step indefinitely, but
+			// saturate rather than discard a larger hint. Discarding falls back
+			// to the workflow's usually much shorter backoff and can exhaust
+			// every attempt before the backend's window opens again.
+			verdict.retryAfter = min(d, maxPluginRetryAfter)
 		}
 
 		return verdict, true
