@@ -77,8 +77,12 @@ commit rather than "then" and "now."
 
 ## Authentication
 
-All four tasks accept a `token` input, always as a secret reference -
-`${secret('git:some-name')}` - never a literal. `git.ls_remote`, `git.log`,
+All four tasks accept a `token` input, always as a whole secret reference -
+for example `${secret('env:GITHUB_TOKEN')}` or the compatibility provider
+`${secret('git:some-name')}` - never a literal. Every task declares `token` in
+both `secret_inputs` and `required_secret_inputs`, so the host resolves the
+reference under the caller's namespace, scrubs the value from plugin errors and
+outputs, and only then invokes the plugin. `git.ls_remote`, `git.log`,
 and `git.read_file` all treat an unset token as an unauthenticated request,
 which works for any public repository - see
 `examples/plugins/git/workflow.yaml` and `log-and-read-file.yaml`. Reading a
@@ -88,14 +92,11 @@ difference is this one field being set - see `ls-remote-private.yaml`.
 accepts an anonymous push over HTTPS, so writing always needs a credential,
 whichever repository it targets - see `commit-push.yaml`.
 
-A credential is selected by two things, and only one of them is written in
-the Flowfile. The *name* is what a reference carries: `${secret('git:token')}`
-is scheme `git`, name `token`, and a reference has no third part — the form is
-`scheme:name`. The *namespace* is the tenant the requesting workload belongs
-to, established by the server from the authenticated caller and handed to this
-plugin alongside the reference. A workflow cannot name it, choose it, or
-change it; that is the point, since a workload that could name its own tenant
-could name somebody else's.
+A credential is selected by its provider scheme and name, plus a namespace the
+host establishes from the authenticated caller. A workflow cannot name, choose,
+or change that namespace. The `git:` provider remains for compatibility with
+existing Flowfiles and reads the variables below; new Flowfiles may use any
+host-configured provider instead.
 
 So in a single-tenant deployment — no identity provider configured, or one
 that assigns no namespaces — every reference arrives in the default namespace
@@ -594,17 +595,13 @@ assertion - not only the ones CLAUDE.md's own house gate demanded up front:
       returned string ends in the original `-07:00`, not merely that it
       parses as RFC 3339 (which `Z` also would).
 
-## SDK gaps found while building this
+## SDK boundary learned while building this
 
-Both gaps `plugins/vcs/README.md` documents apply unchanged here - a plugin
-task can only resolve its own secret scheme, and has no access to the
-caller's namespace or tenant identity - see that README for the full
-argument, not repeated here.
-
-**Once PR #160 (`TaskManifest.secret_inputs`) merges**, this plugin should
-declare its `token` input there instead of resolving its own `git:` scheme,
-and drop `secretScheme` - referenced here by number because that PR has not
-merged, and this plugin is not built against its unmerged branch.
+The original implementation resolved `git:` references inside each task. That
+bypassed the host's namespace-aware `secret_inputs` path and output/error
+scrubber. Tasks now receive only host-resolved values. The `git:` SecretService
+remains solely as a migration-compatible provider behind that same host path;
+it is not a second task-resolution mechanism.
 
 **`sdk.Conflict`** did not exist before this plugin needed it - added to
 `pkg/flowstate/v1/plugin/sdk` alongside `sdk.IsConflict` (a predicate other

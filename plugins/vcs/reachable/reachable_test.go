@@ -128,6 +128,18 @@ func TestAFlowfileCanNameTheVCSPluginsTasks(t *testing.T) {
 		}
 	})
 
+	t.Run("the validator refuses a literal token", func(t *testing.T) {
+		literal := []byte(strings.Replace(string(source), "url: ${vars.repo}",
+			"url: ${vars.repo}\n      token: \"durable-history-credential\"", 1))
+		diags, err := flowfile.ValidateSource(literal)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) == 0 {
+			t.Fatal("a literal token was accepted despite the plugin's required_secret_inputs claim")
+		}
+	})
+
 	t.Run("its schema is checked like a built-in's", func(t *testing.T) {
 		// max_commits is int32 in a schema this build never compiled; the only
 		// way the validator can know that is the descriptor this plugin

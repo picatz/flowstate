@@ -210,6 +210,22 @@ func TestOldSQLPluginManifestIsRefusedBeforeTaskRegistration(t *testing.T) {
 	require.NoError(t, checkSQLManifestSecurityContract(&pluginv1.PluginManifest{Name: "git"}))
 }
 
+func TestLegacyPluginSecretContractsRequireHostResolution(t *testing.T) {
+	for _, name := range []string{"git", "vcs", "github"} {
+		t.Run(name, func(t *testing.T) {
+			old := &pluginv1.PluginManifest{Name: name, Tasks: []*pluginv1.TaskManifest{{Name: "task"}}}
+			require.ErrorContains(t, checkLegacyPluginSecretManifest(old), "upgrade flowstate-plugin-"+name)
+
+			current := &pluginv1.PluginManifest{Name: name, Tasks: []*pluginv1.TaskManifest{{
+				Name: "task", SecretInputs: []string{"token"}, RequiredSecretInputs: []string{"token"},
+			}}}
+			require.NoError(t, checkLegacyPluginSecretManifest(current))
+		})
+	}
+
+	require.NoError(t, checkLegacyPluginSecretManifest(&pluginv1.PluginManifest{Name: "third-party"}))
+}
+
 // TestTheLanguageServerTakesThePluginFlags is the same wiring check for the
 // editor's side of the seam.
 //

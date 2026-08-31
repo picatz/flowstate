@@ -68,7 +68,7 @@ attempt is compare-and-swapped against the commit it was computed on, so a
 second writer to the same branch is refused rather than silently forced.
 
 **The credential is never in the agent's context.** `${secret('env:OPENAI_API_KEY')}`
-and `${secret('git:token')}` are references resolved inside the task that needs
+and `${secret('git:token')}` are references resolved by the host for the task that needs
 the value. The prompt this file builds carries a test log and nothing else, and
 nothing about either key reaches workflow history.
 

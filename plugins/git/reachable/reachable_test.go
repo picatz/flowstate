@@ -184,6 +184,18 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 		}
 	})
 
+	t.Run("the validator refuses a literal token", func(t *testing.T) {
+		literal := []byte(strings.Replace(string(privateReadSource),
+			"token: ${secret('git:token')}", `token: "durable-history-credential"`, 1))
+		diags, err := flowfile.ValidateSource(literal)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) == 0 {
+			t.Fatal("a literal token was accepted despite the plugin's required_secret_inputs claim")
+		}
+	})
+
 	t.Run("the validator accepts the real read/audit-tier example", func(t *testing.T) {
 		diags, err := flowfile.ValidateSource(logAndReadFileSource)
 		if err != nil {

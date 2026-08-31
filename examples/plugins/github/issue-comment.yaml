@@ -40,7 +40,7 @@ steps:
       number: ${inputs.number}
       owner: ${inputs.owner}
       repo: ${inputs.repo}
-      # A secret reference, resolved inside the task, never a literal - see
+      # A secret reference, resolved by the host before the task, never a literal - see
       # plugins/github/README.md, "Authentication," for how this plugin
       # answers it: a GitHub App installation token when one is configured,
       # a personal access token otherwise.

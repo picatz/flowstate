@@ -126,7 +126,7 @@ steps:
       number: ${inputs.number}
       owner: ${inputs.owner}
       repo: ${inputs.repo}
-      # A secret reference, resolved inside the task, never a literal - see
+      # A secret reference, resolved by the host before the task, never a literal - see
       # plugins/github/README.md, "Authentication," for how this plugin
       # answers it: a GitHub App installation token when one is configured,
       # a personal access token otherwise.
@@ -577,8 +577,12 @@ partial answer is complete.
 
 ## Authentication
 
-Every task's `token` input is a secret reference -
-`${secret('github:token')}` - never a literal. `pull_request_get` treats an
+Every task's `token` input is a whole secret reference - for example
+`${secret('env:GITHUB_TOKEN')}` or `${secret('github:token')}` - never a
+literal. Every task declares `token` in `secret_inputs` and
+`required_secret_inputs`; the host resolves it under the caller's namespace,
+scrubs it from plugin errors and outputs, and invokes the plugin with only the
+value. `pull_request_get` treats an
 unset token as an unauthenticated request (works for public repositories, at
 a much lower rate limit); `issue_comment` requires one, since GitHub does not
 accept an anonymous comment.
@@ -603,6 +607,12 @@ All three App variables must be set together or not at all - a
 half-configured App fails closed at startup (`checkHealth`) rather than
 silently falling back to a PAT and running every request as the wrong
 identity without saying so.
+
+The `github:` provider is a compatibility path for the worker-wide App/PAT
+configuration above. Because that configuration has no per-tenant selector,
+it refuses named namespaces rather than sharing one credential across tenants.
+Multi-tenant deployments must use a namespace-aware host secret provider for
+`token`. The default namespace retains existing single-tenant behavior.
 
 `GITHUB_API_BASE_URL` overrides the API base for GitHub Enterprise Server.
 It is also the credential destination allowlist: an authenticated task uses
@@ -715,10 +725,8 @@ to swap in independently later.
 
 ## SDK gaps found while building this
 
-The SDK now supports host-resolved `SecretInputs` and gives tasks the caller's
-namespace and identity. This plugin still uses its older plugin-local `github:`
-secret scheme; migrating it to the shared mechanism, including namespace-scoped
-resolution and host-side scrubbing, is tracked in issue #1330.
+Task credential resolution now uses the shared host `secret_inputs` path, so
+the original provider and namespace gaps no longer apply.
 
 The SDK now covers two gaps originally recorded here. Unknown mutation
 outcomes use `sdk.OutcomeUnknown`, which the host maps to
