@@ -74,13 +74,15 @@
 //     by the task making the request; a request not made through a Flowstate task
 //     sees the empty identity.
 //   - credentials bool, request-scoped only: whether this request carries a
-//     worker-resolved credential — a bearer secret or a JIT federation target
-//     (#963). It composes with identity, so "this tenant's credentials may reach
-//     only this host" is expressible as one rule; host stays the same normalized
-//     attribute a rule without credentials already uses, so there is no second
-//     host form to get wrong. Unset — a request not made through a task that sets
-//     it — reads as false, which is also what an old rule predating this
-//     attribute already meant, so adding it changes no existing rule's answer.
+//     worker-resolved credential — a bearer secret, a JIT federation target, or a
+//     secret reference nested in the headers or the structured body the task will
+//     resolve on its way out (#963). It composes with identity, so "this tenant's
+//     credentials may reach only this host" is expressible as one rule; host stays
+//     the same normalized attribute a rule without credentials already uses, so
+//     there is no second host form to get wrong. Unset — a request not made
+//     through a task that sets it — reads as false, which is also what an old rule
+//     predating this attribute already meant, so adding it changes no existing
+//     rule's answer.
 //
 // Attributes are normalized to the form the request will actually take, so that a
 // rule cannot be evaded by spelling the same target differently. host is
