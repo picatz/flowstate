@@ -468,10 +468,21 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			return nil, httpInputError(err)
 		}
 		if bodyText != "" || taskInputs.Body != nil {
-			httpReq.Body = io.NopCloser(strings.NewReader(bodyText))
 			httpReq.ContentLength = int64(len(bodyText))
+			httpReq.Body = io.NopCloser(strings.NewReader(bodyText))
 			httpReq.GetBody = func() (io.ReadCloser, error) {
 				return io.NopCloser(strings.NewReader(bodyText)), nil
+			}
+			if bodyText == "" {
+				// What http.NewRequestWithContext does for a zero-length body,
+				// restated here because the constructor is no longer the one
+				// being asked. It is not cosmetic: a non-nil Body with
+				// ContentLength 0 reads as *unknown* length
+				// (http.Request.outgoingLength), so an author's `body: ""` on a
+				// POST would go out Transfer-Encoding: chunked where it used to
+				// go out Content-Length: 0.
+				httpReq.Body = http.NoBody
+				httpReq.GetBody = func() (io.ReadCloser, error) { return http.NoBody, nil }
 			}
 		}
 
