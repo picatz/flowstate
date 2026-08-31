@@ -366,6 +366,8 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	ds = append(ds, validateDeclaredInputs(wf)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
+	ds = append(ds, validateDebug(wf)...)
+	ds = append(ds, validateReservedSignalNames(wf)...)
 	ds = append(ds, validateConcurrency(wf)...)
 	ds = append(ds, validateWorkflowVars(wf)...)
 
@@ -2320,6 +2322,14 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 	if err := v1.ValidateWait(wait); err != nil {
 		ds = append(ds, Diagnostic{Step: id, Message: err.Error()})
 		return ds
+	}
+
+	// A gate on a channel the engine owns would be answered by an ask to pause
+	// the run for debugging (#928). Reported here rather than over the workflow,
+	// because this is where the step id and the key the author wrote are both
+	// known — see [reservedSignalWaitDiagnostic].
+	if d, found := reservedSignalWaitDiagnostic(id, wait); found {
+		ds = append(ds, d)
 	}
 
 	// The same reference checking a condition gets, since these are the same kind

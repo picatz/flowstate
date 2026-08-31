@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // MaxResourceKeyBytes bounds the one value in a record a caller influences.
@@ -24,6 +25,11 @@ import (
 // depend on whether their arguments parse. So the emitter bounds what it was
 // handed rather than assuming somebody else did.
 const MaxResourceKeyBytes = 256
+
+// MaxProvenanceBytes bounds each operator-chosen policy label copied from the
+// attested Principal. These are not token claims, but configuration is still an
+// input to a durable sink and therefore bounded where it is spent.
+const MaxProvenanceBytes = auth.MaxPolicyProvenanceBytes
 
 // Emitter writes one record to one sink.
 //
@@ -37,15 +43,16 @@ type Emitter interface {
 // Subject is what a decision was about, as the seam making it already knows
 // it.
 //
-// The action is deliberately absent: it is derived from RPC through
-// [v1.AuthorizationActionForRPC], the deployment's one closed vocabulary, so a
-// call site cannot record a decision under an action other than the one that
-// authorizes the operation. That derivation is also what makes the audited
-// surface a property of the bindings rather than a second list — see
-// [AuditedActions].
+// The action is deliberately absent: it is derived from RPC or MCPTool through
+// the deployment's one closed vocabulary, so a call site cannot record a
+// decision under an action other than the one that authorizes the operation.
+// Exactly one operation name must be present.
 type Subject struct {
 	// RPC is the WorkflowService method by its schema name, e.g. "Signal".
 	RPC string
+
+	// MCPTool is the full registered MCP tool name, e.g. "flowstate_test".
+	MCPTool string
 
 	// Identity is the caller as this deployment attested them. Nil for an
 	// unauthenticated caller, which a deployment started with
@@ -57,6 +64,11 @@ type Subject struct {
 	// resource at all.
 	ResourceKind v1.AuditResourceKind
 	ResourceKey  string
+
+	// IssuerName and Role are policy provenance: operator-chosen values from
+	// the TrustedIssuer entry that admitted the caller, never token claims.
+	IssuerName string
+	Role       string
 }
 
 // Recorder is the process's audit sink, and the policy about it.
@@ -209,13 +221,30 @@ func (r *Recorder) record(ctx context.Context, subject Subject, decision v1.Audi
 		return nil
 	}
 
+	operation := subject.RPC
+	if operation == "" {
+		operation = subject.MCPTool
+	}
 	return fmt.Errorf("audit: recording the %s decision for %s: %w",
-		decision, subject.RPC, errors.Join(failures...))
+		decision, operation, errors.Join(failures...))
 }
 
 // newRecord assembles the record, deriving everything derivable.
 func (r *Recorder) newRecord(subject Subject, decision v1.AuditDecision, code v1.AuditDenyCode) (*v1.AuditRecord, error) {
-	action, err := v1.AuthorizationActionForRPC(subject.RPC)
+	var (
+		action v1.AuthorizationAction
+		err    error
+	)
+	switch {
+	case subject.RPC != "" && subject.MCPTool != "":
+		return nil, errors.New("audit: exactly one of RPC or MCPTool must identify the decision")
+	case subject.RPC != "":
+		action, err = v1.AuthorizationActionForRPC(subject.RPC)
+	case subject.MCPTool != "":
+		action, err = v1.AuthorizationActionForMCPTool(subject.MCPTool)
+	default:
+		return nil, errors.New("audit: no RPC or MCP tool identifies the decision")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("audit: %w", err)
 	}
@@ -224,44 +253,62 @@ func (r *Recorder) newRecord(subject Subject, decision v1.AuditDecision, code v1
 		Action:       action,
 		Decision:     decision,
 		Rpc:          subject.RPC,
-		Identity:     subject.Identity,
+		McpTool:      subject.MCPTool,
+		Identity:     auditIdentity(subject.Identity),
 		ResourceKind: subject.ResourceKind,
 		ResourceKey:  boundResourceKey(subject.ResourceKey),
 		DecidedAt:    timestamppb.New(r.now()),
 		DenyCode:     code,
+		IssuerName:   boundString(subject.IssuerName, MaxProvenanceBytes),
+		Role:         boundString(subject.Role, MaxProvenanceBytes),
 	}, nil
+}
+
+// auditIdentity retains the bounded identity coordinates needed to identify
+// the caller while structurally excluding claims. Claims may be safe for the
+// workload identity carried into a run, but an authorization trail does not
+// need their values to say who made which decision.
+func auditIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
+	if identity == nil {
+		return nil
+	}
+
+	return &v1.WorkloadIdentity{
+		Subject:    identity.GetSubject(),
+		Issuer:     identity.GetIssuer(),
+		Namespace:  identity.GetNamespace(),
+		Deployment: identity.GetDeployment(),
+	}
 }
 
 // boundResourceKey truncates on a rune boundary rather than mid-sequence, so a
 // bounded record is still a readable one — #993's one part worth keeping.
 func boundResourceKey(key string) string {
-	if len(key) <= MaxResourceKeyBytes {
-		return key
-	}
-
-	return strings.ToValidUTF8(key[:MaxResourceKeyBytes], "")
+	return boundString(key, MaxResourceKeyBytes)
 }
 
-// AuditedActions is the audited surface, derived rather than listed.
+func boundString(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+
+	return strings.ToValidUTF8(value[:maxBytes], "")
+}
+
+// AuditedActions is the set of actions this recorder can express, derived
+// rather than listed. The name predates MCP support.
 //
-// It is every action the bindings attach to at least one RPC, in the schema's
-// own order. Nothing here is hand-kept, which is the point: an RPC added to
-// the service without a binding already fails
-// TestEveryRPCHasExactlyOneAuthorizationAction, so an RPC cannot arrive
-// unaudited without that failure being the thing a reviewer sees.
-//
-// The three MCP-only actions — mcp.run_local, mcp.test and mcp.debug — are
-// bound to no RPC and therefore fall out of this set. That is v1's written
-// exemption rather than an oversight: those tools execute in the process
-// serving them and have no RPC seam to decide at.
-// TestTheAuditedSurfaceIsTheRPCSurface asserts the exemption is exactly those
-// three, so a fourth unaudited action cannot join them quietly.
+// It is every action the bindings attach to at least one RPC or MCP-only tool,
+// in the schema's own order. Actual seam coverage is asserted separately: all
+// RPCs reach server audit, and every tool registered by authenticated
+// `flow mcp serve` is invoked through its audit wrapper. Local stdio makes no
+// bearer authorization decision.
 func AuditedActions() []v1.AuthorizationAction {
 	bindings := v1.AuthorizationActionBindings()
 
 	actions := make([]v1.AuthorizationAction, 0, len(bindings))
 	for _, binding := range bindings {
-		if len(binding.GetRpcs()) > 0 {
+		if len(binding.GetRpcs()) > 0 || len(binding.GetMcpTools()) > 0 {
 			actions = append(actions, binding.GetAction())
 		}
 	}

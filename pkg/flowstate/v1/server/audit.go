@@ -5,6 +5,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // Where an authorization decision is written down.
@@ -79,10 +80,16 @@ func (s *FlowstateServer) auditDeny(ctx context.Context, rpc string, kind v1.Aud
 // identity in an audit record is the identity the decision was actually made
 // about rather than a second derivation of it.
 func (s *FlowstateServer) auditSubject(ctx context.Context, rpc string, kind v1.AuditResourceKind, key string) audit.Subject {
-	return audit.Subject{
+	subject := audit.Subject{
 		RPC:          rpc,
 		Identity:     s.identityFor(ctx),
 		ResourceKind: kind,
 		ResourceKey:  key,
 	}
+	if principal, ok := auth.PrincipalFromContext(ctx); ok {
+		subject.IssuerName = principal.IssuerName
+		subject.Role = principal.Role
+	}
+
+	return subject
 }

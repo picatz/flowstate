@@ -671,30 +671,12 @@ func joins(id, base, token, step string) *v1.Node {
 // when it happens, so the cancellation lands at a known point rather than racing
 // the steps.
 //
-// # The window this corpus does not cover, and which half of it is the problem
+// # The other cancellation timing
 //
-// A cancellation that arrives while the *last* step is in flight, where that step
-// then succeeds anyway. Every case here parks, so the cancellation lands at a known
-// point and the run is certainly not mid-step. The window is real — the durable
-// driver's WaitForCancellation exists precisely to let an activity win that race —
-// and both drivers guard it, so what is missing is a case rather than a behaviour.
-//
-// The local half of it *is* covered, in `pkg/flowstate/v1`'s own
-// TestRunWorkflowUndoOnLateCancellation. What makes it stageable there is that a
-// `log:` step does not consult its context: it succeeds on a cancelled one, which
-// is the same thing an activity winning the race does, and the stop can be landed
-// inside it through the logger the run was given. So it is not true that a
-// cancelled local run can only produce a *failed* last step; that is true of the
-// steps that do I/O, which is every step these cases use.
-//
-// The durable half is the one that needs a new hook. Temporal's test environment
-// delivers a cancellation either during an activity — where the activity is
-// cancelled, the step fails, and the run leaves through the ordinary failure path,
-// which is a different case — or after the workflow has closed, where there is
-// nothing left to decide. Neither is the window, so a durable arm added today would
-// assert something other than what the local one asserts, and a shared case whose
-// two drivers are answering different questions is worse than an absent one. That
-// is the third timing this type's doc means, and it is a follow-up.
+// A cancellation can also arrive while the *last* step is in flight and that step
+// can still succeed. Every case here parks, so none answers that question. The
+// sibling [UndoLateCancellationCases] does: its driver hooks put the stop after the
+// last task started and let that task report success before the run closes.
 type UndoCancellationCase struct {
 	// Name of the case, used for test identification.
 	Name string
@@ -872,6 +854,79 @@ func UndoCancellationCases(base string) []UndoCancellationCase {
 			// first is the scheduler's; the compensation after them is the claim.
 			Recorded:        []string{"a", "z", "undo-a"},
 			UnorderedPrefix: 2,
+		},
+	}
+}
+
+// UndoLateCancellationCase is a run stopped after its final task started where
+// that task nevertheless succeeds, paired with what compensation must do.
+//
+// Drivers supply the timing rather than the case: locally the `log` task cancels
+// through its logger and returns success on the cancelled context; durably a real
+// Temporal activity is held after starting, the workflow cancellation is observed
+// in history, and the activity is then allowed to complete successfully. The
+// workflow and observable outcome stay shared.
+type UndoLateCancellationCase struct {
+	Name     string
+	Workflow *v1.Workflow
+	Summary  string
+	Recorded []string
+}
+
+// UndoLateCancellationCases are the shared cases for the window
+// WaitForCancellation opens after the final activity starts and before workflow
+// close. finalTask names the task each driver can deterministically hold in that
+// window; message identifies the local logger cancellation point.
+func UndoLateCancellationCases(base, finalTask, message string) []UndoLateCancellationCase {
+	workflow := func(undo bool) *v1.Workflow {
+		first := records("first", base, "a")
+		if undo {
+			first = undoing(first, base, "/do/undo")
+		}
+
+		last := &v1.Node{
+			Id: "stop",
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   finalTask,
+				Inputs: map[string]*v1.Value{"message": v1.NewLiteral(message)},
+			}},
+		}
+		if undo {
+			// Registration happens after the cancellation and evaluates an
+			// expression long enough to cross CEL's cancellation check, pinning
+			// the local driver's context.WithoutCancel rather than merely carrying
+			// a short expression that can finish before inspecting its context.
+			zeros := strings.Repeat("0,", int(v1.DefaultInterruptCheckFrequency)+1) + "0"
+			last.Undo = &v1.Compensation{Task: &v1.Task{
+				Name:   "http",
+				Inputs: map[string]*v1.Value{"url": v1.NewExpr(`([` + zeros + `].all(x, x == 0) ? "` + base + `/do/undo-stop-" + steps.first.said : "")`)},
+			}}
+		}
+
+		return &v1.Workflow{
+			Name:    "undo-late-cancel",
+			Profile: v1.CurrentProfile,
+			// This fails if evaluated, making output evaluation after the stop
+			// observable instead of relying on a partial transcript that always
+			// omits run outputs.
+			DeclaredOutputs: []*v1.OutputDeclaration{
+				{Name: "said", Value: v1.NewExpr("int(steps.first.said)")},
+			},
+			Steps: []*v1.Node{first, last},
+		}
+	}
+
+	return []UndoLateCancellationCase{
+		{
+			Name:     "a stop landing as the last step succeeds still takes the run back",
+			Workflow: workflow(true),
+			Summary:  `; compensation ran in reverse order: undid "stop", undid "first"`,
+			Recorded: []string{"a", "undo-stop-a", "undo-a"},
+		},
+		{
+			Name:     "a stop landing as the last step succeeds cancels a run with nothing to take back",
+			Workflow: workflow(false),
+			Recorded: []string{"a"},
 		},
 	}
 }

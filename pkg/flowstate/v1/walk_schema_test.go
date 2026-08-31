@@ -325,6 +325,7 @@ func workflowUsingEveryValuePosition() *Workflow {
 		Signals: map[string]*SignalPolicy{
 			"approval": {Allow: []*SignalPolicyRule{{SubjectFrom: NewExpr("'a#b'")}}},
 		},
+		Debug: &SignalPolicy{Allow: []*SignalPolicyRule{{SubjectFrom: NewExpr("'a#b'")}}},
 		Triggers: &Triggers{
 			Webhooks: []*WebhookTrigger{{
 				Name:           "payments",

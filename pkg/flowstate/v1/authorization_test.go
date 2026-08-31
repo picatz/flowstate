@@ -156,8 +156,13 @@ func TestAuthorizationActionLookupsFailClosed(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
 
-	// The two tools no RPC projects resolve, which is the whole reason they
-	// are in the vocabulary separately.
+	// A projected RPC tool and a tool no RPC projects both resolve through the
+	// one lookup the audit seam uses.
+	action, err = v1.AuthorizationActionForMCPTool("flowstate_get_catalog")
+	require.NoError(t, err)
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_CATALOG_READ, action)
+	require.Equal(t, "flowstate_get_catalog", v1.MCPToolNameForRPC("GetCatalog"))
+
 	action, err = v1.AuthorizationActionForMCPTool("flowstate_run_local")
 	require.NoError(t, err)
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL, action)

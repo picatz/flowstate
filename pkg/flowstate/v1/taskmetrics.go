@@ -76,12 +76,28 @@ func taskInstruments() (metric.Float64Histogram, metric.Int64Counter) {
 	return duration, executions
 }
 
-// ObserveTask runs one task execution inside its span and its measurement.
+// ObserveTask runs a first task attempt inside its span and its measurement.
+// Callers that own a retry counter use [ObserveTaskAttempt]. Keeping this
+// first-attempt form preserves the original API and makes direct callers count
+// exactly what they counted before retry metrics existed.
+func ObserveTask(ctx context.Context, task *Task, stepID, driver string, run func(context.Context, trace.Span) (*Node_Outputs, error)) (*Node_Outputs, error) {
+	return ObserveTaskAttempt(ctx, task, stepID, driver, 1, run)
+}
+
+// ObserveTaskAttempt runs one task execution inside its span and measurements.
 //
 // run is handed the span's context and the span itself — the second because a
-// caller may have something to write on it that only that caller knows, like
-// the durable driver's attempt number. Whatever run returns is what this
-// returns; the observation is closed exactly once, whichever way run leaves.
+// caller may have something to write on it that only that caller knows. Whatever
+// run returns is what this returns; the observation is closed exactly once,
+// whichever way run leaves.
+//
+// attempt is the one-based attempt number each driver already owns: the local
+// retry loop's counter or Temporal's activity attempt. It never becomes a
+// metric label. It is used only to count a retry when attempt > 1, so the first
+// attempt records execution and duration but no retry. Counting at the start of
+// the retried execution means cancellation during backoff does not invent a
+// retry that never ran, while a retried execution that fails or panics still
+// counts once.
 //
 // # Why this takes the work rather than returning an ending function
 //
@@ -123,9 +139,10 @@ func taskInstruments() (metric.Float64Histogram, metric.Int64Counter) {
 // else: the per-key distinct-value cap applies whether or not the name turned
 // out to name anything. See that package for the rule and for what a bound does
 // when it is reached.
-func ObserveTask(ctx context.Context, task *Task, stepID, driver string, run func(context.Context, trace.Span) (*Node_Outputs, error)) (*Node_Outputs, error) {
+func ObserveTaskAttempt(ctx context.Context, task *Task, stepID, driver string, attempt int, run func(context.Context, trace.Span) (*Node_Outputs, error)) (*Node_Outputs, error) {
 	ctx, span := StartTaskSpan(ctx, task, stepID)
 	started := time.Now()
+	recordTaskRetry(ctx, task.GetName(), driver, attempt)
 
 	// Set on the normal path, immediately after run returns. False when the
 	// deferred function below runs means one thing only: run did not return, so
@@ -211,6 +228,29 @@ func recordTaskExecution(ctx context.Context, taskName, driver, errorType string
 	bounded := metricschema.WithAttributes(attrs...)
 	duration.Record(ctx, elapsed.Seconds(), bounded)
 	executions.Add(ctx, 1, bounded)
+}
+
+// recordTaskRetry counts a started task execution after the first attempt.
+//
+// This is deliberately a retry counter, not a second attempt counter:
+// [metricschema.InstrumentTaskExecutions] already counts every attempt and
+// [metricschema.InstrumentTaskDuration] already measures every attempt. A
+// separate increment for attempt 1 would duplicate those instruments without
+// answering whether work was tried again. Terminal outcome does not change this
+// count; the executions counter carries success/error and error.type.
+func recordTaskRetry(ctx context.Context, taskName, driver string, attempt int) {
+	if attempt <= 1 {
+		return
+	}
+
+	meter := otel.GetMeterProvider().Meter(taskMeterName)
+	retries, _ := meter.Int64Counter(metricschema.InstrumentTaskRetries,
+		metric.WithDescription("task executions that are retries of their step"))
+
+	retries.Add(ctx, 1, metricschema.WithAttributes(
+		attribute.String(metricschema.TaskName, taskName),
+		attribute.String(metricschema.Driver, driver),
+	))
 }
 
 // RecordPolicyDenial counts one refusal by a deny-by-default surface.

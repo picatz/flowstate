@@ -318,7 +318,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Best-effort steps | per-step `continue_on_error:`, recording the failure as `${steps.<id>.error}` **(done)** |
 | Activity heartbeats | every task activity heartbeats on a ten-second ticker carrying the phase the task has reached **(done)**; periodic rather than per-phase, because a heartbeat *timeout* has to exceed the longest legitimate gap between beats and a per-phase beat would make that the whole request. The phase is a `v1.Phase`, a closed vocabulary with no constructor — heartbeat details are written into history, so invariant 7 applies and the type refuses the leak rather than a reviewer catching it. This is also how a cancellation reaches a running activity at all, which is what makes the cancellation wait in the row above short |
 | Task queues | per-*tenant* routing **(done)**: `flow server --task-queue-prefix` submits a run to `<prefix>_<namespace>`, derived from the authenticated tenant and never from the request, and `flow worker --tenant` polls exactly that queue and refuses a run belonging to anyone else — which is what makes a per-tenant worker fleet addressable rather than merely startable, and what turns a routing mistake into a failure instead of a cross-tenant execution. Unset, every run goes to the one shared queue exactly as before. The composition is unforgeable for the reason an assertion subject's `_default` is: the separator is the one character the namespace grammar forbids, so the boundary is a fact rather than a convention. Per-*step* routing — a step naming a specialized or plugin fleet — is the same mechanism one level down, and is not built |
-| Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant **(done)**; per-step controls still to come. Setting the key is verified and correctly wired — whether it is *enforced* (one tenant's large workload cannot crowd out another's) is a property of your Temporal server version and configuration, since Temporal marks `Priority`/fairness as an experimental SDK feature. See [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor) |
+| Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant **(done)**; per-step controls still to come. Setting the key is verified and correctly wired. Task Queue Priority and Fairness are GA in Temporal Server 1.31+, but Fairness still has to be enabled by the deployment and is approximate within each Task Queue partition. See [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor) |
 | **Nexus** | cross-namespace and cross-team calls — both consuming and *exposing* operations |
 
 ### Nexus
@@ -634,8 +634,9 @@ which is what makes it likely, since a five-thousand-iteration loop is an ordina
 write. A run therefore carries a Temporal fairness key taken from its authenticated tenant,
 which dispatches each tenant a share in proportion to weight rather than to volume — setting
 the key is verified and correctly wired; whether it is *enforced* is a property of your
-Temporal server version and configuration, since Temporal marks `Priority`/fairness as an
-experimental SDK feature (see [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor)).
+Temporal server version and configuration. Task Queue Priority and Fairness are GA in
+Temporal Server 1.31+, but Fairness remains deployment-enabled and approximate within each
+Task Queue partition (see [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor)).
 Activities inherit it from the run, so it covers every task the run goes on to schedule,
 and Temporal carries it across Continue-As-New — which matters, because the workloads that
 suspend are exactly the ones that crowd a queue.

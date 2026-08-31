@@ -82,6 +82,8 @@ var commands = []command{
 		help: "list what could be written at the end of that text"},
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing,
 		help: "describe the step the run is stopped at"},
+	{verb: "backtrace", aliases: []string{"bt"}, completes: completesNothing,
+		help: "list this step and the call chain that reached it"},
 	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
 		help: "end the run here"},
 	{verb: "help", aliases: []string{"h", "?"}, completes: completesNothing,
@@ -242,6 +244,12 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 		return false, nil
 
+	case "backtrace":
+		s.record("backtrace")
+		s.showBacktrace()
+
+		return false, nil
+
 	case "quit":
 		s.record("quit")
 		// Remembered, so the autopsy stays shut: quit is the one command
@@ -265,6 +273,21 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		s.printfTone(ToneWarning, "unknown command %q — try `help`\n", verb)
 
 		return false, nil
+	}
+}
+
+func (s *Session) showBacktrace() {
+	trace, err := s.Backtrace()
+	if err != nil {
+		s.printfTone(ToneWarning, "%s\n", err)
+		return
+	}
+	for i, frame := range trace.GetFrames() {
+		name := frame.GetStepId()
+		if frame.GetWorkflow() != "" {
+			name = frame.GetWorkflow() + "." + name
+		}
+		s.printf("#%d %s (%s)\n", i, name, frame.GetKind())
 	}
 }
 
@@ -558,7 +581,7 @@ func namesLine(names []string, listing string) string {
 
 // showStep prints what the run is stopped at.
 func (s *Session) showStep(node *v1.Node) {
-	s.printf("%s (%s)\n", node.GetId(), NodeKind(node))
+	s.printf("%s (%s)\n", node.GetId(), v1.NodeKind(node))
 	if description := node.GetDescription(); description != "" {
 		s.printf("  %s\n", description)
 	}
@@ -926,41 +949,4 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(keys)
 
 	return keys
-}
-
-// NodeKind names a step's kind for a person reading a prompt: the word the
-// file spells, plus the one detail that identifies which one it is.
-//
-// A new spelling rather than a shared one, deliberately and narrowly: nothing
-// exported names a node's kind for a reader today (flowfile's describeNode
-// names YAML AST nodes, a different thing), and the engine's own switches over
-// [v1.Node] kinds exist to *run* them. If a second reader-facing namer ever
-// appears, these two should become one — that is the rule, and this is the
-// first of them rather than the second.
-func NodeKind(node *v1.Node) string {
-	switch kind := node.GetKind().(type) {
-	case *v1.Node_Task:
-		return fmt.Sprintf("task %q", kind.Task.GetName())
-	case *v1.Node_Value:
-		return "value"
-	case *v1.Node_Wait:
-		if signal := kind.Wait.GetSignal(); signal != nil {
-			return fmt.Sprintf("wait_for_signal %q", signal.GetName())
-		}
-		if batch := kind.Wait.GetSignalBatch(); batch != nil {
-			return fmt.Sprintf("wait_for_signals %q", batch.GetName())
-		}
-
-		return "wait"
-	case *v1.Node_ForEach:
-		return "for_each"
-	case *v1.Node_Parallel:
-		return "parallel"
-	case *v1.Node_Switch:
-		return "switch"
-	case *v1.Node_Call:
-		return fmt.Sprintf("call %q", kind.Call.GetWorkflow())
-	default:
-		return "step"
-	}
 }

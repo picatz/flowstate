@@ -121,6 +121,17 @@ type executor struct {
 	// so only one of them runs at a time.
 	signals *signalCarry
 
+	// debug is the run's debug lease, or nil in a segment that was handed none.
+	//
+	// Shared by pointer with every nested executor for [executor.signals]'
+	// reason and one of its own: a lease is a hold on *the run*, so a callee's
+	// boundary and its caller's must be able to see the same one. Only
+	// boundaries at `susp == 0` ever read it — see debuglease.go for why the
+	// run's single representable position is the only place a lease can hold —
+	// and workflow coroutines are scheduled cooperatively, so no lock is
+	// needed here either.
+	debug *debugControl
+
 	// progress is where the run has got to, for the query handler to answer from.
 	// Shared by pointer for the same reason signals is, and for the sharper version
 	// of it: a copy per level would leave the query reading the root's copy, which
@@ -321,6 +332,31 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
 			continue
+		}
+
+		// The step boundary a durable debug lease holds the run at (#928 stage
+		// 2): the same point the local driver offers [v1.Debugger] — after the
+		// condition decided this step runs, before any of its work, an
+		// `async:` step included — and only at `susp == 0`, the run's own
+		// single representable position. If earlier async work is outstanding,
+		// an ask first joins it in written order: publishing the parent as held
+		// while its child continues making progress would not be a hold at all.
+		// See debuglease.go for the asymmetry with the local driver.
+		//
+		// A run nobody is debugging pays one empty-channel inspection here,
+		// which issues no command and writes no history. That is the whole cost
+		// of the feature being off, and why the check lives at the boundary.
+		if susp == 0 {
+			if e.debugAsksWaiting() {
+				for len(started) > 0 {
+					joined := started[0]
+					started = started[1:]
+					if err := e.joinAsync(joined); err != nil {
+						return err
+					}
+				}
+			}
+			e.debugAsksAtBoundary(node)
 		}
 
 		if node.GetAsync() {
@@ -639,6 +675,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// executor shares them with every nested one: a signal or a compensation
 		// belongs to the run, not to the level that happens to be executing.
 		signals:    e.signals,
+		debug:      e.debug,
 		progress:   e.progress,
 		detailsCtx: e.detailsCtx,
 		waits:      e.waits,
@@ -960,30 +997,44 @@ func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
 // than an error — the origin sentence differs per type, because the two types
 // are set by two different keys.
 //
-// Only a [temporal.TimeoutError] counts, for the reason
-// [durableStepTimeoutMessage]'s doc gives at length, and it is read before
-// anything else in the chain.
-//
-// # A shape this deliberately does not claim to cover
-//
-// Temporal raises a TimeoutError when a deadline reaches an attempt that is *in
-// flight*. A ScheduleToClose budget running out during a *backoff* is a
-// different shape: the server has the last attempt's failure in hand, so it
-// stops retrying and returns that, with `RetryState` distinguishing "the budget
-// ran out" from "the attempts ran out" and nothing else doing so. That case
-// reads today as the dependency's own error with no mention of the budget, and
-// it is not fixed here: `testsuite`'s environment leaves RetryState Unspecified
-// on the error it hands back, so an arm reading it could be written and could
-// not be tested, and an untested claim about a substrate's error shape is
-// exactly the kind this repository has been wrong about before. Tracked as a
-// follow-up rather than landed on a guess.
+// A [temporal.TimeoutError] is the shape when a deadline reaches an attempt in
+// flight. When ScheduleToClose expires during retry backoff, the server instead
+// retains the last attempt's [temporal.ApplicationError] inside a
+// [temporal.ActivityError] whose RetryState is RETRY_STATE_TIMEOUT. When the
+// prior attempt itself timed out, the server instead returns a ScheduleToClose
+// TimeoutError. A real dev server pins both shapes in retry_timeout_e2e_test.go;
+// recognizing only the retained-application shape leaves maximum-attempt,
+// non-retryable, and unrelated application failures under their own
+// classifications.
 func durableStepTimeoutType(err error) (enumspb.TimeoutType, bool) {
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		return timeoutErr.TimeoutType(), true
 	}
 
+	if _, expired := durableStepBackoffApplicationFailure(err); expired {
+		return enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, true
+	}
+
 	return enumspb.TIMEOUT_TYPE_UNSPECIFIED, false
+}
+
+// durableStepBackoffApplicationFailure identifies the server shape whose
+// retained application failure needs to survive as the overall timeout's
+// structured cause. RetryState is the only discriminator for the
+// ScheduleToClose budget that expired while no attempt was in flight.
+func durableStepBackoffApplicationFailure(err error) (*temporal.ApplicationError, bool) {
+	var activityErr *temporal.ActivityError
+	if !errors.As(err, &activityErr) || activityErr.RetryState() != enumspb.RETRY_STATE_TIMEOUT {
+		return nil, false
+	}
+
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(activityErr.Unwrap(), &applicationErr) {
+		return nil, false
+	}
+
+	return applicationErr, true
 }
 
 // durableStepTimeoutError carries [durableStepTimeoutMessage]'s translated
@@ -1486,6 +1537,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		frames:    e.frames,
 
 		signals:    e.signals,
+		debug:      e.debug,
 		progress:   e.progress,
 		detailsCtx: e.detailsCtx,
 		waits:      e.waits,
@@ -1573,6 +1625,7 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		// same place a top-level one does, and consuming it here has to remove it
 		// for the whole run.
 		signals:    e.signals,
+		debug:      e.debug,
 		progress:   e.progress,
 		detailsCtx: e.detailsCtx,
 		waits:      e.waits,
@@ -1652,6 +1705,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					path:      body,
 					budget:    e.budget,
 					signals:   e.signals,
+					debug:     e.debug,
 					undo:      iterationUndo,
 					undoScope: v1.UndoScopeConcurrent,
 					callDepth: e.callDepth,
@@ -1760,6 +1814,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				path:      branchPath,
 				budget:    e.budget,
 				signals:   e.signals,
+				debug:     e.debug,
 				undo:      branchUndo,
 				undoScope: v1.UndoScopeConcurrent,
 				callDepth: e.callDepth,

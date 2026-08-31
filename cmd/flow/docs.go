@@ -1,7 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -80,13 +83,52 @@ func newDocsCommand() *cobra.Command {
 // default is read from the environment at construction, so one shared command
 // would answer with whatever the environment held when it was made.
 func newReferenceGenerator() (*docsgen.Generator, error) {
+	taskPolicySource, err := readRepositoryFile("pkg/flowstate/v1/taskpolicy_config.go")
+	if err != nil {
+		return nil, err
+	}
+	taskPolicy, err := docsgen.ParsePolicyReference(taskPolicySource, "TaskPolicyConfig")
+	if err != nil {
+		return nil, err
+	}
+
 	return docsgen.New(docsgen.Sources{
 		NewRoot:        newRootCommand,
 		UseLine:        useLine,
 		FlagName:       flagName,
 		MCPTools:       mcpToolDocs(),
 		DefaultAddress: defaultServerAddress,
+		TaskPolicy:     taskPolicy,
 	})
+}
+
+// readRepositoryFile finds a generator input from any directory inside the
+// checkout. flow docs generate is a repository build step, so reaching the
+// repository root is an explicit precondition rather than a compiled-in copy.
+func readRepositoryFile(name string) ([]byte, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("finding repository root: %w", err)
+	}
+	return readRepositoryFileFrom(dir, name)
+}
+
+func readRepositoryFileFrom(dir, name string) ([]byte, error) {
+	for {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return data, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("reading documentation source %s: %w", name, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil, fmt.Errorf("generating documentation requires a Flowstate repository checkout")
+		}
+		dir = parent
+	}
 }
 
 // mcpToolDocs describes every tool `flow mcp` registers, in the order it

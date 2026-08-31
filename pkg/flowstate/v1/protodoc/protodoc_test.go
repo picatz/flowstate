@@ -109,6 +109,42 @@ func TestCommentFindsProse(t *testing.T) {
 	}
 }
 
+// A leading comment belongs to the declaration immediately below it. Presence
+// alone did not catch RunState's prose being copied above WorkloadIdentity,
+// where generated API documentation attributed both descriptions to the
+// identity message and left RunState unnamed.
+func TestDocumentedTopLevelDeclarationsNameThemselves(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	check := func(declaration protoreflect.Descriptor) {
+		name := declaration.FullName()
+		comment, ok := CommentOf(declaration)
+		if !ok {
+			if declaration.ParentFile().Package() == "flowstate.v1" {
+				t.Errorf("Comment(%q) = _, false; want prose", name)
+			}
+			return
+		}
+		if want := string(name.Name()) + " "; !strings.HasPrefix(comment, want) {
+			t.Errorf("Comment(%q) starts with %q; want its own declaration name %q", name, FirstSentence(comment), name.Name())
+		}
+	}
+	files.RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		for i, declarations := 0, file.Messages(); i < declarations.Len(); i++ {
+			check(declarations.Get(i))
+		}
+		for i, declarations := 0, file.Enums(); i < declarations.Len(); i++ {
+			check(declarations.Get(i))
+		}
+		for i, declarations := 0, file.Services(); i < declarations.Len(); i++ {
+			check(declarations.Get(i))
+		}
+		return true
+	})
+}
+
 // Fail closed: every way of asking for something that is not there answers the
 // same way, and none of them panics.
 func TestCommentFailsClosed(t *testing.T) {

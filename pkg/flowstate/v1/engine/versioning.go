@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -130,6 +131,10 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	if len(runtime) > 0 {
 		configured = runtime[0]
 	}
+	// Frozen when this worker is registered, after its built-ins and plugin
+	// tasks have been installed. Activities compare against this worker-owned
+	// snapshot rather than reading a mutable process registry during replay.
+	configured.taskNames = v1.DefaultRegistry().Names()
 	authorized := taskActivities{configured: configured}
 	w.RegisterActivityWithOptions(authorized.TaskAuthorized, activity.RegisterOptions{Name: "TaskAuthorized"})
 	w.RegisterActivityWithOptions(authorized.TaskInScopeAuthorized, activity.RegisterOptions{Name: "TaskInScopeAuthorized"})
@@ -148,6 +153,12 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	// from a method value, and a history that says `CheckPlugins` would replay
 	// against a worker answering to a name nothing ever scheduled.
 	w.RegisterActivityWithOptions(authorized.CheckPlugins, activity.RegisterOptions{Name: checkPluginsActivity})
+
+	// The equivalent segment admission for task availability. Old histories do
+	// not schedule it because their workflow carries no resolved task snapshot;
+	// current runs use this stable name before any task activity is dispatched.
+	w.RegisterActivityWithOptions(authorized.CheckTaskCapabilities,
+		activity.RegisterOptions{Name: checkTaskCapabilitiesActivity})
 
 	// Registered so a run started before scopes existed can still complete. It has
 	// no callers in current code and is not dead: history written by an older
