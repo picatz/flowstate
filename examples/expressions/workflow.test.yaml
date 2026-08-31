@@ -9,7 +9,11 @@
 #     way to assert it is that `confirm` is present in `ran:` at all, since a
 #     condition that failed to compile would have failed the run;
 #   * a macro is expanded by the parser, so `sortBy(...)[0]` over an unsorted
-#     list yields `alpha` and not `zeta`.
+#     list yields `alpha` and not `zeta`;
+#   * `sum` folds the kept amounts to one number — 3700, so the filter dropped
+#     the unpaid 999 and the fold added what remained;
+#   * `reduce` folds with the author's own combiner — 24, a product `sum`
+#     cannot spell, seeded from the call itself.
 #
 # The optional-traversal steps add two more claims (edition v2026.3): `.?` on a
 # field the value carries reads it, and `.?` on one it does not carry resolves
@@ -35,6 +39,15 @@ tests:
       - task: log
         where: inputs.message == 'alpha'
         returns: {}
+      # filter dropped the unpaid amount, map picked the numbers, sum added
+      # them: 1200 + 2500, and not 999.
+      - task: log
+        where: inputs.message == '3700'
+        returns: {}
+      # reduce multiplied where sum only adds: 2 * 3 * 4, seeded at 1.
+      - task: log
+        where: inputs.message == '24'
+        returns: {}
       # `.?` on a field the value carries reads it — 7, through the step's
       # `vars:` — and `.?muted` on one it does not carry let the `if:` pass.
       - task: log
@@ -45,6 +58,6 @@ tests:
         where: inputs.message == 'default'
         returns: {}
     expect:
-      ran: [shout, confirm, order, prefs, tuned, announce]
+      ran: [shout, confirm, order, total, product, prefs, tuned, announce]
       outputs:
         volume: 7

@@ -126,7 +126,7 @@ steps:
       number: ${inputs.number}
       owner: ${inputs.owner}
       repo: ${inputs.repo}
-      # A secret reference, resolved inside the task, never a literal - see
+      # A secret reference, resolved by the host before the task, never a literal - see
       # plugins/github/README.md, "Authentication," for how this plugin
       # answers it: a GitHub App installation token when one is configured,
       # a personal access token otherwise.
@@ -577,8 +577,12 @@ partial answer is complete.
 
 ## Authentication
 
-Every task's `token` input is a secret reference -
-`${secret('github:token')}` - never a literal. `pull_request_get` treats an
+Every task's `token` input is a whole secret reference - for example
+`${secret('env:GITHUB_TOKEN')}` or `${secret('github:token')}` - never a
+literal. Every task declares `token` in `secret_inputs` and
+`required_secret_inputs`; the host resolves it under the caller's namespace,
+scrubs it from plugin errors and outputs, and invokes the plugin with only the
+value. `pull_request_get` treats an
 unset token as an unauthenticated request (works for public repositories, at
 a much lower rate limit); `issue_comment` requires one, since GitHub does not
 accept an anonymous comment.
@@ -603,6 +607,12 @@ All three App variables must be set together or not at all - a
 half-configured App fails closed at startup (`checkHealth`) rather than
 silently falling back to a PAT and running every request as the wrong
 identity without saying so.
+
+The `github:` provider is a compatibility path for the worker-wide App/PAT
+configuration above. Because that configuration has no per-tenant selector,
+it refuses named namespaces rather than sharing one credential across tenants.
+Multi-tenant deployments must use a namespace-aware host secret provider for
+`token`. The default namespace retains existing single-tenant behavior.
 
 `GITHUB_API_BASE_URL` overrides the API base for GitHub Enterprise Server.
 It is also the credential destination allowlist: an authenticated task uses
@@ -715,55 +725,15 @@ to swap in independently later.
 
 ## SDK gaps found while building this
 
-The two most significant gaps are identical to `plugins/vcs`'s and are not
-repeated in full here - see `plugins/vcs/README.md`, "SDK gaps found while
-building this":
+Task credential resolution now uses the shared host `secret_inputs` path, so
+the original provider and namespace gaps no longer apply.
 
-1. A plugin task can only resolve a secret reference under its own scheme,
-   never the engine's env/file/vault providers or another plugin's scheme -
-   which is why this plugin cannot, say, borrow a token the `vcs` plugin
-   already resolved, even for the exact same GitHub credential in a
-   workflow that uses both plugins together.
-2. A plugin task has no access to the caller's namespace or identity, so
-   this plugin's in-process secret resolution is correct only for a
-   single-tenant deployment.
-
-Two more, specific to this plugin:
-
-3. **The plugin SDK has no equivalent of
-   [`flowstatev1.ErrorKindUpstreamUnknown`].** `sdk.Failed`, `sdk.
-   Unavailable`, and the rest classify a failure as permanent or retryable,
-   but there is no distinct "the outcome is unknown, and that is *why* it
-   is permanent" classification a plugin can return - the engine's own
-   `ErrorKindUpstreamUnknown` exists specifically to say that, for exactly
-   the http task's own `retry_on_unknown_outcome` case, but nothing in
-   `pkg/flowstate/v1/plugin/sdk/errors.go` exposes it to a plugin. The
-   *behavior* this plugin needs - do not retry `issue_comment` when the
-   outcome is unknown - is achieved by returning `sdk.Failed`, which the
-   host maps to `ErrorKindInvalidInput` (see `taskError` in
-   `pkg/flowstate/v1/plugin/task.go`'s own comment on why that is the
-   least-wrong permanent kind available). The safety property holds; the
-   diagnostic an operator reads is imprecise - it says "invalid input" for
-   a failure that has nothing to do with the inputs. `classifyMutationError`
-   works around this by writing the real reason into the error message
-   itself, since the classification cannot carry it.
-
-4. **A plugin has no way to carry a `Retry-After` duration on a retryable
-   failure.** The engine's own `flowstatev1.TaskError.RetryAfter` exists so
-   a 429 or 503 can tell the durable driver when to try again rather than
-   guessing with ordinary backoff - CLAUDE.md's own "Both execution drivers
-   must agree" section names this exact mechanism. `sdk.Unavailable` has no
-   parameter for it. This plugin computes the correct wait from GitHub's
-   rate-limit reset time and secondary-rate-limit `Retry-After` header (see
-   `errors.go`'s handling of `*github.RateLimitError` and
-   `*github.AbuseRateLimitError`) and puts it in the error *message*, which
-   a human reads but which the retry scheduler cannot act on - a step
-   retries on the engine's own backoff schedule rather than waiting exactly
-   as long as GitHub asked. Fixing this needs `pluginv1.ExecuteResponse` (or
-   the `sdk.classified` error type) to carry a duration alongside its
-   existing `retryable` bool, and for `taskError` in
-   `pkg/flowstate/v1/plugin/task.go` to read it - a schema and SDK change,
-   not something this plugin can add on its own.
+The SDK now covers two gaps originally recorded here. Unknown mutation
+outcomes use `sdk.OutcomeUnknown`, which the host maps to
+`ErrorKindUpstreamUnknown` and never retries. GitHub rate-limit reset times and
+secondary-limit `Retry-After` values use `sdk.UnavailableAfter`, so both drivers
+receive the backend's preferred retry delay, saturated at the host's safety
+bound instead of discarded into generic backoff.
 
 ## What was left undone, and why
 

@@ -490,13 +490,7 @@ func walkWorkflowValuesAfterSteps(wf *Workflow, w Walk) {
 
 // WalkNodes visits a list of sibling steps and everything under them.
 func WalkNodes(nodes []*Node, w Walk) {
-	if w.Steps != nil {
-		w.Steps(nodes)
-	}
-
-	for _, node := range nodes {
-		WalkNode(node, w)
-	}
+	walkNodeFrames([]nodeWalkFrame{{group: nodes}}, w)
 }
 
 // WalkNode visits one step: the step itself, every value position it holds, and
@@ -508,27 +502,83 @@ func WalkNode(node *Node, w Walk) {
 	if node == nil {
 		return
 	}
+	walkNodeFrames([]nodeWalkFrame{{node: node}}, w)
+}
 
-	if w.Node != nil {
-		w.Node(node)
-	}
-	walkNodeValues(node, w)
+// A nodeWalkFrame is one unit of traversal work still owed by [walkNodeFrames]:
+// a single node not yet visited when node is set, otherwise a sibling group
+// whose [Walk.Steps] callback has not fired. A nil node inside a group is
+// dropped when the group's frame is expanded — the same silent no-op
+// [WalkNode] has always been for a nil node — so a group frame and a nil-node
+// frame can never be confused.
+type nodeWalkFrame struct {
+	group []*Node
+	node  *Node
+}
 
-	switch kind := node.GetKind().(type) {
-	case *Node_ForEach:
-		WalkNodes(kind.ForEach.GetBody(), w)
+// walkNodeFrames drains a work stack of frames in document order: a group
+// delivers its [Walk.Steps] callback and then its nodes in order, and a node
+// delivers [Walk.Node] and its value positions before anything nested under
+// it, exactly as the recursive spelling of this traversal did.
+//
+// An explicit stack rather than Go recursion, for the reason
+// [CheckStructureDepth] holds one: how deeply a document nests steps is chosen
+// by whoever built the specification, the compiler's own nesting bound says
+// nothing about a message submitted over the RPC path, and this traversal runs
+// during admission — [RequiredTaskNames]'s callee walk hands every workflow it
+// visits to [WalkWorkflow] *before* that walk's depth guard has seen the
+// workflow's own steps. Recursing here turned wire-chosen control-flow depth
+// into Go recursion depth: measured at 32 MiB of goroutine stack for a
+// 99,000-level `for_each` chain that fits under [MaxSpecBytes] (#1284), spent
+// per in-flight admission and only then refused by the guard. The work stack
+// puts that cost on the heap, where it is bounded by the size of the
+// specification the caller already checked, instead of on a stack the runtime
+// grows by doubling and does not promptly return.
+func walkNodeFrames(stack []nodeWalkFrame, w Walk) {
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		f := stack[last]
+		stack = stack[:last]
 
-	case *Node_Loop:
-		WalkNodes(kind.Loop.GetBody(), w)
-
-	case *Node_Parallel:
-		for _, branch := range kind.Parallel.GetBranches() {
-			WalkNodes(branch.GetSteps(), w)
+		if f.node == nil {
+			if w.Steps != nil {
+				w.Steps(f.group)
+			}
+			// Reversed, so the group's first node is popped — and therefore
+			// visited — first, preserving document order.
+			for i := len(f.group) - 1; i >= 0; i-- {
+				if f.group[i] == nil {
+					continue
+				}
+				stack = append(stack, nodeWalkFrame{node: f.group[i]})
+			}
+			continue
 		}
 
-	case *Node_Switch:
-		for _, body := range SwitchBodies(kind.Switch) {
-			WalkNodes(body, w)
+		node := f.node
+		if w.Node != nil {
+			w.Node(node)
+		}
+		walkNodeValues(node, w)
+
+		switch kind := node.GetKind().(type) {
+		case *Node_ForEach:
+			stack = append(stack, nodeWalkFrame{group: kind.ForEach.GetBody()})
+
+		case *Node_Loop:
+			stack = append(stack, nodeWalkFrame{group: kind.Loop.GetBody()})
+
+		case *Node_Parallel:
+			branches := kind.Parallel.GetBranches()
+			for i := len(branches) - 1; i >= 0; i-- {
+				stack = append(stack, nodeWalkFrame{group: branches[i].GetSteps()})
+			}
+
+		case *Node_Switch:
+			bodies := SwitchBodies(kind.Switch)
+			for i := len(bodies) - 1; i >= 0; i-- {
+				stack = append(stack, nodeWalkFrame{group: bodies[i]})
+			}
 		}
 	}
 }

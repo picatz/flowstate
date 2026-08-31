@@ -16,7 +16,9 @@ import (
 // output name would produce a local rehearsal that told an author the wrong thing
 // about production with nothing to give the difference away.
 //
-// Three cases, which are the three the issue's gate names.
+// Three cases came first — the three the issue's gate names — and more joined
+// as the kind and the dialect grew (the composite value #411 decided, the
+// `sum` and `reduce` folds #1304 added).
 //
 //   - A value is read. The result lands under [v1.ValueOutput] and a later `if:`
 //     reads it there, which is the ordinary path and also the one that would
@@ -93,6 +95,74 @@ func ValueCases() []Case {
 			},
 			ExpectedOutputs: withStep(held("show"), "regions", map[string]*v1.Value{
 				v1.ValueOutput: v1.NewLiteralList("eu", "us", "ap"),
+			}),
+		},
+		{
+			// #1304's acceptance case: the ETL total — sum over the kept orders'
+			// amounts — is one expression. `sum` is a parse-time macro, so the
+			// compiled spec both drivers receive carries its expansion (a plain
+			// comprehension) rather than the name; what this pins is that the two
+			// evaluate that expansion to the identical scalar, recorded under the
+			// value's own name. The empty fold rides along because its zero is the
+			// one value the macro invents (an empty list has no element to take a
+			// type from), which makes it the likeliest spot for a divergence.
+			Name: "a value folds a numeric total with sum",
+			Workflow: &v1.Workflow{
+				Name:    "value-sum",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{
+					{
+						Id: "total",
+						Kind: &v1.Node_Value{Value: v1.NewExpr(
+							`[{'amount_cents': 1200, 'paid': true}, {'amount_cents': 999, 'paid': false}, ` +
+								`{'amount_cents': 2500, 'paid': true}, {'amount_cents': 2570, 'paid': true}]` +
+								`.filter(o, o.paid).map(o, o.amount_cents).sum()`)},
+					},
+					{
+						Id:   "none",
+						Kind: &v1.Node_Value{Value: v1.NewExpr(`[].sum()`)},
+					},
+				}, pins("show",
+					`steps.total.`+v1.ValueOutput+` == 6270 && steps.none.`+v1.ValueOutput+` == 0`)...),
+			},
+			ExpectedOutputs: withStep(withStep(held("show"), "total", map[string]*v1.Value{
+				v1.ValueOutput: v1.NewLiteral(int64(6270)),
+			}), "none", map[string]*v1.Value{
+				v1.ValueOutput: v1.NewLiteral(int64(0)),
+			}),
+		},
+		{
+			// The general fold, same pinning as the sum case: `reduce` compiles
+			// to a comprehension carrying the author's own accumulator and
+			// element names, so what travels to both drivers is a spec whose
+			// variables nothing else declares — the shape that historically
+			// broke as `references unknown name "v"` when macros went
+			// unexpanded. A weighted total, because it is the fold the issue
+			// names that `sum` alone does not spell; the empty fold answers the
+			// author's seed, which is the contract that separates `reduce`'s
+			// zero from `sum`'s invented one.
+			Name: "a value folds a weighted total with reduce",
+			Workflow: &v1.Workflow{
+				Name:    "value-reduce",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{
+					{
+						Id: "weighted",
+						Kind: &v1.Node_Value{Value: v1.NewExpr(
+							`[{'qty': 2, 'price': 300}, {'qty': 1, 'price': 150}]` +
+								`.reduce(t, o, 0, t + o.qty * o.price)`)},
+					},
+					{
+						Id:   "seeded",
+						Kind: &v1.Node_Value{Value: v1.NewExpr(`[].reduce(t, o, 42, t + o)`)},
+					},
+				}, pins("show",
+					`steps.weighted.`+v1.ValueOutput+` == 750 && steps.seeded.`+v1.ValueOutput+` == 42`)...),
+			},
+			ExpectedOutputs: withStep(withStep(held("show"), "weighted", map[string]*v1.Value{
+				v1.ValueOutput: v1.NewLiteral(int64(750)),
+			}), "seeded", map[string]*v1.Value{
+				v1.ValueOutput: v1.NewLiteral(int64(42)),
 			}),
 		},
 		{

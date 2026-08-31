@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
@@ -129,41 +131,12 @@ func envSegment(s string) (string, error) {
 	return b.String(), nil
 }
 
-// tokenFromValue extracts an HTTPS credential from a task's `token` input.
-//
-// A literal string is refused outright - CLAUDE.md is explicit that a
-// credential must be a secret reference, never a literal in a Flowfile, and
-// this is the one place that rule is enforced for every task in this plugin.
-// An unset input is not an error: it means the repository is public.
-//
-// # The namespace this cannot apply
-//
-// Resolution happens by calling [resolveSecret] directly, in this same
-// process, rather than through the SecretService RPC the host would use -
-// see [secretScheme]'s doc comment for why that is the only path available
-// to a plugin task at all today. The cost of that path is this function's
-// own limitation, and it is a real one: [sdk.SecretRequest.Namespace] is
-// what lets a multi-tenant deployment's secret backend scope a lookup to the
-// calling workload's own tenant, and a plugin *task* - as opposed to a
-// plugin's SecretService handler, which the host calls directly and does
-// pass a namespace - has no access to the caller's namespace or identity at
-// all. [pluginv1.ExecuteRequest] carries both, but sdk.Task.Fn's signature
-// does not expose them (see sdk.go's TaskFunc and taskService.Execute).
-//
-// So this function resolves every reference in the empty (default) tenant's
-// namespace, unconditionally. On a single-tenant deployment - which
-// invariant 8, "self-hosted first," treats as the ordinary case - this is
-// exactly correct. On a deployment serving several tenants from one worker
-// pool, this is wrong in a way worth saying loudly rather than leaving
-// implicit: every workload, whichever tenant it belongs to, would resolve
-// `${secret('vcs:...')}` against the *same* default-namespace variable,
-// which is a tenancy hole of the same shape CLAUDE.md's own env-provider
-// story warns about, just with the ambiguity moved from the variable name
-// to a namespace this function never received. See the README's "SDK gaps"
-// section - fixing this needs sdk.TaskFunc's signature to carry the caller's
-// namespace, which is a change to pkg/flowstate/v1/plugin, not to this
-// plugin, and is out of scope here.
-func tokenFromValue(ctx context.Context, v *flowstatev1.Value) (string, error) {
+// tokenFromValue extracts the host-resolved HTTPS credential from token. The
+// manifest requires any supplied token to be a whole secret reference, but by
+// the time this function runs the host has replaced that reference with its
+// string value. An unresolved reference is therefore a host/manifest defect,
+// not an input this plugin may resolve in the default namespace.
+func tokenFromValue(_ context.Context, v *flowstatev1.Value) (string, error) {
 	if v == nil {
 		return "", nil
 	}
@@ -171,24 +144,14 @@ func tokenFromValue(ctx context.Context, v *flowstatev1.Value) (string, error) {
 	switch kind := v.GetKind().(type) {
 	case nil:
 		return "", nil
-
-	case *flowstatev1.Value_SecretRef:
-		ref := kind.SecretRef
-		if ref.GetScheme() != secretScheme {
-			return "", sdk.InvalidInput(
-				"token must be a %q secret reference; got scheme %q", secretScheme, ref.GetScheme())
-		}
-		resp, err := resolveSecret(ctx, sdk.SecretRequest{Scheme: ref.GetScheme(), Name: ref.GetName()})
-		if err != nil {
-			return "", err
-		}
-		return string(resp.Value), nil
-
 	case *flowstatev1.Value_Literal:
-		return "", sdk.InvalidInput(
-			"token must be a secret reference (${secret('vcs:name')}), never a literal value; " +
-				"a literal here would put a credential in the Flowfile and in workflow history")
-
+		s, ok := kind.Literal.GetKind().(*expr.Value_StringValue)
+		if !ok {
+			return "", sdk.InvalidInput("token must resolve to a string")
+		}
+		return s.StringValue, nil
+	case *flowstatev1.Value_SecretRef:
+		return "", sdk.Failed("token reached this task still holding a secret reference; the host must resolve declared secret_inputs before invoking the plugin")
 	default:
 		return "", sdk.InvalidInput("token cannot be a %T", kind)
 	}

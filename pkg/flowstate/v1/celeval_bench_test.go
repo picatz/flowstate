@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/google/cel-go/cel"
 )
 
 // Benchmarks in this repository are a map, not a gate: nothing in ci.yml or
@@ -112,8 +114,11 @@ func BenchmarkEval(b *testing.B) {
 // Eval calls env.Program on every call, so each evaluation pays for building a
 // program as well as running it — and a benchmark of Eval alone cannot say
 // which half a regression landed in. This times the construction on its own so
-// the two are comparable; if the split ever justifies caching programs, this is
-// the measurement that argument starts from.
+// the two are comparable. The split did come to justify caching programs —
+// [Evaluator.EvalParsed] now reuses a compiled program per specification site,
+// and BenchmarkEvalParsedCached below is the cached half of this measurement —
+// while Eval itself stays uncached for the freshly built ASTs a REPL hands it,
+// so this construction cost is still what that path pays per call.
 func BenchmarkEvalProgramConstruction(b *testing.B) {
 	evaluator := NewEvaluator()
 
@@ -134,6 +139,44 @@ func BenchmarkEvalProgramConstruction(b *testing.B) {
 	for range b.N {
 		if _, err := env.Program(ast, options...); err != nil {
 			b.Fatalf("building the program: %v", err)
+		}
+	}
+}
+
+// BenchmarkEvalParsedCached measures the path the engine actually takes per
+// iteration — [Evaluator.EvalParsedBase] down to a program-cache hit — which
+// is BenchmarkEval's condition case minus the per-call program construction.
+// The gap between this number and BenchmarkEval's is what the cache buys on
+// every `if:`, `items:`, `until:` and computed input past a site's first
+// evaluation; if the two ever converge, the cache stopped hitting.
+func BenchmarkEvalParsedCached(b *testing.B) {
+	evaluator := NewEvaluator()
+
+	env, err := evaluator.ProfileEnv(CurrentProfile)
+	if err != nil {
+		b.Fatalf("building the profile environment: %v", err)
+	}
+
+	ast, issues := env.Parse(`steps.fetch.status == 200 && vars.enabled`)
+	if issues != nil && issues.Err() != nil {
+		b.Fatalf("parsing: %v", issues.Err())
+	}
+	parsed, err := cel.AstToParsedExpr(ast)
+	if err != nil {
+		b.Fatalf("converting to a parsed expression: %v", err)
+	}
+
+	activation := map[string]any{
+		"vars":  map[string]any{"enabled": true},
+		"steps": map[string]any{"fetch": map[string]any{"status": 200}},
+	}
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := evaluator.EvalParsed(ctx, env, parsed, activation); err != nil {
+			b.Fatalf("evaluating: %v", err)
 		}
 	}
 }

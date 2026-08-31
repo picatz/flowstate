@@ -252,6 +252,22 @@ type Deps struct {
 	// is not. See remoteCatalogCall.
 	RemoteCatalogAddress string
 
+	// DecorateRPCError, when set, rewrites the error a dispatched RPC failed
+	// with before it becomes the tool result, given the RPC's name.
+	//
+	// It exists because only the embedding binary knows where the call was
+	// going and why: the lifecycle verbs address durable runs, which only a
+	// server has, and their promise — cmd/flow/mcp.go, "without --address
+	// they explain that rather than failing opaquely" — needs the resolved
+	// address and whether an operator actually named one, neither of which
+	// this package holds. The same division Redact draws: the mechanism here,
+	// the policy and the words in the caller.
+	//
+	// Applied to dispatched RPC errors only — argument-decode refusals answer
+	// as themselves, and the extra tools (run_local, test, debug) never dial.
+	// Nil is the identity.
+	DecorateRPCError func(rpc string, err error) error
+
 	// Audit records each registered tool's authorization decision at the last
 	// shared seam before its handler runs. Nil on stdio, whose local process
 	// makes no bearer authorization decision; flow mcp serve supplies the
@@ -840,6 +856,10 @@ func dispatch(
 
 		out, err := method.Call(ctx, local, remote, in)
 		if err != nil {
+			if deps.DecorateRPCError != nil {
+				err = deps.DecorateRPCError(method.Name, err)
+			}
+
 			return ToolError(err), nil
 		}
 

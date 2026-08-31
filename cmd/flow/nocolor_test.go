@@ -38,11 +38,17 @@ func TestEnvironForSurfaceAddsNoColorOnlyWhenAsked(t *testing.T) {
 	environ := environForSurface(newCmdWithFlag(true))
 	assert.Contains(t, environ, "NO_COLOR=1",
 		"--no-color=true did not fold NO_COLOR into the environment ui.Detect reads")
+	assert.Contains(t, environ, "CLICOLOR_FORCE=0",
+		"--no-color=true did not override CLICOLOR_FORCE, which beats NO_COLOR "+
+			"through a pipe — see environForSurface")
 
 	environ = environForSurface(newCmdWithFlag(false))
 	assert.NotContains(t, environ, "NO_COLOR=1",
 		"a command that was never asked for --no-color injected NO_COLOR anyway, "+
 			"which would disable colour for every command in the tree")
+	assert.NotContains(t, environ, "CLICOLOR_FORCE=0",
+		"a command that was never asked for --no-color overrode CLICOLOR_FORCE anyway, "+
+			"which would take colour away from a person who exported it to force colour")
 }
 
 // TestEnvironForSurfaceWinsOverAnExportedNoColor proves the precedence
@@ -117,6 +123,43 @@ func TestNoColorFlagSuppressesColourThroughTheRealBinary(t *testing.T) {
 
 	// And the message itself has to still be there — --no-color removes colour,
 	// never information.
+	assert.Contains(t, string(plainOut), path,
+		"--no-color removed content along with colour")
+}
+
+// TestNoColorFlagBeatsCLICOLORFORCEThroughAPipe is the precedence the flag's
+// own help promises ("it wins over CLICOLOR_FORCE"), on the one stream where
+// that was not true: colorprofile only lets NO_COLOR win where the output is a
+// terminal, so through a pipe CLICOLOR_FORCE=1 forced colour straight past the
+// flag. The TTY_FORCE test above cannot see this — forcing a terminal takes
+// exactly the branch where NO_COLOR already wins — so this one runs the real
+// binary against a real pipe.
+func TestNoColorFlagBeatsCLICOLORFORCEThroughAPipe(t *testing.T) {
+	unsetNoColor(t)
+
+	bin := buildFlowBinary(t)
+
+	path := filepath.Join(t.TempDir(), "broken.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(brokenWorkflow), 0o600))
+
+	// No TTY_FORCE here, deliberately: CLICOLOR_FORCE's whole meaning is
+	// "colour this pipe anyway", and CombinedOutput is that pipe.
+	env := append(append(os.Environ(), "CLICOLOR_FORCE=1", "TERM=xterm-256color"), covbuild.Env()...)
+
+	withColor := exec.Command(bin, "validate", path)
+	withColor.Env = env
+	coloredOut, _ := withColor.CombinedOutput()
+	require.Contains(t, string(coloredOut), "\x1b[",
+		"CLICOLOR_FORCE=1 did not colour the pipe, so this test cannot prove "+
+			"--no-color wins over it:\n%s", coloredOut)
+
+	withoutColor := exec.Command(bin, "--no-color", "validate", path)
+	withoutColor.Env = env
+	plainOut, _ := withoutColor.CombinedOutput()
+	assert.NotContains(t, string(plainOut), "\x1b[",
+		"--no-color lost to CLICOLOR_FORCE, the exact precedence its help text "+
+			"promises the other way around:\n%s", plainOut)
+
 	assert.Contains(t, string(plainOut), path,
 		"--no-color removed content along with colour")
 }

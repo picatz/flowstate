@@ -22,13 +22,10 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// secretScheme is this plugin's own secret reference scheme: a Flowfile
-// authenticates by writing `token: ${secret('github:token')}`, never a
-// literal. See plugins/vcs/secrets.go's doc comment on its own secretScheme
-// for the SDK-level reason a plugin task can only resolve its own scheme,
-// in-process, and cannot reach the engine's env/file/vault providers or
-// another plugin's scheme; the same limitation applies verbatim here and is
-// not repeated in full at every call site.
+// secretScheme is the compatibility provider for the worker-wide GitHub App
+// or PAT configured below. Plugin tasks declare token through secret_inputs,
+// so the host may resolve this scheme or any other configured provider before
+// invoking the task.
 const secretScheme = "github"
 
 // Environment variables this plugin reads at startup. All are optional
@@ -180,6 +177,12 @@ const installationRefreshSkew = 2 * time.Minute
 // invite an author to write `${secret('github:some-other-token')}` and get
 // the same credential back with no diagnostic explaining why.
 func resolveSecret(ctx context.Context, req sdk.SecretRequest) (sdk.SecretResponse, error) {
+	if req.Namespace != "" {
+		return sdk.SecretResponse{}, sdk.PermissionDenied(
+			"the github secret provider is configured once for the worker and cannot resolve credentials for namespace %q; configure a namespace-aware host secret provider instead",
+			req.Namespace)
+	}
+
 	cfg, err := loadAuthConfig()
 	if err != nil {
 		return sdk.SecretResponse{}, sdk.Failed("this plugin's authentication is misconfigured: %v", err)

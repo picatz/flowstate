@@ -384,14 +384,20 @@ type Session struct {
 	promptMu sync.Mutex
 	outMu    sync.Mutex
 
-	mu          sync.Mutex
-	mode        mode
-	until       string
-	breakpoints map[string]breakpoint
+	mu    sync.Mutex
+	mode  mode
+	until string
+	// untilCondition optionally gates the stop `until` names, exactly as a
+	// breakpoint's condition gates its arrival: same compiler, same evaluator,
+	// same declined-arrival notice. One-shot with the mode that carries it —
+	// every resume clears both.
+	untilCondition *v1.Value
+	breakpoints    map[string]breakpoint
 
-	// notedUnbound remembers which breakpoints have already reported a
-	// condition they could not evaluate, so the notice is one line rather than
-	// one per iteration. See [Session.noteDeclined].
+	// notedUnbound remembers which condition-gated stops — breakpoints and
+	// `until` — have already reported a condition they could not evaluate, so
+	// the notice is one line rather than one per iteration. See
+	// [Session.noteDeclined].
 	notedUnbound map[string]struct{}
 	// script records accepted commands, in order, for replay, and scriptBytes
 	// is what they weigh — see [MaxScriptBytes], which the count bound beside
@@ -938,11 +944,11 @@ func (s *Session) WaitStarted(id, signal string, timeout time.Duration, bounded 
 func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) (bool, error) {
 	s.mu.Lock()
 	at, isBreakpoint := s.breakpoints[id]
-	mode, until := s.mode, s.until
+	mode, until, untilCondition := s.mode, s.until, s.untilCondition
 	s.mu.Unlock()
 
 	if isBreakpoint {
-		holds, err := s.breakpointHolds(ctx, id, at, scope)
+		holds, err := s.conditionHolds(ctx, declinedBreakpoint, id, at.condition, scope)
 		if err != nil {
 			return false, err
 		}
@@ -955,11 +961,26 @@ func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) (b
 	case modeStop:
 		return true, nil
 	case modeUntil:
-		return until == id, nil
+		if until != id {
+			return false, nil
+		}
+		// The same gate a breakpoint's condition is, through the same
+		// function — `until x if e` and `break x if e` + `continue` cannot
+		// disagree about when a run is held.
+		return s.conditionHolds(ctx, declinedUntil, id, untilCondition, scope)
 	default:
 		return false, nil
 	}
 }
+
+// The names the two condition-gated verbs go by in the declined-arrival
+// notice, and the keys [Session.noteDeclined] files its once-only memory
+// under — one per verb and id, because a breakpoint at `body` and an
+// `until body if ...` are different questions.
+const (
+	declinedBreakpoint = "breakpoint at"
+	declinedUntil      = "until"
+)
 
 // A breakpoint is a step id and, optionally, the condition that decides
 // whether reaching it stops the run.
@@ -974,7 +995,11 @@ type breakpoint struct {
 	condition *v1.Value
 }
 
-// breakpointHolds answers whether an arrival at a breakpoint should stop.
+// conditionHolds answers whether an arrival gated by a condition should stop —
+// a breakpoint's arrival, or the one stop `until` names. One function for both
+// verbs, because two evaluations of "does this condition hold here" would be
+// two answers to one question. `what` is the verb's own name for itself in the
+// declined-arrival notice.
 //
 // Evaluated outside s.mu — the condition is the author's own CEL and calling
 // into the evaluator under the session lock would hold it for the length of an
@@ -993,8 +1018,8 @@ type breakpoint struct {
 // a breakpoint that looks set and silently never fires is the outcome with no
 // symptom. Stopping also makes the reporting free — the session is parked, so
 // the reason prints once rather than once per arrival.
-func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint, scope *v1.Scope) (bool, error) {
-	if at.condition == nil {
+func (s *Session) conditionHolds(ctx context.Context, what, id string, condition *v1.Value, scope *v1.Scope) (bool, error) {
+	if condition == nil {
 		return true, nil
 	}
 
@@ -1029,7 +1054,7 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 	// domain reports and fires where it belongs. Stopping bought nothing the
 	// notice does not, and cost a hold in the wrong loop on every legal
 	// workflow that reuses an id.
-	holds, err := v1.EvalConditionInScope(ctx, at.condition, scope)
+	holds, err := v1.EvalConditionInScope(ctx, condition, scope)
 	switch {
 	case ctx.Err() != nil:
 		// Not an unanswerable condition: the operator interrupted the run
@@ -1041,7 +1066,7 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 		return false, ctx.Err()
 
 	case err != nil:
-		s.noteDeclined(id, err)
+		s.noteDeclined(what, id, err)
 
 		return false, nil
 	}
@@ -1051,11 +1076,20 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 
 // resume sets what happens at the next boundary.
 func (s *Session) resume(m mode, until string) {
+	s.resumeUntil(m, until, nil)
+}
+
+// resumeUntil is resume carrying `until`'s optional condition. Every resume
+// writes the condition — nil from every other verb — because `until` is
+// one-shot: a condition that outlived its resume would turn some later
+// `continue` into a conditional stop nobody asked for.
+func (s *Session) resumeUntil(m mode, until string, condition *v1.Value) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.mode = m
 	s.until = until
+	s.untilCondition = condition
 }
 
 // announce prints where the run has stopped.
@@ -1587,22 +1621,36 @@ func (s *Session) noteStep(id string, state StepState) {
 // never fires anywhere and says so, the second fires where it belongs.
 //
 // This notice is what makes not-stopping safe rather than silent — see
-// [Session.breakpointHolds], which reversed a fail-closed rule on the strength
+// [Session.conditionHolds], which reversed a fail-closed rule on the strength
 // of it.
-func (s *Session) noteDeclined(id string, err error) {
+// clearDeclined forgets a verb's declined-condition notice for id, so a newly
+// accepted command carrying a fresh condition gets its own one notice.
+func (s *Session) clearDeclined(what, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.notedUnbound, what+" "+id)
+}
+
+func (s *Session) noteDeclined(what, id string, err error) {
+	// Keyed by verb and id together: a breakpoint at `body` and an
+	// `until body if ...` are different questions, and one saying it could
+	// not be asked must not spend the other's one notice.
+	key := what + " " + id
+
 	s.mu.Lock()
 	if s.notedUnbound == nil {
 		s.notedUnbound = map[string]struct{}{}
 	}
-	_, already := s.notedUnbound[id]
-	s.notedUnbound[id] = struct{}{}
+	_, already := s.notedUnbound[key]
+	s.notedUnbound[key] = struct{}{}
 	s.mu.Unlock()
 
 	if already {
 		return
 	}
 
-	s.printfTone(ToneWarning, "breakpoint at %s: the condition could not be evaluated here, so the run was not held: %v\n", id, err)
+	s.printfTone(ToneWarning, "%s %s: the condition could not be evaluated here, so the run was not held: %v\n", what, id, err)
 }
 
 // consoleEnded says why the command stream stopped, in words an author can

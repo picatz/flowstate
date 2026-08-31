@@ -174,6 +174,32 @@ func TestWithValuesAddsToBothHalvesAndDoesNotMutate(t *testing.T) {
 		"an empty plaintext registers nothing: it occurs at every position of every string")
 }
 
+// TestWithValuesHoldsAOneRuneValueToTheSubstringFloor is the shredder case
+// [minSensitiveSubstringRunes] argues, on the path that used to skip the
+// floor: a case's `secrets: {env:TOKEN: e}` marked every `e` of every
+// rendered line — `authenticated: true` came back as
+// `auth[redacted]nticat[redacted]d: tru[r[redacted]dact[redacted]d]`, the
+// marker itself re-shredded — destroying the diagnostic while protecting
+// nothing the value comparison had not already caught.
+func TestWithValuesHoldsAOneRuneValueToTheSubstringFloor(t *testing.T) {
+	t.Parallel()
+
+	set := SensitiveValues{}.WithValues("e")
+
+	require.True(t, set.IsSensitive("e"),
+		"the value comparison holds at every length: a rendered value equal to the plaintext still redacts")
+	require.Equal(t, SensitiveMarker, set.RedactTree("e"),
+		"and the redaction itself, not only set membership: a value equal to the plaintext "+
+			"renders as the marker at any length")
+	require.Equal(t, "authenticated: true", set.RedactSubstrings("authenticated: true"),
+		"a one-rune plaintext must not join the substring backstop: replacing every occurrence "+
+			"of one rune is a shredder, not a redaction")
+
+	twoRunes := SensitiveValues{}.WithValues("ab")
+	require.Equal(t, "Bearer [redacted]", twoRunes.RedactSubstrings("Bearer ab"),
+		"the floor is a floor: at two runes the composite backstop still works")
+}
+
 // A sensitive input this cannot read withholds everything rather than
 // dropping out of the set: skipping it would leave *nothing* about that input
 // redacted anywhere, which is an allow-on-error in the one function whose job
