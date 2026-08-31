@@ -197,10 +197,11 @@ task policy independently from permitting the plugin binary to launch.
 
 Calls carry a workflow-supplied UUID as Slack's `client_msg_id`, but Slack does
 not document a complete deduplication guarantee. The plugin retries nothing
-internally: a definite 429 refusal carries Slack's bounded `Retry-After` into
-the workflow retry mechanism, while connection loss, timeout, malformed
-acknowledgement, and ambiguous server errors return non-retryable unknown
-outcomes. Inspect Slack before manually retrying one of those outcomes.
+internally: a definite 429 or initial-hop operator rate-limit refusal carries a
+bounded delay into the workflow retry mechanism, while connection loss,
+timeout, malformed acknowledgement, a rate limit after a redirect, and
+ambiguous server errors return non-retryable unknown outcomes. Inspect Slack
+before manually retrying one of those outcomes.
 
 ## The four-tier isolation model
 

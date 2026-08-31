@@ -22,8 +22,9 @@ reference names duplicate-related errors for `client_msg_id`, but does not make
 a complete deduplication guarantee. Therefore:
 
 - a clean Slack success returns `channel` and `ts`;
-- HTTP 429 and explicit `ratelimited` responses are definite refusals and return
-  retryable `UnavailableAfter`, honoring `Retry-After` up to five minutes;
+- HTTP 429, explicit `ratelimited` responses, and an operator rate bucket that
+  refuses the initial hop are definite no-write outcomes and return retryable
+  `UnavailableAfter`, with the delay capped at five minutes;
 - authentication, destination, and input refusals are permanent;
 - a timeout, connection loss, malformed acknowledgement, HTTP 5xx, or Slack
   `internal_error`/`fatal_error` is `OutcomeUnknown` and is never retried
@@ -32,9 +33,11 @@ a complete deduplication guarantee. Therefore:
   the one retry mechanism, and only definite no-write classifications reach it.
 
 Slack documents approximately one message per second per channel plus a
-workspace-wide limit. This plugin does not maintain an in-memory rate bucket:
-that state would disappear on restart and would not coordinate worker replicas.
-Slack's authoritative 429 response is instead propagated durably.
+workspace-wide limit. The operator egress policy may add a per-process rate
+bucket; a refusal before the initial request is sent propagates its delay, while
+a refusal after a redirect is an unknown outcome because an earlier hop already
+received the write. Slack's authoritative 429 remains the fleet-wide limit and
+is propagated durably.
 
 ## Security boundary
 

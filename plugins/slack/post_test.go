@@ -127,6 +127,41 @@ func TestRateLimitCarriesBoundedRetryAfter(t *testing.T) {
 	}
 }
 
+func TestOperatorRateLimitRefusesBeforeASecondWrite(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123APPROVAL","ts":"1503435956.000247"}`))
+	}))
+	t.Cleanup(server.Close)
+	policy, err := netpolicy.New(
+		netpolicy.WithAllowLoopback(),
+		netpolicy.WithMaxRequestsPerSecondPerProcess("127.0.0.1", 1),
+	)
+	if err != nil {
+		t.Fatalf("building rate-limited test policy: %v", err)
+	}
+	if _, err := sendPost(context.Background(), policy.Client(), server.URL, "not-real", validPostInputs()); err != nil {
+		t.Fatalf("first sendPost: %v", err)
+	}
+	_, err = sendPost(context.Background(), policy.Client(), server.URL, "not-real", validPostInputs())
+	if err == nil || !strings.Contains(err.Error(), "before it was sent") || !strings.Contains(err.Error(), "retry after") {
+		t.Fatalf("second sendPost error = %v, want retryable pre-send rate refusal", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("listener received %d requests, want only the first write", got)
+	}
+}
+
+func TestRateLimitAfterRedirectIsAnUnknownOutcome(t *testing.T) {
+	err := classifyTransportError(&netpolicy.RateLimitedError{
+		Host: "slack.com", RetryAfter: time.Second, AfterRedirect: true,
+	})
+	if !strings.Contains(err.Error(), "original request may already have taken effect") || !strings.Contains(err.Error(), "not retried automatically") {
+		t.Fatalf("classifyTransportError = %v, want redirect unknown outcome", err)
+	}
+}
+
 func TestServerErrorAndLostResponseAreUnknownOutcomes(t *testing.T) {
 	for name, handler := range map[string]http.HandlerFunc{
 		"documented ambiguous server error": func(w http.ResponseWriter, _ *http.Request) {
@@ -164,6 +199,21 @@ func TestOversizedResponseIsAnUnknownOutcome(t *testing.T) {
 	_, err = sendPost(context.Background(), policy.Client(), server.URL, "not-real", validPostInputs())
 	if err == nil || !strings.Contains(err.Error(), "exceeded the 65536-byte limit") || !strings.Contains(err.Error(), "not retried automatically") {
 		t.Fatalf("sendPost error = %v, want bounded unknown outcome", err)
+	}
+}
+
+func TestOperatorResponseLimitIsNamedInTheUnknownOutcome(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 65)))
+	}))
+	t.Cleanup(server.Close)
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithMaxResponseBytes(64))
+	if err != nil {
+		t.Fatalf("building response-limited test policy: %v", err)
+	}
+	_, err = sendPost(context.Background(), policy.Client(), server.URL, "not-real", validPostInputs())
+	if err == nil || !strings.Contains(err.Error(), "operator egress policy's 64-byte limit") || !strings.Contains(err.Error(), "not retried automatically") {
+		t.Fatalf("sendPost error = %v, want operator-bound unknown outcome", err)
 	}
 }
 

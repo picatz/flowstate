@@ -158,6 +158,10 @@ func sendPost(ctx context.Context, client *http.Client, endpoint, token string, 
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
+		var tooLarge *netpolicy.BodyTooLargeError
+		if errors.As(err, &tooLarge) {
+			return nil, sdk.OutcomeUnknown("Slack's response exceeded the operator egress policy's %d-byte limit after chat.postMessage was sent; the message may already exist, so it is not retried automatically", tooLarge.Limit)
+		}
 		return nil, sdk.OutcomeUnknown("Slack's response could not be read after chat.postMessage was sent; the message may already exist, so it is not retried automatically")
 	}
 	if len(raw) > maxResponseBytes {
@@ -183,6 +187,14 @@ func sendPost(ctx context.Context, client *http.Client, endpoint, token string, 
 }
 
 func classifyTransportError(err error) error {
+	var limited *netpolicy.RateLimitedError
+	if errors.As(err, &limited) {
+		if limited.AfterRedirect {
+			return sdk.OutcomeUnknown("Slack redirected chat.postMessage before the operator egress policy rate-limited the next hop; the original request may already have taken effect, so it is not retried automatically")
+		}
+		delay := boundedRetryAfter(limited.RetryAfter)
+		return sdk.UnavailableAfter(delay, "operator egress policy rate-limited slack.post before it was sent; retry after %s", delay)
+	}
 	var deny *netpolicy.DenyError
 	if errors.As(err, &deny) {
 		return sdk.PermissionDenied("deployment egress policy denied slack.post")
@@ -216,10 +228,17 @@ func retryAfter(value string) time.Duration {
 	if err != nil || seconds <= 0 {
 		return time.Second
 	}
-	if seconds > 300 {
-		seconds = 300
+	return boundedRetryAfter(time.Duration(seconds) * time.Second)
+}
+
+func boundedRetryAfter(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		return time.Second
 	}
-	return time.Duration(seconds) * time.Second
+	if delay > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return delay
 }
 
 func bounded(value string) string {
