@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -86,19 +87,141 @@ func TestCheckStructureDepthBothDirections(t *testing.T) {
 		"the refusal must name the bound so an author has a number to act on")
 }
 
-func TestCheckStructureDepthBoundsDeepControlFlowWithoutRecursiveTraversal(t *testing.T) {
-	t.Parallel()
-
+// deepForEachChain builds a `for_each` chain nested levels deep — the shape
+// whose control-flow depth is chosen entirely by the sender while its byte
+// size stays far under [v1.MaxSpecBytes], so it is what an admission bound
+// meets after every size precheck has already said yes.
+func deepForEachChain(levels int) []*v1.Node {
 	var body []*v1.Node
-	for range 50_000 {
+	for range levels {
 		body = []*v1.Node{{Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Body: body}}}}
 	}
-	wf := &v1.Workflow{Name: "deep-control-flow", Steps: body}
+	return body
+}
+
+// stackGrowthDuring runs fn three times, each on a fresh goroutine of its own,
+// and reports the largest number of goroutine-stack bytes the process gained
+// during any single run.
+//
+// Both reads happen inside the goroutine, while it is still alive: a stack a
+// recursive walk grew is still in use at the second read — the runtime only
+// shrinks it at a later GC, and by at most half per cycle — whereas waiting
+// for the goroutine to exit would hand its stack back to the allocator and
+// erase exactly the growth this exists to see. A dedicated goroutine rather
+// than the test's own, so every sample starts from a fresh small stack instead
+// of whatever the test harness has already grown.
+//
+// The maximum of three, and the direction matters more than the count. The two
+// ways a sample can lie are not symmetric. StackInuse is process-global, so a
+// collection that frees a *previous* sample's dead 16 MiB stack inside this
+// sample's window makes the delta read as a net decrease — reported as zero —
+// even though this sample's own traversal grew a stack exactly as much as the
+// others. Taking the minimum lets one such sample collapse the answer to zero
+// and pass a recursive walk: the earlier spelling of this helper did exactly
+// that, passing in isolation while failing beside its neighbours. Noise in the
+// other direction (another goroutine growing its own stack in the window) can
+// only inflate, and would have to invent four megabytes to matter against an
+// iterative reading of tens of kilobytes. So the maximum is the reading that
+// cannot produce a false pass, and runtime.GC below settles the previous
+// sample's dead stack before each measurement rather than letting it land
+// inside one.
+func stackGrowthDuring(fn func()) uint64 {
+	highest := uint64(0)
+	for range 3 {
+		// Settle the previous sample's dead stack here, where it cannot be
+		// mistaken for this sample's own growth.
+		runtime.GC()
+
+		done := make(chan uint64, 1)
+		go func() {
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			fn()
+			runtime.ReadMemStats(&after)
+			if after.StackInuse <= before.StackInuse {
+				done <- 0
+				return
+			}
+			done <- after.StackInuse - before.StackInuse
+		}()
+		if growth := <-done; growth > highest {
+			highest = growth
+		}
+	}
+	return highest
+}
+
+// stackGrowthBudget is what the two stack-growth regressions below allow a
+// bounded walk to grow the goroutine stack by while traversing a 50,000-level
+// chain.
+//
+// The number discriminates, with headroom on both sides. Measured on this
+// tree: a work-stack traversal grows the goroutine stack by 0–32 KiB (the
+// goroutine's own locals), while the recursive traversal these tests regress
+// against grows it by 16–32 MiB — one Go frame per nesting level, rounded up
+// by the runtime's stack doubling, so the exact figure moves with Go version
+// and frame layout but only by a constant factor. 4 MiB sits two orders of
+// magnitude above the iterative reading and four below where a recursive walk
+// could plausibly land even if a future toolchain halved its frame sizes, so
+// neither an honest pass nor a real regression can drift across the line.
+const stackGrowthBudget = 4 << 20
+
+func TestCheckStructureDepthBoundsDeepControlFlowWithoutRecursiveTraversal(t *testing.T) {
+	// Not parallel: stackGrowthDuring reads runtime.MemStats.StackInuse, a
+	// process-global counter, and sharing the process with tests concurrently
+	// growing their own goroutine stacks would make the delta theirs as much
+	// as ours.
+
+	wf := &v1.Workflow{Name: "deep-control-flow", Steps: deepForEachChain(50_000)}
 
 	require.Less(t, proto.Size(wf), v1.MaxSpecBytes,
 		"the regression must fit under the byte precheck that runs before structure validation")
-	require.NoError(t, v1.CheckStructureDepth(wf),
-		"control-flow depth chosen by a wire caller must not become Go recursion depth")
+
+	// Acceptance alone cannot see this regression: Go grows a goroutine stack
+	// to 32 MiB before giving up, so a recursive walk also returns nil here
+	// and the mutation this test exists to catch — putting Go recursion back
+	// in [v1.CheckStructureDepth] — passed the earlier spelling that asserted
+	// only NoError. Stack growth is the property the test's name claims, so
+	// stack growth is what it measures.
+	var err error
+	growth := stackGrowthDuring(func() { err = v1.CheckStructureDepth(wf) })
+	require.NoError(t, err,
+		"control-flow depth chosen by a wire caller must still be accepted by the structure check")
+	require.Less(t, growth, uint64(stackGrowthBudget),
+		"checked control-flow depth must not become Go recursion depth: the walk grew the goroutine "+
+			"stack by %d bytes, which only a recursive traversal does at this depth", growth)
+}
+
+// TestRequiredTaskNamesBoundsDeepControlFlowWithoutRecursiveTraversal is
+// #1284's admission-path half: [v1.CheckStructureDepth] was made iterative so
+// checked depth does not become Go recursion depth, and the very next call in
+// submission validation — [v1.ResolveTaskCapabilities], through
+// [v1.RequiredTaskNames]'s callee walk — handed each workflow to
+// [v1.WalkWorkflow] *before* the callee walk's own depth guard had seen that
+// workflow's steps. The guard still refused the specification; it just
+// refused it after the recursive traversal had already grown the admission
+// goroutine's stack by 32 MiB, once per in-flight submission. Both halves are
+// asserted: the refusal (fail closed at a depth nothing past the guard can
+// vouch for) and the stack staying flat on the way to it.
+func TestRequiredTaskNamesBoundsDeepControlFlowWithoutRecursiveTraversal(t *testing.T) {
+	// Not parallel, for stackGrowthDuring's reason above.
+
+	wf := &v1.Workflow{Name: "deep-requirements", Steps: deepForEachChain(50_000)}
+
+	require.Less(t, proto.Size(wf), v1.MaxSpecBytes,
+		"the regression must fit under the byte precheck that runs before the requirement walk")
+
+	var err error
+	growth := stackGrowthDuring(func() { _, err = v1.RequiredTaskNames(wf) })
+	require.Error(t, err,
+		"a chain nested past what the callee walk is checked to must be refused, not silently "+
+			"under-scanned")
+	require.ErrorContains(t, err, "steps nest more than",
+		"the refusal must be the callee walk's own depth guard, so an author is told the shape of "+
+			"the problem")
+	require.Less(t, growth, uint64(stackGrowthBudget),
+		"the requirement walk must not spend a recursive stack before the guard refuses: it grew "+
+			"the goroutine stack by %d bytes", growth)
 }
 
 // TestCollectNodeRefsFailsClosedPastTheDepthBound is the CAN-compaction half

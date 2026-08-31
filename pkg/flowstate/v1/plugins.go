@@ -68,6 +68,15 @@ const maxPluginScanDepth = maxVarScanDepth
 // its `plugins:` block travels with the submission and is as much a part of what a
 // run needs as the top level's. A walk that stopped at the call would pin the half
 // of a specification that happens to be spelled at the top.
+//
+// visit runs on each workflow *before* the depth guard below has descended into
+// that workflow's own steps, so the guard bounds where this walk goes next and
+// says nothing about what visit spends. A visit that traverses the workflow it
+// is handed must not turn wire-chosen nesting into Go recursion depth of its
+// own: [RequiredTaskNames]'s visit runs [WalkWorkflow], which traverses with a
+// work stack for exactly this reason (#1284), and the other two callers —
+// [ResolvePlugins] and [PinnedPlugins] — read only the plugin fields of the
+// workflow they are handed.
 func walkPluginWorkflows(wf *Workflow, depth int, visit func(wf *Workflow) error) error {
 	if wf == nil {
 		return nil
