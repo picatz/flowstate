@@ -466,13 +466,16 @@ func verbList() string {
 // [MaxScopeNames] is the bound rather than a number of this function's own,
 // because it is the same question that constant already answers — how many
 // names one line may list before it stops being scannable — asked about a
-// different list. Sorted, since a map's order would make one refusal read
-// differently on every run.
-func stepList(names []string) string {
-	sorted := make([]string, len(names))
-	copy(sorted, names)
-	slices.Sort(sorted)
-
+// different list.
+//
+// The ids arrive sorted and are read rather than copied. The order is
+// load-bearing — a map's would make one refusal read differently on every run
+// — but both callers already hold an ordering built once, [CheckScript]'s
+// candidates and [Session.declared], so sorting here would only redo it. That
+// matters because a refused command is not recorded: an input can repeat an
+// unknown id past [MaxScriptCommands], and each repeat would pay
+// O(steps log steps) again (Codex, #1347).
+func stepList(sorted []string) string {
 	if len(sorted) > MaxScopeNames {
 		return quote(sorted[:MaxScopeNames]) + fmt.Sprintf(" and %d more", len(sorted)-MaxScopeNames)
 	}

@@ -697,12 +697,30 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
 }
 
-// maxStepSuggestionInput bounds the typed id a did-you-mean is computed for,
-// the same rule and the same reasoning cmd/flow's maxSuggestionInput states
-// for argv. A step id is a CEL identifier, so a real one is short; this sits
-// far above any an author would write and far below what a scan of the
-// inventory can be made to cost.
-const maxStepSuggestionInput = 64
+// maxStepSuggestionInput bounds the typed id a did-you-mean is computed for:
+// the longest id the schema permits, plus the most edits [nearest] will call a
+// near miss.
+//
+// The rule is cmd/flow's maxSuggestionInput (#428) — bound the typed side
+// before scanning — but the *number* has to come from what a real step id can
+// be, not from that constant, which sizes this CLI's own short command names.
+// `Node.id` is `max_len: 128` in proto/flowstate/v1/workflow.proto, so a
+// declared id of 128 characters mistyped once is 129 and is genuinely worth a
+// suggestion; a threshold of 64 borrowed from the command surface would have
+// skipped it at the prompt while `flow debug replay` still offered it, which
+// is the prompt-versus-replay divergence this whole change exists to close
+// (Codex, #1347).
+//
+// Derived rather than written down as 130: the two facts it is made of live
+// where they are enforced, and a schema that widens the id should widen this
+// with it.
+const maxStepSuggestionInput = maxStepIDLength + nearest.MaxDistance
+
+// maxStepIDLength is `Node.id`'s own `max_len` in
+// proto/flowstate/v1/workflow.proto. Asserted against the descriptor by
+// TestMaxStepIDLengthMatchesTheSchema, so it cannot drift from the constraint
+// that decides what a step may actually be called.
+const maxStepIDLength = 128
 
 // unknownStepNotice reports that a step id names nothing this run can reach,
 // in the words `flow debug replay` already refuses the same line with.
@@ -764,6 +782,10 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 		}
 	}
 
+	// names is [Session.declared], sorted once at construction, so the
+	// rendering below takes it as it is: re-sorting an already-sorted
+	// inventory on every refusal is work a redirected stdin chooses the
+	// amount of, and refused commands are not recorded (Codex, #1347).
 	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
 }
 
