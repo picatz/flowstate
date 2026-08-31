@@ -299,9 +299,15 @@ func TestDiscoverSaysWhichBinaryItShadowed(t *testing.T) {
 	}
 }
 
-// TestDiscoverIsSilentWithNothingShadowed is the other direction: one
-// directory, or two with distinct names, must say nothing at all — a warning
-// on every ordinary launch is one nobody reads.
+// TestDiscoverIsSilentWithNothingShadowed is the other direction: two
+// directories with distinct names must draw no shadow warning — one on every
+// ordinary launch is one nobody reads.
+//
+// Asserted against the shadow account specifically rather than against an
+// empty log, because Discover has other legitimate things to say at this
+// level: warnOwnershipUnchecked fires where the filesystem cannot answer who
+// owns a directory, which is a property of the platform the test runs on
+// rather than of what it is testing.
 func TestDiscoverIsSilentWithNothingShadowed(t *testing.T) {
 	t.Parallel()
 
@@ -320,8 +326,8 @@ func TestDiscoverIsSilentWithNothingShadowed(t *testing.T) {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	if account.Len() != 0 {
-		t.Errorf("two plugins with distinct names produced an account: %q", account.String())
+	if strings.Contains(account.String(), "shadowed") {
+		t.Errorf("two plugins with distinct names drew a shadow warning: %q", account.String())
 	}
 }
 
