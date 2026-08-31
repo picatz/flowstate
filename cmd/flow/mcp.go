@@ -116,15 +116,20 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Build one provider registry for the lifetime of this server. Plugins add
+	// their providers to it at launch, and every local tool call builds its
+	// task runtime over this same registry; a second per-call registry would
+	// lose compatibility schemes such as github: between launch and execution.
+	providers, err := localSecretProviders(cmd)
+	if err != nil {
+		return err
+	}
+	defer providers.close()
+
 	// Launched here, once, before the first tool call can arrive — never per
 	// call, and never from anything but this command's own --plugin-dir, for
-	// the reasons given where the flag is declared in main.go. nil rather than
-	// a secret registry: the plugin registration server.go's own runServer
-	// passes secretProviders for is what lets a *worker* resolve a secret
-	// scheme a plugin claims, and this process has the same secret backend
-	// flowstate_run_local already takes through --secret-env/--secret-dir,
-	// wired separately in withLocalTaskRuntime per call.
-	_, closePlugins, err := startPlugins(cmd, nil)
+	// the reasons given where the flag is declared in main.go.
+	_, closePlugins, err := startPlugins(cmd, providers.registry)
 	if err != nil {
 		return err
 	}
@@ -171,7 +176,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
 
 	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
-		stdioExtraTools(cmd)...)
+		stdioExtraTools(cmd, providers)...)
 }
 
 // stdioExtraTools is the three tools on this surface that are not RPCs, in one
@@ -182,9 +187,9 @@ func runMCP(cmd *cobra.Command, args []string) error {
 // None takes a timeout: stdio's single caller is the process that launched
 // this one, and this surface is unchanged by the bound `flow mcp serve`
 // applies for its own reasons. See [testToolHandler].
-func stdioExtraTools(cmd *cobra.Command) []flowmcp.ToolRegistration {
+func stdioExtraTools(cmd *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	return []flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
+		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd, providers)},
 		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
 		// The debugger's own front (#928 slice 3), beside the tool whose
 		// verdicts it explains.
@@ -354,7 +359,7 @@ func applyMCPEgressPolicy(cmd *cobra.Command) error {
 // runLocalToolHandler executes one submitted workflow.
 //
 // posture carries the process's flags — the only place a run's reach comes from.
-func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
+func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.ToolHandler {
 	if posture == nil {
 		posture = defaultLocalRunPosture()
 	}
@@ -414,11 +419,19 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 			return flowmcp.ToolError(err), nil
 		}
 
-		ctx, closeSecretProviders, err := withLocalTaskRuntime(posture, ctx, workflow)
-		if err != nil {
-			return flowmcp.ToolError(err), nil
+		if providers == nil {
+			var closeProviders func()
+			ctx, closeProviders, err = withLocalTaskRuntime(posture, ctx, workflow)
+			if err != nil {
+				return flowmcp.ToolError(err), nil
+			}
+			defer closeProviders()
+		} else {
+			ctx, err = withLocalTaskRuntimeUsing(posture, ctx, workflow, providers)
+			if err != nil {
+				return flowmcp.ToolError(err), nil
+			}
 		}
-		defer closeSecretProviders()
 
 		// `log:` steps go into the answer rather than onto a stream, and that is
 		// not a nicety: stdout is the MCP transport. A workflow that narrates

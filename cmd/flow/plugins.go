@@ -735,6 +735,11 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 
 		return nil, noop, err
 	}
+	if err := checkLegacyPluginSecretContracts(host.Plugins()); err != nil {
+		stop()
+
+		return nil, noop, err
+	}
 
 	if err := host.Register(v1.DefaultRegistry(), secretProviders); err != nil {
 		stop()
@@ -801,6 +806,39 @@ func checkSQLManifestSecurityContract(manifest *pluginv1.PluginManifest) error {
 				"SQL plugin is not compatible with this host's security contract: task sql.%s must require dsn as a whole secret reference; upgrade flowstate-plugin-sql together with the host",
 				name,
 			)
+		}
+	}
+
+	return nil
+}
+
+// checkLegacyPluginSecretContracts keeps rolling upgrades fail closed. A new
+// plugin refuses an unresolved token defensively, so old-host/new-plugin is
+// safe. This is the other direction: a new host must not register an old
+// first-party plugin that still resolves token inside the task without the
+// caller's namespace or the host scrubber.
+func checkLegacyPluginSecretContracts(plugins []*plugin.Plugin) error {
+	for _, p := range plugins {
+		if err := checkLegacyPluginSecretManifest(p.Manifest()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkLegacyPluginSecretManifest(manifest *pluginv1.PluginManifest) error {
+	switch manifest.GetName() {
+	case "git", "vcs", "github":
+	default:
+		return nil
+	}
+
+	for _, task := range manifest.GetTasks() {
+		if !slices.Contains(task.GetSecretInputs(), "token") ||
+			!slices.Contains(task.GetRequiredSecretInputs(), "token") {
+			return fmt.Errorf(
+				"%s plugin is not compatible with this host's secret security contract: task %s.%s must resolve token through the host; upgrade flowstate-plugin-%s together with the host",
+				manifest.GetName(), manifest.GetName(), task.GetName(), manifest.GetName())
 		}
 	}
 

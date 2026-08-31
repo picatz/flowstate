@@ -13,19 +13,20 @@ import (
 
 const containmentSecret = "ghp_git_plugin_containment_canary_do_not_print_me"
 
-func TestTokenFromValueRefusesALiteral(t *testing.T) {
+func TestTokenFromValueAcceptsAHostResolvedString(t *testing.T) {
 	v := flowstatev1.NewValue("a-literal-token")
-	if _, err := tokenFromValue(context.Background(), v); err == nil {
-		t.Fatal("tokenFromValue with a literal: got no error, want one")
+	token, err := tokenFromValue(context.Background(), v)
+	if err != nil || token != "a-literal-token" {
+		t.Fatalf("tokenFromValue with a resolved string: got (%q, %v)", token, err)
 	}
 }
 
-func TestTokenFromValueRefusesAForeignScheme(t *testing.T) {
+func TestTokenFromValueRefusesAnUnresolvedReference(t *testing.T) {
 	v := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
 		SecretRef: &flowstatev1.SecretRef{Scheme: "env", Name: "GITHUB_TOKEN"},
 	}}
 	if _, err := tokenFromValue(context.Background(), v); err == nil {
-		t.Fatal("tokenFromValue with a foreign scheme: got no error, want one")
+		t.Fatal("tokenFromValue with an unresolved reference: got no error, want one")
 	}
 }
 
@@ -36,18 +37,15 @@ func TestTokenFromValueTreatsUnsetAsPublic(t *testing.T) {
 	}
 }
 
-func TestTokenFromValueResolvesItsOwnScheme(t *testing.T) {
+func TestCompatibilityProviderResolvesItsOwnScheme(t *testing.T) {
 	t.Setenv("GIT_SECRET_0__TEST_TOKEN", containmentSecret)
 
-	v := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
-		SecretRef: &flowstatev1.SecretRef{Scheme: secretScheme, Name: "test-token"},
-	}}
-	token, err := tokenFromValue(context.Background(), v)
+	resp, err := resolveSecret(context.Background(), sdk.SecretRequest{Scheme: secretScheme, Name: "test-token"})
 	if err != nil {
-		t.Fatalf("tokenFromValue: unexpected error: %v", err)
+		t.Fatalf("resolveSecret: unexpected error: %v", err)
 	}
-	if token != containmentSecret {
-		t.Fatalf("token: got %q, want %q", token, containmentSecret)
+	if string(resp.Value) != containmentSecret {
+		t.Fatalf("token: got %q, want %q", resp.Value, containmentSecret)
 	}
 }
 

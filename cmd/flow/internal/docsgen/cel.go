@@ -284,6 +284,28 @@ var celIdioms = []celIdiom{
 		expr: `[1, 2, 3, 4, 5].filter(n, n % 2 == 0).map(n, n * n)`,
 	},
 	{
+		title: "Totalling a list without a loop",
+		prose: "`sum` folds a list with `+`, expanded when the file compiles like `filter` and " +
+			"`map` — so a numeric total is one expression instead of a `loop:` carrying an index " +
+			"and a running sum through durable history, with the off-by-one that shape invites. " +
+			"Chained after `map` it reads left to right: keep what matters, pick the number, add " +
+			"them up. An empty list sums to `0`, and a list `+` cannot add — a string beside an " +
+			"int — fails the evaluation rather than guessing. Only a list may be folded: a map's " +
+			"iteration order is undefined, so both folds refuse one, and the deterministic spelling " +
+			"is explicit — `m.map(k, k).sort().map(k, m[k]).sum()`. `loop:` remains the right tool " +
+			"when the fold's body does real work; see examples/loop-accumulate.",
+		expr: `steps.paid.value.map(o, o.amount_cents).sum()`,
+	},
+	{
+		title: "A fold whose combiner is not +",
+		prose: "`reduce` is the general form `sum` is the special case of: name the accumulator " +
+			"and the element, give the seed, write the combining expression. Reach for " +
+			"`map(...).sum()` first — it answers the naming and seeding questions for you — and " +
+			"for `reduce` when the combiner is not `+`: a product, a running maximum, a fold " +
+			"whose seed carries meaning. An empty list folds to the seed, verbatim.",
+		expr: `steps.factors.value.reduce(p, v, 1, p * v)`,
+	},
+	{
 		title: "Building one message from several values",
 		prose: "`format` is an operator on a string, defined at the CEL level and pinned by " +
 			"the profile, filling `%s` and `%d` verbs from the argument list in order.",

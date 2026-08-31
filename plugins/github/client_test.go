@@ -5,21 +5,23 @@ import (
 	"testing"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-func TestTokenFromValueRefusesALiteral(t *testing.T) {
+func TestTokenFromValueAcceptsAHostResolvedString(t *testing.T) {
 	v := flowstatev1.NewValue("a-literal-token")
-	if _, err := tokenFromValue(context.Background(), v); err == nil {
-		t.Fatal("tokenFromValue with a literal: got no error, want one")
+	token, err := tokenFromValue(context.Background(), v)
+	if err != nil || token != "a-literal-token" {
+		t.Fatalf("tokenFromValue with a resolved string: got (%q, %v)", token, err)
 	}
 }
 
-func TestTokenFromValueRefusesAForeignScheme(t *testing.T) {
+func TestTokenFromValueRefusesAnUnresolvedReference(t *testing.T) {
 	v := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
 		SecretRef: &flowstatev1.SecretRef{Scheme: "env", Name: "GITHUB_TOKEN"},
 	}}
 	if _, err := tokenFromValue(context.Background(), v); err == nil {
-		t.Fatal("tokenFromValue with a foreign scheme: got no error, want one")
+		t.Fatal("tokenFromValue with an unresolved reference: got no error, want one")
 	}
 }
 
@@ -31,14 +33,7 @@ func TestTokenFromValueTreatsUnsetAsUnauthenticated(t *testing.T) {
 }
 
 func TestTokenFromValueResolvesAConfiguredPAT(t *testing.T) {
-	t.Setenv(envAppID, "")
-	t.Setenv(envAppPrivateKey, "")
-	t.Setenv(envAppInstallID, "")
-	t.Setenv(envPAT, containmentSecret)
-
-	v := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
-		SecretRef: &flowstatev1.SecretRef{Scheme: secretScheme, Name: "token"},
-	}}
+	v := flowstatev1.NewValue(containmentSecret)
 	token, err := tokenFromValue(context.Background(), v)
 	if err != nil {
 		t.Fatalf("tokenFromValue: unexpected error: %v", err)
@@ -54,10 +49,17 @@ func TestResolveSecretRefusesWhenNothingConfigured(t *testing.T) {
 	t.Setenv(envAppInstallID, "")
 	t.Setenv(envPAT, "")
 
-	if _, err := tokenFromValue(context.Background(), &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
-		SecretRef: &flowstatev1.SecretRef{Scheme: secretScheme, Name: "token"},
-	}}); err == nil {
+	if _, err := resolveSecret(context.Background(), sdk.SecretRequest{Scheme: secretScheme, Name: "token"}); err == nil {
 		t.Fatal("resolving a credential with nothing configured: got no error, want one")
+	}
+}
+
+func TestGitHubProviderRefusesNamedTenants(t *testing.T) {
+	t.Setenv(envPAT, containmentSecret)
+	if _, err := resolveSecret(context.Background(), sdk.SecretRequest{
+		Scheme: secretScheme, Name: "token", Namespace: "tenant-a",
+	}); err == nil {
+		t.Fatal("resolveSecret for a named tenant: got no error, want fail-closed refusal")
 	}
 }
 

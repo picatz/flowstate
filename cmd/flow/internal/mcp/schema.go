@@ -423,10 +423,11 @@ func debugInputSchema() map[string]any {
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 				"description": "The debug script, one command per entry, in order: `step` (run this step " +
-					"and stop at the next), `continue`, `until <step-id>`, `break <step-id>`, " +
+					"and stop at the next), `continue`, `until <step-id> [if <cel-expression>]`, " +
+					"`break <step-id>`, " +
 					"`break <step-id> if <cel-expression>` (stop there only when the expression " +
 					"holds, which is how a step inside a `for_each` is reached at one iteration " +
-					"rather than every one), " +
+					"rather than every one; `until` takes the same condition for a one-shot stop), " +
 					"`delete <step-id>`, `breakpoints`, `inspect <cel-expression>` (evaluate against " +
 					"the paused run's own scope), `complete <partial-command>` (list what could be " +
 					"written at the end of that text, over the paused run's own names — the same " +

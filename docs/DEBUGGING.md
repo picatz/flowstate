@@ -26,6 +26,7 @@ nothing here is worth learning twice.
 | `step`, `s` | run this step, stop at the next. An empty line does the same. |
 | `continue`, `c` | run to the next breakpoint, or to the end |
 | `until <step-id>`, `u` | run to that step without stopping in between |
+| `until <step-id> if <expr>` | run to that step, stopping only where the expression holds |
 | `break <step-id>`, `b` | stop there whenever it is reached |
 | `break <step-id> if <expr>` | stop there only when the expression holds |
 | `delete <step-id>`, `d` | remove that breakpoint |
