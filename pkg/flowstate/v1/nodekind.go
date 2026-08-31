@@ -25,6 +25,8 @@ func NodeKind(node *Node) string {
 		return "wait"
 	case *Node_ForEach:
 		return "for_each"
+	case *Node_Loop:
+		return "loop"
 	case *Node_Parallel:
 		return "parallel"
 	case *Node_Switch:
