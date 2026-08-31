@@ -127,12 +127,32 @@ func TestAFlowfileCanNameTheSQLPluginsTasks(t *testing.T) {
 		}
 	})
 
+	t.Run("both SQL tasks refuse a literal DSN before compilation", func(t *testing.T) {
+		for name, source := range map[string][]byte{"sql.query": querySource, "sql.exec": execSource} {
+			t.Run(name, func(t *testing.T) {
+				literal := "literal-dsn-must-not-enter-history"
+				changed := strings.Replace(string(source), "${secret('env:SQL_DSN')}", literal, 1)
+				diags, err := flowfile.ValidateSource([]byte(changed))
+				if err != nil {
+					t.Fatalf("ValidateSource: unexpected error: %v", err)
+				}
+				got := diagnosticText(diags)
+				if !strings.Contains(got, "whole secret reference") {
+					t.Fatalf("literal DSN diagnostics = %q, want required-secret refusal", got)
+				}
+				if strings.Contains(got, literal) {
+					t.Fatalf("literal DSN leaked into diagnostics: %q", got)
+				}
+			})
+		}
+	})
+
 	t.Run("engine is a closed enum, checked like a built-in's", func(t *testing.T) {
 		// engine is Engine in sql.v1.QueryInputs; the only way the validator
 		// can know its choices is the descriptor this plugin shipped over
 		// its socket at launch, reconstructed by the host.
 		wrongEngine, err := flowfile.ValidateSource([]byte(strings.Replace(
-			string(querySource), "ENGINE_SQLITE", "ENGINE_ORACLE", 1)))
+			string(querySource), "ENGINE_POSTGRES", "ENGINE_ORACLE", 1)))
 		if err != nil {
 			t.Fatalf("ValidateSource: unexpected error: %v", err)
 		}

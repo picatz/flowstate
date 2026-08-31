@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/picatz/flowstate/internal/covbuild"
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -48,6 +50,13 @@ const pluginSearchPathEnv = "FLOWSTATE_PLUGIN_DIR"
 // environment rather than into every command line.
 const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 
+// sqlEgressPolicyEnv gives the in-tree SQL plugin an immutable base64 encoding
+// of the same operator-owned policy bytes the host parsed for built-in HTTP.
+// The plugin process starts with an empty environment, so forwarding the
+// snapshot here is an explicit grant, not ambient inheritance. SQL itself
+// refuses PostgreSQL when it is absent.
+const sqlEgressPolicyEnv = "FLOWSTATE_SQL_EGRESS_POLICY_B64"
+
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
@@ -73,6 +82,11 @@ type pluginFlags struct {
 	// those flags' help for the merge and #1010 for why this surface exists at
 	// all.
 	pinnedDigests map[string]string
+
+	// egressPolicy is the exact operator policy snapshot already parsed by the
+	// host, forwarded to first-party protocol-native plugins that enforce it
+	// on their own socket path.
+	egressPolicy []byte
 }
 
 // pluginFlagsOf reads them off the command being run.
@@ -88,6 +102,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
 	pinFlags, _ := cmd.Flags().GetStringArray("plugin-pin")
 	pinsFile, _ := cmd.Flags().GetString("plugin-pins")
+	egressPolicy := egressPolicySnapshot(cmd)
 
 	// The $FLOWSTATE_PLUGIN_DIR fallback is bound at registration time, in
 	// addPluginFlags, as the flag's own default — not here — so that the
@@ -243,6 +258,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 		schemes:           schemes,
 		allowInsecureDirs: allowInsecure,
 		pinnedDigests:     pins,
+		egressPolicy:      egressPolicy,
 	}, nil
 }
 
@@ -350,6 +366,10 @@ func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 
 // host builds a host for these flags. The caller owns closing it.
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
+	env := covbuild.Env()
+	if len(f.egressPolicy) > 0 {
+		env = append(env, sqlEgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(f.egressPolicy))
+	}
 	return plugin.NewHost(plugin.Config{
 		SearchPath:              f.dirs,
 		AllowInsecureSearchPath: f.allowInsecureDirs,
@@ -367,7 +387,7 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		// Without it, a coverage-instrumented plugin binary launched through
 		// this host writes nothing, and #519's plugin blind spot stays closed
 		// only for the tests that build their own Config.Env by hand.
-		Env: covbuild.Env(),
+		Env: env,
 	})
 }
 
@@ -701,6 +721,11 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 
 		return nil, noop, err
 	}
+	if err := checkSQLPluginSecurityContract(host.Plugins()); err != nil {
+		stop()
+
+		return nil, noop, err
+	}
 
 	if err := host.Register(v1.DefaultRegistry(), secretProviders); err != nil {
 		stop()
@@ -727,6 +752,50 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 	}
 
 	return catalog, stop, nil
+}
+
+// checkSQLPluginSecurityContract prevents a partially upgraded deployment from
+// pairing this host with the pre-egress-policy SQL binary. Protocol version 3
+// remains compatible for every other plugin; SQL is singled out by its own
+// manifest name (rather than its renameable executable name) and must assert
+// the two claims this host enforces before either task can be registered.
+//
+// This is deliberately not satisfied by the egress environment grant alone:
+// an old SQL process ignores unknown environment and would otherwise retain
+// unrestricted PostgreSQL and SQLite access. The current SQL plugin both makes
+// these claims and refuses to start without a valid policy snapshot.
+func checkSQLPluginSecurityContract(plugins []*plugin.Plugin) error {
+	for _, p := range plugins {
+		if err := checkSQLManifestSecurityContract(p.Manifest()); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkSQLManifestSecurityContract(manifest *pluginv1.PluginManifest) error {
+	if manifest.GetName() != "sql" {
+		return nil
+	}
+
+	for _, name := range []string{"query", "exec"} {
+		var task *pluginv1.TaskManifest
+		for _, candidate := range manifest.GetTasks() {
+			if candidate.GetName() == name {
+				task = candidate
+				break
+			}
+		}
+		if task == nil || !slices.Contains(task.GetRequiredSecretInputs(), "dsn") {
+			return fmt.Errorf(
+				"SQL plugin is not compatible with this host's security contract: task sql.%s must require dsn as a whole secret reference; upgrade flowstate-plugin-sql together with the host",
+				name,
+			)
+		}
+	}
+
+	return nil
 }
 
 // pluginShutdownGrace bounds how long a worker waits for its plugins to exit.

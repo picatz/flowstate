@@ -118,7 +118,7 @@ func TestACatalogRoundTripPreservesEveryClaim(t *testing.T) {
 //
 // Every schema-driven check in the validator asks the descriptor rather than
 // the rendering — validateTaskInputs returns nothing at all when def.Inputs is
-// nil — so a round trip that keeps the five claims and loses the descriptor is
+// nil — so a round trip that keeps the security-relevant claims and loses the descriptor is
 // a validator that reports nothing about a task's inputs and says so nowhere.
 func TestACatalogRoundTripPreservesTheInputSchema(t *testing.T) {
 	t.Parallel()

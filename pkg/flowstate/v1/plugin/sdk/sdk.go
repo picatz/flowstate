@@ -309,6 +309,13 @@ type Task struct {
 	// than the plugin asking it to.
 	SecretInputs []string
 
+	// RequiredSecretInputs names inputs that must be supplied as whole secret
+	// references. Each must also be in SecretInputs. The host refuses a literal
+	// before resolving inputs or invoking Fn, so sensitive connection material
+	// cannot be embedded in workflow history merely because the plugin receives
+	// a resolved secret in the same wire shape as a literal.
+	RequiredSecretInputs []string
+
 	// ShapesOutputs declares that this task reads an input named `outputs` as a
 	// mapping of output name to expression, and returns those names as the
 	// step's outputs in place of the ones its descriptor declares.
@@ -794,17 +801,18 @@ func (t Task) manifest(prose *flowstatev1.DescriptorProse) (*pluginv1.TaskManife
 	}
 
 	return &pluginv1.TaskManifest{
-		Name:             t.Name,
-		Summary:          t.Summary,
-		InputDescriptor:  inputDescriptor,
-		InputMessage:     inputMessage,
-		OutputDescriptor: outputDescriptor,
-		OutputMessage:    outputMessage,
-		DeferredInputs:   slices.Clone(t.DeferredInputs),
-		ExpressionInputs: slices.Clone(t.ExpressionInputs),
-		NeedsScope:       t.NeedsScope,
-		SecretInputs:     slices.Clone(t.SecretInputs),
-		ShapesOutputs:    t.ShapesOutputs,
+		Name:                 t.Name,
+		Summary:              t.Summary,
+		InputDescriptor:      inputDescriptor,
+		InputMessage:         inputMessage,
+		OutputDescriptor:     outputDescriptor,
+		OutputMessage:        outputMessage,
+		DeferredInputs:       slices.Clone(t.DeferredInputs),
+		ExpressionInputs:     slices.Clone(t.ExpressionInputs),
+		NeedsScope:           t.NeedsScope,
+		SecretInputs:         slices.Clone(t.SecretInputs),
+		RequiredSecretInputs: slices.Clone(t.RequiredSecretInputs),
+		ShapesOutputs:        t.ShapesOutputs,
 	}, nil
 }
 

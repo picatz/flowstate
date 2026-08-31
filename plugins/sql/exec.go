@@ -44,7 +44,7 @@ func sqlExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flows
 	callCtx, cancel := context.WithTimeout(ctx, queryTimeout*time.Second)
 	defer cancel()
 
-	db, err := openDB(in.GetEngine(), dsn)
+	db, err := openDB(callCtx, in.GetEngine(), dsn, scrubber)
 	if err != nil {
 		return nil, scrubber.ScrubError(err)
 	}

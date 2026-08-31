@@ -2,8 +2,10 @@
 
 Ordinary SQL for a workflow: `sql.query` (bounded, parameterized reads) and
 `sql.exec` (one or more statements as a single transaction), over
-[sqlite](https://modernc.org/sqlite) and
-[postgres](https://github.com/jackc/pgx) - two pure-Go drivers, chosen so
+[PostgreSQL](https://github.com/jackc/pgx). The pure-Go SQLite driver remains
+compiled for hermetic package tests but is refused by the distributed plugin:
+an embedded database is worker-filesystem authority, not a network connection
+that egress policy can confine. Both drivers are chosen so
 this plugin never links cgo and never execs a database client binary. See
 [`doc.go`](doc.go) for the full design: why every value in `params:` is
 bound rather than ever interpolated into SQL text, what this plugin could
@@ -49,7 +51,7 @@ what that value contains:
 ```yaml
 edition: v2026.3
 name: sql-query
-description: Reads bounded, typed rows from a sqlite database using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
+description: Reads bounded, typed rows from PostgreSQL using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
 
 # sql.query is one of two tasks the "sql" plugin provides; the other,
 # sql.exec, writes one or more statements as a single transaction - see
@@ -58,8 +60,8 @@ description: Reads bounded, typed rows from a sqlite database using the "sql" pl
 # compiled sql.v1.QueryInputs; it learns the shape from descriptors this
 # plugin ships in its manifest at launch. See plugins/sql for the source and
 # plugins/sql/README.md for what this plugin needs configured on the worker
-# before this file can run for real (a sqlite database file with an
-# "accounts" table, and SQL_DSN naming it).
+# before this file can run for real (a PostgreSQL database with an
+# "accounts" table, SQL_DSN naming it, and an operator egress policy).
 #
 # Requires configuration - a real database and a resolvable dsn secret - so
 # it never runs by accident. See plugins/sql/README.md, "Trying this
@@ -72,11 +74,9 @@ steps:
       # A secret reference, resolved inside the task, never a literal
       # connection string - see plugins/sql/README.md, "Secrets," for what
       # SQL_SECRET_DSN (or whatever this deployment's provider names it)
-      # resolves to. This is the only line that would change to point the
-      # same call at postgres instead: engine: ENGINE_POSTGRES and a dsn
-      # secret naming a postgres connection string.
+      # resolves to. Literal DSNs are refused by the plugin host.
       dsn: ${secret('env:SQL_DSN')}
-      engine: ENGINE_SQLITE
+      engine: ENGINE_POSTGRES
       # Required: there is no default. A result with more rows than this
       # is refused outright, naming the bound, rather than returned as a
       # silently truncated prefix - see plugins/sql/doc.go, "Bounded
@@ -87,7 +87,7 @@ steps:
       # plugins/sql/doc.go, "Parameterized only, structurally."
       params:
         - ${vars.min_balance_cents}
-      query: SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id
+      query: SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= $1 ORDER BY id
   - id: announce
     log:
       # rows is a list of maps CEL can filter and index by column name,
@@ -119,20 +119,17 @@ splicing).
 
 ## Secrets
 
-Both tasks declare `dsn` in their own `secret_inputs` (issue #160's
-mechanism, this plugin's third consumer): a Flowfile writes
+Both tasks declare `dsn` in `secret_inputs` and `required_secret_inputs`: a Flowfile writes
 `dsn: ${secret('provider:name')}`, and the host resolves that reference
 under the caller's identity before this task's `Fn` ever runs. This plugin
 process never holds a provider credential, a vault token, or a reference of
 its own - only the one resolved value, for the duration of one call.
 
-There is no `user:password@` in any URL this plugin's own tasks accept as a
-literal input, because there is no such input: the connection string
-*itself* is what `secret_inputs` resolves, whole. Writing a literal `dsn:`
-value is possible (this task cannot always tell a resolved secret from an
-author's own literal, once both arrive as the same value shape - see
-`doc.go`) but strongly discouraged: it puts a credential in the Flowfile and
-in workflow history.
+The connection string itself is resolved whole. The host refuses a literal
+`dsn:` before invoking either task, so it cannot put a credential into a
+Flowfile or workflow history. A secret reference is not destination authority:
+the operator must separately provide an egress policy that permits every
+resolved PostgreSQL address and port.
 
 Every DSN this plugin resolves is registered with a
 [`secrets.Scrubber`](../../pkg/flowstate/v1/secrets/scrub.go) before a
@@ -238,7 +235,7 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 # and only the harmless "set applied = 1" statement (already true) runs
 # again. See plugins/sql/exec_test.go's
 # TestSQLTransferPatternMovesMoneyExactlyOnceAcrossARetry, which runs this
-# exact four-statement pattern against sqlite twice with the same key and
+# exact four-statement pattern against a hermetic test database twice with the same key and
 # asserts both balances moved on the first call and stayed put on the
 # second - the point of an idempotency claim is a test proving it, not a
 # comment asserting it.
@@ -247,12 +244,12 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 # accounts_ledger(idempotency_key TEXT PRIMARY KEY, applied INTEGER NOT
 # NULL DEFAULT 0) tables, and a resolvable dsn secret - so it never runs by
 # accident. See plugins/sql/README.md, "Trying this example."
+# The operator must also permit the database destination with --egress-policy
+# and permit the qualified sql.exec capability in task policy. sql.query and
+# sql.exec are separate policy names so read access does not imply write access.
 #
 # Written for ENGINE_POSTGRES, with $1, $2, ... placeholders - pgx does not
-# rewrite `?` the way this file's own sqlite-flavored sibling
-# (workflow.yaml) uses, so a query written for one engine's placeholder
-# syntax is not portable to the other unchanged (see plugins/sql/README.md,
-# "Drivers," for the placeholder note this file's own review corrected).
+# rewrite `?`; PostgreSQL statements use numbered placeholders.
 inputs:
   from_account_id:
     type: int
@@ -301,19 +298,15 @@ outputs:
     description: 4 on a fresh transfer (insert, debit, credit, flag), 1 on a converged retry (only the harmless flag-set touches a row)
 ```
 
-Note `transfer.yaml` writes `$1`, `$2`, ... placeholders, not the `?` this
-README's sqlite example uses - pgx does **not** rewrite `?` into postgres's
-own numbered placeholder syntax (an earlier version of this file claimed it
-did; that claim was wrong, caught in review, and corrected here rather than
-left standing). Each engine's own native placeholder syntax is what the SQL
-text has to use; nothing in this plugin translates between them, and a
-query written for one engine is not portable to the other unchanged.
+PostgreSQL statements use `$1`, `$2`, ... placeholders. Values remain separate
+bound parameters; the plugin does not translate placeholder dialects.
 
 ## Drivers
 
-sqlite ([`modernc.org/sqlite`](https://modernc.org/sqlite)) and postgres
-([`github.com/jackc/pgx/v5`](https://github.com/jackc/pgx)) are both pure
-Go, compiled directly into this plugin - no cgo anywhere in this module.
+PostgreSQL ([`github.com/jackc/pgx/v5`](https://github.com/jackc/pgx)) is the
+distributed plugin's supported runtime engine. SQLite
+([`modernc.org/sqlite`](https://modernc.org/sqlite)) is compiled only for
+hermetic package tests - no cgo anywhere in this module.
 `Engine` is a closed proto enum naming exactly the drivers this build ships;
 naming one this build lacks (`engine: ENGINE_ORACLE`) is refused by `flow
 validate` with a positioned diagnostic listing the choices, the same way any
@@ -322,35 +315,57 @@ is a Go dependency compiled into this plugin, never a runtime-loadable
 backend - adding one is a PR here, reviewed and released, not a runtime
 event.
 
-This plugin's own test suite runs against **sqlite**, hermetically, in
-`t.TempDir()`-backed files with nothing to stand up and nothing to tear
-down - see `doc.go`, "Why sqlite is enumerated first," for why that choice
-does not contradict issue #181's own "postgres first" for production
-weight. The postgres driver is real, compiled in, and covered by unit tests
-that do not require a live server (DSN parsing, the wire-bound connection
-wrapper, `PgError` classification); there is no live-postgres integration
-test in this module, and that gap is named here rather than left for
-someone to discover.
+File-backed and in-memory SQLite DSNs are refused in released binaries. This
+avoids granting arbitrary file open, URI, symlink, `ATTACH`, `VACUUM INTO`, or
+extension-loading authority without pretending plugin process separation is a
+sandbox. Package tests enable SQLite only through test-compiled code.
 
 ## Trying this example
 
-Neither example file runs with no arguments, because both need a real
-database:
+Neither example runs with no arguments. Put the complete PostgreSQL DSN in the
+configured secret backend, then pass a deployment-owned policy permitting only
+the database host, resolved network, and port. This deliberately local example
+is for a loopback development database; production deployments must replace
+the target exactly:
 
 ```console
-# sqlite: create the file this plugin's workflow.yaml example reads from.
-sqlite3 /tmp/flowstate-sql-example.sqlite <<'SQL'
-CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT, balance_cents INTEGER);
-INSERT INTO accounts (name, balance_cents) VALUES ('alice', 500), ('bob', -50);
-SQL
-
-export FLOWSTATE_SECRET_SQL_DSN="file:/tmp/flowstate-sql-example.sqlite"
+# Provision FLOWSTATE_SECRET_SQL_DSN out of band; do not paste its value into
+# shell history, this README, or the Flowfile.
+flow worker --plugin-dir /path/to/plugins \
+  --secret-env SQL_DSN --auth-policy /path/to/auth-policy.yaml \
+  --egress-policy examples/plugins/sql/egress-policy.yaml
 ```
 
 `SQL_DSN` above is illustrative - which environment variable a `${secret('env:SQL_DSN')}`
 reference actually resolves to depends on which secret provider this
 deployment configured (see `pkg/flowstate/v1/secrets`); check that
-package's own docs for the exact variable name your worker expects.
+package's own docs for the exact variable name your worker expects. Do not put
+the DSN on the command line or in the Flowfile. `sql.query` and `sql.exec` are
+separate qualified task-policy capabilities; granting the former does not grant
+the latter's write authority.
+
+<!-- example: examples/plugins/sql/egress-policy.yaml -->
+```yaml
+# Deliberately local-only policy for the SQL example. Production deployments
+# should replace both the host and network with their database's exact values.
+egress:
+  schemes: [postgres]
+  allow:
+    - host == "localhost" && port == 5432
+  allow_networks:
+    - 127.0.0.0/8
+    - ::1/128
+  allow_ports: [5432]
+  min_tls_version: "1.2"
+```
+
+Missing or malformed policy fails closed. PostgreSQL requires verified TLS,
+rejects Unix sockets and filesystem-reading connection options, checks every
+address of every host before dialing, pins those resolutions against rebinding,
+and rechecks the actual socket target immediately before each dial. Because
+DSN-selected `sslrootcert` files would restore arbitrary worker-file reads,
+private database CAs must be installed in the worker's system trust store; this
+release has no separate operator-owned SQL CA-bundle setting.
 
 ## Security properties, and what holds by construction
 
@@ -385,12 +400,9 @@ place of parameter binding (`TestParamsToArgsNeverInterpolatesIntoSQLText`
 failed with a SQL-level error from the corrupted query, rather than passing
 silently).
 
-## Bounds this plugin cannot fully close, said plainly
+## Bounds and remaining limits
 
-See `doc.go`, "Byte bounds," for the full argument. In short: postgres gets
-a real, wire-level byte bound below the driver; sqlite, having no wire to
-bound, gets a decoded-result-size bound instead, which is real prevention
-but does not bound how much work sqlite itself does computing bytes this
-plugin has not read yet (a pathological query over tiny stored data). Named
-here rather than solved, the same honesty CLAUDE.md's RoundTripper lesson
-asks for everywhere else in this repository.
+PostgreSQL retains the real wire-level byte bound below pgx, plus row and
+decoded-result bounds above it. There is no live PostgreSQL integration server
+in this module; the actual dial path is tested with bounded local listeners,
+while protocol semantics are covered without external infrastructure.

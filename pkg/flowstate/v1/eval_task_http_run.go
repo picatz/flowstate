@@ -615,19 +615,30 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
 			}
 
-			// The policy's own per-host rate bound (#912 phase two). Checked
-			// before the two classifications below, because it is neither of
-			// the things they decide: the request was permitted and was never
-			// sent, so it is not a denial and its outcome is not unknown — a
-			// bucket that refuses cannot have reached the peer. Classifying it
-			// as UpstreamUnknown on a POST would make a request nobody made
-			// look like one that might have taken effect.
+			// Whether repeating this request could repeat an effect the first
+			// attempt already had. Decided once, here, because both
+			// classifications below turn on the same question, and answering it
+			// twice is how two answers drift apart.
+			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err)
+
+			// The policy's own per-host rate bound (#912 phase two). On the
+			// initial hop the request was never sent, so it is neither a denial
+			// nor an unknown outcome — a bucket that refuses cannot have reached
+			// the peer, and classifying it as UpstreamUnknown on a POST would
+			// make a request nobody made look like one that might have taken
+			// effect.
+			//
+			// A refused *redirect* hop is the opposite case: an earlier hop did
+			// reach its peer, so the original request was sent, and replaying it
+			// may repeat a side effect that already happened. That is the
+			// question outcomeUnknown above already answers, so this defers to
+			// it rather than deciding it a second way.
 			//
 			// RateLimited is retryable and carries the bucket's own wait, so
 			// this rides the machinery a 429's Retry-After already rides
 			// (#1180): both drivers read RetryAfter off the error and schedule
 			// the next attempt from it. Nothing blocks in the activity.
-			if rateLimited {
+			if rateLimited && !(limited.AfterRedirect && outcomeUnknown) {
 				rateErr := NewTaskError("http", ErrorKindRateLimited, fmt.Errorf(
 					"%s %s was held back by this worker's own rate limit for %s of %g requests per second per process: %w",
 					taskInputs.GetMethod(), taskInputs.GetUrl(), limited.Host, limited.RequestsPerSecond, err))
@@ -635,7 +646,18 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 				return nil, rateErr
 			}
 
-			if !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err) {
+			if rateLimited {
+				// Held back mid-redirect, on a method for which a repeat is a
+				// second effect. Reported with its own message rather than the
+				// one below, which says the request got no response: this one
+				// did, and that response is precisely why the outcome is
+				// unknown.
+				return nil, NewTaskError("http", ErrorKindUpstreamUnknown, fmt.Errorf(
+					"%s %s was redirected and the next hop was held back by this worker's own rate limit for %s, so the original request reached its peer and whether it took effect is unknown: %w",
+					taskInputs.GetMethod(), taskInputs.GetUrl(), limited.Host, err))
+			}
+
+			if outcomeUnknown {
 				return nil, NewTaskError("http", ErrorKindUpstreamUnknown, fmt.Errorf(
 					"%s %s failed with no response, so whether it took effect is unknown: %w",
 					taskInputs.GetMethod(), taskInputs.GetUrl(), err))

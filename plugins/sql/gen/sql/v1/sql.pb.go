@@ -33,9 +33,8 @@ type Engine int32
 
 const (
 	Engine_ENGINE_UNSPECIFIED Engine = 0
-	// Pure-Go, embedded, no server: github.com/picatz/flowstate/plugins/sql's
-	// own tests run against this engine, in-process, with nothing to stand up
-	// - see doc.go, "Why sqlite is enumerated first."
+	// Pure-Go, embedded, no server. Retained for package-test fixtures; released
+	// plugin binaries refuse it because it grants worker-filesystem authority.
 	Engine_ENGINE_SQLITE Engine = 1
 	// Pure-Go over the network: github.com/jackc/pgx/v5, the enterprise
 	// target issue #181 names first for production use.
@@ -91,17 +90,15 @@ type QueryInputs struct {
 	// dialect a query string is written in.
 	Engine Engine `protobuf:"varint,1,opt,name=engine,proto3,enum=sql.v1.Engine" json:"engine,omitempty"`
 	// Dsn is this call's connection string. It is declared in this task's
-	// secret_inputs (see main.go), so a Flowfile writes
+	// secret_inputs and required_secret_inputs (see main.go), so a Flowfile writes
 	// `dsn: ${secret('...')}` and this task receives the resolved value,
 	// never the reference - the host resolves it before this task ever runs.
-	// A literal is accepted but strongly discouraged (see doc.go, "Secrets"),
-	// for the same reason codex.exec's api_key is: this task cannot always
-	// tell a resolved secret from an author's own literal once both arrive as
-	// the same value shape.
+	// Validation and dispatch both refuse a literal before it can enter durable
+	// workflow history or cross the plugin socket.
 	Dsn *v1.Value `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	// Query is the SQL text this call executes, verbatim. It is never
 	// string-formatted, concatenated, or templated by this plugin - a
-	// parameter placeholder (`?` for sqlite, `$1`, `$2`, ... for postgres) is
+	// PostgreSQL parameter placeholder (`$1`, `$2`, ...) is
 	// the only way a value from params ever reaches the database, and there
 	// is no other spelling in this schema that lets a value become part of
 	// the query text itself. See doc.go, "Parameterized only, structurally."
@@ -277,7 +274,8 @@ type ExecInputs struct {
 	// QueryInputs.engine does.
 	Engine Engine `protobuf:"varint,1,opt,name=engine,proto3,enum=sql.v1.Engine" json:"engine,omitempty"`
 	// Dsn is this call's connection string, exactly as QueryInputs.dsn is -
-	// declared in secret_inputs, resolved by the host before this task runs.
+	// declared in secret_inputs and required_secret_inputs, resolved by the host
+	// before this task runs; ordinary literals are refused.
 	Dsn *v1.Value `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	// Statements runs in order, inside one transaction: every statement
 	// commits together or none does. A statement that fails rolls the whole
@@ -294,11 +292,11 @@ type ExecInputs struct {
 	// files_changed) encountered on the input side instead of the output
 	// side. A Flowfile writes this as an ordinary CEL list of maps:
 	//
-	//	statements:
-	//	  - sql: "INSERT INTO accounts (id, balance_cents) VALUES (?, ?)"
-	//	    params: [1, 1000]
-	//	  - sql: "UPDATE accounts SET balance_cents = balance_cents - ? WHERE id = ?"
-	//	    params: [100, 1]
+	//   statements:
+	//     - sql: "INSERT INTO accounts (id, balance_cents) VALUES ($1, $2)"
+	//       params: [1, 1000]
+	//     - sql: "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2"
+	//       params: [100, 1]
 	//
 	// Each entry is a map with two keys: "sql" (string, required, the exact
 	// same verbatim-text rule query: follows) and "params" (a list, bound the
@@ -370,9 +368,9 @@ type ExecOutputs struct {
 	// failing to read something" reasoning plugins/codex's token-usage fields
 	// use.
 	TotalRowsAffected int64 `protobuf:"varint,1,opt,name=total_rows_affected,json=totalRowsAffected,proto3" json:"total_rows_affected,omitempty"`
-	// LastInsertId is the sqlite engine's own rowid from the final
-	// statement's own INSERT, when it performed one. Always 0 for
-	// ENGINE_POSTGRES: database/sql's LastInsertId is unsupported by pgx (the
+	// LastInsertId is retained for schema compatibility with SQLite package
+	// tests. It is always 0 for the released ENGINE_POSTGRES path:
+	// database/sql's LastInsertId is unsupported by pgx (the
 	// wire protocol has no equivalent RPC), and the idiomatic replacement -
 	// an `INSERT ... RETURNING id` statement whose result a workflow reads -
 	// is sql.query's job, not this field's; see doc.go and the README for

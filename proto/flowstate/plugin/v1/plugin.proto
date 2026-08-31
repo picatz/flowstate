@@ -296,6 +296,17 @@ message TaskManifest {
   // declared, and an author who writes `outputs:` at one is told it is an
   // unknown input rather than being quietly stood down from.
   bool shapes_outputs = 11;
+
+  // RequiredSecretInputs names inputs that must arrive as whole host-resolved
+  // secret references, never as ordinary literal values. Every name here must
+  // also appear in secret_inputs: that list grants resolution, while this one
+  // independently prevents credential material or connection strings from
+  // being embedded in a Flowfile and durable workflow history.
+  //
+  // The host enforces this before resolving anything and before Execute crosses
+  // the plugin socket. The plugin still receives the resolved literal value,
+  // preserving the existing local protocol shape.
+  repeated string required_secret_inputs = 12 [(buf.validate.field).repeated = {max_items: 16}];
 }
 
 // PluginService is the capability handshake every plugin must implement.
