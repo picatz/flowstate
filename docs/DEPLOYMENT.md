@@ -1346,8 +1346,11 @@ batch processor's export happens after the request has already been answered,
 so a "required" sink backed by one would prove nothing at the decision point.
 Stderr follows the same trade: in the default mode records enter a bounded
 background queue, and a full queue drops a record rather than blocking the RPC
-on a stalled logging consumer. Under `--audit-required`, stderr writes are
-synchronous so returning success proves that the record was written.
+on a stalled logging consumer. Dropped records are counted and reported to the
+same stderr stream as one summary line naming the count, so the loss is
+visible to whoever reads the trail rather than silent. Under
+`--audit-required`, stderr writes are synchronous so returning success proves
+that the record was written.
 
 The default is auditing **on**, best-effort — every deployment gets a stderr
 trail from the moment it starts serving, and nothing has to be configured to

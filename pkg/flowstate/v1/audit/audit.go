@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -339,6 +340,11 @@ func NewWriterEmitter(w io.Writer) Emitter {
 // an error, which a best-effort Recorder deliberately swallows. The returned
 // flush waits for records already accepted into the queue, subject to ctx.
 //
+// A drop is counted, and the writer goroutine reports the running total in
+// one summary line to the same sink — before the next record it writes, and
+// at flush — so backpressure loss is visible to whoever reads the trail
+// rather than silent, at a rate the writer sets rather than once per drop.
+//
 // This emitter is for best-effort mode only. Required auditing must use
 // [NewWriterEmitter], where completion of Emit proves the record was written.
 func NewAsyncWriterEmitter(w io.Writer, queueSize int) (Emitter, func(context.Context) error) {
@@ -365,6 +371,12 @@ type asyncWriterItem struct {
 type asyncWriterEmitter struct {
 	w     io.Writer
 	queue chan asyncWriterItem
+
+	// dropped counts records Emit refused since the last summary the writer
+	// goroutine managed to sink. doc.go promises a trail that is complete
+	// rather than sampled; when best-effort mode breaks that promise to keep
+	// a stalled consumer off the RPC path, the break has to be visible.
+	dropped atomic.Uint64
 }
 
 func (e *asyncWriterEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
@@ -377,12 +389,14 @@ func (e *asyncWriterEmitter) Emit(_ context.Context, record *v1.AuditRecord) err
 	case e.queue <- asyncWriterItem{line: append(line, '\n')}:
 		return nil
 	default:
+		e.dropped.Add(1)
 		return errors.New("audit: writer queue is full")
 	}
 }
 
 func (e *asyncWriterEmitter) run() {
 	for item := range e.queue {
+		e.reportDropped()
 		var err error
 		if item.line != nil {
 			_, err = e.w.Write(item.line)
@@ -393,6 +407,30 @@ func (e *asyncWriterEmitter) run() {
 		if item.flushed != nil {
 			item.flushed <- err
 		}
+	}
+}
+
+// reportDropped writes the one line describing what a full queue dropped
+// since the last report — the shape plugin's stderrLimiter (#714) settled:
+// suppression must never be invisible, so it is reported once, at a rate the
+// writer chooses, rather than once per dropped record. run calls it ahead of
+// every item, so the summary lands before the next record a reader sees and
+// again at flush, and a drop is never lost to shutdown.
+//
+// Prose, deliberately not protojson: records are one JSON object per line,
+// and a summary that parsed as JSON could be mistaken for a record by a
+// consumer of the trail. The sink already interleaves the process's ordinary
+// stderr, so a non-JSON line is nothing a record consumer has not seen.
+func (e *asyncWriterEmitter) reportDropped() {
+	n := e.dropped.Swap(0)
+	if n == 0 {
+		return
+	}
+
+	if _, err := fmt.Fprintf(e.w, "audit: %d records dropped: writer queue was full\n", n); err != nil {
+		// The count outlives a writer that is still failing; the next record
+		// or flush retries the report.
+		e.dropped.Add(n)
 	}
 }
 
