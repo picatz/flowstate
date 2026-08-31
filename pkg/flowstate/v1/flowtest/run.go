@@ -1140,23 +1140,39 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 // at once — the same reason [stubbedTask] holds one, and the same short
 // critical section.
 type unstubbedTasks struct {
-	mu    sync.Mutex
-	names map[string]struct{}
+	mu sync.Mutex
+
+	// at holds one entry per task-and-step pair, because a warning that names
+	// only the task cannot be acted on when two steps run it and one of them
+	// is stubbed by `step:`. The step is the engine's own
+	// ([v1.TaskStepFromContext]) rather than a second channel of the same
+	// fact, and it is empty for an invocation the engine recorded no step for
+	// — a compensation runs off the run-level context — which the rendering
+	// below says rather than inventing one.
+	at map[unstubbedAt]struct{}
 }
 
-// record notes one invocation of an unstubbed task.
-func (u *unstubbedTasks) record(name string) {
+// unstubbedAt is one invocation's identity: the task, and the step that ran it.
+type unstubbedAt struct {
+	task string
+	step string
+}
+
+// record notes one invocation of an unstubbed task, at the step serving it.
+func (u *unstubbedTasks) record(ctx context.Context, name string) {
 	if u == nil {
 		return
 	}
 
+	step, _ := v1.TaskStepFromContext(ctx)
+
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	if u.names == nil {
-		u.names = map[string]struct{}{}
+	if u.at == nil {
+		u.at = map[unstubbedAt]struct{}{}
 	}
-	u.names[name] = struct{}{}
+	u.at[unstubbedAt{task: name, step: step}] = struct{}{}
 }
 
 // warnings is the account a case owes about its own scaffolding, in the shape
@@ -1174,24 +1190,42 @@ func (u *unstubbedTasks) warnings() []*v1.Diagnostic {
 	}
 
 	u.mu.Lock()
-	names := make([]string, 0, len(u.names))
-	for name := range u.names {
-		names = append(names, name)
+	at := make([]unstubbedAt, 0, len(u.at))
+	for one := range u.at {
+		at = append(at, one)
 	}
 	u.mu.Unlock()
 
 	// Ordered, not walked: the report must read identically on every run.
-	sort.Strings(names)
+	sort.Slice(at, func(i, j int) bool {
+		if at[i].task != at[j].task {
+			return at[i].task < at[j].task
+		}
 
-	warnings := make([]*v1.Diagnostic, 0, len(names))
-	for _, name := range names {
+		return at[i].step < at[j].step
+	})
+
+	warnings := make([]*v1.Diagnostic, 0, len(at))
+	for _, one := range at {
+		// True whichever way the run ended. An earlier wording said the step
+		// had tolerated the refusal, which is the case this exists for but
+		// not the only one it reports: a run that *failed* on the refusal
+		// earns the warning too, and telling its author their Flowfile
+		// tolerated something it did not is a diagnostic that lies. What is
+		// true in both is that the case declared no stub and the task
+		// therefore did nothing.
+		where := ""
+		if one.step != "" {
+			where = fmt.Sprintf(" at step %q", one.step)
+		}
+
 		warnings = append(warnings, &v1.Diagnostic{
 			Field: "stubs",
+			Step:  one.step,
 			Message: fmt.Sprintf(
-				"task %q was invoked with no stub declared for it, and the step tolerated the "+
-					"refusal (`continue_on_error:`), so this case asserts about a run in which "+
-					"that task never did anything; add a `stubs:` entry naming %q",
-				name, name),
+				"task %q was invoked%s with no stub declared for it, so it did nothing and this "+
+					"case asserts about a run that never exercised it; add a `stubs:` entry naming %q",
+				one.task, where, one.task),
 		})
 	}
 
@@ -1206,7 +1240,7 @@ func (u *unstubbedTasks) warnings() []*v1.Diagnostic {
 // step swallowed still reaches the report. See [unstubbedTasks].
 func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
-		seen.record(name)
+		seen.record(ctx, name)
 
 		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, fmt.Errorf(
 			"flow test: task %q was invoked, but this case declares no stub for it; "+

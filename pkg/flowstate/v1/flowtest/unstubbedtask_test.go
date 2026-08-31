@@ -67,8 +67,17 @@ tests:
 	assert.Equal(t, "stubs", w.GetField())
 	assert.Contains(t, w.GetMessage(), `task "http"`,
 		"the warning does not name the task that ran unstubbed: %s", w.GetMessage())
-	assert.Contains(t, w.GetMessage(), "continue_on_error",
-		"the warning does not say why the refusal went unseen: %s", w.GetMessage())
+	assert.Equal(t, "ping", w.GetStep(),
+		"the warning does not name the step that ran the unstubbed task, so a case with two "+
+			"steps sharing a task cannot tell which one is missing a stub")
+	assert.Contains(t, w.GetMessage(), `step "ping"`,
+		"the step is not named in the message either: %s", w.GetMessage())
+
+	// The wording has to hold for the failing-run case below too, so it must
+	// not assert a tolerance that case does not have.
+	assert.NotContains(t, w.GetMessage(), "continue_on_error",
+		"the warning claims a tolerance it cannot know applies on every run it is reported for: %s",
+		w.GetMessage())
 }
 
 // TestAnUnstubbedTaskIsWarnedAboutEvenWhenTheRunFails is the half an idle
@@ -95,7 +104,14 @@ tests:
 	c := report.GetCases()[0]
 	require.Len(t, c.GetWarnings(), 1,
 		"an invocation that happened must be recorded whatever the verdict: %v", c.GetWarnings())
-	assert.Contains(t, c.GetWarnings()[0].GetMessage(), `task "http"`)
+
+	// The same sentence as the tolerated case, and it has to be true here:
+	// nothing tolerated this refusal, the run failed on it.
+	message := c.GetWarnings()[0].GetMessage()
+	assert.Contains(t, message, `task "http"`)
+	assert.NotContains(t, message, "continue_on_error",
+		"the warning tells this author their Flowfile tolerated a refusal that in fact failed "+
+			"the run: %s", message)
 }
 
 // TestAFullyStubbedCaseWarnsAboutNothing is the direction a check like this
