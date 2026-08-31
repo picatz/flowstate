@@ -368,10 +368,11 @@ const stringsExtensionVersion = 5
 
 // listsExtensionVersion pins the lists extension library, for the reason
 // [stringsExtensionVersion] records — and with one edge sharper here: this
-// build declares a name of its own inside the library's namespace (`sum`,
-// celsum.go), so an unpinned `ext.Lists()` would let a future cel-go release
-// claim the same name and either change what a workflow's `.sum()` means or
-// refuse to construct the environment at all, as a side effect of `go get -u`.
+// build declares names of its own inside the library's namespace (`sum` and
+// `reduce`, celfold.go), so an unpinned `ext.Lists()` would let a future cel-go
+// release claim the same names and either change what a workflow's `.sum()`
+// means or refuse to construct the environment at all, as a side effect of
+// `go get -u`.
 // Three is the highest version cel-go v0.31.0 implements, so pinning it changes
 // nothing today; raising it is the same reviewed decision the strings pin
 // describes.
@@ -387,7 +388,7 @@ var extensionLibraries = map[string][]cel.EnvOption{
 	"comprehensions": {ext.TwoVarComprehensions()},
 	"encoders":       {ext.Encoders()},
 	"json":           {jsonLibrary()},
-	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), sumLibrary()},
+	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), foldLibrary()},
 	"math":           {ext.Math()},
 	"optional":       {cel.OptionalTypes()},
 	"protos":         {ext.Protos()},
@@ -470,8 +471,9 @@ const OriginalProfile = "2026.1"
 // kind: a compiled spec carries the expansion rather than the name, so no stored
 // run and no worker can tell whether the build evaluating it ever heard of the
 // macro — a worker predating it still evaluates every spec that uses it. Such a
-// macro may join the current profile (`sum`, celsum.go, is one); anything that
-// declares a runtime name, however small, still means a new profile.
+// macro may join the current profile (`sum` and `reduce`, celfold.go, are two);
+// anything that declares a runtime name, however small, still means a new
+// profile.
 var profiles = map[string][]string{
 	// The first profile is every library this build shipped with when profiles
 	// were introduced, which is also every library that existed. That is a

@@ -293,6 +293,7 @@ var macroExamples = map[string]string{
 	"transformMapEntry": `{'a': 1}.transformMapEntry(k, v, {k: v * 2})`,
 
 	// lists.
+	"reduce": `[1, 2, 3].reduce(a, v, 0, a + v)`,
 	"sortBy": `[3, 1, 2].sortBy(v, v)`,
 	"sum":    `[1, 2, 3].sum()`,
 

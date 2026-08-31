@@ -49,6 +49,7 @@ a macro, so this column is derived from it directly.
 | `lists` | `distinct` | function | — | `list(<T>).distinct() -> list(<T>)` |
 | `lists` | `flatten` | function | — | `list(dyn).flatten(int) -> list(dyn)`<br>`list(list(<T>)).flatten() -> list(<T>)` |
 | `lists` | `lists.range` | function | — | `lists.range(int) -> list(int)` |
+| `lists` | `reduce` | macro | `[1, 2, 3].reduce(a, v, 0, a + v)` | — |
 | `lists` | `reverse` | function | — | `list(<T>).reverse() -> list(<T>)`<br>`string.reverse() -> string` |
 | `lists` | `slice` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
 | `lists` | `sort` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
@@ -178,6 +179,14 @@ payload.?approved.hasValue()
 
 ```cel
 steps.paid.value.map(o, o.amount_cents).sum()
+```
+
+### A fold whose combiner is not +
+
+`reduce` is the general form `sum` is the special case of: name the accumulator and the element, give the seed, write the combining expression. Reach for `map(...).sum()` first — it answers the naming and seeding questions for you — and for `reduce` when the combiner is not `+`: a product, a running maximum, a fold whose seed carries meaning. An empty list folds to the seed, verbatim.
+
+```cel
+steps.factors.value.reduce(p, v, 1, p * v)
 ```
 
 ### Building one message from several values

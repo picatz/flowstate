@@ -52,6 +52,16 @@ steps:
     log:
       message: ${"%d".format([cents])}
 
+  # `reduce` is the general fold `sum` is the special case of: name the
+  # accumulator and the element, give the seed, write the combining
+  # expression. Reach for `map(...).sum()` for totals; `reduce` when the
+  # combiner is not `+` — a product here, and an empty list folds to the seed.
+  - id: product
+    vars:
+      "n": ${[2, 3, 4].reduce(p, v, 1, p * v)}
+    log:
+      message: ${"%d".format([n])}
+
   # Optional traversal is the dialect's read-with-default (edition v2026.3).
   # `.?` reads a field that may be absent and `orValue` puts the default beside
   # the read, where `has(x.y) && x.y` spelled the path twice with a guard in
