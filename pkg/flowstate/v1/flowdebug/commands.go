@@ -686,31 +686,26 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // nothing about what exists, and [checkStepArgument] takes that same silence
 // the same way: absence of evidence is not evidence a step is missing.
 func (s *Session) unknownStepNotice(id string) (string, bool) {
+	// Built once at construction ([declaredStepIDs]); this is a lookup rather
+	// than a walk, because a refused command is not recorded and so may be
+	// repeated without bound.
+	_, known := s.declaredIDs[id]
+
 	s.mu.Lock()
-	declared := make([]string, 0, len(s.steps))
-	known := false
-	for _, step := range s.steps {
-		declared = append(declared, step.ID)
-		known = known || step.ID == id
-	}
 	// An id this session has watched go past is reachable whatever the
 	// inventory said, so it is admitted — but it never *makes* an inventory:
 	// what has run so far is not what the workflow declares, and reading it
 	// that way would refuse every step the run has not reached yet, which on
 	// an empty inventory is all of them.
-	for seen := range s.seen {
-		known = known || seen == id
+	if !known {
+		_, known = s.seen[id]
 	}
 	s.mu.Unlock()
 
-	if known || len(declared) == 0 {
+	names := s.declared
+	if known || len(names) == 0 {
 		return "", false
 	}
-
-	names := declared
-
-	slices.Sort(names)
-	names = slices.Compact(names)
 
 	if suggestion, found := nearest.Name(id, names); found {
 		return fmt.Sprintf("no step named %q: did you mean %q?", id, suggestion), true

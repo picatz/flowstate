@@ -438,6 +438,14 @@ type Session struct {
 	// boundary is parked — can answer against the scope the prompt is for.
 	at promptSubject
 
+	// declared is [Options.Steps]'s ids, sorted and deduplicated, and
+	// declaredIDs is the same set as a membership test. Both are built once at
+	// construction and never written again — steps is not mutated after New —
+	// so [Session.unknownStepNotice] costs a lookup rather than a rebuild per
+	// refused command. See [declaredStepIDs] for the ordering it also fixes.
+	declared    []string
+	declaredIDs map[string]struct{}
+
 	// steps are the ids a caller said this run may reach ([Options.Steps]),
 	// and seen are the ids this session has watched go past, each against what
 	// it was last watched doing. Both feed completion for `break` and `until`
@@ -596,6 +604,8 @@ func New(opts Options) (*Session, error) {
 		steps:       slices.Clone(opts.Steps),
 		seen:        map[string]StepState{},
 		sharedIDs:   sharedStepIDs(opts.Steps),
+		declared:    declaredStepIDs(opts.Steps),
+		declaredIDs: declaredStepIDSet(opts.Steps),
 
 		controlled:   opts.Controlled,
 		control:      make(chan controlRequest),
@@ -635,6 +645,40 @@ func New(opts Options) (*Session, error) {
 	}
 
 	return s, nil
+}
+
+// declaredStepIDs is the sorted, deduplicated ids [Options.Steps] names, built
+// once at construction because [Session.unknownStepNotice] answers over it on
+// every refused `break` or `until` — and a refused command is not recorded, so
+// redirected input can repeat one without ever reaching [MaxScriptCommands].
+// Rebuilding and re-sorting the whole inventory per rejected line is work an
+// input controls the amount of, which is the bound CLAUDE.md asks for spent
+// where it is spent (Codex, #1347).
+//
+// Sorted here rather than at the call site so the prompt and `flow debug
+// replay` feed [nearest.Name] the same order: it keeps the first candidate at
+// the best distance, so an unsorted list makes the suggestion depend on map
+// iteration order — different between the two fronts, and different between
+// two runs of the same one.
+func declaredStepIDs(steps []Step) []string {
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.ID)
+	}
+	slices.Sort(ids)
+
+	return slices.Compact(ids)
+}
+
+// declaredStepIDSet is [declaredStepIDs] as a membership test, so the common
+// answer — the id is declared, arm it — costs one lookup.
+func declaredStepIDSet(steps []Step) map[string]struct{} {
+	ids := make(map[string]struct{}, len(steps))
+	for _, step := range steps {
+		ids[step.ID] = struct{}{}
+	}
+
+	return ids
 }
 
 // sharedStepIDs are the ids more than one *workflow* in an inventory declares.

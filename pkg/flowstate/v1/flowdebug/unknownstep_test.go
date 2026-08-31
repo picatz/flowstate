@@ -143,3 +143,71 @@ func TestAnEmptyInventoryRefusesNothing(t *testing.T) {
 	assert.NotContains(t, out, "no step named",
 		"an empty inventory was read as proof the step does not exist:\n%s", out)
 }
+
+// TestTheSuggestionIsStableAndAgreesWithReplay is the tie case. [nearest.Name]
+// keeps the first candidate at the best distance, so the answer depends on the
+// order it is asked in — and replay built its list by walking a map, which made
+// its own suggestion a coin toss between two equally near ids, differing
+// between runs and from the prompt answering the identical question. Both
+// fronts sort first now, so this asserts they agree, repeatedly.
+func TestTheSuggestionIsStableAndAgreesWithReplay(t *testing.T) {
+	t.Parallel()
+
+	// "bild" is one edit from both, so which is suggested is decided purely by
+	// the order the candidates are offered in.
+	steps := []flowdebug.Step{{ID: "build"}, {ID: "bald"}, {ID: "deploy"}}
+
+	prompt := func() string {
+		var console strings.Builder
+		session, err := flowdebug.New(flowdebug.Options{
+			In:    strings.NewReader("break bild\ncontinue\n"),
+			Out:   &console,
+			Steps: steps,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = session.Close() })
+		require.NoError(t, <-walked(t, session, "build", "deploy"))
+
+		return console.String()
+	}
+
+	first := prompt()
+	require.Contains(t, first, "did you mean")
+	for range 5 {
+		assert.Equal(t, first, prompt(),
+			"the same typo suggested a different id on a later run: the candidates are "+
+				"being offered to nearest.Name in an unstable order")
+	}
+
+	// And the other front, over the same ids, has to land on the same word —
+	// asked enough times to see an unstable order rather than to sample one.
+	// Replay built its candidates by walking a map, and measured over this
+	// same tie that picked the other id about one call in eight, so a handful
+	// of iterations would make this test a coin toss about a coin toss.
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.ID)
+	}
+
+	want := suggestedName(t, first)
+	for range 100 {
+		problems, _ := flowdebug.CheckScript([]string{"break bild"}, ids)
+		require.NotEmpty(t, problems, "replay accepted a step id nothing declares")
+
+		assert.Equal(t, want, suggestedName(t, problems[0].Message),
+			"the prompt and replay suggest different ids for one typo:\nprompt: %s\nreplay: %s",
+			first, problems[0].Message)
+	}
+}
+
+// suggestedName pulls the id out of a `did you mean "x"?` diagnostic.
+func suggestedName(t *testing.T, message string) string {
+	t.Helper()
+
+	_, after, found := strings.Cut(message, `did you mean "`)
+	require.True(t, found, "no suggestion in %q", message)
+	name, _, found := strings.Cut(after, `"`)
+	require.True(t, found, "unterminated suggestion in %q", message)
+
+	return name
+}

@@ -366,6 +366,14 @@ func checkStepArgument(
 		names = append(names, name)
 	}
 
+	// Sorted before it is asked, because [nearest.Name] keeps the first
+	// candidate at the best distance: over a map's iteration order two equally
+	// near ids make the suggestion a coin toss, differing between runs of this
+	// same command and between this front and the prompt, which answers the
+	// identical question. [stepList] below sorts for its own reasons; this is
+	// the answer above it needing the same guarantee.
+	slices.Sort(names)
+
 	if suggestion, found := nearest.Name(id, names); found {
 		report(number, column, "no step named %q: did you mean %q?", id, suggestion)
 
