@@ -779,6 +779,16 @@ message RunState {
   // validate` cannot tell those apart and neither can a workflow, which is
   // correct: "no trigger recorded" is one fact, not two.
   TriggerContext trigger = 12;
+
+  // MetricWorkflowName is the deployment-owned workflow name that run-lifecycle
+  // metrics may export. It is set only when the admitting boundary selected a
+  // trusted workflow; an open submission leaves it empty so a caller cannot
+  // spend the process-wide workflow-name cardinality budget.
+  //
+  // Carried across Continue-As-New because trust was established once at the
+  // boundary and cannot be reconstructed by workflow code. Absent on older runs
+  // reads as empty, which safely omits the name.
+  string metric_workflow_name = 13;
 }
 
 // TimelineEntry is one thing a run did, read back from its own durable history.
