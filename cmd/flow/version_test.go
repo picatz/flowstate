@@ -148,12 +148,13 @@ func TestDashDashVersionMatchesTheVersionCommand(t *testing.T) {
 	var info versionInfo
 	require.NoError(t, json.Unmarshal(jsonOut, &info))
 
-	// Cobra's template is "flow version <version>"; the assertion is on the
-	// version value itself, so a template change cannot fail this for a
-	// wording reason.
-	assert.Contains(t, strings.TrimSpace(string(flagOut)), info.Version,
-		"--version and `flow version` disagree about which build this is: %q vs %q",
-		strings.TrimSpace(string(flagOut)), info.Version)
+	// Cobra's template is "flow version <version>": the fixed prefix is
+	// stripped and the remainder compared exactly, because a containment
+	// check would pass two versions sharing a prefix (v1.2.30 contains
+	// v1.2.3) — the very drift this test exists to refuse.
+	flagVersion := strings.TrimPrefix(strings.TrimSpace(string(flagOut)), "flow version ")
+	assert.Equal(t, info.Version, flagVersion,
+		"--version and `flow version` disagree about which build this is")
 }
 
 // TestRunVersionJSONRoundTripsIntoVersionInfo is the stricter form of the
