@@ -290,8 +290,10 @@ var celIdioms = []celIdiom{
 			"and a running sum through durable history, with the off-by-one that shape invites. " +
 			"Chained after `map` it reads left to right: keep what matters, pick the number, add " +
 			"them up. An empty list sums to `0`, and a list `+` cannot add — a string beside an " +
-			"int — fails the evaluation rather than guessing. `loop:` remains the right tool when " +
-			"the fold's body does real work; see examples/loop-accumulate.",
+			"int — fails the evaluation rather than guessing. Only a list may be folded: a map's " +
+			"iteration order is undefined, so both folds refuse one, and the deterministic spelling " +
+			"is explicit — `m.map(k, k).sort().map(k, m[k]).sum()`. `loop:` remains the right tool " +
+			"when the fold's body does real work; see examples/loop-accumulate.",
 		expr: `steps.paid.value.map(o, o.amount_cents).sum()`,
 	},
 	{

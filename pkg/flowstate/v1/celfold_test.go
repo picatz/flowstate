@@ -91,7 +91,15 @@ func TestSumFailsTheWayTheOperatorDoes(t *testing.T) {
 	}{
 		{name: "mixed types", expr: `[1, 'a'].sum()`, contains: "no such overload"},
 		{name: "int overflow", expr: `[9223372036854775807, 1].sum()`, contains: "integer overflow"},
-		{name: "not a list", expr: `'abc'.sum()`, contains: ""},
+		{name: "not a list", expr: `'abc'.sum()`, contains: "sum() folds a list"},
+		// A map is the corner that would not merely fail: the comprehension
+		// machinery iterates a map's keys in Go's randomized order, so a fold
+		// over one is a value that can differ between two evaluations of the
+		// same expression — measured at three distinct strings in forty runs
+		// before the guard existed, and the exact replay hazard #1359 records.
+		// Refused with the deterministic spelling in the error's own words.
+		{name: "a map receiver", expr: `{'a': 'x', 'b': 'y'}.sum()`, contains: "sum() folds a list"},
+		{name: "a map receiver for reduce", expr: `{'a': 1, 'b': 2}.reduce(t, v, 0, t + v)`, contains: "reduce() folds a list"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

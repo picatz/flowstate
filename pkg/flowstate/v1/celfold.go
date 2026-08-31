@@ -42,18 +42,45 @@ import (
 // them — the properties the profile freeze exists to protect, kept without
 // minting a new profile. The rule this instantiates is written at [profiles].
 //
+// # Only a list may be folded
+//
+// CEL's comprehension machinery also iterates maps — over their *keys*, in
+// Go's own randomized map order (#1359) — so a fold over a map is a value that
+// can differ between two evaluations of the same expression over the same
+// data. The local driver would record whichever answer it got; the durable
+// driver re-evaluates conditions on replay, where a different answer is the
+// nondeterminism invariant 4 exists to keep out of workflow-side code.
+// `{'a': 'x', 'b': 'y', 'c': 'z'}.sum()` measurably produces three different
+// strings across forty runs. Flagged by review on #1345.
+//
+// So both expansions refuse a non-list receiver before iterating, inside the
+// expansion itself — the guard has to be spelled in the same standard-CEL
+// vocabulary as the rest, or the forward-compatibility argument above dies
+// with it. Two tricks make that possible. The receiver is bound once through
+// the same empty-range comprehension `cel.bind` and `sortBy` use, so the
+// guard's two reads do not evaluate the receiver twice. And the type test is
+// written `type(x) == type([])` rather than `type(x) == list`, because the
+// bare identifier `list` would be collected by flowfile's type-check
+// declarations (celcheck.go) and collide with the standard environment's own
+// type identifier. The refusal itself is a key lookup on an empty map, whose
+// error carries the one sentence an author needs: fold a map by ordering its
+// keys first — `m.map(k, k).sort().map(k, m[k]).sum()` is the deterministic
+// spelling, and it stays an author's explicit choice.
+//
 // # The `sum` expansion
 //
 //	xs.sum()
 //
-// becomes, with `acc` the parser's accumulator and `@__sum_elem__` the element:
+// becomes, with `acc` the parser's accumulator, `@__sum_input__` the bound
+// receiver, and `@__sum_elem__` the element:
 //
-//	__comprehension__(          // fold over xs
-//	  iterRange: xs,
-//	  accuInit:  [],
-//	  loopStep:  size(acc) == 0 ? [@__sum_elem__] : [acc[0] + @__sum_elem__],
-//	  result:    size(acc) == 0 ? dyn(0) : acc[0]
-//	)
+//	cel.bind(@__sum_input__, xs,
+//	  __comprehension__(        // fold over the guarded receiver
+//	    iterRange: type(@__sum_input__) == type([]) ? @__sum_input__ : {}['sum() folds a list…'],
+//	    accuInit:  [],
+//	    loopStep:  size(acc) == 0 ? [@__sum_elem__] : [acc[0] + @__sum_elem__],
+//	    result:    size(acc) == 0 ? dyn(0) : acc[0]
+//	  ))
 //
 // The accumulator carries the running total inside a single-element list, and
 // the first element seeds it, because CEL's `+` has no cross-type overloads and
@@ -76,13 +103,14 @@ import (
 //
 //	xs.reduce(a, v, init, step)
 //
-// becomes the comprehension it names outright: iterate xs as `v`, carry `a`
-// seeded with `init`, evaluate `step` each iteration as the next `a`, answer
-// the final `a`. The seed makes the empty-list answer the author's — `[]` folds
-// to `init`, no `dyn(0)` needed — and the author-written step means no carrier
-// list either: `reduce` is the comprehension machinery with none of `sum`'s
-// compensations, because every question those compensations answer (what is
-// zero, what is the combining operator) is answered in the call.
+// becomes the comprehension it names outright, under the same bind and guard:
+// iterate the guarded xs as `v`, carry `a` seeded with `init`, evaluate `step`
+// each iteration as the next `a`, answer the final `a`. The seed makes the
+// empty-list answer the author's — `[]` folds to `init`, no `dyn(0)` needed —
+// and the author-written step means no carrier list either: `reduce` is the
+// comprehension machinery with none of `sum`'s compensations, because every
+// question those compensations answer (what is zero, what is the combining
+// operator) is answered in the call.
 //
 //	[2, 3, 4].reduce(p, v, 1, p * v)   // 24 — the fold sum cannot spell
 //
@@ -114,6 +142,32 @@ func foldLibrary() cel.EnvOption {
 // or capture any name an author can write.
 const sumElementVar = "@__sum_elem__"
 
+// bindReceiver wraps body so that the macro's receiver is evaluated once and
+// read as inputVar — the empty-range comprehension `cel.bind` and `sortBy`
+// expand to. Without it the guard's two reads of the receiver would evaluate
+// it twice, doubling the work and the charged cost of whatever chain produced
+// it.
+func bindReceiver(mef cel.MacroExprFactory, inputVar string, target, body ast.Expr) ast.Expr {
+	return mef.NewComprehension(mef.NewList(), "#unused", inputVar,
+		target, mef.NewLiteral(types.False), mef.NewIdent(inputVar), body)
+}
+
+// listOnly returns the bound receiver where it is a list, and a refusal
+// naming the deterministic map spelling where it is not. See "Only a list may
+// be folded" above for why the test avoids the bare identifier `list` and why
+// the refusal is a key lookup.
+func listOnly(mef cel.MacroExprFactory, inputVar, macroName string) ast.Expr {
+	isList := mef.NewCall(operators.Equals,
+		mef.NewCall("type", mef.NewIdent(inputVar)),
+		mef.NewCall("type", mef.NewList()))
+
+	refusal := mef.NewCall(operators.Index, mef.NewMap(), mef.NewLiteral(types.String(
+		macroName+" folds a list, and this receiver is not one; a map's iteration order "+
+			"is undefined, so order its keys first — m.map(k, k).sort().map(k, m[k])")))
+
+	return mef.NewCall(operators.Conditional, isList, mef.NewIdent(inputVar), refusal)
+}
+
 // expandSum rewrites `xs.sum()` into the comprehension documented on
 // [foldLibrary]. Every node is built fresh — the factory assigns each an id,
 // and a shared node would give two positions one identity.
@@ -140,8 +194,11 @@ func expandSum(mef cel.MacroExprFactory, target ast.Expr, _ []ast.Expr) (ast.Exp
 		mef.NewCall("dyn", mef.NewLiteral(types.Int(0))),
 		total())
 
-	return mef.NewComprehension(target, sumElementVar, mef.AccuIdentName(),
-		mef.NewList(), mef.NewLiteral(types.True), step, result), nil
+	const inputVar = "@__sum_input__"
+	fold := mef.NewComprehension(listOnly(mef, inputVar, "sum()"), sumElementVar,
+		mef.AccuIdentName(), mef.NewList(), mef.NewLiteral(types.True), step, result)
+
+	return bindReceiver(mef, inputVar, target, fold), nil
 }
 
 // expandReduce rewrites `xs.reduce(a, v, init, step)` into the comprehension
@@ -172,8 +229,11 @@ func expandReduce(mef cel.MacroExprFactory, target ast.Expr, args []ast.Expr) (a
 		}
 	}
 
-	return mef.NewComprehension(target, iterVar, accuVar,
-		args[2], mef.NewLiteral(types.True), args[3], mef.NewIdent(accuVar)), nil
+	const inputVar = "@__reduce_input__"
+	fold := mef.NewComprehension(listOnly(mef, inputVar, "reduce()"), iterVar, accuVar,
+		args[2], mef.NewLiteral(types.True), args[3], mef.NewIdent(accuVar))
+
+	return bindReceiver(mef, inputVar, target, fold), nil
 }
 
 // identName returns the name a bare identifier expression carries.
