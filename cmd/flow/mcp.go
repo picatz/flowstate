@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
@@ -79,11 +80,72 @@ import (
 // testable without standing up the stdio server — see
 // TestRemoteCatalogAddressForRespectsExplicitAddress.
 func remoteCatalogAddressFor(cmd *cobra.Command, flags serverFlags) string {
-	if cmd.Flags().Changed("address") || os.Getenv("FLOWSTATE_ADDRESS") != "" {
+	if addressExplicitlyConfigured(cmd) {
 		return flags.address
 	}
 
 	return ""
+}
+
+// addressExplicitlyConfigured reports whether an operator named a deployment,
+// either way one can be named. The one spelling of the question
+// [remoteCatalogAddressFor] documents, shared with [mcpRPCErrorDecorator]
+// because both answer differently depending on it.
+func addressExplicitlyConfigured(cmd *cobra.Command) bool {
+	return cmd.Flags().Changed("address") || os.Getenv("FLOWSTATE_ADDRESS") != ""
+}
+
+// mcpRPCErrorDecorator makes good on this file's own promise for the
+// lifecycle verbs: they address durable runs, which only a server has, and
+// "without --address they explain that rather than failing opaquely". Until
+// now only flowstate_get_catalog explained itself ([remoteCatalogCall]'s
+// refusal names the deployment and the repair); flowstate_run, flowstate_list
+// and their siblings answered a bare `unavailable: dial tcp ...: connection
+// refused` — no mention that the tool needs a server, no mention of
+// --address/FLOWSTATE_ADDRESS, and no way for an agent that never saw this
+// process's flags to know which address was even tried.
+//
+// Only unavailable answers are decorated: that is the code a dial failure
+// carries, and also the one a reachable server answers when it cannot serve —
+// the wording covers both honestly rather than guessing which happened. Every
+// other refusal (not found, permission denied, invalid argument) is the
+// server's own answer about the request and already names its subject.
+//
+// GetCatalog is skipped because its remote path already explains itself, in
+// terms specific to what a wrong catalog would cost; a second sentence on top
+// would say less by saying more.
+func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err error) error {
+	return func(rpc string, err error) error {
+		if rpc == "GetCatalog" {
+			return err
+		}
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			return err
+		}
+
+		// Connect wraps every transport failure as unavailable, including the
+		// ones this process produced before any bytes reached the network — a
+		// token file that cannot be read, a misconfigured --credential-source
+		// or client TLS triple. Those already name their own repair, and
+		// "fix --address, start the server" would point away from it; the
+		// [clientSideError] mark is how the transport says which half failed.
+		var local *clientSideError
+		if errors.As(err, &local) {
+			return err
+		}
+
+		tool := flowmcp.ToolName(rpc)
+		if explicit {
+			return fmt.Errorf("%s needs a Flowstate server, and the deployment at %s answered unavailable "+
+				"or could not be reached: %w\n  fix --address/FLOWSTATE_ADDRESS, or start that deployment, "+
+				"then retry", tool, flags.address, err)
+		}
+
+		return fmt.Errorf("%s addresses durable runs, which only a server has, and neither --address nor "+
+			"FLOWSTATE_ADDRESS names one; this dialed the default %s: %w\n  start a local stack with "+
+			"`flow server dev`, or point --address/FLOWSTATE_ADDRESS at a deployment that is already "+
+			"running, then retry", tool, flags.address, err)
+	}
 }
 
 // runMCP implements the mcp sub-command.
@@ -174,6 +236,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	}
 
 	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
+	deps.DecorateRPCError = mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd))
 
 	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
 		stdioExtraTools(cmd, providers)...)
