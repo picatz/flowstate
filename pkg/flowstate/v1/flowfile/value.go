@@ -99,7 +99,7 @@ func ExprError(s string) error {
 		return fenceError(s)
 	}
 	if value := v1.NewExpr(inner); value.Error() != nil {
-		_, message := celFailure(value.Error(), Span{}, inner)
+		_, message := celFailure(value, Span{}, inner)
 		if containsFence(inner) {
 			return fmt.Errorf("invalid expression %q: %s; %s", inner, message, interpolationHelp)
 		}
@@ -336,8 +336,8 @@ func (c *compiler) interpolation(n ast.Node, text string, segs []segment, path s
 
 		span := spanOfFence(n, text, sg)
 		val := v1.NewExpr(sg.text)
-		if err := val.Error(); err != nil {
-			at, msg := celFailure(err, span, sg.text)
+		if val.Error() != nil {
+			at, msg := celFailure(val, span, sg.text)
 			c.report(at, r, "is not a valid expression: %s", msg)
 			return nil
 		}
@@ -355,12 +355,12 @@ func (c *compiler) interpolation(n ast.Node, text string, segs []segment, path s
 	c.recordExpr(path, spanOfNode(n))
 
 	val := v1.NewExpr(src)
-	if err := val.Error(); err != nil {
+	if val.Error() != nil {
 		// Unreachable while every fence parses and every literal is quoted, and
 		// so reported against the whole value rather than guessed at: a position
 		// invented for an impossible case is the wrong-position failure one
 		// surface over from `flow fix` corruption.
-		_, msg := celFailure(err, spanOfNode(n), src)
+		_, msg := celFailure(val, spanOfNode(n), src)
 		c.report(spanOfNode(n), r, "is not a valid expression: %s", msg)
 		return nil
 	}
@@ -379,8 +379,8 @@ func (c *compiler) expression(n ast.Node, src, path string, r ref, placement sec
 	c.recordExpr(path, span)
 
 	val := v1.NewExpr(src)
-	if err := val.Error(); err != nil {
-		at, msg := celFailure(err, span, src)
+	if val.Error() != nil {
+		at, msg := celFailure(val, span, src)
 		if containsFence(src) {
 			// A second fence inside the first: "${a} ${b}" opens at the start and
 			// closes at the end, so it parses as one expression and fails inside.
@@ -746,7 +746,7 @@ func (c *compiler) celTextString(n ast.Node, text string, r ref) (string, bool) 
 			}
 			span := spanOfFence(n, text, sg)
 			if val := v1.NewExpr(sg.text); val.Error() != nil {
-				at, msg := celFailure(val.Error(), span, sg.text)
+				at, msg := celFailure(val, span, sg.text)
 				c.report(at, r, "is not a valid expression: %s", msg)
 				return "", false
 			}
@@ -789,11 +789,20 @@ var celErrorPattern = regexp.MustCompile(`ERROR: <input>:(\d+):(\d+): (.*)`)
 // name the last token an author wrote when the parser ran out of input. Nothing
 // else here reads it, and a caller that does not have it may pass "": the
 // translation loses one clause and stays correct.
-func celFailure(err error, span Span, src string) (Span, string) {
-	text := err.Error()
+func celFailure(val *v1.Value, span Span, src string) (Span, string) {
+	// The structured message rather than [v1.Value.Error]'s rendering of it.
+	// That rendering appends " (code: CODE_INTERNAL)", and [lastCause] below
+	// reads the text after the final ": " — so a cel-go failure reported
+	// without the position prefix came back as the bare word "CODE_INTERNAL)",
+	// the code's name and its closing parenthesis standing in for the cause an
+	// author needed (#1291). The field carries the same text with no rendering
+	// to undo, which is the one source of truth rather than a format parsed
+	// back apart.
+	text := val.GetError().GetMessage()
+
 	match := celErrorPattern.FindStringSubmatch(text)
 	if match == nil {
-		return span, lastCause(text)
+		return span, positionlessCause(text)
 	}
 
 	msg := strings.TrimSpace(match[3])
@@ -817,8 +826,33 @@ func celFailure(err error, span Span, src string) (Span, string) {
 	return Span{Start: at, End: span.End}, msg
 }
 
+// celDepthLimit is cel-go's own words for an expression that nests deeper than
+// its parser will descend. It arrives with no usable position — the parser
+// reports line -1, which is why [celErrorPattern] does not match it and why
+// this is the one failure [positionlessCause] has to name itself.
+const celDepthLimit = "max recursion depth exceeded"
+
+// positionlessCause is [lastCause] for the failures cel-go reports without a
+// position, with the one an author can act on translated into what to do about
+// it. Everything else keeps cel-go's own words: a message this file cannot
+// improve on is better passed through than paraphrased.
+func positionlessCause(text string) string {
+	cause := lastCause(text)
+	if cause == celDepthLimit {
+		return "this expression nests deeper than the parser will descend; " +
+			"name its parts in `vars:` or in `value:` steps and combine those instead"
+	}
+
+	return cause
+}
+
 // lastCause returns the innermost message of a wrapped error, so that a reader
 // sees what went wrong rather than the chain of functions that noticed.
+//
+// It is given a [v1.Value_Error.Message], never a rendered error: the messages
+// there are genuine wrapper chains ("failed to create CEL expression: failed
+// to parse CEL expression: ..."), where the last segment is the cause. See
+// [celFailure] for what reading a rendered error instead cost.
 func lastCause(text string) string {
 	if i := strings.LastIndex(text, ": "); i >= 0 && i+2 < len(text) {
 		return text[i+2:]
