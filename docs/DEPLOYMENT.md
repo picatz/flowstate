@@ -172,6 +172,36 @@ to PostgreSQL rather than treating the plugin process as filesystem confinement.
 Finally, allow `sql.query` and `sql.exec` separately in task policy: read access
 does not imply the write capability.
 
+### Slack outbound plugin
+
+`slack.post` is the notification half of approval and human-in-the-loop flows.
+It posts bounded accessible text and optionally keeps an outcome in the request
+message's thread; it does not receive Slack interactions or authorize an
+approval. Verified inbound events bridging into Flowstate signals remain a
+separate control-plane concern.
+
+The entire `token` input must be a host-resolved secret reference such as
+`${secret('env:SLACK_BOT_TOKEN')}`. The plugin separately requires an explicit
+`--egress-policy` snapshot permitting HTTPS to `slack.com:443`; absent or
+malformed policy fails closed, and the actual HTTP client enforces DNS, address,
+port, redirect, TLS, credential/identity-aware CEL rules, and response bounds.
+See `examples/plugins/slack/egress-policy.yaml` for the narrow policy shape.
+Neither the Flowfile nor the plugin manifest grants that destination authority,
+and running the plugin as another process does not confine its ambient network
+or filesystem access.
+
+Every post also requires the host-attested production mode. Local rehearsal and
+unknown modes are refused before network access, because a preview that sends a
+real notification is not a safe rehearsal. Operators must allow `slack.post` in
+task policy independently from permitting the plugin binary to launch.
+
+Calls carry a workflow-supplied UUID as Slack's `client_msg_id`, but Slack does
+not document a complete deduplication guarantee. The plugin retries nothing
+internally: a definite 429 refusal carries Slack's bounded `Retry-After` into
+the workflow retry mechanism, while connection loss, timeout, malformed
+acknowledgement, and ambiguous server errors return non-retryable unknown
+outcomes. Inspect Slack before manually retrying one of those outcomes.
+
 ## The four-tier isolation model
 
 Each tier is a set of claims a security reviewer can check independently.

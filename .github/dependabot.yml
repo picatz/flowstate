@@ -92,6 +92,7 @@ updates:
       - /plugins/git
       - /plugins/github
       - /plugins/sql
+      - /plugins/slack
       - /plugins/vcs
     schedule:
       interval: weekly
