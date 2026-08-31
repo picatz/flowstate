@@ -521,9 +521,9 @@ type FlowstateServer struct {
 // It returns an error for a name this deployment registered twice with
 // different specifications, rather than an answer drawn from either of them.
 // See [FlowstateServer.noteTrustedWorkflowConflict].
-func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) (*v1.Workflow, error) {
+func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) (*v1.Workflow, bool, error) {
 	if requested == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	key := trustedWorkflowKey{namespace: namespace, name: requested.GetName()}
 	s.trustedWorkflowsMu.RLock()
@@ -536,12 +536,23 @@ func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workfl
 		// problem it is. It carries no specification detail — the request came
 		// from outside and the conflict is between two deployment-owned
 		// copies.
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(refusal))
+		return nil, false, connect.NewError(connect.CodeFailedPrecondition, errors.New(refusal))
 	}
 	if !ok {
-		return requested, nil
+		return requested, false, nil
 	}
-	return proto.Clone(trusted).(*v1.Workflow), nil
+	return proto.Clone(trusted).(*v1.Workflow), true, nil
+}
+
+// metricWorkflowName returns a workflow name only when the deployment, rather
+// than the request, chose it. Open submissions deliberately have no per-name
+// run metric: otherwise an admitted caller could permanently consume the
+// process-wide cardinality budget shared by every tenant on the worker.
+func metricWorkflowName(workflow *v1.Workflow, trusted bool) string {
+	if !trusted {
+		return ""
+	}
+	return workflow.GetName()
 }
 
 // registerTrustedWorkflow adds one deployment-owned specification to the
@@ -1307,7 +1318,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// equality that can only ever answer true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -1381,7 +1392,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := v1.CheckManualStart(workflow, identity.GetSubject(), req.Msg.GetReason()); err != nil {
+	if err := v1.CheckManualStart(workflow, manualStartPrincipal(ctx), req.Msg.GetReason()); err != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied, err)
 	}
 
@@ -1457,9 +1468,10 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	asSubmitted := specificationAsSubmitted(submitted, workflow)
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
-		Workflow:    workflow,
-		StepsBudget: int32(s.maxStepsPerRun),
-		Identity:    identity,
+		Workflow:           workflow,
+		StepsBudget:        int32(s.maxStepsPerRun),
+		Identity:           identity,
+		MetricWorkflowName: metricWorkflowName(workflow, trusted),
 
 		// Checked and defaulted, once, above. The engine reads them and never
 		// re-derives them, so every segment of the run sees what this submission
@@ -2008,6 +2020,19 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 		Namespace:  derived.Namespace,
 		Deployment: derived.Deployment,
 	}
+}
+
+// manualStartPrincipal returns the canonical identity manual-start policy may
+// authorize. It comes only from authentication middleware, never from the
+// request or from the durable identity derived from it. OIDC and mTLS callers
+// share [auth.Principal.ID]'s issuer-qualified spelling. Missing, zero, and the
+// explicitly unauthenticated development principal cannot satisfy an allowlist.
+func manualStartPrincipal(ctx context.Context) string {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.IsZero() || principal.IsAnonymous() {
+		return ""
+	}
+	return principal.ID()
 }
 
 // Get retrieves the status of a workflow execution by its ID (and optionally its run ID).

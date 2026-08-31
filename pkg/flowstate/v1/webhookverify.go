@@ -86,6 +86,13 @@ const WebhookReplayWindow = 5 * time.Minute
 // far past any rotation and short of anything that costs a receiver.
 const maxSignaturesPerHeader = 8
 
+// maxStripeHeaderParts bounds how many comma-delimited fields a Stripe header
+// may make the verifier inspect. The HTTP header byte limit does not imply this
+// bound: one value made entirely of commas fits under that limit while containing
+// roughly a million fields. Stripe emits only a timestamp and one v1 field per
+// active signing secret, so this leaves ample room for rotation and future fields.
+const maxStripeHeaderParts = 32
+
 // VerifyWebhookDelivery reports whether a delivery satisfies what its trigger
 // declared.
 //
@@ -283,10 +290,17 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	supplied := webhookHeader(headers, StripeSignatureHeader)
 
 	var (
-		timestamp  string
-		signatures []string
+		timestamp    string
+		signatures   []string
+		tooManyParts bool
 	)
-	for _, part := range strings.Split(supplied, ",") {
+	partsSeen := 0
+	for part := range strings.SplitSeq(supplied, ",") {
+		partsSeen++
+		if partsSeen > maxStripeHeaderParts {
+			tooManyParts = true
+			break
+		}
 		name, value, found := strings.Cut(strings.TrimSpace(part), "=")
 		if !found {
 			continue
@@ -327,6 +341,10 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 
 	if supplied == "" {
 		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
+	}
+
+	if tooManyParts {
+		return fmt.Errorf("the %s header contains more than %d fields", StripeSignatureHeader, maxStripeHeaderParts)
 	}
 
 	if timestamp == "" || len(signatures) == 0 {
@@ -430,12 +448,12 @@ func SignStripeBody(key secrets.Secret, body []byte, at time.Time) string {
 // mid-rotation emits. Bounded by [maxSignaturesPerHeader] because each candidate
 // costs an HMAC over the whole body and the count is the sender's choice.
 func splitSignatures(value string) []string {
-	parts := strings.Split(value, ",")
-	if len(parts) > maxSignaturesPerHeader {
-		parts = parts[:maxSignaturesPerHeader]
-	}
-	for i, part := range parts {
-		parts[i] = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), hmacPrefix))
+	parts := make([]string, 0, maxSignaturesPerHeader)
+	for part := range strings.SplitSeq(value, ",") {
+		parts = append(parts, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), hmacPrefix)))
+		if len(parts) == maxSignaturesPerHeader {
+			break
+		}
 	}
 
 	return parts

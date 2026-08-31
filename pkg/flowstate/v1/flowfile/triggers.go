@@ -302,6 +302,12 @@ func (c *compiler) manualPrincipals(n ast.Node, path string) []string {
 
 		return nil
 	}
+	if len(nodes) > 64 {
+		c.report(spanOfNode(resolved), r,
+			"names %d principals, exceeding the limit of 64; narrow the allowlist", len(nodes))
+
+		return nil
+	}
 
 	out := make([]string, 0, len(nodes))
 	seen := make(map[string]struct{}, len(nodes))
@@ -320,6 +326,13 @@ func (c *compiler) manualPrincipals(n ast.Node, path string) []string {
 				"is empty, which names nobody; write the subject a caller authenticates as, or remove "+
 					"the entry — an empty principal would match a caller a deployment with no identity "+
 					"provider attests, which is every caller")
+
+			continue
+		}
+		if !v1.LooksLikeQualifiedSubject(subject) {
+			c.report(spanOfNode(node), ref{path: p, label: r.label},
+				"%q is not \"<issuer>#<subject>\"; a bare or malformed subject is refused because a "+
+					"subject is only unique within its issuer", subject)
 
 			continue
 		}

@@ -1266,6 +1266,12 @@ these instruments through genuinely different code).
 | `flowstate.run.duration` | histogram | s | `flowstate.workflow.name`, `flowstate.driver`, `flowstate.run.outcome`, `error.type` (on failure) | Duration from start to terminal outcome. Durably this is the segment that ends the run, not the sum of every Continue-As-New segment a long workload took — see `metricschema.InstrumentRunDuration`'s doc for why |
 | `flowstate.run.executions` | counter | — | same as `flowstate.run.duration` | Run completions, by outcome — the "step failure rate" and "runs per workflow" answer this table previously said did not exist |
 
+The `flowstate.workflow.name` attribute is present only when the admitting
+boundary selected a deployment-owned trusted workflow (including registered
+webhooks). Open, ad-hoc submissions still contribute to the run totals and
+outcomes, but omit the name: a request-controlled name must not consume the
+process-wide workflow-name cardinality budget shared by other tenants.
+
 A Continue-As-New segment boundary records neither instrument: it is a
 handover to the next segment, not a completion, and counting it as one would
 make one submission look like several runs. `flowstate.workflow.name` and
@@ -1344,7 +1350,13 @@ traded for a complete trail, and it is why the OTel sink switches from an
 ordinary batch processor to a synchronous one under `--audit-required` — a
 batch processor's export happens after the request has already been answered,
 so a "required" sink backed by one would prove nothing at the decision point.
-Stderr needs no such switch; every write to it is already synchronous.
+Stderr follows the same trade: in the default mode records enter a bounded
+background queue, and a full queue drops a record rather than blocking the RPC
+on a stalled logging consumer. Dropped records are counted and reported to the
+same stderr stream as one summary line naming the count, so the loss is
+visible to whoever reads the trail rather than silent. Under
+`--audit-required`, stderr writes are synchronous so returning success proves
+that the record was written.
 
 The default is auditing **on**, best-effort — every deployment gets a stderr
 trail from the moment it starts serving, and nothing has to be configured to

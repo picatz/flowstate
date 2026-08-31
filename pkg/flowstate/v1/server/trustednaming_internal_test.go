@@ -74,7 +74,7 @@ func TestANamelessWorkflowCannotDisplaceANamedOneAlreadyTrusted(t *testing.T) {
 		Profile: v1.CurrentProfile,
 		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{
 			RequireReason:     true,
-			AllowedPrincipals: []string{"oncall@example.com"},
+			AllowedPrincipals: []string{"https://issuer.example.com#oncall@example.com"},
 		}},
 		Steps: []*v1.Node{{Id: "rotate", Kind: &v1.Node_Value{Value: v1.NewLiteral("rotated")}}},
 	}
@@ -89,9 +89,9 @@ func TestANamelessWorkflowCannotDisplaceANamedOneAlreadyTrusted(t *testing.T) {
 	require.Error(t, s.registerTrustedWorkflows("team-a", []*v1.Workflow{trusted, weaker}))
 
 	// The narrowed policy is still what this tenant's name resolves to.
-	effective, err := s.trustedWorkflow("team-a", &v1.Workflow{Name: "break-glass"})
+	effective, _, err := s.trustedWorkflow("team-a", &v1.Workflow{Name: "break-glass"})
 	require.NoError(t, err, "a refused batch poisoned a key it was never allowed to touch")
-	assert.Equal(t, []string{"oncall@example.com"},
+	assert.Equal(t, []string{"https://issuer.example.com#oncall@example.com"},
 		effective.GetTriggers().GetManual().GetAllowedPrincipals(),
 		"the registered `manual:` policy stopped binding after a refused batch")
 }

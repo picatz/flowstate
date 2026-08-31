@@ -778,10 +778,11 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	options.WorkflowExecutionErrorWhenAlreadyStarted = true
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
-		Workflow:    spec,
-		StepsBudget: int32(r.server.maxStepsPerRun),
-		Identity:    identity,
-		Inputs:      bound,
+		Workflow:           spec,
+		StepsBudget:        int32(r.server.maxStepsPerRun),
+		Identity:           identity,
+		Inputs:             bound,
+		MetricWorkflowName: spec.GetName(),
 
 		// How this run started, for the workflow's own steps to read: which
 		// webhook, admitted as which principal, by which delivery. The delivery id
