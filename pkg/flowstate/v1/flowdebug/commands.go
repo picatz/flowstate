@@ -13,6 +13,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // A command is one verb the session understands.
@@ -185,6 +186,11 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		target := strings.TrimSpace(rest)
 		if target == "" {
 			s.printfTone(ToneWarning, "%s\n", usageUntil)
+
+			return false, nil
+		}
+		if notice, unknown := s.unknownStepNotice(target); unknown {
+			s.printfTone(ToneWarning, "until: %s\n", notice)
 
 			return false, nil
 		}
@@ -624,6 +630,12 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 
+	if notice, unknown := s.unknownStepNotice(id); unknown {
+		s.printfTone(ToneWarning, "break: %s\n", notice)
+
+		return
+	}
+
 	at := breakpoint{source: rest}
 	if conditional {
 		compiled, err := compileCondition(condition, scope)
@@ -649,6 +661,62 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+}
+
+// unknownStepNotice reports that a step id names nothing this run can reach,
+// in the words `flow debug replay` already refuses the same line with.
+//
+// The prompt used to arm anything: `break nosuchstep` answered "breakpoint at
+// nosuchstep", listed it, and never fired, while `until nosuchstep` printed
+// nothing at all and ran the workflow to its end — one mistyped character
+// forfeiting the session, with every queued command after it unanswered. The
+// check that catches it already existed one door over, in [checkScript], over
+// the same inventory; this is that check where a person types rather than
+// where a script is read, so the two fronts stop disagreeing about the same
+// word.
+//
+// The inventory is [Options.Steps] and the ids this session has watched go
+// past, which is exactly what completion offers ([Session.reachableSteps]) —
+// so a name the prompt would complete is a name it accepts. Ids are bare and
+// not qualified by workflow, deliberately: a `call:`'s callee declares its own
+// steps and a breakpoint on one is a breakpoint the run genuinely stops at,
+// which is why the inventory holds them too.
+//
+// An empty inventory refuses nothing. A caller that supplied no steps has said
+// nothing about what exists, and [checkStepArgument] takes that same silence
+// the same way: absence of evidence is not evidence a step is missing.
+func (s *Session) unknownStepNotice(id string) (string, bool) {
+	s.mu.Lock()
+	declared := make([]string, 0, len(s.steps))
+	known := false
+	for _, step := range s.steps {
+		declared = append(declared, step.ID)
+		known = known || step.ID == id
+	}
+	// An id this session has watched go past is reachable whatever the
+	// inventory said, so it is admitted — but it never *makes* an inventory:
+	// what has run so far is not what the workflow declares, and reading it
+	// that way would refuse every step the run has not reached yet, which on
+	// an empty inventory is all of them.
+	for seen := range s.seen {
+		known = known || seen == id
+	}
+	s.mu.Unlock()
+
+	if known || len(declared) == 0 {
+		return "", false
+	}
+
+	names := declared
+
+	slices.Sort(names)
+	names = slices.Compact(names)
+
+	if suggestion, found := nearest.Name(id, names); found {
+		return fmt.Sprintf("no step named %q: did you mean %q?", id, suggestion), true
+	}
+
+	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
 }
 
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was
