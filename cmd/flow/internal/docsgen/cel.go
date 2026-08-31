@@ -284,6 +284,17 @@ var celIdioms = []celIdiom{
 		expr: `[1, 2, 3, 4, 5].filter(n, n % 2 == 0).map(n, n * n)`,
 	},
 	{
+		title: "Totalling a list without a loop",
+		prose: "`sum` folds a list with `+`, expanded when the file compiles like `filter` and " +
+			"`map` — so a numeric total is one expression instead of a `loop:` carrying an index " +
+			"and a running sum through durable history, with the off-by-one that shape invites. " +
+			"Chained after `map` it reads left to right: keep what matters, pick the number, add " +
+			"them up. An empty list sums to `0`, and a list `+` cannot add — a string beside an " +
+			"int — fails the evaluation rather than guessing. `loop:` remains the right tool when " +
+			"the fold's body does real work; see examples/loop-accumulate.",
+		expr: `steps.paid.value.map(o, o.amount_cents).sum()`,
+	},
+	{
 		title: "Building one message from several values",
 		prose: "`format` is an operator on a string, defined at the CEL level and pinned by " +
 			"the profile, filling `%s` and `%d` verbs from the argument list in order.",

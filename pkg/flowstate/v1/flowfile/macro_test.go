@@ -86,6 +86,7 @@ var macroCases = map[string]macroCase{
 
 	// `lists`.
 	"sortBy/2": {expr: `[3,1,2].sortBy(v, -v)[0]`, want: "3"},
+	"sum/0":    {expr: `[1,2,3].sum()`, want: "6"},
 
 	// `math`. Its other functions are ordinary declarations and always worked; these
 	// two are macros because they are variadic.

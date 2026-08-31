@@ -53,6 +53,7 @@ a macro, so this column is derived from it directly.
 | `lists` | `slice` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
 | `lists` | `sort` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
 | `lists` | `sortBy` | macro | `[3, 1, 2].sortBy(v, v)` | — |
+| `lists` | `sum` | macro | `[1, 2, 3].sum()` | — |
 | `math` | `greatest` | macro | `math.greatest(1, 2)` | — |
 | `math` | `least` | macro | `math.least(3, 4)` | — |
 | `math` | `math.abs` | function | — | `math.abs(double) -> double`<br>`math.abs(int) -> int`<br>`math.abs(uint) -> uint` |
@@ -169,6 +170,14 @@ payload.?approved.hasValue()
 
 ```cel
 [1, 2, 3, 4, 5].filter(n, n % 2 == 0).map(n, n * n)
+```
+
+### Totalling a list without a loop
+
+`sum` folds a list with `+`, expanded when the file compiles like `filter` and `map` — so a numeric total is one expression instead of a `loop:` carrying an index and a running sum through durable history, with the off-by-one that shape invites. Chained after `map` it reads left to right: keep what matters, pick the number, add them up. An empty list sums to `0`, and a list `+` cannot add — a string beside an int — fails the evaluation rather than guessing. `loop:` remains the right tool when the fold's body does real work; see examples/loop-accumulate.
+
+```cel
+steps.paid.value.map(o, o.amount_cents).sum()
 ```
 
 ### Building one message from several values

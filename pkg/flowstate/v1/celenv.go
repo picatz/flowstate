@@ -366,6 +366,17 @@ func libsKey(libs []string) string {
 // the packages cannot share a constant without an import cycle.
 const stringsExtensionVersion = 5
 
+// listsExtensionVersion pins the lists extension library, for the reason
+// [stringsExtensionVersion] records — and with one edge sharper here: this
+// build declares a name of its own inside the library's namespace (`sum`,
+// celsum.go), so an unpinned `ext.Lists()` would let a future cel-go release
+// claim the same name and either change what a workflow's `.sum()` means or
+// refuse to construct the environment at all, as a side effect of `go get -u`.
+// Three is the highest version cel-go v0.31.0 implements, so pinning it changes
+// nothing today; raising it is the same reviewed decision the strings pin
+// describes.
+const listsExtensionVersion = 3
+
 // extensionLibraries maps the library names a workflow may enable to the
 // environment options that provide them.
 //
@@ -376,7 +387,7 @@ var extensionLibraries = map[string][]cel.EnvOption{
 	"comprehensions": {ext.TwoVarComprehensions()},
 	"encoders":       {ext.Encoders()},
 	"json":           {jsonLibrary()},
-	"lists":          {ext.Lists()},
+	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), sumLibrary()},
 	"math":           {ext.Math()},
 	"optional":       {cel.OptionalTypes()},
 	"protos":         {ext.Protos()},
@@ -418,19 +429,19 @@ func ExtensionLibraries() []string {
 // names a fixed membership, the compiler records which one a spec was built for,
 // and a worker resolves that name rather than asking what it happens to have.
 
-// CurrentProfile is the language profile this build evaluates against.
+// CurrentProfile is the language profile this build compiles against.
 //
-// Not yet recorded per run, and the distinction is the whole of what is left to
-// do. A profile *name* freezes a membership, which is what makes "pinned per run"
-// possible — but nothing stores which profile a spec was compiled against, so
-// every expression is evaluated against whatever profile the worker running it
-// calls current. Today that is safe because there is exactly one; the day a second
-// exists it stops being, and the field and the threading have to land before then.
+// The flowfile compiler stamps it into `Workflow.profile`, and every
+// evaluation site resolves the profile the *spec* records, through
+// [Evaluator.EvalParsedBase] — so an expression is evaluated against the
+// vocabulary it was checked against rather than whatever the worker running it
+// calls current, and a worker handed a name it does not know refuses in
+// [ProfileLibraries] instead of guessing.
 //
-// The first attempt at this added `Workflow.profile` and then hardcoded
-// CurrentProfile at both evaluation sites, so the value was recorded and never
-// read. That is worse than not recording it: the schema claimed a guarantee the
-// engine did not honour. Backed out rather than shipped half-wired.
+// The first attempt at that threading added `Workflow.profile` and then
+// hardcoded CurrentProfile at both evaluation sites, so the value was recorded
+// and never read — the schema claiming a guarantee the engine did not honour.
+// Backed out rather than shipped half-wired, and landed whole.
 const CurrentProfile = "2026.1"
 
 // OriginalProfile is what a spec compiled before profiles existed evaluates as.
@@ -451,6 +462,16 @@ const OriginalProfile = "2026.1"
 // recorded in a spec, its membership is frozen. Adding libraries means adding a
 // *new* profile, so that a run compiled against the old one keeps the vocabulary
 // it was checked against.
+//
+// The freeze is about what a run can observe. A library brings *runtime* names,
+// and a recorded run resolves those names every time it evaluates, so membership
+// is frozen from the day a spec can record the profile. A parse-time macro whose
+// expansion spells only vocabulary the profile already evaluates is different in
+// kind: a compiled spec carries the expansion rather than the name, so no stored
+// run and no worker can tell whether the build evaluating it ever heard of the
+// macro — a worker predating it still evaluates every spec that uses it. Such a
+// macro may join the current profile (`sum`, celsum.go, is one); anything that
+// declares a runtime name, however small, still means a new profile.
 var profiles = map[string][]string{
 	// The first profile is every library this build shipped with when profiles
 	// were introduced, which is also every library that existed. That is a
@@ -469,9 +490,10 @@ var profiles = map[string][]string{
 // expressions in it mean, and guessing is how a run quietly starts computing
 // something else — the fail-closed rule, applied to the language itself.
 //
-// This refusal has no caller that can reach it yet, because nothing passes a
-// profile a spec chose. It is here because the refusal is the hard part to add
-// later under pressure, not because it is exercised today.
+// Reachable from every evaluation site: the profile passed in is the one the
+// spec records, so a spec compiled by a newer build against a profile this
+// worker does not know is refused here, before anything guesses at what its
+// expressions mean.
 func ProfileLibraries(profile string) ([]string, error) {
 	if profile == "" {
 		// A spec compiled before this field existed, which can only have come from

@@ -42,6 +42,16 @@ steps:
     log:
       message: ${first}
 
+  # `sum` is the dialect's fold, a macro like the ones above: the total of the
+  # kept amounts is one expression, not a `loop:` carrying an index and a
+  # running total through durable history. `loop:` keeps that job for folds
+  # whose body does real work — examples/loop-accumulate shows it.
+  - id: total
+    vars:
+      cents: '${[{"amount": 1200, "paid": true}, {"amount": 999, "paid": false}, {"amount": 2500, "paid": true}].filter(o, o.paid).map(o, o.amount).sum()}'
+    log:
+      message: ${"%d".format([cents])}
+
   # Optional traversal is the dialect's read-with-default (edition v2026.3).
   # `.?` reads a field that may be absent and `orValue` puts the default beside
   # the read, where `has(x.y) && x.y` spelled the path twice with a guard in

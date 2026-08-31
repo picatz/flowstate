@@ -294,6 +294,7 @@ var macroExamples = map[string]string{
 
 	// lists.
 	"sortBy": `[3, 1, 2].sortBy(v, v)`,
+	"sum":    `[1, 2, 3].sum()`,
 
 	// math. Written on the namespace.
 	"greatest": `math.greatest(1, 2)`,
