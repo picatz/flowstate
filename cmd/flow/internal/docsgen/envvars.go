@@ -138,7 +138,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_EGRESS_POLICY",
 			value:   "unset",
-			purpose: "Default for `--egress-policy`: a YAML policy governing the `http` task. When set it replaces the built-in policy entirely rather than merging with it.",
+			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP and first-party SQL PostgreSQL connections. When set it replaces the built-in policy entirely rather than merging with it.",
 			read:    "cmd/flow/egress.go",
 		},
 		{
@@ -333,6 +333,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			purpose: "The value of an `env:` secret. Read only for a name the allowlist carries, and only inside the activity that applies it: the reference is what travels, never the value.",
 			read:    "pkg/flowstate/v1/secrets/env.go",
 			family:  true,
+		},
+		{
+			name:    "FLOWSTATE_SQL_EGRESS_POLICY",
+			value:   "unset",
+			purpose: "Internal grant from the plugin host to the first-party SQL plugin: the absolute path selected by `--egress-policy`. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; PostgreSQL execution is denied when the grant is absent.",
+			read:    "cmd/flow/plugins.go",
 		},
 		{
 			name:    "FLOWSTATE_SYMBOLS",
