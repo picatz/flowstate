@@ -531,7 +531,7 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	host, err := flags.host(pluginLogger(surface))
+	host, err := flags.host(pluginLogger(cmd, surface))
 	if err != nil {
 		return err
 	}
@@ -628,8 +628,20 @@ func yesNo(b bool) string {
 // plugin failing to launch is an account of what happened, and the answer is the
 // catalog. Piping this command into jq must not interleave a plugin's log lines
 // with the document.
-func pluginLogger(surface *ui.UI) *slog.Logger {
-	return slog.New(slog.NewTextHandler(surface.Err, &slog.HandlerOptions{Level: slog.LevelWarn}))
+//
+// Warnings by default and everything under -v, because the level was the whole
+// of what the flag did here: the host's account of what it discovered, launched
+// and skipped is written at Debug and Info, and a handler pinned at Warn
+// discarded all of it however loudly an operator asked. `--verbose` is
+// documented as "enable verbose logging", and this is the one stream on these
+// commands it had nothing to say about.
+func pluginLogger(cmd *cobra.Command, surface *ui.UI) *slog.Logger {
+	level := slog.LevelWarn
+	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+		level = slog.LevelDebug
+	}
+
+	return slog.New(slog.NewTextHandler(surface.Err, &slog.HandlerOptions{Level: level}))
 }
 
 // inputFields converts described fields back into the shape the renderer takes.
@@ -698,7 +710,7 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 
 	surface := newSurface(cmd)
 
-	host, err := flags.host(pluginLogger(surface))
+	host, err := flags.host(pluginLogger(cmd, surface))
 	if err != nil {
 		return nil, noop, err
 	}
