@@ -724,8 +724,8 @@ The SDK now covers two gaps originally recorded here. Unknown mutation
 outcomes use `sdk.OutcomeUnknown`, which the host maps to
 `ErrorKindUpstreamUnknown` and never retries. GitHub rate-limit reset times and
 secondary-limit `Retry-After` values use `sdk.UnavailableAfter`, so both drivers
-receive the backend's preferred retry delay instead of relying on generic
-backoff.
+receive the backend's preferred retry delay, saturated at the host's safety
+bound instead of discarded into generic backoff.
 
 ## What was left undone, and why
 
