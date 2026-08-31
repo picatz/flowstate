@@ -147,7 +147,7 @@ func validateDigestPin(name, digest string) error {
 
 	if err := flowstatev1.ValidateContentDigest(digest); err != nil {
 		return fmt.Errorf(
-			"%w: the pin for %q is %q, which %v; a pin is the algorithm, a colon, and the hash, exactly as this package prints a digest",
+			"%w: the pin for %q is %q: %v; a pin is the algorithm, a colon, and the hash, exactly as this package prints a digest",
 			ErrDigestPin, name, truncate(digest, 96), err,
 		)
 	}
