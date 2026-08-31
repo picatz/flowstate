@@ -362,7 +362,10 @@ egress:
 Missing or malformed policy fails closed. PostgreSQL requires verified TLS,
 rejects Unix sockets and filesystem-reading connection options, checks every
 address of every host before dialing, pins those resolutions against rebinding,
-and rechecks the actual socket target immediately before each dial.
+and rechecks the actual socket target immediately before each dial. Because
+DSN-selected `sslrootcert` files would restore arbitrary worker-file reads,
+private database CAs must be installed in the worker's system trust store; this
+release has no separate operator-owned SQL CA-bundle setting.
 
 ## Security properties, and what holds by construction
 
