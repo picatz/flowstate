@@ -423,10 +423,11 @@ not a line to copy.
 
 ### 3. The manifest's string lists are claims nothing cross-checks
 
-`DeferredInputs`, `ExpressionInputs` and `SecretInputs` name inputs by string.
+`DeferredInputs`, `ExpressionInputs`, `SecretInputs` and
+`RequiredSecretInputs` name inputs by string.
 The SDK copies them into the manifest as given (`sdk/sdk.go:736-764`), and the
 host's `checkManifest` validates the manifest's shape, its capabilities, its
-schemes and its task-name uniqueness — and never intersects those three lists
+schemes and its task-name uniqueness — and never intersects those four lists
 with the descriptors sitting beside them in the same message
 (`plugin/plugin.go:504-594`). A typo in one is therefore accepted at launch and
 discovered at execution.
@@ -461,8 +462,15 @@ is what authorizes reading it: a process holding a secret provider with no acces
 policy is refused. [examples/plugins/greet](../examples/plugins/greet) has a
 policy file for exactly this and explains why it looks the way it does.)
 
-All three lists are checkable against the descriptors at `sdk.Run` time, which is
-earlier than both and reaches the person who can fix it. Nothing does it today;
+`RequiredSecretInputs` is the security-specific exception: every name must also
+be in `SecretInputs`, or the host refuses the manifest. For a coherent declaration,
+`flow validate` requires the named input to be a whole secret reference and the
+runtime repeats the check before resolution and dispatch, so a literal cannot
+enter durable history or reach the plugin. The broader descriptor-name typo gap
+for all four lists remains.
+
+All four lists are checkable against the descriptors at `sdk.Run` time, which is
+earlier than both and reaches the person who can fix it. No full check does so today;
 see [known limitations](#known-limitations).
 
 ### 4. Three traps the code knows about and no authoring surface teaches

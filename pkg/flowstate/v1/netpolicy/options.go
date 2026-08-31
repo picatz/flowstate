@@ -141,7 +141,9 @@ type Option func(*config) error
 
 // WithSchemes replaces the scheme allowlist. Schemes are compared
 // case-insensitively. The default allowlist is http and https, which rejects
-// file, gopher, ftp, and every other scheme a URL might name.
+// file, gopher, ftp, postgres, and every other scheme a URL might name.
+// Postgres is supported only when explicitly listed, for protocol-native tasks
+// that apply this same policy to their actual database dial path.
 func WithSchemes(schemes ...string) Option {
 	return func(c *config) error {
 		if len(schemes) == 0 {
@@ -151,14 +153,14 @@ func WithSchemes(schemes ...string) Option {
 		for _, s := range schemes {
 			s = strings.ToLower(strings.TrimSpace(s))
 			switch s {
-			case "http", "https":
+			case "http", "https", "postgres":
 				set[s] = struct{}{}
 			case "":
 				return fmt.Errorf("scheme must not be empty")
 			default:
 				// Allowing a scheme the transport cannot speak would produce a
 				// confusing failure later instead of a clear one now.
-				return fmt.Errorf("scheme %q is not supported, only http and https can be requested", s)
+				return fmt.Errorf("scheme %q is not supported, only http, https, and postgres can be requested", s)
 			}
 		}
 		c.schemes = set

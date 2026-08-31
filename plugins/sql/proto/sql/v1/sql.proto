@@ -21,9 +21,8 @@ import "flowstate/v1/value.proto";
 enum Engine {
   ENGINE_UNSPECIFIED = 0;
 
-  // Pure-Go, embedded, no server: github.com/picatz/flowstate/plugins/sql's
-  // own tests run against this engine, in-process, with nothing to stand up
-  // - see doc.go, "Why sqlite is enumerated first."
+  // Pure-Go, embedded, no server. Retained for package-test fixtures; released
+  // plugin binaries refuse it because it grants worker-filesystem authority.
   ENGINE_SQLITE = 1;
 
   // Pure-Go over the network: github.com/jackc/pgx/v5, the enterprise
@@ -39,18 +38,16 @@ message QueryInputs {
   Engine engine = 1;
 
   // Dsn is this call's connection string. It is declared in this task's
-  // secret_inputs (see main.go), so a Flowfile writes
+  // secret_inputs and required_secret_inputs (see main.go), so a Flowfile writes
   // `dsn: ${secret('...')}` and this task receives the resolved value,
   // never the reference - the host resolves it before this task ever runs.
-  // A literal is accepted but strongly discouraged (see doc.go, "Secrets"),
-  // for the same reason codex.exec's api_key is: this task cannot always
-  // tell a resolved secret from an author's own literal once both arrive as
-  // the same value shape.
+  // Validation and dispatch both refuse a literal before it can enter durable
+  // workflow history or cross the plugin socket.
   flowstate.v1.Value dsn = 2;
 
   // Query is the SQL text this call executes, verbatim. It is never
   // string-formatted, concatenated, or templated by this plugin - a
-  // parameter placeholder (`?` for sqlite, `$1`, `$2`, ... for postgres) is
+  // PostgreSQL parameter placeholder (`$1`, `$2`, ...) is
   // the only way a value from params ever reaches the database, and there
   // is no other spelling in this schema that lets a value become part of
   // the query text itself. See doc.go, "Parameterized only, structurally."
@@ -109,7 +106,8 @@ message ExecInputs {
   Engine engine = 1;
 
   // Dsn is this call's connection string, exactly as QueryInputs.dsn is -
-  // declared in secret_inputs, resolved by the host before this task runs.
+  // declared in secret_inputs and required_secret_inputs, resolved by the host
+  // before this task runs; ordinary literals are refused.
   flowstate.v1.Value dsn = 2;
 
   // Statements runs in order, inside one transaction: every statement
@@ -128,9 +126,9 @@ message ExecInputs {
   // side. A Flowfile writes this as an ordinary CEL list of maps:
   //
   //   statements:
-  //     - sql: "INSERT INTO accounts (id, balance_cents) VALUES (?, ?)"
+  //     - sql: "INSERT INTO accounts (id, balance_cents) VALUES ($1, $2)"
   //       params: [1, 1000]
-  //     - sql: "UPDATE accounts SET balance_cents = balance_cents - ? WHERE id = ?"
+  //     - sql: "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2"
   //       params: [100, 1]
   //
   // Each entry is a map with two keys: "sql" (string, required, the exact
@@ -150,9 +148,9 @@ message ExecOutputs {
   // use.
   int64 total_rows_affected = 1;
 
-  // LastInsertId is the sqlite engine's own rowid from the final
-  // statement's own INSERT, when it performed one. Always 0 for
-  // ENGINE_POSTGRES: database/sql's LastInsertId is unsupported by pgx (the
+  // LastInsertId is retained for schema compatibility with SQLite package
+  // tests. It is always 0 for the released ENGINE_POSTGRES path:
+  // database/sql's LastInsertId is unsupported by pgx (the
   // wire protocol has no equivalent RPC), and the idiomatic replacement -
   // an `INSERT ... RETURNING id` statement whose result a workflow reads -
   // is sql.query's job, not this field's; see doc.go and the README for

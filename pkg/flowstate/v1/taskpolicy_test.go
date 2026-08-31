@@ -106,6 +106,19 @@ func TestTaskPolicyAllowlistDeniesNoMatch(t *testing.T) {
 	require.Equal(t, v1.TaskPolicyReasonNoAllowRule, denied.Reason)
 }
 
+func TestSQLReadPolicyDoesNotGrantWriteCapability(t *testing.T) {
+	t.Parallel()
+
+	policy, err := (v1.TaskPolicyConfig{Allow: []string{`task == "sql.query"`}}).Policy()
+	require.NoError(t, err)
+	require.NoError(t, policy.Check(context.Background(), "sql.query", &v1.WorkloadIdentity{}))
+	require.ErrorIs(t,
+		policy.Check(context.Background(), "sql.exec", &v1.WorkloadIdentity{}),
+		v1.ErrTaskPolicyDenied,
+		"allowing the read-only SQL task also granted the write task",
+	)
+}
+
 // TestTaskPolicyRuleErrorDenies is the "errored rule denies" cell of the
 // fail-closed matrix: a rule that type-checks (so it compiles and loads
 // successfully) but fails at evaluation time — here, integer division by

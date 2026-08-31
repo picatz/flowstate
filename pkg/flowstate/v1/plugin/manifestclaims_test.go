@@ -23,17 +23,20 @@ func TestAPluginsSecretInputsReachTheTaskDef(t *testing.T) {
 	t.Parallel()
 
 	def, err := (&Plugin{name: "example"}).taskDef(&pluginv1.TaskManifest{
-		Name:          "commit_push",
-		Summary:       "writes a commit to a branch",
-		InputMessage:  "flowstate.v1.Task.Log.Inputs",
-		OutputMessage: "flowstate.v1.Task.Log.Outputs",
-		SecretInputs:  []string{"token"},
-		NeedsScope:    true,
+		Name:                 "commit_push",
+		Summary:              "writes a commit to a branch",
+		InputMessage:         "flowstate.v1.Task.Log.Inputs",
+		OutputMessage:        "flowstate.v1.Task.Log.Outputs",
+		SecretInputs:         []string{"token"},
+		RequiredSecretInputs: []string{"token"},
+		NeedsScope:           true,
 	}, Config{})
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"token"}, def.SecretInputs,
 		"the manifest declared secret_inputs and the task definition does not carry it")
+	require.Equal(t, []string{"token"}, def.RequiredSecretInputs,
+		"the manifest declared required_secret_inputs and the task definition does not carry it")
 	require.True(t, def.NeedsPrevOutputs,
 		"the manifest declared needs_scope and the task definition does not carry it")
 
@@ -41,6 +44,8 @@ func TestAPluginsSecretInputsReachTheTaskDef(t *testing.T) {
 
 	assert.Equal(t, []string{"token"}, described.GetSecretInputs(),
 		"a plugin's whole-value secret-accepting inputs are invisible in the task's description")
+	assert.Equal(t, []string{"token"}, described.GetRequiredSecretInputs(),
+		"a plugin's required whole-value secret inputs are invisible in the task's description")
 	assert.True(t, described.GetNeedsScope(),
 		"a plugin task that receives every prior step's outputs reports otherwise in its description")
 }
@@ -61,7 +66,22 @@ func TestAPluginThatDeclaresNoSecretInputsDescribesNone(t *testing.T) {
 	described := flowstatev1.DescribeTask(def)
 
 	assert.Empty(t, described.GetSecretInputs())
+	assert.Empty(t, described.GetRequiredSecretInputs())
 	assert.False(t, described.GetNeedsScope())
+}
+
+func TestRequiredSecretInputsMustAlsoPermitHostResolution(t *testing.T) {
+	t.Parallel()
+
+	_, err := (&Plugin{name: "example"}).taskDef(&pluginv1.TaskManifest{
+		Name:                 "connect",
+		InputMessage:         "flowstate.v1.Task.Log.Inputs",
+		OutputMessage:        "flowstate.v1.Task.Log.Outputs",
+		RequiredSecretInputs: []string{"token"},
+	}, Config{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires")
+	assert.Contains(t, err.Error(), "secret_inputs")
 }
 
 // TestPluginCatalogCarriesClaimsSchemaVersion is the same presence signal as

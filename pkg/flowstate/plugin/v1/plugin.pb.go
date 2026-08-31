@@ -475,8 +475,18 @@ type TaskManifest struct {
 	// declared, and an author who writes `outputs:` at one is told it is an
 	// unknown input rather than being quietly stood down from.
 	ShapesOutputs bool `protobuf:"varint,11,opt,name=shapes_outputs,json=shapesOutputs,proto3" json:"shapes_outputs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// RequiredSecretInputs names inputs that must arrive as whole host-resolved
+	// secret references, never as ordinary literal values. Every name here must
+	// also appear in secret_inputs: that list grants resolution, while this one
+	// independently prevents credential material or connection strings from
+	// being embedded in a Flowfile and durable workflow history.
+	//
+	// The host enforces this before resolving anything and before Execute crosses
+	// the plugin socket. The plugin still receives the resolved literal value,
+	// preserving the existing local protocol shape.
+	RequiredSecretInputs []string `protobuf:"bytes,12,rep,name=required_secret_inputs,json=requiredSecretInputs,proto3" json:"required_secret_inputs,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *TaskManifest) Reset() {
@@ -584,6 +594,13 @@ func (x *TaskManifest) GetShapesOutputs() bool {
 		return x.ShapesOutputs
 	}
 	return false
+}
+
+func (x *TaskManifest) GetRequiredSecretInputs() []string {
+	if x != nil {
+		return x.RequiredSecretInputs
+	}
+	return nil
 }
 
 // DescribeRequest carries host facts a plugin may use before advertising its
@@ -1375,7 +1392,7 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\fcapabilities\x18\x04 \x03(\x0e2\x1f.flowstate.plugin.v1.CapabilityB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10\x10R\fcapabilities\x128\n" +
 	"\aschemes\x18\x05 \x03(\tB\x1e\xbaH\x1b\x92\x01\x18\x10 \"\x14r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\aschemes\x12A\n" +
-	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\x84\x04\n" +
+	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xc4\x04\n" +
 	"\fTaskManifest\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\x04name\x12\"\n" +
 	"\asummary\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\asummary\x12)\n" +
@@ -1389,7 +1406,8 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x11expression_inputs\x18\t \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x10expressionInputs\x12-\n" +
 	"\rsecret_inputs\x18\n" +
 	" \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\fsecretInputs\x12%\n" +
-	"\x0eshapes_outputs\x18\v \x01(\bR\rshapesOutputs\"=\n" +
+	"\x0eshapes_outputs\x18\v \x01(\bR\rshapesOutputs\x12>\n" +
+	"\x16required_secret_inputs\x18\f \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x14requiredSecretInputs\"=\n" +
 	"\x0fDescribeRequest\x12*\n" +
 	"\fhost_version\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18@R\vhostVersion\"_\n" +
 	"\x10DescribeResponse\x12K\n" +

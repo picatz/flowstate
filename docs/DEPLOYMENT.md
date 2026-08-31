@@ -137,6 +137,31 @@ socket) or reach it some other way. Know this before either over-trusting a
 plugin ("it's sandboxed, right?") or over-building a containment layer that
 duplicates a property the worker already has.
 
+### SQL plugin deployment and migration
+
+`sql.query` and `sql.exec` now require the entire `dsn` input to be a host
+secret reference. Literal DSNs are rejected during validation and again before
+plugin dispatch. Move each existing DSN into the deployment's configured secret
+backend and write `${secret('provider:name')}` in the Flowfile; `flow fix` cannot
+do this safely because creating or authorizing deployment secret state is not a
+source rewrite.
+
+Credential source is not destination authorization. A worker loading the SQL
+plugin must also receive `--egress-policy` with `postgres` in `egress.schemes`
+and exact allow rules/networks/ports for the database. The host forwards that
+same operator-owned file to the first-party SQL plugin; missing policy denies all
+PostgreSQL connections, and malformed policy prevents plugin startup. The SQL
+plugin resolves and authorizes every address for every DSN host, pins that set,
+rechecks the actual TCP target immediately before each connection, requires
+verified TLS, and rejects Unix sockets and filesystem-reading connection options.
+
+Released SQL plugins no longer execute SQLite DSNs. Embedded SQLite grants the
+plugin worker-filesystem authority (including URI modes, symlinks, `ATTACH`, and
+`VACUUM INTO`) that a network egress policy cannot bound. Migrate those workflows
+to PostgreSQL rather than treating the plugin process as filesystem confinement.
+Finally, allow `sql.query` and `sql.exec` separately in task policy: read access
+does not imply the write capability.
+
 ## The four-tier isolation model
 
 Each tier is a set of claims a security reviewer can check independently.

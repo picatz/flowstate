@@ -276,6 +276,12 @@ func (p *Policy) Timeout() time.Duration {
 	return p.cfg.timeout
 }
 
+// MinTLSVersion returns the deployment's TLS floor. Protocol-native clients
+// governed by this policy use it when they establish TLS outside net/http.
+func (p *Policy) MinTLSVersion() uint16 {
+	return p.cfg.minTLSVersion
+}
+
 // newClient builds the policy-governed client. The transport is cloned from
 // [http.DefaultTransport] so it keeps the standard library's settings, then has
 // every unbounded phase bounded and its dialer replaced with one that checks
@@ -738,6 +744,36 @@ func (p *Policy) CheckURL(ctx context.Context, method string, u *url.URL) error 
 	}
 
 	return p.checkRequest(req)
+}
+
+// CheckConnection applies p to one resolved non-HTTP connection. It composes
+// the same request and connection CEL vocabularies the HTTP transport uses:
+// scheme, normalized host and port are checked before a dial; ip is checked for
+// the exact address about to be dialed. Callers must invoke this for every DNS
+// answer and again on the actual dial path. A Unix socket or unresolved address
+// has no AddrPort and is therefore not accepted by this API.
+//
+// The method is CONNECT and the path is "/" in request-scoped rules. A policy
+// intended to permit database traffic should therefore allow the postgres
+// scheme and identify destinations by host/port (and ip in connection rules),
+// rather than depending on HTTP-only method or path semantics.
+func (p *Policy) CheckConnection(ctx context.Context, scheme, host string, addr netip.AddrPort) error {
+	if !addr.IsValid() {
+		return &DenyError{Reason: ReasonRequest, Detail: "no resolved address was given"}
+	}
+
+	u := &url.URL{Scheme: strings.ToLower(scheme), Host: net.JoinHostPort(host, strconv.Itoa(int(addr.Port())))}
+	if err := p.CheckURL(ctx, http.MethodConnect, u); err != nil {
+		return err
+	}
+	if err := p.checkResolvedAddr(ctx, addr); err != nil {
+		return err
+	}
+	if p.connRules.empty() {
+		return nil
+	}
+
+	return p.evalConnRules(ctx, addr.String(), strings.ToLower(scheme), normalizeHost(host), addr)
 }
 
 // allowedSchemes renders the scheme allowlist for an error message, in a stable

@@ -86,16 +86,16 @@ type TaskCatalog struct {
 	// ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
 	// describing a task's security-relevant claims — started at 1 for
 	// needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
-	// expression_inputs (#712).
+	// expression_inputs (#712); version 2 adds required_secret_inputs.
 	//
 	// Exists because proto3 cannot mark a bool or a repeated string field
-	// `optional`, so none of those five fields can distinguish "populated as
+	// `optional`, so none of those fields can distinguish "populated as
 	// false/empty" from "never populated, because the server that built this
 	// catalog predates them" on its own — an old GetCatalog server's response
 	// decodes needs_scope as false whether the task genuinely claims nothing
 	// or the field simply does not exist in that server's schema. This is the
 	// presence signal for the whole set instead of one per field, read once
-	// rather than reconstructed from five independent zero-checks.
+	// rather than reconstructed from independent zero-checks.
 	//
 	// Zero means "this catalog predates every claim field" — the value on
 	// every GetCatalog response before this field existed, and the value an
@@ -450,8 +450,13 @@ type TaskDescription struct {
 	// output_descriptor, or within the reader's own descriptor registry when the
 	// bytes are empty; empty alongside empty bytes declares no output message.
 	OutputMessage string `protobuf:"bytes,13,opt,name=output_message,json=outputMessage,proto3" json:"output_message,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// RequiredSecretInputs is the subset of secret_inputs that must be written as
+	// whole secret references, never literals. This is a security claim because
+	// it prevents sensitive material from entering a compiled specification and
+	// durable workflow history. Sorted and deduplicated like secret_inputs.
+	RequiredSecretInputs []string `protobuf:"bytes,14,rep,name=required_secret_inputs,json=requiredSecretInputs,proto3" json:"required_secret_inputs,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *TaskDescription) Reset() {
@@ -573,6 +578,13 @@ func (x *TaskDescription) GetOutputMessage() string {
 		return x.OutputMessage
 	}
 	return ""
+}
+
+func (x *TaskDescription) GetRequiredSecretInputs() []string {
+	if x != nil {
+		return x.RequiredSecretInputs
+	}
+	return nil
 }
 
 // PluginCatalog is what a deployment's plugins add to this build, described so
@@ -701,8 +713,9 @@ type PluginDescription struct {
 	// exists to catch is a plugin whose descriptors changed shape while its
 	// version stood still.
 	//
-	// Deliberately not computed over NeedsScope, SecretInputs, ShapesOutputs,
-	// DeferredInputs or ExpressionInputs, even though those travel on the same
+	// Deliberately not computed over NeedsScope, SecretInputs,
+	// RequiredSecretInputs, ShapesOutputs, DeferredInputs or ExpressionInputs,
+	// even though those travel on the same
 	// TaskDescription — see ClaimsDigest below for why they get their own
 	// digest instead of folding into this one. This field is embedded in every
 	// in-flight run's ResolvedPlugin the moment a run is submitted, replayed
@@ -717,8 +730,9 @@ type PluginDescription struct {
 	// path immediately before launch rather than proving what the kernel ran.
 	DistributionDigest string `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
 	// ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
-	// ShapesOutputs, DeferredInputs and ExpressionInputs only — the fields
-	// with security weight (#712) — kept apart from task_schema_digest so it
+	// RequiredSecretInputs, ShapesOutputs, DeferredInputs and ExpressionInputs
+	// only — the fields with security weight (#712) — kept apart from
+	// task_schema_digest so it
 	// can change on its own without disturbing the replay contract every
 	// already-durable run is pinned to. See
 	// [flowstatev1.ResolvedPlugin.claims_digest] for how a worker treats an
@@ -955,7 +969,7 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\alibrary\x18\x02 \x01(\tR\alibrary\x12\x14\n" +
 	"\x05macro\x18\x03 \x01(\bR\x05macro\x12\x18\n" +
 	"\aexample\x18\x04 \x01(\tR\aexample\x12\x1c\n" +
-	"\tsignature\x18\x05 \x03(\tR\tsignature\"\x8a\x04\n" +
+	"\tsignature\x18\x05 \x03(\tR\tsignature\"\xc0\x04\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +
@@ -971,7 +985,8 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	" \x01(\fR\x0finputDescriptor\x12#\n" +
 	"\rinput_message\x18\v \x01(\tR\finputMessage\x12+\n" +
 	"\x11output_descriptor\x18\f \x01(\fR\x10outputDescriptor\x12%\n" +
-	"\x0eoutput_message\x18\r \x01(\tR\routputMessage\"\x9f\x01\n" +
+	"\x0eoutput_message\x18\r \x01(\tR\routputMessage\x124\n" +
+	"\x16required_secret_inputs\x18\x0e \x03(\tR\x14requiredSecretInputs\"\x9f\x01\n" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +
