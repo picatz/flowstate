@@ -331,6 +331,42 @@ func TestDiscoverIsSilentWithNothingShadowed(t *testing.T) {
 	}
 }
 
+// TestDiscoverScansARepeatedDirectoryOnce is the boundary the shadow warning
+// opened. SearchPath is a list and the environment spells it as a path list,
+// so the same directory can legitimately appear twice — and scanning it again
+// found every binary already discovered, reporting each as shadowed by
+// itself with using and ignoring naming one path. That is a false warning on
+// every plugin in that directory, on every command and every worker start
+// (Codex, #1361).
+func TestDiscoverScansARepeatedDirectoryOnce(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, BinaryPrefix+"shared"), []byte("x"), 0o755); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	var account strings.Builder
+	logger := slog.New(slog.NewTextHandler(&account, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// Spelled both ways a duplicate actually arrives: the same string twice,
+	// and the same directory reached by a path that cleans to it.
+	found, err := Discover(Config{
+		SearchPath: []string{dir, dir, filepath.Join(dir, "..", filepath.Base(dir))},
+		Logger:     logger,
+	})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	if len(found) != 1 {
+		t.Fatalf("discovered %d plugins, want 1", len(found))
+	}
+	if strings.Contains(account.String(), "shadowed") {
+		t.Errorf("a directory named twice reported its own binary as shadowed: %q", account.String())
+	}
+}
+
 // TestDiscoverSkipsMissingDirectories checks that a search path configured
 // across hosts that do not all have plugins installed is not an error.
 func TestDiscoverSkipsMissingDirectories(t *testing.T) {
