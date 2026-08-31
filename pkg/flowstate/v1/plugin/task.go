@@ -28,6 +28,13 @@ import (
 // compiled in.
 func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstatev1.TaskDef, error) {
 	name := manifest.GetName()
+	for _, required := range manifest.GetRequiredSecretInputs() {
+		if !slices.Contains(manifest.GetSecretInputs(), required) {
+			return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf(
+				"task %q requires input %q to be a secret reference but does not declare it in secret_inputs",
+				truncate(name, 64), truncate(required, 64)))
+		}
+	}
 
 	// The def is registered under the name an author writes, which is the
 	// manifest's name qualified by the plugin's: `slack.post` for the `post`
@@ -77,7 +84,8 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// can say so. Enforcement itself still reads the manifest directly,
 		// closed over below in taskFunc — this copy is for visibility, not for
 		// the resolve-or-refuse decision.
-		SecretInputs: manifest.GetSecretInputs(),
+		SecretInputs:         manifest.GetSecretInputs(),
+		RequiredSecretInputs: manifest.GetRequiredSecretInputs(),
 
 		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
 		// .CredentialInputs for a plugin task's secret inputs — see the
@@ -102,6 +110,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 	qualified := p.name + "." + name
 	needsScope := manifest.GetNeedsScope()
 	secretInputs := manifest.GetSecretInputs()
+	requiredSecretInputs := manifest.GetRequiredSecretInputs()
 
 	return func(ctx context.Context, inputs map[string]*flowstatev1.Value, scope *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 		ctx = telemetryBaggage(ctx, p.name, qualified)
@@ -121,7 +130,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		// the response, and the error — is registered against from here on.
 		// See [resolvePluginSecretInputs] for why this is where it has to
 		// happen, and for the boundary this local transport depends on.
-		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, inputs)
+		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, requiredSecretInputs, inputs)
 		if err != nil {
 			callErr = err
 			return nil, err
@@ -375,6 +384,7 @@ func resolvePluginSecretInputs(
 	ctx context.Context,
 	taskName string,
 	declared []string,
+	required []string,
 	inputs map[string]*flowstatev1.Value,
 ) (map[string]*flowstatev1.Value, *secrets.Scrubber, error) {
 	scrubber := secrets.NewScrubber()
@@ -388,6 +398,11 @@ func resolvePluginSecretInputs(
 		ref, isWholeRef := v.GetKind().(*flowstatev1.Value_SecretRef)
 
 		switch {
+		case slices.Contains(required, name) && !isWholeRef:
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
+				"input %q must be a whole secret reference such as ${secret('env:NAME')}, never a literal; "+
+					"literal secret or connection material is stored in workflow history", name))
+
 		case isWholeRef && slices.Contains(declared, name):
 			secret, err := flowstatev1.ResolveSecret(ctx, ref.SecretRef)
 			if err != nil {

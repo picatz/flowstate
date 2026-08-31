@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -181,6 +182,32 @@ func TestTheWorkerTakesThePluginFlags(t *testing.T) {
 				"`flow %s` does not take --%s, so a deployment cannot configure it", command, name)
 		}
 	}
+}
+
+func TestOldSQLPluginManifestIsRefusedBeforeTaskRegistration(t *testing.T) {
+	old := &pluginv1.PluginManifest{
+		Name: "sql",
+		Tasks: []*pluginv1.TaskManifest{
+			{Name: "query", SecretInputs: []string{"dsn"}},
+			{Name: "exec", SecretInputs: []string{"dsn"}},
+		},
+	}
+
+	err := checkSQLManifestSecurityContract(old)
+	require.ErrorContains(t, err, "upgrade flowstate-plugin-sql together with the host")
+
+	current := &pluginv1.PluginManifest{
+		Name: "sql",
+		Tasks: []*pluginv1.TaskManifest{
+			{Name: "query", SecretInputs: []string{"dsn"}, RequiredSecretInputs: []string{"dsn"}},
+			{Name: "exec", SecretInputs: []string{"dsn"}, RequiredSecretInputs: []string{"dsn"}},
+		},
+	}
+	require.NoError(t, checkSQLManifestSecurityContract(current))
+
+	// Other protocol-v3 plugins remain compatible; this coordinated-upgrade
+	// requirement belongs only to SQL's newly privileged destination path.
+	require.NoError(t, checkSQLManifestSecurityContract(&pluginv1.PluginManifest{Name: "git"}))
 }
 
 // TestTheLanguageServerTakesThePluginFlags is the same wiring check for the

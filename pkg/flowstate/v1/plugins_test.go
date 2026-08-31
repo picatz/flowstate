@@ -415,9 +415,9 @@ func TestResolvePluginsPinsClaimsSchemaVersion(t *testing.T) {
 
 	wf := requires("slack", "v2.1.0")
 	require.NoError(t, v1.ResolvePlugins(wf,
-		catalogWithClaimsSchemaVersion(1, describedPlugin("slack", "v2.1.0", "sha256:schema"))))
+		catalogWithClaimsSchemaVersion(v1.CurrentClaimsSchemaVersion, describedPlugin("slack", "v2.1.0", "sha256:schema"))))
 
-	require.Equal(t, uint32(1), wf.GetResolvedPlugins()[0].GetClaimsSchemaVersion(),
+	require.Equal(t, v1.CurrentClaimsSchemaVersion, wf.GetResolvedPlugins()[0].GetClaimsSchemaVersion(),
 		"resolving against a catalog with a claims schema version did not pin it onto the run")
 }
 
@@ -468,7 +468,7 @@ func TestReplayGuardAcceptsALegacyPinWithNoClaimsSchemaVersion(t *testing.T) {
 		// before this field existed decodes as.
 	}}
 
-	worker := catalogWithClaimsSchemaVersion(1, describedPlugin("slack", "v2.1.0", "sha256:schema"))
+	worker := catalogWithClaimsSchemaVersion(v1.CurrentClaimsSchemaVersion, describedPlugin("slack", "v2.1.0", "sha256:schema"))
 
 	require.NoError(t, v1.CheckPluginsAvailable(legacyPin, worker),
 		"a run pinned before ClaimsSchemaVersion existed was refused by a worker reporting one for an unchanged plugin")
@@ -486,16 +486,16 @@ func TestReplayGuardStillRefusesAClaimsSchemaVersionMismatchOnANewPin(t *testing
 
 	wf := requires("slack", "v2.1.0")
 	require.NoError(t, v1.ResolvePlugins(wf,
-		catalogWithClaimsSchemaVersion(1, describedPlugin("slack", "v2.1.0", "sha256:schema"))))
+		catalogWithClaimsSchemaVersion(v1.CurrentClaimsSchemaVersion, describedPlugin("slack", "v2.1.0", "sha256:schema"))))
 
 	// The worker's live catalog: identical descriptors and identical
 	// ClaimsDigest — describedPlugin always writes "sha256:claims" — but a
 	// newer claims schema version, the shape a meaning-redefining bump takes.
-	worker := catalogWithClaimsSchemaVersion(2, describedPlugin("slack", "v2.1.0", "sha256:schema"))
+	worker := catalogWithClaimsSchemaVersion(v1.CurrentClaimsSchemaVersion+1, describedPlugin("slack", "v2.1.0", "sha256:schema"))
 
 	err := v1.CheckResolvedPlugins(wf, worker)
 	require.ErrorContains(t, err, "claims schema version",
-		"the run was pinned to claims schema version 1 and a worker reporting version 2 with an "+
+		"the run was pinned to the current claims schema version and a worker reporting a different version with an "+
 			"identical claims digest was not refused; a digest match alone cannot tell two schema "+
 			"versions apart when a version bump redefines a field's meaning without changing its "+
 			"serialized value")

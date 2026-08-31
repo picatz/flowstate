@@ -302,13 +302,17 @@ denies (`:91-111`). Rules may key on the run's identity, including namespace, so
 worker can serve two tenants with different reach
 (`pkg/flowstate/v1/eval_task_http_run.go:316`, `docs/DEPLOYMENT.md:153-166`).
 
-**Limits.** This is enforced *inside* the Go `http` task
-(`pkg/flowstate/v1/eval_task_http_def.go:30`, `:66`). That is honest exactly while
-every task is our code, which is #341 invariant 1 stated as a limit: the moment a
-task is a container running arbitrary code, in-process enforcement is theater,
-because the code opens its own sockets. A plugin task's network access is the
-worker's to govern by whatever the operating system provides, not by netpolicy. With
-a proxy configured the dialer never sees the target, so the check weakens to a
+**Limits.** HTTP enforcement lives *inside* the Go `http` task
+(`pkg/flowstate/v1/eval_task_http_def.go:30`, `:66`). The first-party SQL plugin
+now composes the same deployment policy onto pgx's real TCP dial path: every host
+and address is checked before connection, checked DNS answers are pinned, and the
+actual address is categorically rechecked immediately before each dial. PostgreSQL
+is denied when policy is absent; SQLite is denied because its authority is the
+worker filesystem rather than a socket. This remains voluntary enforcement in
+vetted code, not plugin-process confinement. The moment a task is a container or
+arbitrary plugin opening its own sockets, in-process enforcement is theater and
+the worker's operating-system/substrate boundary must govern it. With an HTTP proxy
+configured the dialer never sees the target, so the HTTP check weakens to a
 pre-resolution one (`pkg/flowstate/v1/netpolicy/netpolicy.go:33-37`), which is why
 proxies are off unless named.
 

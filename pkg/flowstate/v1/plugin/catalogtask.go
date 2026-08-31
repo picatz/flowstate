@@ -344,14 +344,15 @@ func TaskDefFromDescription(described *flowstatev1.TaskDescription, cfg Config) 
 		Inputs:  inputs,
 		Outputs: outputs,
 
-		// The five claims with security weight (#712), each read from the
+		// The claims with security weight (#712), each read from the
 		// field DescribeTask wrote it from. A field added to that mapping
 		// belongs here the same day, or a catalog carries a fact this drops.
-		NeedsPrevOutputs: described.GetNeedsScope(),
-		SecretInputs:     slices.Clone(described.GetSecretInputs()),
-		ShapesOutputs:    described.GetShapesOutputs(),
-		DeferredInputs:   slices.Clone(described.GetDeferredInputs()),
-		ExpressionInputs: slices.Clone(described.GetExpressionInputs()),
+		NeedsPrevOutputs:     described.GetNeedsScope(),
+		SecretInputs:         slices.Clone(described.GetSecretInputs()),
+		RequiredSecretInputs: slices.Clone(described.GetRequiredSecretInputs()),
+		ShapesOutputs:        described.GetShapesOutputs(),
+		DeferredInputs:       slices.Clone(described.GetDeferredInputs()),
+		ExpressionInputs:     slices.Clone(described.GetExpressionInputs()),
 
 		Fn: catalogTaskFunc(name),
 	}, nil

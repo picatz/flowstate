@@ -536,10 +536,14 @@ how the process was launched. Without the flag the answer is unchanged, because 
 server that recognised a task its author's worker may not have would move the
 error from an editor to production.
 
-What a plugin cannot do is escape policy. It resolves secrets only for schemes the
-deployment permitted, receives the tenant a workload belongs to rather than choosing
-one, and its network access is the worker's to govern. A plugin is an extension of
-the engine's capability, not an exemption from its rules.
+What a vetted first-party plugin cannot do is treat a manifest declaration as
+authority. It resolves secrets only for schemes the deployment permitted and
+receives the tenant a workload belongs to rather than choosing one. Network policy
+must be enforced on the plugin's real connection path: the SQL plugin applies the
+operator's existing egress policy to every resolved PostgreSQL socket target, while
+arbitrary third-party plugin code still requires deployment/substrate confinement.
+A plugin is an extension of the engine's capability, not an exemption from its
+rules.
 
 **A plugin *task* consuming a host secret is the reverse direction, and the host
 resolves it, not the plugin.** `SecretService` above is a plugin answering for a
@@ -554,7 +558,11 @@ plugin process receives a value over the socket, never a reference and never
 provider access, and every resolved value is registered with the activity's
 scrubber so an echo cannot reach a step output or a task error. An input a
 `TaskManifest` did not name is refused rather than resolved, fail-closed in both
-directions. That hand-off is sound only because "the plugin" is a process on the
+directions. A manifest may additionally put an input in
+`required_secret_inputs`; it must also be in `secret_inputs`, and the compiler and
+host then refuse a literal before it can enter durable history or cross the plugin
+socket. That controls where credential material comes from, not what destination
+it authorizes. That hand-off is sound only because "the plugin" is a process on the
 same machine, reached over a socket only the worker can open — a future remote
 plugin endpoint must not resolve-then-send the same way without a per-endpoint
 release policy deciding first whether that endpoint may receive the value at all.

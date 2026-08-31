@@ -42,7 +42,7 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 # and only the harmless "set applied = 1" statement (already true) runs
 # again. See plugins/sql/exec_test.go's
 # TestSQLTransferPatternMovesMoneyExactlyOnceAcrossARetry, which runs this
-# exact four-statement pattern against sqlite twice with the same key and
+# exact four-statement pattern against a hermetic test database twice with the same key and
 # asserts both balances moved on the first call and stayed put on the
 # second - the point of an idempotency claim is a test proving it, not a
 # comment asserting it.
@@ -51,12 +51,12 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 # accounts_ledger(idempotency_key TEXT PRIMARY KEY, applied INTEGER NOT
 # NULL DEFAULT 0) tables, and a resolvable dsn secret - so it never runs by
 # accident. See plugins/sql/README.md, "Trying this example."
+# The operator must also permit the database destination with --egress-policy
+# and permit the qualified sql.exec capability in task policy. sql.query and
+# sql.exec are separate policy names so read access does not imply write access.
 #
 # Written for ENGINE_POSTGRES, with $1, $2, ... placeholders - pgx does not
-# rewrite `?` the way this file's own sqlite-flavored sibling
-# (workflow.yaml) uses, so a query written for one engine's placeholder
-# syntax is not portable to the other unchanged (see plugins/sql/README.md,
-# "Drivers," for the placeholder note this file's own review corrected).
+# rewrite `?`; PostgreSQL statements use numbered placeholders.
 inputs:
   from_account_id:
     type: int

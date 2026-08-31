@@ -171,6 +171,12 @@ type TaskDef struct {
 	// reviewer or an operator would look for it (#712).
 	SecretInputs []string
 
+	// RequiredSecretInputs is the subset of SecretInputs that an author must
+	// supply as a whole secret reference, never as a literal. The compiler uses
+	// this before a specification can enter durable history; the runtime repeats
+	// the check at dispatch as defense in depth.
+	RequiredSecretInputs []string
+
 	// ShapesOutputs declares that this task evaluates its [ShapingInput] as a
 	// replacement for the outputs it declares.
 	//
