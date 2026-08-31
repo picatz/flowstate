@@ -456,7 +456,7 @@ func compileReturnValue(v any) (any, error) {
 // so an unmatched-stub failure (see [unmatchedStubError]) can redact a value
 // that traces back to one, the same "display etiquette" every other surface
 // applies, not skipped just because this surface is new.
-func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.TaskFunc {
+func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstubbed *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
 		// Resolved once per invocation, before any matcher runs, so a
 		// reference with no `secrets:` entry is refused regardless of
@@ -590,6 +590,14 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			serving, _ := v1.TaskStepFromContext(ctx)
 			recorder.stubUnmatched(serving)
 		}
+
+		// And it is a hole in the case's scaffolding, recorded for the same
+		// reason an undeclared stub is: the refusal below is an ordinary step
+		// failure, so a `continue_on_error:` step swallows it whole and the
+		// case passes green about work that never happened. Reached where a
+		// `step:` stub binds its task — the sibling step running that task
+		// arrives here rather than at [unstubbedTaskFn].
+		unstubbed.recordUnmatched(ctx, name)
 
 		// A where: that failed to evaluate is a broken expression, the same
 		// kind [m.matches] itself would have reported had this returned
