@@ -6,12 +6,14 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // A command is one verb the session understands.
@@ -201,6 +203,16 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 			return false, nil
 		}
+		// Checked before the condition is compiled, where `break` checks it
+		// too: an id the workflow does not declare is refused whether or not
+		// a condition follows it, and refusing first spends nothing on
+		// compiling a question about a step that will never be reached.
+		if notice, unknown := s.unknownStepNotice(id); unknown {
+			s.printfTone(ToneWarning, "until: %s\n", notice)
+
+			return false, nil
+		}
+
 		var compiled *v1.Value
 		if conditional {
 			compiled, err = compileCondition(condition, scope, grammarUntil)
@@ -652,6 +664,12 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 
+	if notice, unknown := s.unknownStepNotice(id); unknown {
+		s.printfTone(ToneWarning, "break: %s\n", notice)
+
+		return
+	}
+
 	at := breakpoint{source: rest}
 	if conditional {
 		compiled, err := compileCondition(condition, scope, grammarBreak)
@@ -677,6 +695,98 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+}
+
+// maxStepSuggestionInput bounds the typed id a did-you-mean is computed for:
+// the longest id the schema permits, plus the most edits [nearest] will call a
+// near miss.
+//
+// The rule is cmd/flow's maxSuggestionInput (#428) — bound the typed side
+// before scanning — but the *number* has to come from what a real step id can
+// be, not from that constant, which sizes this CLI's own short command names.
+// `Node.id` is `max_len: 128` in proto/flowstate/v1/workflow.proto, so a
+// declared id of 128 characters mistyped once is 129 and is genuinely worth a
+// suggestion; a threshold of 64 borrowed from the command surface would have
+// skipped it at the prompt while `flow debug replay` still offered it, which
+// is the prompt-versus-replay divergence this whole change exists to close
+// (Codex, #1347).
+//
+// Derived rather than written down as 130: the two facts it is made of live
+// where they are enforced, and a schema that widens the id should widen this
+// with it.
+const maxStepSuggestionInput = maxStepIDLength + nearest.MaxDistance
+
+// maxStepIDLength is `Node.id`'s own `max_len` in
+// proto/flowstate/v1/workflow.proto. Asserted against the descriptor by
+// TestMaxStepIDLengthMatchesTheSchema, so it cannot drift from the constraint
+// that decides what a step may actually be called.
+const maxStepIDLength = 128
+
+// unknownStepNotice reports that a step id names nothing this run can reach,
+// in the words `flow debug replay` already refuses the same line with.
+//
+// The prompt used to arm anything: `break nosuchstep` answered "breakpoint at
+// nosuchstep", listed it, and never fired, while `until nosuchstep` printed
+// nothing at all and ran the workflow to its end — one mistyped character
+// forfeiting the session, with every queued command after it unanswered. The
+// check that catches it already existed one door over, in [checkScript], over
+// the same inventory; this is that check where a person types rather than
+// where a script is read, so the two fronts stop disagreeing about the same
+// word.
+//
+// The inventory is [Options.Steps] and the ids this session has watched go
+// past, which is exactly what completion offers ([Session.reachableSteps]) —
+// so a name the prompt would complete is a name it accepts. Ids are bare and
+// not qualified by workflow, deliberately: a `call:`'s callee declares its own
+// steps and a breakpoint on one is a breakpoint the run genuinely stops at,
+// which is why the inventory holds them too.
+//
+// An empty inventory refuses nothing. A caller that supplied no steps has said
+// nothing about what exists, and [checkStepArgument] takes that same silence
+// the same way: absence of evidence is not evidence a step is missing.
+func (s *Session) unknownStepNotice(id string) (string, bool) {
+	// Built once at construction ([declaredStepIDs]); this is a lookup rather
+	// than a walk, because a refused command is not recorded and so may be
+	// repeated without bound.
+	_, known := s.declaredIDs[id]
+
+	s.mu.Lock()
+	// An id this session has watched go past is reachable whatever the
+	// inventory said, so it is admitted — but it never *makes* an inventory:
+	// what has run so far is not what the workflow declares, and reading it
+	// that way would refuse every step the run has not reached yet, which on
+	// an empty inventory is all of them.
+	if !known {
+		_, known = s.seen[id]
+	}
+	s.mu.Unlock()
+
+	names := s.declared
+	if known || len(names) == 0 {
+		return "", false
+	}
+
+	// The suggestion is skipped for input too long to have been a typo of
+	// anything declared, which is the bound [nearest]'s own doc puts on every
+	// caller and cmd/flow's argv suggestions already keep (maxSuggestionInput,
+	// #428). A refused command is not recorded, so it can be repeated without
+	// reaching [MaxScriptCommands], and each scan is one [nearest.Distance]
+	// per declared id over a word this session will read up to
+	// [MaxCommandBytes] of — work a redirected stdin would otherwise size
+	// (Codex, #1347). Nothing within [nearest.MaxDistance] edits of a real id
+	// can be longer than the longest declared one plus that many, so the
+	// refusal below loses no suggestion anybody could have earned.
+	if utf8.RuneCountInString(id) <= maxStepSuggestionInput {
+		if suggestion, found := nearest.Name(id, names); found {
+			return fmt.Sprintf("no step named %q: did you mean %q?", id, suggestion), true
+		}
+	}
+
+	// names is [Session.declared], sorted once at construction, so the
+	// rendering below takes it as it is: re-sorting an already-sorted
+	// inventory on every refusal is work a redirected stdin chooses the
+	// amount of, and refused commands are not recorded (Codex, #1347).
+	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
 }
 
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was

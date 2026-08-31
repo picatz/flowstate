@@ -240,6 +240,20 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 		known[id] = struct{}{}
 	}
 
+	// Sorted once for the whole script rather than per refused line. A script
+	// may carry up to [MaxScriptCommands] of them, and every one would
+	// otherwise re-copy and re-sort the workflow's whole inventory before
+	// anything ran (Codex, #1347). The order itself is load-bearing, not
+	// tidiness: [nearest.Name] keeps the first candidate at the best distance,
+	// so an unsorted list makes the suggestion depend on map iteration order —
+	// unstable between runs of this command, and different from the prompt,
+	// which answers the identical question over the same ids.
+	candidates := make([]string, 0, len(known))
+	for id := range known {
+		candidates = append(candidates, id)
+	}
+	slices.Sort(candidates)
+
 	report := func(line, column int, format string, args ...any) {
 		total++
 		if len(problems) >= MaxScriptProblems {
@@ -310,7 +324,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known)
+			checkStepArgument(report, number, line, id, known, candidates)
 
 		case "break":
 			id, condition, conditional, err := splitCondition(rest, grammarBreak)
@@ -337,7 +351,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known)
+			checkStepArgument(report, number, line, id, known, candidates)
 
 		case "inspect":
 			if strings.TrimSpace(rest) == "" {
@@ -357,12 +371,15 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 // the workflow — including a `call:`'s callee, which `cmd/flow`'s stepIDs
 // follows precisely because a breakpoint there is one the run genuinely stops
 // at.
+// names is [CheckScript]'s sorted candidate list, built once for the whole
+// script: see there for why it is sorted and why it is not rebuilt here.
 func checkStepArgument(
 	report func(line, column int, format string, args ...any),
 	number int,
 	line string,
 	id string,
 	known map[string]struct{},
+	names []string,
 ) {
 	if len(known) == 0 {
 		return
@@ -372,10 +389,6 @@ func checkStepArgument(
 	}
 
 	column := columnOf(line, argumentOffset(line))
-	names := make([]string, 0, len(known))
-	for name := range known {
-		names = append(names, name)
-	}
 
 	if suggestion, found := nearest.Name(id, names); found {
 		report(number, column, "no step named %q: did you mean %q?", id, suggestion)
@@ -453,13 +466,16 @@ func verbList() string {
 // [MaxScopeNames] is the bound rather than a number of this function's own,
 // because it is the same question that constant already answers — how many
 // names one line may list before it stops being scannable — asked about a
-// different list. Sorted, since a map's order would make one refusal read
-// differently on every run.
-func stepList(names []string) string {
-	sorted := make([]string, len(names))
-	copy(sorted, names)
-	slices.Sort(sorted)
-
+// different list.
+//
+// The ids arrive sorted and are read rather than copied. The order is
+// load-bearing — a map's would make one refusal read differently on every run
+// — but both callers already hold an ordering built once, [CheckScript]'s
+// candidates and [Session.declared], so sorting here would only redo it. That
+// matters because a refused command is not recorded: an input can repeat an
+// unknown id past [MaxScriptCommands], and each repeat would pay
+// O(steps log steps) again (Codex, #1347).
+func stepList(sorted []string) string {
 	if len(sorted) > MaxScopeNames {
 		return quote(sorted[:MaxScopeNames]) + fmt.Sprintf(" and %d more", len(sorted)-MaxScopeNames)
 	}
