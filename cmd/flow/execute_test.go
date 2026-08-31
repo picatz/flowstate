@@ -120,6 +120,12 @@ func TestCobraUsageErrorsMatchIsUsageError(t *testing.T) {
 		{"unknown shorthand flag", []string{"validate", "-Z"}},
 		{"unknown command", []string{"this-command-does-not-exist"}},
 		{"too few arguments", []string{"validate"}},
+
+		// ExactArgs wording ("accepts N arg(s), received M"), through the verb
+		// where the count being exact is load-bearing: `flow run local` took
+		// MinimumNArgs once, so `flow run local *.yaml` ran the first file,
+		// dropped the rest, and reported success for the lot.
+		{"too many arguments", []string{"run", "local", "one.yaml", "two.yaml"}},
 		{"flag needs an argument", []string{"validate", "--output"}},
 		{"invalid argument to a typed flag", []string{"watch", "x", "--interval", "not-a-duration"}},
 
