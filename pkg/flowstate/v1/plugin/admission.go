@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"fmt"
-	"strings"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -146,34 +145,10 @@ func validateDigestPin(name, digest string) error {
 		)
 	}
 
-	hex, ok := strings.CutPrefix(digest, flowstatev1.ContentDigestPrefix)
-	if !ok {
+	if err := flowstatev1.ValidateContentDigest(digest); err != nil {
 		return fmt.Errorf(
-			"%w: the pin for %q is %q, which does not begin with %q; a pin is the algorithm, a colon, and the hash, exactly as this package prints a digest",
-			ErrDigestPin, name, truncate(digest, 96), flowstatev1.ContentDigestPrefix,
-		)
-	}
-
-	if len(hex) != flowstatev1.ContentDigestHexLen {
-		return fmt.Errorf(
-			"%w: the pin for %q carries %d hex characters, want %d",
-			ErrDigestPin, name, len(hex), flowstatev1.ContentDigestHexLen,
-		)
-	}
-
-	// Lower-case only, and checked rather than normalized. What a comparison
-	// needs is that the pin is spelled the way [flowstatev1.ContentDigestOf]
-	// spells its answer; accepting upper-case here and folding it would make
-	// this package's own rendering one of two accepted spellings, and a second
-	// spelling of one value is what everything else in this tree refuses.
-	for i := 0; i < len(hex); i++ {
-		c := hex[i]
-		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
-			continue
-		}
-		return fmt.Errorf(
-			"%w: the pin for %q holds %q, which is not lower-case hexadecimal",
-			ErrDigestPin, name, string(c),
+			"%w: the pin for %q is %q, which %v; a pin is the algorithm, a colon, and the hash, exactly as this package prints a digest",
+			ErrDigestPin, name, truncate(digest, 96), err,
 		)
 	}
 

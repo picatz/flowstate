@@ -3,7 +3,9 @@ package flowstatev1
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"strings"
 )
 
 // One spelling of "these exact bytes", for every surface that needs to name a
@@ -57,4 +59,30 @@ func ContentDigestOf(r io.Reader) (string, error) {
 	}
 
 	return ContentDigestPrefix + hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+// ValidateContentDigest checks that digest has the one canonical spelling
+// [ContentDigest] writes. It validates a content identifier, not what the
+// identified bytes mean and not whether those bytes are available.
+//
+// Readers need this independently of writers: plugin distribution pins and OCI
+// image references both arrive as operator- or workflow-authored text before
+// either can be compared with measured content. Keeping the shape here avoids
+// each boundary accepting a subtly different spelling of the same digest.
+func ValidateContentDigest(digest string) error {
+	digits, ok := strings.CutPrefix(digest, ContentDigestPrefix)
+	if !ok {
+		return fmt.Errorf("does not begin with %q", ContentDigestPrefix)
+	}
+	if len(digits) != ContentDigestHexLen {
+		return fmt.Errorf("carries %d hex characters, want %d", len(digits), ContentDigestHexLen)
+	}
+	for i := 0; i < len(digits); i++ {
+		c := digits[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
+			continue
+		}
+		return fmt.Errorf("holds %q, which is not lower-case hexadecimal", string(c))
+	}
+	return nil
 }
