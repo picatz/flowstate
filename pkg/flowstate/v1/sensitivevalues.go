@@ -330,7 +330,22 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 			continue
 		}
 		state.values = append(state.values, plaintext)
-		state.substrings = append(state.substrings, plaintext)
+
+		// The substring half takes the floor [minSensitiveSubstringRunes]
+		// argues, which this path used to skip: a one-rune fixture secret
+		// (`t`, `1` — short by nature, since nothing about a test's
+		// `secrets:` is real material) marked every occurrence of that rune
+		// in every rendered line, shredding the very diagnostic its author
+		// was trying to read — and the substituted markers were themselves
+		// shredded, nesting `[redacted]` inside `[redacted]`. The value
+		// comparison above still holds at every length, so a rendered value
+		// *equal* to the plaintext redacts exactly as before; only the
+		// composite-string backstop declines, and a one-rune leaf is the
+		// case where that backstop protects nothing the comparison has not
+		// already caught.
+		if utf8.RuneCountInString(plaintext) >= minSensitiveSubstringRunes {
+			state.substrings = append(state.substrings, plaintext)
+		}
 	}
 
 	return sensitiveValuesOf(state)
