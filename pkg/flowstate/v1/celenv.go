@@ -584,6 +584,7 @@ const listsExtensionVersion = 3
 var extensionLibraries = map[string][]cel.EnvOption{
 	"bindings":       {ext.Bindings()},
 	"comprehensions": {ext.TwoVarComprehensions()},
+	"digest":         {digestLibrary()},
 	"encoders":       {ext.Encoders()},
 	"json":           {jsonLibrary()},
 	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), foldLibrary()},
@@ -678,7 +679,7 @@ var profiles = map[string][]string{
 	// coincidence of timing rather than a rule: the second profile will differ
 	// from "everything available" the moment a library is added.
 	CurrentProfile: {
-		"bindings", "comprehensions", "encoders", "json", "lists",
+		"bindings", "comprehensions", "digest", "encoders", "json", "lists",
 		"math", "optional", "protos", "regex", "sets", "strings",
 	},
 }

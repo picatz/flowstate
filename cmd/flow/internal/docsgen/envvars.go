@@ -341,6 +341,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/plugins.go",
 		},
 		{
+			name:    "FLOWSTATE_SLACK_EGRESS_POLICY_B64",
+			value:   "unset",
+			purpose: "Internal grant from the plugin host to the first-party Slack plugin: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; outbound Slack writes are denied when the grant is absent.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
 			name:    "FLOWSTATE_SYMBOLS",
 			value:   "unset",
 			purpose: "Override symbol selection (`unicode`/`ascii`) when terminal detection guesses wrong.",

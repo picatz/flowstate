@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,6 +256,114 @@ func TestDiscoverPrecedence(t *testing.T) {
 	// Sorted by name, so "only-second" then "shared".
 	if found[1].Name != "shared" || found[1].Dir != first {
 		t.Errorf("shared resolved to %q, want the copy in the first directory", found[1].Dir)
+	}
+}
+
+// TestDiscoverSaysWhichBinaryItShadowed pins the account first-wins owes.
+//
+// Precedence itself is documented and deliberate — the test above is the
+// claim — but the shadowed binary takes every task it provides with it, and a
+// workflow's `plugins:` requirement still resolves because the winner answers
+// to the same name. Reported at Info, that account sat below the level every
+// one of the CLI's plugin surfaces logs at, so two plugins claiming one name
+// were indistinguishable from one (#1302): a real `git` plugin's whole task
+// set vanished with nothing said, under -v as much as without it.
+func TestDiscoverSaysWhichBinaryItShadowed(t *testing.T) {
+	t.Parallel()
+
+	first, second := t.TempDir(), t.TempDir()
+	for _, dir := range []string{first, second} {
+		if err := os.WriteFile(filepath.Join(dir, BinaryPrefix+"shared"), []byte("x"), 0o755); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+
+	var account strings.Builder
+	logger := slog.New(slog.NewTextHandler(&account, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if _, err := Discover(Config{SearchPath: []string{first, second}, Logger: logger}); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	// At the level the CLI's own plugin logger keeps by default, since being
+	// reachable only under a flag nobody thinks to pass is the defect.
+	written := account.String()
+	if !strings.Contains(written, "shadowed") {
+		t.Errorf("a shadowed plugin binary was not reported at warn level: %q", written)
+	}
+	if !strings.Contains(written, filepath.Join(second, BinaryPrefix+"shared")) {
+		t.Errorf("the account does not name the binary that was ignored: %q", written)
+	}
+	if !strings.Contains(written, filepath.Join(first, BinaryPrefix+"shared")) {
+		t.Errorf("the account does not name the binary that won: %q", written)
+	}
+}
+
+// TestDiscoverIsSilentWithNothingShadowed is the other direction: two
+// directories with distinct names must draw no shadow warning — one on every
+// ordinary launch is one nobody reads.
+//
+// Asserted against the shadow account specifically rather than against an
+// empty log, because Discover has other legitimate things to say at this
+// level: warnOwnershipUnchecked fires where the filesystem cannot answer who
+// owns a directory, which is a property of the platform the test runs on
+// rather than of what it is testing.
+func TestDiscoverIsSilentWithNothingShadowed(t *testing.T) {
+	t.Parallel()
+
+	first, second := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(first, BinaryPrefix+"one"), []byte("x"), 0o755); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(second, BinaryPrefix+"two"), []byte("x"), 0o755); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	var account strings.Builder
+	logger := slog.New(slog.NewTextHandler(&account, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if _, err := Discover(Config{SearchPath: []string{first, second}, Logger: logger}); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	if strings.Contains(account.String(), "shadowed") {
+		t.Errorf("two plugins with distinct names drew a shadow warning: %q", account.String())
+	}
+}
+
+// TestDiscoverScansARepeatedDirectoryOnce is the boundary the shadow warning
+// opened. SearchPath is a list and the environment spells it as a path list,
+// so the same directory can legitimately appear twice — and scanning it again
+// found every binary already discovered, reporting each as shadowed by
+// itself with using and ignoring naming one path. That is a false warning on
+// every plugin in that directory, on every command and every worker start
+// (Codex, #1361).
+func TestDiscoverScansARepeatedDirectoryOnce(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, BinaryPrefix+"shared"), []byte("x"), 0o755); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	var account strings.Builder
+	logger := slog.New(slog.NewTextHandler(&account, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// Spelled both ways a duplicate actually arrives: the same string twice,
+	// and the same directory reached by a path that cleans to it.
+	found, err := Discover(Config{
+		SearchPath: []string{dir, dir, filepath.Join(dir, "..", filepath.Base(dir))},
+		Logger:     logger,
+	})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	if len(found) != 1 {
+		t.Fatalf("discovered %d plugins, want 1", len(found))
+	}
+	if strings.Contains(account.String(), "shadowed") {
+		t.Errorf("a directory named twice reported its own binary as shadowed: %q", account.String())
 	}
 }
 

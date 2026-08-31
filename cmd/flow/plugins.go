@@ -57,6 +57,11 @@ const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 // refuses PostgreSQL when it is absent.
 const sqlEgressPolicyEnv = "FLOWSTATE_SQL_EGRESS_POLICY_B64"
 
+// slackEgressPolicyEnv gives the first-party Slack plugin the same immutable
+// operator-owned snapshot. slack.post refuses to write when it is absent and
+// applies it through netpolicy on the HTTP client's actual dial path.
+const slackEgressPolicyEnv = "FLOWSTATE_SLACK_EGRESS_POLICY_B64"
+
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
@@ -368,7 +373,11 @@ func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 	env := covbuild.Env()
 	if len(f.egressPolicy) > 0 {
-		env = append(env, sqlEgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(f.egressPolicy))
+		encoded := base64.StdEncoding.EncodeToString(f.egressPolicy)
+		env = append(env,
+			sqlEgressPolicyEnv+"="+encoded,
+			slackEgressPolicyEnv+"="+encoded,
+		)
 	}
 	return plugin.NewHost(plugin.Config{
 		SearchPath:              f.dirs,
@@ -531,7 +540,7 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	host, err := flags.host(pluginLogger(surface))
+	host, err := flags.host(pluginLogger(cmd, surface))
 	if err != nil {
 		return err
 	}
@@ -628,8 +637,20 @@ func yesNo(b bool) string {
 // plugin failing to launch is an account of what happened, and the answer is the
 // catalog. Piping this command into jq must not interleave a plugin's log lines
 // with the document.
-func pluginLogger(surface *ui.UI) *slog.Logger {
-	return slog.New(slog.NewTextHandler(surface.Err, &slog.HandlerOptions{Level: slog.LevelWarn}))
+//
+// Warnings by default and everything under -v, because the level was the whole
+// of what the flag did here: the host's account of what it discovered, launched
+// and skipped is written at Debug and Info, and a handler pinned at Warn
+// discarded all of it however loudly an operator asked. `--verbose` is
+// documented as "enable verbose logging", and this is the one stream on these
+// commands it had nothing to say about.
+func pluginLogger(cmd *cobra.Command, surface *ui.UI) *slog.Logger {
+	level := slog.LevelWarn
+	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+		level = slog.LevelDebug
+	}
+
+	return slog.New(slog.NewTextHandler(surface.Err, &slog.HandlerOptions{Level: level}))
 }
 
 // inputFields converts described fields back into the shape the renderer takes.
@@ -698,7 +719,7 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 
 	surface := newSurface(cmd)
 
-	host, err := flags.host(pluginLogger(surface))
+	host, err := flags.host(pluginLogger(cmd, surface))
 	if err != nil {
 		return nil, noop, err
 	}

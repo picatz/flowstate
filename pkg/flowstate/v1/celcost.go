@@ -52,10 +52,11 @@ import (
 // # What is priced, and why the result rather than the operands
 //
 // [byteCostEstimator] charges every call that *produces* a string or bytes for
-// the size of what it produced. The estimator hook
-// ([interpreter.ActualCostEstimator]) is handed the function name, the argument
-// values and the result value, and unlike the overload ID all three are present
-// whether or not anything type-checked.
+// the size of what it produced, plus the few traversal calls whose fixed-size
+// result would otherwise hide work proportional to their input. The estimator
+// hook ([interpreter.ActualCostEstimator]) is handed the function name, the
+// argument values and the result value, and unlike the overload ID all three
+// are present whether or not anything type-checked.
 //
 // Pricing the result rather than the operands is what keeps this from being a
 // second spelling of cel-go's cost table. For concatenation the two agree
@@ -135,30 +136,28 @@ var evaluationCostEstimator interpreter.ActualCostEstimator = byteCostEstimator{
 func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, result ref.Val) *uint64 {
 	var chars int64
 
-	// json_parse is the one call here priced by what it was *handed* rather than
-	// by what it produced, and it has to be: it returns a map or a list of
-	// decoded values, which the switch below declines to price, so cel-go's
-	// default charged it 1 unit however many bytes it decoded. A workflow that
-	// can put a response body into an activation could then decode it once per
-	// iteration of a comprehension for about 13 units an iteration — the
-	// unbounded-repetition shape this whole file exists to close, on the one
-	// function whose work is most obviously linear in its input.
+	// json_parse and digest.sha256 are priced by what they were *handed* rather
+	// than by what they produced. json_parse returns a map or list the switch
+	// below declines to price; digest.sha256 returns the same 71-character string
+	// whether it traversed one input byte or a million. Charging either result
+	// would let a workflow repeat linear work over a response or webhook body for
+	// a flat unit per call.
 	//
 	// Charging the input at the same factor as every other traversal keeps the
-	// bound statable in the same sentence: an evaluation may decode roughly
-	// DefaultCostLimit / StringTraversalCostFactor characters of JSON, about ten
+	// bound statable in the same sentence: an evaluation may decode or hash
+	// roughly DefaultCostLimit / StringTraversalCostFactor characters, about ten
 	// million, however it spells the arithmetic. At the default budget that is
 	// nine or ten passes over a full default-size HTTP response body, and it
 	// refuses before the eleventh rather than after it.
 	//
-	// The residual, stated rather than left to be discovered: a decoded value is
-	// larger in memory than the bytes it came from, sometimes by a lot, and
+	// The JSON residual, stated rather than left to be discovered: a decoded value
+	// is larger in memory than the bytes it came from, sometimes by a lot, and
 	// nothing charges the decoded representation itself. What is bounded here is
 	// the input an evaluation may feed to the decoder, which is the multiplier
 	// the workflow controls; the per-value size is bounded where the value was
 	// admitted (a response body, a webhook payload, a specification), which is
 	// where a limit an operator can raise belongs.
-	if function == jsonParseFunction && len(args) == 1 {
+	if (function == jsonParseFunction || function == digestSHA256Function) && len(args) == 1 {
 		if chars = sizeOf(args[0]); chars < 0 {
 			return nil
 		}

@@ -306,6 +306,15 @@ var celIdioms = []celIdiom{
 		expr: `steps.factors.value.reduce(p, v, 1, p * v)`,
 	},
 	{
+		title: "Naming content by its SHA-256 digest",
+		prose: "`digest.sha256` returns Flowstate's canonical `sha256:<lower-case hex>` content " +
+			"digest for a string's UTF-8 bytes or a bytes value. Use it for checksums, content " +
+			"identity, and stable idempotency components. A plain digest proves that two byte " +
+			"sequences match; it does not prove who supplied them. It is not a signature, MAC, " +
+			"password hash, or credential-protection mechanism.",
+		expr: `digest.sha256(response.body)`,
+	},
+	{
 		title: "Building one message from several values",
 		prose: "`format` is an operator on a string, defined at the CEL level and pinned by " +
 			"the profile, filling `%s` and `%d` verbs from the argument list in order.",

@@ -415,7 +415,7 @@ Two things follow that are worth knowing before you build on it:
   which side to upgrade (`sdk/sdk.go:610-623`, `protocol.go:171` for the current
   version). Nothing equivalent covers the Go types you compile against.
 
-The two in-tree plugin modules are not the counter-example they look like. Each
+The in-tree plugin modules are not the counter-example they look like. Each
 pins `github.com/picatz/flowstate v0.0.0-00010101000000-000000000000` behind a
 `replace => ../..` that its own `go.mod` calls a local-development convenience
 (`plugins/git/go.mod:66-69`) — correct for a module inside this repository, and

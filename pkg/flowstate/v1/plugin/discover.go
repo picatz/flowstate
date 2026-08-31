@@ -61,7 +61,32 @@ func Discover(cfg Config) ([]Found, error) {
 	log := cfg.logger()
 	byName := make(map[string]Found)
 
+	// A directory named twice is scanned once. SearchPath is a list and the
+	// environment spells it as a path list, so `A:B:A` — or the same entry
+	// passed to --plugin-dir twice — is ordinary input rather than a mistake
+	// worth refusing. Scanning it again finds every binary already in byName
+	// and would report each as shadowed by itself, using and ignoring the
+	// identical path: a false warning on every plugin in that directory, on
+	// every command and every worker start, which is exactly the "a warning
+	// on every ordinary launch is one nobody reads" failure the notice below
+	// exists to avoid (Codex, #1361).
+	//
+	// Compared by cleaned path rather than resolved through symlinks: the
+	// former is free and catches how the duplicate is actually written, while
+	// the latter would be a filesystem call per entry to catch a case nothing
+	// has reported. Two paths that reach one directory by different links are
+	// still scanned twice and still shadow each other, which is honest — they
+	// are different entries, and the account says which one won.
+	scanned := make(map[string]struct{}, len(cfg.SearchPath))
+
 	for _, dir := range cfg.SearchPath {
+		if _, already := scanned[filepath.Clean(dir)]; already {
+			log.Debug("plugin search path entry appears more than once; scanning it once", "dir", dir)
+
+			continue
+		}
+		scanned[filepath.Clean(dir)] = struct{}{}
+
 		info, err := os.Stat(dir)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -130,7 +155,21 @@ func Discover(cfg Config) ([]Found, error) {
 			}
 
 			if existing, shadowed := byName[name]; shadowed {
-				log.Info("plugin binary is shadowed by an earlier search path entry",
+				// Warn rather than Info, because of what is lost rather than
+				// how the loser was chosen. First-wins is documented and
+				// deliberate (--plugin-dir is "repeatable, in precedence
+				// order"), but the shadowed binary takes *every task it
+				// provides* with it, silently: a workflow's `plugins:`
+				// requirement still resolves, because the winner answers to
+				// the same name and version, and a step naming one of the
+				// loser's tasks fails as an unknown task with nothing
+				// connecting the two. This package already refuses outright
+				// when two plugins claim one secret *scheme* ("two answers for
+				// one scheme is a configuration error"); one name claimed
+				// twice is that error with a larger blast radius, and it was
+				// reported below the level every one of this CLI's plugin
+				// surfaces logs at.
+				log.Warn("plugin binary is shadowed by an earlier search path entry",
 					"plugin", name, "using", existing.Path, "ignoring", path)
 				continue
 			}
