@@ -188,7 +188,7 @@ Print the workflow specification a Flowfile compiles to
 flow compile [workflow-file] [flags]
 ```
 
-Compile a Flowfile and write the resulting workflow specification to standard output, executing nothing and contacting no server.
+Compile a Flowfile and write the resulting workflow specification to standard output, executing no workflow step and contacting no server. `--plugin-dir` does launch those plugin binaries to read their task descriptors; use `--plugin-catalog` to compile against the same descriptors without starting a process.
 
 This is the sibling of `flow validate` and the two answer different questions. `flow validate` answers whether a file is correct, and its answer is the list of problems. This answers what a correct file becomes, and its answer is the specification: the same `Workflow` message `flow run` submits, so a reviewer, a diff, or a tool reading a step's compiled expressions is reading exactly what would have executed.
 
@@ -213,14 +213,21 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
+| `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow dap`
 
 Debug a workflow from an editor, over the Debug Adapter Protocol
 
 ```
-flow dap
+flow dap [flags]
 ```
 
 Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and continue buttons drive a real local run.
@@ -238,6 +245,43 @@ flow dap
 # The terminal debugger, for a person:
 flow run local --debug examples/hello-world/workflow.yaml
 ```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
+| `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
+| `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
+| `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
+| `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
+| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | absolute directory to discover plugins in, repeatable, in precedence order; a relative path is refused and $FLOWSTATE_PLUGIN_DIR is not read, because an editor starts this process in the workspace |
+| `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
+| `--plugin-pins <string>` | `string` | — | — | path to a YAML pins file; $FLOWSTATE_PLUGIN_PINS is not read, because an editor starts this process in the workspace |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
+| `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
+| `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
+| `--secret-dir-namespaced` | `bool` | `false` | — | resolve file: secrets below a separate <secret-dir>/<namespace>/ directory |
+| `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
+| `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
+| `--secret-keychain` | `bool` | `false` | — | resolve keychain: secrets from the macOS keychain (default $FLOWSTATE_SECRET_KEYCHAIN, macOS only) |
+| `--secret-keychain-namespaced` | `bool` | `false` | — | give each tenant its own keychain service, <service>/<namespace> |
+| `--secret-keychain-service <string>` | `string` | — | `FLOWSTATE_SECRET_KEYCHAIN_SERVICE` | keychain service name entries are stored under (default $FLOWSTATE_SECRET_KEYCHAIN_SERVICE, then "flowstate") |
+| `--secret-op` | `bool` | `false` | — | resolve op: secrets through the 1Password CLI (default $FLOWSTATE_SECRET_OP) |
+| `--secret-op-namespaced` | `bool` | `false` | — | give each tenant its own 1Password vault, named after the namespace |
+| `--secret-op-vault <string>` | `string` | — | `FLOWSTATE_SECRET_OP_VAULT` | 1Password vault read when a run has no namespace (default $FLOWSTATE_SECRET_OP_VAULT, then "flowstate") |
+| `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
+| `--secret-vault-addr <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_ADDR` | address of the Vault or OpenBao instance vault: secrets are read from, such as https://vault.example.com:8200 (default $FLOWSTATE_SECRET_VAULT_ADDR) |
+| `--secret-vault-ca-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_CA_FILE` | PEM CA bundle to verify the vault's certificate against, instead of the system roots (default $FLOWSTATE_SECRET_VAULT_CA_FILE) |
+| `--secret-vault-kubernetes-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT` | where the Kubernetes auth method is mounted (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT, then "kubernetes") |
+| `--secret-vault-kubernetes-role <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE` | Vault role to authenticate as via the Kubernetes auth method, using this pod's projected service account token (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE; exactly one of this or a token must be configured) |
+| `--secret-vault-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_MOUNT` | where the KV v2 engine is mounted (default $FLOWSTATE_SECRET_VAULT_MOUNT, then "secret") |
+| `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
+| `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
+| `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
 
 ## `flow debug`
 
@@ -1168,6 +1212,7 @@ flow schedule create report.yaml --name report-us --input region=us-east-1
 | `--name <string>` | `string` | — | — | what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--paused` | `bool` | `false` | — | create the schedule without letting it fire, so its next firing times can be read before it takes one |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |

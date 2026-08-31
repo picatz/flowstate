@@ -94,16 +94,16 @@ func TestTheOfflineVerbsTakeThePluginCatalogFlag(t *testing.T) {
 		return cmd
 	}
 
-	for _, verb := range []string{"validate", "tasks", "fix"} {
-		t.Run(verb, func(t *testing.T) {
+	for _, verb := range [][]string{{"validate"}, {"tasks"}, {"fix"}, {"compile"}, {"schedule", "create"}} {
+		t.Run(strings.Join(verb, " "), func(t *testing.T) {
 			t.Parallel()
 
-			assert.NotNil(t, find(t, verb).Flags().Lookup(pluginCatalogFlag),
-				"`flow %s` cannot be told what a plugin provides without launching one", verb)
+			assert.NotNil(t, find(t, verb...).Flags().Lookup(pluginCatalogFlag),
+				"`flow %s` cannot be told what a plugin provides without launching one", strings.Join(verb, " "))
 		})
 	}
 
-	for _, verb := range [][]string{{"worker"}, {"run", "local"}, {"task", "run"}} {
+	for _, verb := range [][]string{{"worker"}, {"run", "local"}, {"task", "run"}, {"dap"}} {
 		t.Run("not on "+strings.Join(verb, " "), func(t *testing.T) {
 			t.Parallel()
 
@@ -282,6 +282,7 @@ steps:
 		{"validate", []string{"validate", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir, path}},
 		{"tasks", []string{"tasks", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir}},
 		{"fix", []string{"fix", "--check", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir, path}},
+		{"compile", []string{"compile", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir, path}},
 		{"a pinned plugin", []string{"validate", "--" + pluginCatalogFlag, catalog, "--plugin", "example", path}},
 	} {
 		args := tc.args
