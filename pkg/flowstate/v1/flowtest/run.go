@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/cel-go/common/types/ref"
@@ -699,7 +700,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
 	// timing can put a real task's Fn in this run's path. See [caseRegistry].
-	registry, err := caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow)
+	unstubbed := &unstubbedTasks{}
+
+	registry, err := caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow, unstubbed)
 	if err != nil {
 		caseError("%s", err)
 		return
@@ -995,6 +998,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		result.Warnings = unusedStubWarnings(stubs)
 	}
 
+	// Whatever the run's verdict, and ahead of the idle-stub account above:
+	// a stub this case never declared is a hole its author has to close
+	// before anything the case asserts means what it appears to.
+	result.Warnings = append(unstubbed.warnings(), result.Warnings...)
+
 	return
 }
 
@@ -1044,7 +1052,9 @@ func swapRegistry(taskNames []string) func() {
 			continue
 		}
 		originals[name] = saved{existed: false}
-		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name)})
+		// nil recorder: this entry is the fail-closed placeholder the comment
+		// above describes, and it is never called — nothing to record.
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name, nil)})
 	}
 
 	return func() {
@@ -1073,7 +1083,7 @@ func swapRegistry(taskNames []string) func() {
 // and nothing this case does can leak into anyone else's. Issue #195 is what
 // happens without it — a real DNS lookup escaped a supposedly stubbed http task
 // under concurrency, because a swapped global is only ever swapped for a window.
-func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool, workflow *v1.Workflow) (*v1.Registry, error) {
+func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool, workflow *v1.Workflow, unstubbed *unstubbedTasks) (*v1.Registry, error) {
 	registry := v1.NewRegistry()
 
 	// Every task this build registers, stubbed or not, which is what makes
@@ -1084,7 +1094,7 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 		if stub, ok := stubs[def.Name]; ok {
 			replacement.Fn = stub.fn(def.Name, sensitiveInputNames)
 		} else {
-			replacement.Fn = unstubbedTaskFn(def.Name)
+			replacement.Fn = unstubbedTaskFn(def.Name, unstubbed)
 		}
 		_ = registry.Register(replacement)
 	}
@@ -1106,17 +1116,98 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 		if _, already := registry.Lookup(name); already {
 			continue
 		}
-		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name)})
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name, unstubbed)})
 	}
 
 	return registry, nil
 }
 
+// unstubbedTasks records which tasks a case invoked without declaring a stub
+// for them.
+//
+// The refusal [unstubbedTaskFn] returns is an ordinary step failure on the
+// wire, which is the whole difficulty: `continue_on_error: true` tolerates a
+// *dependency's* failure and cannot tell one apart from the harness's own
+// "you forgot a stub", so a case whose every unstubbed invocation was
+// tolerated passed green, asserting outputs about a run in which nothing was
+// ever exercised (#1296). The invocations were visible only in a failing
+// case's transcript.
+//
+// So the fact is recorded where it is synthesized. The harness knows it made
+// this error; nothing downstream can recover that from a tolerated failure.
+//
+// Locked because two `parallel:` branches may invoke the same unstubbed task
+// at once — the same reason [stubbedTask] holds one, and the same short
+// critical section.
+type unstubbedTasks struct {
+	mu    sync.Mutex
+	names map[string]struct{}
+}
+
+// record notes one invocation of an unstubbed task.
+func (u *unstubbedTasks) record(name string) {
+	if u == nil {
+		return
+	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if u.names == nil {
+		u.names = map[string]struct{}{}
+	}
+	u.names[name] = struct{}{}
+}
+
+// warnings is the account a case owes about its own scaffolding, in the shape
+// [unusedStubWarnings] answers with: a hole in the case rather than in the
+// run, so the verdict is untouched and `--fail-on-warning` is where a suite
+// opts into treating one as fatal.
+//
+// Reported however the run ended, unlike an idle stub. An idle stub on a
+// failed run is unjudgeable — the run may simply not have reached it — but an
+// invocation *happened*: it is a fact about what this case ran, and the run's
+// verdict cannot make it untrue.
+func (u *unstubbedTasks) warnings() []*v1.Diagnostic {
+	if u == nil {
+		return nil
+	}
+
+	u.mu.Lock()
+	names := make([]string, 0, len(u.names))
+	for name := range u.names {
+		names = append(names, name)
+	}
+	u.mu.Unlock()
+
+	// Ordered, not walked: the report must read identically on every run.
+	sort.Strings(names)
+
+	warnings := make([]*v1.Diagnostic, 0, len(names))
+	for _, name := range names {
+		warnings = append(warnings, &v1.Diagnostic{
+			Field: "stubs",
+			Message: fmt.Sprintf(
+				"task %q was invoked with no stub declared for it, and the step tolerated the "+
+					"refusal (`continue_on_error:`), so this case asserts about a run in which "+
+					"that task never did anything; add a `stubs:` entry naming %q",
+				name, name),
+		})
+	}
+
+	return warnings
+}
+
 // unstubbedTaskFn is what a registered task's Fn becomes for the duration of
 // a case that declares no stub for it: a failure naming the task, rather than
 // whatever the real one would have done.
-func unstubbedTaskFn(name string) v1.TaskFunc {
+//
+// It also tells seen about the invocation, so a refusal a `continue_on_error:`
+// step swallowed still reaches the report. See [unstubbedTasks].
+func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
+		seen.record(name)
+
 		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, fmt.Errorf(
 			"flow test: task %q was invoked, but this case declares no stub for it; "+
 				"add a `stubs:` entry naming %q — flow test never lets an unstubbed task run for real",
