@@ -1484,9 +1484,18 @@ type RunState struct {
 	// path that records nothing, which both read as every field empty. `flow
 	// validate` cannot tell those apart and neither can a workflow, which is
 	// correct: "no trigger recorded" is one fact, not two.
-	Trigger       *TriggerContext `protobuf:"bytes,12,opt,name=trigger,proto3" json:"trigger,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Trigger *TriggerContext `protobuf:"bytes,12,opt,name=trigger,proto3" json:"trigger,omitempty"`
+	// MetricWorkflowName is the deployment-owned workflow name that run-lifecycle
+	// metrics may export. It is set only when the admitting boundary selected a
+	// trusted workflow; an open submission leaves it empty so a caller cannot
+	// spend the process-wide workflow-name cardinality budget.
+	//
+	// Carried across Continue-As-New because trust was established once at the
+	// boundary and cannot be reconstructed by workflow code. Absent on older runs
+	// reads as empty, which safely omits the name.
+	MetricWorkflowName string `protobuf:"bytes,13,opt,name=metric_workflow_name,json=metricWorkflowName,proto3" json:"metric_workflow_name,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *RunState) Reset() {
@@ -1601,6 +1610,13 @@ func (x *RunState) GetTrigger() *TriggerContext {
 		return x.Trigger
 	}
 	return nil
+}
+
+func (x *RunState) GetMetricWorkflowName() string {
+	if x != nil {
+		return x.MetricWorkflowName
+	}
+	return ""
 }
 
 // TimelineEntry is one thing a run did, read back from its own durable history.
@@ -1855,7 +1871,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"loop_state\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\tloopState\x1aP\n" +
 	"\rCallVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xd6\x06\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\x88\a\n" +
 	"\bRunState\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bworkflow\x12\x1b\n" +
@@ -1871,7 +1887,8 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	" \x01(\v2\x18.flowstate.v1.RunOutputsR\n" +
 	"runOutputs\x12<\n" +
 	"\fpending_undo\x18\v \x03(\v2\x19.flowstate.v1.PendingUndoR\vpendingUndo\x126\n" +
-	"\atrigger\x18\f \x01(\v2\x1c.flowstate.v1.TriggerContextR\atrigger\x1aL\n" +
+	"\atrigger\x18\f \x01(\v2\x1c.flowstate.v1.TriggerContextR\atrigger\x120\n" +
+	"\x14metric_workflow_name\x18\r \x01(\tR\x12metricWorkflowName\x1aL\n" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aN\n" +

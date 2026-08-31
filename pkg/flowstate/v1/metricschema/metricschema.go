@@ -187,11 +187,19 @@ const (
 	// Declared here rather than only beside the span that writes it, because
 	// this table is the one place a telemetry attribute key is declared and a
 	// key that lives in two places is a key that eventually disagrees with
-	// itself. Nothing records it on an instrument today — the run-level span
-	// (`v1.SpanAttributeWorkflowName`) is its only writer — and the
-	// classification says what would happen if something did: bounded by the
-	// deployment's own set of workflows, so it is a label a metric *may*
-	// carry, unlike the per-execution identifiers below.
+	// itself. The run-level span (`v1.SpanAttributeWorkflowName`) writes it,
+	// and so do the run-lifecycle instruments below.
+	//
+	// [ClassConfiguration] is the classification of a name the *deployment*
+	// chose, which is not every name a run can execute: a server that
+	// registered no trusted specification under a submitted name runs the
+	// caller's copy, and the caller chose that name. So the run-lifecycle
+	// recording sites pass a name only for a submission the admitting boundary
+	// resolved to a deployment-owned workflow (`RunState.metric_workflow_name`,
+	// carried across Continue-As-New), and pass the empty string otherwise,
+	// which [Limiter.Attributes] drops. An open submission must not be able to
+	// spend this key's process-wide [MaxValuesPerKey] budget, which every
+	// tenant on the worker shares.
 	WorkflowName = "flowstate.workflow.name"
 
 	// TriggerName is the name of the trigger that started a run, where one
