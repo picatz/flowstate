@@ -83,6 +83,20 @@ func TestSQLPluginReceivesThePolicySnapshotTheHostParsed(t *testing.T) {
 		"SQL plugin policy = %q, want the host's original immutable snapshot", flags.egressPolicy)
 }
 
+func TestAnOversizedEgressPolicyIsRefusedBeforeItCanReachAPluginEnvironment(t *testing.T) {
+	cmd := &cobra.Command{Use: "oversized"}
+	addEgressPolicyFlag(cmd)
+
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte{'#'}, maxEgressPolicyBytes+1), 0o600))
+	require.NoError(t, cmd.Flags().Set("egress-policy", path))
+
+	err := applyEgressPolicy(cmd)
+	require.ErrorContains(t, err, "exceeds the 65536-byte limit")
+	require.Empty(t, egressPolicySnapshot(cmd),
+		"an oversized policy reached the SQL plugin snapshot despite being refused")
+}
+
 // TestLoopbackDenialUnderAnExplicitPolicyStaysSilent is #387's negative
 // direction: when an operator's own --egress-policy file denied the dial, the
 // remedy is that file, not an environment variable that would read as an

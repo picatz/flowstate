@@ -146,6 +146,11 @@ backend and write `${secret('provider:name')}` in the Flowfile; `flow fix` canno
 do this safely because creating or authorizing deployment secret state is not a
 source rewrite.
 
+Upgrade the worker and `flowstate-plugin-sql` together. The host refuses an SQL
+manifest that does not assert the required-secret contract for both tasks, so a
+pre-policy SQL binary cannot continue under a newer worker even though other
+protocol-v3 plugins remain compatible.
+
 Credential source is not destination authorization. A worker loading the SQL
 plugin must also receive `--egress-policy` with `postgres` in `egress.schemes`
 and exact allow rules/networks/ports for the database. The host forwards that
@@ -156,6 +161,9 @@ plugin startup. The SQL plugin checks host and port rules before DNS, resolves
 and authorizes every address for every DSN host, pins that set, rechecks the
 actual TCP target immediately before each connection, requires verified TLS,
 and rejects Unix sockets and filesystem-reading connection options.
+Egress policy files are limited to 64 KiB. Besides bounding configuration work,
+this leaves room for the immutable base64 snapshot below Linux's per-string
+environment limit when the worker launches the plugin.
 
 Released SQL plugins no longer execute SQLite DSNs. Embedded SQLite grants the
 plugin worker-filesystem authority (including URI modes, symlinks, `ATTACH`, and

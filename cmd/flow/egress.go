@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 
@@ -42,6 +43,13 @@ import (
 // image that bakes configuration into the environment rather than into every
 // command line — the same split --plugin-dir and FLOWSTATE_PLUGIN_DIR have.
 const egressPolicyEnv = "FLOWSTATE_EGRESS_POLICY"
+
+// maxEgressPolicyBytes keeps policy loading bounded and leaves room below
+// Linux's per-environment-string exec limit after the SQL plugin snapshot is
+// base64 encoded. A policy is configuration, not a data transport; 64 KiB is
+// ample for the supported rules while refusing comment-heavy or accidental
+// files before they can prevent every plugin process from launching.
+const maxEgressPolicyBytes = 64 << 10
 
 // egressPolicySnapshotKey carries the exact policy bytes [applyEgressPolicy]
 // parsed. Protocol-native plugins receive this immutable snapshot rather than
@@ -88,9 +96,18 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 		return nil
 	}
 
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("reading egress policy: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxEgressPolicyBytes+1))
+	if err != nil {
+		return fmt.Errorf("reading egress policy: %w", err)
+	}
+	if len(data) > maxEgressPolicyBytes {
+		return fmt.Errorf("reading egress policy %s: file exceeds the %d-byte limit", path, maxEgressPolicyBytes)
 	}
 
 	cfg, err := netpolicy.ParseConfig(data)

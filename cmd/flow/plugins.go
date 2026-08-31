@@ -17,6 +17,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/picatz/flowstate/internal/covbuild"
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -720,6 +721,11 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 
 		return nil, noop, err
 	}
+	if err := checkSQLPluginSecurityContract(host.Plugins()); err != nil {
+		stop()
+
+		return nil, noop, err
+	}
 
 	if err := host.Register(v1.DefaultRegistry(), secretProviders); err != nil {
 		stop()
@@ -746,6 +752,50 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 	}
 
 	return catalog, stop, nil
+}
+
+// checkSQLPluginSecurityContract prevents a partially upgraded deployment from
+// pairing this host with the pre-egress-policy SQL binary. Protocol version 3
+// remains compatible for every other plugin; SQL is singled out by its own
+// manifest name (rather than its renameable executable name) and must assert
+// the two claims this host enforces before either task can be registered.
+//
+// This is deliberately not satisfied by the egress environment grant alone:
+// an old SQL process ignores unknown environment and would otherwise retain
+// unrestricted PostgreSQL and SQLite access. The current SQL plugin both makes
+// these claims and refuses to start without a valid policy snapshot.
+func checkSQLPluginSecurityContract(plugins []*plugin.Plugin) error {
+	for _, p := range plugins {
+		if err := checkSQLManifestSecurityContract(p.Manifest()); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkSQLManifestSecurityContract(manifest *pluginv1.PluginManifest) error {
+	if manifest.GetName() != "sql" {
+		return nil
+	}
+
+	for _, name := range []string{"query", "exec"} {
+		var task *pluginv1.TaskManifest
+		for _, candidate := range manifest.GetTasks() {
+			if candidate.GetName() == name {
+				task = candidate
+				break
+			}
+		}
+		if task == nil || !slices.Contains(task.GetRequiredSecretInputs(), "dsn") {
+			return fmt.Errorf(
+				"SQL plugin is not compatible with this host's security contract: task sql.%s must require dsn as a whole secret reference; upgrade flowstate-plugin-sql together with the host",
+				name,
+			)
+		}
+	}
+
+	return nil
 }
 
 // pluginShutdownGrace bounds how long a worker waits for its plugins to exit.
