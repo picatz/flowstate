@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
@@ -663,6 +664,13 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
 }
 
+// maxStepSuggestionInput bounds the typed id a did-you-mean is computed for,
+// the same rule and the same reasoning cmd/flow's maxSuggestionInput states
+// for argv. A step id is a CEL identifier, so a real one is short; this sits
+// far above any an author would write and far below what a scan of the
+// inventory can be made to cost.
+const maxStepSuggestionInput = 64
+
 // unknownStepNotice reports that a step id names nothing this run can reach,
 // in the words `flow debug replay` already refuses the same line with.
 //
@@ -707,8 +715,20 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 		return "", false
 	}
 
-	if suggestion, found := nearest.Name(id, names); found {
-		return fmt.Sprintf("no step named %q: did you mean %q?", id, suggestion), true
+	// The suggestion is skipped for input too long to have been a typo of
+	// anything declared, which is the bound [nearest]'s own doc puts on every
+	// caller and cmd/flow's argv suggestions already keep (maxSuggestionInput,
+	// #428). A refused command is not recorded, so it can be repeated without
+	// reaching [MaxScriptCommands], and each scan is one [nearest.Distance]
+	// per declared id over a word this session will read up to
+	// [MaxCommandBytes] of — work a redirected stdin would otherwise size
+	// (Codex, #1347). Nothing within [nearest.MaxDistance] edits of a real id
+	// can be longer than the longest declared one plus that many, so the
+	// refusal below loses no suggestion anybody could have earned.
+	if utf8.RuneCountInString(id) <= maxStepSuggestionInput {
+		if suggestion, found := nearest.Name(id, names); found {
+			return fmt.Sprintf("no step named %q: did you mean %q?", id, suggestion), true
+		}
 	}
 
 	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true

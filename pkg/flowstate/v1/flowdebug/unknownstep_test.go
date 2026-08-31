@@ -211,3 +211,35 @@ func suggestedName(t *testing.T, message string) string {
 
 	return name
 }
+
+// TestALongUnknownStepIdIsRefusedWithoutScanning is the bound [nearest]'s own
+// doc puts on every caller. A refused command is not recorded, so it can be
+// repeated without reaching MaxScriptCommands, and each suggestion scan is one
+// nearest.Distance per declared id over a word this session reads up to
+// MaxCommandBytes of. Nothing that long can be within nearest.MaxDistance
+// edits of a real id, so the refusal still names the declared ids and only the
+// suggestion — which could never have been earned — is skipped.
+func TestALongUnknownStepIdIsRefusedWithoutScanning(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("b", 5000)
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:    strings.NewReader("break " + long + "\ncontinue\n"),
+		Out:   &console,
+		Steps: []flowdebug.Step{{ID: "build"}, {ID: "deploy"}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	require.NoError(t, <-walked(t, session, "build", "deploy"))
+
+	out := console.String()
+	assert.Contains(t, out, "no step named",
+		"a long id was not refused at all:\n%s", out)
+	assert.NotContains(t, out, "did you mean",
+		"a did-you-mean was computed for input too long to be a typo of any declared id")
+	assert.Contains(t, out, `"build"`,
+		"the refusal stopped naming what the workflow declares:\n%s", out)
+}
