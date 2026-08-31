@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +114,59 @@ func TestStripeVerificationDoesNotHashASenderSizedTimestamp(t *testing.T) {
 	require.Less(t, *hashed, len(huge),
 		"the signed payload grew with a value the sender chose")
 	require.LessOrEqual(t, *hashed, len(body)+32)
+}
+
+// TestStripeVerificationBoundsCommaDelimitedFields pins the field-count bound,
+// not merely the signature-count bound. strings.Split used to allocate and walk
+// every empty field before the verifier retained at most eight v1 signatures, so
+// a comma-filled header could turn the listener's 1 MiB byte allowance into a
+// million-element allocation on every routed or decoy verification.
+func TestStripeVerificationBoundsCommaDelimitedFields(t *testing.T) {
+	key := secrets.NewSecret(secrets.NewRef("env", "WEBHOOK_SECRET"), "shh")
+	body := []byte(`{"id":"evt_1"}`)
+	now := time.Now()
+	header := SignStripeBody(key, body, now) + strings.Repeat(",", 1<<20)
+
+	err := verifyStripe(key, map[string]string{StripeSignatureHeader: header}, body, now)
+	require.ErrorContains(t, err, "contains more than")
+
+	allocations := testing.AllocsPerRun(10, func() {
+		_ = verifyStripe(key, map[string]string{StripeSignatureHeader: header}, body, now)
+	})
+	require.Less(t, allocations, float64(100),
+		"verification allocated in proportion to the comma-delimited field count")
+}
+
+// TestHMACSHA256VerificationBoundsCommaDelimitedFields is
+// [TestStripeVerificationBoundsCommaDelimitedFields] for the generic scheme:
+// [splitSignatures] took the identical fix, in the identical shape, for the
+// identical reason, and had no regression test naming it.
+//
+// Asserted by bytes allocated rather than by [testing.AllocsPerRun]'s call
+// count. strings.Split's own allocation is one large backing array regardless
+// of field count, so a call-count assertion cannot tell a bounded reader from
+// an unbounded one — the byte total is what actually scales with a
+// comma-filled header, and what [splitSignatures]'s own doc comment names.
+func TestHMACSHA256VerificationBoundsCommaDelimitedFields(t *testing.T) {
+	key := secrets.NewSecret(secrets.NewRef("env", "WEBHOOK_SECRET"), "shh")
+	body := []byte(`{"id":"evt_1"}`)
+	header := hmacPrefix + SignWebhookBody(key, body) + strings.Repeat(",", 1<<20)
+	headers := map[string]string{WebhookSignatureHeader: header}
+
+	require.NoError(t, verifyHMACSHA256(key, headers, body),
+		"the valid signature is still the first field, ahead of the flood")
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range 10 {
+		_ = verifyHMACSHA256(key, headers, body)
+	}
+	runtime.ReadMemStats(&after)
+
+	perCall := (after.TotalAlloc - before.TotalAlloc) / 10
+	require.Less(t, perCall, uint64(len(header)),
+		"verification allocated in proportion to the comma-delimited field count (%d bytes/call over a %d-byte header)",
+		perCall, len(header))
 }
 
 // verifyTrigger builds a well-formed trigger declaring exactly the schemes
