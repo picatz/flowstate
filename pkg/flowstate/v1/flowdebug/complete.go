@@ -136,7 +136,7 @@ func (s *Session) Complete(line string, pos int) Completion {
 		//
 		// Read from the same helper the command parses with, so the prompt and
 		// the parser cannot disagree about where the expression begins.
-		if _, condition, conditional, err := splitCondition(rest); err == nil && conditional {
+		if _, condition, conditional, err := splitCondition(rest, grammarBreak); err == nil && conditional {
 			return s.offerExpression(subject, condition)
 		}
 

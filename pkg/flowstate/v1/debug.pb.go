@@ -137,7 +137,10 @@ const (
 	DebugCommandVerb_DEBUG_COMMAND_VERB_STEP DebugCommandVerb = 1
 	// Run until the next breakpoint, or to the end.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_CONTINUE DebugCommandVerb = 2
-	// Run until the step whose id the argument names.
+	// Run until the step whose id the argument names, unconditionally or only
+	// where an expression holds there. The argument is `<step-id> [if <expr>]`,
+	// the same conditional grammar `BREAK` takes — one-shot, where a
+	// breakpoint's condition persists.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_UNTIL DebugCommandVerb = 3
 	// Stop at a step, always or when an expression holds. The argument is
 	// `<step-id> [if <expr>]`.

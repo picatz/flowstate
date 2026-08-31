@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Flowstate evaluates every CEL expression through this file. Expressions come
@@ -104,6 +106,11 @@ type Evaluator struct {
 	// envs caches environments by extension-library set. Keys are the
 	// canonical library-set string produced by libsKey.
 	envs sync.Map // map[string]*envResult
+
+	// programs caches compiled programs for specification-owned expressions,
+	// so a loop body's `if:` is compiled once rather than once per iteration.
+	// See [Evaluator.EvalParsed] for what is cached and why only that path.
+	programs programCache
 }
 
 // envResult is a memoized environment construction, successful or not. Failures
@@ -218,6 +225,13 @@ func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activa
 	if err != nil {
 		return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 	}
+	return evalProgram(ctx, prg, activation)
+}
+
+// evalProgram runs a compiled program and classifies its failure, which is the
+// half of evaluation [Evaluator.Eval] and [Evaluator.EvalParsed] must share so
+// a cached expression cannot fail with different words than an uncached one.
+func evalProgram(ctx context.Context, prg cel.Program, activation any) (ref.Val, error) {
 	out, _, err := prg.ContextEval(ctx, activation)
 	if err != nil {
 		return nil, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
@@ -269,11 +283,195 @@ func (e *ExpressionError) Unwrap() error { return e.Err }
 
 // EvalParsed evaluates a previously parsed expression, of the form carried in a
 // compiled workflow specification, against the given activation.
+//
+// The compiled program is cached, keyed on the identity of the two things it
+// was compiled from: the environment (already interned per library set by
+// [Evaluator.Env]) and the parsed expression itself. Identity is the right key
+// here and only here — the engine holds one *expr.ParsedExpr per expression
+// site in a loaded specification and hands the same pointer back on every
+// iteration, so a `for_each` over 10,000 items pays one compilation for a body
+// step's `if:` instead of 10,000 (measured at ~16.5µs and ~9.8KB each on the
+// path #1111 records). Specification expressions are immutable once loaded,
+// which is what makes a pointer a truthful key. [Evaluator.Eval] and
+// [Evaluator.EvalString] stay uncached on purpose: their ASTs are freshly
+// built per call — a REPL or `inspect` reparse — so identity would never
+// repeat and every entry would be churn.
+//
+// A cache hit changes where compilation happens and nothing else: the program
+// options carrying the cost budget and interrupt frequency are compiled in, so
+// a cached program enforces the same limits, and per-evaluation state lives in
+// the evaluation rather than the program, which is what makes sharing one
+// program across goroutines sound.
 func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed expression is nil")
 	}
-	return e.Eval(ctx, env, cel.ParsedExprToAst(parsed), activation)
+
+	key := programKey{env: env, parsed: parsed}
+	prg, ok := e.programs.get(key)
+	if !ok {
+		var err error
+		prg, err = env.Program(cel.ParsedExprToAst(parsed), e.limits.programOptions()...)
+		if err != nil {
+			return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
+		}
+		// Two goroutines missing on the same key both compile and both store;
+		// the loser's program is garbage. That costs one compilation, which is
+		// the price of not holding a lock across env.Program. The charge is
+		// the expression's own encoded size — the author-controlled half of
+		// what an entry retains, and a proportional proxy for the compiled
+		// half — measured here on the miss path where a compilation already
+		// dwarfs it.
+		e.programs.put(key, prg, proto.Size(parsed))
+	}
+	return evalProgram(ctx, prg, activation)
+}
+
+// DefaultProgramCacheSize bounds how many compiled programs an [Evaluator]
+// retains, and DefaultProgramCacheBytes bounds what they weigh.
+//
+// Two bounds because the author controls two resources. The number of
+// distinct expression sites a worker evaluates over its lifetime is the
+// deployment's choice, not any one caller's: every loaded specification
+// contributes its sites for as long as runs reference them, across tenants
+// and across time — that is the entry count. But each site's *size* is the
+// author's too, and an entry count alone is not a memory bound: 1,024 sites
+// near [MaxSpecBytes] would retain on the order of a gigabyte, each entry
+// pinning its specification-owned parsed expression through the key and a
+// compiled program that scales with it, surviving the runs that loaded them
+// (Codex, #1274). So every entry is charged its parsed expression's encoded
+// size against the byte budget, and an expression bigger than the whole
+// budget is simply never cached — it compiles per evaluation, as everything
+// did before the cache, rather than evicting the entire working set to sit
+// alone in it.
+//
+// Least-recently-used eviction under both bounds keeps the sites current
+// runs are actually iterating; an evicted site is recompiled on next use, so
+// eviction costs a miss and never an answer.
+const (
+	DefaultProgramCacheSize  = 1024
+	DefaultProgramCacheBytes = 32 << 20
+)
+
+// programKey identifies a compiled program by what it was compiled from. Both
+// halves are pointer identities: the environment is interned per library set,
+// and the parsed expression is owned by a loaded specification — see
+// [Evaluator.EvalParsed] for why that identity is truthful. Program options are
+// not part of the key because they are fixed per [Evaluator] at construction.
+type programKey struct {
+	env    *cel.Env
+	parsed *expr.ParsedExpr
+}
+
+// programCache is a mutex-guarded LRU of compiled programs. The zero value is
+// ready to use, which keeps a zero [Evaluator] working the way it always has.
+//
+// A single lock rather than something cleverer: the guarded section is a map
+// lookup and a list splice, three orders of magnitude cheaper than the
+// compilation a hit avoids, and one lock is the spelling whose behavior under
+// -race needs no argument.
+type programCache struct {
+	mu      sync.Mutex
+	entries map[programKey]*list.Element
+	order   *list.List // front is most recently used, back is next to evict
+
+	// retained sums the charged bytes of everything held, and maxBytes is
+	// the budget it is kept under — [DefaultProgramCacheBytes] when zero,
+	// set smaller only by tests that would otherwise parse megabytes to
+	// reach an eviction.
+	retained int
+	maxBytes int
+
+	// stores counts entries actually stored. It is what lets a test prove a
+	// repeated evaluation was served rather than recompiled-and-restored:
+	// entry count alone cannot tell those apart, since storing over an
+	// existing key leaves it unchanged — the vacuity a first draft of the
+	// cache's own tests shipped with.
+	stores int
+}
+
+// programEntry is what an order element carries: the key rides along so
+// eviction can delete the map entry without a reverse index, and the charged
+// bytes so eviction can return them to the budget.
+type programEntry struct {
+	key   programKey
+	prg   cel.Program
+	bytes int
+}
+
+// get returns the cached program for key, marking it most recently used.
+func (c *programCache) get(key programKey) (cel.Program, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	elem, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	c.order.MoveToFront(elem)
+	return elem.Value.(*programEntry).prg, true
+}
+
+// put stores a compiled program for key charged at the given bytes, evicting
+// least recently used entries until both bounds hold. Storing over an
+// existing key keeps the newest program, so a racing double-compile resolves
+// to one retained entry. A program charged more than the whole budget is not
+// stored at all: its caller compiles per evaluation, which is the pre-cache
+// behavior, instead of the working set being evicted to make room for one
+// tenant's largest expression.
+func (c *programCache) put(key programKey, prg cel.Program, bytes int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	budget := c.maxBytes
+	if budget == 0 {
+		budget = DefaultProgramCacheBytes
+	}
+	if bytes > budget {
+		return
+	}
+
+	c.stores++
+
+	if c.entries == nil {
+		c.entries = make(map[programKey]*list.Element)
+		c.order = list.New()
+	}
+
+	if elem, ok := c.entries[key]; ok {
+		entry := elem.Value.(*programEntry)
+		c.retained += bytes - entry.bytes
+		entry.prg, entry.bytes = prg, bytes
+		c.order.MoveToFront(elem)
+	} else {
+		c.entries[key] = c.order.PushFront(&programEntry{key: key, prg: prg, bytes: bytes})
+		c.retained += bytes
+	}
+
+	for c.order.Len() > DefaultProgramCacheSize || c.retained > budget {
+		oldest := c.order.Back()
+		entry := oldest.Value.(*programEntry)
+		c.order.Remove(oldest)
+		delete(c.entries, entry.key)
+		c.retained -= entry.bytes
+	}
+}
+
+// len reports how many programs the cache holds, for tests that assert the
+// bound holds.
+func (c *programCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// storeCount reports how many programs were ever stored, for tests that
+// assert reuse: evaluations past a site's first that stored nothing were
+// served from the cache.
+func (c *programCache) storeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stores
 }
 
 // EvalParsedBase evaluates a previously parsed expression in the workflow's
