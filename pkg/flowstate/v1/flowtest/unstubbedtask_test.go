@@ -140,3 +140,57 @@ tests:
 	assert.Empty(t, c.GetWarnings(),
 		"a properly stubbed case must earn no warning: %v", c.GetWarnings())
 }
+
+// twoStepsOneTaskWorkflow runs one task from two steps, the second tolerating
+// failure. It is the shape a step-scoped stub makes dangerous: the task *is*
+// stubbed, so the dispatcher answers the first step and refuses the second as
+// unmatched, and that refusal is swallowed exactly like an undeclared one.
+const twoStepsOneTaskWorkflow = `
+edition: v2026.3
+name: two-steps
+steps:
+  - id: first
+    http:
+      url: https://example.invalid/one
+  - id: second
+    continue_on_error: true
+    http:
+      url: https://example.invalid/two
+outputs:
+  one:
+    value: ${steps.first.status_code}
+`
+
+// TestAStepScopedStubLeavesNoSilentHoleForItsSibling is the same hole through
+// the other door, found in review on #1356. A stub scoped with `step:` puts
+// its task in the stub set, so a sibling step running that task never reaches
+// unstubbedTaskFn at all: it is refused by the matcher scan instead, and a
+// `continue_on_error:` sibling swallows that refusal. The first stub answered,
+// so no idle-stub warning fires either — and the case passes green about a
+// run whose second step did nothing.
+func TestAStepScopedStubLeavesNoSilentHoleForItsSibling(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", twoStepsOneTaskWorkflow)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: only the first step is stubbed
+    workflow: ./workflow.yaml
+    stubs:
+      - step: first
+        returns: {status_code: 200}
+    expect:
+      outputs: {one: 200}
+`))
+
+	c := report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+	require.Len(t, c.GetWarnings(), 1,
+		"the sibling step's swallowed refusal was not reported: %v", c.GetWarnings())
+
+	w := c.GetWarnings()[0]
+	assert.Equal(t, "second", w.GetStep(),
+		"the warning does not name the step whose invocation nothing answered")
+	assert.Contains(t, w.GetMessage(), `task "http"`)
+}

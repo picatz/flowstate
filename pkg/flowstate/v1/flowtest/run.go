@@ -1092,7 +1092,7 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 	for _, def := range v1.DefaultRegistry().All() {
 		replacement := def
 		if stub, ok := stubs[def.Name]; ok {
-			replacement.Fn = stub.fn(def.Name, sensitiveInputNames)
+			replacement.Fn = stub.fn(def.Name, sensitiveInputNames, unstubbed)
 		} else {
 			replacement.Fn = unstubbedTaskFn(def.Name, unstubbed)
 		}
@@ -1105,7 +1105,7 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 		if _, already := registry.Lookup(name); already {
 			continue
 		}
-		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name, sensitiveInputNames)})
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name, sensitiveInputNames, unstubbed)})
 	}
 
 	required, err := v1.RequiredTaskNames(workflow)
@@ -1142,24 +1142,44 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 type unstubbedTasks struct {
 	mu sync.Mutex
 
-	// at holds one entry per task-and-step pair, because a warning that names
-	// only the task cannot be acted on when two steps run it and one of them
-	// is stubbed by `step:`. The step is the engine's own
+	// seen holds one entry per task-and-step pair, because a warning that
+	// names only the task cannot be acted on when two steps run it and one of
+	// them is stubbed by `step:`. The step is the engine's own
 	// ([v1.TaskStepFromContext]) rather than a second channel of the same
 	// fact, and it is empty for an invocation the engine recorded no step for
 	// — a compensation runs off the run-level context — which the rendering
 	// below says rather than inventing one.
-	at map[unstubbedAt]struct{}
+	seen map[unstubbedAt]struct{}
 }
 
-// unstubbedAt is one invocation's identity: the task, and the step that ran it.
+// unstubbedAt is one invocation's identity: the task, the step that ran it,
+// and which of the two holes it fell down — no stub declared for the task at
+// all, or stubs declared and none of them answering this invocation.
 type unstubbedAt struct {
 	task string
 	step string
+
+	// unmatched distinguishes the second door, which is the one a `step:`
+	// stub opens: binding one puts its *task* in the stub set, so a sibling
+	// step running that task never reaches [unstubbedTaskFn] — the matcher
+	// scan refuses it instead, and a `continue_on_error:` sibling swallows
+	// that refusal exactly like an undeclared one. The first stub answered,
+	// so no idle-stub warning fires either (Codex, #1356).
+	unmatched bool
 }
 
-// record notes one invocation of an unstubbed task, at the step serving it.
+// record notes one invocation of a task no stub was declared for.
 func (u *unstubbedTasks) record(ctx context.Context, name string) {
+	u.at(ctx, name, false)
+}
+
+// recordUnmatched notes one invocation that declared stubs did not answer.
+func (u *unstubbedTasks) recordUnmatched(ctx context.Context, name string) {
+	u.at(ctx, name, true)
+}
+
+// at records one invocation, at the step serving it.
+func (u *unstubbedTasks) at(ctx context.Context, name string, unmatched bool) {
 	if u == nil {
 		return
 	}
@@ -1169,10 +1189,10 @@ func (u *unstubbedTasks) record(ctx context.Context, name string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	if u.at == nil {
-		u.at = map[unstubbedAt]struct{}{}
+	if u.seen == nil {
+		u.seen = map[unstubbedAt]struct{}{}
 	}
-	u.at[unstubbedAt{task: name, step: step}] = struct{}{}
+	u.seen[unstubbedAt{task: name, step: step, unmatched: unmatched}] = struct{}{}
 }
 
 // warnings is the account a case owes about its own scaffolding, in the shape
@@ -1190,8 +1210,8 @@ func (u *unstubbedTasks) warnings() []*v1.Diagnostic {
 	}
 
 	u.mu.Lock()
-	at := make([]unstubbedAt, 0, len(u.at))
-	for one := range u.at {
+	at := make([]unstubbedAt, 0, len(u.seen))
+	for one := range u.seen {
 		at = append(at, one)
 	}
 	u.mu.Unlock()
@@ -1219,13 +1239,19 @@ func (u *unstubbedTasks) warnings() []*v1.Diagnostic {
 			where = fmt.Sprintf(" at step %q", one.step)
 		}
 
+		// The two holes need different fixes, so they are told apart: one
+		// asks for a stub, the other for a stub that reaches this step.
+		missing := fmt.Sprintf("with no stub declared for it, so it did nothing and this case "+
+			"asserts about a run that never exercised it; add a `stubs:` entry naming %q", one.task)
+		if one.unmatched {
+			missing = "and no declared stub answered it, so it did nothing and this case asserts " +
+				"about a run that never exercised it; widen a `where:`/`step:`, or add a stub for this step"
+		}
+
 		warnings = append(warnings, &v1.Diagnostic{
-			Field: "stubs",
-			Step:  one.step,
-			Message: fmt.Sprintf(
-				"task %q was invoked%s with no stub declared for it, so it did nothing and this "+
-					"case asserts about a run that never exercised it; add a `stubs:` entry naming %q",
-				one.task, where, one.task),
+			Field:   "stubs",
+			Step:    one.step,
+			Message: fmt.Sprintf("task %q was invoked%s %s", one.task, where, missing),
 		})
 	}
 
