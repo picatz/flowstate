@@ -76,6 +76,17 @@ func TestRunWorkflowRecordsNoRunMetricsWithoutAMetricsHandler(t *testing.T) {
 	conformance.AssertNoMetrics(t, reader)
 }
 
+func TestRunWorkflowDoesNotExportAnUntrustedWorkflowName(t *testing.T) {
+	reader := conformance.RecordMetrics(t)
+
+	workflow := conformance.RunMetricsWorkflow()
+	_, err := runRunMetricsState(t, &v1.RunState{Workflow: workflow})
+	require.NoError(t, err)
+
+	conformance.AssertRunMetrics(t, reader, metricschema.DriverDurable, "",
+		metricschema.OutcomeSuccess, "")
+}
+
 // runRunMetricsWorkflow drives w through the durable driver's test
 // environment with a metrics handler wired to whatever
 // [conformance.RecordMetrics] most recently installed as the global meter
@@ -88,6 +99,10 @@ func TestRunWorkflowRecordsNoRunMetricsWithoutAMetricsHandler(t *testing.T) {
 // bridge production uses rather than a shortcut that happens to make the
 // assertion pass.
 func runRunMetricsWorkflow(t *testing.T, w *v1.Workflow) (*v1.Workflow_StepOutputs, error) {
+	return runRunMetricsState(t, &v1.RunState{Workflow: w, MetricWorkflowName: w.GetName()})
+}
+
+func runRunMetricsState(t *testing.T, state *v1.RunState) (*v1.Workflow_StepOutputs, error) {
 	t.Helper()
 
 	handler := opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{
@@ -106,7 +121,7 @@ func runRunMetricsWorkflow(t *testing.T, w *v1.Workflow) (*v1.Workflow_StepOutpu
 	// same wiring [runTaskMetricWorkflow] uses one file over.
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: w})
+	env.ExecuteWorkflow(engine.Run, state)
 	require.True(t, env.IsWorkflowCompleted())
 
 	if err := env.GetWorkflowError(); err != nil {
