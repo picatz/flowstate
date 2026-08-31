@@ -135,8 +135,8 @@ func TestAFlowfileCanNameTheVCSPluginsTasks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ValidateSource: unexpected error: %v", err)
 		}
-		if len(diags) == 0 {
-			t.Fatal("a literal token was accepted despite the plugin's required_secret_inputs claim")
+		if text := diagnosticText(diags); !strings.Contains(text, `requires input "token" to be a whole secret reference`) {
+			t.Fatalf("literal token diagnostics did not prove required_secret_inputs enforcement:\n%s", text)
 		}
 	})
 

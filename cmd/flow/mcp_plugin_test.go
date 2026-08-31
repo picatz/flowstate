@@ -226,3 +226,44 @@ steps:
 	assert.Empty(t, mcpValidateDiagnostics(t, with, workflow),
 		"a step naming a now-registered plugin task still failed to validate")
 }
+
+func TestMCPRunLocalRoutesAPluginProvidedSecretThroughTheLaunchRegistry(t *testing.T) {
+	dir := buildExamplePluginDir(t)
+
+	posture := &cobra.Command{Use: "mcp"}
+	addLocalRunFlags(posture)
+	addPluginFlags(posture)
+	posture.SetContext(t.Context())
+	require.NoError(t, posture.Flags().Set("plugin-dir", dir))
+	require.NoError(t, posture.Flags().Set("auth-policy", localSecretPolicy(t)))
+
+	providers, err := localSecretProviders(posture)
+	require.NoError(t, err)
+	t.Cleanup(providers.close)
+
+	_, closePlugins, err := startPlugins(posture, providers.registry)
+	require.NoError(t, err, "starting the example plugin")
+	t.Cleanup(closePlugins)
+
+	session := connectMCPWithProviders(t, posture, providers)
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.RunLocalToolName,
+		Arguments: map[string]any{"source": `edition: v2026.3
+name: greet
+steps:
+  - id: hi
+    example.greet:
+      name: world
+      token: ${secret("example:token")}
+`},
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, `no secret \"token\"`,
+		"MCP run_local did not route the reference to the provider registered by the plugin")
+	assert.Contains(t, text, "EXAMPLE_SECRET_TOKEN",
+		"MCP run_local did not route the reference to the provider registered by the plugin")
+	assert.NotContains(t, text, "unknown secret scheme")
+}

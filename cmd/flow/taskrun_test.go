@@ -66,6 +66,22 @@ func TestRunningOneTaskWritesItsOutputsToStdout(t *testing.T) {
 		"the invocation did not say how it went, in the word the rest of the CLI uses")
 }
 
+func TestTaskRunRoutesAPluginProvidedSecretThroughTheLaunchRegistry(t *testing.T) {
+	dir := buildExamplePluginDir(t)
+
+	_, stderr, err := taskRun(t, "example.greet",
+		"--plugin-dir", dir,
+		"--auth-policy", localSecretPolicy(t),
+		"--input", "name=world",
+		"--input", `token=${secret("example:token")}`)
+	require.Error(t, err)
+	assert.Contains(t, stderr, `no secret "token"`,
+		"task run did not route the reference to the provider registered by the plugin")
+	assert.Contains(t, stderr, "EXAMPLE_SECRET_TOKEN",
+		"task run did not route the reference to the provider registered by the plugin")
+	assert.NotContains(t, stderr, "unknown secret scheme")
+}
+
 // TestTheAnswerIsOneLinePerOutput pins the shape of the text answer.
 //
 // One line per output whatever the value holds, which is why a string is written in
@@ -553,7 +569,8 @@ func TestAPluginsTaskRunsThroughTheSameDiscoveryAWorkerUses(t *testing.T) {
 
 	dir := buildExamplePluginDir(t)
 
-	stdout, stderr, err := taskRun(t, "example.greet", "--input", "name=world", "--plugin-dir", dir)
+	stdout, stderr, err := taskRun(t, "example.greet", "--input", "name=world", "--plugin-dir", dir,
+		"--auth-policy", localSecretPolicy(t))
 	require.NoError(t, err, stderr)
 
 	assert.Contains(t, stdout, "Hello, world!",
