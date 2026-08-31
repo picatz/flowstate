@@ -241,6 +241,13 @@ jobs:
       - name: Test plugin modules
         run: make test-plugins
 
+      # The module tests prove each plugin in isolation. This joins them to the
+      # author-facing surface: build every binary, diff the descriptors and
+      # security claims against the reviewed catalog, and validate every plugin
+      # example without credentials or network access.
+      - name: Validate plugin examples against the reviewed catalog
+        run: make plugin-examples
+
       # A different schedule, not a longer one. The step above runs at the
       # runner's GOMAXPROCS, where the local harness's virtual clock reaches
       # only the interleavings parallelism happens to produce; GOMAXPROCS=1

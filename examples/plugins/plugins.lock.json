@@ -1,0 +1,1733 @@
+{
+  "plugins": [
+    {
+      "name": "codex",
+      "version": "0.1.0",
+      "description": "Runs a single bounded OpenAI Codex agentic turn (over the codex CLI) and returns its final message, any patch it produced, and usage - the demonstration that flowstate orchestrates AI agents as durable workloads.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "codex.exec",
+          "summary": "One bounded agentic run of OpenAI Codex: a prompt in, a final message, an optional patch, and usage out.",
+          "inputs": [
+            {
+              "name": "prompt",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "sandbox_mode",
+              "type": "read_only | workspace_write | danger_full_access",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "working_context",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "api_key",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "may hold a secret reference"
+              ]
+            },
+            {
+              "name": "max_output_bytes",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_events",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "allow_network",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "reset_working_context",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "final_message",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "patch",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "files_changed",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "thread_id",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "input_tokens",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "cached_input_tokens",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "output_tokens",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "events",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "api_key"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChRjb2RleC92MS9jb2RleC5wcm90bxIIY29kZXgudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byLtAgoKRXhlY0lucHV0cxIWCgZwcm9tcHQYASABKAlSBnByb21wdBIUCgVtb2RlbBgCIAEoCVIFbW9kZWwSOAoMc2FuZGJveF9tb2RlGAMgASgOMhUuY29kZXgudjEuU2FuZGJveE1vZGVSC3NhbmRib3hNb2RlEicKD3dvcmtpbmdfY29udGV4dBgEIAEoCVIOd29ya2luZ0NvbnRleHQSLAoHYXBpX2tleRgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIGYXBpS2V5EigKEG1heF9vdXRwdXRfYnl0ZXMYBiABKAVSDm1heE91dHB1dEJ5dGVzEh0KCm1heF9ldmVudHMYByABKAVSCW1heEV2ZW50cxIjCg1hbGxvd19uZXR3b3JrGAggASgIUgxhbGxvd05ldHdvcmsSMgoVcmVzZXRfd29ya2luZ19jb250ZXh0GAkgASgIUhNyZXNldFdvcmtpbmdDb250ZXh0IuICCgtFeGVjT3V0cHV0cxIjCg1maW5hbF9tZXNzYWdlGAEgASgJUgxmaW5hbE1lc3NhZ2USFAoFcGF0Y2gYAiABKAlSBXBhdGNoEjgKDWZpbGVzX2NoYW5nZWQYAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSDGZpbGVzQ2hhbmdlZBIbCgl0aHJlYWRfaWQYBCABKAlSCHRocmVhZElkEiEKDGlucHV0X3Rva2VucxgFIAEoA1ILaW5wdXRUb2tlbnMSLgoTY2FjaGVkX2lucHV0X3Rva2VucxgGIAEoA1IRY2FjaGVkSW5wdXRUb2tlbnMSIwoNb3V0cHV0X3Rva2VucxgHIAEoA1IMb3V0cHV0VG9rZW5zEisKBmV2ZW50cxgIIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIGZXZlbnRzEhwKCXRydW5jYXRlZBgJIAEoCFIJdHJ1bmNhdGVkKo4BCgtTYW5kYm94TW9kZRIcChhTQU5EQk9YX01PREVfVU5TUEVDSUZJRUQQABIaChZTQU5EQk9YX01PREVfUkVBRF9PTkxZEAESIAocU0FOREJPWF9NT0RFX1dPUktTUEFDRV9XUklURRACEiMKH1NBTkRCT1hfTU9ERV9EQU5HRVJfRlVMTF9BQ0NFU1MQA0KbAQoMY29tLmNvZGV4LnYxQgpDb2RleFByb3RvUAFaPmdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL2NvZGV4L2dlbi9jb2RleC92MTtjb2RleHYxogIDQ1hYqgIIQ29kZXguVjHKAghDb2RleFxWMeICFENvZGV4XFYxXEdQQk1ldGFkYXRh6gIJQ29kZXg6OlYxYgZwcm90bzM=",
+          "inputMessage": "codex.v1.ExecInputs",
+          "outputDescriptor": "ChRjb2RleC92MS9jb2RleC5wcm90bxIIY29kZXgudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byLtAgoKRXhlY0lucHV0cxIWCgZwcm9tcHQYASABKAlSBnByb21wdBIUCgVtb2RlbBgCIAEoCVIFbW9kZWwSOAoMc2FuZGJveF9tb2RlGAMgASgOMhUuY29kZXgudjEuU2FuZGJveE1vZGVSC3NhbmRib3hNb2RlEicKD3dvcmtpbmdfY29udGV4dBgEIAEoCVIOd29ya2luZ0NvbnRleHQSLAoHYXBpX2tleRgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIGYXBpS2V5EigKEG1heF9vdXRwdXRfYnl0ZXMYBiABKAVSDm1heE91dHB1dEJ5dGVzEh0KCm1heF9ldmVudHMYByABKAVSCW1heEV2ZW50cxIjCg1hbGxvd19uZXR3b3JrGAggASgIUgxhbGxvd05ldHdvcmsSMgoVcmVzZXRfd29ya2luZ19jb250ZXh0GAkgASgIUhNyZXNldFdvcmtpbmdDb250ZXh0IuICCgtFeGVjT3V0cHV0cxIjCg1maW5hbF9tZXNzYWdlGAEgASgJUgxmaW5hbE1lc3NhZ2USFAoFcGF0Y2gYAiABKAlSBXBhdGNoEjgKDWZpbGVzX2NoYW5nZWQYAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSDGZpbGVzQ2hhbmdlZBIbCgl0aHJlYWRfaWQYBCABKAlSCHRocmVhZElkEiEKDGlucHV0X3Rva2VucxgFIAEoA1ILaW5wdXRUb2tlbnMSLgoTY2FjaGVkX2lucHV0X3Rva2VucxgGIAEoA1IRY2FjaGVkSW5wdXRUb2tlbnMSIwoNb3V0cHV0X3Rva2VucxgHIAEoA1IMb3V0cHV0VG9rZW5zEisKBmV2ZW50cxgIIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIGZXZlbnRzEhwKCXRydW5jYXRlZBgJIAEoCFIJdHJ1bmNhdGVkKo4BCgtTYW5kYm94TW9kZRIcChhTQU5EQk9YX01PREVfVU5TUEVDSUZJRUQQABIaChZTQU5EQk9YX01PREVfUkVBRF9PTkxZEAESIAocU0FOREJPWF9NT0RFX1dPUktTUEFDRV9XUklURRACEiMKH1NBTkRCT1hfTU9ERV9EQU5HRVJfRlVMTF9BQ0NFU1MQA0KbAQoMY29tLmNvZGV4LnYxQgpDb2RleFByb3RvUAFaPmdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL2NvZGV4L2dlbi9jb2RleC92MTtjb2RleHYxogIDQ1hYqgIIQ29kZXguVjHKAghDb2RleFxWMeICFENvZGV4XFYxXEdQQk1ldGFkYXRh6gIJQ29kZXg6OlYxYgZwcm90bzM=",
+          "outputMessage": "codex.v1.ExecOutputs",
+          "requiredSecretInputs": []
+        }
+      ],
+      "protocolVersion": 3,
+      "taskSchemaDigest": "sha256:f3ed2101c84ca80979885245bfa276b68a8fd429a51198a6a0933af8df304d1d",
+      "claimsDigest": "sha256:b5dd70042bdd23befca5989ea040080ef4a81fca6cf2d82e444220955ace33eb"
+    },
+    {
+      "name": "example",
+      "version": "0.1.0",
+      "description": "Resolves example: secrets and greets people.",
+      "secretSchemes": [
+        "example"
+      ],
+      "tasks": [
+        {
+          "name": "example.greet",
+          "summary": "Greet someone by name.",
+          "inputs": [
+            {
+              "name": "name",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "greeting",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "may hold a secret reference"
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "name": "message",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "length",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "authenticated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChhleGFtcGxlL3YxL2V4YW1wbGUucHJvdG8SCmV4YW1wbGUudjEiUwoLR3JlZXRJbnB1dHMSEgoEbmFtZRgBIAEoCVIEbmFtZRIaCghncmVldGluZxgCIAEoCVIIZ3JlZXRpbmcSFAoFdG9rZW4YAyABKAlSBXRva2VuImYKDEdyZWV0T3V0cHV0cxIYCgdtZXNzYWdlGAEgASgJUgdtZXNzYWdlEhYKBmxlbmd0aBgCIAEoA1IGbGVuZ3RoEiQKDWF1dGhlbnRpY2F0ZWQYAyABKAhSDWF1dGhlbnRpY2F0ZWRCcFpuZ2l0aHViLmNvbS9waWNhdHovZmxvd3N0YXRlL3BrZy9mbG93c3RhdGUvdjEvcGx1Z2luL2V4YW1wbGVzL2Zsb3dzdGF0ZS1wbHVnaW4tZXhhbXBsZS9nZW4vZXhhbXBsZS92MTtleGFtcGxldjFKrRIKBhIEAAA2AQoICgEMEgMAABIKCAoBAhIDAgATCgkKAQgSBAQAhQEKCgoCCAsSBAQAhQEKtgQKAgQAEgQQACYBGi8gR3JlZXRJbnB1dHMgYXJlIHRoZSBpbnB1dHMgdG8gdGhlIGdyZWV0IHRhc2suCjL4AyBUaGUgZXhhbXBsZSBwbHVnaW4ncyBvd24gdGFzayBzY2hlbWEuCgogSXQgaXMgZGVmaW5lZCBoZXJlLCBpbiB0aGUgcGx1Z2luJ3Mgb3duIG1vZHVsZSwgcmF0aGVyIHRoYW4gcmV1c2luZyBvbmUgb2YgdGhlCiBlbmdpbmUncyBtZXNzYWdlcywgYmVjYXVzZSB0aGF0IGlzIHRoZSBjYXNlIGEgcGx1Z2luIGF1dGhvciBpcyBhY3R1YWxseSBpbjoKIHRoZWlyIHRhc2sgaGFzIGEgc2hhcGUgdGhlIGVuZ2luZSBoYXMgbmV2ZXIgc2Vlbi4gVGhlIGRlc2NyaXB0b3JzIGZvciB0aGVzZQogbWVzc2FnZXMgdHJhdmVsIHRvIHRoZSBlbmdpbmUgaW4gdGhlIHBsdWdpbidzIG1hbmlmZXN0LCB3aGljaCBpcyB3aGF0IGxldHMgaXQKIHZhbGlkYXRlIGEgd29ya2Zsb3cgdXNpbmcgdGhpcyB0YXNrLCBjb21wbGV0ZSB0aGVzZSBmaWVsZCBuYW1lcyBpbiBhbiBlZGl0b3IsCiBhbmQgZG9jdW1lbnQgdGhlIHRhc2sg4oCUIHdpdGhvdXQgY29tcGlsaW5nIGFueXRoaW5nIG9mIHRoaXMgcGx1Z2luJ3MuCgoKCgMEAAESAxAIEwoMCgUEAAIABRIDEgIICiQKBAQAAgASAxICEhoXIE5hbWUgaXMgd2hvIHRvIGdyZWV0LgoKDAoFBAACAAESAxIJDQoMCgUEAAIAAxIDEhARCgwKBQQAAgEFEgMVAggKNgoEBAACARIDFQIWGikgR3JlZXRpbmcgb3ZlcnJpZGVzIHRoZSBkZWZhdWx0ICJIZWxsbyIuCgoMCgUEAAIBARIDFQkRCgwKBQQAAgEDEgMVFBUKDAoFBAACAgUSAyUCCArSBgoEBAACAhIDJQITGsQGIFRva2VuIGlzIGEgY3JlZGVudGlhbCB0aGUgKmhvc3QqIG1hbmFnZXMg4oCUIG5vdCB0aGlzIHBsdWdpbidzIG93bgogImV4YW1wbGU6IiBzY2hlbWUsIHdoaWNoIFNlY3JldFJlc29sdmUgYmVsb3cgcmVzb2x2ZXMsIGJ1dCBhIHJlZmVyZW5jZQogdW5kZXIgd2hhdGV2ZXIgc2NoZW1lIHRoZSBkZXBsb3ltZW50J3Mgd29ya2VyIGlzIGNvbmZpZ3VyZWQgd2l0aCwgc3VjaCBhcwogYGVudjpgIG9yIGB2YXVsdDpgLgoKIEFuIG9yZGluYXJ5IHN0cmluZywgZGVsaWJlcmF0ZWx5OiB0aGlzIHBsdWdpbiBkb2VzIG5vdCBkZWNsYXJlIHRoZSBmaWVsZCdzCiAqdHlwZSogYXMgYW55dGhpbmcgdW51c3VhbCBmb3IgYSBzZWNyZXQgdG8gYXJyaXZlIGluLCBiZWNhdXNlIGEgRmxvd2ZpbGUKIGlucHV0IG5hbWluZyBhIGhvc3Qgc2VjcmV0IGFycml2ZXMgaGVyZSBhbHJlYWR5IHJlc29sdmVkLiBUaGUgaG9zdCBuYW1lcwogdGhpcyBmaWVsZCBpbiB0aGUgImdyZWV0IiB0YXNrJ3MgbWFuaWZlc3QgYXMgb25lIG9mIFNlY3JldElucHV0cywgcmVzb2x2ZXMKIHdoYXRldmVyIGAke3NlY3JldCguLi4pfWAgdGhlIHdvcmtmbG93IHdyb3RlIGJlZm9yZSB0aGUgcmVxdWVzdCBldmVyCiByZWFjaGVzIHRoaXMgcHJvY2VzcywgYW5kIHRoaXMgcGx1Z2luIG5ldmVyIHNlZXMgYSByZWZlcmVuY2Ug4oCUIHNlZQogc2RrLlRhc2suU2VjcmV0SW5wdXRzIGluIHRoaXMgcGx1Z2luJ3MgbWFpbi5nbywgYW5kIFRhc2tNYW5pZmVzdCdzIG93bgogc2VjcmV0X2lucHV0cyBmaWVsZCwgZm9yIHdoeSB0aGUgaG9zdCByZXNvbHZlcyByYXRoZXIgdGhhbiB0aGlzIHBsdWdpbgogYXNraW5nIGl0IHRvLgoKDAoFBAACAgESAyUJDgoMCgUEAAICAxIDJRESCj0KAgQBEgQpADYBGjEgR3JlZXRPdXRwdXRzIGFyZSB0aGUgcmVzdWx0cyBvZiB0aGUgZ3JlZXQgdGFzay4KCgoKAwQBARIDKQgUCgwKBQQBAgAFEgMrAggKMQoEBAECABIDKwIVGiQgTWVzc2FnZSBpcyB0aGUgYXNzZW1ibGVkIGdyZWV0aW5nLgoKDAoFBAECAAESAysJEAoMCgUEAQIAAxIDKxMUCgwKBQQBAgEFEgMuAgcKOwoEBAECARIDLgITGi4gTGVuZ3RoIGlzIGhvdyBsb25nIHRoZSBtZXNzYWdlIGlzLCBpbiBieXRlcy4KCgwKBQQBAgEBEgMuCA4KDAoFBAECAQMSAy4REgoMCgUEAQICBRIDNQIGCsgCCgQEAQICEgM1AhkaugIgQXV0aGVudGljYXRlZCByZXBvcnRzIHdoZXRoZXIgYSB0b2tlbiB3YXMgcmVjZWl2ZWQsIHdoaWNoIGlzIHdoYXQgdGhpcwogZXhhbXBsZSB1c2VzIHRvIHByb3ZlIHRoZSB2YWx1ZSBhcnJpdmVkIOKAlCBkZWxpYmVyYXRlbHkgbmV2ZXIgdGhlIHRva2VuCiBpdHNlbGYuIEVjaG9pbmcgaXQgaGVyZSB3b3VsZCBtYWtlIHRoZSBwb2ludCBvZiByb3V0aW5nIGl0IHRocm91Z2gKIHNlY3JldF9pbnB1dHMgcG9pbnRsZXNzOiB0aGUgdmFsdWUgd291bGQgc2l0IGluIGEgc3RlcCBvdXRwdXQsIHdoaWNoIGlzCiBkdXJhYmxlIHdvcmtmbG93IGhpc3RvcnkuCgoMCgUEAQICARIDNQcUCgwKBQQBAgIDEgM1FxhiBnByb3RvMw==",
+          "inputMessage": "example.v1.GreetInputs",
+          "outputDescriptor": "ChhleGFtcGxlL3YxL2V4YW1wbGUucHJvdG8SCmV4YW1wbGUudjEiUwoLR3JlZXRJbnB1dHMSEgoEbmFtZRgBIAEoCVIEbmFtZRIaCghncmVldGluZxgCIAEoCVIIZ3JlZXRpbmcSFAoFdG9rZW4YAyABKAlSBXRva2VuImYKDEdyZWV0T3V0cHV0cxIYCgdtZXNzYWdlGAEgASgJUgdtZXNzYWdlEhYKBmxlbmd0aBgCIAEoA1IGbGVuZ3RoEiQKDWF1dGhlbnRpY2F0ZWQYAyABKAhSDWF1dGhlbnRpY2F0ZWRCcFpuZ2l0aHViLmNvbS9waWNhdHovZmxvd3N0YXRlL3BrZy9mbG93c3RhdGUvdjEvcGx1Z2luL2V4YW1wbGVzL2Zsb3dzdGF0ZS1wbHVnaW4tZXhhbXBsZS9nZW4vZXhhbXBsZS92MTtleGFtcGxldjFKrRIKBhIEAAA2AQoICgEMEgMAABIKCAoBAhIDAgATCgkKAQgSBAQAhQEKCgoCCAsSBAQAhQEKtgQKAgQAEgQQACYBGi8gR3JlZXRJbnB1dHMgYXJlIHRoZSBpbnB1dHMgdG8gdGhlIGdyZWV0IHRhc2suCjL4AyBUaGUgZXhhbXBsZSBwbHVnaW4ncyBvd24gdGFzayBzY2hlbWEuCgogSXQgaXMgZGVmaW5lZCBoZXJlLCBpbiB0aGUgcGx1Z2luJ3Mgb3duIG1vZHVsZSwgcmF0aGVyIHRoYW4gcmV1c2luZyBvbmUgb2YgdGhlCiBlbmdpbmUncyBtZXNzYWdlcywgYmVjYXVzZSB0aGF0IGlzIHRoZSBjYXNlIGEgcGx1Z2luIGF1dGhvciBpcyBhY3R1YWxseSBpbjoKIHRoZWlyIHRhc2sgaGFzIGEgc2hhcGUgdGhlIGVuZ2luZSBoYXMgbmV2ZXIgc2Vlbi4gVGhlIGRlc2NyaXB0b3JzIGZvciB0aGVzZQogbWVzc2FnZXMgdHJhdmVsIHRvIHRoZSBlbmdpbmUgaW4gdGhlIHBsdWdpbidzIG1hbmlmZXN0LCB3aGljaCBpcyB3aGF0IGxldHMgaXQKIHZhbGlkYXRlIGEgd29ya2Zsb3cgdXNpbmcgdGhpcyB0YXNrLCBjb21wbGV0ZSB0aGVzZSBmaWVsZCBuYW1lcyBpbiBhbiBlZGl0b3IsCiBhbmQgZG9jdW1lbnQgdGhlIHRhc2sg4oCUIHdpdGhvdXQgY29tcGlsaW5nIGFueXRoaW5nIG9mIHRoaXMgcGx1Z2luJ3MuCgoKCgMEAAESAxAIEwoMCgUEAAIABRIDEgIICiQKBAQAAgASAxICEhoXIE5hbWUgaXMgd2hvIHRvIGdyZWV0LgoKDAoFBAACAAESAxIJDQoMCgUEAAIAAxIDEhARCgwKBQQAAgEFEgMVAggKNgoEBAACARIDFQIWGikgR3JlZXRpbmcgb3ZlcnJpZGVzIHRoZSBkZWZhdWx0ICJIZWxsbyIuCgoMCgUEAAIBARIDFQkRCgwKBQQAAgEDEgMVFBUKDAoFBAACAgUSAyUCCArSBgoEBAACAhIDJQITGsQGIFRva2VuIGlzIGEgY3JlZGVudGlhbCB0aGUgKmhvc3QqIG1hbmFnZXMg4oCUIG5vdCB0aGlzIHBsdWdpbidzIG93bgogImV4YW1wbGU6IiBzY2hlbWUsIHdoaWNoIFNlY3JldFJlc29sdmUgYmVsb3cgcmVzb2x2ZXMsIGJ1dCBhIHJlZmVyZW5jZQogdW5kZXIgd2hhdGV2ZXIgc2NoZW1lIHRoZSBkZXBsb3ltZW50J3Mgd29ya2VyIGlzIGNvbmZpZ3VyZWQgd2l0aCwgc3VjaCBhcwogYGVudjpgIG9yIGB2YXVsdDpgLgoKIEFuIG9yZGluYXJ5IHN0cmluZywgZGVsaWJlcmF0ZWx5OiB0aGlzIHBsdWdpbiBkb2VzIG5vdCBkZWNsYXJlIHRoZSBmaWVsZCdzCiAqdHlwZSogYXMgYW55dGhpbmcgdW51c3VhbCBmb3IgYSBzZWNyZXQgdG8gYXJyaXZlIGluLCBiZWNhdXNlIGEgRmxvd2ZpbGUKIGlucHV0IG5hbWluZyBhIGhvc3Qgc2VjcmV0IGFycml2ZXMgaGVyZSBhbHJlYWR5IHJlc29sdmVkLiBUaGUgaG9zdCBuYW1lcwogdGhpcyBmaWVsZCBpbiB0aGUgImdyZWV0IiB0YXNrJ3MgbWFuaWZlc3QgYXMgb25lIG9mIFNlY3JldElucHV0cywgcmVzb2x2ZXMKIHdoYXRldmVyIGAke3NlY3JldCguLi4pfWAgdGhlIHdvcmtmbG93IHdyb3RlIGJlZm9yZSB0aGUgcmVxdWVzdCBldmVyCiByZWFjaGVzIHRoaXMgcHJvY2VzcywgYW5kIHRoaXMgcGx1Z2luIG5ldmVyIHNlZXMgYSByZWZlcmVuY2Ug4oCUIHNlZQogc2RrLlRhc2suU2VjcmV0SW5wdXRzIGluIHRoaXMgcGx1Z2luJ3MgbWFpbi5nbywgYW5kIFRhc2tNYW5pZmVzdCdzIG93bgogc2VjcmV0X2lucHV0cyBmaWVsZCwgZm9yIHdoeSB0aGUgaG9zdCByZXNvbHZlcyByYXRoZXIgdGhhbiB0aGlzIHBsdWdpbgogYXNraW5nIGl0IHRvLgoKDAoFBAACAgESAyUJDgoMCgUEAAICAxIDJRESCj0KAgQBEgQpADYBGjEgR3JlZXRPdXRwdXRzIGFyZSB0aGUgcmVzdWx0cyBvZiB0aGUgZ3JlZXQgdGFzay4KCgoKAwQBARIDKQgUCgwKBQQBAgAFEgMrAggKMQoEBAECABIDKwIVGiQgTWVzc2FnZSBpcyB0aGUgYXNzZW1ibGVkIGdyZWV0aW5nLgoKDAoFBAECAAESAysJEAoMCgUEAQIAAxIDKxMUCgwKBQQBAgEFEgMuAgcKOwoEBAECARIDLgITGi4gTGVuZ3RoIGlzIGhvdyBsb25nIHRoZSBtZXNzYWdlIGlzLCBpbiBieXRlcy4KCgwKBQQBAgEBEgMuCA4KDAoFBAECAQMSAy4REgoMCgUEAQICBRIDNQIGCsgCCgQEAQICEgM1AhkaugIgQXV0aGVudGljYXRlZCByZXBvcnRzIHdoZXRoZXIgYSB0b2tlbiB3YXMgcmVjZWl2ZWQsIHdoaWNoIGlzIHdoYXQgdGhpcwogZXhhbXBsZSB1c2VzIHRvIHByb3ZlIHRoZSB2YWx1ZSBhcnJpdmVkIOKAlCBkZWxpYmVyYXRlbHkgbmV2ZXIgdGhlIHRva2VuCiBpdHNlbGYuIEVjaG9pbmcgaXQgaGVyZSB3b3VsZCBtYWtlIHRoZSBwb2ludCBvZiByb3V0aW5nIGl0IHRocm91Z2gKIHNlY3JldF9pbnB1dHMgcG9pbnRsZXNzOiB0aGUgdmFsdWUgd291bGQgc2l0IGluIGEgc3RlcCBvdXRwdXQsIHdoaWNoIGlzCiBkdXJhYmxlIHdvcmtmbG93IGhpc3RvcnkuCgoMCgUEAQICARIDNQcUCgwKBQQBAgIDEgM1FxhiBnByb3RvMw==",
+          "outputMessage": "example.v1.GreetOutputs",
+          "requiredSecretInputs": []
+        }
+      ],
+      "protocolVersion": 3,
+      "taskSchemaDigest": "sha256:d6a6eb6822c5443da1e30455813377edd40f5c87830451c3a2de221ab80351ad",
+      "claimsDigest": "sha256:203b7ca4d6aa5596479ba0c6e02a893bfe3c5d434738dc0b0a4497ed4076cb0a"
+    },
+    {
+      "name": "git",
+      "version": "0.1.0",
+      "description": "Reads a remote's refs, history, and file content, and writes a commit to a branch, over git (go-git). One activity, one write - see doc.go.",
+      "secretSchemes": [
+        "git"
+      ],
+      "tasks": [
+        {
+          "name": "git.commit_push",
+          "summary": "Materialize base_ref, apply files and/or a patch, commit, and push to branch - one activity, compare-and-swapped against base_ref, never forced.",
+          "inputs": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "branch",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "base_ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "message",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "files",
+              "type": "map[string, string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "patch",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "author_name",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "author_email",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "timestamp",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "sha",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "landed_previously",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "changed",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "inputMessage": "git.v1.CommitPushInputs",
+          "outputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "outputMessage": "git.v1.CommitPushOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "git.log",
+          "summary": "A bounded slice of a repository's commit history reachable from ref, including each commit's author, committer, message, and parents.",
+          "inputs": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_commits",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "path",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "since",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "commits",
+              "type": "list[Commit]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "resolved_ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "next_cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "inputMessage": "git.v1.LogInputs",
+          "outputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "outputMessage": "git.v1.LogOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "git.ls_remote",
+          "summary": "The refs a remote currently advertises, without cloning.",
+          "inputs": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "prefix",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "refs",
+              "type": "list[RemoteRef]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "inputMessage": "git.v1.LsRemoteInputs",
+          "outputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "outputMessage": "git.v1.LsRemoteOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "git.read_file",
+          "summary": "One file's content, size, mode, and whether it is binary, at one ref.",
+          "inputs": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "path",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "content",
+              "type": "bytes",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "size",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "binary",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "inputMessage": "git.v1.ReadFileInputs",
+          "outputDescriptor": "ChBnaXQvdjEvZ2l0LnByb3RvEgZnaXQudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKBAQoOTHNSZW1vdGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGcHJlZml4GAIgASgJUgZwcmVmaXgSKQoFdG9rZW4YAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhoKCHVzZXJuYW1lGAQgASgJUgh1c2VybmFtZSIxCglSZW1vdGVSZWYSEgoEbmFtZRgBIAEoCVIEbmFtZRIQCgNzaGEYAiABKAlSA3NoYSJWCg9Mc1JlbW90ZU91dHB1dHMSJQoEcmVmcxgBIAMoCzIRLmdpdC52MS5SZW1vdGVSZWZSBHJlZnMSHAoJdHJ1bmNhdGVkGAIgASgIUgl0cnVuY2F0ZWQipQMKEENvbW1pdFB1c2hJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSFgoGYnJhbmNoGAIgASgJUgZicmFuY2gSGQoIYmFzZV9yZWYYAyABKAlSB2Jhc2VSZWYSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRI5CgVmaWxlcxgFIAMoCzIjLmdpdC52MS5Db21taXRQdXNoSW5wdXRzLkZpbGVzRW50cnlSBWZpbGVzEhQKBXBhdGNoGAYgASgJUgVwYXRjaBIfCgthdXRob3JfbmFtZRgHIAEoCVIKYXV0aG9yTmFtZRIhCgxhdXRob3JfZW1haWwYCCABKAlSC2F1dGhvckVtYWlsEhwKCXRpbWVzdGFtcBgJIAEoCVIJdGltZXN0YW1wEikKBXRva2VuGAogASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgLIAEoCVIIdXNlcm5hbWUaOAoKRmlsZXNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIkkKCVNpZ25hdHVyZRISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWVtYWlsGAIgASgJUgVlbWFpbBISCgR3aGVuGAMgASgJUgR3aGVuIrUBCgZDb21taXQSEAoDc2hhGAEgASgJUgNzaGESKQoGYXV0aG9yGAIgASgLMhEuZ2l0LnYxLlNpZ25hdHVyZVIGYXV0aG9yEi8KCWNvbW1pdHRlchgDIAEoCzIRLmdpdC52MS5TaWduYXR1cmVSCWNvbW1pdHRlchIYCgdtZXNzYWdlGAQgASgJUgdtZXNzYWdlEiMKDXBhcmVudF9oYXNoZXMYBSADKAlSDHBhcmVudEhhc2hlcyLZAQoJTG9nSW5wdXRzEhAKA3VybBgBIAEoCVIDdXJsEhAKA3JlZhgCIAEoCVIDcmVmEh8KC21heF9jb21taXRzGAMgASgFUgptYXhDb21taXRzEhIKBHBhdGgYBCABKAlSBHBhdGgSFAoFc2luY2UYBSABKAlSBXNpbmNlEikKBXRva2VuGAYgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIaCgh1c2VybmFtZRgHIAEoCVIIdXNlcm5hbWUSFgoGY3Vyc29yGAggASgJUgZjdXJzb3IimAEKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLmdpdC52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgEIAEoCVIKbmV4dEN1cnNvciKPAQoOUmVhZEZpbGVJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSEgoEcGF0aBgDIAEoCVIEcGF0aBIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGgoIdXNlcm5hbWUYBSABKAlSCHVzZXJuYW1lImsKD1JlYWRGaWxlT3V0cHV0cxIYCgdjb250ZW50GAEgASgMUgdjb250ZW50EhIKBHNpemUYAiABKANSBHNpemUSEgoEbW9kZRgDIAEoCVIEbW9kZRIWCgZiaW5hcnkYBCABKAhSBmJpbmFyeSJsChFDb21taXRQdXNoT3V0cHV0cxIQCgNzaGEYASABKAlSA3NoYRIrChFsYW5kZWRfcHJldmlvdXNseRgCIAEoCFIQbGFuZGVkUHJldmlvdXNseRIYCgdjaGFuZ2VkGAMgASgIUgdjaGFuZ2VkQokBCgpjb20uZ2l0LnYxQghHaXRQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXQvZ2VuL2dpdC92MTtnaXR2MaICA0dYWKoCBkdpdC5WMcoCBkdpdFxWMeICEkdpdFxWMVxHUEJNZXRhZGF0YeoCB0dpdDo6VjFiBnByb3RvMw==",
+          "outputMessage": "git.v1.ReadFileOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        }
+      ],
+      "protocolVersion": 3,
+      "taskSchemaDigest": "sha256:8f6137ec2ab24d7d71999c1b434d11625192c4cd5656364a14fd43dfa80b101f",
+      "claimsDigest": "sha256:bcbce8a3c6332d07a054bd942d7ace4f88ba77b25d564aedf6c6df5e7ec8d4ed"
+    },
+    {
+      "name": "github",
+      "version": "0.1.0",
+      "description": "Reads pull requests and issues (single-record and bounded listings), posts issue/PR comments, authenticated as a GitHub App or a personal access token.",
+      "secretSchemes": [
+        "github"
+      ],
+      "tasks": [
+        {
+          "name": "github.issue_comment",
+          "summary": "Post a comment on an issue or pull request.",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "repo",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "number",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "comment_id",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "html_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "created_at",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "inputMessage": "github.v1.IssueCommentInputs",
+          "outputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "outputMessage": "github.v1.IssueCommentOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "github.issue_get",
+          "summary": "One issue's title, body, state, labels, and comment count.",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "repo",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "number",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "title",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "state_reason",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "labels",
+              "type": "list[string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "comments",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "html_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "created_at",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "updated_at",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "closed_at",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "is_pull_request",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "inputMessage": "github.v1.IssueGetInputs",
+          "outputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "outputMessage": "github.v1.IssueGetOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "github.issue_list",
+          "summary": "A bounded page of a repository's issues, filtered by state, label, and an updated-since cutoff.",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "repo",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "labels",
+              "type": "list[string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "since",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_results",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "sort",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "direction",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "issues",
+              "type": "list[any]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "next_cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "inputMessage": "github.v1.IssueListInputs",
+          "outputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "outputMessage": "github.v1.IssueListOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "github.pull_request_files",
+          "summary": "The bounded list of files one pull request touches - filename, change kind, and line counts.",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "repo",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "number",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_results",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "files",
+              "type": "list[any]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "next_cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "inputMessage": "github.v1.PullRequestFilesInputs",
+          "outputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "outputMessage": "github.v1.PullRequestFilesOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "github.pull_request_get",
+          "summary": "A pull request's title, body, state, mergeable state, and head/base.",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "repo",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "number",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "title",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "merged",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "mergeable_state",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "head_ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "head_sha",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "base_ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "html_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "inputMessage": "github.v1.PullRequestGetInputs",
+          "outputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "outputMessage": "github.v1.PullRequestGetOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "github.pull_request_list",
+          "summary": "A bounded page of a repository's pull requests, filtered by state and branch.",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "repo",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "base",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "head",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_results",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "sort",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "direction",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "pull_requests",
+              "type": "list[any]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "next_cursor",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "inputMessage": "github.v1.PullRequestListInputs",
+          "outputDescriptor": "ChZnaXRodWIvdjEvZ2l0aHViLnByb3RvEglnaXRodWIudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIp4BChRQdWxsUmVxdWVzdEdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwihAIKFVB1bGxSZXF1ZXN0R2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSFgoGbWVyZ2VkGAQgASgIUgZtZXJnZWQSJwoPbWVyZ2VhYmxlX3N0YXRlGAUgASgJUg5tZXJnZWFibGVTdGF0ZRIZCghoZWFkX3JlZhgGIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgHIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgIIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgJIAEoCVIHaHRtbFVybCKwAQoSSXNzdWVDb21tZW50SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhYKBm51bWJlchgDIAEoA1IGbnVtYmVyEhIKBGJvZHkYBCABKAlSBGJvZHkSKQoFdG9rZW4YBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAYgASgJUgdiYXNlVXJsIm4KE0lzc3VlQ29tbWVudE91dHB1dHMSHQoKY29tbWVudF9pZBgBIAEoA1IJY29tbWVudElkEhkKCGh0bWxfdXJsGAIgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYAyABKAlSCWNyZWF0ZWRBdCKwAgoVUHVsbFJlcXVlc3RMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRISCgRiYXNlGAQgASgJUgRiYXNlEhIKBGhlYWQYBSABKAlSBGhlYWQSHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3IimAIKElB1bGxSZXF1ZXN0U3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhQKBWRyYWZ0GAQgASgIUgVkcmFmdBIZCghoZWFkX3JlZhgFIAEoCVIHaGVhZFJlZhIZCghoZWFkX3NoYRgGIAEoCVIHaGVhZFNoYRIZCghiYXNlX3JlZhgHIAEoCVIHYmFzZVJlZhIZCghodG1sX3VybBgIIAEoCVIHaHRtbFVybBIdCgpjcmVhdGVkX2F0GAkgASgJUgljcmVhdGVkQXQSHQoKdXBkYXRlZF9hdBgKIAEoCVIJdXBkYXRlZEF0Ip0BChZQdWxsUmVxdWVzdExpc3RPdXRwdXRzEkQKDXB1bGxfcmVxdWVzdHMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSDHB1bGxSZXF1ZXN0cxIcCgl0cnVuY2F0ZWQYAiABKAhSCXRydW5jYXRlZBIfCgtuZXh0X2N1cnNvchgDIAEoCVIKbmV4dEN1cnNvciLZAQoWUHVsbFJlcXVlc3RGaWxlc0lucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIfCgttYXhfcmVzdWx0cxgEIAEoBVIKbWF4UmVzdWx0cxIpCgV0b2tlbhgFIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBiABKAlSB2Jhc2VVcmwSFgoGY3Vyc29yGAcgASgJUgZjdXJzb3IiyAEKD1B1bGxSZXF1ZXN0RmlsZRIaCghmaWxlbmFtZRgBIAEoCVIIZmlsZW5hbWUSFgoGc3RhdHVzGAIgASgJUgZzdGF0dXMSHAoJYWRkaXRpb25zGAMgASgFUglhZGRpdGlvbnMSHAoJZGVsZXRpb25zGAQgASgFUglkZWxldGlvbnMSGAoHY2hhbmdlcxgFIAEoBVIHY2hhbmdlcxIrChFwcmV2aW91c19maWxlbmFtZRgGIAEoCVIQcHJldmlvdXNGaWxlbmFtZSKPAQoXUHVsbFJlcXVlc3RGaWxlc091dHB1dHMSNQoFZmlsZXMYASADKAsyHy5nb29nbGUuYXBpLmV4cHIudjFhbHBoYTEuVmFsdWVSBWZpbGVzEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yIpgBCg5Jc3N1ZUdldElucHV0cxIUCgVvd25lchgBIAEoCVIFb3duZXISEgoEcmVwbxgCIAEoCVIEcmVwbxIWCgZudW1iZXIYAyABKANSBm51bWJlchIpCgV0b2tlbhgEIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGQoIYmFzZV91cmwYBSABKAlSB2Jhc2VVcmwixgIKD0lzc3VlR2V0T3V0cHV0cxIUCgV0aXRsZRgBIAEoCVIFdGl0bGUSEgoEYm9keRgCIAEoCVIEYm9keRIUCgVzdGF0ZRgDIAEoCVIFc3RhdGUSIQoMc3RhdGVfcmVhc29uGAQgASgJUgtzdGF0ZVJlYXNvbhIWCgZsYWJlbHMYBSADKAlSBmxhYmVscxIaCghjb21tZW50cxgGIAEoBVIIY29tbWVudHMSGQoIaHRtbF91cmwYByABKAlSB2h0bWxVcmwSHQoKY3JlYXRlZF9hdBgIIAEoCVIJY3JlYXRlZEF0Eh0KCnVwZGF0ZWRfYXQYCSABKAlSCXVwZGF0ZWRBdBIbCgljbG9zZWRfYXQYCiABKAlSCGNsb3NlZEF0EiYKD2lzX3B1bGxfcmVxdWVzdBgLIAEoCFINaXNQdWxsUmVxdWVzdCKwAgoPSXNzdWVMaXN0SW5wdXRzEhQKBW93bmVyGAEgASgJUgVvd25lchISCgRyZXBvGAIgASgJUgRyZXBvEhQKBXN0YXRlGAMgASgJUgVzdGF0ZRIWCgZsYWJlbHMYBCADKAlSBmxhYmVscxIUCgVzaW5jZRgFIAEoCVIFc2luY2USHwoLbWF4X3Jlc3VsdHMYBiABKAVSCm1heFJlc3VsdHMSKQoFdG9rZW4YByABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuEhkKCGJhc2VfdXJsGAggASgJUgdiYXNlVXJsEhIKBHNvcnQYCSABKAlSBHNvcnQSHAoJZGlyZWN0aW9uGAogASgJUglkaXJlY3Rpb24SFgoGY3Vyc29yGAsgASgJUgZjdXJzb3Ii6wEKDElzc3VlU3VtbWFyeRIWCgZudW1iZXIYASABKANSBm51bWJlchIUCgV0aXRsZRgCIAEoCVIFdGl0bGUSFAoFc3RhdGUYAyABKAlSBXN0YXRlEhYKBmxhYmVscxgEIAMoCVIGbGFiZWxzEhkKCGh0bWxfdXJsGAUgASgJUgdodG1sVXJsEh0KCmNyZWF0ZWRfYXQYBiABKAlSCWNyZWF0ZWRBdBIdCgp1cGRhdGVkX2F0GAcgASgJUgl1cGRhdGVkQXQSJgoPaXNfcHVsbF9yZXF1ZXN0GAggASgIUg1pc1B1bGxSZXF1ZXN0IooBChBJc3N1ZUxpc3RPdXRwdXRzEjcKBmlzc3VlcxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIGaXNzdWVzEh8KC25leHRfY3Vyc29yGAMgASgJUgpuZXh0Q3Vyc29yEhwKCXRydW5jYXRlZBgCIAEoCFIJdHJ1bmNhdGVkQqQBCg1jb20uZ2l0aHViLnYxQgtHaXRodWJQcm90b1ABWkFnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9naXRodWIvZ2VuL2dpdGh1Yi92MTtnaXRodWJ2MaICA0dYWKoCCUdpdGh1Yi5WMcoCCUdpdGh1YlxWMeICFUdpdGh1YlxWMVxHUEJNZXRhZGF0YeoCCkdpdGh1Yjo6VjFiBnByb3RvMw==",
+          "outputMessage": "github.v1.PullRequestListOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        }
+      ],
+      "protocolVersion": 3,
+      "taskSchemaDigest": "sha256:50634e54dfde8e2d5ebc2f5f54d8a0947113de6d38b8f76b4f33aaaf1527c203",
+      "claimsDigest": "sha256:b85791e367c47b103ff192779ff3c606f47b1e310e5582bd6ebc6220352b0902"
+    },
+    {
+      "name": "slack",
+      "version": "0.1.0",
+      "description": "Posts bounded accessible text to Slack for approval and human-in-the-loop notifications; outbound only.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "slack.post",
+          "summary": "Post one bounded text message with a stable client message key; production runs only.",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "channel",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "text",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "message_key",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "thread_ts",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "channel",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "ts",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChRzbGFjay92MS9zbGFjay5wcm90bxIIc2xhY2sudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKjAQoKUG9zdElucHV0cxIpCgV0b2tlbhgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGAoHY2hhbm5lbBgCIAEoCVIHY2hhbm5lbBISCgR0ZXh0GAMgASgJUgR0ZXh0Eh8KC21lc3NhZ2Vfa2V5GAQgASgJUgptZXNzYWdlS2V5EhsKCXRocmVhZF90cxgFIAEoCVIIdGhyZWFkVHMiNwoLUG9zdE91dHB1dHMSGAoHY2hhbm5lbBgBIAEoCVIHY2hhbm5lbBIOCgJ0cxgCIAEoCVICdHNCmwEKDGNvbS5zbGFjay52MUIKU2xhY2tQcm90b1ABWj5naXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zbGFjay9nZW4vc2xhY2svdjE7c2xhY2t2MaICA1NYWKoCCFNsYWNrLlYxygIIU2xhY2tcVjHiAhRTbGFja1xWMVxHUEJNZXRhZGF0YeoCCVNsYWNrOjpWMWIGcHJvdG8z",
+          "inputMessage": "slack.v1.PostInputs",
+          "outputDescriptor": "ChRzbGFjay92MS9zbGFjay5wcm90bxIIc2xhY2sudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKjAQoKUG9zdElucHV0cxIpCgV0b2tlbhgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SGAoHY2hhbm5lbBgCIAEoCVIHY2hhbm5lbBISCgR0ZXh0GAMgASgJUgR0ZXh0Eh8KC21lc3NhZ2Vfa2V5GAQgASgJUgptZXNzYWdlS2V5EhsKCXRocmVhZF90cxgFIAEoCVIIdGhyZWFkVHMiNwoLUG9zdE91dHB1dHMSGAoHY2hhbm5lbBgBIAEoCVIHY2hhbm5lbBIOCgJ0cxgCIAEoCVICdHNCmwEKDGNvbS5zbGFjay52MUIKU2xhY2tQcm90b1ABWj5naXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zbGFjay9nZW4vc2xhY2svdjE7c2xhY2t2MaICA1NYWKoCCFNsYWNrLlYxygIIU2xhY2tcVjHiAhRTbGFja1xWMVxHUEJNZXRhZGF0YeoCCVNsYWNrOjpWMWIGcHJvdG8z",
+          "outputMessage": "slack.v1.PostOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        }
+      ],
+      "protocolVersion": 3,
+      "taskSchemaDigest": "sha256:57fcd55c87214e241a4715af45d303d04b34f594605806034b5f41182d9858e8",
+      "claimsDigest": "sha256:8bf5a50bd61c95744f4a98f21ad1a44b3482a53be5d4498d109ff7ded67159ca"
+    },
+    {
+      "name": "sql",
+      "version": "0.1.0",
+      "description": "Policy-governed PostgreSQL: bounded, typed reads (sql.query) and one transaction per activity (sql.exec); DSNs must be host-resolved secrets. See doc.go.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "sql.exec",
+          "summary": "One or more parameterized SQL statements, run as one transaction that begins and ends inside this call.",
+          "inputs": [
+            {
+              "name": "engine",
+              "type": "sqlite | postgres",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "dsn",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "statements",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "total_rows_affected",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "last_insert_id",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "statement_count",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "dsn"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBzcWwvdjEvc3FsLnByb3RvEgZzcWwudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byK6AQoLUXVlcnlJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEhQKBXF1ZXJ5GAMgASgJUgVxdWVyeRIrCgZwYXJhbXMYBCADKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBnBhcmFtcxIZCghtYXhfcm93cxgFIAEoBVIHbWF4Um93cyJuCgxRdWVyeU91dHB1dHMSJwoEcm93cxgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIEcm93cxIbCglyb3dfY291bnQYAiABKAVSCHJvd0NvdW50EhgKB2NvbHVtbnMYAyADKAlSB2NvbHVtbnMikAEKCkV4ZWNJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEjMKCnN0YXRlbWVudHMYAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCnN0YXRlbWVudHMijAEKC0V4ZWNPdXRwdXRzEi4KE3RvdGFsX3Jvd3NfYWZmZWN0ZWQYASABKANSEXRvdGFsUm93c0FmZmVjdGVkEiQKDmxhc3RfaW5zZXJ0X2lkGAIgASgDUgxsYXN0SW5zZXJ0SWQSJwoPc3RhdGVtZW50X2NvdW50GAMgASgFUg5zdGF0ZW1lbnRDb3VudCpICgZFbmdpbmUSFgoSRU5HSU5FX1VOU1BFQ0lGSUVEEAASEQoNRU5HSU5FX1NRTElURRABEhMKD0VOR0lORV9QT1NUR1JFUxACQokBCgpjb20uc3FsLnYxQghTcWxQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zcWwvZ2VuL3NxbC92MTtzcWx2MaICA1NYWKoCBlNxbC5WMcoCBlNxbFxWMeICElNxbFxWMVxHUEJNZXRhZGF0YeoCB1NxbDo6VjFiBnByb3RvMw==",
+          "inputMessage": "sql.v1.ExecInputs",
+          "outputDescriptor": "ChBzcWwvdjEvc3FsLnByb3RvEgZzcWwudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byK6AQoLUXVlcnlJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEhQKBXF1ZXJ5GAMgASgJUgVxdWVyeRIrCgZwYXJhbXMYBCADKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBnBhcmFtcxIZCghtYXhfcm93cxgFIAEoBVIHbWF4Um93cyJuCgxRdWVyeU91dHB1dHMSJwoEcm93cxgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIEcm93cxIbCglyb3dfY291bnQYAiABKAVSCHJvd0NvdW50EhgKB2NvbHVtbnMYAyADKAlSB2NvbHVtbnMikAEKCkV4ZWNJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEjMKCnN0YXRlbWVudHMYAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCnN0YXRlbWVudHMijAEKC0V4ZWNPdXRwdXRzEi4KE3RvdGFsX3Jvd3NfYWZmZWN0ZWQYASABKANSEXRvdGFsUm93c0FmZmVjdGVkEiQKDmxhc3RfaW5zZXJ0X2lkGAIgASgDUgxsYXN0SW5zZXJ0SWQSJwoPc3RhdGVtZW50X2NvdW50GAMgASgFUg5zdGF0ZW1lbnRDb3VudCpICgZFbmdpbmUSFgoSRU5HSU5FX1VOU1BFQ0lGSUVEEAASEQoNRU5HSU5FX1NRTElURRABEhMKD0VOR0lORV9QT1NUR1JFUxACQokBCgpjb20uc3FsLnYxQghTcWxQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zcWwvZ2VuL3NxbC92MTtzcWx2MaICA1NYWKoCBlNxbC5WMcoCBlNxbFxWMeICElNxbFxWMVxHUEJNZXRhZGF0YeoCB1NxbDo6VjFiBnByb3RvMw==",
+          "outputMessage": "sql.v1.ExecOutputs",
+          "requiredSecretInputs": [
+            "dsn"
+          ]
+        },
+        {
+          "name": "sql.query",
+          "summary": "One bounded, parameterized, read-only SQL query: typed rows out, refused rather than truncated past max_rows.",
+          "inputs": [
+            {
+              "name": "engine",
+              "type": "sqlite | postgres",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "dsn",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "params",
+              "type": "list[any]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_rows",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "rows",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "row_count",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "columns",
+              "type": "list[string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "dsn"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBzcWwvdjEvc3FsLnByb3RvEgZzcWwudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byK6AQoLUXVlcnlJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEhQKBXF1ZXJ5GAMgASgJUgVxdWVyeRIrCgZwYXJhbXMYBCADKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBnBhcmFtcxIZCghtYXhfcm93cxgFIAEoBVIHbWF4Um93cyJuCgxRdWVyeU91dHB1dHMSJwoEcm93cxgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIEcm93cxIbCglyb3dfY291bnQYAiABKAVSCHJvd0NvdW50EhgKB2NvbHVtbnMYAyADKAlSB2NvbHVtbnMikAEKCkV4ZWNJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEjMKCnN0YXRlbWVudHMYAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCnN0YXRlbWVudHMijAEKC0V4ZWNPdXRwdXRzEi4KE3RvdGFsX3Jvd3NfYWZmZWN0ZWQYASABKANSEXRvdGFsUm93c0FmZmVjdGVkEiQKDmxhc3RfaW5zZXJ0X2lkGAIgASgDUgxsYXN0SW5zZXJ0SWQSJwoPc3RhdGVtZW50X2NvdW50GAMgASgFUg5zdGF0ZW1lbnRDb3VudCpICgZFbmdpbmUSFgoSRU5HSU5FX1VOU1BFQ0lGSUVEEAASEQoNRU5HSU5FX1NRTElURRABEhMKD0VOR0lORV9QT1NUR1JFUxACQokBCgpjb20uc3FsLnYxQghTcWxQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zcWwvZ2VuL3NxbC92MTtzcWx2MaICA1NYWKoCBlNxbC5WMcoCBlNxbFxWMeICElNxbFxWMVxHUEJNZXRhZGF0YeoCB1NxbDo6VjFiBnByb3RvMw==",
+          "inputMessage": "sql.v1.QueryInputs",
+          "outputDescriptor": "ChBzcWwvdjEvc3FsLnByb3RvEgZzcWwudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byK6AQoLUXVlcnlJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEhQKBXF1ZXJ5GAMgASgJUgVxdWVyeRIrCgZwYXJhbXMYBCADKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBnBhcmFtcxIZCghtYXhfcm93cxgFIAEoBVIHbWF4Um93cyJuCgxRdWVyeU91dHB1dHMSJwoEcm93cxgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIEcm93cxIbCglyb3dfY291bnQYAiABKAVSCHJvd0NvdW50EhgKB2NvbHVtbnMYAyADKAlSB2NvbHVtbnMikAEKCkV4ZWNJbnB1dHMSJgoGZW5naW5lGAEgASgOMg4uc3FsLnYxLkVuZ2luZVIGZW5naW5lEiUKA2RzbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIDZHNuEjMKCnN0YXRlbWVudHMYAyABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCnN0YXRlbWVudHMijAEKC0V4ZWNPdXRwdXRzEi4KE3RvdGFsX3Jvd3NfYWZmZWN0ZWQYASABKANSEXRvdGFsUm93c0FmZmVjdGVkEiQKDmxhc3RfaW5zZXJ0X2lkGAIgASgDUgxsYXN0SW5zZXJ0SWQSJwoPc3RhdGVtZW50X2NvdW50GAMgASgFUg5zdGF0ZW1lbnRDb3VudCpICgZFbmdpbmUSFgoSRU5HSU5FX1VOU1BFQ0lGSUVEEAASEQoNRU5HSU5FX1NRTElURRABEhMKD0VOR0lORV9QT1NUR1JFUxACQokBCgpjb20uc3FsLnYxQghTcWxQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zcWwvZ2VuL3NxbC92MTtzcWx2MaICA1NYWKoCBlNxbC5WMcoCBlNxbFxWMeICElNxbFxWMVxHUEJNZXRhZGF0YeoCB1NxbDo6VjFiBnByb3RvMw==",
+          "outputMessage": "sql.v1.QueryOutputs",
+          "requiredSecretInputs": [
+            "dsn"
+          ]
+        }
+      ],
+      "protocolVersion": 3,
+      "taskSchemaDigest": "sha256:9fabba2ac489ef9d7ca3653e33b33a88a76028cb212e948d8e0b38849747b47e",
+      "claimsDigest": "sha256:9fe13b9671d955e53dda98a95e044d119782cf15ba341a936fbf971814e67a7b"
+    },
+    {
+      "name": "vcs",
+      "version": "0.1.0",
+      "description": "Reads a repository's commit history and diffs two revisions of it, over git (go-git). No shared workspace, no subprocesses.",
+      "secretSchemes": [
+        "vcs"
+      ],
+      "tasks": [
+        {
+          "name": "vcs.diff",
+          "summary": "The changes between two revisions of a repository, as a unified diff and a per-file summary.",
+          "inputs": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "base",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "head",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "name": "patch",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "files",
+              "type": "list[FileChange]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChB2Y3MvdjEvdmNzLnByb3RvEgZ2Y3MudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKZAQoGQ29tbWl0EhAKA3NoYRgBIAEoCVIDc2hhEh8KC2F1dGhvcl9uYW1lGAIgASgJUgphdXRob3JOYW1lEiEKDGF1dGhvcl9lbWFpbBgDIAEoCVILYXV0aG9yRW1haWwSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRIfCgthdXRob3JlZF9hdBgFIAEoCVIKYXV0aG9yZWRBdCJ7CglMb2dJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSHwoLbWF4X2NvbW1pdHMYAyABKAVSCm1heENvbW1pdHMSKQoFdG9rZW4YBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuIncKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLnZjcy52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKYAQoKRmlsZUNoYW5nZRISCgRwYXRoGAEgASgJUgRwYXRoEhkKCG9sZF9wYXRoGAIgASgJUgdvbGRQYXRoEh8KC2NoYW5nZV90eXBlGAMgASgJUgpjaGFuZ2VUeXBlEhwKCWFkZGl0aW9ucxgEIAEoA1IJYWRkaXRpb25zEhwKCWRlbGV0aW9ucxgFIAEoA1IJZGVsZXRpb25zInEKCkRpZmZJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEgoEYmFzZRgCIAEoCVIEYmFzZRISCgRoZWFkGAMgASgJUgRoZWFkEikKBXRva2VuGAQgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbiJrCgtEaWZmT3V0cHV0cxIUCgVwYXRjaBgBIAEoCVIFcGF0Y2gSKAoFZmlsZXMYAiADKAsyEi52Y3MudjEuRmlsZUNoYW5nZVIFZmlsZXMSHAoJdHJ1bmNhdGVkGAMgASgIUgl0cnVuY2F0ZWRCiQEKCmNvbS52Y3MudjFCCFZjc1Byb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL3Zjcy9nZW4vdmNzL3YxO3Zjc3YxogIDVlhYqgIGVmNzLlYxygIGVmNzXFYx4gISVmNzXFYxXEdQQk1ldGFkYXRh6gIHVmNzOjpWMWIGcHJvdG8z",
+          "inputMessage": "vcs.v1.DiffInputs",
+          "outputDescriptor": "ChB2Y3MvdjEvdmNzLnByb3RvEgZ2Y3MudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKZAQoGQ29tbWl0EhAKA3NoYRgBIAEoCVIDc2hhEh8KC2F1dGhvcl9uYW1lGAIgASgJUgphdXRob3JOYW1lEiEKDGF1dGhvcl9lbWFpbBgDIAEoCVILYXV0aG9yRW1haWwSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRIfCgthdXRob3JlZF9hdBgFIAEoCVIKYXV0aG9yZWRBdCJ7CglMb2dJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSHwoLbWF4X2NvbW1pdHMYAyABKAVSCm1heENvbW1pdHMSKQoFdG9rZW4YBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuIncKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLnZjcy52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKYAQoKRmlsZUNoYW5nZRISCgRwYXRoGAEgASgJUgRwYXRoEhkKCG9sZF9wYXRoGAIgASgJUgdvbGRQYXRoEh8KC2NoYW5nZV90eXBlGAMgASgJUgpjaGFuZ2VUeXBlEhwKCWFkZGl0aW9ucxgEIAEoA1IJYWRkaXRpb25zEhwKCWRlbGV0aW9ucxgFIAEoA1IJZGVsZXRpb25zInEKCkRpZmZJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEgoEYmFzZRgCIAEoCVIEYmFzZRISCgRoZWFkGAMgASgJUgRoZWFkEikKBXRva2VuGAQgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbiJrCgtEaWZmT3V0cHV0cxIUCgVwYXRjaBgBIAEoCVIFcGF0Y2gSKAoFZmlsZXMYAiADKAsyEi52Y3MudjEuRmlsZUNoYW5nZVIFZmlsZXMSHAoJdHJ1bmNhdGVkGAMgASgIUgl0cnVuY2F0ZWRCiQEKCmNvbS52Y3MudjFCCFZjc1Byb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL3Zjcy9nZW4vdmNzL3YxO3Zjc3YxogIDVlhYqgIGVmNzLlYxygIGVmNzXFYx4gISVmNzXFYxXEdQQk1ldGFkYXRh6gIHVmNzOjpWMWIGcHJvdG8z",
+          "outputMessage": "vcs.v1.DiffOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "vcs.log",
+          "summary": "A bounded slice of a repository's commit history.",
+          "inputs": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_commits",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "name": "commits",
+              "type": "list[Commit]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "resolved_ref",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChB2Y3MvdjEvdmNzLnByb3RvEgZ2Y3MudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKZAQoGQ29tbWl0EhAKA3NoYRgBIAEoCVIDc2hhEh8KC2F1dGhvcl9uYW1lGAIgASgJUgphdXRob3JOYW1lEiEKDGF1dGhvcl9lbWFpbBgDIAEoCVILYXV0aG9yRW1haWwSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRIfCgthdXRob3JlZF9hdBgFIAEoCVIKYXV0aG9yZWRBdCJ7CglMb2dJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSHwoLbWF4X2NvbW1pdHMYAyABKAVSCm1heENvbW1pdHMSKQoFdG9rZW4YBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuIncKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLnZjcy52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKYAQoKRmlsZUNoYW5nZRISCgRwYXRoGAEgASgJUgRwYXRoEhkKCG9sZF9wYXRoGAIgASgJUgdvbGRQYXRoEh8KC2NoYW5nZV90eXBlGAMgASgJUgpjaGFuZ2VUeXBlEhwKCWFkZGl0aW9ucxgEIAEoA1IJYWRkaXRpb25zEhwKCWRlbGV0aW9ucxgFIAEoA1IJZGVsZXRpb25zInEKCkRpZmZJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEgoEYmFzZRgCIAEoCVIEYmFzZRISCgRoZWFkGAMgASgJUgRoZWFkEikKBXRva2VuGAQgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbiJrCgtEaWZmT3V0cHV0cxIUCgVwYXRjaBgBIAEoCVIFcGF0Y2gSKAoFZmlsZXMYAiADKAsyEi52Y3MudjEuRmlsZUNoYW5nZVIFZmlsZXMSHAoJdHJ1bmNhdGVkGAMgASgIUgl0cnVuY2F0ZWRCiQEKCmNvbS52Y3MudjFCCFZjc1Byb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL3Zjcy9nZW4vdmNzL3YxO3Zjc3YxogIDVlhYqgIGVmNzLlYxygIGVmNzXFYx4gISVmNzXFYxXEdQQk1ldGFkYXRh6gIHVmNzOjpWMWIGcHJvdG8z",
+          "inputMessage": "vcs.v1.LogInputs",
+          "outputDescriptor": "ChB2Y3MvdjEvdmNzLnByb3RvEgZ2Y3MudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90byKZAQoGQ29tbWl0EhAKA3NoYRgBIAEoCVIDc2hhEh8KC2F1dGhvcl9uYW1lGAIgASgJUgphdXRob3JOYW1lEiEKDGF1dGhvcl9lbWFpbBgDIAEoCVILYXV0aG9yRW1haWwSGAoHbWVzc2FnZRgEIAEoCVIHbWVzc2FnZRIfCgthdXRob3JlZF9hdBgFIAEoCVIKYXV0aG9yZWRBdCJ7CglMb2dJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEAoDcmVmGAIgASgJUgNyZWYSHwoLbWF4X2NvbW1pdHMYAyABKAVSCm1heENvbW1pdHMSKQoFdG9rZW4YBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSBXRva2VuIncKCkxvZ091dHB1dHMSKAoHY29tbWl0cxgBIAMoCzIOLnZjcy52MS5Db21taXRSB2NvbW1pdHMSIQoMcmVzb2x2ZWRfcmVmGAIgASgJUgtyZXNvbHZlZFJlZhIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKYAQoKRmlsZUNoYW5nZRISCgRwYXRoGAEgASgJUgRwYXRoEhkKCG9sZF9wYXRoGAIgASgJUgdvbGRQYXRoEh8KC2NoYW5nZV90eXBlGAMgASgJUgpjaGFuZ2VUeXBlEhwKCWFkZGl0aW9ucxgEIAEoA1IJYWRkaXRpb25zEhwKCWRlbGV0aW9ucxgFIAEoA1IJZGVsZXRpb25zInEKCkRpZmZJbnB1dHMSEAoDdXJsGAEgASgJUgN1cmwSEgoEYmFzZRgCIAEoCVIEYmFzZRISCgRoZWFkGAMgASgJUgRoZWFkEikKBXRva2VuGAQgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbiJrCgtEaWZmT3V0cHV0cxIUCgVwYXRjaBgBIAEoCVIFcGF0Y2gSKAoFZmlsZXMYAiADKAsyEi52Y3MudjEuRmlsZUNoYW5nZVIFZmlsZXMSHAoJdHJ1bmNhdGVkGAMgASgIUgl0cnVuY2F0ZWRCiQEKCmNvbS52Y3MudjFCCFZjc1Byb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL3Zjcy9nZW4vdmNzL3YxO3Zjc3YxogIDVlhYqgIGVmNzLlYxygIGVmNzXFYx4gISVmNzXFYxXEdQQk1ldGFkYXRh6gIHVmNzOjpWMWIGcHJvdG8z",
+          "outputMessage": "vcs.v1.LogOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        }
+      ],
+      "protocolVersion": 3,
+      "taskSchemaDigest": "sha256:d59a2383062219531fa4c49df18baa4ff7f10939094214e20e4c3e4db214a8aa",
+      "claimsDigest": "sha256:568efc111a8e63f042c2d507e5c7e2b99b8ba6ac930a7a9dccda34c1f2ce8f09"
+    }
+  ],
+  "claimsSchemaVersion": 2
+}
