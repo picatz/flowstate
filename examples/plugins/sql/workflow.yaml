@@ -1,6 +1,6 @@
 edition: v2026.3
 name: sql-query
-description: Reads bounded, typed rows from a sqlite database using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
+description: Reads bounded, typed rows from PostgreSQL using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
 
 # sql.query is one of two tasks the "sql" plugin provides; the other,
 # sql.exec, writes one or more statements as a single transaction - see
@@ -9,8 +9,8 @@ description: Reads bounded, typed rows from a sqlite database using the "sql" pl
 # compiled sql.v1.QueryInputs; it learns the shape from descriptors this
 # plugin ships in its manifest at launch. See plugins/sql for the source and
 # plugins/sql/README.md for what this plugin needs configured on the worker
-# before this file can run for real (a sqlite database file with an
-# "accounts" table, and SQL_DSN naming it).
+# before this file can run for real (a PostgreSQL database with an
+# "accounts" table, SQL_DSN naming it, and an operator egress policy).
 #
 # Requires configuration - a real database and a resolvable dsn secret - so
 # it never runs by accident. See plugins/sql/README.md, "Trying this
@@ -23,11 +23,9 @@ steps:
       # A secret reference, resolved inside the task, never a literal
       # connection string - see plugins/sql/README.md, "Secrets," for what
       # SQL_SECRET_DSN (or whatever this deployment's provider names it)
-      # resolves to. This is the only line that would change to point the
-      # same call at postgres instead: engine: ENGINE_POSTGRES and a dsn
-      # secret naming a postgres connection string.
+      # resolves to. Literal DSNs are refused by the plugin host.
       dsn: ${secret('env:SQL_DSN')}
-      engine: ENGINE_SQLITE
+      engine: ENGINE_POSTGRES
       # Required: there is no default. A result with more rows than this
       # is refused outright, naming the bound, rather than returned as a
       # silently truncated prefix - see plugins/sql/doc.go, "Bounded
@@ -38,7 +36,7 @@ steps:
       # plugins/sql/doc.go, "Parameterized only, structurally."
       params:
         - ${vars.min_balance_cents}
-      query: SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id
+      query: SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= $1 ORDER BY id
   - id: announce
     log:
       # rows is a list of maps CEL can filter and index by column name,

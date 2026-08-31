@@ -673,15 +673,16 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	t.Parallel()
 
 	task := Task{
-		Name:             "x_do",
-		Summary:          "does x",
-		Input:            &flowstatev1.Task_Log_Inputs{},
-		Output:           &flowstatev1.Task_Log_Outputs{},
-		DeferredInputs:   []string{"expr"},
-		ExpressionInputs: []string{"expr"},
-		SecretInputs:     []string{"token"},
-		NeedsScope:       true,
-		ShapesOutputs:    true,
+		Name:                 "x_do",
+		Summary:              "does x",
+		Input:                &flowstatev1.Task_Log_Inputs{},
+		Output:               &flowstatev1.Task_Log_Outputs{},
+		DeferredInputs:       []string{"expr"},
+		ExpressionInputs:     []string{"expr"},
+		SecretInputs:         []string{"token"},
+		RequiredSecretInputs: []string{"token"},
+		NeedsScope:           true,
+		ShapesOutputs:        true,
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 			return nil, nil
 		},
@@ -711,6 +712,9 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	}
 	if got := manifest.GetSecretInputs(); len(got) != 1 || got[0] != "token" {
 		t.Errorf("secret_inputs = %v, want [token]", got)
+	}
+	if got := manifest.GetRequiredSecretInputs(); len(got) != 1 || got[0] != "token" {
+		t.Errorf("required_secret_inputs = %v, want [token]", got)
 	}
 
 	// The declaration three host surfaces read: the compiler keeps a shaping

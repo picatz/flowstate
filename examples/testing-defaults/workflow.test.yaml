@@ -1,0 +1,9 @@
+edition: v2026.3
+tests:
+  - name: shared defaults supply the workflow and task stub
+    inputs:
+      audience: ${vars.default_audience}
+    expect:
+      outputs:
+        greeting: hello, operators
+      ran: [greet]

@@ -33,9 +33,10 @@ type Config struct {
 // internal denied, bounded in every dimension. Absent fields keep the defaults
 // described on the corresponding option and constant.
 type EgressConfig struct {
-	// Schemes replaces the scheme allowlist. Only http and https can be named,
-	// and naming neither — an explicitly empty list — is an error rather than a
-	// policy that allows nothing by accident. See [WithSchemes].
+	// Schemes replaces the scheme allowlist. HTTP and HTTPS are the defaults;
+	// postgres may be named explicitly for a protocol-native database task.
+	// Naming none — an explicitly empty list — is an error rather than a policy
+	// that allows nothing by accident. See [WithSchemes].
 	Schemes []string `json:"schemes,omitempty" yaml:"schemes,omitempty"`
 
 	// AllowLoopback permits loopback addresses, which is where development

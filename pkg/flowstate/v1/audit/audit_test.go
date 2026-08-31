@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,6 +335,120 @@ func TestARequiredSinksFailureIsTheCallersFailure(t *testing.T) {
 	require.False(t, advisory.Required())
 	require.NoError(t, advisory.Allow(t.Context(), subject),
 		"a deployment that did not ask for a required sink does not get its collector's outage")
+}
+
+// TestAsyncWriterBoundsBackpressure is the availability half of best-effort
+// auditing: a logging consumer that stops draining may occupy the one writer
+// goroutine and fill a finite queue, but it cannot occupy an RPC handler.
+func TestAsyncWriterBoundsBackpressure(t *testing.T) {
+	t.Parallel()
+
+	w := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	emitter, flush := audit.NewAsyncWriterEmitter(w, 1)
+	record := &v1.AuditRecord{}
+
+	require.NoError(t, emitter.Emit(t.Context(), record))
+	select {
+	case <-w.entered:
+	case <-time.After(time.Second):
+		t.Fatal("the writer goroutine did not receive the first record")
+	}
+
+	// One record waits in the bounded queue. The next is dropped immediately
+	// rather than waiting behind the blocked writer.
+	require.NoError(t, emitter.Emit(t.Context(), record))
+	started := time.Now()
+	require.Error(t, emitter.Emit(t.Context(), record))
+	require.Less(t, time.Since(started), 100*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, flush(ctx), context.DeadlineExceeded)
+
+	close(w.release)
+	require.NoError(t, flush(t.Context()))
+}
+
+type blockingWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+// TestAsyncWriterReportsWhatTheFullQueueDropped is the visibility half of
+// best-effort auditing: dropping under backpressure is the availability
+// trade, but doc.go promises a trail that is complete rather than sampled,
+// so the trail has to say when and how much it lost. The summary is one
+// line naming the count — the stderrLimiter shape from #714 — placed before
+// the next record written, and it must not itself parse as a record.
+func TestAsyncWriterReportsWhatTheFullQueueDropped(t *testing.T) {
+	t.Parallel()
+
+	w := &capturingBlockedWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	emitter, flush := audit.NewAsyncWriterEmitter(w, 1)
+	record := &v1.AuditRecord{Rpc: "Signal"}
+
+	// The writer goroutine holds the first record, blocked mid-write.
+	require.NoError(t, emitter.Emit(t.Context(), record))
+	select {
+	case <-w.entered:
+	case <-time.After(time.Second):
+		t.Fatal("the writer goroutine did not receive the first record")
+	}
+
+	// The second occupies the queue's one slot; the next three are dropped.
+	require.NoError(t, emitter.Emit(t.Context(), record))
+	for range 3 {
+		require.Error(t, emitter.Emit(t.Context(), record))
+	}
+
+	close(w.release)
+	require.NoError(t, flush(t.Context()))
+
+	lines := strings.Split(strings.TrimSuffix(w.String(), "\n"), "\n")
+	require.Len(t, lines, 3, "two records and one summary, not one line per drop")
+
+	require.Equal(t, "audit: 3 records dropped: writer queue was full", lines[1],
+		"the summary names the count, before the next record written")
+	require.Error(t, protojson.Unmarshal([]byte(lines[1]), &v1.AuditRecord{}),
+		"a consumer parsing records cannot mistake the summary for one")
+
+	for _, line := range []string{lines[0], lines[2]} {
+		require.NoError(t, protojson.Unmarshal([]byte(line), &v1.AuditRecord{}),
+			"the records around the summary still parse")
+	}
+}
+
+// capturingBlockedWriter blocks every Write until released, then records
+// what was written.
+type capturingBlockedWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *capturingBlockedWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *capturingBlockedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 // TestARequiredRecorderMustHaveASink refuses the one combination that would be

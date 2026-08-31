@@ -1,117 +1,13 @@
 edition: v2026.3
 name: approval-gate
 description: Waits for a human to approve a deploy, then acts on what an attested sender actually sent — authorization lives in `signals:`, not in this file's own `if:`.
-# A workload that waits a week for a person and survives every worker restart in
-# between is the thing a CI system cannot copy. There, a job waiting for approval
-# is a held agent, and redeploying the fleet fails the job. Here the wait is state
-# on the execution substrate: no worker is holding anything, so workers can be
-# replaced underneath it.
-#
-# Unblock a run of this with:
-#
-#   flow signal <workflow-id> deploy-approved --data '{"approved": true}'
-#
-# Rehearse the same gate on a laptop, standing in for the approver `signals:`
-# below names:
-#
-#   flow run local examples/approval-gate/workflow.yaml \
-#     --input-file examples/approval-gate/inputs.json \
-#     --signal deploy-approved='{"approved": true}' \
-#     --signal-as-subject sre-lead@example.com \
-#     --signal-as-issuer https://issuer.example.com \
-#     --signal-as-claim team=release-managers
-#
-# That is an assertion, not an attestation: nothing authenticated it, the gate's
-# own `sender.local` output says so, and the durable driver refuses a sender
-# carrying that mark outright. What it buys is that the policy below is checked
-# by the same function the server checks it with, so dropping the claim, naming
-# a different approver, or making the approver this run's own starter
-# (`--as-subject`) each fails here for the reason it would fail in production.
-#
-# Notice there is no "who approved this" in that payload. That used to be a `by:`
-# field the sender typed in themselves — which meant anyone allowed to send this
-# signal could claim to be anyone. `steps.approval.sender` below is not that: it
-# is who the server actually authenticated the request as, attached by
-# `FlowstateServer.Signal` and impossible for a caller to set. A payload is
-# evidence; a sender is identity.
-#
-# # The gate is stated once, and authorization is not in it at all (#207)
-#
-# Two separate fixes, and it is worth keeping them apart because each removed a
-# different kind of duplication.
-#
-# The first: every clause a caller-supplied payload alone could never satisfy —
-# "was the sender attested at all," "is it the approver this run expects," "is
-# it not the run's own starter" — moved into `signals:` below, where the server
-# enforces it. That was never workflow logic; it was authorization written in
-# the wrong place, four times over.
-#
-# The second: what remained was still written four times — in `deploy`'s `if:`,
-# negated by hand in `rejected`'s, and re-derived again in each of this file's
-# two `outputs:`. `approval`'s own `outputs:` block now states it once, on the
-# step that produced the data, and every reader reads that recorded output. The
-# `decision` output can no longer disagree with the branch that ran, because it
-# *is* the name the branches switch on — literally, since #357: the branches are
-# one `switch:` over that name rather than three `if:`s that each happen to
-# mention it.
-#
-# The authorization half was never workflow logic. `FlowstateServer.Signal`
-# already refuses a signal that fails any of it — synchronously, before
-# Temporal ever sees it — so a payload that reaches the gate below was already
-# attested, already narrowed to the approver this run named, and already
-# confirmed distinct from whoever started the run. `deploy_refused` is gone
-# outright, not merely renamed: "approved, but the sender was wrong" is no
-# longer a state this workflow can observe, because the signal that would
-# produce it never arrives. What is left for this file to decide is exactly
-# the one question that actually is this workflow's own logic — did the
-# approver say yes.
-#
-# `sender` is still read below, in `deploy`'s own log line and in
-# `approver_subject` — not as a gate any more, but as evidence: who to name in
-# the audit trail for a deploy that, by the time this file sees it, has
-# already been authorized.
-#
-# # `signals:` below is the whole of the gate
-#
-# `signals.deploy-approved.allow` (below `inputs:`) is enforced by
-# `FlowstateServer.Signal`, server-side, against the attested sender — before
-# Temporal ever sees the signal. Its one rule requires *both* things at once
-# (fields AND within a rule): a `claims:` constraint this file's author wrote
-# and a caller cannot influence (`team: release-managers`), and a `subject:`
-# resolved once, at submit, from `inputs.expected_approver` — so a caller's
-# own input can *narrow* who this particular run accepts, but never invent an
-# approver outside the team this file already named. `distinct_from_starter:
-# true` refuses the one thing a claim and a per-run subject together still
-# cannot: the approver being the same caller who started the run — checked
-# against the run's own attested starter identity, which no input can set.
-#
-# One thing remains true, and this file does not pretend otherwise: the check
-# still lives here, in a file its own author can edit. `signals:` is read by
-# the server from the run's own memo, frozen at submit, never re-read from a
-# running workflow's own reasoning — but the Flowfile that *declares*
-# `signals:` in the first place is still this same file, so an author who can
-# edit the dispatch below can as easily delete the `signals:` block above it or
-# widen `allow:` to match anyone. Binding that requires policy the workflow's
-# own author does not control at all — deployment-side task-shape policy
-# (#187). That is gap 3, and it stays open, tracked at #187.
 inputs:
-  # No default: there is no sensible absent value for the thing being shipped,
-  # only a plausible one to paste — which is what `example:` is for (the
-  # examples sweep behind #205 made exactly this call for `expense-approval`'s
-  # `employee`/`amount`). `v?` takes either spelling a caller is likely to type;
-  # `flow validate` and submit both check it, so `1.4` or `latest` is refused
-  # before a single step runs rather than three steps into a run nobody can
-  # act on.
   version:
     type: string
     required: true
     description: the semver version being deployed, with or without a leading "v"
     example: v1.4.2
     must: this.matches(r'^v?[0-9]+\.[0-9]+\.[0-9]+$')
-
-  # `must:` over a closed set rather than a bare string, because "deploy to
-  # whatever string you typed" is not a production-shaped question — a typo'd
-  # environment is refused at submit, the same place a bad version is.
   environment:
     type: string
     required: true
@@ -119,39 +15,13 @@ inputs:
     example: production
     must: this in ["staging", "production"]
 
-  # Who this run expects to approve it — resolved into `signals:` own
-  # `subject:` rule below, at submit, rather than read anywhere in this
-  # file's own step logic. A caller narrows *which* release-manager this
-  # particular run accepts; they cannot widen it past the team `signals:`
-  # names, and they cannot forge the resolution itself — `flow signal`'s
-  # payload never carries a subject for a caller to set.
+  # This narrows the literal release-manager grant below; it cannot widen it.
   expected_approver:
     type: string
     required: true
-    description: who this run expects to approve it — narrows `signals:`'s own approver rule for this run, never the security boundary by itself
+    description: who this run expects to approve it
     example: sre-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
-# The whole of who may deliver `deploy-approved`, enforced by
-# `FlowstateServer.Signal` against the attested sender before Temporal ever
-# sees the signal: an authenticated caller who fails any part of this is
-# refused with `PermissionDenied`, synchronously, and the workflow never
-# learns the signal was sent.
-#
-# One rule, two constraints ANDed together. `claims: {team: release-managers}`
-# is literal — this file's author wrote it, and no caller's input can change
-# it. `subject: ${...}` is resolved once, at submit, from
-# `inputs.expected_approver` — qualified with a fixed issuer here rather than
-# left bare, for the identical multi-IdP reason every qualified subject in
-# this codebase is "<issuer>#<subject>," never a bare subject (a second
-# identity provider could mint the same local part for someone else
-# entirely). `flow validate` refuses a rule that interpolates a subject with
-# no literal constraint beside it — an interpolated field can only narrow a
-# grant this file's author already wrote, never invent one from nothing.
-#
-# `distinct_from_starter: true` refuses the one thing a claim and a per-run
-# subject together still cannot: the approver being this run's own starter.
-# Checked against the run's own attested starter identity — recorded at
-# submit, never anything an input can override.
 signals:
   deploy-approved:
     allow:
@@ -159,231 +29,52 @@ signals:
         claims:
           team: release-managers
     distinct_from_starter: true
-# Who may pause a *durable* run of this workflow at a step boundary and look at
-# it — the other half of "who may act on this run from outside", written beside
-# the half above because that is where an auditor looks for both.
-#
-# The grammar is `signals:`'s, deliberately: `allow:` is the same list of
-# alternative rules, matched against the same attested identity by the same
-# check. Who may approve a deploy and who may debug one are different questions
-# with different answers, and this file gives them separately — an SRE holding
-# the run to see what it is doing is not thereby a release manager.
-#
-# The zero case is the opposite of `signals:`'s, and it is the reason this
-# stanza has to exist at all: a workflow that writes no `debug:` cannot be
-# paused by anybody, including whoever started it. Nothing has ever been able to
-# stop a durable run, so there is no prior behaviour to keep and the default
-# fails closed.
-#
-# The hold is leased. It expires on its own and the run resumes exactly as if
-# its holder had let go, so a debugger who closes their laptop cannot wedge a
-# release.
 debug:
+  # Debugging and approval are separate authorities.
   allow:
     - claims:
         team: sre
 steps:
-  # `run.identity.subject` here, not `inputs.requested_by`: this is what the
-  # request actually was, established when the run was submitted
-  # (RunState.identity — server.go), rather than a claim this file's own
-  # caller happened to type into an argument. A local run reports an empty
-  # subject, which the message below reads honestly as "an unattested caller"
-  # rather than papering over it with a placeholder.
   - id: request
     log:
       message: '${"%s requests deploying %s to %s".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.version, inputs.environment])}'
 
-  # A short pause, so a notification has landed before anyone is asked to act on
-  # it. A durable timer, not a sleeping worker.
+  # A durable timer delays the gate without occupying a worker.
   - id: settle
     sleep: 5s
-
-  # The gate. Without a timeout it would wait as long as the run lasts, which is
-  # the right thing for an approval that genuinely must block until someone acts;
-  # here it lapses after a day so an unattended request does not sit forever.
-  #
-  # `outputs:` states the gate ONCE, here, on the step that produced the data
-  # (#207). It used to be written four times — in `deploy`'s `if:`, negated by
-  # hand in `rejected`'s, and re-derived again in each of this file's two
-  # `outputs:` below. Nothing kept the four in agreement except review, so the
-  # `decision` output could report a branch the run did not take. Now every
-  # reader below reads a recorded output of this step, and disagreeing with the
-  # branch that ran is no longer expressible.
-  #
-  # Evaluated once, the moment the wait resolves, in the scope where the wait's
-  # own result already exists: `payload` is what the sender sent, `sender` is
-  # who the server attested them to be, `timed_out` is how the wait ended. No
-  # new evaluation position, no activity, no history entry — the same moment
-  # this step's outputs were being recorded anyway.
-  #
-  # It **replaces** what the wait produces rather than adding to it, exactly as
-  # the http task's own `outputs:` does — one key, one meaning. That is why
-  # `sender` is re-exposed on the last line: the log lines and the
-  # `approver_subject` output below still need it, and re-exposing costs a line.
-  # Reading a name this block dropped is a `flow validate` error, not an empty
-  # value that quietly takes the other branch.
-  # `prompt:` is the question this gate is asking, and it exists because
-  # `deploy-approved` is a routing key rather than a question. Everything that
-  # makes this decision a decision - which build, which environment, who asked -
-  # was in this file, and whoever was being asked had a run id instead of this
-  # file. So the question got asked out of band, in a message somebody typed by
-  # hand, and the run and the question could drift apart with nothing to notice.
-  #
-  # It rides on the same answer that already reports a parked gate, so `flow get`
-  # on a run stuck here now says what agreeing to it would mean.
-  #
-  # Evaluated once, the moment this wait parks - not when it resolves - so it
-  # sees `inputs.*`, `steps.*` and `now`, and deliberately not `payload`,
-  # `sender` or `timed_out`: those are the wait's *result*, which does not exist
-  # yet when the question is asked. A gate released by a signal that arrived
-  # early never parks, and so never asks anything.
-  #
-  # `run.identity.subject` is read here for the same reason the `request` step
-  # above reads it: it is what the server attested about whoever submitted this
-  # run, so the approver is told who they are approving *for* rather than
-  # whatever a caller typed into an argument. `flow get` reports that subject on
-  # its own now too (`starter`), which is the fact `distinct_from_starter` above
-  # is checked against - so an approver refused for being the starter can see
-  # why.
   - id: approval
     wait_for_signal:
       name: deploy-approved
       prompt: '${"Approve deploying %s to %s, requested by %s?".format([inputs.version, inputs.environment, (run.identity.subject == "") ? "an unattested caller" : run.identity.subject])}'
       timeout: 24h
       outputs:
-        # The gate itself, stated once — and stated as the *outcome* rather than
-        # as three booleans, because three booleans is four copies again in a
-        # smaller font. The one `switch:` below dispatches on this name, and
-        # `decision` simply *is* it. There is nowhere left for the report and the
-        # branch to drift apart.
-        #
-        # The spelling matters as much as the naming: this shaping expression
-        # names its three outcomes as string literals, and `flow validate`
-        # reads them back out through the read-side optional idioms below —
-        # `optMap` and `orValue` — the same way it reads a bare conditional.
-        # That is what lets the dispatch below be checked for an impossible
-        # case and for exhaustiveness; a value pulled from elsewhere in the
-        # payload, or built with anything the walk does not read, would
-        # compute the same three strings and quietly cost every one of those
-        # checks.
-        #
-        # `payload.?approved` is an optional select: present and true or false
-        # when the sender sent the field, absent otherwise. `.optMap(approved,
-        # ...)` runs its lambda only in the present case, so the ternary
-        # inside it only ever sees an actual boolean. `.orValue("undecided")`
-        # supplies the absent case.
-        #
-        # Three states and not two: a payload is whatever the sender chose to
-        # send, so one carrying no `approved` field at all is representable, and
-        # it is not a rejection. It is also not the same fact as the timer
-        # lapsing — a signal that arrives with no `approved` field releases the
-        # wait immediately, `timed_out` false — so this state is named for what
-        # is true in both sub-cases: nobody decided. `!timed_out` would claim
-        # the timer lapsed when it did not.
+        # Missing `approved` is distinct from an explicit rejection.
         outcome: '${payload.?approved.optMap(approved, approved ? "deployed" : "rejected").orValue("undecided")}'
         sender: ${sender}
-        # Re-exposed deliberately: `outputs:` replaces what the wait produces,
-        # so these are gone unless a line puts them back. `sender` is read by
-        # the log lines and by `approver_subject`; `timed_out` is what lets the
-        # `undecided` branch say *why* nothing was decided.
         timed_out: ${timed_out}
-
-  # A wait reports how it ended rather than failing, so a lapsed approval is an
-  # ordinary branch and not an error to be tolerated.
-  #
-  # One `switch:` and not three sibling `if:`s, which is what this was until
-  # #357 gave the language a word for "a total dispatch over one value". The
-  # three equalities were correct; what they could not do was *say* they were a
-  # dispatch. Nothing ties three `if:`s together, so a validator reading them
-  # sees three independent predicates and has nothing to check — a typo'd
-  # `"rejcted"` is legal CEL that silently never matches, and a fourth outcome
-  # nobody handled reads exactly like a run where nothing happened to apply.
-  #
-  # Grouping them buys the checks, and the checks here are not hypothetical:
-  # this discriminant has a domain the validator can *infer*. `outcome` above
-  # names its three outcomes as string literals reached through a conditional
-  # and the read-side optional idioms (`optMap`, `orValue`), which is
-  # precisely the form `switchDomain` reads, so `flow validate` knows this
-  # dispatch can only ever see "deployed", "rejected" or "undecided" — and refuses
-  # a case outside that set, by name, with the nearest legal spelling.
-  #
-  # Hence no `default:`, and deliberately so: the three cases exhaust the domain,
-  # and a `default:` beside them is dead code the validator refuses outright
-  # ("`default:` can never run"). Where a domain is *not* the file's to know — a
-  # webhook action, say, as in `examples/webhook-routing` — a `default:` is
-  # exactly right, and an empty `default: {steps: []}` is how "I mean to handle
-  # nothing else" gets written down.
-  #
-  # Exactly one body runs, in the run's own scope, and its outputs merge into the
-  # enclosing namespace — so the ids below are unique across all three bodies for
-  # the same reason parallel branches' are.
   - id: decision
     switch:
       value: ${steps.approval.outcome}
       cases:
-        # `deploy` asks no question of its own any more, and did not really ask
-        # one before either: `signals:` above already refused any signal whose
-        # sender was unattested, wrongly claimed, or this run's own starter,
-        # before it ever reached the gate. `sender` is still read in the log line
-        # below, as evidence for the audit trail rather than as a second gate —
-        # by the time a payload is here to read, the server has already vouched
-        # for who sent it.
         - case: deployed
           steps:
             - id: deploy
               log:
                 message: ${"deploying %s to %s, approved by %s".format([inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
-
-        # The branch that used to be a hand-expanded negation, which #207 calls
-        # the worst of the four: getting a De Morgan expansion subtly wrong is
-        # not something review reliably catches. There is nothing left to expand,
-        # and now nothing left to negate either — a case literal is not a
-        # predicate at all.
         - case: rejected
           steps:
             - id: rejected
               log:
                 message: ${"%s declined the deploy of %s".format([steps.approval.sender.identity.subject, inputs.version])}
-
-        # This branch is where naming the gate found a real disagreement. The
-        # `decision` output below used to report "expired" for a signal that
-        # arrived carrying no `approved` field, while this branch's old `if:`
-        # asked only about the *timer* — so no branch ran and the output said one
-        # had. Exactly the failure #207 is about, surviving in the one copy
-        # nobody thought to compare. `undecided` (#579) is true in both
-        # sub-cases — nobody answered, or somebody answered without deciding —
-        # so the case and the output can finally agree without either one
-        # lying, and the exhaustiveness check means dropping this case is a
-        # validation error rather than a silent gap.
-        #
-        # `timed_out` is re-exposed by the gate above precisely so this line can
-        # still tell the two apart in what it says.
         - case: undecided
           steps:
             - id: undecided
               log:
                 message: '${steps.approval.timed_out ? "nobody approved deploying %s in time".format([inputs.version]) : "the approval for %s carried no decision".format([inputs.version])}'
 outputs:
-  # Three states, not the six this file used to carry. "Approved, but the
-  # wrong sender" is not a fourth: `signals:` refuses that signal before this
-  # run ever sees it, so a payload that arrived approved was already the
-  # narrowed, distinct approver this run named — there is nothing left here
-  # to distinguish.
-  #
-  # This value cannot disagree with the branch that ran, which is this issue's
-  # acceptance test — and it cannot in the strongest way available: the dispatch
-  # above switches on this exact name, so the report is not derived from the
-  # same facts as the branch, it *is* the branch. (`steps.decision.case` records
-  # the same fact from the other end — which case took it — and this output reads
-  # the gate's own name instead, because that is where the decision is made once
-  # and everything else, the dispatch included, reads it from there.)
   decision:
     value: ${steps.approval.outcome}
     description: which branch this run ended on
-  # Populated only when a deploy actually happened. The raw attested subject
-  # is real evidence on a run that reached `deploy`; a run that did not has
-  # nothing here to report, the same pattern `expense-approval`'s own
-  # `approved_by` output uses.
   approver_subject:
     value: '${(steps.approval.outcome == "deployed") ? steps.approval.sender.identity.subject : ""}'
-    description: who the server attests actually approved this, empty unless a deploy really happened — never a payload field, which is a claim rather than an attestation
+    description: who the server attests approved this, empty unless a deploy happened

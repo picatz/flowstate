@@ -1,6 +1,6 @@
 # A task a plugin provides: sql.query and sql.exec
 
-[`workflow.yaml`](workflow.yaml) reads bounded, typed rows from a sqlite
+[`workflow.yaml`](workflow.yaml) reads bounded, typed rows from PostgreSQL
 database with `sql.query:`, and [`transfer.yaml`](transfer.yaml) moves money
 between two accounts with `sql.exec:` - the `sql` plugin's two tasks, one for
 reading and one for writing.
@@ -17,7 +17,8 @@ configured on a worker.
 
 ## Two files, because one of them writes
 
-`workflow.yaml` only reads, so the worst a misconfigured run does is fail.
+`workflow.yaml` only reads. `sql.query` and `sql.exec` are distinct qualified
+task names so an operator can allow reads without granting writes.
 `transfer.yaml` moves money, and it is a separate parameterized file for the
 same reason `plugins/git` and `plugins/github` split theirs: a mutation should
 not be something a reader runs by accident while trying the read.
@@ -58,21 +59,37 @@ insert is not sufficient on its own.
 
 ## Running it
 
+From the repository root, build the separate plugin executable and inspect the
+catalog the same configured path will provide to a worker:
+
+```console
+$ mkdir -p ./plugins
+$ go -C plugins/sql build -o ../../plugins/flowstate-plugin-sql .
+$ go run ./cmd/flow plugins --plugin-dir ./plugins
+```
+
 Both files need configuration that is not expressible in the file - a built
-plugin, a worker told where to find it, a real database, and a resolvable
-`dsn` secret - so neither runs by accident and neither is executed by CI.
+plugin, a worker told where to find it, a real PostgreSQL database, a
+resolvable `dsn` secret, an egress policy allowing the database destination,
+and task policy allowing the qualified task - so neither runs by accident and
+neither is executed by CI.
 [`plugins/sql/README.md`](../../../plugins/sql/README.md), "Trying this
 example," is the procedure: it names the schema the `accounts` table needs and
 the environment variable the `${secret('env:SQL_DSN')}` reference resolves
 through.
 
-The connection string is a secret reference resolved inside the task, never a
-literal in the file — the same rule `examples/http-secret` follows.
+The connection string must be a secret reference resolved by the host, never a
+literal in the file. Credential source and destination authorization are
+separate: the reference keeps the DSN out of the Flowfile and history, while
+the operator-owned egress policy authorizes every resolved socket address.
+See [`egress-policy.yaml`](egress-policy.yaml) for a deliberately local-only
+example policy and the plugin README for the secret setup.
 
-The two files deliberately target different engines: `workflow.yaml` is
-sqlite-flavored and `transfer.yaml` is written for `ENGINE_POSTGRES`. Between
-them they make a point the plugin's README states outright under "Drivers" and
-worth knowing before assuming otherwise: **a query is not portable between
-engines just because the task is.** `engine:` swaps in one line, but pgx does
-not rewrite `?` into `$1`, so the statement text has to change with it. Two
-engines, one task, two dialects.
+For installation integrity and SDK compatibility limits, use the canonical
+[plugin contract guide](../../../docs/PLUGINS.md#five-places-the-contract-is-implicit).
+Task schemas and capabilities come from discovered descriptors; this README
+does not maintain a second inventory.
+
+Both files use `ENGINE_POSTGRES`. The distributed plugin refuses SQLite because
+an embedded driver grants worker-filesystem authority that process separation
+does not confine. Hermetic package tests retain SQLite only as a test fixture.

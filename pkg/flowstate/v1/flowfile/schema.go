@@ -3,6 +3,7 @@ package flowfile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -113,6 +114,18 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	for _, name := range sortedInputNames(task.GetInputs()) {
 		field := findField(def.Inputs, name)
 		if field == nil {
+			continue
+		}
+		if slices.Contains(def.RequiredSecretInputs, name) {
+			if task.GetInputs()[name].GetSecretRef() == nil {
+				ds = append(ds, Diagnostic{
+					Step:  stepID,
+					Field: name,
+					Message: fmt.Sprintf(
+						"task %q requires input %q to be a whole secret reference such as ${secret('env:NAME')}, never a literal",
+						def.Name, name),
+				})
+			}
 			continue
 		}
 		// An input that has to be written as an expression is checked before the

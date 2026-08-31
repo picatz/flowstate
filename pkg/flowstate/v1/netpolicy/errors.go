@@ -139,6 +139,11 @@ type RateLimitedError struct {
 	// sense that no server said it, but derived from the bucket's own state
 	// rather than guessed.
 	RetryAfter time.Duration
+
+	// AfterRedirect reports that an earlier request in this redirect chain
+	// reached its peer before this hop was held back. Callers use it to avoid
+	// replaying a non-idempotent original request as though nothing was sent.
+	AfterRedirect bool
 }
 
 // Error implements the error interface.

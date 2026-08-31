@@ -361,6 +361,8 @@ func Inputs(def TaskDef) []InputField {
 // and a second literal there could drift from what this one writes.
 const secretReferenceNote = "may hold a secret reference"
 
+const requiredSecretReferenceNote = "must be a whole secret reference, never a literal"
+
 // taskInputNotes is what the *task* adds to a field's constraints, by input name.
 //
 // Read off the definition rather than restated: `ExpressionInputs` is already the
@@ -386,6 +388,9 @@ func taskInputNotes(def TaskDef) map[string][]string {
 	for _, name := range def.CredentialInputs {
 		notes[name] = append(notes[name], "names a deployment credential target")
 	}
+	for _, name := range def.RequiredSecretInputs {
+		notes[name] = append(notes[name], requiredSecretReferenceNote)
+	}
 	// def.SecretInputs is the plugin whole-value list (TaskManifest.secret_inputs,
 	// #712): a different mechanism from AuthorityInputs/NestedSecretInputs, but
 	// the same fact about what an author may legally write there, so it earns
@@ -399,6 +404,7 @@ func taskInputNotes(def TaskDef) map[string][]string {
 		slices.Clone(def.AuthorityInputs),
 		append(slices.Clone(def.NestedSecretInputs), def.SecretInputs...)...))) {
 		if slices.Contains(def.CredentialInputs, name) ||
+			slices.Contains(def.RequiredSecretInputs, name) ||
 			slices.Contains(notes[name], secretReferenceNote) {
 			continue
 		}
@@ -457,11 +463,11 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 
 // CurrentClaimsSchemaVersion is [TaskCatalog.ClaimsSchemaVersion]'s current
 // value: every build carrying this constant populates NeedsScope,
-// SecretInputs, ShapesOutputs, DeferredInputs and ExpressionInputs on every
-// TaskDescription it produces. Bump it only alongside a change that adds or
-// redefines one of those fields, the same event that would justify a new
-// entry in the doc comment on ClaimsSchemaVersion itself.
-const CurrentClaimsSchemaVersion uint32 = 1
+// SecretInputs, RequiredSecretInputs, ShapesOutputs, DeferredInputs and
+// ExpressionInputs on every TaskDescription it produces. Bump it only alongside
+// a change that adds or redefines one of those fields, the same event that would
+// justify a new entry in the doc comment on ClaimsSchemaVersion itself.
+const CurrentClaimsSchemaVersion uint32 = 2
 
 // TaskDescriptionClaimsKnown reports whether a catalog's TaskDescriptions can
 // be trusted to say when a task needs scope or accepts a secret, as opposed
@@ -546,14 +552,14 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		OutputDescriptor: outputDescriptor,
 		OutputMessage:    outputMessage,
 
-		// The five claims with security weight (#712): invisible here before,
+		// The claims with security weight (#712): invisible here before,
 		// which meant invisible in the catalog and outside ClaimsDigest (see
 		// [TaskDescriptionClaimsOnly]), which is computed over exactly these
-		// five fields. Read straight off the definition rather than
+		// fields. Read straight off the definition rather than
 		// re-derived, for the same reason every other field above is: one
 		// definition of what a task does, described.
 		//
-		// The three lists are canonicalized rather than cloned as-is: to the
+		// The lists are canonicalized rather than cloned as-is: to the
 		// engine they are membership sets (MustBeExpression, IsDeferred and
 		// resolvePluginSecretInputs all ask "does this list contain X", never
 		// "in what order"), but the manifest schema bounds them only by size,
@@ -564,11 +570,12 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		// (map iteration in the plugin's own code, say) would otherwise digest
 		// differently and fail CheckPluginsAvailable's exact-match replay guard
 		// for a run that plugin can execute unchanged (#763 review).
-		NeedsScope:       def.NeedsPrevOutputs,
-		SecretInputs:     canonicalStrings(def.SecretInputs),
-		ShapesOutputs:    def.ShapesOutputs,
-		DeferredInputs:   canonicalStrings(def.DeferredInputs),
-		ExpressionInputs: canonicalStrings(def.ExpressionInputs),
+		NeedsScope:           def.NeedsPrevOutputs,
+		SecretInputs:         canonicalStrings(def.SecretInputs),
+		RequiredSecretInputs: canonicalStrings(def.RequiredSecretInputs),
+		ShapesOutputs:        def.ShapesOutputs,
+		DeferredInputs:       canonicalStrings(def.DeferredInputs),
+		ExpressionInputs:     canonicalStrings(def.ExpressionInputs),
 	}
 }
 
@@ -640,8 +647,8 @@ func TaskDescriptionSansClaims(t *TaskDescription) *TaskDescription {
 	}
 }
 
-// fieldsSansSecretNote returns fields with [secretReferenceNote] removed
-// from each one's constraints. A field that never carried the note is
+// fieldsSansSecretNote returns fields with secret-input claim notes removed
+// from each one's constraints. A field that never carried either note is
 // returned as-is rather than copied, since every caller of
 // [TaskDescriptionSansClaims] only marshals the result and never mutates it.
 func fieldsSansSecretNote(fields []*TaskField) []*TaskField {
@@ -651,14 +658,15 @@ func fieldsSansSecretNote(fields []*TaskField) []*TaskField {
 
 	out := make([]*TaskField, len(fields))
 	for i, f := range fields {
-		if !slices.Contains(f.GetConstraints(), secretReferenceNote) {
+		if !slices.Contains(f.GetConstraints(), secretReferenceNote) &&
+			!slices.Contains(f.GetConstraints(), requiredSecretReferenceNote) {
 			out[i] = f
 			continue
 		}
 
 		constraints := make([]string, 0, len(f.GetConstraints())-1)
 		for _, c := range f.GetConstraints() {
-			if c != secretReferenceNote {
+			if c != secretReferenceNote && c != requiredSecretReferenceNote {
 				constraints = append(constraints, c)
 			}
 		}
@@ -676,8 +684,8 @@ func fieldsSansSecretNote(fields []*TaskField) []*TaskField {
 }
 
 // TaskDescriptionClaimsOnly returns a copy of t carrying only its name and
-// the five claim fields with security weight (#712): NeedsScope,
-// SecretInputs, ShapesOutputs, DeferredInputs, ExpressionInputs. Used to
+// the claim fields with security weight (#712): NeedsScope, SecretInputs,
+// RequiredSecretInputs, ShapesOutputs, DeferredInputs, ExpressionInputs. Used to
 // build ClaimsDigest apart from TaskSchemaDigest — see
 // [TaskDescriptionSansClaims] for the reverse split and why both exist.
 func TaskDescriptionClaimsOnly(t *TaskDescription) *TaskDescription {
@@ -686,12 +694,13 @@ func TaskDescriptionClaimsOnly(t *TaskDescription) *TaskDescription {
 	}
 
 	return &TaskDescription{
-		Name:             t.GetName(),
-		NeedsScope:       t.GetNeedsScope(),
-		SecretInputs:     t.GetSecretInputs(),
-		ShapesOutputs:    t.GetShapesOutputs(),
-		DeferredInputs:   t.GetDeferredInputs(),
-		ExpressionInputs: t.GetExpressionInputs(),
+		Name:                 t.GetName(),
+		NeedsScope:           t.GetNeedsScope(),
+		SecretInputs:         t.GetSecretInputs(),
+		RequiredSecretInputs: t.GetRequiredSecretInputs(),
+		ShapesOutputs:        t.GetShapesOutputs(),
+		DeferredInputs:       t.GetDeferredInputs(),
+		ExpressionInputs:     t.GetExpressionInputs(),
 	}
 }
 

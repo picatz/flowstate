@@ -1392,7 +1392,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := v1.CheckManualStart(workflow, identity.GetSubject(), req.Msg.GetReason()); err != nil {
+	if err := v1.CheckManualStart(workflow, manualStartPrincipal(ctx), req.Msg.GetReason()); err != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied, err)
 	}
 
@@ -2020,6 +2020,19 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 		Namespace:  derived.Namespace,
 		Deployment: derived.Deployment,
 	}
+}
+
+// manualStartPrincipal returns the canonical identity manual-start policy may
+// authorize. It comes only from authentication middleware, never from the
+// request or from the durable identity derived from it. OIDC and mTLS callers
+// share [auth.Principal.ID]'s issuer-qualified spelling. Missing, zero, and the
+// explicitly unauthenticated development principal cannot satisfy an allowlist.
+func manualStartPrincipal(ctx context.Context) string {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.IsZero() || principal.IsAnonymous() {
+		return ""
+	}
+	return principal.ID()
 }
 
 // Get retrieves the status of a workflow execution by its ID (and optionally its run ID).

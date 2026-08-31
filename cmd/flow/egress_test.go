@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -58,6 +60,41 @@ func TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy(t *testing.T) {
 	// the presence is what keeps a suggestion that prints *both* — a plausible
 	// way to "fix" this by adding rather than correcting — from passing.
 	require.NotContains(t, stderr, v1.AllowLoopbackEgressEnv+"=1")
+}
+
+func TestSQLPluginReceivesThePolicySnapshotTheHostParsed(t *testing.T) {
+	cmd := &cobra.Command{Use: "snapshot"}
+	addEgressPolicyFlag(cmd)
+	addPluginFlags(cmd)
+
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	original := []byte("egress:\n  schemes: [postgres]\n  allow_ports: [5432]\n")
+	replacement := []byte("egress:\n  schemes: [postgres]\n  allow_ports: [6432]\n")
+	require.NoError(t, os.WriteFile(path, original, 0o600))
+	require.NoError(t, cmd.Flags().Set("egress-policy", path))
+	require.NoError(t, applyEgressPolicy(cmd))
+
+	// Simulate an atomic ConfigMap/symlink replacement after the host parsed
+	// the policy but before it launches the plugin.
+	require.NoError(t, os.WriteFile(path, replacement, 0o600))
+	flags, err := pluginFlagsOf(cmd)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(original, flags.egressPolicy),
+		"SQL plugin policy = %q, want the host's original immutable snapshot", flags.egressPolicy)
+}
+
+func TestAnOversizedEgressPolicyIsRefusedBeforeItCanReachAPluginEnvironment(t *testing.T) {
+	cmd := &cobra.Command{Use: "oversized"}
+	addEgressPolicyFlag(cmd)
+
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte{'#'}, maxEgressPolicyBytes+1), 0o600))
+	require.NoError(t, cmd.Flags().Set("egress-policy", path))
+
+	err := applyEgressPolicy(cmd)
+	require.ErrorContains(t, err, "exceeds the 65536-byte limit")
+	require.Empty(t, egressPolicySnapshot(cmd),
+		"an oversized policy reached the SQL plugin snapshot despite being refused")
 }
 
 // TestLoopbackDenialUnderAnExplicitPolicyStaysSilent is #387's negative
