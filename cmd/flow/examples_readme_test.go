@@ -39,7 +39,9 @@ func TestExamplesREADMEFirstRunCommands(t *testing.T) {
 				"the first-run compile pipeline gained an untested shell command")
 			invocation = before
 		}
-		commands = append(commands, strings.Fields(invocation))
+		args := strings.Fields(invocation)
+		require.NotEmpty(t, args, "first-run command %q has no flow invocation", line)
+		commands = append(commands, args)
 	}
 
 	require.Equal(t, 4, len(commands),
@@ -47,6 +49,7 @@ func TestExamplesREADMEFirstRunCommands(t *testing.T) {
 	assert.Equal(t, []string{"validate", "compile", "test", "run"}, []string{
 		commands[0][0], commands[1][0], commands[2][0], commands[3][0],
 	})
+	require.GreaterOrEqual(t, len(commands[3]), 2, "the first run must name its execution venue")
 	require.Equal(t, "local", commands[3][1], "the first run must remain local and offline")
 
 	t.Chdir(root)
