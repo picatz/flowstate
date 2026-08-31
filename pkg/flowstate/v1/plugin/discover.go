@@ -130,7 +130,21 @@ func Discover(cfg Config) ([]Found, error) {
 			}
 
 			if existing, shadowed := byName[name]; shadowed {
-				log.Info("plugin binary is shadowed by an earlier search path entry",
+				// Warn rather than Info, because of what is lost rather than
+				// how the loser was chosen. First-wins is documented and
+				// deliberate (--plugin-dir is "repeatable, in precedence
+				// order"), but the shadowed binary takes *every task it
+				// provides* with it, silently: a workflow's `plugins:`
+				// requirement still resolves, because the winner answers to
+				// the same name and version, and a step naming one of the
+				// loser's tasks fails as an unknown task with nothing
+				// connecting the two. This package already refuses outright
+				// when two plugins claim one secret *scheme* ("two answers for
+				// one scheme is a configuration error"); one name claimed
+				// twice is that error with a larger blast radius, and it was
+				// reported below the level every one of this CLI's plugin
+				// surfaces logs at.
+				log.Warn("plugin binary is shadowed by an earlier search path entry",
 					"plugin", name, "using", existing.Path, "ignoring", path)
 				continue
 			}
