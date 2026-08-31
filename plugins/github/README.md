@@ -715,55 +715,17 @@ to swap in independently later.
 
 ## SDK gaps found while building this
 
-The two most significant gaps are identical to `plugins/vcs`'s and are not
-repeated in full here - see `plugins/vcs/README.md`, "SDK gaps found while
-building this":
+The SDK now supports host-resolved `SecretInputs` and gives tasks the caller's
+namespace and identity. This plugin still uses its older plugin-local `github:`
+secret scheme; migrating it to the shared mechanism, including namespace-scoped
+resolution and host-side scrubbing, is tracked in issue #1330.
 
-1. A plugin task can only resolve a secret reference under its own scheme,
-   never the engine's env/file/vault providers or another plugin's scheme -
-   which is why this plugin cannot, say, borrow a token the `vcs` plugin
-   already resolved, even for the exact same GitHub credential in a
-   workflow that uses both plugins together.
-2. A plugin task has no access to the caller's namespace or identity, so
-   this plugin's in-process secret resolution is correct only for a
-   single-tenant deployment.
-
-Two more, specific to this plugin:
-
-3. **The plugin SDK has no equivalent of
-   [`flowstatev1.ErrorKindUpstreamUnknown`].** `sdk.Failed`, `sdk.
-   Unavailable`, and the rest classify a failure as permanent or retryable,
-   but there is no distinct "the outcome is unknown, and that is *why* it
-   is permanent" classification a plugin can return - the engine's own
-   `ErrorKindUpstreamUnknown` exists specifically to say that, for exactly
-   the http task's own `retry_on_unknown_outcome` case, but nothing in
-   `pkg/flowstate/v1/plugin/sdk/errors.go` exposes it to a plugin. The
-   *behavior* this plugin needs - do not retry `issue_comment` when the
-   outcome is unknown - is achieved by returning `sdk.Failed`, which the
-   host maps to `ErrorKindInvalidInput` (see `taskError` in
-   `pkg/flowstate/v1/plugin/task.go`'s own comment on why that is the
-   least-wrong permanent kind available). The safety property holds; the
-   diagnostic an operator reads is imprecise - it says "invalid input" for
-   a failure that has nothing to do with the inputs. `classifyMutationError`
-   works around this by writing the real reason into the error message
-   itself, since the classification cannot carry it.
-
-4. **A plugin has no way to carry a `Retry-After` duration on a retryable
-   failure.** The engine's own `flowstatev1.TaskError.RetryAfter` exists so
-   a 429 or 503 can tell the durable driver when to try again rather than
-   guessing with ordinary backoff - CLAUDE.md's own "Both execution drivers
-   must agree" section names this exact mechanism. `sdk.Unavailable` has no
-   parameter for it. This plugin computes the correct wait from GitHub's
-   rate-limit reset time and secondary-rate-limit `Retry-After` header (see
-   `errors.go`'s handling of `*github.RateLimitError` and
-   `*github.AbuseRateLimitError`) and puts it in the error *message*, which
-   a human reads but which the retry scheduler cannot act on - a step
-   retries on the engine's own backoff schedule rather than waiting exactly
-   as long as GitHub asked. Fixing this needs `pluginv1.ExecuteResponse` (or
-   the `sdk.classified` error type) to carry a duration alongside its
-   existing `retryable` bool, and for `taskError` in
-   `pkg/flowstate/v1/plugin/task.go` to read it - a schema and SDK change,
-   not something this plugin can add on its own.
+The SDK now covers two gaps originally recorded here. Unknown mutation
+outcomes use `sdk.OutcomeUnknown`, which the host maps to
+`ErrorKindUpstreamUnknown` and never retries. GitHub rate-limit reset times and
+secondary-limit `Retry-After` values use `sdk.UnavailableAfter`, so both drivers
+receive the backend's preferred retry delay instead of relying on generic
+backoff.
 
 ## What was left undone, and why
 

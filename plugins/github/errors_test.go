@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-github/v75/github"
 )
@@ -70,5 +71,31 @@ func TestClassifyMutationErrorHedgesOnContextDeadline(t *testing.T) {
 	err := classifyMutationError(context.DeadlineExceeded)
 	if err == nil || !strings.Contains(err.Error(), "not retried automatically") {
 		t.Fatalf("a deadline exceeded mid-mutation must hedge; got: %v", err)
+	}
+}
+
+func TestClassifyReadErrorCarriesGitHubRateLimitWait(t *testing.T) {
+	reset := time.Now().Add(30 * time.Second)
+	err := classifyReadError(&github.RateLimitError{
+		Rate: github.Rate{Reset: github.Timestamp{Time: reset}},
+	})
+	if err == nil {
+		t.Fatal("got nil error")
+	}
+
+	// The constructor used here is sdk.UnavailableAfter. Its wire mapping is
+	// covered by the SDK's TestPluginErrorPipelineRoundTrip conformance test;
+	// this pins the GitHub-specific half: Reset is converted into the positive
+	// duration passed to that constructor instead of discarded.
+	if !strings.Contains(err.Error(), "resets in") {
+		t.Fatalf("rate-limit error does not report the reset wait: %v", err)
+	}
+}
+
+func TestClassifyReadErrorCarriesSecondaryRateLimitWait(t *testing.T) {
+	wait := 45 * time.Second
+	err := classifyReadError(&github.AbuseRateLimitError{RetryAfter: &wait})
+	if err == nil || !strings.Contains(err.Error(), wait.String()) {
+		t.Fatalf("secondary rate-limit error does not carry GitHub's retry-after %s: %v", wait, err)
 	}
 }
