@@ -148,11 +148,13 @@ jobs:
     needs: plan
     if: needs.plan.outputs.test == 'true'
     runs-on: ubuntu-latest
-    # A hung job otherwise runs to the six-hour default. Nothing here takes more
-    # than a few minutes, so this bounds a stuck dev server or a wedged test
-    # rather than constraining honest work — the same reasoning the engine
-    # applies to a step's own timeout.
-    timeout-minutes: 15
+    # A hung job otherwise runs to the six-hour default. The root suite, six
+    # separately cached plugin modules, and ordering rehearsal are each bounded
+    # below, but a dependency bump changes every cache key and legitimately puts
+    # their cold paths in one run. Twenty-five minutes leaves that run headroom
+    # without letting a stuck dev server or wedged test consume the default six
+    # hours — the same reasoning the engine applies to a step's own timeout.
+    timeout-minutes: 25
     steps:
       # persist-credentials: false everywhere in this workflow (and deep.yml,
       # and editors.yml): checkout otherwise leaves the job's GITHUB_TOKEN in
