@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -48,11 +49,12 @@ const pluginSearchPathEnv = "FLOWSTATE_PLUGIN_DIR"
 // environment rather than into every command line.
 const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 
-// sqlEgressPolicyEnv gives the in-tree SQL plugin the same operator-owned
-// policy file the worker applies to built-in HTTP. The plugin process starts
-// with an empty environment, so forwarding this path here is an explicit grant,
-// not ambient inheritance. SQL itself refuses PostgreSQL when it is absent.
-const sqlEgressPolicyEnv = "FLOWSTATE_SQL_EGRESS_POLICY"
+// sqlEgressPolicyEnv gives the in-tree SQL plugin an immutable base64 encoding
+// of the same operator-owned policy bytes the host parsed for built-in HTTP.
+// The plugin process starts with an empty environment, so forwarding the
+// snapshot here is an explicit grant, not ambient inheritance. SQL itself
+// refuses PostgreSQL when it is absent.
+const sqlEgressPolicyEnv = "FLOWSTATE_SQL_EGRESS_POLICY_B64"
 
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
@@ -80,9 +82,10 @@ type pluginFlags struct {
 	// all.
 	pinnedDigests map[string]string
 
-	// egressPolicy is the operator's policy path, forwarded to first-party
-	// protocol-native plugins that enforce it on their own socket path.
-	egressPolicy string
+	// egressPolicy is the exact operator policy snapshot already parsed by the
+	// host, forwarded to first-party protocol-native plugins that enforce it
+	// on their own socket path.
+	egressPolicy []byte
 }
 
 // pluginFlagsOf reads them off the command being run.
@@ -98,17 +101,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
 	pinFlags, _ := cmd.Flags().GetStringArray("plugin-pin")
 	pinsFile, _ := cmd.Flags().GetString("plugin-pins")
-	var egressPolicy string
-	if cmd.Flags().Lookup("egress-policy") != nil {
-		egressPolicy, _ = cmd.Flags().GetString("egress-policy")
-		if egressPolicy != "" {
-			var err error
-			egressPolicy, err = filepath.Abs(egressPolicy)
-			if err != nil {
-				return pluginFlags{}, fmt.Errorf("resolving SQL egress policy path: %w", err)
-			}
-		}
-	}
+	egressPolicy := egressPolicySnapshot(cmd)
 
 	// The $FLOWSTATE_PLUGIN_DIR fallback is bound at registration time, in
 	// addPluginFlags, as the flag's own default — not here — so that the
@@ -373,8 +366,8 @@ func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 // host builds a host for these flags. The caller owns closing it.
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 	env := covbuild.Env()
-	if f.egressPolicy != "" {
-		env = append(env, sqlEgressPolicyEnv+"="+f.egressPolicy)
+	if len(f.egressPolicy) > 0 {
+		env = append(env, sqlEgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(f.egressPolicy))
 	}
 	return plugin.NewHost(plugin.Config{
 		SearchPath:              f.dirs,

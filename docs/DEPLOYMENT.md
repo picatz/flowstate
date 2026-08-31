@@ -149,11 +149,13 @@ source rewrite.
 Credential source is not destination authorization. A worker loading the SQL
 plugin must also receive `--egress-policy` with `postgres` in `egress.schemes`
 and exact allow rules/networks/ports for the database. The host forwards that
-same operator-owned file to the first-party SQL plugin; missing policy denies all
-PostgreSQL connections, and malformed policy prevents plugin startup. The SQL
-plugin resolves and authorizes every address for every DSN host, pins that set,
-rechecks the actual TCP target immediately before each connection, requires
-verified TLS, and rejects Unix sockets and filesystem-reading connection options.
+same operator-owned policy snapshot to the first-party SQL plugin, so a file
+replacement during startup cannot make HTTP and SQL enforce different bytes;
+missing policy denies all PostgreSQL connections, and malformed policy prevents
+plugin startup. The SQL plugin checks host and port rules before DNS, resolves
+and authorizes every address for every DSN host, pins that set, rechecks the
+actual TCP target immediately before each connection, requires verified TLS,
+and rejects Unix sockets and filesystem-reading connection options.
 
 Released SQL plugins no longer execute SQLite DSNs. Embedded SQLite grants the
 plugin worker-filesystem authority (including URI modes, symlinks, `ATTACH`, and

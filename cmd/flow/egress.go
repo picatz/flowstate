@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -41,6 +43,24 @@ import (
 // command line — the same split --plugin-dir and FLOWSTATE_PLUGIN_DIR have.
 const egressPolicyEnv = "FLOWSTATE_EGRESS_POLICY"
 
+// egressPolicySnapshotKey carries the exact policy bytes [applyEgressPolicy]
+// parsed. Protocol-native plugins receive this immutable snapshot rather than
+// reopening a pathname that an operator or ConfigMap update could replace
+// between the host and plugin reads.
+type egressPolicySnapshotKey struct{}
+
+func egressPolicySnapshot(cmd *cobra.Command) []byte {
+	data, _ := commandContext(cmd).Value(egressPolicySnapshotKey{}).([]byte)
+	return slices.Clone(data)
+}
+
+func commandContext(cmd *cobra.Command) context.Context {
+	if ctx := cmd.Context(); ctx != nil {
+		return ctx
+	}
+	return context.Background()
+}
+
 // addEgressPolicyFlag declares --egress-policy on a command.
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
@@ -62,6 +82,7 @@ func addEgressPolicyFlag(cmd *cobra.Command) {
 // fail-open this flag exists to prevent. The file's path is on every error;
 // [netpolicy.New] already names the rule and the compile problem.
 func applyEgressPolicy(cmd *cobra.Command) error {
+	cmd.SetContext(context.WithValue(commandContext(cmd), egressPolicySnapshotKey{}, []byte(nil)))
 	path, _ := cmd.Flags().GetString("egress-policy")
 	if path == "" {
 		return nil
@@ -81,6 +102,7 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("egress policy %s: %w", path, err)
 	}
+	cmd.SetContext(context.WithValue(cmd.Context(), egressPolicySnapshotKey{}, slices.Clone(data)))
 
 	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for egress policy %s: %w", path, err)

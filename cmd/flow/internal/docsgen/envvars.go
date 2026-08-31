@@ -335,9 +335,9 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			family:  true,
 		},
 		{
-			name:    "FLOWSTATE_SQL_EGRESS_POLICY",
+			name:    "FLOWSTATE_SQL_EGRESS_POLICY_B64",
 			value:   "unset",
-			purpose: "Internal grant from the plugin host to the first-party SQL plugin: the absolute path selected by `--egress-policy`. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; PostgreSQL execution is denied when the grant is absent.",
+			purpose: "Internal grant from the plugin host to the first-party SQL plugin: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; PostgreSQL execution is denied when the grant is absent.",
 			read:    "cmd/flow/plugins.go",
 		},
 		{

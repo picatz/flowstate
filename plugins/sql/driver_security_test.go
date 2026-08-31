@@ -133,6 +133,29 @@ func TestPostgresDNSAnswersFailClosedAsASet(t *testing.T) {
 	}
 }
 
+func TestPostgresRequestPolicyDeniesBeforeDNS(t *testing.T) {
+	policy, err := netpolicy.New(
+		netpolicy.WithSchemes("postgres"),
+		netpolicy.WithAllowRules(`host == "allowed.example"`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
+	withPostgresPolicy(t, policy, func(context.Context, string) ([]string, error) {
+		lookups++
+		return []string{"8.8.8.8"}, nil
+	})
+
+	_, err = openDB(t.Context(), sqlv1.Engine_ENGINE_POSTGRES, postgresDSN("denied.example", 5432), secrets.NewScrubber())
+	if err == nil || !strings.Contains(err.Error(), "denied by deployment egress policy") {
+		t.Fatalf("openDB error = %v, want request-policy denial", err)
+	}
+	if lookups != 0 {
+		t.Fatalf("DNS resolver called %d times for a request-policy-denied host, want zero", lookups)
+	}
+}
+
 func TestPostgresResolutionIsBoundedPinnedAndCancellable(t *testing.T) {
 	policy, err := netpolicy.New(netpolicy.WithSchemes("postgres"))
 	if err != nil {

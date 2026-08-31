@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 
@@ -123,6 +125,14 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 		}
 		if scrubber != nil {
 			scrubber.AddValue(ep.host)
+		}
+		// Refuse a host/port that request-scoped policy denies before DNS.
+		// Resolution is itself an outbound effect, and an attacker-controlled
+		// denied name must not become a DNS exfiltration channel merely because
+		// the eventual TCP connection would be refused.
+		target := &url.URL{Scheme: "postgres", Host: net.JoinHostPort(ep.host, strconv.Itoa(int(ep.port)))}
+		if err := egressPolicy.CheckURL(policyCtx, http.MethodConnect, target); err != nil {
+			return sdk.PermissionDenied("postgres destination is denied by deployment egress policy")
 		}
 		if _, ok := resolved[ep.host]; ok {
 			continue
