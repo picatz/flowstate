@@ -109,6 +109,18 @@ func TestCommentFindsProse(t *testing.T) {
 	}
 }
 
+func TestManualAllowedPrincipalsDocumentationIsIssuerQualified(t *testing.T) {
+	comment, ok := Comment("flowstate.v1.ManualTrigger.allowed_principals")
+	if !ok {
+		t.Fatal("manual allowed_principals has no descriptor documentation")
+	}
+	for _, want := range []string{"<issuer>#<subject>", "Principal.ID", "exactly one", "Bare subjects are invalid"} {
+		if !strings.Contains(comment, want) {
+			t.Errorf("manual allowed_principals descriptor documentation does not contain %q:\n%s", want, comment)
+		}
+	}
+}
+
 // A leading comment belongs to the declaration immediately below it. Presence
 // alone did not catch RunState's prose being copied above WorkloadIdentity,
 // where generated API documentation attributed both descriptions to the

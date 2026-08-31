@@ -663,10 +663,9 @@ const file_flowstate_v1_signal_proto_rawDesc = "" +
 	"\fSignalPolicy\x12@\n" +
 	"\x05allow\x18\x01 \x03(\v2\x1e.flowstate.v1.SignalPolicyRuleB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10 R\x05allow\x122\n" +
-	"\x15distinct_from_starter\x18\x02 \x01(\bR\x13distinctFromStarter\"\xbe\x02\n" +
-	"\x10SignalPolicyRule\x121\n" +
-	"\asubject\x18\x01 \x01(\tB\x17\xbaH\x14\xd8\x01\x01r\x0f\x18\xc0\x022\n" +
-	"^[^#]+#.+$R\asubject\x12&\n" +
+	"\x15distinct_from_starter\x18\x02 \x01(\bR\x13distinctFromStarter\"\xc1\x02\n" +
+	"\x10SignalPolicyRule\x124\n" +
+	"\asubject\x18\x01 \x01(\tB\x1a\xbaH\x17\xd8\x01\x01r\x12\x18\xc0\x022\r^[^#]+#[^#]+$R\asubject\x12&\n" +
 	"\tnamespace\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\tnamespace\x12\\\n" +
 	"\x06claims\x18\x03 \x03(\v2*.flowstate.v1.SignalPolicyRule.ClaimsEntryB\x18\xbaH\x15\x9a\x01\x12\x10\x10\"\ar\x05\x10\x01\x18\x80\x01*\x05r\x03\x18\x80\x02R\x06claims\x126\n" +
 	"\fsubject_from\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vsubjectFrom\x1a9\n" +

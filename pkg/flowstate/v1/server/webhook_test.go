@@ -715,7 +715,9 @@ func TestAWebhookServedWorkflowIsTrustedForRun(t *testing.T) {
 // same way an ordinary workflow's steps would.
 func breakGlassWebhookWorkflowFor(tenant string) *v1.Workflow {
 	workflow := webhookOnlyWorkflowWithManualDenied()
-	workflow.Triggers.Manual.AllowedPrincipals = []string{tenant + "-oncall@example.com"}
+	workflow.Triggers.Manual.AllowedPrincipals = []string{
+		"https://issuer.example.com#" + tenant + "-oncall@example.com",
+	}
 	workflow.Triggers.Manual.Denied = false
 	return workflow
 }
@@ -785,7 +787,7 @@ func TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother(t *testing.T)
 	// If the trusted lookup ever fell through to *any* entry under this name —
 	// a name-only key, or team-b's registration simply overwriting team-a's in
 	// the map — this request would be authorized against team-b's
-	// `allowed_principals`, which does not name `team-a-oncall@example.com`,
+	// `allowed_principals`, which does not name team-a's qualified oncall principal,
 	// and would be refused. Succeeding here is what proves team-a reached its
 	// own entry rather than team-b's.
 	ctxA := auth.ContextWithPrincipal(t.Context(), auth.Principal{

@@ -40,7 +40,7 @@ triggers:
   - manual:
       require_reason: true
       allowed_principals:
-        - oncall@example.com
+        - https://issuer.example.com#oncall@example.com
 steps:
   - id: notify
     if: ${trigger.kind != "schedule"}
@@ -127,8 +127,8 @@ triggers:
   manual:
     require_reason: true
     allowed_principals:
-      - oncall@example.com
-      - sre@example.com
+      - https://issuer.example.com#oncall@example.com
+      - https://issuer.example.com#sre@example.com
 steps:
   - id: rotate
     log:
@@ -161,7 +161,7 @@ steps:
 name: one-principal
 triggers:
   manual:
-    allowed_principals: oncall@example.com
+    allowed_principals: https://issuer.example.com#oncall@example.com
 steps:
   - id: rotate
     log:
