@@ -59,6 +59,15 @@ insert is not sufficient on its own.
 
 ## Running it
 
+From the repository root, build the separate plugin executable and inspect the
+catalog the same configured path will provide to a worker:
+
+```console
+$ mkdir -p ./plugins
+$ go -C plugins/sql build -o ../../plugins/flowstate-plugin-sql .
+$ go run ./cmd/flow plugins --plugin-dir ./plugins
+```
+
 Both files need configuration that is not expressible in the file - a built
 plugin, a worker told where to find it, a real PostgreSQL database, a
 resolvable `dsn` secret, an egress policy allowing the database destination,
@@ -75,6 +84,11 @@ separate: the reference keeps the DSN out of the Flowfile and history, while
 the operator-owned egress policy authorizes every resolved socket address.
 See [`egress-policy.yaml`](egress-policy.yaml) for a deliberately local-only
 example policy and the plugin README for the secret setup.
+
+For installation integrity and SDK compatibility limits, use the canonical
+[plugin contract guide](../../../docs/PLUGINS.md#five-places-the-contract-is-implicit).
+Task schemas and capabilities come from discovered descriptors; this README
+does not maintain a second inventory.
 
 Both files use `ENGINE_POSTGRES`. The distributed plugin refuses SQLite because
 an embedded driver grants worker-filesystem authority that process separation
