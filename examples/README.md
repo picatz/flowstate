@@ -1,18 +1,96 @@
 # Examples
 
-Each directory holds one `workflow.yaml` demonstrating a feature. Run any of them locally,
-without Temporal:
+The corpus has four jobs: teach a first workflow, isolate language and policy
+features, show production-shaped compositions, and pin regressions. Start with a
+journey below; use the complete inventory afterward when you already know which
+construct you need.
+
+## First five minutes
+
+These commands run from a clean repository checkout and do not require an
+installed `flow` binary, a server, a worker, or Temporal.
+
+<!-- first-run-smoke:start -->
 
 ```console
-$ flow run local examples/hello-world/workflow.yaml
+$ go run ./cmd/flow validate examples/hello-world/workflow.yaml
+examples/hello-world/workflow.yaml: ok
+$ go run ./cmd/flow compile examples/hello-world/workflow.yaml -o json | jq -r .name
+hello-world
+$ go run ./cmd/flow test examples/hello-world/
+PASS  examples/hello-world/workflow.test.yaml: the one step logs the literal it was given
+$ go run ./cmd/flow run local examples/hello-world/workflow.yaml
+INFO hello world
+COMPLETED workflow hello-world
 ```
 
-Check one without running it — worth preferring for the network examples, since running
-them makes real requests:
+<!-- first-run-smoke:end -->
 
-```console
-$ flow validate examples/hello-world/workflow.yaml
-```
+`validate` and `compile` execute no tasks. `test` replaces tasks and signals with
+fixtures and uses a virtual clock. `run local` executes real tasks in the current
+process; for a network example that means making a real request. Prefer
+`validate` or `test` until you have reviewed its egress and secret requirements.
+
+Local execution is an ephemeral rehearsal, not a durable-run simulation. The
+local and Temporal drivers share the compiled model and step semantics; Temporal
+adds persisted history, crash recovery, durable timers and signals, and worker
+versioning. A production claim is made only where a durable-driver test or the
+adjacent README says so. Follow the [durable quickstart](../README.md#3-run-durably)
+before using `flow run` without `local`.
+
+## Choose a journey
+
+The role labels classify the representative portfolio. Focused demonstrations
+teach one mechanism; production-shaped compositions show mechanisms interacting;
+regression fixtures exist primarily to keep an edge from returning. The complete
+inventory below remains the source of truth for every directory.
+
+| Journey | Start with | Role |
+| --- | --- | --- |
+| Hello and the authoring loop | [hello-world](hello-world), then [hello-world-multi-step](hello-world-multi-step) | first-run tutorial |
+| Typed inputs, outputs, and CEL | [parameterized-deploy](parameterized-deploy), [computed-outputs](computed-outputs), [expressions](expressions) | focused feature demonstration |
+| Branching and optional values | [webhook-routing](webhook-routing), [optional-dispatch](optional-dispatch) | focused feature demonstration |
+| Loops and bounded fan-out | [loop-accumulate](loop-accumulate), [fan-out-and-parallel](fan-out-and-parallel), [matrix-fan-out](matrix-fan-out) | focused feature demonstration |
+| Reusable workflow composition | [call-a-workflow](call-a-workflow), then [enterprise-customer-onboarding](enterprise-customer-onboarding) | production-shaped composition |
+| Retries, timeouts, cancellation, and undo | [conditional-and-retry](conditional-and-retry), [wait-timeout](wait-timeout), [order-fulfillment](order-fulfillment) | focused feature demonstration → production-shaped composition |
+| Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation) | policy/governance → production-shaped composition |
+| Schedules and trigger context | [scheduled-report](scheduled-report), [schedule-overlap-policies](schedule-overlap-policies), [webhook-trigger](webhook-trigger), [trigger-context](trigger-context) | focused feature demonstration |
+| Local rehearsal and durable execution | [deployment-reconciler](deployment-reconciler), [approval-gate](approval-gate) | local-vs-Temporal parity |
+| `flow test`, directory fixtures, and `testdefaults.yaml` | [testing-defaults](testing-defaults), then any sibling `workflow.test.yaml` | testing/debugging/editor/agent journey; regression fixture |
+| CLI, MCP, and DAP debugging | [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
+| LSP and editor setup | [editor setup](../docs/EDITORS.md), [VS Code client](../editors/vscode/README.md) | testing/debugging/editor/agent journey |
+| Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [http-secret](http-secret) | policy/governance |
+| Observability and audit | [observability](observability), [enterprise-access-review](enterprise-access-review) | production-shaped composition |
+| Plugin discovery and one safe invocation | [plugins/greet](plugins/greet), then the read-only [Git](plugins/git) or [VCS](plugins/vcs) journey | plugin integration |
+| Agent and MCP authoring | [agentic-loop](agentic-loop); [agentic-fix](plugins/agentic-fix) only after its plugin prerequisites | testing/debugging/editor/agent journey → plugin integration |
+
+## House style
+
+- Run `go run ./cmd/flow fmt <workflow>` and accept its key ordering, quoting,
+  and blank-line rhythm. Do not align or space a file into a shape the formatter
+  immediately removes.
+- Comment *why*: a trust boundary, surprising evaluation point, retry or
+  cancellation consequence, or operational hazard. Do not narrate obvious keys.
+  If the explanation needs a section heading, commands, or more than one short
+  paragraph, put it in the directory README and link to the canonical generated
+  reference instead of copying task fields.
+- Keep commands runnable from the directory they claim. Repository documentation
+  uses repository-root commands unless it explicitly changes directories.
+- Say **local rehearsal** for `flow run local` and **durable run** for server and
+  Temporal execution. Never imply that a local assertion authenticates identity
+  or that passing locally proves crash recovery.
+- Examples carry references such as `${secret('env:NAME')}`, never secret-looking
+  literals. Network calls need explicit bounds and safe defaults; writes require
+  inputs or setup that prevent accidental invocation.
+- Each top-level example has a behavior-focused `*.test.yaml`. A README is needed
+  when setup, security posture, multiple files, or operational semantics cannot
+  fit beside the relevant key without overwhelming the Flowfile.
+
+## Complete inventory
+
+Each row links a maintained example. “Network” means a real local run performs
+external I/O; validation and tests remain offline unless that example's README
+says otherwise.
 
 | Example | Shows | Network |
 | --- | --- | --- |
@@ -37,6 +115,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [fan-out-calls](fan-out-calls) | `call:` inside `for_each` — a worklist where each item is handled by a reusable called workflow, bounded by `max_parallel:`, each callee's outputs read back per iteration, and one item's call failing tolerated without touching the others | yes |
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
+| [testing-defaults](testing-defaults) | Two suites inheriting one directory-level `testdefaults.yaml`: workflow, safe task stub, assertion, and shared variable stated once | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
 | [optional-dispatch](optional-dispatch) | Why `.orValue(false)` on a three-way dispatch is a bug — `hasValue()` keeping "nobody answered" apart from "answered no" through a signal's payload, dispatched with `switch:` | no |
 | [string-utilities](string-utilities) | `trim()`, `startsWith()`, `substring()`, `lowerAscii()` and `split()` decomposed across named steps to strip a reply prefix and derive a routing key | no |
