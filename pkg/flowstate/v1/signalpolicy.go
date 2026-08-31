@@ -471,5 +471,5 @@ func QualifiedSubject(issuer, subject string) string {
 // only through protovalidate's generic pattern-mismatch message.
 func LooksLikeQualifiedSubject(s string) bool {
 	i := strings.IndexByte(s, '#')
-	return i > 0 && i < len(s)-1
+	return i > 0 && i < len(s)-1 && strings.LastIndexByte(s, '#') == i
 }

@@ -53,7 +53,7 @@ steps:
 
 	require.Nil(t, workflow.GetTriggers().GetManual(),
 		"declaring a webhook must not compile to a manual narrowing nobody wrote")
-	require.NoError(t, v1.CheckManualStart(workflow, "anyone@example.com", ""),
+	require.NoError(t, v1.CheckManualStart(workflow, "https://issuer.example.com#anyone@example.com", ""),
 		"adding a webhook silently stopped `flow run` from working, which is the one thing "+
 			"a non-exhaustive `triggers:` exists to prevent")
 }
@@ -106,8 +106,8 @@ triggers:
   manual:
     require_reason: true
     allowed_principals:
-      - oncall@example.com
-      - sre@example.com
+      - https://issuer.example.com#oncall@example.com
+      - https://issuer.example.com#sre@example.com
 steps:
   - id: rotate
     log:
@@ -116,28 +116,33 @@ steps:
 
 	manual := workflow.GetTriggers().GetManual()
 	require.True(t, manual.GetRequireReason())
-	require.Equal(t, []string{"oncall@example.com", "sre@example.com"}, manual.GetAllowedPrincipals())
+	require.Equal(t, []string{"https://issuer.example.com#oncall@example.com", "https://issuer.example.com#sre@example.com"}, manual.GetAllowedPrincipals())
 
-	require.NoError(t, v1.CheckManualStart(workflow, "oncall@example.com", "rotating the leaked key"),
+	require.NoError(t, v1.CheckManualStart(workflow, "https://issuer.example.com#oncall@example.com", "rotating the leaked key"),
 		"an allowed principal with a reason is exactly what this block permits")
 
-	err := v1.CheckManualStart(workflow, "oncall@example.com", "   ")
+	err := v1.CheckManualStart(workflow, "https://issuer.example.com#oncall@example.com", "   ")
 	require.Error(t, err, "whitespace is not a reason")
 	assert.Contains(t, err.Error(), "--reason")
 
-	err = v1.CheckManualStart(workflow, "intern@example.com", "curious")
+	err = v1.CheckManualStart(workflow, "https://issuer.example.com#intern@example.com", "curious")
 	require.Error(t, err, "a principal outside the set must be refused")
-	assert.Contains(t, err.Error(), "intern@example.com")
+	assert.Contains(t, err.Error(), "https://issuer.example.com#intern@example.com")
 
 	err = v1.CheckManualStart(workflow, "", "deploying")
 	require.Error(t, err, "an unattested caller must be refused rather than admitted as nobody in particular")
-	assert.Contains(t, err.Error(), "no subject at all")
+	assert.Contains(t, err.Error(), "no authenticated issuer-qualified principal")
 }
 
 // TestManualContradictionsAreRefusedWithAPosition pins each diagnostic a
 // `manual:` block can earn, in the words an author reads.
 func TestManualContradictionsAreRefusedWithAPosition(t *testing.T) {
 	t.Parallel()
+
+	tooManyPrincipals := make([]string, 65)
+	for i := range tooManyPrincipals {
+		tooManyPrincipals[i] = "issuer#" + strconv.Itoa(i)
+	}
 
 	for _, test := range []struct {
 		name   string
@@ -175,10 +180,34 @@ func TestManualContradictionsAreRefusedWithAPosition(t *testing.T) {
 			want: "names nobody",
 		},
 		{
+			name: "a bare principal",
+			source: `triggers:
+  manual:
+    allowed_principals: [ops@example.com]
+`,
+			want: "<issuer>#<subject>",
+		},
+		{
+			name: "an ambiguous principal",
+			source: `triggers:
+  manual:
+    allowed_principals: [mesh#x#y]
+`,
+			want: "<issuer>#<subject>",
+		},
+		{
+			name: "too many principals",
+			source: `triggers:
+  manual:
+    allowed_principals: [` + strings.Join(tooManyPrincipals, ", ") + `]
+`,
+			want: "limit of 64",
+		},
+		{
 			name: "a principal listed twice",
 			source: `triggers:
   manual:
-    allowed_principals: [ops@example.com, ops@example.com]
+    allowed_principals: ["https://issuer.example.com#ops@example.com", "https://issuer.example.com#ops@example.com"]
 `,
 			want: "twice",
 		},
@@ -243,7 +272,7 @@ func TestAContradictoryManualBlockIsRefusedAtSubmit(t *testing.T) {
 		Profile: v1.CurrentProfile,
 		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{
 			Denied:            true,
-			AllowedPrincipals: []string{"ops@example.com"},
+			AllowedPrincipals: []string{"https://issuer.example.com#ops@example.com"},
 		}},
 		Steps: []*v1.Node{{Id: "work", Kind: &v1.Node_Value{Value: v1.NewLiteral("x")}}},
 	}
@@ -254,7 +283,7 @@ func TestAContradictoryManualBlockIsRefusedAtSubmit(t *testing.T) {
 
 	// And the refusal denies rather than being ignored, which is the fail-closed
 	// half: a malformed block that reached a server is a refusal, never a permit.
-	require.Error(t, v1.CheckManualStart(workflow, "ops@example.com", "because"),
+	require.Error(t, v1.CheckManualStart(workflow, "https://issuer.example.com#ops@example.com", "because"),
 		"a `manual:` block that cannot be believed must deny")
 }
 
