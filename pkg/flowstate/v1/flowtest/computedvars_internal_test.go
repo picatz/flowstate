@@ -238,6 +238,54 @@ func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
 	assert.Contains(t, p.err().Error(), "more than 200 computed var leaves")
 }
 
+// sharedTableSource is a file whose `vars:` hold one literal table of
+// `leaves` elements and `readers` computed vars each reading it whole — the
+// one shape both sides of [maxVarDependencyEdges] take, differing only in
+// magnitude: leaves × readers dependency edges.
+func sharedTableSource(leaves, readers int) []byte {
+	var b strings.Builder
+	b.WriteString("vars:\n  data: [")
+	for i := range leaves {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%d", i)
+	}
+	b.WriteString("]\n")
+	for i := range readers {
+		fmt.Fprintf(&b, "  a%03d: \"${vars.data}\"\n", i)
+	}
+	b.WriteString("tests:\n  - name: loads\n    workflow: ./workflow.yaml\n    expect:\n      failed: true\n")
+	return []byte(b.String())
+}
+
+// TestASharedTableReadByEveryVarIsAdmitted pins the legitimate side of the
+// edge budget: 199 vars each deriving from one 600-element table — an
+// ordinary "state the table once, alias it everywhere" fixture — is 119,400
+// edges, which a budget of maxExpandedNodes refused (#1275 review). The full
+// load must accept it and evaluate every reader.
+func TestASharedTableReadByEveryVarIsAdmitted(t *testing.T) {
+	t.Parallel()
+
+	file, err := LoadSource(sharedTableSource(600, 199))
+	require.NoError(t, err)
+	assert.Len(t, file.Vars["a000"], 600)
+	assert.Len(t, file.Vars["a198"], 600)
+}
+
+// TestQuadraticSharedTableFanOutIsRefused pins the attack side: 100 vars each
+// reading a 20,000-element table is 2,000,000 edges inside every other bound
+// ([MaxVarsPerFile], [maxVarExpressions], [maxExpandedNodes]), and the load
+// must refuse it by the whole-file edge budget, naming the limit.
+func TestQuadraticSharedTableFanOutIsRefused(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadSource(sharedTableSource(20_000, 100))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("computed vars have more than %d dependency edges", maxVarDependencyEdges))
+}
+
 // TestEverySiteRecognisesBothSpellings is the audit. `vars.token` and
 // `vars['token']` are the same value to CEL, so every site that asks which var
 // an expression references must answer the same for both — and the two that did

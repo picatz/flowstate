@@ -222,11 +222,42 @@ const maxWithheldVarStrings = 64
 // multiply [maxVarCost] by every leaf the file-size limit can hold.
 const maxVarExpressions = MaxVarsPerFile
 
-// maxVarDependencyEdges bounds the graph material retained across computed
-// leaves. The expanded-node bound is also a safe whole-file edge budget: a
-// structured value may be large, but repeatedly reading that value must not
-// multiply its leaves into quadratic memory.
-const maxVarDependencyEdges = maxExpandedNodes
+// maxVarDependencyEdges bounds the dependency entries retained across the
+// whole file's computed leaves. The budget is cumulative rather than per leaf
+// because the defended resource is the file's total graph: a computed leaf
+// reading a container depends on every leaf of it, so 100 computed vars each
+// reading one shared 20,000-leaf table build 2,000,000 edges while every
+// per-var and per-file count stays legal — and a per-leaf cap generous enough
+// for one reader of a large table multiplies straight back into that total by
+// [maxVarExpressions]. A cumulative budget also admits the lopsided shapes a
+// per-leaf cap would falsely refuse: one var reading a large table whole is a
+// modest graph, however large the table.
+//
+// Twice [maxExpandedNodes], and the factor is measured rather than structural,
+// because the attack and the ordinary file share one shape — computed leaves
+// times container leaves — and differ only in magnitude, so a constant is all
+// there is to decide. The budget must admit every computed leaf a file may
+// hold reading one modest shared table whole: 199 readers of a 600-leaf table
+// is 119,400 edges, an ordinary fixture that a budget of [maxExpandedNodes]
+// refused (#1275 review). And it must refuse the magnitude only an attack
+// reaches: at this bound the 2,000,000-edge fan-out above is refused in
+// ~260ms and ~120MB allocated having retained a tenth of its edges, and the
+// worst fan-out the budget admits (199 readers of a 1,005-leaf table, 199,995
+// edges) measured ~730ms and ~250MB allocated end to end at GOMAXPROCS=2 —
+// the same order as the ~335ms/~125MB worst the previous bound already
+// admitted. The tidier derivation `maxVarExpressions * maxVarCost` =
+// 1,000,000 edges was measured before being rejected: its worst admitted file
+// costs ~5.2s and ~1.5GB allocated, an evaluation-sized budget spent on a
+// loader.
+//
+// What this constant does not bound, named so its next reader does not credit
+// it: the per-read scan over the node map (a probe that retains no new edge
+// spends no budget), and the material evaluation itself retains (a chain of
+// whole-value container reads copies the table once per link on ~one edge per
+// link). Those are the dependency model's costs, not this budget's; collapsing
+// a container read to one edge on the container would remove the quadratic
+// product — and most of this constant's job — entirely.
+const maxVarDependencyEdges = 2 * maxExpandedNodes
 
 // varReference matches a whole-value reference: `${vars.<name>}` and nothing
 // around it. The name grammar is CEL's identifier grammar, because a var must
@@ -1066,7 +1097,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			var withinBound bool
 			d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
 			if !withinBound {
-				p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges", maxVarDependencyEdges)
+				p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges; a computed var reading a container depends on each of its leaves, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges)
 				return nil
 			}
 
@@ -1085,7 +1116,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		var withinBound bool
 		d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
 		if !withinBound {
-			p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges", maxVarDependencyEdges)
+			p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges; a computed var reading a container depends on each of its leaves, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges)
 			return nil
 		}
 		if !ok {
