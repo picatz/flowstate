@@ -7,7 +7,7 @@ require (
 	github.com/picatz/flowstate v0.0.0-00010101000000-000000000000
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d
 	google.golang.org/protobuf v1.36.12
-	modernc.org/sqlite v1.56.0
+	modernc.org/sqlite v1.57.0
 )
 
 require (
