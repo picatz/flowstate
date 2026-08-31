@@ -403,8 +403,8 @@ func (c *compiler) structureScalar(n ast.Node, text, path string, r ref) *v1.Val
 	c.recordExpr(path, span)
 
 	val := v1.NewExpr(inner)
-	if err := val.Error(); err != nil {
-		at, msg := celFailure(err, span, inner)
+	if val.Error() != nil {
+		at, msg := celFailure(val, span, inner)
 		c.report(at, r, "is not a valid expression: %s", msg)
 		return nil
 	}
