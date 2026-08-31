@@ -123,6 +123,17 @@ func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err
 			return err
 		}
 
+		// Connect wraps every transport failure as unavailable, including the
+		// ones this process produced before any bytes reached the network — a
+		// token file that cannot be read, a misconfigured --credential-source
+		// or client TLS triple. Those already name their own repair, and
+		// "fix --address, start the server" would point away from it; the
+		// [clientSideError] mark is how the transport says which half failed.
+		var local *clientSideError
+		if errors.As(err, &local) {
+			return err
+		}
+
 		tool := flowmcp.ToolName(rpc)
 		if explicit {
 			return fmt.Errorf("%s needs a Flowstate server, and the deployment at %s answered unavailable "+

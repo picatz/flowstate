@@ -193,18 +193,33 @@ type authorizingTransport struct {
 	tlsConfigErr error
 }
 
+// clientSideError marks a refusal this process produced before any bytes
+// reached the network: a credential source that cannot be built, client TLS
+// files that cannot be loaded, a token that cannot be produced or must not be
+// sent. Connect wraps every RoundTrip failure as CodeUnavailable, so without
+// the mark a renderer keyed on that code — [mcpRPCErrorDecorator], and the
+// same misreading a `flow list` with a missing token file gets from the
+// no-server headline — writes "fix the address, start the server" onto an
+// error no server change can fix. The message passes through verbatim; the
+// type is the only addition, and Unwrap keeps every errors.Is/As match a
+// caller already relies on.
+type clientSideError struct{ err error }
+
+func (e *clientSideError) Error() string { return e.err.Error() }
+func (e *clientSideError) Unwrap() error { return e.err }
+
 // RoundTrip implements [http.RoundTripper].
 func (t *authorizingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.tlsConfigErr != nil {
-		return nil, t.tlsConfigErr
+		return nil, &clientSideError{err: t.tlsConfigErr}
 	}
 	if t.sourceErr != nil {
-		return nil, t.sourceErr
+		return nil, &clientSideError{err: t.sourceErr}
 	}
 
 	token, err := tokenFor(req.Context(), t.baseURL, t.source)
 	if err != nil {
-		return nil, err
+		return nil, &clientSideError{err: err}
 	}
 	if token == "" {
 		return t.base.RoundTrip(req)

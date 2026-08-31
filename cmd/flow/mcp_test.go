@@ -1515,7 +1515,10 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 			"the refusal does not name which deployment was dialed: %s", text)
 		assert.Contains(t, text, "--address/FLOWSTATE_ADDRESS",
 			"the refusal does not name the repair: %s", text)
-		assert.Contains(t, text, "unavailable",
+		// "connection refused" can only come from the wrapped dial error —
+		// the decoration's own words include "unavailable", so asserting on
+		// that would pass even with the underlying error dropped.
+		assert.Contains(t, text, "connection refused",
 			"the underlying error must survive the decoration: %s", text)
 	})
 
@@ -1537,6 +1540,36 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 		decorate := mcpRPCErrorDecorator(serverFlags{address: address}, true)
 		refusal := connect.NewError(connect.CodeNotFound, fmt.Errorf("no run %q is addressable", "x"))
 		assert.Equal(t, refusal, decorate("Get", refusal))
+	})
+
+	// A refusal this process produced before any bytes reached the network —
+	// here a token file that cannot be read — rides through Connect as
+	// unavailable too, and must pass undecorated: it already names its own
+	// repair, and "fix --address, start the server" would point away from it.
+	// Through the real transport, so what is proved is that the
+	// [clientSideError] mark survives Connect's wrapping to where the
+	// decorator reads it.
+	t.Run("a client-side refusal passes through undecorated", func(t *testing.T) {
+		flags := serverFlags{address: address, tokenFile: "/nonexistent-token-file"}
+		session := connectMCPWithDeps(t, defaultLocalRunPosture(), func() flowstatev1connect.WorkflowServiceClient {
+			return newWorkflowServiceClient(flags)
+		}, flowmcp.Deps{
+			Redact:           func(r *v1.GetResponse) *v1.GetResponse { return r },
+			DecorateRPCError: mcpRPCErrorDecorator(flags, true),
+		})
+
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name:      flowmcp.ToolName("List"),
+			Arguments: map[string]any{},
+		})
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+
+		text := result.Content[0].(*mcp.TextContent).Text
+		assert.Contains(t, text, "/nonexistent-token-file",
+			"the refusal must keep naming the configuration at fault: %s", text)
+		assert.NotContains(t, text, "--address/FLOWSTATE_ADDRESS",
+			"a failure no server change can fix must not be dressed as an unreachable deployment: %s", text)
 	})
 }
 
