@@ -1,0 +1,7 @@
+egress:
+  schemes: [https]
+  allow:
+    - host == "slack.com" && port == 443
+  allow_ports: [443]
+  max_response_bytes: 64KiB
+  min_tls_version: "1.2"

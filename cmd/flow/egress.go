@@ -72,7 +72,7 @@ func commandContext(cmd *cobra.Command) context.Context {
 // addEgressPolicyFlag declares --egress-policy on a command.
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
-		"path to an egress policy (YAML) governing built-in HTTP and policy-aware first-party plugins such as SQL (default $"+egressPolicyEnv+"); "+
+		"path to an egress policy (YAML) governing built-in HTTP and policy-aware first-party plugins such as SQL and Slack (default $"+egressPolicyEnv+"); "+
 			"when set it replaces the default policy entirely, and "+v1.AllowLoopbackEgressEnv+
 			" is ignored; a file that wants loopback says allow_loopback: true")
 }

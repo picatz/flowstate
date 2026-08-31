@@ -57,6 +57,11 @@ const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 // refuses PostgreSQL when it is absent.
 const sqlEgressPolicyEnv = "FLOWSTATE_SQL_EGRESS_POLICY_B64"
 
+// slackEgressPolicyEnv gives the first-party Slack plugin the same immutable
+// operator-owned snapshot. slack.post refuses to write when it is absent and
+// applies it through netpolicy on the HTTP client's actual dial path.
+const slackEgressPolicyEnv = "FLOWSTATE_SLACK_EGRESS_POLICY_B64"
+
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
@@ -368,7 +373,11 @@ func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 	env := covbuild.Env()
 	if len(f.egressPolicy) > 0 {
-		env = append(env, sqlEgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(f.egressPolicy))
+		encoded := base64.StdEncoding.EncodeToString(f.egressPolicy)
+		env = append(env,
+			sqlEgressPolicyEnv+"="+encoded,
+			slackEgressPolicyEnv+"="+encoded,
+		)
 	}
 	return plugin.NewHost(plugin.Config{
 		SearchPath:              f.dirs,
