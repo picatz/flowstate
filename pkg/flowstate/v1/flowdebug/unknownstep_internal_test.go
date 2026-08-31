@@ -26,9 +26,9 @@ func TestMaxStepIDLengthMatchesTheSchema(t *testing.T) {
 
 	rules, ok := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
 	require.True(t, ok, "Node.id carries no protovalidate field constraints")
-	require.NotNil(t, rules.GetString_(), "Node.id declares no string constraints")
-	require.NotNil(t, rules.GetString_().MaxLen, "Node.id declares no max_len")
+	require.NotNil(t, rules.GetString(), "Node.id declares no string constraints")
+	require.NotNil(t, rules.GetString().MaxLen, "Node.id declares no max_len")
 
-	assert.Equal(t, int(rules.GetString_().GetMaxLen()), maxStepIDLength,
+	assert.Equal(t, int(rules.GetString().GetMaxLen()), maxStepIDLength,
 		"the did-you-mean bound is derived from Node.id's max_len and has drifted from it")
 }
