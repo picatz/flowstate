@@ -179,6 +179,24 @@ func TestNothingIsReportedAboutAnExpressionThatIsFine(t *testing.T) {
 			src:  sayingInStep(`string(math.greatest(1, 2))`),
 		},
 		{
+			// A fold over a *typed* literal, which is the corner sum's expansion
+			// wraps in dyn() for: the empty-list branch is int 0, and without the
+			// wrapper the checker would refuse a working double sum for mixing
+			// int and double across `?:`.
+			name: "a sum over doubles",
+			src:  sayingInStep(`string([1.5, 2.5].sum())`),
+		},
+		{
+			name: "a sum chained after map",
+			src:  afterAFetch(`string(steps.web.json.items.map(o, o.amount).sum())`),
+		},
+		{
+			// The general fold binds two author-named variables, and neither
+			// may read as a reference to a step nobody declared.
+			name: "a reduce with its own accumulator and element",
+			src:  sayingInStep(`string([2, 3, 4].reduce(p, v, 1, p * v))`),
+		},
+		{
 			// The case that caught an earlier version of this check. `json` is a
 			// function namespace *and* an ordinary word, and a check that skipped
 			// the name everywhere refused a step that had simply declared one.

@@ -85,7 +85,9 @@ var macroCases = map[string]macroCase{
 	"transformMapEntry/4": {expr: `{'a':1,'b':2}.transformMapEntry(k, v, v > 1, {k: v * 2})['b']`, want: "4"},
 
 	// `lists`.
+	"reduce/4": {expr: `[2,3,4].reduce(p, v, 1, p * v)`, want: "24"},
 	"sortBy/2": {expr: `[3,1,2].sortBy(v, -v)[0]`, want: "3"},
+	"sum/0":    {expr: `[1,2,3].sum()`, want: "6"},
 
 	// `math`. Its other functions are ordinary declarations and always worked; these
 	// two are macros because they are variadic.
