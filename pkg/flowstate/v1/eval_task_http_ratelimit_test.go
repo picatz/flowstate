@@ -3,7 +3,9 @@ package flowstatev1
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,6 +110,70 @@ func Test_httpTask_perHostRateLimit(t *testing.T) {
 			require.NoError(t, err)
 		}
 	})
+}
+
+func Test_httpTask_rateLimitedRedirectDoesNotReplayNonIdempotentRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		retryOnUnknownOutcome bool
+		wantKind              ErrorKind
+		wantMessage           string
+	}{
+		{
+			name:     "protected by default",
+			wantKind: ErrorKindUpstreamUnknown,
+			// Named rather than left to the kind: the generic unknown-outcome
+			// message says the request got no response, which is the one thing
+			// that is not true here, so the wrong branch would still produce
+			// the right kind.
+			wantMessage: "was redirected and the next hop was held back",
+		},
+		{
+			name:                  "author explicitly permits retry",
+			retryOnUnknownOutcome: true,
+			wantKind:              ErrorKindRateLimited,
+			wantMessage:           "was held back by this worker's own rate limit",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var starts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/start" {
+					starts.Add(1)
+					http.Redirect(w, r, "/next", http.StatusTemporaryRedirect)
+					return
+				}
+				// t.Error rather than t.Fatal: this runs on the server's
+				// goroutine, and FailNow from there does not stop the test.
+				t.Error("rate-limited redirect hop unexpectedly reached the server")
+			}))
+			t.Cleanup(server.Close)
+
+			serverURL, err := url.Parse(server.URL)
+			require.NoError(t, err)
+			policy, err := netpolicy.New(
+				netpolicy.WithAllowLoopback(),
+				netpolicy.WithTimeout(5*time.Second),
+				netpolicy.WithMaxRequestsPerSecondPerProcess(serverURL.Hostname(), 1),
+			)
+			require.NoError(t, err)
+
+			inputs := map[string]any{
+				"url":    server.URL + "/start",
+				"method": "POST",
+			}
+			if tc.retryOnUnknownOutcome {
+				inputs["retry_on_unknown_outcome"] = true
+			}
+			_, err = taskFuncHTTP(policy)(t.Context(), NewNamedValues(inputs), nil)
+
+			var taskErr *TaskError
+			require.ErrorAs(t, err, &taskErr)
+			require.Equal(t, tc.wantKind, taskErr.Kind)
+			require.Contains(t, taskErr.Error(), tc.wantMessage)
+			require.EqualValues(t, 1, starts.Load(), "the original operation was sent exactly once")
+		})
+	}
 }
 
 // Test_httpTask_rateLimitIsClassifiedBeforeScrubbing pins the ordering the http

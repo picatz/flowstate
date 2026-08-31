@@ -174,6 +174,7 @@ package netpolicy
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -375,6 +376,10 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// the host it is actually made to, which is the host the limit belongs to.
 	// See [Policy.checkRate], which is where the whole argument lives.
 	if err := rt.policy.checkRate(req.Context(), req.URL, req.URL.Redacted()); err != nil {
+		var limited *RateLimitedError
+		if req.Response != nil && errors.As(err, &limited) {
+			limited.AfterRedirect = true
+		}
 		return nil, err
 	}
 
