@@ -26,7 +26,7 @@ steps:
   - id: refs
     git.ls_remote:
       prefix: refs/heads/
-      # A secret reference, resolved inside the task, never a literal - the
+      # A secret reference, resolved by the host before the task, never a literal - the
       # only line that differs from workflow.yaml's own call to this same
       # task. See plugins/git/README.md, "Authentication," for what
       # GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME> variable this

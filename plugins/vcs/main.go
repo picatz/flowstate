@@ -28,18 +28,22 @@ func main() {
 
 		Tasks: []sdk.Task{
 			{
-				Name:    "log",
-				Summary: "A bounded slice of a repository's commit history.",
-				Input:   &vcsv1.LogInputs{},
-				Output:  &vcsv1.LogOutputs{},
-				Fn:      vcsLog,
+				Name:                 "log",
+				Summary:              "A bounded slice of a repository's commit history.",
+				Input:                &vcsv1.LogInputs{},
+				Output:               &vcsv1.LogOutputs{},
+				SecretInputs:         []string{"token"},
+				RequiredSecretInputs: []string{"token"},
+				Fn:                   vcsLog,
 			},
 			{
-				Name:    "diff",
-				Summary: "The changes between two revisions of a repository, as a unified diff and a per-file summary.",
-				Input:   &vcsv1.DiffInputs{},
-				Output:  &vcsv1.DiffOutputs{},
-				Fn:      vcsDiff,
+				Name:                 "diff",
+				Summary:              "The changes between two revisions of a repository, as a unified diff and a per-file summary.",
+				Input:                &vcsv1.DiffInputs{},
+				Output:               &vcsv1.DiffOutputs{},
+				SecretInputs:         []string{"token"},
+				RequiredSecretInputs: []string{"token"},
+				Fn:                   vcsDiff,
 			},
 		},
 

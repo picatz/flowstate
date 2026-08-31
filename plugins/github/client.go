@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v75/github"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
@@ -126,13 +127,11 @@ func newClient(token, baseURL string) (*github.Client, string, error) {
 	return client, base, nil
 }
 
-// tokenFromValue extracts a credential from a task's `token` input. See
-// plugins/vcs/secrets.go's tokenFromValue for the fuller explanation this
-// mirrors exactly: a literal is refused, an unset value means an
-// unauthenticated request, and a secret reference must name this plugin's
-// own scheme because that is the only one a plugin task can resolve without
-// an RPC this repository's plugin protocol does not have.
-func tokenFromValue(ctx context.Context, v *flowstatev1.Value) (string, error) {
+// tokenFromValue extracts the host-resolved credential from token. The
+// manifest requires any supplied token to be a whole secret reference, but the
+// host replaces it with a string before invoking this task. The reference may
+// name github's compatibility provider or any other configured provider.
+func tokenFromValue(_ context.Context, v *flowstatev1.Value) (string, error) {
 	if v == nil {
 		return "", nil
 	}
@@ -140,23 +139,14 @@ func tokenFromValue(ctx context.Context, v *flowstatev1.Value) (string, error) {
 	switch kind := v.GetKind().(type) {
 	case nil:
 		return "", nil
-
-	case *flowstatev1.Value_SecretRef:
-		ref := kind.SecretRef
-		if ref.GetScheme() != secretScheme {
-			return "", sdk.InvalidInput("token must be a %q secret reference; got scheme %q", secretScheme, ref.GetScheme())
-		}
-		resp, err := resolveSecret(ctx, sdk.SecretRequest{Scheme: ref.GetScheme(), Name: ref.GetName()})
-		if err != nil {
-			return "", err
-		}
-		return string(resp.Value), nil
-
 	case *flowstatev1.Value_Literal:
-		return "", sdk.InvalidInput(
-			"token must be a secret reference (${secret('github:token')}), never a literal value; " +
-				"a literal here would put a credential in the Flowfile and in workflow history")
-
+		s, ok := kind.Literal.GetKind().(*expr.Value_StringValue)
+		if !ok {
+			return "", sdk.InvalidInput("token must resolve to a string")
+		}
+		return s.StringValue, nil
+	case *flowstatev1.Value_SecretRef:
+		return "", sdk.Failed("token reached this task still holding a secret reference; the host must resolve declared secret_inputs before invoking the plugin")
 	default:
 		return "", sdk.InvalidInput("token cannot be a %T", kind)
 	}

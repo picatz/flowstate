@@ -201,7 +201,7 @@ plugin's design:
   not use Exec.Run for the process launch." The library's `ThreadEvent`/
   `ThreadItem` decoding types are still used as-is.
 
-## Secrets: the first task built entirely against secret_inputs
+## Secrets: a task built entirely against secret_inputs
 
 `api_key` is declared in `codex.exec`'s `secret_inputs` (see `main.go`), so
 a Flowfile writes `api_key: ${secret('env:OPENAI_API_KEY')}` and this task's
@@ -211,11 +211,10 @@ under the caller's identity before this task ever runs (see
 plugin process never holds a `flowstate.v1.SecretRef` or a secret provider
 of its own.
 
-This is a real difference from `plugins/vcs` and `plugins/github`, both of
-which predate `secret_inputs` and each stand up their own secret scheme
-(`vcs:...`, `github:...`) resolved from the worker's own environment. This
-plugin has no `Secrets` field in its `sdk.Plugin{}` at all - there is
-nothing for it to resolve.
+Like the git, vcs, github, and SQL plugins, task credential consumption uses
+the host's `secret_inputs` path. This plugin has no `Secrets` field in its
+`sdk.Plugin{}` at all because it does not also provide a compatibility or
+dynamic secret backend of its own.
 
 What `secret_inputs` does not do, and what this plugin does on top of it,
 belt over suspenders: every task-level error and every output field this
@@ -236,11 +235,11 @@ process unresolved. It does not stop a Flowfile author from writing
 value that started as a literal and a value the host just resolved from a
 reference are the same shape, an already-resolved `flowstate.v1.Value`
 holding a literal string, and nothing in the wire format lets this task
-tell them apart. `plugins/vcs`'s own `tokenFromValue` can refuse a literal
-because that plugin resolves its own scheme and sees the `SecretRef` before
-resolving it; a task built against `secret_inputs` cannot do the equivalent
-check itself. See `exec.go`'s `apiKeyFromValue` for where this is recorded
-in code, not only here.
+tell them apart. Tasks whose credential must never be literal add
+`required_secret_inputs`; `codex.exec` deliberately has not made that
+compatibility change, so it cannot do the equivalent check itself. See
+`exec.go`'s `apiKeyFromValue` for where this is recorded in code, not only
+here.
 
 ## Bounds
 

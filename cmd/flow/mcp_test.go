@@ -365,13 +365,17 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 	}
 }
 
-// mcpExtraToolsFor builds the two tools that are not RPCs, the same pair
+// mcpExtraToolsFor builds the tools that are not RPCs, the same set
 // runMCP registers, so a test connects to the identical tool set an agent
 // does.
 func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
+	return mcpExtraToolsForWithProviders(posture, nil)
+}
+
+func mcpExtraToolsForWithProviders(posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	// The command's own list, not a copy of it: a tool registered for an agent
 	// and missing here is a tool no test ever calls.
-	return stdioExtraTools(posture)
+	return stdioExtraTools(posture, providers)
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a
@@ -381,6 +385,10 @@ func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
 // what a test is choosing when it calls this: everything else is the one
 // registration an agent connects to.
 func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
+	return connectMCPWithProviders(t, posture, nil)
+}
+
+func connectMCPWithProviders(t *testing.T, posture *cobra.Command, providers *localSecrets) *mcp.ClientSession {
 	t.Helper()
 
 	srv := flowmcp.NewServer("test")
@@ -389,7 +397,7 @@ func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
+	}, mcpDepsFor(posture), mcpExtraToolsForWithProviders(posture, providers)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 

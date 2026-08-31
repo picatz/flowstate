@@ -1633,7 +1633,7 @@ flow task run http --input url=https://example.com --input expect='${response.st
 flow task run http --input url=https://api.example.com/me --input bearer='${secret("env:API_TOKEN")}' --secret-env API_TOKEN --auth-policy policy.yaml
 
 # Run a task a plugin provides, through the same discovery a worker uses:
-flow task run example.greet --input name=world --plugin-dir ./plugins
+flow task run example.greet --input name=world --plugin-dir ./plugins --auth-policy examples/plugins/greet/auth.yaml
 ```
 
 | Flag | Type | Default | Environment | Description |
