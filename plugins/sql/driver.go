@@ -225,15 +225,21 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 	return nil
 }
 
+// postgresPolicyContext adds what this plugin knows about the connection it is
+// about to make, to the context every policy check below reads.
+//
+// Only the credential mark. The calling workload's identity is already on the
+// task context: the SDK installs it where netpolicy looks when [sdk.Run]
+// delivers the call, so `identity.*` rules in an operator's policy evaluate
+// against the real caller for every plugin rather than only for the ones that
+// remembered to bridge it by hand. This plugin bridged it by hand until that
+// existed, and a second install here would be a second answer to a question with
+// one — the same fact written twice, which is how they come to disagree.
+//
+// Credentials stay here, deliberately: whether a request carries one is this
+// plugin's knowledge about this connection, not something the SDK can infer from
+// a task running.
 func postgresPolicyContext(ctx context.Context) context.Context {
-	caller, _ := sdk.CallerFromContext(ctx)
-	identity := caller.Identity
-	ctx = netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
-		Subject:   identity.GetSubject(),
-		Issuer:    identity.GetIssuer(),
-		Namespace: identity.GetNamespace(),
-		Claims:    identity.GetClaims(),
-	})
 	return netpolicy.ContextWithCredentials(ctx, true)
 }
 

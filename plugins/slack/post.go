@@ -123,12 +123,12 @@ func validatePost(in *slackv1.PostInputs) error {
 }
 
 func sendPost(ctx context.Context, client *http.Client, endpoint, token string, in *slackv1.PostInputs) (*postResponse, error) {
-	caller, _ := sdk.CallerFromContext(ctx)
-	identity := caller.Identity
-	ctx = netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
-		Subject: identity.GetSubject(), Issuer: identity.GetIssuer(),
-		Namespace: identity.GetNamespace(), Claims: identity.GetClaims(),
-	})
+	// The credential mark only. The calling workload's identity is already on
+	// the task context — the SDK installs it where netpolicy looks, so an
+	// operator's `identity.*` rules evaluate against the real caller for every
+	// plugin rather than only the ones that remembered to bridge it here. Whether
+	// this request carries a credential is this plugin's own knowledge about this
+	// request, which is why that half stays.
 	ctx = netpolicy.ContextWithCredentials(ctx, true)
 
 	body, err := json.Marshal(postRequest{
