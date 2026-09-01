@@ -147,11 +147,11 @@ to `ci.yml` and to neither the plan nor `verdict`'s `needs:` is invisible to it.
 copied — and executes it against each of those shapes, so "a skipped required
 check cannot fail open" is a claim with a test behind it rather than a paragraph.
 
-One honest limitation: `appearance` still carries `continue-on-error: true`, so
-its `needs` result is `success` even when it fails and `verdict` cannot
-distinguish those. That is what advisory means. Its 48-hour window lapsed on
-2026-08-12 and dropping the flag is a separate, one-line change that should be
-made by someone who can watch the first red run.
+`appearance` carried `continue-on-error: true` for the 48-hour window every new
+check gets, during which its `needs` result was `success` even when it failed and
+`verdict` could not distinguish those — that is what advisory means. The window
+lapsed on 2026-08-12 and the flag came off on 2026-08-31 (#1319), so its result now
+reaches `verdict` like every other planned job's.
 
 ### The merge queue
 
@@ -201,6 +201,23 @@ the precondition instead of gating around it, and it is why `federation` is no
 longer one of the plan's outputs or one of `verdict`'s `needs:` — a workflow
 with no `pull_request` trigger never produces a check run for this repository's
 required-status-checks list to see, so it participates in neither.
+
+### Two more workflows outside the plan
+
+`editors.yml` (**Editors**) runs on pushes to `main` and on pull requests, in two
+jobs: *Neovim LSP smoke* drives a real, pinned Neovim through
+`tools/editorsmoke/probe.lua` against `flow lsp` and asserts the fenced
+configuration in `docs/EDITORS.md` is byte-identical to the file it loads; *VS
+Code extension* builds and tests the extension. Neither is one of the plan's
+outputs, because what they verify is an editor, not a Go package the plan can
+reach from the import graph, and neither is a required check.
+
+`release.yml` (**Distribution rehearsal**) is `workflow_dispatch` only. It
+builds archives, SBOMs and checksums through `tools/release` and uploads them as
+a same-run payload; its publication job is interlocked off (`if: false && …`,
+with a sibling job that explains the interlock) until releases are switched on
+deliberately — #1216 carries that decision. It produces no check run for a pull
+request and is not in `verdict`'s `needs:`.
 
 ### Caching
 
