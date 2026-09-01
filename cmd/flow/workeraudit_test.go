@@ -4,6 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -77,39 +80,54 @@ func TestTheAuditPostureIsOnEveryDeploymentCommandAndNoRehearsal(t *testing.T) {
 
 // callsIn returns the names of the functions and methods called in the named
 // top-level function of this package.
+//
+// One file at a time over this package's own non-test sources, which is how
+// [analyzeServerSource] next door reads the seam it guards and how
+// docsgen's environment-variable walk reads its own: go/parser.ParseDir, the
+// one call that would read a directory in a single step, is deprecated as of
+// Go 1.25 and fails the repository's staticcheck leg (SA1019). The commands
+// this file asks about are declared in main.go and serverdev.go, so the test
+// files it skips hold none of them — and a function that moved into one would
+// fail the `found` requirement below rather than pass quietly.
 func callsIn(t *testing.T, function string) map[string]bool {
 	t.Helper()
 
-	fset := token.NewFileSet()
-	pkg, err := parser.ParseDir(fset, ".", nil, 0)
+	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
 
+	fset := token.NewFileSet()
 	calls := map[string]bool{}
 	found := false
 
-	for _, files := range pkg {
-		for _, file := range files.Files {
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Name.Name != function || fn.Recv != nil {
-					continue
-				}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
 
-				found = true
-				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					call, ok := n.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					switch fun := call.Fun.(type) {
-					case *ast.Ident:
-						calls[fun.Name] = true
-					case *ast.SelectorExpr:
-						calls[fun.Sel.Name] = true
-					}
-					return true
-				})
+		file, err := parser.ParseFile(fset, filepath.Clean(name), nil, parser.SkipObjectResolution)
+		require.NoError(t, err, "parsing %s", name)
+
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != function || fn.Recv != nil || fn.Body == nil {
+				continue
 			}
+
+			found = true
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					calls[fun.Name] = true
+				case *ast.SelectorExpr:
+					calls[fun.Sel.Name] = true
+				}
+				return true
+			})
 		}
 	}
 
