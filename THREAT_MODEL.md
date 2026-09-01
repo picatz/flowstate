@@ -159,12 +159,18 @@ specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`
 and `List` is bounded by executions read and by requests made
 (`pkg/flowstate/v1/server/list.go:51`, `:63`).
 
-**Limits.** `flow server` speaks cleartext HTTP only: there is no TLS flag and no
-`ListenAndServeTLS` call, so the bearer token is on the wire in the clear unless TLS
-is terminated in front of it (`docs/DEPLOYMENT.md:490-496`,
-`cmd/flow/main.go:719`). The CLI refuses to send a token over plaintext to anything
-but this machine (`cmd/flow/credentials.go:63`), which protects the client, not the
-server's own posture. `--insecure-no-auth` admits everyone as anonymous and is a
+**Limits.** `flow server` serves plain HTTP when it is given no certificate, and it
+refuses to do that on any address but loopback unless `--tls-terminated-upstream`
+asserts that something in front of it terminates TLS (`cmd/flow/tls.go`,
+`refusePlaintextListener`). In-process TLS is `--tls-cert-file`/`--tls-key-file`
+with `--tls-min-version` floored at 1.2, and ACME issuance is the `--tls-acme-*`
+flags (`cmd/flow/acme.go`, wired beside the static loader in `cmd/flow/main.go`).
+So the bearer token is on the wire in the clear in exactly two cases: loopback, and a
+deployment that asserted an upstream terminator — an assertion the process cannot
+verify, which is why the flag's help text is the whole of the control. The CLI
+refuses to send a token over plaintext to anything but this machine
+(`cmd/flow/credentials.go:63`), which protects the client, not the server's own
+posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read at `cmd/flow/main.go:148`, resolved to
 `auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:767`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, `docs/DEPLOYMENT.md:306-311`).
@@ -191,8 +197,9 @@ match. A run's id is a digest over tenant, workflow, trigger and idempotency key
 a redelivery joins rather than duplicating and a key cannot address another tenant's
 run or be read back out of the id.
 
-**Limits.** The route is cleartext like the rest of the server, so a signature and
-body are on the wire in the clear unless TLS is terminated in front. Verification
+**Limits.** The route inherits the listener's TLS posture above: with no certificate
+configured, a signature and body are on the wire in the clear unless TLS is
+terminated in front. Verification
 proves possession of a shared key, not the sender's identity: anyone holding the key
 can deliver. `--secret-require-namespace` is incompatible with the receiver, which
 resolves in the deployment's own tenant.
@@ -308,7 +315,13 @@ now composes the same deployment policy onto pgx's real TCP dial path: every hos
 and address is checked before connection, checked DNS answers are pinned, and the
 actual address is categorically rechecked immediately before each dial. PostgreSQL
 is denied when policy is absent; SQLite is denied because its authority is the
-worker filesystem rather than a socket. This remains voluntary enforcement in
+worker filesystem rather than a socket. The first-party Slack plugin receives the
+same immutable snapshot and applies it on its HTTP client's dial path
+(`plugins/slack/egress.go`). The `git`, `vcs` and `github` plugins do not read the
+operator's file at all — each builds its own default `netpolicy` (`plugins/git/clone.go`,
+`plugins/vcs/clone.go`, `plugins/github/client.go`) — so `--egress-policy` governs
+two of the six in-tree plugins today; #1332 decides the general grant before
+#1321–#1323 close the other three. This remains voluntary enforcement in
 vetted code, not plugin-process confinement. The moment a task is a container or
 arbitrary plugin opening its own sockets, in-process enforcement is theater and
 the worker's operating-system/substrate boundary must govern it. With an HTTP proxy
@@ -350,14 +363,17 @@ constructor because heartbeat details are written into history
 
 **Limits.** Everything that legitimately goes into history goes in unsealed. History
 confidentiality today is whatever the cluster's database and filesystem encryption
-provide; every `DataConverter` in the tree is the default one and no seam exists for
-an operator to supply a codec (`docs/ARCHITECTURE.md:663-678`). Nothing is
-forgettable: there is no erasure path.
+provide: the codec seam exists and is set on both drivers' clients from one
+configuration, with failure-path encoding forced on whenever a codec is configured
+(`pkg/flowstate/v1/payloadcodec`, the payload paragraphs of `docs/ARCHITECTURE.md`),
+but the only codec `flow` ships is the null codec (`cmd/flow/codec.go`), so nothing
+is sealed unless a deployment supplies its own. Nothing is forgettable: there is no
+erasure path.
 
-**Planned.** The codec slot wired into both drivers' client construction identically,
-null codec by default, with failure-path encoding enabled whenever a codec is
-configured, #353 A.1 (design record #113, gap #271), not landed. `flow shred` and
-crypto-shredding, #353 A.2, not landed.
+**Planned.** A shipped encrypting codec, and a claim-check offload codec for
+payloads too large for history — the seam they occupy landed; the codecs are #353
+A.1 (design record #113, gap #271), not landed. `flow shred` and crypto-shredding,
+#353 A.2, not landed.
 
 ### Editor and agent tooling to workspace
 
@@ -559,19 +575,22 @@ is already in `pkg/flowstate/v1/auth/` has landed.
 
 **Honest gaps, all present-tense.**
 
-1. No history confidentiality. No codec seam exists (#113, #271; #353 A.1 specifies
-   it).
+1. No history confidentiality by default. The codec seam exists
+   (`pkg/flowstate/v1/payloadcodec`) and only the null codec ships; an encrypting or
+   offloading codec is #113, #271; #353 A.1 specifies it.
 2. No erasure. Nothing forgets (#353 A.2).
-3. `flow server` is cleartext HTTP; TLS must be terminated in front of it
-   (`docs/DEPLOYMENT.md:490-496`).
+3. `flow server` serves plaintext when given no certificate, and refuses to do so off
+   loopback unless `--tls-terminated-upstream` asserts a terminator in front — an
+   assertion it cannot verify (`cmd/flow/tls.go`); in-process TLS and ACME exist.
 4. Egress enforcement is in-process and therefore honest only while every task is our
    code (#341 invariant 1).
 5. A launched plugin is trusted code with the worker's authority
    (`docs/ARCHITECTURE.md:470-481`).
 6. Task-shape policy's zero case permits everything
    (`pkg/flowstate/v1/taskpolicy.go:133-146`).
-7. Policy denials are recorded; allows are not, so a transcript cannot answer "why was
-   this permitted" (#353 principle 2, workstream D).
+7. The server records allows and denials (`audit.Recorder.Allow`); the worker records
+   nothing, so a transcript still cannot answer "why was this dispatch, resolution or
+   dial permitted" (#1379; #353 principle 2, workstream D).
 8. The stdio agent surface authenticates the process, not the request (#350, #337).
 9. No token revocation, inbound or outbound, within a credential's lifetime.
 10. Windows is an authoring platform, not a worker platform; plugins are AF_UNIX only
