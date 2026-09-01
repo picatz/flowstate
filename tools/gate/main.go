@@ -23,7 +23,11 @@
 // and reference drift checks on docs/DSL.md and the registry/cobra/MCP
 // surfaces, example fix and coverage checks on examples/, and the -cpu=1
 // ordering line when the flowtest package is affected. Every leg prints one
-// line saying it ran or why it was skipped. PR CI remains the full gate;
+// line saying it ran or why it was skipped. A caller that already knows the
+// base — an agent in a sandboxed checkout with no reachable remote, where
+// deriving one is impossible and the fallback runs everything — can supply it
+// with -base or FLOWSTATE_GATE_BASE rather than have one derived (#1306); the
+// -ci lane refuses one, and baseFor says why. PR CI remains the full gate;
 // `make check` remains the full local rehearsal. See CLAUDE.md's gate
 // section.
 package main
@@ -72,19 +76,26 @@ const (
 )
 
 func main() {
-	// One flag, because there is one thing to choose: who is asking. The
-	// local tier runs the legs; CI asks only which of its jobs this diff can
+	// The first flag is the one thing to choose: who is asking. The local
+	// tier runs the legs; CI asks only which of its jobs this diff can
 	// reach and decides the rest itself. Both answers come from analyse,
 	// with local-only test-data package seeding explained there — see ci.go.
 	ci := flag.Bool("ci", false, "print the CI job plan for this diff and write it to $GITHUB_OUTPUT, rather than running the local legs")
 	event := flag.String("event", os.Getenv("GITHUB_EVENT_NAME"), "the GitHub event name; anything other than pull_request forces every job to run")
+
+	// The second is the channel a caller who already knows its base needs.
+	// It defaults from the environment for the same reason -event does: a
+	// harness can set it once for every invocation an agent makes, without
+	// the agent having to learn a new command line. See baseFor for what it
+	// does with it, and runCI for why CI will not take one.
+	base := flag.String("base", os.Getenv("FLOWSTATE_GATE_BASE"), "the commit to measure this diff against, for a checkout that cannot reach a remote to derive one (env: FLOWSTATE_GATE_BASE); rejected under -ci, which derives its own")
 	flag.Parse()
 
 	var err error
 	if *ci {
-		err = runCI(*event)
+		err = runCI(*event, *base)
 	} else {
-		err = run()
+		err = run(*base)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gate:", err)
@@ -102,6 +113,7 @@ type analysis struct {
 	repoDataDeps    []string
 	base            string
 	baseWhy         string
+	baseSupplied    bool
 	changed         []string
 }
 
@@ -114,7 +126,7 @@ type analysis struct {
 // test job from p.repoTestData; adding those readers to affected there would
 // incorrectly make a data-only diff look like a Go change and select the
 // staticcheck and vulncheck jobs too.
-func analyse(seedRepoTestData bool) (analysis, error) {
+func analyse(seedRepoTestData bool, suppliedBase string) (analysis, error) {
 	// Root the whole run at the repository top level so the gate behaves
 	// identically from any working directory.
 	root, err := gitOutput("rev-parse", "--show-toplevel")
@@ -125,7 +137,10 @@ func analyse(seedRepoTestData bool) (analysis, error) {
 		return analysis{}, err
 	}
 
-	base, baseWhy := resolveBase()
+	base, baseWhy, err := baseFor(suppliedBase)
+	if err != nil {
+		return analysis{}, err
+	}
 
 	changed, err := changedFiles(base)
 	if err != nil {
@@ -219,6 +234,7 @@ func analyse(seedRepoTestData bool) (analysis, error) {
 		repoDataDeps:    repoDataDeps,
 		base:            base,
 		baseWhy:         baseWhy,
+		baseSupplied:    suppliedBase != "",
 		changed:         changed,
 	}, nil
 }
@@ -227,8 +243,22 @@ func analyse(seedRepoTestData bool) (analysis, error) {
 // ci.yml's jobs it can reach, and publish that. It runs no checks itself and
 // never fails on a finding — a wrong answer here is a job that did not run, and
 // the verdict job is what turns that into a red required check.
-func runCI(event string) error {
-	a, err := analyse(false)
+//
+// It takes suppliedBase only in order to refuse it. Here the base decides which
+// *required* jobs run, so a base the branch under review could set is a way for
+// that branch to narrow the gate judging it — #964's hole arriving through a new
+// door. It refuses loudly rather than ignoring quietly because a harness that
+// exports FLOWSTATE_GATE_BASE for its agents should learn that the plan job does
+// not take one, instead of CI quietly disagreeing with the input it was handed.
+func runCI(event, suppliedBase string) error {
+	if suppliedBase != "" {
+		return fmt.Errorf("-ci was given the base %q, and the CI lane does not take one: the base here "+
+			"decides which required jobs run, so a base the pull request could set would let it narrow "+
+			"the gate that judges it (#964). CI derives its own from a ref it controls — unset -base and "+
+			"FLOWSTATE_GATE_BASE for the plan job", suppliedBase)
+	}
+
+	a, err := analyse(false, "")
 	if err != nil {
 		return err
 	}
@@ -245,8 +275,8 @@ func runCI(event string) error {
 	return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.base, a.plan)))
 }
 
-func run() error {
-	a, err := analyse(true)
+func run(suppliedBase string) error {
+	a, err := analyse(true, suppliedBase)
 	if err != nil {
 		return err
 	}
@@ -258,7 +288,14 @@ func run() error {
 	if a.base == "" {
 		fmt.Printf("gate: %d tracked file(s), every leg wide\n", len(a.changed))
 	} else {
-		fmt.Printf("gate: %d changed file(s) vs merge-base %s\n", len(a.changed), a.base[:12])
+		// Named for what it is. A supplied base is whatever the caller says it
+		// is, so calling it a merge-base on the one line a reader checks the
+		// scope against would claim a derivation that did not happen.
+		noun := "merge-base"
+		if a.baseSupplied {
+			noun = "supplied base"
+		}
+		fmt.Printf("gate: %d changed file(s) vs %s %s\n", len(a.changed), noun, a.base[:12])
 	}
 
 	g := &gate{}
@@ -595,6 +632,52 @@ func resolveBase() (base, why string) {
 
 	return "", "no merge-base with origin/main could be found or fetched, so every tracked file is treated as changed: " +
 		"this run is wide and slow rather than narrow and wrong"
+}
+
+// baseFor is where [analyse] gets the commit it measures the diff against: the
+// one the caller supplied, if it supplied one, and otherwise whatever
+// [resolveBase] can derive.
+//
+// The supplied channel exists because every repair [resolveBase] knows needs
+// the network, and the environments this gate most needs to run in are the ones
+// least likely to have it. An agent working in a sandboxed checkout branched
+// from a known commit *knows* its base and, until this flag, had no way to say
+// so: the gate fell through to the whole tree, selected the full -race suite,
+// and was interrupted before it verified anything (#1306). Wide-and-slow beats
+// narrow-and-wrong only where wide finishes.
+//
+// It is a channel rather than a grant of trust. A local run is already whatever
+// the person or agent running it says it is, so there is no ancestry check here
+// and none is wanted: a base that is not HEAD's ancestor produces a diff, and
+// that diff is the caller's claim about its own scope. What the gate does owe
+// is that the claim was understood — so the supplied value is resolved to a
+// commit id, and a value naming nothing this checkout has is an error rather
+// than a fall-through to the whole-tree fallback. Falling through would
+// reproduce the exact symptom of #1306 while looking like the flag worked.
+//
+// Only the *obtaining* of the base is new. The commit it returns goes into
+// [changedFiles] and [buildPlan] exactly as a derived one does, so docs/CI.md's
+// one computation of what a diff can reach keeps having one opinion about
+// scope. See [runCI] for why CI does not accept one at all.
+func baseFor(supplied string) (base, why string, err error) {
+	if supplied == "" {
+		base, why = resolveBase()
+
+		return base, why, nil
+	}
+
+	// ^{commit} both peels a tag or branch to the commit changedFiles needs
+	// and rejects anything that does not name one; --verify --quiet turns
+	// every other failure into a non-zero exit rather than a guess.
+	out, err := gitOutput("rev-parse", "--verify", "--quiet", supplied+"^{commit}")
+	if resolved := strings.TrimSpace(out); err == nil && resolved != "" {
+		return resolved, fmt.Sprintf("measuring against the base supplied as %q (-base or "+
+			"FLOWSTATE_GATE_BASE), resolved to %s, rather than deriving one", supplied, resolved), nil
+	}
+
+	return "", "", fmt.Errorf("the supplied base %q does not name a commit in this checkout: "+
+		"supply one this checkout has, or unset -base and FLOWSTATE_GATE_BASE and let the gate "+
+		"derive its own", supplied)
 }
 
 // changedFiles is the diff against the merge-base, plus untracked files —

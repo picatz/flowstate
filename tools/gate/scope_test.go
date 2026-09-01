@@ -1,6 +1,10 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -336,5 +340,174 @@ func TestResolveBaseFetchesWhatTheCheckoutIsMissing(t *testing.T) {
 				t.Errorf("resolveBase found a base but reports %q, which does not say it %s anything", why, test.want)
 			}
 		})
+	}
+}
+
+// The rest of this file is the other half of where a base comes from: one the
+// caller supplied, because every repair resolveBase knows needs a network the
+// sandboxed checkouts of #1306 did not have.
+
+// TestASuppliedBaseProducesTheSamePlanAsDerivingIt is the acceptance criterion
+// of #1306 stated as a test rather than assumed: a caller that supplies the
+// base the gate would have derived gets the plan the gate would have built.
+//
+// It is not a tautology. A supplied base could plausibly have arrived through a
+// second path into scope — an "everything since" shortcut, a different diff
+// invocation, a set of files assembled some other way — and any of those would
+// be the second opinion about scope docs/CI.md exists to prevent. The assertion
+// that the two plans are deep-equal is the assertion that no such path exists:
+// baseFor changes only how the commit is obtained, and it then flows through
+// changedFiles and buildPlan like any other.
+//
+// Three spellings, because resolution is the part that could differ: a ref, an
+// abbreviated id and a full one all have to land on the same commit.
+//
+// The fixture is a clone rather than this repository because the comparison
+// needs a checkout whose origin/main is reachable without a network, which is
+// exactly what the environments in #1306 lack. It stops at buildPlan rather
+// than calling analyse for two reasons: analyse os.Chdirs the process to the
+// repository root, which would follow this test out into the rest of the
+// package, and it shells out to `go list`, which a fixture repository with no
+// module has nothing to say about. Everything downstream of buildPlan reads the
+// plan, not the base.
+func TestASuppliedBaseProducesTheSamePlanAsDerivingIt(t *testing.T) {
+	src := t.TempDir()
+	git(t, src, "init", "--initial-branch=main")
+	write(t, src, "pkg/flowstate/v1/engine/policy.go", "package engine\n")
+	write(t, src, "docs/CI.md", "# CI\n")
+	git(t, src, "add", ".")
+	git(t, src, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "shared history")
+
+	dst := t.TempDir() + "/clone"
+	git(t, t.TempDir(), "clone", "file://"+src, dst)
+	git(t, dst, "checkout", "-q", "-b", "work")
+	write(t, dst, "pkg/flowstate/v1/engine/policy.go", "package engine\n\n// changed\n")
+	write(t, dst, "examples/http/flow.yaml", "version: v1\n")
+	git(t, dst, "add", ".")
+	git(t, dst, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "the change under review")
+
+	// Untracked, because changedFiles adds those to the diff and both paths
+	// have to agree about them too.
+	write(t, dst, "pkg/flowstate/v1/engine/new.go", "package engine\n")
+
+	t.Chdir(dst)
+
+	derived, why := resolveBase()
+	if derived == "" {
+		t.Fatalf("this fixture has origin/main and needs no network, so resolveBase must find a base: %s", why)
+	}
+
+	// The derived side of the comparison goes through baseFor too, so the
+	// no-base path is pinned as a pass-through rather than assumed to be one.
+	if got, gotWhy, err := baseFor(""); err != nil || got != derived || gotWhy != why {
+		t.Fatalf("baseFor(\"\") answered (%q, %q, %v), want resolveBase's own answer (%q, %q)", got, gotWhy, err, derived, why)
+	}
+
+	derivedChanged, err := changedFiles(derived)
+	if err != nil {
+		t.Fatalf("changedFiles(derived): %v", err)
+	}
+	derivedPlan := buildPlan(derivedChanged)
+	if len(derivedPlan.goFiles) == 0 || !derivedPlan.examples {
+		t.Fatalf("the fixture diff reaches too little to compare plans over: %+v", derivedPlan)
+	}
+
+	for _, test := range []struct {
+		name     string
+		supplied string
+	}{
+		{"a ref", "origin/main"},
+		{"an abbreviated commit id", derived[:8]},
+		{"a full commit id", derived},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base, why, err := baseFor(test.supplied)
+			if err != nil {
+				t.Fatalf("baseFor(%q): %v", test.supplied, err)
+			}
+			if base != derived {
+				t.Fatalf("baseFor(%q) resolved to %q, want the commit resolveBase derives, %q", test.supplied, base, derived)
+			}
+			// Doing double duty: the reason has to name the supplied value,
+			// both so a reader can tell a declared scope from a derived one,
+			// and because resolveBase says nothing on this fixture — so an
+			// implementation that quietly ignored -base and derived the same
+			// commit anyway would satisfy every other assertion here.
+			if !strings.Contains(why, test.supplied) {
+				t.Errorf("the reported reason is %q, which does not name the supplied base %q", why, test.supplied)
+			}
+
+			changed, err := changedFiles(base)
+			if err != nil {
+				t.Fatalf("changedFiles(supplied): %v", err)
+			}
+			if !slices.Equal(changed, derivedChanged) {
+				t.Errorf("the supplied base changed the file set:\nsupplied %v\nderived  %v", changed, derivedChanged)
+			}
+			if got := buildPlan(changed); !reflect.DeepEqual(got, derivedPlan) {
+				t.Errorf("the supplied base produced a different plan, so it is a second opinion about scope:\nsupplied %+v\nderived  %+v", got, derivedPlan)
+			}
+		})
+	}
+}
+
+// TestAnUnresolvableSuppliedBaseFailsRatherThanFallingThrough pins the
+// direction #1306 is most afraid of.
+//
+// An empty base is not a neutral answer here: changedFiles reads it as "take
+// every tracked file", which selects the widest plan there is — the run that
+// exceeds an agent's budget and gets interrupted having verified nothing. A
+// -base the gate quietly could not use would therefore reproduce the exact
+// symptom the flag exists to remove, while looking like the flag worked. So a
+// supplied base that names nothing is an error that names what was supplied.
+func TestAnUnresolvableSuppliedBaseFailsRatherThanFallingThrough(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "--initial-branch=main")
+	git(t, dir, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "root")
+
+	t.Chdir(dir)
+
+	base, why, err := baseFor("v9.9.9-no-such-commit")
+	if err == nil {
+		t.Fatalf("baseFor accepted a base naming nothing (base %q, reason %q); an empty base is the whole-tree "+
+			"fallback, which is #1306's symptom wearing the fix's clothes", base, why)
+	}
+	if base != "" {
+		t.Errorf("baseFor failed and still answered with the base %q", base)
+	}
+	if !strings.Contains(err.Error(), "v9.9.9-no-such-commit") {
+		t.Errorf("the failure is %q, which does not name what was supplied", err)
+	}
+}
+
+// TestTheCILaneRefusesASuppliedBase is the constraint that shaped #1306's fix.
+//
+// In the local tier a supplied base is harmless: the run is already whatever
+// the person or agent starting it says it is. In the plan job it is not, because
+// there the base decides which *required* jobs run — so a base a pull request
+// could set would let that pull request narrow the gate judging it, which is
+// #964's hole arriving through a new door.
+//
+// Refused, not ignored. A harness that exports FLOWSTATE_GATE_BASE for its
+// agents would otherwise hand it to the plan job as well and never learn that
+// CI disagreed. The empty $GITHUB_OUTPUT is the second half of the assertion: a
+// refusal that still published a plan would not be a refusal.
+func TestTheCILaneRefusesASuppliedBase(t *testing.T) {
+	// analyse os.Chdirs to the repository root, so if this refusal ever stops
+	// happening the rest of the package should not inherit the new directory.
+	t.Chdir(".")
+
+	out := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", out)
+
+	err := runCI("pull_request", "0123456789abcdef0123456789abcdef01234567")
+	if err == nil {
+		t.Fatal("the plan job accepted a supplied base, so a pull request can narrow the gate that judges it (#964)")
+	}
+	if !strings.Contains(err.Error(), "0123456789abcdef0123456789abcdef01234567") {
+		t.Errorf("the refusal is %q, which does not name the base that was refused", err)
+	}
+	if _, statErr := os.Stat(out); statErr == nil {
+		t.Error("the plan job wrote its decisions despite refusing the base")
 	}
 }
