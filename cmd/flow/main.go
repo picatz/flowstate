@@ -2703,7 +2703,7 @@ flow server --verbose`,
 	// see workerCapacityOptions and runWorker. Raise this when
 	// temporal_sticky_cache_total_forced_eviction is nonzero and rising while
 	// temporal_sticky_cache_size sits at the configured limit; lower it when
-	// process.runtime.go.mem.heap_alloc climbs with cache size. See
+	// go.memory.used climbs with cache size. See
 	// docs/DEPLOYMENT.md's capacity section.
 	workerCmd.Flags().String("sticky-cache-size",
 		cmp.Or(os.Getenv("FLOWSTATE_WORKER_STICKY_CACHE_SIZE"), "0"),

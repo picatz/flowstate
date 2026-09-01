@@ -420,6 +420,13 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 	if want := fmt.Sprintf("%s=%d", protocol.TokenFDEnv, tokenFD); !strings.Contains(joined, want) {
 		t.Errorf("the token descriptor was not passed as %q: %v", want, env)
 	}
+	// The operator's own entry is dropped, not appended after the host's. A
+	// second entry for a name the protocol owns would leave which descriptor a
+	// plugin reads its token from up to whichever copy that plugin's runtime
+	// hands back for the name.
+	if got := strings.Count(joined, protocol.TokenFDEnv+"="); got != 1 {
+		t.Errorf("%s appears %d times, want only the one the host set: %v", protocol.TokenFDEnv, got, env)
+	}
 	if strings.Contains(joined, "hijacked") {
 		t.Errorf("an operator-supplied entry overrode a protocol variable: %v", env)
 	}

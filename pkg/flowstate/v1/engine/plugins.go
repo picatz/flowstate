@@ -108,6 +108,15 @@ func admitPlugins(ctx workflow.Context, wf *v1.Workflow) error {
 		return nil
 	}
 
-	return workflow.ExecuteActivity(withSummary(ctx, pluginAdmissionSummary),
-		checkPluginsActivity, pins).Get(ctx, nil)
+	// Through [preStepFailed] for the reason its doc gives: this runs before the
+	// executor exists, so a refusal travels as the application error the activity
+	// built and reaches the client as itself, while a timeout would otherwise
+	// reach the server's fallback bare and be read there as the run's own
+	// execution budget expiring — on a run that had not yet started a step.
+	if err := workflow.ExecuteActivity(withSummary(ctx, pluginAdmissionSummary),
+		checkPluginsActivity, pins).Get(ctx, nil); err != nil {
+		return preStepFailed(err, "admitting the workflow's pinned plugins did not finish")
+	}
+
+	return nil
 }

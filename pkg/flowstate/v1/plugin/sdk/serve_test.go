@@ -51,7 +51,9 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 				protocol.VersionsEnv:    "99",
 			},
 			wantErr: ErrProtocolVersion,
-			wantMsg: fmt.Sprintf("this plugin speaks %d", protocol.Version4),
+			// Both halves: a refusal that names only this side leaves the
+			// operator to work out which of the two builds is the old one.
+			wantMsg: fmt.Sprintf("the host offered 99 and this plugin speaks %d", protocol.Version4),
 		},
 		{
 			name: "no socket to serve on",

@@ -1,12 +1,14 @@
 package flowfile_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -319,6 +321,51 @@ steps:
 	// The value of the offending input begins at column 15 of line 5.
 	if ds[0].Line != 6 || ds[0].Column != 15 {
 		t.Errorf("position = %d:%d, want 6:15\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
+	}
+}
+
+// TestRequiredSecretInputRefusalCarriesTheSharedMessage pins the compiler half of
+// the "same sentence on both paths" claim [v1.RequiredSecretInputMessage] documents:
+// a literal written into an input a task declares in TaskDef.RequiredSecretInputs
+// must be refused with that exact sentence here, in this package's own schema
+// check, not a paraphrase that happens to look similar. [v1.CheckRequiredSecretInputs]
+// is the RPC-path half and is covered separately
+// (pkg/flowstate/v1/server/requiredsecretinputs_internal_test.go); before this test
+// nothing in this package exercised its own branch at all.
+//
+// No built-in task declares RequiredSecretInputs, so this registers one of its own —
+// reusing the log task's Inputs descriptor, which already has a string field to hang
+// the requirement on — and unregisters it when done, the same way
+// pkg/flowstate/v1/server's registerRequiredSecretTask does for the RPC path.
+func TestRequiredSecretInputRefusalCarriesTheSharedMessage(t *testing.T) {
+	const taskName = "test-required-secret-input-probe"
+	require.NoError(t, v1.DefaultRegistry().Register(v1.TaskDef{
+		Name:                 taskName,
+		Inputs:               (&v1.Task_Log_Inputs{}).ProtoReflect().Descriptor(),
+		SecretInputs:         []string{"message"},
+		RequiredSecretInputs: []string{"message"},
+		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+			return nil, nil
+		},
+	}))
+	t.Cleanup(func() { v1.DefaultRegistry().Unregister(taskName) })
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: a
+    ` + taskName + `:
+      message: hello
+`
+	ds, err := flowfile.ValidateSource([]byte(src))
+	if err != nil {
+		t.Fatalf("ValidateSource() error: %v", err)
+	}
+
+	want := v1.RequiredSecretInputMessage(taskName, "message")
+	got := ds.Error()
+	if !strings.Contains(got, want) {
+		t.Errorf("diagnostics do not carry RequiredSecretInputMessage's exact text %q; got:\n%s", want, got)
 	}
 }
 

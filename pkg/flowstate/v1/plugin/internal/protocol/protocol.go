@@ -35,7 +35,7 @@
 // the host captures as that plugin's logs. Reserving stdout for one line is what
 // keeps a plugin's own logging from corrupting the protocol.
 //
-//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|4|unix|/var/folders/.../s
 //
 // The fields are the sentinel, the version of this handshake format, the
 // negotiated protocol version, the network, and the address. The handshake
