@@ -123,12 +123,31 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // message — set on the error strictly after the decision, never consulted
 // by anything that decides.
 func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentity, local bool) error {
-	err := TaskPolicyIn(ctx).Check(ctx, task, identity)
-	if err == nil {
-		return nil
+	rule, err := TaskPolicyIn(ctx).check(ctx, task, identity)
+
+	// The audit subject is the same either way: this identity, this task, and
+	// the rule that decided. Built once so an allow and a deny cannot describe
+	// the same dispatch differently (picatz/flowstate#1379).
+	subject := EnforcementSubject{
+		Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
+		Identity:     identity,
+		ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
+		ResourceKey:  task,
+		Rule:         rule,
 	}
 
-	if denied, ok := errors.AsType[*TaskPolicyDeniedError](err); ok {
+	if err == nil {
+		// Recorded before the task runs, which is what the write-ahead rule
+		// asks of this seam: this check is made once per dispatch, above the
+		// driver's retry loop, so the record is written while the dispatch it
+		// permits is still ahead of it. A required recorder that could not
+		// write refuses the dispatch, which is the whole of "an action that
+		// cannot be recorded does not happen".
+		return auditEnforcementAllow(ctx, subject)
+	}
+
+	denied, isDecision := errors.AsType[*TaskPolicyDeniedError](err)
+	if isDecision {
 		denied.Local = local
 
 		// Provenance, recorded here for the same reason and under the same
@@ -154,5 +173,39 @@ func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentit
 	}
 	RecordPolicyDenial(ctx, metricschema.SurfaceTaskDispatch, task, driver)
 
-	return NewTaskError(task, ErrorKindPolicyDenied, err)
+	refusal := NewTaskError(task, ErrorKindPolicyDenied, err)
+
+	if !isDecision {
+		// Not something the policy decided. [taskPolicyRuleFailure] returns a
+		// cancelled or expired context as itself, and running out of time is
+		// not a decision — a record saying the rules refused this dispatch
+		// would be a sentence the trail must not hold. The error keeps the
+		// classification it has always had; only the record is withheld.
+		return refusal
+	}
+
+	// The metric counts refusals; the record says which identity was refused
+	// which task by which rule. Both, because a rate cannot answer "why was
+	// this dispatch refused" and a record cannot answer "how often".
+	return auditEnforcementDeny(ctx, subject, taskPolicyDenyCode(denied.Reason), refusal)
+}
+
+// taskPolicyDenyCode maps a task-shape denial's own closed reason onto the
+// audit schema's closed deny code.
+//
+// Both sets are closed and neither is derived from the other, so the mapping
+// is written once, here, rather than at the seam: a reason added to
+// [TaskPolicyReason] without a code arrives as UNSPECIFIED, which is visible
+// in the trail rather than silently recorded as something it is not.
+func taskPolicyDenyCode(reason TaskPolicyReason) AuditDenyCode {
+	switch reason {
+	case TaskPolicyReasonDenyRule:
+		return AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE
+	case TaskPolicyReasonNoAllowRule:
+		return AuditDenyCode_AUDIT_DENY_CODE_NO_ALLOW_RULE
+	case TaskPolicyReasonRuleError:
+		return AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR
+	default:
+		return AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED
+	}
 }

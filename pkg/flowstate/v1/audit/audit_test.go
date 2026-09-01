@@ -43,10 +43,18 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	// The pinned set. Adding a field to the schema fails this until somebody
 	// has decided, in writing, that the new field is one of the two kinds
 	// above.
+	// enforcement_point and rule are picatz/flowstate#1379's two additions, and
+	// both are the first kind: chosen by this deployment. The point is a closed
+	// enum. The rule is the operator's own configuration — the one string here
+	// that is neither an identity this deployment attested nor a name it
+	// resolved — admitted on the same terms issuer_name and role are, bounded
+	// on the way in, and never filled from a denial's prose. See the rule
+	// field's own comment in proto/flowstate/v1/audit.proto for what that
+	// excludes.
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
-		"mcp_tool", "issuer_name", "role",
+		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
 	}
 
 	got := make([]string, 0, fields.Len())
@@ -522,6 +530,130 @@ func TestTheResourceKeyIsBoundedOnARuneBoundary(t *testing.T) {
 	// Bounded to what the schema itself will accept, which is what makes the
 	// two halves of this bound one number rather than two.
 	require.NoError(t, v1.Validate(sink.records[0]))
+}
+
+// TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline: the worker's
+// half of the trail (picatz/flowstate#1379) is written by the same recorder,
+// under the same bounds, the same clock and the same claim removal, and
+// validates against the same schema.
+//
+// The point of asserting all of it here rather than at the seams is that a
+// seam hands over a subject and the recorder decides everything else — so a
+// new seam cannot record an unbounded rule, a caller's clock, or an identity
+// with claims on it by writing its call site differently.
+func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 9, 1, 9, 30, 0, 0, time.UTC)
+
+	var sink recordingEmitter
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink),
+		audit.WithClock(func() time.Time { return at }))
+	require.NoError(t, err)
+
+	require.NoError(t, recorder.EnforcementAllow(t.Context(), v1.EnforcementSubject{
+		Point: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS,
+		Identity: &v1.WorkloadIdentity{
+			Subject:   "deploy-bot",
+			Namespace: "acme",
+			Claims:    map[string]string{"team": "payments"},
+		},
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SECRET,
+		ResourceKey:  strings.Repeat("é", audit.MaxResourceKeyBytes),
+		Rule:         strings.Repeat("é", audit.MaxRuleBytes),
+	}))
+
+	require.Len(t, sink.records, 1)
+	record := sink.records[0]
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
+	require.Equal(t, at, record.GetDecidedAt().AsTime())
+	require.Empty(t, record.GetIdentity().GetClaims())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+
+	require.LessOrEqual(t, len(record.GetResourceKey()), audit.MaxResourceKeyBytes)
+	require.True(t, isValidUTF8(record.GetResourceKey()), "the resource bound cut a rune in half")
+	require.LessOrEqual(t, len(record.GetRule()), audit.MaxRuleBytes)
+	require.True(t, isValidUTF8(record.GetRule()), "the rule bound cut a rune in half")
+
+	// The same number on both sides of the boundary: what the recorder emits
+	// is what the schema accepts.
+	require.NoError(t, v1.Validate(record))
+
+	// And the control-plane vocabulary stays out of it, which is what keeps a
+	// reader from mistaking an enforcement decision for a scope a caller could
+	// have been granted.
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, record.GetAction())
+	require.Empty(t, record.GetRpc())
+	require.Empty(t, record.GetMcpTool())
+}
+
+// TestTheSchemaHoldsTheTwoOperationVocabulariesApart: one record can be a
+// control-plane decision or an enforcement decision and never both, and never
+// neither.
+//
+// Asserted against protovalidate rather than against the Go constructors,
+// because the message rule is what a reader of the trail — or a second writer
+// of it — is actually held to. The pairing it enforces is the reason action
+// may be UNSPECIFIED at all: an enforcement point names the operation instead,
+// so a record with neither would be a decision about nothing, and a record
+// with both would claim a caller-facing scope for a decision no token could
+// have granted.
+func TestTheSchemaHoldsTheTwoOperationVocabulariesApart(t *testing.T) {
+	t.Parallel()
+
+	enforcement := &v1.AuditRecord{
+		Decision:         v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		EnforcementPoint: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
+		ResourceKind:     v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
+		ResourceKey:      "http",
+		DecidedAt:        timestamppb.Now(),
+	}
+	require.NoError(t, v1.Validate(enforcement))
+
+	controlPlane := &v1.AuditRecord{
+		Action:    v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		Decision:  v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		Rpc:       "Run",
+		DecidedAt: timestamppb.Now(),
+	}
+	require.NoError(t, v1.Validate(controlPlane))
+
+	both := proto.Clone(controlPlane).(*v1.AuditRecord)
+	both.EnforcementPoint = v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS
+	require.Error(t, v1.Validate(both), "a record named both an rpc and an enforcement point")
+
+	neither := &v1.AuditRecord{
+		Decision:  v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		DecidedAt: timestamppb.Now(),
+	}
+	require.Error(t, v1.Validate(neither), "a record named no operation at all")
+
+	scoped := proto.Clone(enforcement).(*v1.AuditRecord)
+	scoped.Action = v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN
+	require.Error(t, v1.Validate(scoped),
+		"an enforcement record carried an authorization action, which no caller could hold")
+
+	unnamed := proto.Clone(controlPlane).(*v1.AuditRecord)
+	unnamed.Action = v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED
+	require.Error(t, v1.Validate(unnamed), "an rpc decision recorded no action")
+}
+
+// TestAnEnforcementRecordWithNoPointIsRefused: the same failure an unbound RPC
+// is, at the seam that has no action to derive — a decision that cannot say
+// which policy made it is not evidence of anything, and it is refused whether
+// or not the deployment asked for required.
+func TestAnEnforcementRecordWithNoPointIsRefused(t *testing.T) {
+	t.Parallel()
+
+	var sink recordingEmitter
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink))
+	require.NoError(t, err)
+
+	require.Error(t, recorder.EnforcementAllow(t.Context(), v1.EnforcementSubject{
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
+		ResourceKey:  "log",
+	}))
+	require.Empty(t, sink.records)
 }
 
 // TestTheRecordCarriesTheServersClock: never the caller's, the rule

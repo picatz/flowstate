@@ -21,19 +21,27 @@ import (
 // follow rather than a second spelling.
 const auditRequiredFlag = "audit-required"
 
-// addAuditRequiredFlag registers --audit-required on a serving command.
+// addAuditRequiredFlag registers --audit-required on a command that runs a
+// deployment.
 //
-// Called once per command (`flow server`, `flow server dev`, `flow mcp serve`)
-// rather than shared through a persistent flag on a parent, in the same shape
-// every other serving-only flag in this file takes.
+// Called once per command (`flow server`, `flow server dev`, `flow mcp serve`,
+// `flow worker`) rather than shared through a persistent flag on a parent, in
+// the same shape every other serving-only flag in this file takes.
+//
+// The help says "operation" rather than "request" because
+// picatz/flowstate#1379 put this flag on `flow worker`, where the decisions it
+// governs are a task dispatching, a secret being read, a request leaving and a
+// credential being assumed — none of which is an inbound request, and all of
+// which the same posture has to cover for a deployment to be able to state it
+// once.
 func addAuditRequiredFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool(auditRequiredFlag, false,
-		"fail a request whose authorization decision could not be written to every audit sink, "+
-			"trading availability for a complete trail: an operator's collector outage becomes an "+
-			"outage of this service rather than a gap in the record. Auditing itself is always on — "+
-			"stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/"+
-			"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's "+
-			"own failure does to the caller")
+		"fail an operation whose authorization or enforcement decision could not be written to "+
+			"every audit sink, trading availability for a complete trail: an operator's collector "+
+			"outage becomes an outage of this service rather than a gap in the record. Auditing "+
+			"itself is always on — stderr carries every decision unconditionally, and "+
+			"OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only "+
+			"decides what a sink's own failure does to the caller")
 }
 
 // auditState mirrors [telemetryState]: a package-level fact — the process's one

@@ -37,6 +37,13 @@ const DefaultWriterQueueSize = 256
 // input to a durable sink and therefore bounded where it is spent.
 const MaxProvenanceBytes = auth.MaxPolicyProvenanceBytes
 
+// MaxRuleBytes bounds the operator's policy rule copied into an enforcement
+// record. The schema says the same number (AuditRecord.rule's max_bytes), and
+// this is the half that holds: a rule is configuration rather than a caller's
+// text, but a CEL expression has no length an operator agreed to, and a bound
+// is spent where the value is.
+const MaxRuleBytes = 256
+
 // Emitter writes one record to one sink.
 //
 // The error is the reason this interface exists rather than an
@@ -193,6 +200,33 @@ func (r *Recorder) Deny(ctx context.Context, subject Subject, code v1.AuditDenyC
 	return r.record(ctx, subject, v1.AuditDecision_AUDIT_DECISION_DENY, code)
 }
 
+// EnforcementAllow records that a worker-side policy permitted a workload.
+//
+// The other half of the trail (picatz/flowstate#1379): task dispatch, secret
+// access, egress and credential assumption, recorded by the same recorder into
+// the same sinks under the same schema as the control plane's decisions. This
+// is [v1.EnforcementAuditor]'s allow half — the interface lives in the schema's
+// own package because that package cannot import this one.
+//
+// A record is written where the policy is consulted, so an allow is written
+// before what it permits happens — with one stated exception at the egress
+// seam, whose verdict is reached inside the policy's transport. See
+// proto/flowstate/v1/audit.proto's "The worker's half".
+func (r *Recorder) EnforcementAllow(ctx context.Context, subject v1.EnforcementSubject) error {
+	return r.recordEnforcement(ctx, subject, v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED)
+}
+
+// EnforcementDeny records that a worker-side policy refused a workload.
+//
+// The code, and the rule that matched when one did — never a denial's prose,
+// for the reason [Recorder.Deny] gives and one more: at these seams the prose
+// is built from what the policy was evaluating, which is the workload's own
+// data. See [v1.EnforcementSubject.Rule].
+func (r *Recorder) EnforcementDeny(ctx context.Context, subject v1.EnforcementSubject, code v1.AuditDenyCode) error {
+	return r.recordEnforcement(ctx, subject, v1.AuditDecision_AUDIT_DECISION_DENY, code)
+}
+
 // Required reports whether a sink failure is the caller's failure.
 func (r *Recorder) Required() bool {
 	return r != nil && r.required
@@ -213,6 +247,48 @@ func (r *Recorder) record(ctx context.Context, subject Subject, decision v1.Audi
 		return err
 	}
 
+	operation := subject.RPC
+	if operation == "" {
+		operation = subject.MCPTool
+	}
+
+	return r.emit(ctx, record, decision, operation)
+}
+
+// recordEnforcement is [Recorder.record]'s worker-side twin: a different
+// subject and a different operation vocabulary, the same clock, the same
+// bounds, the same fan-out and the same required-mode contract, because a
+// deployment reading one trail must not have to know which half of the process
+// wrote a given line.
+func (r *Recorder) recordEnforcement(ctx context.Context, subject v1.EnforcementSubject, decision v1.AuditDecision, code v1.AuditDenyCode) error {
+	if r == nil {
+		return nil
+	}
+
+	if subject.Point == v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED {
+		// The same class of failure newRecord's unbound-RPC error is, and
+		// ungated for the same reason: a seam that cannot name which policy
+		// decided has not recorded the decision.
+		return errors.New("audit: no enforcement point identifies the decision")
+	}
+
+	record := &v1.AuditRecord{
+		Decision:         decision,
+		EnforcementPoint: subject.Point,
+		Identity:         auditIdentity(subject.Identity),
+		ResourceKind:     subject.ResourceKind,
+		ResourceKey:      boundResourceKey(subject.ResourceKey),
+		DecidedAt:        timestamppb.New(r.now()),
+		DenyCode:         code,
+		Rule:             boundString(subject.Rule, MaxRuleBytes),
+	}
+
+	return r.emit(ctx, record, decision, subject.Point.String())
+}
+
+// emit hands one built record to every sink and applies the deployment's
+// policy about their failures.
+func (r *Recorder) emit(ctx context.Context, record *v1.AuditRecord, decision v1.AuditDecision, operation string) error {
 	var failures []error
 	for _, emitter := range r.emitters {
 		if err := emitter.Emit(ctx, record); err != nil {
@@ -227,10 +303,6 @@ func (r *Recorder) record(ctx context.Context, subject Subject, decision v1.Audi
 		return nil
 	}
 
-	operation := subject.RPC
-	if operation == "" {
-		operation = subject.MCPTool
-	}
 	return fmt.Errorf("audit: recording the %s decision for %s: %w",
 		decision, operation, errors.Join(failures...))
 }

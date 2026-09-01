@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -24,12 +25,85 @@ type TaskRuntime struct {
 // AuthorizeCredential obtains a short-lived credential for target and applies it
 // directly to req. Material moves broker-to-request inside the activity and is
 // never returned to workflow code.
+//
+// The decision is recorded (picatz/flowstate#1379): which workload asked to
+// assume which target, and what the assumption policy answered. The record
+// carries the target's operator-chosen name and never the credential — no
+// field of it can hold one, which is the containment argument the audit
+// schema makes structurally rather than by scrubbing.
+//
+// The allow is written after [auth.Broker.Authorize] returns, because the
+// policy decision happens inside it, on the way to minting: this seam sees the
+// answer and not the moment. It is still ahead of what the decision permits —
+// the request has not been sent — so a required recorder that cannot write
+// still stops the credential from being used, at the cost of a minted
+// assertion that is then discarded. That is the safe direction; a request
+// leaving with an unrecorded credential is not.
 func AuthorizeCredential(ctx context.Context, req *http.Request, target string) error {
+	subject := EnforcementSubject{
+		Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION,
+		ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET,
+		ResourceKey:  target,
+	}
+
 	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
 	if !ok || runtime.Broker == nil {
-		return fmt.Errorf("workload identity federation is not configured on this worker")
+		return auditEnforcementDeny(ctx, subject, AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED,
+			fmt.Errorf("workload identity federation is not configured on this worker"))
 	}
-	return runtime.Broker.Authorize(ctx, req, runtime.Identity, runtime.Step, target)
+
+	subject.Identity = ProtoWorkloadIdentity(runtime.Identity)
+
+	err := runtime.Broker.Authorize(ctx, req, runtime.Identity, runtime.Step, target)
+	if err == nil {
+		return auditEnforcementAllow(ctx, subject)
+	}
+
+	code, rule, decided := assumeDenial(err)
+	if !decided {
+		// The broker refuses for reasons that are not decisions: a token
+		// exchange that failed, an identity the run never carried, a context
+		// that expired. Recording those as denials would put refusals in the
+		// trail that no policy made — the rule [taskPolicyRuleFailure] states
+		// for a cancelled evaluation, applied to this seam.
+		return err
+	}
+
+	subject.Rule = rule
+
+	return auditEnforcementDeny(ctx, subject, code, err)
+}
+
+// assumeDenial reads an assumption refusal as the audit schema's closed
+// vocabulary: the deny code, the rule that matched if one did, and whether
+// this error is a policy decision at all.
+//
+// Only a rule that matched is copied. [auth.AssumeDeniedError.Detail] holds
+// the rule source for a match and the CEL evaluation error for a failure, and
+// an evaluation error can quote the data the rule was reading — see
+// [EnforcementSubject.Rule].
+func assumeDenial(err error) (code AuditDenyCode, rule string, decided bool) {
+	if denied, ok := errors.AsType[*auth.AssumeDeniedError](err); ok {
+		switch denied.Reason {
+		case auth.ReasonAssumeDenyRule:
+			return AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE, denied.Detail, true
+		case auth.ReasonAssumeNoAllowRule:
+			return AuditDenyCode_AUDIT_DENY_CODE_NO_ALLOW_RULE, "", true
+		case auth.ReasonAssumeRuleError:
+			return AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR, "", true
+		default:
+			return AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, "", true
+		}
+	}
+
+	if errors.Is(err, auth.ErrUnknownTarget) {
+		// A target the deployment never configured cannot be assumed by
+		// anyone, which is a refusal an operator reading the trail should see
+		// as configuration rather than as policy.
+		return AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED, "", true
+	}
+
+	return AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, "", false
 }
 
 type secretRuntimeKey struct{}
@@ -87,19 +161,79 @@ func TaskStepFromContext(ctx context.Context) (string, bool) {
 // execution context. Authorization runs for every resolution, before the store is
 // consulted, so a cache or provider can never turn a denied read into an allowed
 // one.
+//
+// The decision is recorded (picatz/flowstate#1379), and the record is written
+// in the same window the authorization is: after the policy answers and before
+// the store is asked, so an allow is durable before the value exists and a
+// required recorder that cannot write means the value is never fetched. What
+// reaches the trail is the *reference* — "scheme:name", which
+// [secrets.Ref]'s own doc calls safe to log because it names where a secret
+// lives and carries no way to obtain it. The resolved secret is returned to
+// the caller and has no field in the record to occupy.
 func ResolveSecret(ctx context.Context, ref secrets.Ref) (secrets.Secret, error) {
+	subject := EnforcementSubject{
+		Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS,
+		ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_SECRET,
+		ResourceKey:  secrets.RefString(ref),
+	}
+
 	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
 	if !ok || runtime.Store == nil || runtime.Policy == nil {
-		return secrets.Secret{}, fmt.Errorf("secret access is not configured on this worker")
+		return secrets.Secret{}, auditEnforcementDeny(ctx, subject,
+			AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED,
+			fmt.Errorf("secret access is not configured on this worker"))
 	}
+
+	subject.Identity = ProtoWorkloadIdentity(runtime.Identity)
+
 	if err := runtime.Policy.Authorize(ctx, runtime.Identity, runtime.Step, ref); err != nil {
+		code, rule, decided := secretDenial(err)
+		if !decided {
+			// A cancelled or expired context, which [auth.SecretPolicy.Authorize]
+			// returns as itself: not something the policy decided.
+			return secrets.Secret{}, err
+		}
+		subject.Rule = rule
+		return secrets.Secret{}, auditEnforcementDeny(ctx, subject, code, err)
+	}
+
+	if err := auditEnforcementAllow(ctx, subject); err != nil {
 		return secrets.Secret{}, err
 	}
+
 	resolver, err := runtime.Store.For(secretIdentity{namespace: runtime.Identity.Namespace})
 	if err != nil {
 		return secrets.Secret{}, err
 	}
 	return resolver.Resolve(ctx, ref)
+}
+
+// secretDenial reads a secret-access refusal as the audit schema's closed
+// vocabulary, under [assumeDenial]'s rule about which text may be copied.
+//
+// A malformed reference and a workload with no established identity are
+// recorded as POLICY_DENIED rather than under codes of their own: the finer
+// codes each name what a *rule* did, and these two are the policy refusing on
+// the shape of what it was asked, which is the case POLICY_DENIED already
+// describes.
+func secretDenial(err error) (code AuditDenyCode, rule string, decided bool) {
+	denied, ok := errors.AsType[*auth.SecretDeniedError](err)
+	if !ok {
+		return AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, "", false
+	}
+
+	switch denied.Reason {
+	case auth.ReasonSecretDenyRule:
+		return AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE, denied.Detail, true
+	case auth.ReasonSecretNoAllowRule:
+		return AuditDenyCode_AUDIT_DENY_CODE_NO_ALLOW_RULE, "", true
+	case auth.ReasonSecretRuleError:
+		return AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR, "", true
+	case auth.ReasonSecretNoPolicy:
+		return AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED, "", true
+	default:
+		return AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, "", true
+	}
 }
 
 // A deliberately tiny adapter: the secret store needs only the namespace and

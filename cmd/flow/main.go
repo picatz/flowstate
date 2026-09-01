@@ -701,6 +701,29 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer c.Close()
 
+	// picatz/flowstate#1379: the worker's own policy decisions get written down
+	// too, by the same recorder `flow server` builds and under the same
+	// --audit-required posture — task dispatch, secret access, egress and
+	// credential assumption, which are the decisions that actually govern a
+	// workload once it is running. Built here for the reason runServer builds
+	// it where it does: [initTemporalClient] has already resolved this
+	// process's OTEL_* environment through [startTelemetry], and started rather
+	// than initialized so a second call could never orphan the first
+	// recorder's OTel LoggerProvider.
+	//
+	// Installed process-wide rather than threaded through the runtime, because
+	// the seams that record are reached from activities the Temporal SDK
+	// invokes with a context of its own making — the same reason the
+	// task-shape policy above is a process-wide default. Installed before the
+	// worker polls, so there is no window in which a dispatch is decided and
+	// not recorded.
+	auditRequired, _ := cmd.Flags().GetBool(auditRequiredFlag)
+	recorder, err := startAudit(cmd.Context(), auditRequired)
+	if err != nil {
+		return fmt.Errorf("configuring the audit trail: %w", err)
+	}
+	v1.SetDefaultEnforcementAuditor(recorder)
+
 	// The interpreter's own copy of the converter this client was built with.
 	// Workflow-side code replaces the context's converter to decode a signal in
 	// either wire shape, and the SDK offers no way to read the one it is
@@ -863,6 +886,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// somebody is looking for when they come to ask what a worker was doing
 	// when it went away. Bounded and best-effort; see flushTelemetry.
 	flushTelemetry()
+
+	// The same argument for the audit trail's own sinks, and a stronger one:
+	// the decisions a draining worker made in its last seconds are exactly the
+	// ones an operator asks about afterwards. Required sinks have already
+	// written synchronously at each decision; this drains the best-effort
+	// queue and closes the OTel connection. main() flushes again on every exit
+	// path, including the ones that leave before here.
+	flushAudit()
 
 	infraLogger().Info("worker stopped")
 
@@ -2788,7 +2819,15 @@ flow server --verbose`,
 	// picatz/flowstate#1018: whether an audit sink's own failure fails the
 	// request. Auditing itself has no flag — every deployment gets it, stderr at
 	// minimum — see [addAuditRequiredFlag]'s help.
+	//
+	// On the worker for the same reason and with the same meaning
+	// (picatz/flowstate#1379): its policy decisions reach the same trail, so
+	// the posture about a sink's failure has to be one an operator can state
+	// for the whole deployment rather than for half of it. Deliberately not on
+	// `flow run local`, which installs no recorder at all — a rehearsal has no
+	// deployment to audit, argued in the audit package's doc.
 	addAuditRequiredFlag(serverCmd)
+	addAuditRequiredFlag(workerCmd)
 
 	// The public listener's TLS configuration and its ACME
 	// automatic-certificate alternative — see cmd/flow/tls.go and

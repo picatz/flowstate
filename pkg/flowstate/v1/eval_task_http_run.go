@@ -385,6 +385,100 @@ func taskCarriesCredential(taskInputs *Task_HTTP_Inputs, headersSpec *Value) boo
 	return false
 }
 
+// egressEndpoint renders a request's destination as the audit trail's resource
+// key: scheme://host[:port], and no other part of the URL.
+//
+// url.URL.Host is host and port without userinfo, so what this cannot include
+// is exactly what an audit record must not carry: the path (a webhook URL
+// keeps its credential there), the query (written to access logs and forwarded
+// in a Referer), the fragment, and any password in the userinfo. That is the
+// same line netpolicy's own tracing comment draws for a span attribute, minus
+// the hostname — which stays, because an egress record that cannot say where a
+// request was going does not answer the question the trail exists for. See
+// AUDIT_RESOURCE_KIND_ENDPOINT.
+func egressEndpoint(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+
+	return u.Scheme + "://" + u.Host
+}
+
+// egressVerdict is an egress refusal in the terms the audit record uses.
+type egressVerdict struct {
+	// Code is the closed reason the record carries.
+	Code AuditDenyCode
+
+	// Rule is the operator's rule that matched, when one did.
+	Rule string
+
+	// Endpoint is the destination actually refused, which is not always the
+	// one the workflow addressed — a redirect hop is re-checked against the
+	// policy and refused on its own terms.
+	Endpoint string
+}
+
+// egressDenial reads an egress refusal as that vocabulary. endpoint is the
+// destination the request was built for, used when the refusal does not name a
+// URL of its own.
+//
+// The six netpolicy reasons that are not rule decisions — a scheme, a port, a
+// resolved address, a redirect, the control plane, an unusable request — share
+// one code, because the record already names the destination and what an
+// operator does about each of them is to change the same configuration. Only
+// [netpolicy.ReasonDenyRule] copies Detail, which for that reason is the rule's
+// own source and for the others is prose built from the request. A denial that
+// is not a [*netpolicy.DenyError] at all cannot be classified, and is recorded
+// as the generic policy refusal it is rather than as a category guessed at.
+func egressDenial(err error, endpoint string) egressVerdict {
+	denied, ok := errors.AsType[*netpolicy.DenyError](err)
+	if !ok {
+		if errors.Is(err, netpolicy.ErrDenied) {
+			return egressVerdict{Code: AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, Endpoint: endpoint}
+		}
+		return egressVerdict{Endpoint: endpoint}
+	}
+
+	verdict := egressVerdict{Endpoint: refusedEndpoint(denied.Target, endpoint)}
+
+	switch denied.Reason {
+	case netpolicy.ReasonDenyRule:
+		verdict.Code, verdict.Rule = AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE, denied.Detail
+	case netpolicy.ReasonNoAllowRule:
+		verdict.Code = AuditDenyCode_AUDIT_DENY_CODE_NO_ALLOW_RULE
+	case netpolicy.ReasonRuleError:
+		verdict.Code = AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR
+	default:
+		verdict.Code = AuditDenyCode_AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED
+	}
+
+	return verdict
+}
+
+// refusedEndpoint reads the destination out of a denial's target, so a
+// redirect hop that was refused is recorded as the hop rather than as the URL
+// the workflow wrote.
+//
+// [netpolicy.DenyError.Target] is a URL for the request-scoped refusals and
+// something else — a resolved address, a port, a scheme — for the rest, so a
+// target that does not spell a scheme and a host is not treated as one:
+// url.Parse would read "203.0.113.9:443" as a scheme, and a record naming a
+// destination that never existed is worse than one naming the request's own.
+// Only the scheme and host are taken, exactly as [egressEndpoint] takes them
+// from the request.
+func refusedEndpoint(target, fallback string) string {
+	if !strings.Contains(target, "://") {
+		return fallback
+	}
+
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fallback
+	}
+
+	return parsed.Scheme + "://" + parsed.Host
+}
+
 // isLoopbackHost reports whether host names the local machine — literally
 // "localhost", or an address that parses and is its own loopback range.
 //
@@ -453,6 +547,25 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
 
+		// What every egress decision below is recorded about: this identity,
+		// this destination. Built once, from the request rather than from a
+		// denial, so an allow and a deny name the same endpoint the same way —
+		// and so that only the parts of the URL an audit record may carry are
+		// ever read out of it (see [egressEndpoint]).
+		//
+		// One record per request, not per hop. The policy re-checks every
+		// redirect, and a hop it refuses is recorded as that hop (see
+		// [refusedEndpoint]); a hop it permits is covered by the one allow this
+		// request already has, because the decision being recorded is whether
+		// this workload's request was let out and not how many times the
+		// transport asked.
+		egressSubject := EnforcementSubject{
+			Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS,
+			Identity:     scope.GetIdentity(),
+			ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_ENDPOINT,
+			ResourceKey:  egressEndpoint(httpReq.URL),
+		}
+
 		// Preflight the credentials-scoped egress rule before either secret path
 		// is read. policy.Client().Do below applies the same request-scoped
 		// rules when it actually dials, but that happens after ResolveSecret and
@@ -462,9 +575,18 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// (see the design comment on #963). Only worth the extra check when a
 		// credential is in play; an uncredentialed request gets the identical
 		// check for free when it is actually sent.
+		//
+		// A refusal here is the request's one egress decision, so it is the one
+		// recorded; the request is never sent, so nothing below can decide it a
+		// second time (picatz/flowstate#1379). A preflight that *passes*
+		// records nothing, because it is not yet the verdict — the dial below
+		// still applies the connection-scoped rules this call cannot reach.
 		if credentialed {
 			if err := policy.CheckURL(httpReq.Context(), httpReq.Method, httpReq.URL); err != nil {
-				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
+				verdict := egressDenial(err, egressSubject.ResourceKey)
+				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
+				return nil, auditEnforcementDeny(ctx, egressSubject, verdict.Code,
+					NewTaskError("http", ErrorKindPolicyDenied, err))
 			}
 		}
 
@@ -607,12 +729,30 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			var limited *netpolicy.RateLimitedError
 			rateLimited := errors.As(err, &limited)
 
+			// The egress verdict, read off the same unscrubbed error and for
+			// the same reason: this is what the record's deny code, rule and
+			// refused destination are built from, and after the scrub they are
+			// unreachable.
+			verdict := egressDenial(err, egressSubject.ResourceKey)
+
 			err = scrubber.ScrubError(err)
 			// A policy denial is deliberate and will happen again; a connection
 			// reset, DNS failure, or timeout may succeed later. Distinguishing
 			// them is what stops a denied request from being retried.
 			if errors.Is(err, netpolicy.ErrDenied) {
-				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
+				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
+				return nil, auditEnforcementDeny(ctx, egressSubject, verdict.Code,
+					NewTaskError("http", ErrorKindPolicyDenied, err))
+			}
+
+			// Not a denial, so the policy permitted this request: the transport
+			// evaluates every rule that decides before it spends a rate-limit
+			// token or dials, so a refusal from anything below is a refusal of
+			// a request the policy allowed. Recorded here rather than only on
+			// the success path, or a request the policy permitted and the
+			// network dropped would leave the trail saying nothing was decided.
+			if auditErr := auditEnforcementAllow(ctx, egressSubject); auditErr != nil {
+				return nil, auditErr
 			}
 
 			// Whether repeating this request could repeat an effect the first
@@ -666,6 +806,16 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			return nil, NewTaskError("http", ErrorKindUpstream, err)
 		}
 		defer httpResp.Body.Close()
+
+		// The peer answered, so the policy permitted the request: the same
+		// verdict the error path above records, on the path where there was no
+		// error to read it from. A required recorder that cannot write fails
+		// the step here, after the request has already been sent — the cost
+		// the schema's "The worker's half" states for this seam, and the
+		// reason the deny direction is the one write-ahead protects.
+		if err := auditEnforcementAllow(ctx, egressSubject); err != nil {
+			return nil, err
+		}
 
 		// The body is read before success is decided, because `expect` is an
 		// expression over the response and the interesting cases are about its

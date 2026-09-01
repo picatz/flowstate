@@ -1363,11 +1363,13 @@ previously undashboarded, which left the slot-exhaustion runbook below's
 
 `flow server`, `flow server dev`, and authenticated `flow mcp serve` write down
 every authorization decision — allow and deny alike — before the mutation the
-decision permits. This is not telemetry: it is unconditional, it is not
-sampled, and it does not depend on `OTEL_*` being configured at all.
-picatz/flowstate#1018 is the design; this is the part of it an operator turns a
-knob on. Local `flow mcp` over stdio makes no bearer authorization decision and
-therefore emits no MCP authorization record.
+decision permits. `flow worker` writes down every *enforcement* decision it
+makes about a workload it is running. This is not telemetry: it is
+unconditional, it is not sampled, and it does not depend on `OTEL_*` being
+configured at all. picatz/flowstate#1018 is the design and #1379 is the
+worker's half; this is the part of it an operator turns a knob on. Local `flow
+mcp` over stdio makes no bearer authorization decision and therefore emits no
+MCP authorization record.
 
 **What is recorded.** One record per decision, keyed by the closed
 `AuthorizationAction` vocabulary (`proto/flowstate/v1/authorization.proto`)
@@ -1389,6 +1391,44 @@ resolved operation decision. That is deliberate, not an oversight — see
 `pkg/flowstate/v1/audit`'s package doc and `proto/flowstate/v1/audit.proto`'s
 file comment for why a scrubber was rejected in favor of a record with nothing
 in it for a scrubber to catch.
+
+**What `flow worker` records.** The same record, in the same sinks, for the
+four decisions a worker makes about a workload already running: whether a task
+may dispatch (the deployment's `--task-policy`), whether a secret reference may
+be read (the `secrets:` rules of `--auth-policy`), whether a request may leave
+(`--egress-policy`), and whether a credential target may be assumed (the
+assumption rules). Allow and deny alike. Instead of `action` and `rpc`, such a
+record carries `enforcement_point` — `TASK_DISPATCH`, `SECRET_ACCESS`,
+`EGRESS`, `CREDENTIAL_ASSUMPTION` — because the `AuthorizationAction`
+vocabulary is the OAuth scope list a *caller* can be granted, and none of these
+is a scope anyone holds. It names what was addressed the same way the control
+plane does (`resource_kind` gains `TASK`, `SECRET`, `ENDPOINT`,
+`CREDENTIAL_TARGET`), carries the run's attested identity, and adds `rule`: the
+operator's own CEL rule that decided, verbatim, when a single rule did. Denials
+use four further codes — `DENY_RULE`, `NO_ALLOW_RULE`, `RULE_ERROR`,
+`NOT_CONFIGURED` — plus `DESTINATION_NOT_PERMITTED` for a destination the
+egress policy refuses on its scheme, port, resolved address, redirect, or
+because it addressed the control plane. `RULE_ERROR` is the one to alert on: it
+means a rule could not be evaluated and the policy is failing closed on work it
+never decided about.
+
+Still no free text. A rule that *matched* is configuration and is recorded; a
+rule that failed to evaluate is recorded by its code alone, because its detail
+quotes the evaluation error and an evaluation error can quote the data the rule
+was reading. An egress record names `scheme://host:port` and no other part of
+the URL — a webhook URL keeps its credential in the path. A secret record names
+the `scheme:name` reference and never a resolved value; there is no field one
+could occupy.
+
+Two costs, stated. An egress *allow* is written when the policy's transport
+answers, which is after the request left: the verdict is reached inside the
+transport, and evaluating the policy a second time to move the record earlier
+would be a second evaluator for one concept. The deny direction is unaffected —
+a denied request never left. And `flow run local`, `flow test` and `flow task
+run` install no recorder at all: a rehearsal has no deployment to audit, its
+refusals are already reported in full to the person running it, and the
+exemption is argued in `pkg/flowstate/v1/audit`'s package doc rather than
+inherited by accident.
 
 **Where it goes.** Every deployment gets stderr, unconditionally, one JSON
 object per line — the floor that survives an operator who configured no
