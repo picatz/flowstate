@@ -117,6 +117,19 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 			grant:       nil,
 			wantRefusal: true,
 		},
+		{
+			// The plugin still launched, and its task still ran: reaching the
+			// task at all is the assertion. The SDK captures the grant while it
+			// reads the launch environment, and a grant that does not parse
+			// must not turn into a plugin the host refuses — a plugin that
+			// never touches the network has no use for it, and failing the
+			// launch would make a bad policy file break tasks that do not
+			// depend on one. The refusal belongs to whoever asks for a policy,
+			// which is where it arrives.
+			name:        "a malformed grant refuses at the ask, not at the launch",
+			grant:       []byte("egress:\n  schemes: [https\n"),
+			wantRefusal: true,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

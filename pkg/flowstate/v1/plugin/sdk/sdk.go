@@ -676,6 +676,21 @@ func readEnvironment() (environment, error) {
 		return environment{}, err
 	}
 
+	// The grant is captured here, with the rest of the launch environment, and
+	// deliberately not at the first call that wants it. [Run] reaches this
+	// before it builds a handler or serves anything, so no task function and no
+	// plugin-registered code has run yet — which closes the window where a
+	// plugin could write its own FLOWSTATE_EGRESS_POLICY_B64 and have the SDK
+	// hand back a client governed by a policy the operator never wrote.
+	//
+	// A failure is not returned. A malformed or oversized grant is a fact about
+	// the deployment that belongs to whoever asks for a policy, and it is
+	// reported there, naming the variable — refusing the whole launch here would
+	// stop a plugin that never touches the network over a grant it never uses.
+	// The error is latched by the capture, so the answer is the same whether it
+	// is asked for now or later.
+	captureEgressGrant()
+
 	return environment{
 		socketPath:      socketPath,
 		protocolVersion: version,

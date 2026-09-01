@@ -45,24 +45,48 @@ const EgressPolicyEnv = protocol.EgressPolicyEnv
 // deployment has. Presence is the grant; length is not. This is why the variable
 // is read with [os.LookupEnv].
 //
-// The grant is captured once, on the first call, and every later call answers
-// from that capture. It is the snapshot the host handed this process at launch,
-// and a launch happens once: rereading would mean a plugin could hand itself a
-// different policy with [os.Setenv] and keep using [HTTPClient] as though the
-// worker had granted it, which is the one thing an authorization snapshot must
-// not permit. Nothing an operator does to the environment of a running plugin is
-// meant to be read here — a policy file edited after launch reaches the plugins
-// the worker starts next.
+// The grant is captured once and every later call answers from that capture. It
+// is the snapshot the host handed this process at launch, and a launch happens
+// once: rereading would mean a plugin could hand itself a different policy with
+// [os.Setenv] and keep using [HTTPClient] as though the worker had granted it,
+// which is the one thing an authorization snapshot must not permit. Nothing an
+// operator does to the environment of a running plugin is meant to be read here
+// — a policy file edited after launch reaches the plugins the worker starts
+// next.
+//
+// The capture happens when [Run] reads the launch environment, before any task
+// function or other plugin-registered code has run, rather than at the first
+// call that wants a policy. What remains outside that line is code running
+// before [Run] — package initialization, or a main that does work first — which
+// is the plugin's own program deciding what its own process starts with, and no
+// more than opening a raw socket already gives it. That is the voluntary
+// enforcement boundary docs/ARCHITECTURE.md draws; a plugin cannot be confined
+// by a library it links.
 //
 // It is safe for concurrent use, and [netpolicy.Policy.Client] hands out a copy
 // per caller, so a plugin that reassigns the transport on a client it was given
 // disables the policy for itself alone.
 func EgressPolicy() (*netpolicy.Policy, error) {
+	captureEgressGrant()
+
+	return grant.policy, grant.err
+}
+
+// captureEgressGrant reads and parses the grant, once per process.
+//
+// [Run] calls it while it is reading the launch environment, before it builds a
+// handler or serves anything, so the captured value is the host's rather than
+// whatever a task function may have written since. [EgressPolicy] calls it too,
+// for a plugin that never went through [Run] — a test, or a binary serving by
+// hand — where the first ask is the earliest this can happen.
+//
+// It reports nothing. A grant that does not parse is not a reason to stop
+// reading the launch environment; it is an answer waiting for whoever asks for a
+// policy, latched here so that answer does not depend on when they ask.
+func captureEgressGrant() {
 	grant.once.Do(func() {
 		grant.policy, grant.err = parseEgressGrant(os.LookupEnv(EgressPolicyEnv))
 	})
-
-	return grant.policy, grant.err
 }
 
 // HTTPClient returns an HTTP client governed by [EgressPolicy].

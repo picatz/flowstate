@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -11,10 +12,15 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
@@ -370,4 +376,81 @@ func loopback(t *testing.T) netip.AddrPort {
 	require.NoError(t, err)
 
 	return addr
+}
+
+// TestRunCapturesTheGrantBeforeTaskCodeCanRewriteIt closes the window the
+// after-the-first-call test above leaves open.
+//
+// A `sync.Once` on the first ask is only as early as the first ask. A plugin
+// that writes its own FLOWSTATE_EGRESS_POLICY_B64 from a task body — or from an
+// earlier task in the same process — before anything has asked for a policy
+// would have that write captured, and every governed client the SDK handed out
+// afterwards would enforce a policy the operator never wrote. So [Run] captures
+// while it reads the launch environment, before it builds a handler or serves,
+// and this launches a real plugin through that path to prove the ordering.
+//
+// The task body is the attacker: it rewrites the variable to a policy that
+// permits loopback and then asks. The host's grant denies loopback, so a
+// regression fails by permitting.
+func TestRunCapturesTheGrantBeforeTaskCodeCanRewriteIt(t *testing.T) {
+	resetGrant(t)
+
+	const token = "the-per-launch-token"
+
+	// What the host granted this launch.
+	t.Setenv(EgressPolicyEnv, grantOf("egress:\n  schemes: [https]\n"))
+
+	type answer struct {
+		loopbackErr error
+		err         error
+	}
+	answers := make(chan answer, 1)
+
+	socket := startTestPluginRunning(t, token, &syncBuffer{},
+		func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			// Plugin code, doing the one thing the capture exists to make
+			// pointless. Nothing in this process has asked for a policy yet.
+			if err := os.Setenv(EgressPolicyEnv,
+				grantOf("egress:\n  schemes: [https]\n  allow_loopback: true\n")); err != nil {
+				answers <- answer{err: err}
+				return &flowstatev1.Node_Outputs{}, nil
+			}
+
+			policy, err := EgressPolicy()
+			if err != nil {
+				answers <- answer{err: err}
+				return &flowstatev1.Node_Outputs{}, nil
+			}
+
+			answers <- answer{loopbackErr: policy.CheckAddr(loopback(t))}
+			return &flowstatev1.Node_Outputs{}, nil
+		})
+
+	client := pluginv1connect.NewTaskServiceClient(unixClient(socket), "http://plugin.invalid")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	req := connect.NewRequest(&pluginv1.ExecuteStreamRequest{
+		Task: &flowstatev1.Task{Name: "testplug_noop"},
+	})
+	req.Header().Set(protocol.TokenHeader, token)
+
+	stream, err := client.ExecuteStream(ctx, req)
+	require.NoError(t, err)
+	defer stream.Close()
+	for stream.Receive() {
+	}
+	require.NoError(t, stream.Err())
+
+	var got answer
+	select {
+	case got = <-answers:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the task never reported what it was granted")
+	}
+
+	require.NoError(t, got.err)
+	assert.Error(t, got.loopbackErr,
+		"a task granted itself loopback by writing its own environment before the first EgressPolicy call")
 }

@@ -442,6 +442,17 @@ func startTestPlugin(t *testing.T, token string) string {
 func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) string {
 	t.Helper()
 
+	return startTestPluginRunning(t, token, stdout,
+		func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			return &flowstatev1.Node_Outputs{}, nil
+		})
+}
+
+// startTestPluginRunning is the same harness with the task's body supplied, for
+// a test whose claim is about what the SDK did before that body could run.
+func startTestPluginRunning(t *testing.T, token string, stdout *syncBuffer, fn TaskFunc) string {
+	t.Helper()
+
 	// A short directory: a Unix socket address holds about a hundred bytes, and
 	// the temporary directory is most of that on macOS.
 	dir, err := os.MkdirTemp("", "sdkt")
@@ -483,9 +494,7 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 				Name:   "testplug_noop",
 				Input:  &flowstatev1.Task_Log_Inputs{},
 				Output: &flowstatev1.Task_Log_Outputs{},
-				Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
-					return &flowstatev1.Node_Outputs{}, nil
-				},
+				Fn:     fn,
 			}},
 		})
 	}()
