@@ -17,16 +17,13 @@
 package reachable
 
 import (
-	"context"
-	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/picatz/flowstate/internal/covbuild"
+	"github.com/picatz/flowstate/internal/pluginreachtest"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
@@ -206,96 +203,21 @@ func TestAFlowfileCanNameTheSQLPluginsTasks(t *testing.T) {
 }
 
 func buildPlugin(t *testing.T, output string) {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-
-	// -cover only when internal/covbuild says coverage was asked for, which
-	// is `make coverage` and nothing else. This binary is a real subprocess:
-	// without instrumentation every line it runs is invisible to the harness
-	// that launched it, and this plugin's end-to-end path runs nowhere else.
-	args := append([]string{"build"}, covbuild.BuildArgs()...)
-	args = append(args, "-o", output, sqlModule)
-
-	cmd := exec.CommandContext(ctx, "go", args...)
-	if wd, err := os.Getwd(); err == nil {
-		cmd.Dir = wd
-	}
-
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building the sql plugin: %v: %s", err, out)
-	}
+	pluginreachtest.BuildPlugin(t, sqlModule, output)
 }
 
 func readExample(t *testing.T, name string) []byte {
-	t.Helper()
-
-	data, err := os.ReadFile(filepath.Join(exampleDir, name))
-	if err != nil {
-		t.Fatalf("reading the example workflow: %v", err)
-	}
-	return data
+	return pluginreachtest.ReadFile(t, filepath.Join(exampleDir, name))
 }
 
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, info.Mode())
-}
+var copyFile = pluginreachtest.CopyFile
 
 func openHost(t *testing.T, cfg plugin.Config) *plugin.Host {
-	t.Helper()
-
-	// A plugin's environment is built from scratch rather than inherited
-	// (see plugin.pluginEnv), so the coverage destination reaches the
-	// process only if it is named here. Empty unless FLOWSTATE_COVERDIR is
-	// set, which makes this a no-op outside `make coverage`.
-	cfg.Env = append(cfg.Env, covbuild.Env()...)
-
-	host, err := plugin.NewHost(cfg)
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		host.Close(ctx)
-	})
-
-	if err := host.Open(context.Background()); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	return host
+	return pluginreachtest.OpenHost(t, cfg)
 }
 
 func diagnosticText(diags flowfile.Diagnostics) string {
-	var b strings.Builder
-	for _, d := range diags {
-		b.WriteString(d.Message)
-		b.WriteString("\n")
-	}
-	return b.String()
+	return pluginreachtest.DiagnosticText(diags)
 }
 
-func testLogger(t *testing.T) *slog.Logger {
-	t.Helper()
-	return slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Helper()
-	defer func() { _ = recover() }()
-	w.t.Log(strings.TrimRight(string(p), "\n"))
-	return len(p), nil
-}
+var testLogger = pluginreachtest.Logger
