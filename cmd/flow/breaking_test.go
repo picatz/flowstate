@@ -307,6 +307,17 @@ func TestBreakingOutputValuesWidened(t *testing.T) {
 	// old set, so it is silent — again the inverse of the input rule.
 	require.Empty(t, diffFixtures(t, wide, narrow),
 		"removing a member from an output enum must not be a break")
+
+	// Adopting an enum type where there was none only strengthens the
+	// guarantee, exactly as TestBreakingOutputTypeWeakened's loosening case
+	// establishes for every other type. The old declaration has no values of
+	// its own to compare against, so this must stay silent rather than read
+	// every member of the new enum as "added".
+	untyped := fixtureHeader() +
+		"outputs:\n  status:\n    value: ${'ok'}\n" +
+		fixtureStep
+	require.Empty(t, diffFixtures(t, untyped, wide),
+		"adopting an enum type where there was none must not be a break")
 }
 
 // --- end-to-end: the git plumbing and the command wiring ---

@@ -430,7 +430,14 @@ func breakingDiagnostics(old, neu *v1.Workflow, pos *flowfile.Positions) flowfil
 		// [removedValues] with its two sides swapped, which is what "the inverse
 		// rule" means concretely: what is removed reading new-to-old is what was
 		// added reading old-to-new, in the new declaration's own order.
-		if added := removedValues(no.GetValues(), oo.GetValues()); len(added) > 0 {
+		//
+		// Gated on the old declaration already being an enum: an untyped output
+		// has no values of its own, so without this gate every member of a
+		// newly adopted enum reads as "added" against that empty set, contradicting
+		// the type rule just above — adopting a type where there was none is
+		// silent. A typed old declaration reaching this point already shares the
+		// new one's type, since the block above `continue`s otherwise.
+		if added := removedValues(no.GetValues(), oo.GetValues()); oo.GetType() == v1.InputDeclaration_TYPE_ENUM && len(added) > 0 {
 			ds = append(ds, diagAt(pos, "outputs."+name+".values", flowfile.Diagnostic{
 				Field: "outputs." + name, Value: name,
 				Message: fmt.Sprintf(
