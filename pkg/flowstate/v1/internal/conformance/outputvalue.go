@@ -2,6 +2,7 @@ package conformance
 
 import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // A declared output whose value is already known is checked at the submit
@@ -96,5 +97,41 @@ func OutputValueRefusalCases() []Refusal {
 				`, which is not one of the values token declares: "stable", "beta"`,
 			Omits: sensitiveAnswer,
 		},
+		{
+			// #1404. The kind half of the type check passes — a map keyed by
+			// anything is a map — and the declaration is still broken: `struct`
+			// is the promise that this output reads back as a plain object, and
+			// a non-string key is one nothing outside this schema can spell.
+			// Answerable at submit for the same reason the two above are: the
+			// literal is written down, so no run can change what it holds.
+			Name: "a literal struct output keyed by an int is refused at submit",
+			Workflow: declares("outputs-literal-struct-int-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					literalOutput("detail", intKeyedMap(), v1.InputDeclaration_TYPE_STRUCT),
+				},
+				says("a", "hello"),
+			),
+			Contains: `output "detail" is declared struct but computed a map with int keys; ` +
+				`a struct is a map with string keys`,
+		},
 	}
+}
+
+// intKeyedMap is `{1: "value"}` as a literal, which no Flowfile can write.
+//
+// A mapping under `value:` compiles to a structure whose keys are the document's
+// own — YAML keys are strings — so this shape reaches a declared output only
+// from an expression the run evaluates or from a specification built as a
+// message. Both are refused by [v1.CheckOutputValue]; this is the second, which
+// is the one a submit boundary answers.
+func intKeyedMap() *v1.Value {
+	return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
+		Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{
+			Entries: []*expr.MapValue_Entry{{
+				Key:   &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 1}},
+				Value: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "value"}},
+			}},
+		}},
+	}}}
 }

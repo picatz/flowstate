@@ -809,6 +809,47 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 	}, nil
 }
 
+// MapKeyTypeError is what [LiteralToGo] refuses a map key with: a Go
+// map[string]any cannot hold an integer, unsigned, or boolean key, so a value
+// holding one has no plain spelling at all.
+//
+// A named type rather than a bare sentence because two places now read the same
+// judgement. The projection in `cmd/flow` keeps the schema's tagged encoding for
+// a value that will not convert, and [CheckOutputValue] refuses a `type: struct`
+// output that would reach that fallback — a declaration promising a plain
+// object, kept by the rule the projection itself applies rather than by a second
+// rule beside it that could come to disagree (#1404).
+type MapKeyTypeError struct {
+	// KeyType names the refused key's type the way a declaration spells one.
+	//
+	// The name only, never the key: a refusal composed from this is the failure
+	// text of a run whose output may be declared `sensitive:`, and a key is part
+	// of that value (invariant 7).
+	KeyType string
+}
+
+func (e *MapKeyTypeError) Error() string {
+	return fmt.Sprintf(
+		"map key of type %s cannot be converted to a Go map key: only string keys are supported",
+		e.KeyType)
+}
+
+// mapKeyTypeName names a map key's type in the vocabulary a declaration is
+// written in.
+//
+// [DeclaredTypeName] over [inputTypeOf] covers every key CEL can produce — a map
+// key is a string, an int, an unsigned int, or a bool and nothing else — which
+// is what lets a refusal about one read in the same words a declared type does.
+// [literalKindName] answers for a key only a hand-built literal could hold, so
+// the sentence stays a sentence rather than naming "no type".
+func mapKeyTypeName(key *expr.Value) string {
+	if t, ok := inputTypeOf(key); ok {
+		return DeclaredTypeName(t)
+	}
+
+	return literalKindName(key)
+}
+
 // LiteralToGo converts a resolved CEL literal into a plain Go value,
 // recursively for a list or a map. It is the reverse of what [NewValue]
 // performs when a Go value becomes a literal.
@@ -852,7 +893,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 			// this target cannot represent rather than corrupt the result.
 			key, ok := entry.GetKey().GetKind().(*expr.Value_StringValue)
 			if !ok {
-				return nil, fmt.Errorf("map key of type %T cannot be converted to a Go map key: only string keys are supported", entry.GetKey().GetKind())
+				return nil, &MapKeyTypeError{KeyType: mapKeyTypeName(entry.GetKey())}
 			}
 			name := key.StringValue
 			native, err := LiteralToGo(entry.GetValue())

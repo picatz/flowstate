@@ -680,8 +680,47 @@ func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
 		return err
 	}
 
+	if err := checkStructKeys(decl.GetName(), t, lit); err != nil {
+		return err
+	}
+
 	return checkEnumMembership("output", decl.GetName(), t, decl.GetValues(),
 		outputValueRendering(decl), lit)
+}
+
+// checkStructKeys refuses a `struct` output holding a map key a plain object
+// cannot carry, at any depth.
+//
+// The kind check above cannot see this one: a map keyed by anything is a map, so
+// it accepts `{1: "value"}` as a struct. What `type: struct` promises, though, is
+// the plain object a caller reads — `cmd/flow`'s run document converts an output
+// with [LiteralToGo] and keeps the schema's tagged encoding for anything that
+// will not convert — and a non-string key is exactly what does not. Before this,
+// such a run reported success and answered `{"literal":{"mapValue":…}}` under a
+// declaration promising an object (#1404).
+//
+// [LiteralToGo]'s own walk is the judgement rather than a second one over the
+// same union, and deliberately so: the rule about which keys a plain object can
+// hold is the projection's rule, and two of them answering differently is the
+// defect this closes. Only [MapKeyTypeError] is read, because that is the
+// promise a declared type makes; a value some other conversion cannot spell is a
+// separate question this declaration does not answer.
+//
+// Named types only, never the key itself, so the sentence is safe to persist for
+// an output declared `sensitive:` — see [MapKeyTypeError.KeyType].
+func checkStructKeys(name string, declared InputDeclaration_Type, lit *expr.Value) error {
+	if declared != InputDeclaration_TYPE_STRUCT {
+		return nil
+	}
+
+	var keyErr *MapKeyTypeError
+	if _, err := LiteralToGo(lit); !errors.As(err, &keyErr) {
+		return nil
+	}
+
+	return fmt.Errorf("output %q is declared %s but computed a map with %s keys; "+
+		"a struct is a map with string keys",
+		name, DeclaredTypeName(declared), keyErr.KeyType)
 }
 
 // CheckInputConstraints applies a declaration's standard-rule constraints and
