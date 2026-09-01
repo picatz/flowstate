@@ -30,12 +30,14 @@ operate.
 ## The plugin ecosystem
 
 The built-in registry stays small — the admission test in DSL.md holds — so the
-breadth lives in plugins, spelled `<plugin>.<task>:`. Wanted, each landing with a
-worked example verified in CI:
+breadth lives in plugins, spelled `<plugin>.<task>:`. Six ship in-tree and so are
+no longer listed here — `codex`, `git`, `github`, `slack`, `sql`, `vcs`; the
+README's *Extend* row and [PLUGINS.md](PLUGINS.md) are the record. Still wanted,
+each landing with a worked example verified in CI:
 
-- **git** — clone, diff, commit surfaces for repo-driven workloads.
-- **slack** (and discord) — post, and eventually a signal bridge, so an approval
-  gate is answered from the channel where the question was asked.
+- **discord** — post, as `slack.post` already does; and for both channels the
+  signal bridge (#96), so an approval gate is answered from the channel where the
+  question was asked.
 - **grpc** — the generic caller for the unary row of the interaction-shape table;
   the streaming rows stay refused until they have an execution model.
 - **vault / openbao** — the canonical *secrets* plugin example (the in-tree
@@ -45,7 +47,8 @@ worked example verified in CI:
 - **docker, or a sandbox-provider plugin** (Modal or similar) — a place to run
   untrusted work that is not the worker's own host; pairs with `exec:`'s policy.
 - **github-actions** — bidirectional integration, deliberately weird: GHA as a
-  trigger source and as a target, so each system can gate the other.
+  trigger source and as a target, so each system can gate the other. The in-tree
+  `github` plugin covers issues and pull requests; the Actions half is what remains.
 - **llm** — a provider-agnostic completion/tool-call task, which is what the
   agentic workloads above stand on.
 
@@ -68,9 +71,11 @@ A plugin is Connect RPC over a Unix socket, which means nothing about it is
 inherently local: the same three services over TLS to a remote host is a
 *hosted* plugin, authenticated with OAuth2/OIDC (3-legged where a human's
 consent is in the loop) instead of the local handshake token. That is the same
-shape as MCP servers, and MCP should be first-class in both directions —
-`flow mcp` serving the control plane to agents (in flight), and potentially
-consuming MCP services as capability providers.
+shape as MCP servers, and MCP should be first-class in both directions. The
+serving direction landed — `flow mcp` over stdio and the authorized HTTP subset of
+`flow mcp serve`, with the tool roster derived from the service descriptor (see
+[CLI.md](CLI.md) and the generated-ecosystem note below) — so what this file still
+holds is the other direction: consuming MCP services as capability providers (#108).
 
 ## Policy on plugins, and identity all the way down
 

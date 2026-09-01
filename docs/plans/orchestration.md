@@ -145,6 +145,27 @@ tell each agent where it sits: who rebases on whom, and which PR carries
 a shared surface (a CLAUDE.md amendment, a schema change) that the others
 must not touch in flight.
 
+## Bot review findings
+
+Codex and Copilot review every pull request, and the account's Codex
+security-review lane rate-limits under waves (#1352 was found in a sweep
+of ~45 merges made while it did). The rule dispatched with every builder,
+recorded here so a session does not re-derive it:
+
+- A bot finding is a bug report. Verify it against the tree before
+  anything else; the diff is not evidence about itself.
+- Real: fix and push. The pushed fix is the reply — no narration, no
+  thanks, no restating the finding.
+- Wrong: one reply with evidence (file:line, the test that proves it),
+  then leave the thread for the merger.
+- Resolve only threads you addressed; the merge guard denies a merge with
+  any thread unresolved, so an unaddressed thread is a blocked merge, not
+  a nit.
+- If a bot's findings stop converging — each fix draws a new or reshaped
+  one — stop pushing for them and hand the lead what is still flagged.
+- A Codex "usage limit" refusal is a review that did not happen, not a
+  pass; the lead schedules a security-review skill pass for that PR.
+
 ## The communication constitution
 
 Embed this in every dispatch prompt:
@@ -162,3 +183,26 @@ Embed this in every dispatch prompt:
 > model should change, never as a progress bar. The literary register
 > belongs to durable doctrine and does not leak into PR bodies or review
 > replies. Reviews may return PASS; finding-count is not the metric.
+
+## Decisions do not block on the owner
+
+The lead decides. When a design record has more than one credible shape, or
+a decision would otherwise wait on the owner, the lead convenes a working
+session rather than a question: two agents brief with opposite positions
+(each argues one shape end to end against the invariants, with a concrete
+sketch, the failure it forecloses, and the cost it accepts), the lead reads
+both against the tree, decides, and records the decision on the issue with
+the reasoning and the alternative refused. The record names what evidence
+would reopen it. A builder is dispatched from the recorded decision, never
+from the debate.
+
+Working sessions have one question, a reading list, a word budget, and a
+deadline; they are read-only and produce memos, not commits. A session is
+worth its tokens when the wrong shape would cost a protocol bump, a schema
+change, or a trust-boundary rewrite to undo; it is not worth them for a
+naming choice or a bound's value, which the builder decides in the commit
+body. The owner's standing instruction (2026-09-01) is that decisions,
+sequencing and the merge of a green, reviewed PR are the lead's to make;
+what still goes to the owner is the materially irreversible or externally
+consequential act: a first release, a deletion of state, a change to
+production or security controls outside the repository.

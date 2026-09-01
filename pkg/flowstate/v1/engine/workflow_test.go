@@ -945,6 +945,32 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
 			require.True(t, env.IsWorkflowCompleted())
+
+			if test.ExpectFailure {
+				// See the local runner: an output that cannot satisfy its own
+				// declaration fails the run, and what the two drivers must
+				// agree about is the sentence.
+				err := env.GetWorkflowError()
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+				if test.ExpectedErrorOmits != "" {
+					// The durable half of #1396's claim, and the one that
+					// matters most: this error is what Temporal writes into the
+					// run's history, so a value reaching it is a value that
+					// outlives the process that computed it.
+					require.NotContains(t, err.Error(), test.ExpectedErrorOmits,
+						"the failure text carries something this case says it must not")
+				}
+				if test.ExpectedErrorMaxBytes > 0 {
+					// Asserted against the durable rendering, Temporal's own
+					// framing included, because that is the string this driver
+					// has to persist into history.
+					require.Less(t, len(err.Error()), test.ExpectedErrorMaxBytes,
+						"the failure text is larger than this case's bound")
+				}
+
+				return
+			}
 			require.NoError(t, env.GetWorkflowError())
 
 			var out v1.Workflow_StepOutputs
@@ -1252,6 +1278,28 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 			_, err := v1.BindRunInputs(test.Workflow, test.Inputs)
 			require.Error(t, err, "the submission was accepted")
 			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
+// TestRunWorkflowOutputValueRefused is the durable driver's half of the submit
+// boundary for a declared output whose value is already known to be wrong.
+//
+// Nothing is executed, because nothing should be: a specification whose own
+// answer contradicts its own declaration must not get a first step, and no
+// amount of running it can make the contradiction go away. Both drivers reach
+// this through [v1.BindRunInputs], which is what makes the two refuse the same
+// specification in the same words.
+func TestRunWorkflowOutputValueRefused(t *testing.T) {
+	for _, test := range conformance.OutputValueRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+			if test.Omits != "" {
+				require.NotContains(t, err.Error(), test.Omits,
+					"the refusal carries something this case says it must not")
+			}
 		})
 	}
 }

@@ -55,13 +55,31 @@ import (
 // without the extension) are still ticked by a person against a real host, and
 // still recorded in a pull request rather than in a test run.
 
-// hostDoubleBudget bounds the whole of one browser test.
+// hostDoubleBudget bounds the card's own setup and handshake, once the
+// browser itself is already running: navigating the host double, attaching to
+// the card's frame, and completing the ui/initialize handshake with it.
 //
 // Everything inside it is a poll against this deadline, so a card that never
 // renders fails by naming what never became true rather than by hanging: a
-// browser that will not start, a frame that never appears, and a handshake that
-// never completes are all the same shape of failure and all reported here.
+// frame that never appears and a handshake that never completes are both
+// reported here. Getting the browser to that starting point is bounded
+// separately, by browserStartupBudget below, so a slow cold start cannot eat
+// into the time this budget gives the handshake to prove itself.
 const hostDoubleBudget = 60 * time.Second
+
+// browserStartupBudget bounds only getting a browser process to a page target
+// the harness can attach to: launching it, and its devtools port and first
+// page becoming visible.
+//
+// Larger than hostDoubleBudget, deliberately: browser startup is the one
+// piece of these tests whose duration the code under test does not control.
+// On a runner loaded to the level CI's `test` job reaches, a cold start alone
+// has already exceeded the old shared 60s bound and failed here twice within
+// one hour on unrelated PRs, both "the browser never offered a page target:
+// context deadline exceeded" with every other package green: #1281 (run
+// 33554039559, job 100010534986) and #1390 (run 33556795369, job
+// 100019958805). See #1400.
+const browserStartupBudget = 2 * time.Minute
 
 // specDefaultCSP is the policy the MCP Apps specification tells a host to apply
 // to a view whose resource declares none, which the card deliberately does.
@@ -107,9 +125,6 @@ func newCardHarness(t *testing.T) *cardHarness {
 		t.Skip("skipping: launches a browser to execute the card; CI runs the full suite")
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), hostDoubleBudget)
-	t.Cleanup(cancel)
-
 	view := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/view":
@@ -134,7 +149,25 @@ func newCardHarness(t *testing.T) *cardHarness {
 	}))
 	t.Cleanup(host.Close)
 
-	b := startBrowser(t, ctx)
+	// The browser's own start is timed on browserStartupBudget rather than on
+	// ctx below: see that constant's doc comment for why. Nothing startBrowser
+	// creates keeps a reference to startupCtx after it returns — its
+	// Runtime/Page/Target calls finish synchronously inside it, and
+	// DialContext only bounds the dial, not the connection it hands back — so
+	// the common path cancels it explicitly right below, freeing the timer
+	// before the handshake starts rather than waiting for newCardHarness to
+	// return. The defer stays too: startBrowser skips or fails the test on
+	// several paths of its own (no browser found, a launch whose devtools
+	// port or page target never appears, a failed dial or enable), each of
+	// which ends the test before the explicit cancel below would run, and the
+	// defer is what still releases startupCtx on those.
+	startupCtx, cancelStartup := context.WithTimeout(t.Context(), browserStartupBudget)
+	defer cancelStartup()
+	b := startBrowser(t, startupCtx)
+	cancelStartup()
+
+	ctx, cancel := context.WithTimeout(t.Context(), hostDoubleBudget)
+	t.Cleanup(cancel)
 
 	page := b.page()
 	page.call(t, ctx, "Page.navigate", map[string]any{

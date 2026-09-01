@@ -3,16 +3,13 @@
 package reachable
 
 import (
-	"context"
-	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/picatz/flowstate/internal/covbuild"
+	"github.com/picatz/flowstate/internal/pluginreachtest"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
@@ -31,10 +28,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 		t.Skip("Go toolchain unavailable")
 	}
 
-	source, err := os.ReadFile(examplePath)
-	if err != nil {
-		t.Fatalf("reading example: %v", err)
-	}
+	source := pluginreachtest.ReadFile(t, examplePath)
 	before, err := flowfile.ValidateSource(source)
 	if err != nil {
 		t.Fatalf("validating before registration: %v", err)
@@ -85,53 +79,14 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 }
 
 func buildPlugin(t *testing.T, output string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	args := append([]string{"build"}, covbuild.BuildArgs()...)
-	args = append(args, "-o", output, slackModule)
-	cmd := exec.CommandContext(ctx, "go", args...)
-	if wd, err := os.Getwd(); err == nil {
-		cmd.Dir = wd
-	}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building Slack plugin: %v: %s", err, out)
-	}
+	pluginreachtest.BuildPlugin(t, slackModule, output)
 }
 
 func openHost(t *testing.T, cfg plugin.Config) *plugin.Host {
-	t.Helper()
-	cfg.Env = append(cfg.Env, covbuild.Env()...)
-	cfg.Logger = slog.New(slog.NewTextHandler(testWriter{t}, nil))
-	host, err := plugin.NewHost(cfg)
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		host.Close(ctx)
-	})
-	if err := host.Open(context.Background()); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	return host
+	cfg.Logger = pluginreachtest.Logger(t)
+	return pluginreachtest.OpenHost(t, cfg)
 }
 
 func diagnosticText(diags flowfile.Diagnostics) string {
-	var b strings.Builder
-	for _, diag := range diags {
-		b.WriteString(diag.Message)
-		b.WriteByte('\n')
-	}
-	return b.String()
-}
-
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Helper()
-	defer func() { _ = recover() }()
-	w.t.Log(strings.TrimSpace(string(p)))
-	return len(p), nil
+	return pluginreachtest.DiagnosticText(diags)
 }

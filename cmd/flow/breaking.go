@@ -55,8 +55,9 @@ func newBreakingCommand() *cobra.Command {
 		Long: "Compile every Flowfile at the working tree and at a git ref, match workflows by " +
 			"`name:`, and report interface breaks: a declared input that a caller must now supply, " +
 			"an input whose type narrowed, an input removed, a declared output removed or renamed, " +
-			"or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a " +
-			"contract may grow, not shrink.\n\n" +
+			"a declared output whose type or guarantee weakened, or a constraint tightened. " +
+			"Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not " +
+			"shrink.\n\n" +
 			"The comparison is over the compiled protos, not the YAML text, so it is immune to " +
 			"formatting and comment churn. Each finding names the position in the working-tree file, " +
 			"what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as " +
@@ -397,6 +398,52 @@ func breakingDiagnostics(old, neu *v1.Workflow, pos *flowfile.Positions) flowfil
 					"output %q was removed or renamed, so callers reading it break; keep the name, or add the new one alongside it", name),
 			})
 			continue
+		}
+
+		// A declared output type is the other half of that same guarantee, and
+		// it is read in the *opposite* direction from an input's: an input's
+		// type constrains what a caller may send, so tightening it breaks them,
+		// while an output's type promises what a caller will receive, so it is
+		// weakening that breaks them. Dropping the type (nothing is promised any
+		// more) and changing it (something else is promised) are both that;
+		// adding one where there was none only promises more, so it is silent,
+		// exactly as an added `must:` above is. There is no subtyping in this
+		// vocabulary — the six data types are disjoint and `enum` is a string
+		// with a set — so "changed" is the whole of the decidable question and
+		// no direction of change is safe.
+		if oldType := oo.GetType(); oldType != v1.InputDeclaration_TYPE_UNSPECIFIED && oldType != no.GetType() {
+			ds = append(ds, diagAt(pos, "outputs."+name+".type", flowfile.Diagnostic{
+				Field: "outputs." + name, Value: name,
+				Message: fmt.Sprintf(
+					"output %q changed type from %s to %s, so callers reading the old type break; keep the type, or add a new output",
+					name, typeName(oldType), typeName(no.GetType())),
+			}))
+			continue
+		}
+
+		// An enum output's `values:` is the set a caller may switch on, so
+		// *adding* a member breaks them — the run may now answer with something
+		// their code has never seen — which is the exact inverse of the input
+		// rule one block up, where adding a member only admits more. Removing a
+		// member narrows what the run can answer with, which no consumer of the
+		// old set can be surprised by, so it stays silent.
+		// [removedValues] with its two sides swapped, which is what "the inverse
+		// rule" means concretely: what is removed reading new-to-old is what was
+		// added reading old-to-new, in the new declaration's own order.
+		//
+		// Gated on the old declaration already being an enum: an untyped output
+		// has no values of its own, so without this gate every member of a
+		// newly adopted enum reads as "added" against that empty set, contradicting
+		// the type rule just above — adopting a type where there was none is
+		// silent. A typed old declaration reaching this point already shares the
+		// new one's type, since the block above `continue`s otherwise.
+		if added := removedValues(no.GetValues(), oo.GetValues()); oo.GetType() == v1.InputDeclaration_TYPE_ENUM && len(added) > 0 {
+			ds = append(ds, diagAt(pos, "outputs."+name+".values", flowfile.Diagnostic{
+				Field: "outputs." + name, Value: name,
+				Message: fmt.Sprintf(
+					"output %q widened its declared values (added: %s), so callers switching on the old set break; keep the set, or add a new output",
+					name, strings.Join(added, ", ")),
+			}))
 		}
 
 		// A declared output's `must:` is a postcondition the callee guarantees,

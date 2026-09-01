@@ -12,6 +12,7 @@ import (
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
 	slackv1 "github.com/picatz/flowstate/plugins/slack/gen/slack/v1"
 )
@@ -86,24 +87,44 @@ func TestDeniedDestinationIsNotDialed(t *testing.T) {
 	}
 }
 
-func TestSlackPostRefusesARehearsalBeforeAnyWrite(t *testing.T) {
-	old := egressPolicy
-	var err error
-	egressPolicy, err = netpolicy.New(netpolicy.WithAllowLoopback())
-	if err != nil {
-		t.Fatalf("building test egress policy: %v", err)
+func TestSlackPostOnlyAcceptsAnEstablishedProductionMode(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		caller sdk.Caller
+		found  bool
+		wantOK bool
+	}{
+		{name: "production", caller: sdk.Caller{Identity: &flowstatev1.WorkloadIdentity{Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION}}, found: true, wantOK: true},
+		{name: "rehearsal", caller: sdk.Caller{Identity: &flowstatev1.WorkloadIdentity{Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL}}, found: true},
+		{name: "unspecified", caller: sdk.Caller{Identity: &flowstatev1.WorkloadIdentity{}}, found: true},
+		{name: "unknown future mode", caller: sdk.Caller{Identity: &flowstatev1.WorkloadIdentity{Mode: flowstatev1.WorkloadIdentityMode(99)}}, found: true},
+		{name: "missing caller"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := requireProductionMode(test.caller, test.found)
+			if test.wantOK && err != nil {
+				t.Fatalf("requireProductionMode: %v", err)
+			}
+			if !test.wantOK && (err == nil || !strings.Contains(err.Error(), "production execution identity")) {
+				t.Fatalf("requireProductionMode error = %v, want fail-closed production-mode refusal", err)
+			}
+		})
 	}
+}
+
+func TestSlackPostChecksModeBeforeInputsAndEgress(t *testing.T) {
+	old := egressPolicy
+	egressPolicy = nil
 	t.Cleanup(func() { egressPolicy = old })
 
-	// A direct call has no host-attested production identity. It must fail at
-	// the first gate, before decoding (and therefore before resolving or using)
-	// even an otherwise valid credential. Local dispatch carries REHEARSAL and
-	// reaches the same branch.
-	_, err = slackPost(context.Background(), map[string]*flowstatev1.Value{
-		"token": flowstatev1.NewValue("not-a-real-token"),
-	}, &flowstatev1.Scope{})
+	// Invalid inputs and absent egress would each fail if reached. The mode
+	// refusal must remain the task boundary's first decision, before either one
+	// and before any credential can be decoded or used.
+	_, err := slackPost(context.Background(), map[string]*flowstatev1.Value{
+		"token": flowstatev1.NewValue("inert-test-token"),
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "production execution identity") {
-		t.Fatalf("slackPost error = %v, want rehearsal-write refusal", err)
+		t.Fatalf("slackPost error = %v, want production-mode refusal before inputs and egress", err)
 	}
 }
 
