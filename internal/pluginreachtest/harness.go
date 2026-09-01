@@ -74,7 +74,9 @@ func OpenHost(t *testing.T, cfg plugin.Config) *plugin.Host {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		host.Close(ctx)
+		if err := host.Close(ctx); err != nil {
+			t.Errorf("closing plugin host: %v", err)
+		}
 	})
 	if err := host.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
