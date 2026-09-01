@@ -93,10 +93,13 @@ func retriableTransportFailure(method string, err error) bool {
 //   - An evaluation the caller's context interrupted, on the request itself
 //     rather than on a later hop: the rules never finished, so no dial
 //     followed. Same AfterRedirect reasoning.
-//   - A policy denial ([netpolicy.DenyError]) does not reach here: the branch
-//     above answers it permanently, which is the right answer for a refused
-//     first request and for a refused redirect hop alike, and permanent is
-//     what a denial deserves either way.
+//   - A policy denial ([netpolicy.DenyError]) refusing the request the workflow
+//     made. A refused *redirect hop* is again the opposite: the origin was
+//     permitted and sent, so a denial arriving mid-chain is not evidence that
+//     nothing happened. The denial branch answers an ordinary refusal
+//     permanently either way, but a denial whose record could not be written
+//     is classified from this, and there the difference decides whether a POST
+//     that already reached its peer may be sent again.
 //   - A request that could not be built, a body that could not be encoded, or
 //     a reference that could not be resolved all return before Do is called,
 //     so they are not classified here at all.
@@ -112,6 +115,11 @@ func requestNeverLeft(err error) bool {
 	var undecided *netpolicy.UndecidedError
 	if errors.As(err, &undecided) {
 		return !undecided.AfterRedirect
+	}
+
+	var denied *netpolicy.DenyError
+	if errors.As(err, &denied) {
+		return !denied.AfterRedirect
 	}
 
 	return false
@@ -486,7 +494,7 @@ func egressDenial(err error, endpoint string) egressVerdict {
 		return egressVerdict{Endpoint: endpoint}
 	}
 
-	verdict := egressVerdict{Endpoint: refusedEndpoint(denied.Target, endpoint)}
+	verdict := egressVerdict{Endpoint: refusedEndpoint(denied, endpoint)}
 
 	switch denied.Reason {
 	case netpolicy.ReasonDenyRule:
@@ -521,28 +529,47 @@ func unrecordedRequestKind(outcomeUnknown bool) ErrorKind {
 	return ErrorKindUpstream
 }
 
-// refusedEndpoint reads the destination out of a denial's target, so a
-// redirect hop that was refused is recorded as the hop rather than as the URL
-// the workflow wrote.
+// refusedEndpoint reads the destination out of a denial, so a redirect hop that
+// was refused is recorded as the hop rather than as the URL the workflow wrote.
 //
-// [netpolicy.DenyError.Target] is a URL for the request-scoped refusals and
-// something else — a resolved address, a port, a scheme — for the rest, so a
-// target that does not spell a scheme and a host is not treated as one:
-// url.Parse would read "203.0.113.9:443" as a scheme, and a record naming a
-// destination that never existed is worse than one naming the request's own.
-// Only the scheme and host are taken, exactly as [egressEndpoint] takes them
-// from the request.
-func refusedEndpoint(target, fallback string) string {
-	if !strings.Contains(target, "://") {
-		return fallback
+// [netpolicy.DenyError.Hop] is the request the decision was about, and it is
+// the first source because it is the only one that always names a destination.
+// Target is a URL for the request-scoped refusals and something else — a
+// resolved address, a port, a scheme — for the rest: a hop refused at dial
+// time carries "10.0.0.1:9", which is not a destination and would leave the
+// record naming the origin, an endpoint this policy allowed and this worker
+// reached (Codex, picatz/flowstate#1394).
+//
+// Both are read through [egressEndpoint], so a record carries the scheme and
+// host and no other part of a URL. A target that does not spell a scheme and a
+// host is not treated as one: url.Parse would read "203.0.113.9:443" as a
+// scheme, and a record naming a destination that never existed is worse than
+// one naming the request's own.
+func refusedEndpoint(denied *netpolicy.DenyError, fallback string) string {
+	if endpoint := parsedEndpoint(denied.Hop); endpoint != "" {
+		return endpoint
 	}
 
-	parsed, err := url.Parse(target)
+	if endpoint := parsedEndpoint(denied.Target); endpoint != "" {
+		return endpoint
+	}
+
+	return fallback
+}
+
+// parsedEndpoint renders a candidate URL as an audit record's endpoint, or
+// empty when it does not spell one.
+func parsedEndpoint(candidate string) string {
+	if !strings.Contains(candidate, "://") {
+		return ""
+	}
+
+	parsed, err := url.Parse(candidate)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fallback
+		return ""
 	}
 
-	return parsed.Scheme + "://" + parsed.Host
+	return egressEndpoint(parsed)
 }
 
 // isLoopbackHost reports whether host names the local machine — literally
@@ -837,18 +864,6 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			verdict := egressDenial(err, egressSubject.ResourceKey)
 
 			err = scrubber.ScrubError(err)
-			// A policy denial is deliberate and will happen again; a connection
-			// reset, DNS failure, or timeout may succeed later. Distinguishing
-			// them is what stops a denied request from being retried.
-			if errors.Is(err, netpolicy.ErrDenied) {
-				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
-
-				// Late, because a refused redirect hop is decided after an
-				// earlier hop of this request already reached its peer, and can
-				// be decided while the caller's context is done.
-				return nil, auditEnforcementDenyLate(ctx, egressSubject, verdict.Code,
-					NewTaskError("http", ErrorKindPolicyDenied, err))
-			}
 
 			// Whether repeating this request could repeat an effect the first
 			// attempt already had. Decided once, here, because every
@@ -862,6 +877,31 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			// picatz/flowstate#1394).
 			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !neverLeft &&
 				!retriableTransportFailure(taskInputs.GetMethod(), err)
+
+			// A policy denial is deliberate and will happen again; a connection
+			// reset, DNS failure, or timeout may succeed later. Distinguishing
+			// them is what stops a denied request from being retried.
+			if errors.Is(err, netpolicy.ErrDenied) {
+				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
+
+				// Late, because a refused redirect hop is decided after an
+				// earlier hop of this request already reached its peer, and can
+				// be decided while the caller's context is done.
+				refused := auditEnforcementDenyLate(ctx, egressSubject, verdict.Code,
+					NewTaskError("http", ErrorKindPolicyDenied, err))
+
+				// A required recorder that could not write replaces the
+				// refusal, and an unclassified error is [ErrorKindInternal],
+				// which is retryable. For a denial mid-chain that is a repeat
+				// of the original request, which already reached its peer, so
+				// the sink's failure is classified by the same question the
+				// allow path asks rather than left to the default.
+				if AuditRecorderUnavailable(refused) {
+					return nil, NewTaskError("http", unrecordedRequestKind(outcomeUnknown), refused)
+				}
+
+				return nil, refused
+			}
 
 			// Not a denial, so the policy permitted this request: the transport
 			// evaluates every rule that decides before it spends a rate-limit

@@ -96,6 +96,28 @@ type DenyError struct {
 	// rather than from a rule matching. A rule that could not be evaluated puts
 	// the evaluation error here, so a caller can inspect it with errors.As.
 	Err error
+
+	// Hop is the redacted URL of the request this decision was about, when the
+	// decision was made about one.
+	//
+	// Target is not always that URL: for an address, a port or a scheme
+	// refusal it is the attribute that was rejected — "203.0.113.9:443" — and
+	// a caller that must name the destination cannot recover it from that. Set
+	// at [Policy.checkRequestHop] and [Policy.controlDial], the two places a
+	// hop enters the policy, so the destination a denial names is the hop that
+	// was refused rather than the URL the caller originally asked for
+	// (picatz/flowstate#1379).
+	//
+	// Empty for a denial made outside a request, such as [Policy.CheckAddr]'s.
+	Hop string
+
+	// AfterRedirect reports that an earlier request in this redirect chain
+	// reached its peer before this hop was refused, which means the caller's
+	// original request was sent. [RateLimitedError.AfterRedirect] and
+	// [UndecidedError.AfterRedirect] carry the same fact for the same reason:
+	// a caller must not replay a non-idempotent request as though nothing had
+	// happened.
+	AfterRedirect bool
 }
 
 // Error implements the error interface.

@@ -346,6 +346,13 @@ type attrs struct {
 	scheme string
 	host   string
 
+	// url is the redacted URL of the request these attributes came from, so a
+	// denial the dialer makes can name the destination it refused. The dialer
+	// sees a resolved address and nothing else, and an address is not a
+	// destination: "10.0.0.1:9" cannot tell a caller which hop of a redirect
+	// chain was refused (picatz/flowstate#1379).
+	url string
+
 	// afterRedirect is [http.Request.Response] != nil for the request these
 	// attributes came from: an earlier request in this chain reached its peer.
 	//
@@ -403,13 +410,19 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// A round tripper must not modify the request it is given, so the attributes
 	// the dialer needs are attached to a copy.
-	if !rt.policy.connRules.empty() {
-		req = req.Clone(withAttrs(req.Context(), attrs{
-			scheme:        strings.ToLower(req.URL.Scheme),
-			host:          ruleHost(req.URL),
-			afterRedirect: req.Response != nil,
-		}))
-	}
+	//
+	// Attached for every request rather than only when connection-scoped rules
+	// are configured. The dialer refuses on the address policy too — a private
+	// address behind a public name, the control plane's own — and such a
+	// refusal has to name the hop it was about, which is knowable here and
+	// nowhere below. The cost is one clone per request, against a denial that
+	// would otherwise name the wrong destination.
+	req = req.Clone(withAttrs(req.Context(), attrs{
+		scheme:        strings.ToLower(req.URL.Scheme),
+		host:          ruleHost(req.URL),
+		url:           req.URL.Redacted(),
+		afterRedirect: req.Response != nil,
+	}))
 
 	resp, err := rt.next.RoundTrip(req)
 	if err != nil {
@@ -632,27 +645,41 @@ func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string,
 // resolved and the socket created, but before the connection is made, for every
 // address the dialer tries. Returning an error prevents the connection.
 func (p *Policy) controlDial(ctx context.Context, network, address string, _ syscall.RawConn) error {
+	a, hasAttrs := attrsFromContext(ctx)
+
+	// Every denial here is about the hop those attributes describe, and the
+	// dialer is the only place that knows both the refusal and which request
+	// it belongs to. Marked once, on the way out, so a check added here cannot
+	// forget to say which destination it refused.
+	markHop := func(err error) error {
+		var denied *DenyError
+		if hasAttrs && errors.As(err, &denied) {
+			denied.Hop, denied.AfterRedirect = a.url, a.afterRedirect
+		}
+
+		return err
+	}
+
 	addrPort, err := netip.ParseAddrPort(address)
 	if err != nil {
 		// Every address reaching the hook for an HTTP request is a resolved
 		// literal. Anything else, such as a Unix socket path, is refused.
-		return &DenyError{
+		return markHop(&DenyError{
 			Reason: ReasonRequest,
 			Target: network + " " + address,
 			Detail: "not a resolved IP address and port",
-		}
+		})
 	}
 
 	if err := p.checkResolvedAddr(ctx, addrPort); err != nil {
-		return err
+		return markHop(err)
 	}
 
 	if p.connRules.empty() {
 		return nil
 	}
 
-	a, ok := attrsFromContext(ctx)
-	if !ok {
+	if !hasAttrs {
 		// Connection-scoped rules need attributes the round tripper attaches. If
 		// they are missing the request did not come through the policy's client,
 		// so the rules cannot be evaluated and the dial fails closed.
@@ -663,7 +690,7 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		}
 	}
 
-	err = p.evalConnRules(ctx, address, a.scheme, a.host, addrPort)
+	err = markHop(p.evalConnRules(ctx, address, a.scheme, a.host, addrPort))
 
 	// The same mark [Policy.checkRequestHop] makes for the request-scoped
 	// rules, made here because this is the other place an evaluation can be
@@ -757,10 +784,23 @@ func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
 // no chain to be after.
 func (p *Policy) checkRequestHop(req *http.Request) error {
 	err := p.checkRequest(req)
+	if err == nil {
+		return nil
+	}
+
+	afterRedirect := req.Response != nil
 
 	var undecided *UndecidedError
-	if req.Response != nil && errors.As(err, &undecided) {
+	if afterRedirect && errors.As(err, &undecided) {
 		undecided.AfterRedirect = true
+	}
+
+	// A denial is marked with the hop as well as with the chain, because
+	// [DenyError.Target] is the attribute that was rejected rather than the
+	// destination: a scheme or a port refusal names neither.
+	var denied *DenyError
+	if errors.As(err, &denied) && req.URL != nil {
+		denied.Hop, denied.AfterRedirect = req.URL.Redacted(), afterRedirect
 	}
 
 	return err

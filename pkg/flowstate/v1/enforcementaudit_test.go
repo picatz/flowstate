@@ -631,6 +631,104 @@ func TestAnUnrecordableRequestThatReachedItsPeerIsNotRetried(t *testing.T) {
 	require.True(t, v1.ClassifyError(err).Retryable())
 }
 
+// TestADeniedRedirectHopThatCouldNotBeRecordedIsNotRetried: the denial branch's
+// own recorder failure, classified (Codex, picatz/flowstate#1394).
+//
+// A POST reaches its origin, the peer redirects it somewhere the rules refuse,
+// and the required sink cannot write that refusal. The refusal replaces itself
+// with the recorder's error, which is unclassified and therefore Internal —
+// retryable — so either driver would repeat a POST that already took effect.
+// The hop is what makes it so: a first-hop denial sent nothing.
+//
+// Mutation-proved: removing the [netpolicy.DenyError] arm from
+// [requestNeverLeft] makes this retryable, and removing the classification at
+// the denial branch makes it Internal.
+func TestADeniedRedirectHopThatCouldNotBeRecordedIsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:9/elsewhere", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	policy, err := netpolicy.New(
+		netpolicy.WithAllowLoopback(),
+		netpolicy.WithDenyRules(`port == 9`),
+	)
+	require.NoError(t, err)
+
+	post := map[string]*v1.Value{
+		"url":    v1.NewValue(origin.URL + "/start"),
+		"method": v1.NewValue(http.MethodPost),
+	}
+
+	ctx, sink := auditing(t, audit.Required())
+	sink.fail = errors.New("the collector is down")
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, post, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+	require.True(t, v1.AuditRecorderUnavailable(err))
+	require.Equal(t, v1.ErrorKindUpstreamUnknown, v1.ClassifyError(err),
+		"the original POST reached its peer before the hop was refused, so a repeat repeats it")
+	require.False(t, v1.ClassifyError(err).Retryable())
+
+	// A first-hop denial under the same failing sink sent nothing, so it stays
+	// retryable: the collector coming back lets the step reach its refusal.
+	ctx, sink = auditing(t, audit.Required())
+	sink.fail = errors.New("the collector is down")
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url":    v1.NewValue("http://127.0.0.1:9/refused"),
+		"method": v1.NewValue(http.MethodPost),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+	require.True(t, v1.AuditRecorderUnavailable(err))
+	require.True(t, v1.ClassifyError(err).Retryable(),
+		"nothing left this worker, so there is nothing a repeat could repeat")
+}
+
+// TestAHopRefusedAtDialTimeIsRecordedAsTheHop: the destination a dial-time
+// refusal names.
+//
+// The address policy decides after DNS, where the only thing in hand is
+// "10.0.0.1:9" — not a destination. The record therefore fell back to the URL
+// the workflow wrote, which is an endpoint this policy *allowed* and this
+// worker reached, so the trail said the origin was refused and never mentioned
+// the address that actually was (Codex, picatz/flowstate#1394).
+//
+// Mutation-proved: dropping the hop from the dialer's mark, or reading Target
+// first in refusedEndpoint, records the origin here.
+func TestAHopRefusedAtDialTimeIsRecordedAsTheHop(t *testing.T) {
+	t.Parallel()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://10.0.0.1:9/internal", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	// Loopback is permitted, so the origin is reachable; 10.0.0.0/8 is refused
+	// by the shipped address policy, at the dial, after the redirect.
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	require.NoError(t, err)
+
+	ctx, sink := auditing(t)
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url": v1.NewValue(origin.URL + "/start"),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	// One record, and it is the refusal: this request's single egress decision
+	// is the one that ended it, which is the seam's stated shape (see the
+	// comment on recordEgress, and picatz/flowstate#1397 for the per-hop trail
+	// that would also name the origin it reached).
+	refused := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, refused.GetDecision())
+	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED, refused.GetDenyCode())
+	require.Equal(t, "http://10.0.0.1:9", refused.GetResourceKey(),
+		"the record names the address the policy refused, not the origin it allowed")
+}
+
 // TestADestinationOutsideThePolicyIsRecordedWithoutARule: netpolicy's six
 // non-rule refusals share one code, because the record already names the
 // destination and no rule decided.
