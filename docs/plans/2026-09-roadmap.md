@@ -218,7 +218,9 @@ Must-land is marked; cut from the bottom, never from must-land.
 5. **#965** — stop the deep tier self-publishing fuzz reproducers in public
    issues, per SECURITY.md's own embargo posture.
 6. **#489** — decide the back-to-back-merge answer (merge queue or
-   re-verification), even if the fix lands later.
+   re-verification), even if the fix lands later. — **Decided** (recorded on
+   #489): the merge queue; `merge_group` support in `ci.yml` lands as its own
+   PR this week, and the ruleset flip follows it.
 
 ### Build (PR candidates)
 
@@ -257,8 +259,8 @@ Must-land is marked; cut from the bottom, never from must-land.
     the existing verification schemes and `signals:` authorization, needs a
     sender-identity shape and idempotency across redelivery, conformance
     cases with both drivers as callers, and the `flowstate-security-review`
-    pass before merge. #96 is milestoned "Post-release exploration"; the
-    promotion is the owner's call, argued in its thread. If the week runs
+    pass before merge. **Promoted** (recorded on #96): dispatched as soon as
+    the perimeter PRs of the wave are merged. If the week runs
     short, this slips whole rather than shipping unverified — a half-bridge
     at a trust boundary is worse than none.
 12. **Factory catch-up** — #1386 (the ledger cadence decision), #1307's
