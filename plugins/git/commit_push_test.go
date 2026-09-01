@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +17,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/plumbing/transport/client"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
@@ -147,17 +153,40 @@ func remoteCommitShas(t *testing.T, remoteDir, branch string) []string {
 
 // TestCommitPushTaskBoundaryDoesNotTreatModeAsAuthorization records the
 // compatibility half of this task's execution-mode posture. With no production
-// caller, the task still reaches its ordinary input validation; the real local
-// repository mutations below prove the write path that follows. A future mode
-// gate would change this error before any credential or network fixture was
-// involved and fail this test.
+// caller and otherwise valid inputs, the task reaches doCommitPush's real clone
+// path and contacts the TLS fixture. A future mode gate anywhere before that
+// write path would leave the request counter at zero and fail this test.
 func TestCommitPushTaskBoundaryDoesNotTreatModeAsAuthorization(t *testing.T) {
-	_, err := gitCommitPush(context.Background(), nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "url") {
-		t.Fatalf("gitCommitPush with no production caller error = %v, want ordinary url validation", err)
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "fixture stops after the write path reaches its remote", http.StatusBadGateway)
+	}))
+	t.Cleanup(server.Close)
+
+	// Install the fixture client into go-git's process-wide protocol registry,
+	// then restore the production governed client for every following test.
+	client.InstallProtocol("https", githttp.NewClient(server.Client()))
+	t.Cleanup(func() {
+		if err := installEgressPolicy(); err != nil {
+			t.Fatalf("restoring governed git transport: %v", err)
+		}
+	})
+
+	_, err := gitCommitPush(context.Background(), map[string]*flowstatev1.Value{
+		"url":       flowstatev1.NewValue(server.URL + "/repo.git"),
+		"branch":    flowstatev1.NewValue("main"),
+		"base_ref":  flowstatev1.NewValue("0123456789012345678901234567890123456789"),
+		"message":   flowstatev1.NewValue("rehearsal write"),
+		"files":     flowstatev1.NewValue(map[string]any{"mode.txt": "rehearsal\n"}),
+		"timestamp": flowstatev1.NewValue("2026-09-01T12:00:00Z"),
+		"token":     flowstatev1.NewValue("inert-test-token"),
+	}, nil)
+	if err == nil {
+		t.Fatal("gitCommitPush against refusing fixture: got no error")
 	}
-	if strings.Contains(err.Error(), "production") || strings.Contains(err.Error(), "rehearsal") {
-		t.Fatalf("gitCommitPush treated execution mode as write authorization: %v", err)
+	if got := requests.Load(); got == 0 {
+		t.Fatalf("gitCommitPush with no production caller never reached the write path's remote: %v", err)
 	}
 }
 

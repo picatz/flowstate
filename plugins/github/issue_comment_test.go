@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,9 +19,9 @@ import (
 // separately permit it. The local server and inert token keep that contract
 // credential-free.
 func TestIssueCommentWritesWithoutAProductionCaller(t *testing.T) {
-	var requests int
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v3/repos/acme/widgets/issues/7/comments" {
 			t.Errorf("request = %s %s", r.Method, r.URL.Path)
 		}
@@ -53,8 +54,8 @@ func TestIssueCommentWritesWithoutAProductionCaller(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issueComment without a production caller: %v", err)
 	}
-	if requests != 1 {
-		t.Fatalf("comment requests = %d, want 1 real local mutation", requests)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("comment requests = %d, want 1 real local mutation", got)
 	}
 	if got := outputs.GetNamedValues()["comment_id"].GetLiteral().GetInt64Value(); got != 42 {
 		t.Fatalf("comment_id = %d, want 42", got)

@@ -112,6 +112,22 @@ func TestSlackPostOnlyAcceptsAnEstablishedProductionMode(t *testing.T) {
 	}
 }
 
+func TestSlackPostChecksModeBeforeInputsAndEgress(t *testing.T) {
+	old := egressPolicy
+	egressPolicy = nil
+	t.Cleanup(func() { egressPolicy = old })
+
+	// Invalid inputs and absent egress would each fail if reached. The mode
+	// refusal must remain the task boundary's first decision, before either one
+	// and before any credential can be decoded or used.
+	_, err := slackPost(context.Background(), map[string]*flowstatev1.Value{
+		"token": flowstatev1.NewValue("inert-test-token"),
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "production execution identity") {
+		t.Fatalf("slackPost error = %v, want production-mode refusal before inputs and egress", err)
+	}
+}
+
 func TestRateLimitCarriesBoundedRetryAfter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "17")
