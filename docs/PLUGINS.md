@@ -641,6 +641,18 @@ under — so the host sets the grant to the empty string and `sdk.EgressPolicy()
 parses it. A plugin reading presence with `os.Getenv` instead of `os.LookupEnv`
 collapses the two and denies where the same deployment's built-in task allows.
 
+**A proxy policy brings its proxy with it.** When the deployment's policy sets
+`proxy_from_environment: true`, your launch environment also carries the worker's
+own `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` (and their lowercase spellings),
+copied verbatim — so `sdk.HTTPClient()` routes exactly where the built-in `http`
+task does. They are granted, not inherited: nothing else from the worker's
+environment crosses, and when the policy does not proxy, none of them do either.
+Without that grant a plugin's `http.ProxyFromEnvironment` would find nothing and
+dial straight out, which on a deployment whose egress is only permitted through
+a proxy is the plugin going around the control rather than taking a different
+route. An operator who wants a plugin to use a different proxy names it in the
+host's `Env`, and that entry wins over the worker's.
+
 The policy is at most **64 KiB** before encoding (`plugin.MaxEgressPolicyBytes`).
 It travels as one environment string through `exec`, which Linux bounds at 128
 KiB, and a policy over the limit is refused by `flow` when it reads the file and

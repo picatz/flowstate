@@ -20,9 +20,17 @@
 //	FLOWSTATE_PLUGIN_TOKEN_FD          fd carrying the per-launch secret
 //	FLOWSTATE_PLUGIN_HOST_FD           fd that closes when the host exits
 //	FLOWSTATE_EGRESS_POLICY_B64        the deployment's egress policy, base64
+//	HTTP_PROXY HTTPS_PROXY NO_PROXY    only when the policy proxies (see below)
 //
 // The secret itself is never in the environment; only the number of the
 // descriptor carrying it is. See [TokenFDEnv] and [ReadToken].
+//
+// The last line is not a protocol variable. The proxy variables belong to Go's
+// own [net/http.ProxyFromEnvironment] and to every other HTTP stack that reads
+// them, and they are here because they are *granted* alongside the policy rather
+// than inherited: a plugin's environment is built from nothing, so a policy that
+// says "proxy from the environment" would find no environment to proxy from.
+// See [ProxyEnv].
 //
 // The egress grant is set whenever the deployment configured a policy, and is
 // present-but-empty when that policy is an empty document — which is a policy,
@@ -151,6 +159,38 @@ const (
 // it (plugin.Config.validate), and the SDK reading the grant out of an
 // environment it did not build (sdk.EgressPolicy).
 const MaxEgressPolicyBytes = 64 << 10
+
+// ProxyEnv returns the environment variable names [net/http.ProxyFromEnvironment]
+// reads, in both the uppercase and lowercase spellings it accepts.
+//
+// These are granted, not protocol. Nothing in this package sets or reads them;
+// they are ordinary variables that every HTTP stack already understands, and the
+// host forwards the worker's own values verbatim — and only when the deployment's
+// policy has `proxy_from_environment` enabled, because that is the operator
+// saying the proxy is part of how this deployment reaches the network.
+//
+// Without the grant a plugin dials directly while the worker's built-in http
+// task proxies: the plugin's environment is built from nothing, so
+// ProxyFromEnvironment inside it finds nothing and returns no proxy. On a
+// deployment whose egress leaves through a mandatory proxy that is not a
+// difference in routing, it is the plugin going around the control — silently,
+// and only for plugins.
+//
+// They are deliberately not in [MagicCookieEnv]'s company in the host's
+// isProtocolEnv list: an operator who names a proxy in Config.Env is being more
+// specific than the worker's own environment, and that entry wins rather than
+// being dropped.
+//
+// REQUEST_METHOD is not here. ProxyFromEnvironment also consults it — a
+// non-empty value means the process is a CGI script, and HTTP_PROXY is then
+// ignored as untrusted — and forwarding it would let the worker's environment
+// turn a plugin's proxy off in a way no operator wrote down.
+func ProxyEnv() []string {
+	return []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "no_proxy",
+	}
+}
 
 // MagicCookieValue is the value [MagicCookieEnv] must hold.
 //

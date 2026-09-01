@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -636,6 +638,9 @@ func tokenPipe(token string) (*os.File, error) {
 // the snapshot this launch carried, so a policy file edited afterwards reaches
 // the plugins started next rather than the ones already running. See
 // [Config.EgressPolicy].
+//
+// The proxy variables travel for the same reason and under the same condition:
+// see [proxyGrant].
 func pluginEnv(cfg Config, socketPath string) []string {
 	env := []string{
 		protocol.MagicCookieEnv + "=" + protocol.MagicCookieValue,
@@ -655,6 +660,8 @@ func pluginEnv(cfg Config, socketPath string) []string {
 		env = append(env, protocol.EgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(cfg.EgressPolicy))
 	}
 
+	env = append(env, proxyGrant(cfg)...)
+
 	// Operator-supplied entries come last, but cannot override the protocol's
 	// own: a Config.Env that redefined the socket path or a token descriptor
 	// would break the handshake in a way that looks like a plugin bug.
@@ -666,6 +673,64 @@ func pluginEnv(cfg Config, socketPath string) []string {
 	}
 
 	return env
+}
+
+// proxyGrant returns the proxy variables to grant this launch, which is none
+// unless the deployment's policy asked to proxy.
+//
+// A policy that says `proxy_from_environment: true` is an operator saying the
+// way out of this deployment is through a proxy. The built-in http task obeys it
+// because it runs in the worker, where those variables are; a plugin's
+// environment is built from nothing, so the identical policy inside a plugin
+// finds no proxy and dials straight out. That is not a routing difference — on a
+// deployment whose egress is *only* permitted through that proxy it is the
+// plugin leaving the path the operator controls, and it happens with no error on
+// either side.
+//
+// So the proxy inputs are granted, like the policy itself, and tied to the same
+// switch: when the policy proxies, the worker's own values cross verbatim; when
+// it does not, none of them do. An operator who wants a plugin to reach a
+// different proxy names it in [Config.Env], and that entry wins — see the skip
+// below.
+//
+// The flag is read out of the grant rather than carried beside it, so there is
+// one source of truth for what this deployment's policy says. A grant that does
+// not parse grants no proxy: the plugin's own [netpolicy.ParseConfig] will refuse
+// the same bytes, so it has nothing to proxy for.
+func proxyGrant(cfg Config) []string {
+	if cfg.EgressPolicy == nil {
+		return nil
+	}
+
+	policy, err := netpolicy.ParseConfig(cfg.EgressPolicy)
+	if err != nil || !policy.Egress.ProxyFromEnvironment {
+		return nil
+	}
+
+	var granted []string
+	for _, name := range protocol.ProxyEnv() {
+		value, ok := os.LookupEnv(name)
+		if !ok {
+			continue
+		}
+
+		// An operator naming this variable in Config.Env is more specific than
+		// the worker's ambient value, and duplicate keys in one environment
+		// block are read differently by different runtimes. Skip rather than
+		// emit both.
+		if slices.ContainsFunc(cfg.Env, func(entry string) bool { return isEnvNamed(entry, name) }) {
+			continue
+		}
+
+		granted = append(granted, name+"="+value)
+	}
+
+	return granted
+}
+
+// isEnvNamed reports whether a KEY=VALUE entry has the given key.
+func isEnvNamed(entry, name string) bool {
+	return len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name
 }
 
 // isProtocolEnv reports whether an operator-supplied entry would collide with
@@ -691,7 +756,7 @@ func isProtocolEnv(entry string) bool {
 		protocol.HostFDEnv,
 		protocol.EgressPolicyEnv,
 	} {
-		if len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name {
+		if isEnvNamed(entry, name) {
 			return true
 		}
 	}
