@@ -75,6 +75,12 @@ findings accepted vs noise: the #1281 review returned four accepted
 findings and one pre-existing non-finding; two reviews (#1389, #1390)
 pending at the time of writing.
 
+Third friction: the session scratchpad is shared across worktree agents,
+so two builders overwrote each other's draft files and one gate log was
+truncated mid-write. Rule: a dispatch brief names a per-agent scratch
+directory (the worktree's own `.git`-ignored path or a subdirectory keyed
+by slice), never the shared scratchpad.
+
 Rule adopted (settles #1386, option 1): one entry per dispatched wave,
 appended by the dispatching session before it ends, with the measurement
 line above filled from what that session actually observed. Second rule:
