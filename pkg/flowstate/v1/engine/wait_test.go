@@ -691,10 +691,33 @@ func TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound(t *testing.T
 		},
 	}
 
+	// Both runs this test drives drain a full carry in workflow code without
+	// yielding: the suspending run in Continue-As-New's own drain, and the
+	// resumed run as the loop consumes every carried delivery. That drain is the
+	// longest legitimate non-yielding stretch the engine has — it is the whole
+	// point of the test — and the SDK's default budget is one second. Measured
+	// on an idle four-CPU host under -race, the resumed run's drain already
+	// spends between 250ms and 350ms without yielding; with that host loaded it
+	// spends between 700ms and 900ms. A CI runner busier than that crosses the
+	// second, and the test fails with TMPRL1101 naming the detector rather than
+	// with anything about which deliveries survived. It has, twice:
+	//
+	//   https://github.com/picatz/flowstate/actions/runs/33551513900/job/100001952508
+	//   https://github.com/picatz/flowstate/actions/runs/33563300453/job/100040715939
+	//
+	// So both environments run at [conformance.BoundaryDeadlockDetectionTimeout],
+	// via [atABound]. The budget is not a number invented to make this test
+	// green: it reads [v1.WorkerDeadlockDetectionTimeout], the budget every
+	// flowstate worker runs with, so work at a documented bound that a real
+	// worker would tolerate is tolerated here too, and a workflow goroutine
+	// wedged for longer than a real worker allows still fails. The raise costs
+	// the assertions nothing — every one of them is about which deliveries were
+	// carried and consumed, none about how quickly.
+
 	// One step of budget suspends the run after `one` and before the loop ever
 	// reads the channel, so every delivery below is acknowledged and buffered,
 	// none of them consumed, by the time Continue-As-New's own drain runs.
-	first := newWaitEnv(t)
+	first := atABound(newWaitEnv(t))
 	first.RegisterDelayedCallback(func() {
 		for i := 0; i < total; i++ {
 			first.SignalWorkflow(signalName, testSignalDelivery(
@@ -734,7 +757,7 @@ func TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound(t *testing.T
 	// than this loop's iterations plus the step before it.
 	carried.StepsBudget = 0
 
-	outputs, _ := resumeToCompletion(t, &carried)
+	outputs, _ := resumeToCompletion(t, &carried, atABound)
 
 	loop := outputs.GetStepValues()["each"]
 	require.NotNil(t, loop, "the loop never produced results, so consuming the carry was not tested")
@@ -821,7 +844,16 @@ func TestPendingSignalWithoutSenderResumesAsUnattested(t *testing.T) {
 // A real workload continues as new until it is done, so a test that follows only
 // the first hop tests less than it looks like it does — anything carried across a
 // suspend has to survive being carried again.
-func resumeToCompletion(t *testing.T, state *v1.RunState) (*v1.Workflow_StepOutputs, int) {
+//
+// Each prepare function wraps every environment this builds, for the caller whose
+// resumed run needs something [newWaitEnv] should not give every caller.
+// [atABound] is the one in use: the run that consumes a full carry is the one
+// doing bound-sized work. Passing nothing leaves a caller exactly as it was.
+func resumeToCompletion(
+	t *testing.T,
+	state *v1.RunState,
+	prepare ...func(*testsuite.TestWorkflowEnvironment) *testsuite.TestWorkflowEnvironment,
+) (*v1.Workflow_StepOutputs, int) {
 	t.Helper()
 
 	// Bounded, because a bug that suspends without making progress would
@@ -830,6 +862,10 @@ func resumeToCompletion(t *testing.T, state *v1.RunState) (*v1.Workflow_StepOutp
 
 	for run := 1; run <= maxRuns; run++ {
 		env := newWaitEnv(t)
+		for _, wrap := range prepare {
+			env = wrap(env)
+		}
+
 		env.ExecuteWorkflow(engine.Run, state)
 
 		require.True(t, env.IsWorkflowCompleted(), "run %d did not finish", run)
