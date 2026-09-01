@@ -54,3 +54,54 @@ tests:
           release: 2026.9.0
           hosts_placed: 2
         summary: placed 2026.9.0 on 2 host(s)
+
+  # The boundary `coverage:`'s zero guard exists for. `targets: []` is a legal
+  # `type: list` argument, and the unguarded ratio divides 0.0 by 0.0 into NaN —
+  # which `type: float` accepts, because a declared type bounds the shape of an
+  # answer rather than its arithmetic, so `-o json` would report the string "NaN"
+  # to a caller reading `.runOutputs.coverage` as a number.
+  #
+  # 1.0 rather than 0.0 because `complete` answers true for this same run: nothing
+  # was requested, so nothing was missed. The assertion is the whole outputs map,
+  # as every case here is, which is what pins the two against contradicting each
+  # other.
+  - name: an empty targets list computes a number rather than NaN
+    workflow: ./workflow.yaml
+    inputs:
+      targets: []
+    expect:
+      # The loop body never runs, so `roll_out` reaches no step and `report` is
+      # the only one that does.
+      ran: [report]
+      outputs:
+        release: 2026.8.1
+        hosts_placed: 0
+        targets: []
+        complete: true
+        coverage: 1.0
+        scope: canary
+        detail:
+          release: 2026.8.1
+          hosts_placed: 0
+        summary: placed 2026.8.1 on 0 host(s)
+
+  # One host is the smallest rollout that reaches the division at all, so it is
+  # the case that proves the guard did not swallow the real arithmetic.
+  - name: a single target is the smallest rollout that still divides
+    workflow: ./workflow.yaml
+    inputs:
+      release: 2026.9.1
+      targets: [alpha]
+    expect:
+      ran: [roll_out, report]
+      outputs:
+        release: 2026.9.1
+        hosts_placed: 1
+        targets: [alpha]
+        complete: true
+        coverage: 1.0
+        scope: canary
+        detail:
+          release: 2026.9.1
+          hosts_placed: 1
+        summary: placed 2026.9.1 on 1 host(s)

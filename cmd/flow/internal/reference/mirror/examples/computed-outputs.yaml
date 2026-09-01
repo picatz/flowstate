@@ -107,8 +107,18 @@ outputs:
   # The same fact as a ratio, which is what a dashboard wants and a boolean cannot
   # give. `double()` on both sides deliberately: two ints divide as ints, and every
   # partial rollout would report 0.
+  #
+  # The zero case is guarded rather than left to the arithmetic. `targets: []` is a
+  # legal `type: list` argument, and 0.0/0.0 is NaN — which *is* a float, so
+  # `type: float` accepts it and `-o json` then reports the string "NaN" to a
+  # caller reading `.runOutputs.coverage` as a number. A declared type bounds the
+  # shape of an answer, not its arithmetic, so an expression that can produce a
+  # non-number has to say what it means instead. It answers 1.0 because `complete:`
+  # above already answers true for the same run — nothing was requested, so nothing
+  # was missed, and two outputs describing one rollout must not contradict each
+  # other.
   coverage:
-    value: ${double(steps.placed.value) / double(steps.requested.value)}
+    value: '${steps.requested.value == 0 ? 1.0 : double(steps.placed.value) / double(steps.requested.value)}'
     type: float
     description: the fraction of requested hosts the run reached
 
