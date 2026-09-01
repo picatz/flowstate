@@ -602,6 +602,16 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// still applies the connection-scoped rules this call cannot reach.
 		if credentialed {
 			if err := policy.CheckURL(httpReq.Context(), httpReq.Method, httpReq.URL); err != nil {
+				// An evaluation the context interrupted decided nothing, so it
+				// is recorded as nothing and reported as itself rather than as
+				// a refusal — the distinction [netpolicy.UndecidedError]
+				// carries, applied here as well as at the transport below. No
+				// redirect is possible at this point: this is the request the
+				// workflow wrote, before anything has been sent.
+				if undecided, ok := errors.AsType[*netpolicy.UndecidedError](err); ok {
+					return nil, undecided
+				}
+
 				verdict := egressDenial(err, egressSubject.ResourceKey)
 				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
 				return nil, auditEnforcementDeny(ctx, egressSubject, verdict.Code,
@@ -748,6 +758,16 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			var limited *netpolicy.RateLimitedError
 			rateLimited := errors.As(err, &limited)
 
+			// Whether this policy ever answered for this request, read off the
+			// same unscrubbed error and for the same reason. Only an
+			// evaluation the context interrupted *before any hop had left*
+			// means no decision was made: on a redirect hop the origin was
+			// permitted and sent, so the request the workflow made was
+			// decided, and its allow is the one record this seam owes
+			// (Codex, picatz/flowstate#1394).
+			var undecided *netpolicy.UndecidedError
+			policyUndecided := errors.As(err, &undecided) && !undecided.AfterRedirect
+
 			// The egress verdict, read off the same unscrubbed error and for
 			// the same reason: this is what the record's deny code, rule and
 			// refused destination are built from, and after the scrub they are
@@ -777,15 +797,20 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			// the success path, or a request the policy permitted and the
 			// network dropped would leave the trail saying nothing was decided.
 			//
-			// Withheld on a cancelled context, and that is not an optimization:
-			// netpolicy returns a cancelled or expired context as itself rather
-			// than as a verdict (its ruleFailure, the rule [taskPolicyRuleFailure]
-			// states for the dispatch seam), so the policy may never have
-			// answered at all. An allow recorded there would be a sentence the
-			// trail cannot support. The cost is a request that was permitted
-			// and then died with its context going unrecorded; a false allow is
-			// the worse of the two.
-			if ctx.Err() == nil {
+			// Withheld only when this policy never reached a verdict, which is
+			// narrower than "the context is done" and deliberately so. A
+			// cancelled context reaches this seam from three places — a rule
+			// interrupted mid-evaluation, a dial that never completed, a peer
+			// that stopped answering — and the policy said yes before the last
+			// two. Testing the context here withheld the allow for all three,
+			// so a request that was permitted, left this worker, and possibly
+			// reached its peer went unrecorded under --audit-required: exactly
+			// the request an operator most needs the trail to name (Codex,
+			// picatz/flowstate#1394). [netpolicy.UndecidedError] is what
+			// separates them, and the "not a decision" rule
+			// [taskPolicyRuleFailure] states for the dispatch seam still holds
+			// for the one case that is genuinely undecided.
+			if !policyUndecided {
 				if auditErr := auditEnforcementAllow(ctx, egressSubject); auditErr != nil {
 					// Classified rather than returned bare: an unclassified
 					// error is [ErrorKindInternal], which is retryable, and a

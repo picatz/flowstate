@@ -414,28 +414,93 @@ func TestARefusedRedirectIsRecordedAgainstTheHopThatWasRefused(t *testing.T) {
 		"the record names the hop the policy refused, not the URL the workflow wrote")
 }
 
-// TestACancelledRequestRecordsNoEgressDecision: netpolicy returns a cancelled
-// or expired context as itself rather than as a verdict, so the policy may
-// never have answered — and an allow recorded there would be a sentence the
-// trail cannot support. The same rule the dispatch seam follows for a rule
-// evaluation that ran out of time.
+// TestACancelledRequestRecordsNoEgressDecision: an evaluation the context
+// interrupts decides nothing, so it is recorded as nothing — the rule the
+// dispatch seam follows for a rule that ran out of time, and the one
+// [netpolicy.UndecidedError] carries to this seam.
+//
+// The rule is one that cannot be evaluated, so evaluation is genuinely
+// entered and genuinely fails. What makes the failure *undecided* is the done
+// context, which the second half proves by removing it: the identical rule
+// under a live context is an ordinary RULE_ERROR denial and is recorded. A
+// test that only asserted the empty sink would pass just as well against a
+// policy that never ran a rule at all.
 func TestACancelledRequestRecordsNoEgressDecision(t *testing.T) {
 	t.Parallel()
 
-	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithAllowRules("true"))
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(),
+		netpolicy.WithAllowRules(`int(host) > 0`))
 	require.NoError(t, err)
 
 	ctx, sink := auditing(t)
-	ctx, cancel := context.WithCancel(ctx)
+	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
+
+	_, err = v1.HTTPTaskDef(policy).Fn(cancelled, map[string]*v1.Value{
+		"url": v1.NewValue("http://127.0.0.1:9/never-sent"),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled,
+		"an interrupted evaluation still answers the context checks every caller makes of it")
+
+	require.Empty(t, sink.all(),
+		"a request whose rule never finished recorded an egress decision the policy never made")
 
 	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
 		"url": v1.NewValue("http://127.0.0.1:9/never-sent"),
 	}, &v1.Scope{Identity: testIdentity()})
 	require.Error(t, err)
 
-	require.Empty(t, sink.all(),
-		"a request whose context was already done recorded an egress decision the policy never made")
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
+	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR, record.GetDenyCode(),
+		"the same rule under a live context is a decision, and decisions are recorded")
+}
+
+// TestARequestCancelledAfterThePolicyPermittedItIsStillRecorded is the other
+// side of the same distinction, and the one a blanket context test got wrong
+// (Codex, picatz/flowstate#1394): the policy answered allow, the request left
+// this worker, and only then did the context end.
+//
+// Withholding that record leaves --audit-required silent about precisely the
+// request an operator needs it to name — one that may have reached its peer
+// and whose outcome nobody knows. The peer here hangs until the context is
+// cancelled, which is that request exactly.
+func TestARequestCancelledAfterThePolicyPermittedItIsStillRecorded(t *testing.T) {
+	t.Parallel()
+
+	reached := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(reached)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithAllowRules("true"))
+	require.NoError(t, err)
+
+	ctx, sink := auditing(t)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	go func() {
+		<-reached
+		cancel()
+	}()
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url":    v1.NewValue(server.URL + "/hangs"),
+		"method": v1.NewValue(http.MethodPost),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
+	require.Equal(t, v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS,
+		record.GetEnforcementPoint())
+	require.Equal(t, server.URL, record.GetResourceKey(),
+		"the destination the policy permitted, which is where the request went")
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
 }
 
 // TestAnUnrecordableRequestThatReachedItsPeerIsNotRetried: under a required

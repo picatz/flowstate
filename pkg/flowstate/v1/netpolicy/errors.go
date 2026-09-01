@@ -171,3 +171,47 @@ func (e *BodyTooLargeError) Error() string {
 
 // Unwrap returns [ErrBodyTooLarge] so every size denial matches a single sentinel.
 func (e *BodyTooLargeError) Unwrap() error { return ErrBodyTooLarge }
+
+// UndecidedError reports that this policy was interrupted before it reached a
+// verdict: the caller's context was cancelled or expired while a rule was being
+// evaluated, so the request is neither permitted nor refused.
+//
+// It exists because "no decision" and "denied" are different facts, and only one
+// of them may be written down as a decision. [ruleFailure] has always returned a
+// cancelled context as itself rather than as a denial, for the reason stated
+// there — telling an operator their rules rejected a request that in fact never
+// finished. A caller that must record what this policy decided
+// (picatz/flowstate#1379) needs the same distinction one step further out, and a
+// bare context error cannot carry it: a context error also arrives from the
+// transport, from the dialer, and from a peer that never answered, long after
+// the policy said yes.
+//
+// It deliberately does not wrap [ErrDenied]. It is not a denial, and a caller
+// that maps denials to a permanent refusal must not map this to one.
+type UndecidedError struct {
+	// Target is the request that was being evaluated, redacted the way
+	// [DenyError.Target] is.
+	Target string
+
+	// AfterRedirect reports that an earlier request in this redirect chain
+	// reached its peer before this hop's evaluation was interrupted, which means
+	// the policy did decide — and permit — the request the caller made. Set at
+	// the transport, which is the only place that knows a hop from an origin;
+	// [RateLimitedError.AfterRedirect] carries the same fact for the same
+	// reason.
+	AfterRedirect bool
+
+	// Err is the context's own error, kept so that errors.Is(err,
+	// context.Canceled) and errors.Is(err, context.DeadlineExceeded) answer for
+	// this exactly as they answered for the bare value this replaced.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *UndecidedError) Error() string {
+	return fmt.Sprintf("egress policy evaluation for %s was interrupted before it decided: %v", e.Target, e.Err)
+}
+
+// Unwrap returns the context's error, and notably not [ErrDenied]: see the type's
+// own documentation.
+func (e *UndecidedError) Unwrap() error { return e.Err }

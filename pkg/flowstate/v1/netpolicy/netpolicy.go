@@ -372,7 +372,7 @@ type roundTripper struct {
 
 // RoundTrip implements [http.RoundTripper].
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := rt.policy.checkRequest(req); err != nil {
+	if err := rt.policy.checkRequestHop(req); err != nil {
 		return nil, err
 	}
 
@@ -712,7 +712,33 @@ func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
 		}
 	}
 
-	return p.checkRequest(req)
+	return p.checkRequestHop(req)
+}
+
+// checkRequestHop applies [Policy.checkRequest] to a request the transport is
+// about to make, and marks an evaluation the context interrupted with whether
+// an earlier request in this redirect chain already reached its peer.
+//
+// The mark is set here, and only here, because this is the boundary that knows
+// it: [http.Request.Response] is non-nil exactly for a hop net/http built from
+// a redirect, and both places a hop enters the policy — this round tripper and
+// [Policy.checkRedirect], which refuses a hop before it can reach one — pass
+// through this. It is the same fact [RateLimitedError.AfterRedirect] carries,
+// set the same way beside it, for the same caller: one that must not treat a
+// request its origin already sent as one that never left.
+//
+// [Policy.CheckURL] deliberately does not go through this. Its request is one
+// this package built for a check, so it has no response behind it and there is
+// no chain to be after.
+func (p *Policy) checkRequestHop(req *http.Request) error {
+	err := p.checkRequest(req)
+
+	var undecided *UndecidedError
+	if req.Response != nil && errors.As(err, &undecided) {
+		undecided.AfterRedirect = true
+	}
+
+	return err
 }
 
 // CheckURL reports whether p permits a request with the given method to the given
