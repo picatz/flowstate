@@ -150,12 +150,21 @@ func newCardHarness(t *testing.T) *cardHarness {
 	t.Cleanup(host.Close)
 
 	// The browser's own start is timed on browserStartupBudget rather than on
-	// ctx below: see that constant's doc comment for why. This context does
-	// not outlive startBrowser, so it is released with a local defer instead
-	// of t.Cleanup.
+	// ctx below: see that constant's doc comment for why. Nothing startBrowser
+	// creates keeps a reference to startupCtx after it returns — its
+	// Runtime/Page/Target calls finish synchronously inside it, and
+	// DialContext only bounds the dial, not the connection it hands back — so
+	// the common path cancels it explicitly right below, freeing the timer
+	// before the handshake starts rather than waiting for newCardHarness to
+	// return. The defer stays too: startBrowser skips or fails the test on
+	// several paths of its own (no browser found, a launch whose devtools
+	// port or page target never appears, a failed dial or enable), each of
+	// which ends the test before the explicit cancel below would run, and the
+	// defer is what still releases startupCtx on those.
 	startupCtx, cancelStartup := context.WithTimeout(t.Context(), browserStartupBudget)
 	defer cancelStartup()
 	b := startBrowser(t, startupCtx)
+	cancelStartup()
 
 	ctx, cancel := context.WithTimeout(t.Context(), hostDoubleBudget)
 	t.Cleanup(cancel)
