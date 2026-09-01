@@ -93,16 +93,24 @@
 //
 // The secret is on a descriptor rather than in the environment, and any language
 // that can inherit one can read it: the host writes the token and a single "\n"
-// to a pipe, closes its end before the plugin starts, and the plugin reads that
-// descriptor to EOF, bounded, takes everything before the newline, and closes
-// it — so the token does not stay reachable through /proc/<pid>/fd, and does not
-// travel to anything the plugin itself launches. There is nothing to wait for
-// and nothing to write back. What made the environment the
-// wrong place is that a variable cannot be withdrawn — on Linux
-// /proc/<pid>/environ shows the block the kernel copied at execve(2), so a
-// secret delivered there is readable for as long as the plugin runs, no matter
-// how promptly the plugin unsets it, and it is collected by anything that sweeps
-// environments into a diagnostic bundle or a core dump.
+// to a pipe, closes its end before the plugin starts, and names the read end's
+// number in FLOWSTATE_PLUGIN_TOKEN_FD. The plugin reads that descriptor to EOF,
+// takes everything before the newline, and closes it — so the token does not
+// stay reachable through /proc/<pid>/fd, and does not travel to anything the
+// plugin itself launches. There is nothing to wait for and nothing to write
+// back. What made the environment the wrong place is that a variable cannot be
+// withdrawn — on Linux /proc/<pid>/environ shows the block the kernel copied at
+// execve(2), so a secret delivered there is readable for as long as the plugin
+// runs, no matter how promptly the plugin unsets it, and it is collected by
+// anything that sweeps environments into a diagnostic bundle or a core dump.
+//
+// That read is bounded in both directions, because a plugin cannot know that the
+// process which launched it is the host it expects: at most 512 bytes, the
+// newline included, and at most five seconds, after which the plugin refuses to
+// serve rather than waiting. Neither bound covers the other. Bytes alone leave a
+// launcher that writes half a line and closes nothing waiting forever; time
+// alone lets one that writes without stopping decide what this process
+// allocates. An implementation in another language needs both.
 //
 // The plugin checks the cookie. Without it — someone ran the binary from a
 // shell — it prints an explanation to stderr and exits, rather than printing a
@@ -114,7 +122,7 @@
 // credential that is not where it looked. It reads the token, listens on the
 // assigned path, sets the socket to mode 0600, and prints one line to stdout:
 //
-//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|4|unix|/var/folders/.../s
 //
 // After that line the plugin never uses stdout again; everything else it says
 // goes to stderr, which the host reads line by line and logs attributed to that
