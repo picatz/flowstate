@@ -221,7 +221,15 @@ func checkLibraries(libs []string) error {
 // The activation may be a map[string]any or a cel.Activation, matching the CEL
 // runtime's own contract.
 func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activation any) (ref.Val, error) {
-	prg, err := env.Program(ast, e.limits.programOptions()...)
+	ordered, err := orderMapComprehensionsAST(ast)
+	if err != nil {
+		return nil, &ExpressionError{Err: fmt.Errorf("prepare expression: %w", err)}
+	}
+	programEnv, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
+	if err != nil {
+		return nil, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
+	}
+	prg, err := programEnv.Program(ordered, e.limits.programOptions()...)
 	if err != nil {
 		return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 	}
@@ -310,8 +318,11 @@ func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.P
 	key := programKey{env: env, parsed: parsed}
 	prg, ok := e.programs.get(key)
 	if !ok {
-		var err error
-		prg, err = env.Program(cel.ParsedExprToAst(parsed), e.limits.programOptions()...)
+		programEnv, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
+		if err != nil {
+			return nil, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
+		}
+		prg, err = programEnv.Program(cel.ParsedExprToAst(orderMapComprehensions(parsed)), e.limits.programOptions()...)
 		if err != nil {
 			return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 		}

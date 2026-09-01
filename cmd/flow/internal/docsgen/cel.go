@@ -280,7 +280,11 @@ var celIdioms = []celIdiom{
 		title: "Filtering and transforming a list without a loop",
 		prose: "`filter` and `map` are macros — expanded when the file compiles — so a list " +
 			"comprehension costs nothing at evaluation time beyond the work it does. Chained, " +
-			"they read left to right: keep what matters, then compute what is kept.",
+			"they read left to right: keep what matters, then compute what is kept. When a " +
+			"comprehension ranges over a map, Flowstate visits keys in ascending key order " +
+			"(false before true; then integers, unsigned integers, and strings by value). The " +
+			"order is identical in local runs and Temporal replays; sort explicitly when a " +
+			"different business order matters.",
 		expr: `[1, 2, 3, 4, 5].filter(n, n % 2 == 0).map(n, n * n)`,
 	},
 	{
@@ -290,9 +294,9 @@ var celIdioms = []celIdiom{
 			"and a running sum through durable history, with the off-by-one that shape invites. " +
 			"Chained after `map` it reads left to right: keep what matters, pick the number, add " +
 			"them up. An empty list sums to `0`, and a list `+` cannot add — a string beside an " +
-			"int — fails the evaluation rather than guessing. Only a list may be folded: a map's " +
-			"iteration order is undefined, so both folds refuse one, and the deterministic spelling " +
-			"is explicit — `m.map(k, k).sort().map(k, m[k]).sum()`. `loop:` remains the right tool " +
+			"int — fails the evaluation rather than guessing. Only a list may be folded: a map " +
+			"must select its values explicitly, for example " +
+			"`m.map(k, k).sort().map(k, m[k]).sum()`. `loop:` remains the right tool " +
 			"when the fold's body does real work; see examples/loop-accumulate.",
 		expr: `steps.paid.value.map(o, o.amount_cents).sum()`,
 	},

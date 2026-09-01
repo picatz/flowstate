@@ -98,6 +98,31 @@ func ValueCases() []Case {
 			}),
 		},
 		{
+			// #1359's replay-safety case. CEL expands map into a comprehension,
+			// and cel-go's default map iterator delegates to Go's randomized map
+			// range. The same AST produced several strings across repeated
+			// evaluations before the shared evaluator imposed this key order.
+			//
+			// A scalar result makes the order observable after the compiled AST
+			// travels to either driver: merely comparing maps would prove nothing,
+			// because map equality deliberately ignores traversal order.
+			Name: "a map comprehension traverses keys canonically",
+			Workflow: &v1.Workflow{
+				Name:    "value-map-order",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{
+					{
+						Id: "order",
+						Kind: &v1.Node_Value{Value: v1.NewExpr(
+							`{'e': 5, 'c': 3, 'a': 1, 'd': 4, 'b': 2}.map(k, k).join('')`)},
+					},
+				}, pins("show", `steps.order.`+v1.ValueOutput+` == "abcde"`)...),
+			},
+			ExpectedOutputs: withStep(held("show"), "order", map[string]*v1.Value{
+				v1.ValueOutput: v1.NewLiteral("abcde"),
+			}),
+		},
+		{
 			// #1304's acceptance case: the ETL total — sum over the kept orders'
 			// amounts — is one expression. `sum` is a parse-time macro, so the
 			// compiled spec both drivers receive carries its expansion (a plain
