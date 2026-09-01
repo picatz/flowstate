@@ -45,3 +45,38 @@ orchestration reference, and this ledger (branch claude/factory-comms).
 Measurement baseline for wave 2: count clarification turns, owner edits
 to our artifacts, and review findings accepted vs noise, against this
 wave's artifacts.
+
+## Wave 2 (2026-09-01): the September slate, first dispatch
+
+Source: `2026-09-roadmap.md` (the step-back review), issues #1376–#1388.
+
+Dispatched: six builders and one reviewer at the deep tier, one mechanical
+slice (a dependabot retidy) at the cheap tier, all in isolated worktrees on
+one four-core machine. Landed the same day: two dependabot merges, PRs
+#1387 (#1306 gate base channel), #1389 (#1336 token on a descriptor),
+#1390 (#1332 egress grant, PR A), the #1281 review-and-fix, the #1372
+retidy; the doc-truth sweep (#1382) and the appearance flip (#1319) on
+the review branch itself.
+
+Friction, measured: five concurrent `go run ./tools/gate` runs pushed the
+load average to 50–80, turned ten-minute gates into forty-minute ones, and
+failed unrelated deadline-bound tests in every builder's wide leg — each
+slice lost roughly forty minutes to a result nobody could interpret. The
+redirect that fixed it: targeted package tests, push, open the PR with an
+honest verification section, CI as the authoritative gate; kill the
+contended gate by PID. Recorded as #1388 (the gate's own half) and as a
+rule below (the wave's half). Second friction: builders park inside a
+long foreground command and cannot read a redirect until it returns —
+bound the first gate attempt, not only the tests inside it.
+
+Receiver-cost outcomes, this wave: zero clarification turns from the
+owner on any brief; owner edits to our artifacts: none yet; review
+findings accepted vs noise: the #1281 review returned four accepted
+findings and one pre-existing non-finding; two reviews (#1389, #1390)
+pending at the time of writing.
+
+Rule adopted (settles #1386, option 1): one entry per dispatched wave,
+appended by the dispatching session before it ends, with the measurement
+line above filled from what that session actually observed. Second rule:
+at most two full gates run concurrently on one machine; the rest of a wave
+verifies with targeted package tests and lets PR CI be the gate.
