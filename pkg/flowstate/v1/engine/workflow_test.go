@@ -945,6 +945,17 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
 			require.True(t, env.IsWorkflowCompleted())
+
+			if test.ExpectFailure {
+				// See the local runner: an output that cannot satisfy its own
+				// declaration fails the run, and what the two drivers must
+				// agree about is the sentence.
+				err := env.GetWorkflowError()
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+
+				return
+			}
 			require.NoError(t, env.GetWorkflowError())
 
 			var out v1.Workflow_StepOutputs

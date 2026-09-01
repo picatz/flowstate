@@ -278,29 +278,45 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 		return fmt.Errorf("input %q cannot be used as a value: %v", name, kind)
 	}
 
-	got, ok := inputTypeOf(value.GetLiteral())
+	return checkDeclaredLiteralType("input", "was given", name, declaration.GetType(), value.GetLiteral())
+}
+
+// checkDeclaredLiteralType is the "does this literal have the declared type"
+// rule, over a declared type rather than over a message that holds one.
+//
+// Split out of [CheckInputValue] because an output declares the same type in
+// the same vocabulary (see [OutputDeclaration.type]) and the rule about a
+// literal is the same rule. kind is the noun ("input", "output" — both
+// vowel-initial, which is what lets one format string say "an %s") and verb is
+// how the sentence says the value arrived — a caller *gave* an input, a run
+// *computed* an output — since those are the two halves that differ and the
+// judgement is what does not.
+func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration_Type, literal *expr.Value) error {
+	got, ok := inputTypeOf(literal)
 	if !ok {
-		return fmt.Errorf("input %q is %s, which is not a kind of value an input can hold; "+
-			"it is declared %s", name, literalKindName(value.GetLiteral()), DeclaredTypeName(declaration.GetType()))
+		return fmt.Errorf("%s %q is %s, which is not a kind of value an %s can hold; "+
+			"it is declared %s", kind, name, literalKindName(literal), kind, DeclaredTypeName(declared))
 	}
 
 	// TYPE_ENUM has no counterpart in [inputTypeOf]'s switch, deliberately:
-	// the wire shape a caller sends for an enum value is a string, the same
-	// shape TYPE_STRING sends, so the only rule this function checks is that
-	// shape. Which string is checked against the declaration's own `values:`
-	// is a set-fact about *this* declaration, and [CheckInputConstraints] is
-	// where set-facts are enforced.
-	if declaration.GetType() == InputDeclaration_TYPE_ENUM {
+	// the wire shape an enum value travels in is a string, the same shape
+	// TYPE_STRING travels in, so the only rule this function checks is that
+	// shape — which is why the two share this arm through [StringShaped]
+	// rather than TYPE_STRING falling through to the comparison below.
+	// *Which* string is checked against the declaration's own `values:` is a
+	// set-fact about that declaration, and [CheckInputConstraints] and
+	// [CheckOutputValue] are where set-facts are enforced.
+	if StringShaped(declared) {
 		if got != InputDeclaration_TYPE_STRING {
-			return fmt.Errorf("input %q is declared %s but was given %s",
-				name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))
+			return fmt.Errorf("%s %q is declared %s but %s %s",
+				kind, name, DeclaredTypeName(declared), verb, DeclaredTypeName(got))
 		}
 		return nil
 	}
 
-	if got != declaration.GetType() {
-		return fmt.Errorf("input %q is declared %s but was given %s",
-			name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))
+	if got != declared {
+		return fmt.Errorf("%s %q is declared %s but %s %s",
+			kind, name, DeclaredTypeName(declared), verb, DeclaredTypeName(got))
 	}
 
 	return nil

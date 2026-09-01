@@ -589,6 +589,16 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 	for _, test := range conformance.InputOutputCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				// An output that cannot satisfy its own declaration fails the
+				// run, so a case about that has no outputs to compare — only
+				// the sentence, which must be the same one the durable driver
+				// gives.
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+
+				return
+			}
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 		})

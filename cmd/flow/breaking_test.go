@@ -253,6 +253,62 @@ func TestBreakingOutputGuaranteeWeakened(t *testing.T) {
 		"an unchanged output guarantee must not be a break")
 }
 
+// TestBreakingOutputTypeWeakened is the output-type class, and the direction is
+// the whole of what makes it a separate test from the input one: an input's type
+// says what a caller may send, so tightening it breaks them, and an output's says
+// what a caller will receive, so it is *weakening* that breaks them. Dropping the
+// type and changing it are both weakenings; adding one where there was none only
+// promises more, and passes.
+func TestBreakingOutputTypeWeakened(t *testing.T) {
+	typed := fixtureHeader() +
+		"outputs:\n  code:\n    value: ${200}\n    type: int\n" +
+		fixtureStep
+	untyped := fixtureHeader() +
+		"outputs:\n  code:\n    value: ${200}\n" +
+		fixtureStep
+
+	ds := diffFixtures(t, typed, untyped)
+	require.Len(t, ds, 1, "dropping an output type should report exactly one break")
+	require.Contains(t, ds[0].Message, `output "code" changed type from int to no type`)
+
+	retyped := fixtureHeader() +
+		"outputs:\n  code:\n    value: ${'200'}\n    type: string\n" +
+		fixtureStep
+	dsRetyped := diffFixtures(t, typed, retyped)
+	require.Len(t, dsRetyped, 1)
+	require.Contains(t, dsRetyped[0].Message, `output "code" changed type from int to string`)
+	require.Positive(t, dsRetyped[0].Line, "the break should be positioned at the new declaration")
+
+	// Loosening: an output that gains a type promises more than it did, exactly
+	// as one that gains a `must:` does.
+	require.Empty(t, diffFixtures(t, untyped, typed),
+		"declaring a type where there was none must not be a break")
+	require.Empty(t, diffFixtures(t, typed, typed),
+		"an unchanged output type must not be a break")
+}
+
+// TestBreakingOutputValuesWidened is the inverse of the input enum rule, and the
+// inversion is the point: a member added to an *input* enum admits more and is
+// silent, while a member added to an *output* enum lets the run answer with
+// something a consumer's switch has never seen.
+func TestBreakingOutputValuesWidened(t *testing.T) {
+	narrow := fixtureHeader() +
+		"outputs:\n  status:\n    value: ${'ok'}\n    type: enum\n    values:\n      - ok\n" +
+		fixtureStep
+	wide := fixtureHeader() +
+		"outputs:\n  status:\n    value: ${'ok'}\n    type: enum\n    values:\n      - ok\n      - degraded\n" +
+		fixtureStep
+
+	ds := diffFixtures(t, narrow, wide)
+	require.Len(t, ds, 1, "widening an output enum should report exactly one break")
+	require.Contains(t, ds[0].Message, `output "status" widened its declared values (added: degraded)`)
+
+	// Narrowing what the run may answer with cannot surprise a consumer of the
+	// old set, so it is silent — again the inverse of the input rule.
+	require.Empty(t, diffFixtures(t, wide, narrow),
+		"removing a member from an output enum must not be a break")
+}
+
 // --- end-to-end: the git plumbing and the command wiring ---
 
 // gitInitRepo builds a throwaway repository with one committed Flowfile, then

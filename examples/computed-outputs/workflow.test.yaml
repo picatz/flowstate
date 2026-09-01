@@ -1,10 +1,15 @@
 # This is the one example whose subject *is* `outputs:`, so the assertion is the
-# outputs map itself — all three, exactly, with nothing extra. Two cases, because
-# the point of computing an output rather than writing one down is that it says
-# something different when the run was given different arguments: the defaults
+# outputs map itself — every one of them, exactly, with nothing extra. Two cases,
+# because the point of computing an output rather than writing one down is that it
+# says something different when the run was given different arguments: the defaults
 # reach three hosts, and an explicit two-element `targets:` reaches two, with
 # `hosts_placed` and the `summary` sentence both following the loop's own
 # `results` rather than the argument.
+#
+# Every output here declares a `type:`, so each asserted value is also the evidence
+# that the run checked what it computed against that declaration before reporting
+# it: a `scope` outside its own `values:`, or a `coverage` that came back an int,
+# would fail the run rather than reach this table.
 edition: v2026.3
 defaults:
   stubs:
@@ -20,6 +25,13 @@ tests:
         # size(steps.roll_out.results) — counting what the loop actually did,
         # which is what makes this different from echoing size(inputs.targets).
         hosts_placed: 3
+        targets: [alpha, beta, gamma]
+        complete: true
+        coverage: 1.0
+        scope: fleet
+        detail:
+          release: 2026.8.1
+          hosts_placed: 3
         summary: placed 2026.8.1 on 3 host(s)
 
   - name: supplied arguments change every output that reads them
@@ -32,4 +44,13 @@ tests:
       outputs:
         release: 2026.9.0
         hosts_placed: 2
+        targets: [alpha, beta]
+        complete: true
+        coverage: 1.0
+        # The other member of `scope`'s closed set: two targets is a canary, three
+        # is a fleet, so the two cases here report a different one.
+        scope: canary
+        detail:
+          release: 2026.9.0
+          hosts_placed: 2
         summary: placed 2026.9.0 on 2 host(s)

@@ -78,7 +78,13 @@ var (
 		"type", "values", "required", "default", "description", "example", "sensitive",
 		"min_len", "max_len", "min_items", "max_items", "must",
 	}
-	outputKeys = []string{"value", "description", "must", "sensitive"}
+	// `type` and `values` are the input vocabulary reaching the other half of
+	// the signature, and they sit after `value:` rather than before it because
+	// `value:` is what an output *is*: the expression is required, the type is
+	// the promise made about it, and the order the marshaller writes them in
+	// follows this list so a file `flow fix` rewrote reads the way one somebody
+	// typed does.
+	outputKeys = []string{"value", "type", "values", "description", "must", "sensitive"}
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
@@ -1005,7 +1011,7 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 	if f, found := fields.get("values"); found {
 		valuesPath := fieldPath(path, "values")
 		declaration.Values = c.enumValues(f.value, valuesPath,
-			ref{path: valuesPath, label: "input " + e.name + " values"})
+			ref{path: valuesPath, label: "input " + e.name + " values"}, "input may hold")
 	}
 
 	if f, found := fields.get("required"); found {
@@ -1086,8 +1092,15 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 	return declaration
 }
 
-// enumValues compiles an input declaration's `values:` list — the closed set a
-// `type: enum` input may hold.
+// enumValues compiles a declaration's `values:` list — the closed set a
+// `type: enum` input may hold, or that a `type: enum` output may report. One
+// function for both, because the list is one list: an output declares its
+// choices in the same words, under the same bound, as an input does.
+//
+// holds names what the set is *of*, completing "the values this ..." in the
+// diagnostic below — an input holds one of them, an output reports one — since
+// that clause is the only part of this function's judgement that differs
+// between the two.
 //
 // This is the shape half only: whether `values:` belongs here at all (it does
 // not, beside anything but `type: enum`) and whether an enum declares at
@@ -1098,7 +1111,7 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 // decides for a specification that never was a Flowfile. What belongs here is
 // only what this one key's own value can be wrong about: a scalar or a
 // mapping written where a list belongs.
-func (c *compiler) enumValues(n ast.Node, path string, r ref) []string {
+func (c *compiler) enumValues(n ast.Node, path string, r ref, holds string) []string {
 	n = c.resolve(n, path, r)
 	if n == nil {
 		return nil
@@ -1108,8 +1121,8 @@ func (c *compiler) enumValues(n ast.Node, path string, r ref) []string {
 	sequence, ok := n.(*ast.SequenceNode)
 	if !ok {
 		c.report(spanOfNode(n), r,
-			"must be a list of the values this input may hold, like [staging, production], but %s was written here",
-			describeNode(n))
+			"must be a list of the values this %s, like [staging, production], but %s was written here",
+			holds, describeNode(n))
 		return nil
 	}
 
@@ -1175,7 +1188,8 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 	if !ok {
 		c.report(spanOfNode(e.value), r,
 			"is declared as a mapping with `value:`, the expression that produces it, "+
-				"and optionally `description:`")
+				"and optionally `type:` (one of %s), `description:`, `must:` and `sensitive:`",
+			strings.Join(v1.DeclaredTypeNames(), ", "))
 
 		return nil
 	}
@@ -1192,6 +1206,30 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 	} else {
 		c.report(spanOfNode(e.value), r,
 			"has no `value:`; an output is the expression that produces it, evaluated once the steps have finished")
+	}
+
+	// Optional here where it is required on an input, which is the one place
+	// the two declarations deliberately differ: an output with no `type:` is a
+	// workflow that has not said what it answers with, not a value arriving
+	// unchecked from a caller. See [v1.OutputDeclaration.type].
+	if f, found := fields.get("type"); found {
+		typePath := fieldPath(path, "type")
+		typeRef := ref{path: typePath, label: "output " + e.name + " type"}
+		if text, ok := c.text(f.value, typePath, typeRef); ok {
+			declared, known := v1.ParseDeclaredType(text)
+			if !known {
+				c.report(spanOfNode(f.value), typeRef,
+					"is %q, which is not a type an output can have; the types are %s",
+					text, strings.Join(v1.DeclaredTypeNames(), ", "))
+			}
+			declaration.Type = declared
+		}
+	}
+
+	if f, found := fields.get("values"); found {
+		valuesPath := fieldPath(path, "values")
+		declaration.Values = c.enumValues(f.value, valuesPath,
+			ref{path: valuesPath, label: "output " + e.name + " values"}, "output may report")
 	}
 
 	if f, found := fields.get("description"); found {

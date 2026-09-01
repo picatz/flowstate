@@ -55,6 +55,20 @@ func output(name, expression string) *v1.OutputDeclaration {
 	return &v1.OutputDeclaration{Name: name, Value: v1.NewExpr(expression)}
 }
 
+// typedOutput declares one output that also says what its value is.
+//
+// values is the closed set for a `type: enum` declaration and is left empty for
+// every other type, which is the same pairing an input declares — see
+// [v1.OutputDeclaration.type].
+func typedOutput(name, expression string, t v1.InputDeclaration_Type, values ...string) *v1.OutputDeclaration {
+	return &v1.OutputDeclaration{
+		Name:   name,
+		Value:  v1.NewExpr(expression),
+		Type:   t,
+		Values: values,
+	}
+}
+
 // answers is the run outputs a case expects, beside the steps it expects to have
 // run.
 //
@@ -270,6 +284,71 @@ func InputOutputCases(httpBaseURL string) []Case {
 					"waited": v1.NewLiteral(true),
 				},
 			),
+		},
+		{
+			// A declared output type changes nothing about the answer, which is
+			// the claim: the same three values, in the same message, under both
+			// drivers. What it changes is that each one is now checked against
+			// its declaration before it is reported — by [v1.CheckOutputValue]
+			// inside [v1.EvalRunOutputs], the one function both drivers reach at
+			// the one moment they evaluate outputs — so a driver that skipped
+			// the check, or ran it against a differently-shaped value, would
+			// diverge here rather than in production.
+			//
+			// All four kinds of declaration in one case, on purpose: a string, an
+			// int computed rather than echoed, an enum whose value is inside its
+			// declared set, and an untyped output beside them, which is the shape
+			// every workflow written before there was a type to declare still has.
+			Name: "typed outputs round-trip as themselves",
+			Workflow: declares("outputs-typed",
+				[]*v1.InputDeclaration{
+					input("name", v1.InputDeclaration_TYPE_STRING, true, nil),
+					{
+						Name:   "channel",
+						Type:   v1.InputDeclaration_TYPE_ENUM,
+						Values: []string{"stable", "beta"},
+					},
+				},
+				[]*v1.OutputDeclaration{
+					typedOutput("said", "steps.a.said", v1.InputDeclaration_TYPE_STRING),
+					typedOutput("length", "size(steps.a.said)", v1.InputDeclaration_TYPE_INT),
+					typedOutput("channel", "inputs.channel", v1.InputDeclaration_TYPE_ENUM, "stable", "beta"),
+					output("untyped", `"whatever"`),
+				},
+				echoes("a", httpBaseURL, "inputs.name"),
+			),
+			Inputs: map[string]*v1.Value{
+				"name":    v1.NewLiteral("world"),
+				"channel": v1.NewLiteral("beta"),
+			},
+			ExpectedOutputs: answers(
+				&v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{"a": said("world")}},
+				map[string]*v1.Value{
+					"said":    v1.NewLiteral("world"),
+					"length":  v1.NewLiteral(int64(5)),
+					"channel": v1.NewLiteral("beta"),
+					"untyped": v1.NewLiteral("whatever"),
+				},
+			),
+		},
+		{
+			// The negative direction of the same claim, which is what makes the
+			// case above worth having: a declared type that nothing enforced
+			// would be decoration. The expression is a closed one so the value it
+			// produces is a fact about this file rather than about the http
+			// server, and it is outside the set the declaration closed — so the
+			// run fails at the one moment there is nothing left to retry, under
+			// both drivers, with the declaration's own choices in the sentence.
+			Name:          "an enum output outside its declared values fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-enum-violated",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("channel", `"canary"`, v1.InputDeclaration_TYPE_ENUM, "stable", "beta"),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "channel" is "canary", which is not one of the values channel declares`,
 		},
 	}
 }

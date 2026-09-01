@@ -120,7 +120,7 @@ Report workflows whose declared inputs or outputs broke a contract
 flow breaking [path...] [flags]
 ```
 
-Compile every Flowfile at the working tree and at a git ref, match workflows by `name:`, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
+Compile every Flowfile at the working tree and at a git ref, match workflows by `name:`, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, a declared output whose type or guarantee weakened, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
 
 The comparison is over the compiled protos, not the YAML text, so it is immune to formatting and comment churn. Each finding names the position in the working-tree file, what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as `validate`.
 
