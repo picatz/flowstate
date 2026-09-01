@@ -118,7 +118,7 @@ outputs:
   # was missed, and two outputs describing one rollout must not contradict each
   # other.
   coverage:
-    value: '${steps.requested.value == 0 ? 1.0 : double(steps.placed.value) / double(steps.requested.value)}'
+    value: "${(steps.requested.value == 0) ? 1.0 : (double(steps.placed.value) / double(steps.requested.value))}"
     type: float
     description: the fraction of requested hosts the run reached
 
