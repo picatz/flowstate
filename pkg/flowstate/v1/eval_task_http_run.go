@@ -214,7 +214,7 @@ func httpInputError(err error) error {
 	var resolution *secretResolutionError
 	if errors.As(err, &resolution) {
 		kind := ErrorKindPolicyDenied
-		if secrets.Retryable(err) {
+		if secrets.Retryable(err) || AuditRecorderUnavailable(err) {
 			kind = ErrorKindUpstream
 		}
 
@@ -702,8 +702,14 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			}
 			secret, err := ResolveSecret(ctx, ref)
 			if err != nil {
+				// A required recorder that could not write is the third answer
+				// this classification has to have. The seam refused *before*
+				// the store was asked, so nothing was read and another attempt
+				// is exactly what a caller's retry policy is for; without this
+				// a collector outage reached the author as a permanent policy
+				// denial (Codex, picatz/flowstate#1394).
 				kind := ErrorKindPolicyDenied
-				if secrets.Retryable(err) {
+				if secrets.Retryable(err) || AuditRecorderUnavailable(err) {
 					kind = ErrorKindUpstream
 				}
 				return nil, NewTaskError("http", kind, fmt.Errorf("resolving bearer reference %s: %w", secretRefText(ref), err))
@@ -717,8 +723,12 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 					fmt.Errorf("credential and an Authorization header cannot both be set"))
 			}
 			if err := AuthorizeCredential(ctx, httpReq, target); err != nil {
+				// Same third answer, at the seam that mints rather than reads:
+				// a credential whose record could not be written is discarded
+				// unused, so the request this step would have made has not
+				// happened and may be attempted again.
 				kind := ErrorKindPolicyDenied
-				if auth.Retryable(err) {
+				if auth.Retryable(err) || AuditRecorderUnavailable(err) {
 					kind = ErrorKindUpstream
 				}
 				return nil, NewTaskError("http", kind,

@@ -751,6 +751,51 @@ func TestARequiredRecorderStopsTheActionItCouldNotRecord(t *testing.T) {
 		"the store must not be consulted for a read whose allow could not be recorded")
 }
 
+// TestASinkOutageIsRetryableAtTheSeamsThatRecordBeforeTheyAct: the opposite
+// case to the egress one above, and the one an operator meets on a bad
+// afternoon (Codex, picatz/flowstate#1394).
+//
+// Secret access and credential assumption record *before* the value is read or
+// the credential is used, so a required recorder that could not write has
+// stopped the operation with nothing done. That is worth another attempt — and
+// a bare recorder error was not: it matched neither [secrets.Retryable] nor
+// [auth.Retryable], so it fell through to PolicyDenied, which is permanent, and
+// a collector outage failed every secret-backed step for good.
+//
+// Mutation-proved: dropping [v1.AuditRecorderUnavailable] from either arm of
+// the classification returns PolicyDenied here.
+func TestASinkOutageIsRetryableAtTheSeamsThatRecordBeforeTheyAct(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	require.NoError(t, err)
+
+	ctx, sink := auditing(t, audit.Required())
+	sink.fail = errors.New("the collector is down")
+	ctx = v1.ContextWithTaskRuntime(ctx, secretRuntime(t, "material",
+		auth.SecretAccessPolicy{Allow: []string{"true"}}))
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url":    v1.NewValue(server.URL),
+		"bearer": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "env", Name: "API_TOKEN"}}},
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	kind := v1.ClassifyError(err)
+	require.Equal(t, v1.ErrorKindUpstream, kind,
+		"a collector outage is not a policy denial: the store was never asked, so the step can be attempted again")
+	require.True(t, kind.Retryable())
+	require.True(t, v1.AuditRecorderUnavailable(err),
+		"the recorder's own failure has to stay recognizable through the task error that carries it")
+
+	require.Empty(t, sink.all(), "the failing sink recorded nothing, which is the premise of the test")
+}
+
 // TestALocalRehearsalRecordsNothing: `flow run local` installs no auditor, and
 // the seams behave exactly as they did before this existed. The exemption is
 // argued in the audit package's doc; this is the assertion that it holds.

@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 )
 
@@ -163,7 +164,62 @@ func auditEnforcementAllow(ctx context.Context, subject EnforcementSubject) erro
 	if auditor == nil {
 		return nil
 	}
-	return auditor.EnforcementAllow(ctx, subject)
+
+	return recorderFailure(auditor.EnforcementAllow(ctx, subject))
+}
+
+// AuditRecorderError reports that a required audit recorder could not write the
+// record a seam was about to act on, so the seam refused to act.
+//
+// It exists because of what happens to an unmarked one. These seams answer a
+// caller that classifies their failures — a denial is permanent, an unreachable
+// dependency is worth retrying — and a bare recorder error matches neither
+// [secrets.Retryable] nor [auth.Retryable], so it fell through to the permanent
+// arm: a collector outage failed every secret-backed step for good, which is a
+// deployment-wide outage wearing a policy denial's clothes (Codex,
+// picatz/flowstate#1394).
+//
+// What the seams that record *before* they act may promise is exactly that
+// nothing happened, which is why this is safe to retry. The egress seam is the
+// stated exception — its record is written when the policy's transport answers,
+// after the request may already have left — and it classifies its own failure
+// through [unrecordedRequestKind] rather than through this, because there the
+// question is not "did anything happen" but "could a repeat repeat it".
+type AuditRecorderError struct {
+	// Err is the recorder's own failure: every required sink's error, as the
+	// recorder joined them.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *AuditRecorderError) Error() string {
+	return "the decision could not be written to a required audit sink: " + e.Err.Error()
+}
+
+// Unwrap returns the recorder's failure, so errors.Is against a sink's own
+// error answers for this exactly as it did for the bare value this replaced.
+func (e *AuditRecorderError) Unwrap() error { return e.Err }
+
+// AuditRecorderUnavailable reports whether err is a required recorder's own
+// failure, and so whether another attempt is worth making.
+//
+// Spelled and used the way [secrets.Retryable] and [auth.Retryable] are, beside
+// which every caller of it asks: one predicate at the source, rather than four
+// seams each carrying their own idea of what an audit failure looks like.
+func AuditRecorderUnavailable(err error) bool {
+	var recorder *AuditRecorderError
+
+	return errors.As(err, &recorder)
+}
+
+// recorderFailure marks a recorder's failure as such, and passes a successful
+// record (nil) through.
+func recorderFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &AuditRecorderError{Err: err}
 }
 
 // auditEnforcementDeny records a refusal and returns the refusal to hand back,
@@ -182,7 +238,7 @@ func auditEnforcementDeny(ctx context.Context, subject EnforcementSubject, code 
 	}
 
 	if err := auditor.EnforcementDeny(ctx, subject, code); err != nil {
-		return err
+		return recorderFailure(err)
 	}
 
 	return refusal

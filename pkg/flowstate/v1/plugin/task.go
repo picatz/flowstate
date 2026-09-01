@@ -406,8 +406,13 @@ func resolvePluginSecretInputs(
 		case isWholeRef && slices.Contains(declared, name):
 			secret, err := flowstatev1.ResolveSecret(ctx, ref.SecretRef)
 			if err != nil {
+				// The same three answers the built-in http task gives, through
+				// the same predicates: a denial is permanent, an unreachable
+				// store or a required audit sink that could not write is worth
+				// another attempt. A plugin task's secret inputs get no
+				// different treatment (Codex, picatz/flowstate#1394).
 				kind := flowstatev1.ErrorKindPolicyDenied
-				if secrets.Retryable(err) {
+				if secrets.Retryable(err) || flowstatev1.AuditRecorderUnavailable(err) {
 					kind = flowstatev1.ErrorKindUpstream
 				}
 				return nil, nil, flowstatev1.NewTaskError(taskName, kind, fmt.Errorf(
