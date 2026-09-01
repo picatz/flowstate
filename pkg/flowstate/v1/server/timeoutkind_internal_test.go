@@ -86,12 +86,14 @@ func TestTimeoutFailureCarriesTheTimeoutKind(t *testing.T) {
 		require.False(t, v1.ErrorKindRunTimeout.Retryable(),
 			"restarting a run could repeat effects from its completed prefix")
 
-		// And permanent by [v1.ErrorKind.Retryable]'s default alone. The kind is
-		// synthesized here, run-side, from Temporal's own timeout; no activity
-		// ever fails with it, so listing it in [v1.PermanentErrorKinds] would put
-		// a string no activity returns into every step's NonRetryableErrorTypes.
-		require.NotContains(t, v1.PermanentErrorKinds(), v1.ErrorKindRunTimeout,
-			"that list is the activity boundary's, and this kind never crosses it")
+		// And listed where a client looks. [v1.PermanentErrorKinds] is the whole
+		// public answer to "may this be resubmitted", so a kind emitted here and
+		// missing there reads to a client as one worth retrying — which is the one
+		// thing this kind exists to say it is not. The engine's activity retry
+		// policy is derived from that list rather than equal to it; that half is
+		// pinned by engine's TestTheActivityPolicyDropsRunOnlyKinds.
+		require.Contains(t, v1.PermanentErrorKinds(), v1.ErrorKindRunTimeout,
+			"a client checking the permanent enumeration would not find this kind in it")
 		require.Contains(t, got.GetMessage(), timeoutKindText(kind),
 			"the message must still say which clock, kind=%s", kind)
 	}

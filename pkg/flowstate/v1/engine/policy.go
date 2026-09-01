@@ -170,11 +170,37 @@ func activityOptionsFor(policy *v1.StepPolicy, summary string) workflow.Activity
 // same classification is what keeps them in agreement — the previous policy
 // listed a type no activity could ever return, so every deterministic failure
 // was retried to exhaustion.
+//
+// Derived from [v1.PermanentErrorKinds] rather than equal to it, and
+// [runOnlyErrorKinds] is the whole of the difference: that list answers a
+// client's question about a run, this one answers Temporal's question about an
+// activity, and the two are the same classification read at different scopes.
+// Filtering here rather than shortening the public list is what keeps both
+// true — see [v1.PermanentErrorKinds] for why completeness is its contract.
 func nonRetryableErrorTypes() []string {
 	kinds := v1.PermanentErrorKinds()
 	types := make([]string, 0, len(kinds))
 	for _, k := range kinds {
+		if runOnlyErrorKinds[k] {
+			continue
+		}
 		types = append(types, k.String())
 	}
 	return types
+}
+
+// runOnlyErrorKinds names the permanent kinds no activity can fail with, and
+// which therefore have no meaning in an activity's NonRetryableErrorTypes.
+//
+// A set with a reason rather than a special case at the loop, because the
+// question it answers — "can the activity boundary produce this?" — is a fact
+// about each kind, and a future one belongs here beside the entry that explains
+// what membership costs: an entry that cannot occur is a string Temporal
+// matches against every failure and never matches, which is the inert drift
+// [nonRetryableErrorTypes]' own doc records against the policy it replaced.
+var runOnlyErrorKinds = map[v1.ErrorKind]bool{
+	// Synthesized run-side, from Temporal's own timeout, at the point the server
+	// reads a finished run's failure (server.timeoutFailure). Nothing classifies
+	// it inside an activity, so it never crosses the boundary this list guards.
+	v1.ErrorKindRunTimeout: true,
 }

@@ -88,16 +88,22 @@ const (
 	// so the safe answer is permanent: an operator must decide whether a new run
 	// is appropriate.
 	//
-	// Permanent through [ErrorKind.Retryable]'s default rather than through
-	// [PermanentErrorKinds], and the distinction is the whole reason this kind
-	// is absent from that list. That list is the activity boundary's
-	// NonRetryableErrorTypes (the engine's nonRetryableErrorTypes), whose
-	// contract is that every entry names a type an activity can actually fail
-	// with — and no activity can fail with this one. It is synthesized run-side
-	// from Temporal's own timeout, which never crosses that boundary as an
-	// ApplicationError, so listing it would put a string no activity returns
-	// into every step's retry policy: the shape of drift that function's own
-	// doc records against the policy it replaced.
+	// Listed by [PermanentErrorKinds], which is the complete public answer to
+	// "which kinds cannot succeed on a retry" — a client that reads a kind off
+	// the wire and checks that membership must find this one there, or it is
+	// told the run may be resubmitted, which is the one thing this kind exists
+	// to say it must not be.
+	//
+	// The engine's activity retry policy is derived from that list rather than
+	// equal to it, and this kind is what made the difference visible. That
+	// policy's NonRetryableErrorTypes matches on the type an activity attached
+	// to a failure, and no activity can fail with this kind: it is synthesized
+	// run-side from Temporal's own timeout and never crosses the activity
+	// boundary as an ApplicationError. So the engine filters it out (see
+	// nonRetryableErrorTypes) rather than shipping a string no activity returns
+	// in every step's retry policy. Two lists, one classification: the public
+	// one is complete, and the activity one is what is left after removing the
+	// kinds that boundary cannot produce.
 	ErrorKindRunTimeout ErrorKind = "RunTimeout"
 
 	// ErrorKindInternal indicates a defect in Flowstate itself. These are
@@ -153,8 +159,16 @@ func RetryableErrorKinds() []ErrorKind {
 
 // PermanentErrorKinds returns the kinds that cannot succeed on a retry.
 //
-// The engine passes these to the durable execution substrate so that a
-// deterministic failure fails once instead of consuming its whole retry budget.
+// Complete, and that is its contract: a client holding a kind read off
+// [RunResponse_Error] decides whether to resubmit by checking this membership,
+// so a kind missing here reads as one worth retrying.
+//
+// The engine derives its activity retry policy from this list rather than
+// passing it through unchanged, so that a deterministic failure fails once
+// instead of consuming its whole retry budget. What it removes on the way is
+// the kinds no activity can attach to a failure — see the engine's
+// nonRetryableErrorTypes, and [ErrorKindRunTimeout] for the one such kind
+// today.
 func PermanentErrorKinds() []ErrorKind {
 	return []ErrorKind{
 		ErrorKindInvalidInput,
@@ -163,6 +177,7 @@ func PermanentErrorKinds() []ErrorKind {
 		ErrorKindPolicyDenied,
 		ErrorKindLimitExceeded,
 		ErrorKindUpstreamUnknown,
+		ErrorKindRunTimeout,
 	}
 }
 
