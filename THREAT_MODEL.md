@@ -161,13 +161,18 @@ and `List` is bounded by executions read and by requests made
 
 **Limits.** `flow server` serves plain HTTP when it is given no certificate, and it
 refuses to do that on any address but loopback unless `--tls-terminated-upstream`
-asserts that something in front of it terminates TLS (`cmd/flow/tls.go`,
-`refusePlaintextListener`). In-process TLS is `--tls-cert-file`/`--tls-key-file`
-with `--tls-min-version` floored at 1.2, and ACME issuance is the `--tls-acme-*`
-flags (`cmd/flow/acme.go`, wired beside the static loader in `cmd/flow/main.go`).
-So the bearer token is on the wire in the clear in exactly two cases: loopback, and a
-deployment that asserted an upstream terminator — an assertion the process cannot
-verify, which is why the flag's help text is the whole of the control. The CLI
+asserts that something in front of it either terminates TLS or bounds who can reach
+the address at all: a reverse proxy, an Ingress, a load balancer, or a container's
+published-port binding, which is the case the documented Compose deployment relies
+on (`examples/observability/docker-compose.yaml` publishes every port on
+`127.0.0.1` while the container listens on `0.0.0.0`, and nothing terminates TLS)
+(`cmd/flow/tls.go`, `refusePlaintextListener`). In-process TLS is
+`--tls-cert-file`/`--tls-key-file` with `--tls-min-version` floored at 1.2, and ACME
+issuance is the `--tls-acme-*` flags (`cmd/flow/acme.go`, wired beside the static
+loader in `cmd/flow/main.go`). So the bearer token is on the wire in the clear in
+exactly two cases: loopback, and a deployment that asserted an upstream terminator
+or a reachability boundary — an assertion the process cannot verify, which is why
+the flag's help text is the whole of the control. The CLI
 refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
@@ -198,8 +203,9 @@ a redelivery joins rather than duplicating and a key cannot address another tena
 run or be read back out of the id.
 
 **Limits.** The route inherits the listener's TLS posture above: with no certificate
-configured, a signature and body are on the wire in the clear unless TLS is
-terminated in front. Verification
+configured, a signature and body are on the wire in the clear unless something in
+front of the listener terminates TLS or bounds who can reach it, which is what
+`--tls-terminated-upstream` asserts and the process cannot verify. Verification
 proves possession of a shared key, not the sender's identity: anyone holding the key
 can deliver. `--secret-require-namespace` is incompatible with the receiver, which
 resolves in the deployment's own tenant.
