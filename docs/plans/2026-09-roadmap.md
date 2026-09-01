@@ -21,6 +21,16 @@ this file. When an item here lands, its entry moves to the document that owns
 the shipped thing, per [VISION.md](../VISION.md)'s rule; what does not land
 rolls into the next plan or is dropped with a sentence saying why.
 
+Updated the same day, after a reconciliation pass: every "file after
+dup-check" candidate was searched against the open design records, the
+anchors were read, and the slate below now carries real issue numbers —
+eleven filed (#1376–#1386), the rest advanced on records that already
+claimed the territory. Three of this file's first-draft claims were
+corrected by that pass, and the corrections are visible where they apply:
+per-step priority is a recorded refusal (not an open gap), the entity-loop
+bounds belong to #105, and the task-policy zero case was decided when #187
+closed.
+
 ## August, measured
 
 **Velocity.** 688 PRs merged in the month (182 in Aug 1–10, 190 in 11–20, 316
@@ -89,7 +99,7 @@ snapshot's; the five passes hold the detail.
 
 | Subsystem | Strong | Thin |
 | --- | --- | --- |
-| **Engine & drivers** | Full step model on both drivers; structural both-callers conformance; bounds on essentially every engine path; pinned interpreter versioning; DST + replay corpus | No per-step routing or priority (tenant-level only); `call:` is inlining, not a child workflow — one history, one CAN budget; no Temporal Update; `flow watch` polls; search attributes write-only, so listing is a bounded scan; no entity/unbounded loop |
+| **Engine & drivers** | Full step model on both drivers; structural both-callers conformance; bounds on essentially every engine path; pinned interpreter versioning; DST + replay corpus | `call:` is inlining, not a child workflow — one history, one CAN budget; no Temporal Update; `flow watch` polls; search attributes write-only, so listing is a bounded scan (#1384); no entity/unbounded loop (#105); per-step *priority* is a recorded refusal (#657, via #133), with capability routing the open caveat (#156, #1271) — and the owner's expressiveness census (#133, 2026-08-22) calls the Update/child-execution-mode pair "the single highest-leverage open decision in the tracker" |
 | **Language & toolchain** | 31 verbs; editions + rewriter; 9 stable diagnostic codes with machine-appliable edits; `flow test` coverage/seeds; DAP debugger; `flow breaking`; generated references pinned in CI | Outputs are untyped (`parse.go:81`) so a callee has no semver-able contract; `call:` can't climb above the caller's directory and can't resolve from bytes (MCP/RPC/unsaved buffers refuse it); CEL type checking stops at `dyn` for reference-only expressions; no `exec:` task yet (decided in DSL.md, unbuilt); no tree-sitter; only Neovim is CI-verified |
 | **Governance & identity** | Five CEL policy surfaces sharing one identity vocabulary; OIDC/JWT/mTLS/ACME; WIF with live CI verification; secrets as refs with closure-held values; server-side audit with allow recording | Worker-side decisions (task/secret/egress) reach no audit trail (`main.go:1241` wires the server only); `--egress-policy` is forwarded to exactly two plugins by name (`plugins.go:58,63`) while `github`/`vcs`/`git` compile their own defaults; task-shape policy sees no inputs and its zero case permits everything; scopes are published and enforced by nothing; delegation (`act` chains) refused rather than represented; single issuer key, no revocation |
 | **Ingress & the human loop** | Webhooks with HMAC/Stripe verification, idempotency, bounded and timing-levelled; schedules; manual triggers with reasons; `slack.post` outbound | A webhook can only start a run (`server/webhook.go:780`) — it cannot answer a `wait_for_signal:` gate, so the Slack-approval loop is one bridge short; no outbound webhook signing; no event→signal provider capability |
@@ -116,13 +126,14 @@ September builds contracts and closes perimeter, and designs the rest:
 essentially complete: one CEL machinery, five decision surfaces, one identity
 vocabulary. The *enforcement* story has open seams, each of which reads today
 like governance and behaves like advice: the egress snapshot three plugins
-never receive, the worker that audits nothing, the task-shape zero case that
-permits everything, the scopes nothing reads, the freshness doc nothing
-enforces. Every one of these is more urgent than any new capability, because
-each is a sentence an operator already believes. Fixing them is mostly small,
-already-issue-tracked work (#1332 decides the egress-grant contract before
-#1321/#1322/#1323 execute it; #1352 and #1336 are open invariant-7-adjacent
-bugs; the audit recorder already exists and wants a second wiring point).
+never receive, the worker that audits nothing (#1379), the invocation-shape
+rules #187 designed and slice 1 left unbuilt (#1378), the scopes nothing
+reads (#1014), the freshness doc nothing enforces (#1380). Every one of these
+is more urgent than any new capability, because each is a sentence an
+operator already believes. Fixing them is mostly small, already-issue-tracked
+work (#1332 decides the egress-grant contract before #1321/#1322/#1323
+execute it; #1352 and #1336 are open invariant-7-adjacent bugs; the audit
+recorder already exists and wants a second wiring point).
 
 **P2 — Close the human loop where humans already live.** The engine's
 distinctive primitive is the durable wait; the systems humans answer from are
@@ -136,18 +147,23 @@ trust-boundary work: signature verification, sender identity shape, and
 idempotency are the design, not the garnish.
 
 **P3 — One team to many, contract-first.** In order, because each unlocks the
-next and only the first is cheap: (a) **typed workflow outputs** — `type:` on
-output declarations, the semver-able contract a shared workflow needs, add-only
-in the schema and `flow breaking`-aware; (b) **`call:` from bytes** — a
-resolver decision so MCP, the Compile RPC, and hosted authoring can compose
-(today every byte-based surface refuses); (c) **module identity** — the
-Phase-3 design DSL.md already records (`name@vMAJOR.MINOR.PATCH`, content
-digests, a catalog; leaning OCI for distribution) promoted from a paragraph to
-a design round; (d) **per-step routing/priorities** — the per-tenant queue
-mechanism one level down, already sketched in ARCHITECTURE.md; (e) **Nexus,
-consuming first** — the durable cross-namespace boundary, as a design note
-only. None of (c)–(e) should ship code in September; all three should end it
-with a decided design.
+next and only the first is cheap: (a) **typed workflow outputs** (#1377) —
+`type:` on output declarations, the semver-able contract a shared workflow
+needs, add-only in the schema and `flow breaking`-aware; (b) **`call:` beyond
+the calling file** (#1376) — a resolver decision so MCP, the Compile RPC, and
+a monorepo `lib/` can compose (today every byte-based surface refuses); (c)
+**module identity** — already mapped by #172 (composition keystone: vendoring
+not linking, registry-as-distribution) plus DSL.md's Phase-3 paragraphs;
+advance that record rather than open a second one; (d) **capability routing**
+— per-step *priority* is a recorded refusal (#657, argued in #133), but
+plugins are per-worker, so "steps needing this plugin run there" is capability
+routing, not priority; #156's `runs_on:` sketch is the recorded landing zone
+and #1271 owns the fleet-homogeneity proof; (e) **the at-scale execution
+decisions** — the #133 census elevates Update (with update-with-start) and a
+child-execution mode for `call:` as the tracker's highest-leverage open
+decision, ahead of Nexus, which stays a design note behind them. None of
+(c)–(e) should ship code in September; each should end it with a decided
+design.
 
 **P0 — The factory at its own new speed.** ~29 merges/day through a gate with
 two known correctness gaps is the tail risk to everything above. #1306 and
@@ -188,70 +204,81 @@ Must-land is marked; cut from the bottom, never from must-land.
 
 ### Build (PR candidates)
 
-7. **The doc-truth sweep** *(must; one PR, G1-style)* — THREAT_MODEL.md's
-   three stale gaps (TLS, allow-audit, codec seam) refreshed against the tree;
-   VISION.md's `flow mcp` line moved per its own rule and its plugin wish-list
-   reconciled with the real roster (grpc/discord/docker unbuilt; sql/vcs/codex
-   shipped unlisted); ARCHITECTURE.md's schedule row; DEBUGGING.md's DAP note;
-   docs/CI.md's two missing workflows; AUTHORIZATION_FRESHNESS.md either
-   implemented or corrected to what is enforced — the claims that are *true*
-   (and the audit found many) stay untouched.
+7. **The doc-truth sweep** *(must; one PR, G1-style)* — #1382 enumerates and
+   bounds it: THREAT_MODEL.md's three stale gaps (TLS, allow-audit, codec
+   seam) plus its narrow egress-coverage list; VISION.md's `flow mcp` line
+   moved per its own rule and its plugin wish-list reconciled with the real
+   roster; ARCHITECTURE.md's schedule row; DEBUGGING.md's DAP note;
+   docs/CI.md's two missing workflows. AUTHORIZATION_FRESHNESS.md is
+   deliberately outside the sweep — #1380 owns its implement-or-correct
+   decision, since the answer may be code. The claims that are *true* (and
+   the audit found many) stay untouched.
 8. **Egress to every plugin** — land the #1332 decision (a generic,
    immutable, explicit grant rather than per-plugin env constants), then
    execute #1321/#1322/#1323 so `github`/`vcs`/`git` obey the operator's
    `--egress-policy` exactly as `sql`/`slack` do. *(must)*
-9. **Worker-side audit** — wire the existing `audit.Recorder` through
-   `runWorker` so task-policy, secret and egress decisions (allows included)
-   leave the same trail server RPCs already do; #353's principle 2 applied at
-   the second of its two homes.
-10. **Typed outputs, schema first** — `type:` on output declarations
+9. **Worker-side audit** (#1379) — wire the existing `audit.Recorder` through
+   `runWorker` so task-policy, secret, egress and assumption decisions
+   (allows included) leave the same trail server RPCs already do; #1018's
+   decided contract at the second of its two homes, #353's principle 2 made
+   true past the RPC boundary.
+10. **Typed outputs, schema first** (#1377) — `type:` on output declarations
     (mirroring `inputs:`), compile + validate + both drivers + `flow breaking`
     awareness; the B1-style opener for everything in P3.
-11. **The webhook→signal bridge** *(flagship)* — a verified delivery answering
-    a declared `wait_for_signal:`/`wait_for_signals:` gate: reuses the
-    existing verification schemes and `signals:` authorization, needs a
+11. **The webhook→signal bridge** *(flagship; #96 is the design record, and
+    its thread now carries the promotion proposal)* — a verified delivery
+    answering a declared `wait_for_signal:`/`wait_for_signals:` gate: reuses
+    the existing verification schemes and `signals:` authorization, needs a
     sender-identity shape and idempotency across redelivery, conformance
     cases with both drivers as callers, and the `flowstate-security-review`
-    pass before merge. If the week runs short, this slips whole rather than
-    shipping unverified — a half-bridge at a trust boundary is worse than
-    none.
-12. **Factory catch-up** — the `factory.md` entry (or its explicit
-    retirement), #1307's `tools/fleet` reachability, and the docs/CI.md
-    workflow-inventory fix if not already inside (7).
+    pass before merge. #96 is milestoned "Post-release exploration"; the
+    promotion is the owner's call, argued in its thread. If the week runs
+    short, this slips whole rather than shipping unverified — a half-bridge
+    at a trust boundary is worse than none.
+12. **Factory catch-up** — #1386 (the ledger cadence decision), #1307's
+    `tools/fleet` reachability, and the docs/CI.md workflow-inventory fix if
+    not already inside (7).
 
-### Design rounds (issues to file — each after a `search_issues` dup-check
-against the ≈78 open design records — or to advance where a number exists)
+### The issue slate, reconciled (dup-checked against the open design records,
+then filed or advanced on 2026-08-31; the numbers below are real)
 
-- **File: module identity and the catalog** — promote DSL.md's Phase-3
-  paragraphs to a design record: naming, digests, version resolution, and the
-  distribution posture (OCI-leaning, per VISION), with the explicit non-goal
-  of remote fetch in v1.
-- **File: `call:` beyond the subtree** — the resolver contract for bytes-based
-  and cross-directory callees; decides what MCP/hosted authoring may compose.
-- **File: task-shape policy sees inputs, and the zero case** — today a rule
-  cannot say "deny `sql.query` against prod" and an absent file permits every
-  task; both halves need a decided posture (the input-visibility half has a
-  secrets-adjacency question the design must answer).
-- **File: scope enforcement** — scopes are minted and published
-  (`authorization.proto`) and read by nothing; enforce at the one place
-  actions are already enumerated, or stop publishing them.
-- **File: per-step routing and priority** — the ARCHITECTURE.md sketch
-  ("the same mechanism one level down") as a decidable design.
-- **File: sandbox-provider plugin shape** — the T3 story with `plugins/codex`
-  as the worked precedent for fail-closed confinement ceilings.
-- **File: entity-loop bounds** — the one acknowledged unbounded engine path
-  (carried `state:` byte bound, history-size-aware suspend cadence).
-- **Advance:** #337 (delegation/`act` chains, OAuth 2.1 alignment, per-tenant
-  issuers and key custody), #341 (the agent-loop design; `llm`/`mcp:` stay
-  behind it), #350 (approvals; the bridge in (11) is its transport), #353
-  (refresh A.1's status against `payloadcodec` reality), #146 (plugin
-  vetting/signing), #713 (plugin scaffold + conformance harness), #1333
-  (plugin SDK dedup before a seventh plugin), #928 (durable debugging),
-  #923, #477 (DST depth), #113/#271 (payload offload), #1216 (release
-  rehearsal).
-- **Re-triage:** #133/#134/#135 against a tree ~700 merges newer than their
-  text, and the Jul-31 design wave (#95–#108) for supersession (#102 vs
-  #715, #104 vs #548).
+**Filed by this review**, each cross-linked into the records that constrain
+it: #1376 (`call:` unresolvable from bytes, and the monorepo `lib/`
+boundary), #1377 (output declarations carry no type — half a signature),
+#1378 (task-shape rules read `task`+`identity` but not `inputs` — #187's
+unbuilt second half), #1379 (worker-side decisions unaudited), #1380
+(AUTHORIZATION_FRESHNESS.md: implement or correct), #1381 (netpolicy's
+control-plane capability has zero callers), #1382 (the doc-truth sweep,
+enumerated), #1383 (thread task descriptors into `env.Check`), #1384
+(search-attribute pushdown for `list --filter`), #1385 (compensation
+observability through `Get`/timeline), #1386 (the factory ledger cadence).
+
+**Found already claimed — advance, never re-file:** the webhook→signal
+bridge is #96 (promotion proposed in its thread); scope enforcement is
+#1014; module identity and the catalog are #172 plus DSL.md's Phase-3
+paragraphs; the sandbox/exec story is #100/#239 (with #721); the entity
+loop and its `state:` byte bound are #105 (DSL.md's sixth-round deferral
+names it); capability routing is #156/#1271 under #133's census; the
+task-policy zero case is *decided* — opt-in per deployment, argued in
+#187's closing design record — and needs no issue.
+
+**Advance:** #337 (delegation/`act` chains, OAuth 2.1 alignment, per-tenant
+issuers and key custody), #341 (the agent-loop design; `llm`/`mcp:` stay
+behind it), #350 (approvals; the bridge in (11) is its transport), #353
+(refresh A.1's status against `payloadcodec` reality), #146 (plugin
+vetting/signing), #713 (plugin scaffold + conformance harness), #1333
+(plugin SDK dedup before a seventh plugin), #928 (durable debugging; also
+owns session recording for terminal runs), #585 (the VS Code extension and
+its missing debug-type contribution), #923, #477 (DST depth), #113/#271
+(payload offload), #1216 (release rehearsal), #641 (the expressiveness
+census — the language-side companion to this review).
+
+**Re-triage:** #133 and #135 turned out to be *actively maintained* — #133
+retitled with two refusals recorded and the owner's census on top, #135
+corrected in-thread (this review added the one stale line: `flow test`
+shipped, #155) — so the real re-triage residue is #134 (both debts appear
+still live) and the Jul-31 design wave (#95–#108) for supersession
+(#102 vs #715, #104 vs #548).
 
 ### Definition of done for the week
 
