@@ -1412,6 +1412,14 @@ because it addressed the control plane. `RULE_ERROR` is the one to alert on: it
 means a rule could not be evaluated and the policy is failing closed on work it
 never decided about.
 
+One narrowing on `EGRESS`: those records are the built-in `http` task's
+decisions. A first-party plugin — `slack`, `sql` — enforces the same
+`--egress-policy` in its own process, and nothing running there can reach this
+worker's recorder, so its allows and denials are not recorded and
+`--audit-required` does not gate them. The traffic is still governed; only the
+record is missing. Tracked as
+[#1399](https://github.com/picatz/flowstate/issues/1399).
+
 Still no free text. A rule that *matched* is configuration and is recorded; a
 rule that failed to evaluate is recorded by its code alone, because its detail
 quotes the evaluation error and an evaluation error can quote the data the rule
