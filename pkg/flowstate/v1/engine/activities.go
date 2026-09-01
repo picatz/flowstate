@@ -91,7 +91,7 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 	// — see engine/workflow.go's varsScope, "Never Local", and
 	// [v1.CheckTaskPolicy]'s own doc for what this parameter can and cannot
 	// affect.
-	if err := v1.CheckTaskPolicy(ctx, task.GetName(), identity, false); err != nil {
+	if err := v1.CheckTaskPolicy(dispatchAttempt(ctx), task.GetName(), identity, false); err != nil {
 		recordTaskOutcome(span, err)
 		// Never benign: a deployment's task-shape policy denying dispatch is
 		// not the failure `continue_on_error:` describes — it is the
@@ -101,6 +101,25 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 		return activityError(task.GetName(), err, false)
 	}
 	return nil
+}
+
+// dispatchAttempt tells the shared dispatch check which attempt at this
+// dispatch it is running under.
+//
+// Temporal retries an activity by invoking it again, so this check — which
+// lives inside the activity — runs once per attempt while the local driver's
+// runs once per dispatch. The policy should be consulted every time; the
+// *record* should not be written every time, or one retried dispatch produces
+// a different trail on each driver (Codex, picatz/flowstate#1394). The
+// substrate is asked rather than a counter threaded through, the way
+// [observeTask] asks it for the span's attempt, and guarded the same way,
+// because activity.GetInfo panics outside an activity context.
+func dispatchAttempt(ctx context.Context) context.Context {
+	if !activity.IsActivity(ctx) {
+		return ctx
+	}
+
+	return v1.NewContextWithDispatchAttempt(ctx, int(activity.GetInfo(ctx).Attempt))
 }
 
 // Task is a Temporal activity that executes a single task.

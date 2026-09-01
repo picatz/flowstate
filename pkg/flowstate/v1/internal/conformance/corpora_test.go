@@ -141,6 +141,7 @@ var notACorpus = map[string]string{
 // and it means every exported result in this package is now either resolved or
 // named, rather than resolved or missed.
 var unresolvedResults = map[string]account{
+	"DispatchAuditTaskDef":    {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"ErrorKindTimeoutTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginIdentityTaskDef":   {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginTaskInputsTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},

@@ -51,6 +51,44 @@ func DefaultTaskPolicy() *TaskPolicy {
 // it by guessing a string key.
 type taskPolicyContextKey struct{}
 
+// dispatchAttemptContextKey is the unexported type a dispatch's attempt number
+// is keyed under, alongside the policy this file already carries.
+type dispatchAttemptContextKey struct{}
+
+// NewContextWithDispatchAttempt returns a context saying which attempt at one
+// dispatch is about to run, so [CheckTaskPolicy] can record the decision once
+// per dispatch rather than once per attempt.
+//
+// The number comes from the substrate, which is the only thing that knows it:
+// the durable driver reads Temporal's own activity info (engine's
+// dispatchAttempt), because a retried activity is a *new invocation* of the
+// same check — the policy is consulted again, correctly, but the dispatch it
+// permits is the one already recorded. The local driver sets nothing, and the
+// absent value reads as the first attempt, which is exactly right: it consults
+// the policy once above its retry loop, so every check it makes is a first one
+// (picatz/flowstate#1394).
+//
+// A fact about one invocation rather than about the deployment, so it travels
+// the way [ObserveTaskAttempt]'s own attempt does — from the substrate, into
+// the shared seam, as data.
+func NewContextWithDispatchAttempt(ctx context.Context, attempt int) context.Context {
+	return context.WithValue(ctx, dispatchAttemptContextKey{}, attempt)
+}
+
+// dispatchAttemptIn reports which attempt at this dispatch ctx describes,
+// defaulting to the first.
+//
+// The default is what makes this safe to add to a seam with callers that know
+// nothing about it: an unset context is a first attempt, which records, which
+// is the behavior every caller had before this existed.
+func dispatchAttemptIn(ctx context.Context) int {
+	if attempt, ok := ctx.Value(dispatchAttemptContextKey{}).(int); ok && attempt > 0 {
+		return attempt
+	}
+
+	return 1
+}
+
 // NewContextWithTaskPolicy returns a context carrying policy, consulted by
 // [TaskPolicyIn] ahead of the process-wide default. For a run whose
 // task-shape policy must not be (or cannot be) the process global — the
@@ -97,13 +135,18 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // denial retried is a denial repeated for no reason: the policy's answer
 // does not change between attempts of the same dispatch.
 //
-// Called once per dispatch, above wherever a driver retries a failed
-// attempt — [runStepWithPolicy] for the local driver, each activity entry
-// point for the durable one (`engine/activities.go`) — never inside the
-// retry loop itself. A dispatch's identity and task name do not change
-// between retries of the same step, so evaluating this once is not an
-// optimization so much as it is the accurate description of what the policy
-// governs: one dispatch, one decision.
+// Called above wherever a driver retries a failed attempt —
+// [runStepWithPolicy] for the local driver, each activity entry point for the
+// durable one (`engine/activities.go`) — never inside a retry loop itself.
+//
+// The two drivers reach that position differently, and the difference is not
+// cosmetic. The local driver checks once and then retries beneath the check.
+// The durable driver's check is inside the activity, and Temporal's retry
+// re-invokes the activity, so the policy is consulted again on every attempt —
+// which is correct enforcement and would be a second *record* of one dispatch.
+// [NewContextWithDispatchAttempt] is how the durable driver says which attempt
+// this is, so the allow is written once per dispatch on both drivers while the
+// policy still governs every attempt.
 //
 // local is [Scope.GetLocal] — true for any local-driver entry point's own
 // rehearsal (`flow run local`, `flow test`, `flow task run`, ...), never
@@ -138,11 +181,29 @@ func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentit
 
 	if err == nil {
 		// Recorded before the task runs, which is what the write-ahead rule
-		// asks of this seam: this check is made once per dispatch, above the
-		// driver's retry loop, so the record is written while the dispatch it
+		// asks of this seam: the record is written while the dispatch it
 		// permits is still ahead of it. A required recorder that could not
 		// write refuses the dispatch, which is the whole of "an action that
 		// cannot be recorded does not happen".
+		//
+		// Once per dispatch rather than once per attempt, which is what makes
+		// the two drivers' trails the same trail. The local driver consults
+		// this policy above its retry loop, so a retried step checks once; the
+		// durable driver's check lives *inside* the activity, which Temporal
+		// re-invokes for every attempt, so without this a retried dispatch
+		// wrote one allow per attempt durably and one in total locally — the
+		// same run, two different trails (Codex, picatz/flowstate#1394).
+		//
+		// The policy is still evaluated on every attempt: what a later attempt
+		// skips is the *record*, not the check, so an operator who tightens a
+		// policy mid-run still has the next attempt refused — and refusals are
+		// recorded whenever they happen, below. Nothing goes unrecorded either:
+		// the dispatch this permits was recorded when it was first permitted,
+		// and a retry is that same dispatch.
+		if dispatchAttemptIn(ctx) > 1 {
+			return nil
+		}
+
 		return auditEnforcementAllow(ctx, subject)
 	}
 

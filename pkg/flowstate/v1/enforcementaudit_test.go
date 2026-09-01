@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -143,6 +145,35 @@ func TestTaskDispatchRecordsBothDirectionsAndTheRuleThatDecided(t *testing.T) {
 	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE, denied.GetDenyCode())
 	require.Equal(t, `task == "http" && identity.namespace == "acme"`, denied.GetRule())
 	require.Equal(t, "http", denied.GetResourceKey())
+}
+
+// TestARetriedDispatchIsRecordedOnceLocal is one of the two driver callers
+// [conformance.AssertOneDispatchAllowPerDispatch] asks for: the local driver
+// consults the task-shape policy above its retry loop, so a step attempted
+// twice is one dispatch and one record.
+//
+// engine.TestARetriedDispatchIsRecordedOnceDurable is the other, over
+// Temporal's own retry — the driver where the check runs inside the activity
+// and the count was wrong (Codex, picatz/flowstate#1394).
+//
+// Registered on a private registry rather than the process-global one, the way
+// TestTotalTimeoutEndsTheStepLocal does, so this test needs no coordination
+// with anything else registering tasks.
+func TestARetriedDispatchIsRecordedOnceLocal(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(conformance.DispatchAuditTaskDef(&attempts)))
+
+	ctx, sink := auditing(t)
+	ctx = v1.NewContextWithRegistry(ctx, registry)
+
+	_, err := v1.Run(ctx, conformance.DispatchAuditWorkflow())
+	require.NoError(t, err, "the fixture succeeds on its second attempt")
+
+	conformance.AssertOneDispatchAllowPerDispatch(t, "the local driver", sink.all(), attempts.Load())
 }
 
 // TestADispatchNoAllowRuleMatchedIsRecordedAsSuchAndNamesNoRule: an allowlist
