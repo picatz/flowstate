@@ -204,11 +204,13 @@ Must-land is marked; cut from the bottom, never from must-land.
 ### Fix (existing issues, in this order)
 
 1. **#1352** — secret material bypassing RPC admission into durable history.
-   Invariant 7 is the invariant; this lands before anything else. *(must)*
+   Invariant 7 is the invariant; this lands before anything else. *(must)* —
+   PR #1391.
 2. **#1336** — plugin handshake token readable in `/proc/<pid>/environ` for
-   the process lifetime. *(must)*
+   the process lifetime. *(must)* — PR #1389 (protocol v4).
 3. **#1306** — let a worktree agent hand the gate its merge-base; the gate is
-   the thing 29 merges/day stand on. *(must)*
+   the thing 29 merges/day stand on. *(must)* — **merged**, PR #1387; the
+   no-scope fallback's other half is #1388.
 4. **#1319** — drop the lapsed `continue-on-error` so `appearance` fails
    loudly again; 19 days overdue by its own comment. *(must, trivial)* —
    **landed on this branch**, on the evidence that the job passed on the
@@ -235,7 +237,9 @@ Must-land is marked; cut from the bottom, never from must-land.
 8. **Egress to every plugin** — land the #1332 decision (a generic,
    immutable, explicit grant rather than per-plugin env constants), then
    execute #1321/#1322/#1323 so `github`/`vcs`/`git` obey the operator's
-   `--egress-policy` exactly as `sql`/`slack` do. *(must)*
+   `--egress-policy` exactly as `sql`/`slack` do. *(must)* — decision recorded
+   on #1332 (with the default-grant amendment); PR A is #1390; the
+   schema-owned launch-input question it surfaced is #1393.
 9. **Worker-side audit** (#1379) — wire the existing `audit.Recorder` through
    `runWorker` so task-policy, secret, egress and assumption decisions
    (allows included) leave the same trail server RPCs already do; #1018's
@@ -243,7 +247,7 @@ Must-land is marked; cut from the bottom, never from must-land.
    true past the RPC boundary.
 10. **Typed outputs, schema first** (#1377) — `type:` on output declarations
     (mirroring `inputs:`), compile + validate + both drivers + `flow breaking`
-    awareness; the B1-style opener for everything in P3.
+    awareness; the B1-style opener for everything in P3. — PR #1392.
 11. **The webhook→signal bridge** *(flagship; #96 is the design record, and
     its thread now carries the promotion proposal)* — a verified delivery
     answering a declared `wait_for_signal:`/`wait_for_signals:` gate: reuses
