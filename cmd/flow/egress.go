@@ -12,6 +12,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
 
 // The netpolicy package had twenty-two options and one production lever: an
@@ -50,12 +51,22 @@ const egressPolicyEnv = "FLOWSTATE_EGRESS_POLICY"
 // transport; 64 KiB is ample for the supported rules while refusing
 // comment-heavy or accidental files before they can prevent every plugin process
 // from launching.
-const maxEgressPolicyBytes = 64 << 10
+//
+// The number is the plugin package's, not a second one that happens to match:
+// this is where an operator's own file meets the bound, and a CLI that accepted
+// a file the host would then refuse — or refused one the host would accept —
+// would be two answers to the same question with only this comment holding them
+// together.
+const maxEgressPolicyBytes = plugin.MaxEgressPolicyBytes
 
 // egressPolicySnapshotKey carries the exact policy bytes [applyEgressPolicy]
 // parsed. Protocol-native plugins receive this immutable snapshot rather than
 // reopening a pathname that an operator or ConfigMap update could replace
 // between the host and plugin reads.
+//
+// Nil means no --egress-policy was configured; a non-nil empty slice means one
+// was and its document is empty, which is a policy. [slices.Clone] preserves
+// that distinction, which is why it is the clone used on both hops.
 type egressPolicySnapshotKey struct{}
 
 func egressPolicySnapshot(cmd *cobra.Command) []byte {
@@ -120,7 +131,19 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("egress policy %s: %w", path, err)
 	}
-	cmd.SetContext(context.WithValue(cmd.Context(), egressPolicySnapshotKey{}, slices.Clone(data)))
+
+	// Non-nil even for a zero-byte file. Nil is how
+	// [plugin.Config.EgressPolicy] spells "nothing was configured", and an
+	// operator who named a file configured a policy — the one this function just
+	// registered over the built-in http task. Letting an empty file arrive there
+	// as nil is what made the two sides disagree: the built-in task ran the
+	// policy an empty document builds while every plugin was told there was no
+	// grant at all.
+	snapshot := slices.Clone(data)
+	if snapshot == nil {
+		snapshot = []byte{}
+	}
+	cmd.SetContext(context.WithValue(cmd.Context(), egressPolicySnapshotKey{}, snapshot))
 
 	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for egress policy %s: %w", path, err)

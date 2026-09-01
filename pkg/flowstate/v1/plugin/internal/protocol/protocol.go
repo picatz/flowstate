@@ -19,9 +19,14 @@
 //	FLOWSTATE_PLUGIN_SOCKET            absolute path the plugin must listen on
 //	FLOWSTATE_PLUGIN_TOKEN_FD          fd carrying the per-launch secret
 //	FLOWSTATE_PLUGIN_HOST_FD           fd that closes when the host exits
+//	FLOWSTATE_EGRESS_POLICY_B64        the deployment's egress policy, base64
 //
 // The secret itself is never in the environment; only the number of the
 // descriptor carrying it is. See [TokenFDEnv] and [ReadToken].
+//
+// The egress grant is set whenever the deployment configured a policy, and is
+// present-but-empty when that policy is an empty document — which is a policy,
+// and a different fact from the variable being absent. See [EgressPolicyEnv].
 //
 // # The handshake line
 //
@@ -110,12 +115,42 @@ const (
 	// name for every plugin, because a per-plugin name is a per-plugin decision
 	// about whether to make the grant at all, and the answer is always yes.
 	//
+	// Presence is the grant, not length. A deployment whose policy file is an
+	// empty document configured a policy — the one an empty document builds,
+	// which is what the built-in http task runs under in that case — so the
+	// variable is set to the empty string rather than left out. Left out means
+	// only that nothing granted anything, which is why the reader can fail
+	// closed on it. os.Getenv cannot tell those apart; os.LookupEnv can, and is
+	// what both sides use.
+	//
 	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy] is
 	// what reads it. Nothing here obliges a plugin to; a plugin opening sockets
 	// without it is doing so deliberately, which is the line ARCHITECTURE.md
 	// draws about voluntary enforcement in vetted code.
 	EgressPolicyEnv = "FLOWSTATE_EGRESS_POLICY_B64"
 )
+
+// MaxEgressPolicyBytes bounds the raw policy carried in [EgressPolicyEnv],
+// before base64 encoding.
+//
+// The launch environment is passed through execve(2), and Linux bounds a single
+// environment string at MAX_ARG_STRLEN — 128 KiB, and not configurable. Base64
+// expands by 4/3, so 64 KiB of policy becomes 87,384 bytes plus the 28-byte
+// name: comfortably under the limit, with room for the encoding to grow before
+// anything has to be reconsidered. Past the limit exec fails with an errno that
+// names neither this variable nor the policy, and every plugin on the worker
+// stops launching for a reason nobody can read off the error.
+//
+// It is also simply a bound on input (AGENTS.md's fifth invariant): a policy is
+// configuration, not a data transport, and 64 KiB is ample for the rules
+// netpolicy supports while refusing a file handed over by accident.
+//
+// One ceiling, three enforcement points, because each is a boundary someone can
+// arrive at without passing the others: the CLI reading the operator's file
+// (cmd/flow/egress.go), the host accepting a Config from a program that embeds
+// it (plugin.Config.validate), and the SDK reading the grant out of an
+// environment it did not build (sdk.EgressPolicy).
+const MaxEgressPolicyBytes = 64 << 10
 
 // MagicCookieValue is the value [MagicCookieEnv] must hold.
 //
@@ -236,6 +271,17 @@ const Version3 = 3
 // serves with no token and rejects every request the host makes as
 // unauthenticated. Moving the number turns both into one refusal at startup
 // naming two versions, from whichever side is older.
+//
+// Version 4's launch environment also carries the deployment's egress policy in
+// [EgressPolicyEnv] (#1332), and that is why the grant needs no version of its
+// own. The staggered upgrade a reviewer would otherwise have to worry about —
+// an older plugin under a newer host reaching the network as though no policy
+// were configured, or a newer plugin under an older host finding no grant where
+// it expects one — cannot be reached: neither pairing negotiates. A version 3
+// plugin is refused at the handshake, by name and by number, before it serves
+// anything. What ends a version is the whole contract between the two sides,
+// and the launch environment is part of that contract; a grant added to it
+// without moving the number would be the same lie [Version3]'s doc describes.
 const Version4 = 4
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an

@@ -131,6 +131,18 @@ func runFakePlugin() int {
 		time.Sleep(10 * time.Second)
 		return 0
 
+	case "previous-version":
+		// A plugin built against the version before this one, announcing what
+		// its SDK would announce. Everything else about the line is correct, so
+		// the only thing the host can refuse it for is the version — which is
+		// the point: this is the binary a staggered upgrade actually produces,
+		// not a fixture with a number nobody ever shipped.
+		fmt.Printf("%s|%d|%d|unix|%s\n",
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3,
+			os.Getenv(protocol.SocketEnv))
+		time.Sleep(10 * time.Second)
+		return 0
+
 	case "bad-address":
 		// The address is what this fixture gets wrong, so everything else about the
 		// line has to be right — including the protocol version. Announcing a

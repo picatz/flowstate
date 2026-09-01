@@ -594,6 +594,14 @@ it that you did not ask for: the deployment's egress policy, the same bytes the
 operator wrote in `--egress-policy` and the same ones governing the built-in
 `http` task, base64-encoded under `FLOWSTATE_EGRESS_POLICY_B64`.
 
+It is a snapshot taken at your launch, not a subscription. You hold the bytes
+your own launch carried, so an operator who edits the policy file afterwards
+governs the plugins the worker starts next — the running ones keep what they were
+given until the worker relaunches them. The SDK reads it once, on the first call,
+and answers from that capture forever after: a grant a process could re-read is a
+grant that process can rewrite, and self-granting must not be one line of a
+plugin's own code.
+
 Ask the SDK for a client rather than building one:
 
 ```go
@@ -620,6 +628,20 @@ having been told nothing about what you may reach is not permission to reach
 anything, and a plugin cannot tell "the operator allowed it all" from "nobody
 told me". A plugin run outside a worker — directly, from a shell — sees the same
 refusal, which is the correct answer rather than a bug.
+
+**Absent means the variable is not set, not that it is empty.** An operator whose
+`--egress-policy` names an empty document has configured a policy — the one an
+empty document builds, which is exactly what the built-in `http` task then runs
+under — so the host sets the grant to the empty string and `sdk.EgressPolicy()`
+parses it. A plugin reading presence with `os.Getenv` instead of `os.LookupEnv`
+collapses the two and denies where the same deployment's built-in task allows.
+
+The policy is at most **64 KiB** before encoding (`plugin.MaxEgressPolicyBytes`).
+It travels as one environment string through `exec`, which Linux bounds at 128
+KiB, and a policy over the limit is refused by `flow` when it reads the file and
+by the plugin host when it accepts a `Config` — in both cases naming the bound,
+rather than failing every plugin launch on the worker with an `exec` errno that
+names nothing.
 
 Nothing here confines you. A separate process can open whatever socket the
 operating system will give it, and a plugin that builds its own

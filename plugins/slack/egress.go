@@ -23,8 +23,14 @@ const slackEgressPolicyEnv = sdk.EgressPolicyEnv
 var egressPolicy *netpolicy.Policy
 
 func installEgressPolicy() error {
-	encoded := os.Getenv(slackEgressPolicyEnv)
-	if encoded == "" {
+	// Presence, not length. An operator whose --egress-policy names an empty
+	// document configured a policy — the one an empty document builds, which is
+	// what the worker's own built-in http task runs under — and the host sets
+	// the grant to the empty string to say so. Reading it with os.Getenv made
+	// that indistinguishable from no grant at all, so this plugin denied where
+	// the same deployment's built-in task allowed.
+	encoded, granted := os.LookupEnv(slackEgressPolicyEnv)
+	if !granted {
 		return nil
 	}
 	data, err := base64.StdEncoding.DecodeString(encoded)

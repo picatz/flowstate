@@ -187,6 +187,19 @@ const (
 	stderrRateWindow = time.Minute
 )
 
+// MaxEgressPolicyBytes bounds [Config.EgressPolicy]: 64 KiB of raw policy,
+// before the base64 encoding that puts it in the launch environment.
+//
+// Exported for the same reason the Default constants above are, and for one
+// more: the CLI reading an operator's --egress-policy file bounds it with this
+// (cmd/flow/egress.go), so a file that would fail here is refused where the
+// operator can see which file it was, and the two cannot come to mean two
+// different sizes. The reasoning behind the number — MAX_ARG_STRLEN, and why a
+// policy is configuration rather than a data transport — is on
+// protocol.MaxEgressPolicyBytes, which is where the launch environment's own
+// bounds live.
+const MaxEgressPolicyBytes = protocol.MaxEgressPolicyBytes
+
 // Config describes which plugins a deployment will run and how far it will let
 // them go.
 //
@@ -287,8 +300,16 @@ type Config struct {
 	Env []string
 
 	// EgressPolicy is the deployment's egress policy, as the operator wrote it
-	// and the worker already parsed it for the built-in http task. Empty grants
-	// nothing.
+	// and the worker already parsed it for the built-in http task.
+	//
+	// Nil is no grant; non-nil is a grant, including an empty one. That
+	// distinction is the whole of it, and length is not: an operator who points
+	// --egress-policy at an empty document has configured a policy — the one an
+	// empty document builds, which is exactly what the built-in http task then
+	// runs under — and a plugin denying where the built-in task allows is the
+	// same deployment answering one question two ways. So a configured policy is
+	// forwarded whether or not it has bytes in it, and only an unset field means
+	// nothing was granted.
 	//
 	// Every launched plugin receives it, base64-encoded, under
 	// $FLOWSTATE_EGRESS_POLICY_B64 — not by name, and not as an entry an operator
@@ -296,6 +317,14 @@ type Config struct {
 	// repeated per plugin. It is a field rather than a convention so that a host
 	// embedded in someone else's program has to pass the deployment's policy
 	// deliberately, and so that the one place it is encoded is here.
+	//
+	// It is a snapshot taken at launch, not a subscription: a plugin holds the
+	// bytes its own launch carried, so a policy file edited afterwards governs
+	// the plugins the worker starts next, not the ones already running.
+	//
+	// At most [MaxEgressPolicyBytes]; a larger one is refused by [NewHost] with
+	// a message naming the bound, because past it the failure is exec(2)
+	// refusing the whole launch with an errno that names nothing.
 	//
 	// A plugin reaches it through
 	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy],
@@ -515,6 +544,18 @@ func (c Config) validate() error {
 		if !isEnvEntry(entry) {
 			return fmt.Errorf("plugin: Env entry %q is not of the form KEY=VALUE", truncate(entry, 64))
 		}
+	}
+
+	// Refused here rather than discovered at exec. The grant becomes one
+	// environment string, and an over-long environment string is not a policy
+	// problem the operating system can describe: exec fails for every plugin at
+	// once, with an errno that names neither the variable nor the file it came
+	// from. Naming the bound and the size makes it a configuration error.
+	if len(c.EgressPolicy) > MaxEgressPolicyBytes {
+		return fmt.Errorf(
+			"plugin: EgressPolicy is %d bytes, over the %d-byte limit; it is passed to every plugin as one environment string, and a longer one fails exec with an error naming nothing",
+			len(c.EgressPolicy), MaxEgressPolicyBytes,
+		)
 	}
 
 	return nil

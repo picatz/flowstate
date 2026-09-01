@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -453,13 +454,7 @@ func TestTheEgressGrantReachesEveryPluginAndCannotBeOverriddenByEnv(t *testing.T
 	cfg.EgressPolicy = policy
 	cfg.Env = []string{protocol.EgressPolicyEnv + "=" + base64.StdEncoding.EncodeToString([]byte("egress: {}"))}
 
-	var granted []string
-	for _, entry := range pluginEnv(cfg, "/tmp/s", "real-token") {
-		if name, value, _ := strings.Cut(entry, "="); name == protocol.EgressPolicyEnv {
-			granted = append(granted, value)
-		}
-	}
-
+	granted := grantsIn(t, pluginEnv(cfg, "/tmp/s"))
 	if len(granted) != 1 {
 		t.Fatalf("%s appears %d times in the launch environment, want exactly one: %v",
 			protocol.EgressPolicyEnv, len(granted), granted)
@@ -478,10 +473,91 @@ func TestTheEgressGrantReachesEveryPluginAndCannotBeOverriddenByEnv(t *testing.T
 	// to prevent, and it must not be manufactured here.
 	cfg.EgressPolicy = nil
 	cfg.Env = nil
-	for _, entry := range pluginEnv(cfg, "/tmp/s", "real-token") {
-		if strings.HasPrefix(entry, protocol.EgressPolicyEnv+"=") {
-			t.Errorf("a host with no egress policy granted one anyway: %q", entry)
+	if granted := grantsIn(t, pluginEnv(cfg, "/tmp/s")); len(granted) != 0 {
+		t.Errorf("a host with no egress policy granted one anyway: %q", granted)
+	}
+}
+
+// grantsIn returns every value the launch environment carries under the grant's
+// name, so a test can tell "absent" from "present and empty" — which is the
+// distinction the grant is built on and the one a bare string search cannot see.
+func grantsIn(t *testing.T, env []string) []string {
+	t.Helper()
+
+	var granted []string
+	for _, entry := range env {
+		if name, value, _ := strings.Cut(entry, "="); name == protocol.EgressPolicyEnv {
+			granted = append(granted, value)
 		}
+	}
+
+	return granted
+}
+
+// TestAnExplicitlyEmptyEgressPolicyIsStillGranted is the case a length check
+// silently dropped.
+//
+// An operator whose --egress-policy names a zero-byte file has configured a
+// policy: the worker parses that empty document and registers the http task
+// under what it builds. Forwarding the grant only when it had bytes in it made
+// every plugin on that worker read the deployment as ungranted, so plugins
+// denied while the built-in task allowed — one file, one deployment, two
+// answers. Nil is the only thing that means "nothing was configured".
+func TestAnExplicitlyEmptyEgressPolicyIsStillGranted(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, t.TempDir()).withDefaults()
+	cfg.EgressPolicy = []byte{}
+
+	granted := grantsIn(t, pluginEnv(cfg, "/tmp/s"))
+	if len(granted) != 1 {
+		t.Fatalf("an explicitly configured empty policy produced %d grants, want exactly one: %q",
+			len(granted), granted)
+	}
+	if granted[0] != "" {
+		t.Errorf("the empty policy was granted as %q, want the empty string", granted[0])
+	}
+
+	// withDefaults clones every slice it carries, and the clone has to preserve
+	// the distinction: a Config that came through it must still be able to say
+	// "empty policy" rather than collapsing to "no policy".
+	if cfg.withDefaults().EgressPolicy == nil {
+		t.Error("withDefaults turned an explicitly empty policy into no policy at all")
+	}
+}
+
+// TestAnOversizedEgressPolicyIsRefusedByConfig bounds the grant where it is
+// configured rather than where it is spent.
+//
+// The grant becomes one environment string, and Linux bounds one of those at
+// MAX_ARG_STRLEN. Past it, exec fails for every plugin at once with an errno
+// naming neither this field nor the operator's file — so the refusal belongs
+// here, in terms of the bound and the size, before anything is launched.
+func TestAnOversizedEgressPolicyIsRefusedByConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, t.TempDir())
+
+	// Exactly at the bound is accepted. Without this half, a check that refused
+	// everything would pass the half below.
+	cfg.EgressPolicy = make([]byte, MaxEgressPolicyBytes)
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("a policy exactly at the %d-byte bound was refused: %v", MaxEgressPolicyBytes, err)
+	}
+
+	cfg.EgressPolicy = make([]byte, MaxEgressPolicyBytes+1)
+	err := cfg.validate()
+	if err == nil {
+		t.Fatalf("a policy one byte over the %d-byte bound was accepted", MaxEgressPolicyBytes)
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(MaxEgressPolicyBytes)) {
+		t.Errorf("the refusal does not name the bound, so nobody can size a policy to fit it: %v", err)
+	}
+
+	// And it is refused by the constructor, not only by the unexported check:
+	// an embedding host never calls validate itself.
+	if _, err := NewHost(cfg); err == nil {
+		t.Error("NewHost accepted a policy over the bound")
 	}
 }
 

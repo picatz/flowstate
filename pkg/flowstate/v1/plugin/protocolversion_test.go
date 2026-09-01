@@ -1,9 +1,12 @@
 package plugin
 
 import (
+	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
@@ -240,5 +243,78 @@ func TestTheTokenDescriptorIsRefusedAtTheHandshakeInBothDirections(t *testing.T)
 	// a protocol that refuses everything.
 	if _, ok := protocol.Negotiate(onDescriptor, onDescriptor); !ok {
 		t.Fatal("two builds delivering the token on a descriptor failed to negotiate with each other")
+	}
+}
+
+// TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake is what makes the
+// launch environment safe to extend.
+//
+// Version 4 carries two things version 3 did not: the per-launch token on a
+// descriptor (#1336) and the deployment's egress policy in
+// [protocol.EgressPolicyEnv] (#1332). Neither is on the wire, so neither is
+// visible to a route-shaped compatibility argument — and the failure a reviewer
+// worries about is the quiet one: a version 3 binary launched by a version 4
+// host reaches the network as though the deployment had configured no policy at
+// all, and a version 4 binary under a version 3 host finds no grant where it
+// expects one. Both are closed the same way, by the version refusing to
+// negotiate, which is why the grant needs no compatibility mechanism of its own.
+//
+// The fixture announces [protocol.Version3] rather than an invented number, so
+// what this asserts is the transition an upgrade actually produces. The refusal
+// has to name both sides: "version mismatch" with no numbers leaves an operator
+// unable to tell which half is old.
+func TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, pluginDir(t, "previous-version"))
+
+	// Generous, for the reason TestOpenRefusesBadPlugins records: the refusal
+	// under test is one the plugin gives, and a busy machine must not be able to
+	// turn it into a timeout.
+	cfg.HandshakeTimeout = time.Minute
+	cfg.DescribeTimeout = time.Minute
+
+	// A policy is configured, so a host that launched this plugin anyway would
+	// be launching it *with* a grant it cannot read — which is the shape of the
+	// bug: it would run, and it would run ungoverned.
+	cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n")
+
+	host, err := NewHost(cfg)
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := host.Close(ctx); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	openErr := host.Open(t.Context())
+	if openErr == nil {
+		t.Fatal("a plugin speaking the previous protocol version was launched, not refused")
+	}
+	if !errors.Is(openErr, ErrHandshake) {
+		t.Errorf("Open error = %v, want one wrapping ErrHandshake", openErr)
+	}
+
+	for _, want := range []string{
+		strconv.Itoa(protocol.Version3),
+		strconv.Itoa(protocol.Version4),
+	} {
+		if !strings.Contains(openErr.Error(), want) {
+			t.Errorf("Open error = %q, want it to name version %s; a refusal naming one side does not say which build is old",
+				openErr.Error(), want)
+		}
+	}
+
+	// Refused, not admitted with a warning. A plugin the host kept would be one
+	// running under a launch environment it does not understand.
+	if got := len(host.Plugins()); got != 0 {
+		t.Errorf("host holds %d plugins after refusing a version mismatch, want 0", got)
+	}
+	if got := len(host.TaskDefs()); got != 0 {
+		t.Errorf("host offers %d task defs from a refused plugin, want 0", got)
 	}
 }

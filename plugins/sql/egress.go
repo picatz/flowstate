@@ -27,8 +27,14 @@ var egressPolicy *netpolicy.Policy
 // state at the task boundary, while catalog/validation-only plugin launches
 // continue to work without pretending they can connect anywhere.
 func installEgressPolicy() error {
-	encoded := os.Getenv(sqlEgressPolicyEnv)
-	if encoded == "" {
+	// Presence, not length. An operator whose --egress-policy names an empty
+	// document configured a policy — the one an empty document builds, which is
+	// what the worker's own built-in http task runs under — and the host sets
+	// the grant to the empty string to say so. Reading it with os.Getenv made
+	// that indistinguishable from no grant at all, so this plugin denied where
+	// the same deployment's built-in task allowed.
+	encoded, granted := os.LookupEnv(sqlEgressPolicyEnv)
+	if !granted {
 		return nil
 	}
 

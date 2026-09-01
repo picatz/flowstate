@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
@@ -100,6 +101,18 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 			grant: []byte("egress:\n  schemes: [https]\n  allow_loopback: true\n"),
 		},
 		{
+			// An operator's zero-byte --egress-policy file. The worker parses
+			// that empty document and registers the built-in http task under
+			// what it builds, so a plugin that read the same deployment as
+			// ungranted denied where the built-in task allowed. The expectation
+			// is computed rather than written down, because the claim is parity
+			// with the host's own answer, not agreement with a posture this
+			// test happens to believe in.
+			name:               "an explicitly empty policy is a policy on both sides",
+			grant:              []byte{},
+			wantLoopbackDenied: hostDeniesLoopbackUnderAnEmptyPolicy(t),
+		},
+		{
 			name:        "no policy is refused rather than defaulted",
 			grant:       nil,
 			wantRefusal: true,
@@ -133,4 +146,23 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 			}
 		})
 	}
+}
+
+// hostDeniesLoopbackUnderAnEmptyPolicy makes the two calls applyEgressPolicy
+// makes (cmd/flow/egress.go) for a zero-byte policy file, and reports what the
+// built-in http task would then decide about the address the fixture checks.
+//
+// It is the host half of the parity claim. Stating it as a constant would make
+// the test agree with whatever netpolicy's empty-document default happens to be
+// today rather than with whatever the built-in task is actually running.
+func hostDeniesLoopbackUnderAnEmptyPolicy(t *testing.T) bool {
+	t.Helper()
+
+	cfg, err := netpolicy.ParseConfig(nil)
+	require.NoError(t, err)
+
+	policy, err := cfg.Policy()
+	require.NoError(t, err)
+
+	return policy.CheckAddr(netip.MustParseAddrPort("127.0.0.1:443")) != nil
 }

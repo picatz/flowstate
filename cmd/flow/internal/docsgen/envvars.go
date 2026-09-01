@@ -144,7 +144,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_EGRESS_POLICY_B64",
 			value:   "unset",
-			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one.",
+			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed, at most 64 KiB before encoding. It is a per-launch snapshot, so a policy file edited afterwards reaches the plugins the worker starts next rather than the ones already running. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one. Set-but-empty is a grant whose policy document is empty, which is what an empty `--egress-policy` file configures; only an unset variable means nothing was granted.",
 			read:    "pkg/flowstate/v1/plugin/sdk/egress.go",
 		},
 		{

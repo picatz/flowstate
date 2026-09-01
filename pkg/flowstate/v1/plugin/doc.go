@@ -91,6 +91,15 @@
 // numbers of two inherited file descriptors — one carrying a per-launch secret
 // generated from crypto/rand, one that closes when the host exits.
 //
+// That environment also carries the deployment's egress policy, base64-encoded,
+// whenever the deployment configured one — the grant every plugin receives, the
+// same bytes the built-in http task runs under, bounded at 64 KiB before
+// encoding. Set-but-empty is a policy whose document is empty; unset is no
+// grant, and the reader must fail closed on it rather than treat it as
+// permission. It is part of the launch environment protocol version 4 names, so
+// a plugin that predates it is refused at the handshake rather than launched
+// ungoverned. See [Config.EgressPolicy] and the sdk package's EgressPolicy.
+//
 // The secret is on a descriptor rather than in the environment, and any language
 // that can inherit one can read it: the host writes the token and a single "\n"
 // to a pipe, closes its end before the plugin starts, and the plugin reads that

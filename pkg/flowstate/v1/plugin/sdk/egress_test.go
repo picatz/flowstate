@@ -6,6 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -13,11 +16,40 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
 // grantOf encodes a policy the way a worker hands one to a plugin.
 func grantOf(policy string) string {
 	return base64.StdEncoding.EncodeToString([]byte(policy))
+}
+
+// resetGrant discards the captured grant so a test gets the one it sets.
+//
+// [EgressPolicy] captures once per process on purpose, and no production path
+// undoes that — see [TestTheGrantIsCapturedOnceAndCannotBeReplaced], which is
+// the test that would pass trivially if this helper were reachable from
+// anywhere else. A test binary is the one process that holds many plugins'
+// worth of grants in sequence, so it is the one place the capture has to be
+// undone, and it is undone here rather than by anything the SDK exports.
+func resetGrant(t *testing.T) {
+	t.Helper()
+
+	grant = &egressGrant{}
+	t.Cleanup(func() { grant = &egressGrant{} })
+}
+
+// noGrant removes the variable entirely, which is what a plugin launched
+// outside a worker sees.
+//
+// t.Setenv first, for its restore-on-cleanup and its refusal to run under
+// t.Parallel; os.Unsetenv after, because an empty value is a *grant* here and
+// t.Setenv cannot express absence.
+func noGrant(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(EgressPolicyEnv, "placeholder")
+	require.NoError(t, os.Unsetenv(EgressPolicyEnv))
 }
 
 // countingListener accepts nothing and counts the attempts that reached it.
@@ -57,6 +89,8 @@ func countingListener(t *testing.T) (addr string, accepts *atomic.Int64) {
 // falsifier: it is running, it is reachable, and if the policy were consulted
 // only where it is convenient, it would record an accept.
 func TestTheGovernedClientNeverDialsADeniedDestination(t *testing.T) {
+	resetGrant(t)
+
 	denied, accepts := countingListener(t)
 
 	// The default policy denies loopback, so the listener is a destination this
@@ -87,6 +121,8 @@ func TestTheGovernedClientNeverDialsADeniedDestination(t *testing.T) {
 // policy names, which is bound before the policy is built precisely so the denial
 // is about this socket rather than about loopback in general.
 func TestARedirectToADeniedDestinationIsNeverDialed(t *testing.T) {
+	resetGrant(t)
+
 	denied, accepts := countingListener(t)
 
 	_, deniedPort, err := net.SplitHostPort(denied)
@@ -136,7 +172,8 @@ func httpServerRedirectingTo(t *testing.T, target string) string {
 // been told nothing about what it may reach. The safe reading of nothing is not
 // "everything".
 func TestAnAbsentGrantIsRefusedRatherThanDefaulted(t *testing.T) {
-	t.Setenv(EgressPolicyEnv, "")
+	resetGrant(t)
+	noGrant(t)
 
 	policy, err := EgressPolicy()
 	require.Error(t, err, "an absent grant produced a policy")
@@ -166,6 +203,7 @@ func TestAMalformedGrantIsRefusedRatherThanDefaulted(t *testing.T) {
 		{name: "a policy that cannot be built", grant: grantOf("egress:\n  deny: [\"not a cel expression\"]\n")},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			resetGrant(t)
 			t.Setenv(EgressPolicyEnv, testCase.grant)
 
 			policy, err := EgressPolicy()
@@ -177,27 +215,151 @@ func TestAMalformedGrantIsRefusedRatherThanDefaulted(t *testing.T) {
 	}
 }
 
-// TestTheGrantIsRereadWhenItChanges guards the cache rather than the policy.
+// TestTheGrantIsCapturedOnceAndCannotBeReplaced is the authorization property,
+// not a cache property.
 //
-// Caching the parsed policy is what lets a plugin call [HTTPClient] per request
-// without rebuilding a transport, and a cache that answered for a grant the
-// process no longer has would be a policy nobody could see. The environment does
-// not change under a running plugin, so this is a property of the cache's key,
-// held here because nothing else would notice it break.
-func TestTheGrantIsRereadWhenItChanges(t *testing.T) {
+// The grant is what the host handed this process at launch, and a launch happens
+// once. An earlier version read the variable on every call and reparsed it when
+// it changed, which made the policy the plugin's own decision: os.Setenv to
+// something permissive, ask for [HTTPClient], and the SDK hands back a client
+// governed by a policy the operator never wrote. Nothing outside the process
+// needs to have done it — the plugin is the attacker here, and self-granting
+// must not be one line of its own code.
+//
+// The replacement is deliberately the *looser* policy, so a regression fails by
+// permitting rather than by denying.
+func TestTheGrantIsCapturedOnceAndCannotBeReplaced(t *testing.T) {
+	resetGrant(t)
 	t.Setenv(EgressPolicyEnv, grantOf("egress:\n  schemes: [https]\n"))
 
 	first, err := EgressPolicy()
 	require.NoError(t, err)
+	require.Error(t, first.CheckAddr(loopback(t)), "the granted policy should deny loopback")
 
-	t.Setenv(EgressPolicyEnv, grantOf("egress:\n  schemes: [https]\n  allow_loopback: true\n"))
+	// What a plugin can do to its own environment, spelled the way a plugin
+	// would spell it.
+	require.NoError(t, os.Setenv(EgressPolicyEnv,
+		grantOf("egress:\n  schemes: [https]\n  allow_loopback: true\n")))
 
 	second, err := EgressPolicy()
 	require.NoError(t, err)
-	require.NotSame(t, first, second, "a changed grant returned the policy built from the old one")
+	assert.Same(t, first, second, "a rewritten environment produced a different policy")
+	assert.Error(t, second.CheckAddr(loopback(t)),
+		"a plugin granted itself loopback by writing its own environment")
 
-	assert.Error(t, first.CheckAddr(loopback(t)), "the first policy should still deny loopback")
-	assert.NoError(t, second.CheckAddr(loopback(t)), "the second policy should permit loopback")
+	// The constructor a plugin would actually reach for, so the property is
+	// asserted where it would be exploited rather than only on the accessor.
+	client, err := HTTPClient()
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	response, err := client.Get("http://" + loopback(t).String() + "/")
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("the client followed the self-granted policy")
+	}
+	assert.ErrorIs(t, err, netpolicy.ErrDenied,
+		"the request failed for some reason other than the captured policy: %v", err)
+}
+
+// TestAnEmptyConfiguredGrantIsThePolicyAnEmptyDocumentBuilds is the other half
+// of "presence is the grant": present and empty is not absent.
+//
+// An operator whose --egress-policy names a zero-byte file has configured a
+// policy, and the worker's built-in http task runs under whatever an empty
+// document builds. A plugin that read the same deployment as ungranted denied
+// where the built-in task allowed — one file, two answers. The expectation is
+// computed from netpolicy rather than written down, because the claim is parity
+// with the host's own two calls (applyEgressPolicy in cmd/flow/egress.go), not
+// agreement with a posture this test happens to believe in.
+func TestAnEmptyConfiguredGrantIsThePolicyAnEmptyDocumentBuilds(t *testing.T) {
+	resetGrant(t)
+	t.Setenv(EgressPolicyEnv, "")
+
+	granted, err := EgressPolicy()
+	require.NoError(t, err, "an explicitly configured empty policy was refused as absent")
+	require.NotNil(t, granted)
+
+	cfg, err := netpolicy.ParseConfig(nil)
+	require.NoError(t, err)
+	host, err := cfg.Policy()
+	require.NoError(t, err)
+
+	assert.Equal(t, posture(t, host), posture(t, granted),
+		"the plugin's posture under an empty policy differs from the host's under the same file")
+}
+
+// posture reduces a policy to the answers this test compares. Policies are not
+// comparable by value — they carry compiled CEL programs — so parity is stated
+// as the decisions each one makes.
+func posture(t *testing.T, policy *netpolicy.Policy) []bool {
+	t.Helper()
+
+	return []bool{
+		policy.CheckAddr(loopback(t)) == nil,
+		policy.CheckAddr(netip.MustParseAddrPort("93.184.216.34:443")) == nil,
+		policy.CheckAddr(netip.MustParseAddrPort("10.0.0.1:443")) == nil,
+	}
+}
+
+// TestAnOversizedGrantIsRefusedBeforeItIsDecoded bounds the one input this
+// package reads out of an environment it did not build.
+//
+// A Flowstate host bounds the policy before encoding it, which is the reason
+// this is worth having rather than a reason to skip it: the SDK's contract has
+// to hold for a third-party host that never went through plugin.Config, and "the
+// caller checked" is not a bound. The refusal is on the encoded length, so the
+// decode — which is the allocation — never runs.
+func TestAnOversizedGrantIsRefusedBeforeItIsDecoded(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+
+		// policy is the raw document, valid in every way but its length.
+		policy []byte
+	}{
+		{
+			// Trips the exact bound, after decoding. Base64 rounds to
+			// three-byte groups, so one byte over the ceiling is not one byte
+			// over the encoded ceiling — which is why the encoded check alone
+			// would let this through and the documented number would not mean
+			// what it says.
+			name:   "one byte over the ceiling",
+			policy: []byte("# " + strings.Repeat("x", protocol.MaxEgressPolicyBytes-1)),
+		},
+		{
+			// Trips the encoded bound, before decoding: the case the pre-check
+			// exists for, where decoding is the thing that would cost.
+			name:   "far over the ceiling",
+			policy: []byte("# " + strings.Repeat("x", 4*protocol.MaxEgressPolicyBytes)),
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resetGrant(t)
+			require.Greater(t, len(testCase.policy), protocol.MaxEgressPolicyBytes)
+			t.Setenv(EgressPolicyEnv, base64.StdEncoding.EncodeToString(testCase.policy))
+
+			policy, err := EgressPolicy()
+			require.Error(t, err, "an oversized grant produced a policy")
+			assert.Nil(t, policy)
+			assert.Contains(t, err.Error(), EgressPolicyEnv)
+			assert.Contains(t, err.Error(), strconv.Itoa(protocol.MaxEgressPolicyBytes),
+				"the refusal does not name the bound, so nobody can size a policy to fit it")
+		})
+	}
+}
+
+// TestAGrantAtTheBoundIsAccepted is the other side of the boundary: a check that
+// refused what is at the bound would pass the test above and still be wrong.
+func TestAGrantAtTheBoundIsAccepted(t *testing.T) {
+	resetGrant(t)
+
+	atBound := []byte("# " + strings.Repeat("x", protocol.MaxEgressPolicyBytes-2))
+	require.Len(t, atBound, protocol.MaxEgressPolicyBytes)
+	t.Setenv(EgressPolicyEnv, base64.StdEncoding.EncodeToString(atBound))
+
+	policy, err := EgressPolicy()
+	require.NoError(t, err, "a policy exactly at the bound was refused")
+	assert.NotNil(t, policy)
 }
 
 // loopback is an address the two policies above disagree about.

@@ -38,21 +38,29 @@ const EgressPolicyEnv = protocol.EgressPolicyEnv
 // --egress-policy on the worker, or launch this binary through a worker at all —
 // is not guessable from "denied".
 //
-// The policy is parsed once and reused while the grant is unchanged, so a plugin
-// may call this per request without rebuilding a transport each time. It is safe
-// for concurrent use, and [netpolicy.Policy.Client] hands out a copy per caller,
-// so a plugin that reassigns the transport on a client it was given disables the
-// policy for itself alone.
+// A grant that is present and empty is neither of those. It is the policy an
+// empty document builds — precisely what the worker's own built-in http task
+// runs under when --egress-policy names an empty file — so it is parsed rather
+// than refused, and the plugin ends up with the posture the rest of the
+// deployment has. Presence is the grant; length is not. This is why the variable
+// is read with [os.LookupEnv].
+//
+// The grant is captured once, on the first call, and every later call answers
+// from that capture. It is the snapshot the host handed this process at launch,
+// and a launch happens once: rereading would mean a plugin could hand itself a
+// different policy with [os.Setenv] and keep using [HTTPClient] as though the
+// worker had granted it, which is the one thing an authorization snapshot must
+// not permit. Nothing an operator does to the environment of a running plugin is
+// meant to be read here — a policy file edited after launch reaches the plugins
+// the worker starts next.
+//
+// It is safe for concurrent use, and [netpolicy.Policy.Client] hands out a copy
+// per caller, so a plugin that reassigns the transport on a client it was given
+// disables the policy for itself alone.
 func EgressPolicy() (*netpolicy.Policy, error) {
-	encoded := os.Getenv(EgressPolicyEnv)
-
-	grant.mu.Lock()
-	defer grant.mu.Unlock()
-
-	if !grant.parsed || grant.encoded != encoded {
-		grant.policy, grant.err = parseEgressGrant(encoded)
-		grant.encoded, grant.parsed = encoded, true
-	}
+	grant.once.Do(func() {
+		grant.policy, grant.err = parseEgressGrant(os.LookupEnv(EgressPolicyEnv))
+	})
 
 	return grant.policy, grant.err
 }
@@ -79,25 +87,32 @@ func HTTPClient() (*http.Client, error) {
 	return policy.Client(), nil
 }
 
-// grant holds the parsed policy for the grant this process was launched with.
+// egressGrant holds what this process was launched with, parsed once.
 //
-// Rebuilding the policy per request would also rebuild its transport, which is
-// where connection reuse lives — so it is cached. Keyed by the encoded grant
-// rather than by a sync.Once, so that the cache answers for the environment the
-// process actually has rather than for the one it had when something first
-// asked.
-var grant struct {
-	mu      sync.Mutex
-	parsed  bool
-	encoded string
-	policy  *netpolicy.Policy
-	err     error
+// A [sync.Once] rather than a cache keyed by the current environment. The two
+// look alike and differ on the question that matters: a keyed cache answers for
+// whatever the environment says *now*, which makes plugin code that calls
+// os.Setenv the author of its own authorization. First read wins, and there is
+// no second read to win.
+//
+// Parsing once is also what lets a plugin call [HTTPClient] per request without
+// rebuilding a transport, which is where connection reuse lives.
+type egressGrant struct {
+	once   sync.Once
+	policy *netpolicy.Policy
+	err    error
 }
 
+// grant is a pointer so that this package's own tests can put a fresh capture in
+// place; a test binary is one process holding many plugins' worth of grants,
+// which is the only setting where the capture has to be undone.
+var grant = &egressGrant{}
+
 // parseEgressGrant turns the encoded grant into a policy, or says why it could
-// not.
-func parseEgressGrant(encoded string) (*netpolicy.Policy, error) {
-	if encoded == "" {
+// not. present is [os.LookupEnv]'s second result: false is no grant, true with
+// an empty string is a grant whose document is empty.
+func parseEgressGrant(encoded string, present bool) (*netpolicy.Policy, error) {
+	if !present {
 		return nil, fmt.Errorf(
 			"sdk: no egress policy: %s is not set, so there is no destination this plugin is "+
 				"known to be permitted to reach. A Flowstate worker sets it from its own "+
@@ -105,9 +120,33 @@ func parseEgressGrant(encoded string) (*netpolicy.Policy, error) {
 				"grant to read", EgressPolicyEnv)
 	}
 
+	// Bounded twice, because the two bounds answer different questions. The
+	// encoded length is checked first and is the one that keeps the decode from
+	// allocating; it is coarse, since base64 rounds to three-byte groups. The
+	// decoded length is the documented ceiling exactly, and is what an author
+	// sizing a policy against [protocol.MaxEgressPolicyBytes] is entitled to
+	// have mean what it says.
+	//
+	// A Flowstate worker bounds the policy before encoding it, so neither is
+	// reachable from the supported path. They are here because this reads an
+	// environment the SDK did not build — a third-party host, or a plugin run
+	// by hand — and "the caller checked" is not a bound (AGENTS.md's fifth
+	// invariant).
+	if maxEncoded := base64.StdEncoding.EncodedLen(protocol.MaxEgressPolicyBytes); len(encoded) > maxEncoded {
+		return nil, fmt.Errorf(
+			"sdk: the egress policy in %s is over the %d-byte limit once decoded (%d encoded bytes, at most %d)",
+			EgressPolicyEnv, protocol.MaxEgressPolicyBytes, len(encoded), maxEncoded)
+	}
+
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: decoding the egress policy in %s: %w", EgressPolicyEnv, err)
+	}
+
+	if len(data) > protocol.MaxEgressPolicyBytes {
+		return nil, fmt.Errorf(
+			"sdk: the egress policy in %s is %d bytes, over the %d-byte limit",
+			EgressPolicyEnv, len(data), protocol.MaxEgressPolicyBytes)
 	}
 
 	cfg, err := netpolicy.ParseConfig(data)

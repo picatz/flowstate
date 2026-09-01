@@ -155,7 +155,7 @@
           "requiredSecretInputs": []
         }
       ],
-      "protocolVersion": 3,
+      "protocolVersion": 4,
       "taskSchemaDigest": "sha256:f3ed2101c84ca80979885245bfa276b68a8fd429a51198a6a0933af8df304d1d",
       "claimsDigest": "sha256:b5dd70042bdd23befca5989ea040080ef4a81fca6cf2d82e444220955ace33eb"
     },
@@ -232,7 +232,7 @@
           "requiredSecretInputs": []
         }
       ],
-      "protocolVersion": 3,
+      "protocolVersion": 4,
       "taskSchemaDigest": "sha256:d6a6eb6822c5443da1e30455813377edd40f5c87830451c3a2de221ab80351ad",
       "claimsDigest": "sha256:203b7ca4d6aa5596479ba0c6e02a893bfe3c5d434738dc0b0a4497ed4076cb0a"
     },
@@ -628,7 +628,7 @@
           ]
         }
       ],
-      "protocolVersion": 3,
+      "protocolVersion": 4,
       "taskSchemaDigest": "sha256:8f6137ec2ab24d7d71999c1b434d11625192c4cd5656364a14fd43dfa80b101f",
       "claimsDigest": "sha256:bcbce8a3c6332d07a054bd942d7ace4f88ba77b25d564aedf6c6df5e7ec8d4ed"
     },
@@ -1324,7 +1324,7 @@
           ]
         }
       ],
-      "protocolVersion": 3,
+      "protocolVersion": 4,
       "taskSchemaDigest": "sha256:50634e54dfde8e2d5ebc2f5f54d8a0947113de6d38b8f76b4f33aaaf1527c203",
       "claimsDigest": "sha256:b85791e367c47b103ff192779ff3c606f47b1e310e5582bd6ebc6220352b0902"
     },
@@ -1408,7 +1408,7 @@
           ]
         }
       ],
-      "protocolVersion": 3,
+      "protocolVersion": 4,
       "taskSchemaDigest": "sha256:57fcd55c87214e241a4715af45d303d04b34f594605806034b5f41182d9858e8",
       "claimsDigest": "sha256:8bf5a50bd61c95744f4a98f21ad1a44b3482a53be5d4498d109ff7ded67159ca"
     },
@@ -1565,7 +1565,7 @@
           ]
         }
       ],
-      "protocolVersion": 3,
+      "protocolVersion": 4,
       "taskSchemaDigest": "sha256:9fabba2ac489ef9d7ca3653e33b33a88a76028cb212e948d8e0b38849747b47e",
       "claimsDigest": "sha256:9fe13b9671d955e53dda98a95e044d119782cf15ba341a936fbf971814e67a7b"
     },
@@ -1724,7 +1724,7 @@
           ]
         }
       ],
-      "protocolVersion": 3,
+      "protocolVersion": 4,
       "taskSchemaDigest": "sha256:d59a2383062219531fa4c49df18baa4ff7f10939094214e20e4c3e4db214a8aa",
       "claimsDigest": "sha256:568efc111a8e63f042c2d507e5c7e2b99b8ba6ac930a7a9dccda34c1f2ce8f09"
     }

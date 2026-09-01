@@ -632,7 +632,9 @@ func tokenPipe(token string) (*os.File, error) {
 //
 // The deployment's egress policy is the one thing every plugin gets without
 // being named: an environment built from nothing is also an environment with no
-// network policy in it, and a plugin cannot inherit what was never there. See
+// network policy in it, and a plugin cannot inherit what was never there. It is
+// the snapshot this launch carried, so a policy file edited afterwards reaches
+// the plugins started next rather than the ones already running. See
 // [Config.EgressPolicy].
 func pluginEnv(cfg Config, socketPath string) []string {
 	env := []string{
@@ -643,7 +645,13 @@ func pluginEnv(cfg Config, socketPath string) []string {
 		protocol.HostFDEnv + "=" + strconv.Itoa(hostFD),
 	}
 
-	if len(cfg.EgressPolicy) > 0 {
+	// Configured, not non-empty. An operator's empty policy document is a policy
+	// — the built-in http task runs under what it builds — so the grant is
+	// forwarded as the empty string rather than left out, and the plugin side
+	// reads presence with os.LookupEnv. Testing the length here instead is what
+	// made a zero-byte --egress-policy file deny in plugins while allowing in
+	// the built-in task: one deployment, one file, two answers.
+	if cfg.EgressPolicy != nil {
 		env = append(env, protocol.EgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(cfg.EgressPolicy))
 	}
 
