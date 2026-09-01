@@ -59,9 +59,27 @@ import (
 // the shape here, before execution starts, is what turns a malformed output
 // `must:` into a submission refused rather than a result discovered too late
 // to matter.
+//
+// The same argument reaches one step further, to the *value* of an output
+// that already has one: a declaration whose `value:` is a literal (or an
+// all-literal structure) contradicting its own `type:` or `values:` is wrong
+// the moment it is submitted, and nothing about running the workflow can make
+// it right. [CheckOutputValue] answers that statically and returns nil for an
+// expression, so the run-time half stays exactly where it was — a computed
+// output is still judged at completion, against the value it actually
+// produced, because that is the first moment there is one.
 func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value, error) {
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		if err := CheckOutputConstraintShape(declaration); err != nil {
+			return nil, err
+		}
+		// Statically knowable only: nil for an expression, so this refuses the
+		// half a caller could have been told about before anything ran and
+		// leaves the other half to [EvalRunOutputs]. Same function, so the
+		// sentence, the `sensitive:` withholding and the length bound are the
+		// ones the completion-time refusal uses rather than a second rendering
+		// that could drift from it.
+		if err := CheckOutputValue(declaration, declaration.GetValue()); err != nil {
 			return nil, err
 		}
 	}

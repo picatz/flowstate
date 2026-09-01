@@ -1282,6 +1282,28 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowOutputValueRefused is the durable driver's half of the submit
+// boundary for a declared output whose value is already known to be wrong.
+//
+// Nothing is executed, because nothing should be: a specification whose own
+// answer contradicts its own declaration must not get a first step, and no
+// amount of running it can make the contradiction go away. Both drivers reach
+// this through [v1.BindRunInputs], which is what makes the two refuse the same
+// specification in the same words.
+func TestRunWorkflowOutputValueRefused(t *testing.T) {
+	for _, test := range conformance.OutputValueRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+			if test.Omits != "" {
+				require.NotContains(t, err.Error(), test.Omits,
+					"the refusal carries something this case says it must not")
+			}
+		})
+	}
+}
+
 // TestRunWorkflowVarsSecretRefused is the durable driver's half of the same
 // negative direction: a specification whose `vars:` hold a secret reference is
 // refused at this driver's submit boundary too, in the same words, because both

@@ -797,6 +797,28 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowOutputValueRefused is the local driver's half of the submit
+// boundary for a declared output whose value is already known to be wrong.
+//
+// Run through [v1.RunWithInputs] rather than [v1.BindRunInputs] directly, which
+// is what makes it a claim about the driver rather than about the checker: the
+// workflow carries a step, so a refusal that did not happen at submit would run
+// it. See [conformance.OutputValueRefusalCases] for why a literal is answerable
+// here at all when a computed output is not.
+func TestRunWorkflowOutputValueRefused(t *testing.T) {
+	for _, test := range conformance.OutputValueRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+			if test.Omits != "" {
+				require.NotContains(t, err.Error(), test.Omits,
+					"the refusal carries something this case says it must not")
+			}
+		})
+	}
+}
+
 // TestRunWorkflowOutputShaping covers a shaped `outputs:` mapping in the local
 // driver.
 //

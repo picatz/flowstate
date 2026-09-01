@@ -491,6 +491,13 @@ type Refusal struct {
 	// Contains is a fragment the refusal's message must carry, so the case pins
 	// which rule refused rather than only that something did.
 	Contains string
+
+	// Omits is a fragment the refusal's message must not carry, for the cases
+	// whose claim is about what a refusal does not say. Contains cannot make
+	// that claim: a sentence can hold the expected wording and the forbidden
+	// material at once, and a refusal about a `sensitive:` declaration is
+	// exactly where it does (#1396). Empty means the case makes no such claim.
+	Omits string
 }
 
 // InputRefusalCases returns submissions that must be refused before anything runs,
