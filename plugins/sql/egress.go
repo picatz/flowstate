@@ -6,13 +6,19 @@ import (
 	"os"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// sqlEgressPolicyEnv is set by the Flowstate host to an immutable base64
-// snapshot of the same --egress-policy bytes already parsed for built-in HTTP.
-// It is intentionally not inherited from the worker's ambient environment:
-// plugin.Config.Env names the grant explicitly.
-const sqlEgressPolicyEnv = "FLOWSTATE_SQL_EGRESS_POLICY_B64"
+// sqlEgressPolicyEnv is the one grant the host makes to every plugin it
+// launches: an immutable base64 snapshot of the same --egress-policy bytes
+// already parsed for built-in HTTP. It is intentionally not inherited from the
+// worker's ambient environment — plugin.Config.EgressPolicy names it explicitly
+// — and it is not SQL's own variable, which is why the name comes from the SDK
+// rather than being spelled again here (#1332).
+//
+// PostgreSQL is not HTTP, so this plugin applies the policy on its own dial path
+// rather than through sdk.HTTPClient; the grant it reads is the same one.
+const sqlEgressPolicyEnv = sdk.EgressPolicyEnv
 
 var egressPolicy *netpolicy.Policy
 

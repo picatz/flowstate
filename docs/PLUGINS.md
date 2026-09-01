@@ -23,6 +23,7 @@ outside this repository against `c4ead7c`; the `file:line` references are agains
 - [Chapter two: the schema is the contract](#chapter-two-the-schema-is-the-contract)
 - [Five places the contract is implicit](#five-places-the-contract-is-implicit)
 - [The rest of the manifest](#the-rest-of-the-manifest)
+- [Reaching the network](#reaching-the-network)
 - [Classifying failures](#classifying-failures)
 - [Writing one in another language](#writing-one-in-another-language)
 - [Known limitations](#known-limitations)
@@ -584,6 +585,50 @@ rehearsal marker or from the durable driver itself, never from claims or task
 input. A future remote-plugin transport must authenticate the host and preserve
 that property; otherwise it must deliver `UNSPECIFIED`, not forward a mode
 supplied by a workflow or remote caller.
+
+## Reaching the network
+
+Your plugin process starts with an environment built from nothing — not a copy of
+the worker's, which is where the worker's own credentials live. One thing is in
+it that you did not ask for: the deployment's egress policy, the same bytes the
+operator wrote in `--egress-policy` and the same ones governing the built-in
+`http` task, base64-encoded under `FLOWSTATE_EGRESS_POLICY_B64`.
+
+Ask the SDK for a client rather than building one:
+
+```go
+client, err := sdk.HTTPClient()
+if err != nil {
+	return nil, sdk.Failed("egress: %v", err)
+}
+
+response, err := client.Do(request)
+```
+
+That client checks the destination before the request goes out, again in the
+dialer for every address it actually connects to, and again on every redirect
+hop — so a hostname that resolves to something the policy denies is refused where
+the connection is made, not only where the URL was read. Bodies are capped and
+the request is bounded, per the operator's policy. `sdk.EgressPolicy()` returns
+the `*netpolicy.Policy` itself, for a plugin speaking something other than HTTP
+that has to apply it on its own dial path (`plugins/sql` does this for
+PostgreSQL).
+
+**When the grant is absent, both refuse.** No policy is an error naming
+`FLOWSTATE_EGRESS_POLICY_B64`, never an empty policy that permits everything:
+having been told nothing about what you may reach is not permission to reach
+anything, and a plugin cannot tell "the operator allowed it all" from "nobody
+told me". A plugin run outside a worker — directly, from a shell — sees the same
+refusal, which is the correct answer rather than a bug.
+
+Nothing here confines you. A separate process can open whatever socket the
+operating system will give it, and a plugin that builds its own
+`http.Client` is not stopped by this SDK or by the worker; it has simply left the
+path the deployment governs, which is a thing a deployment is entitled to notice
+and a reviewer of a first-party plugin is entitled to reject. Real confinement of
+a plugin that wants out is the deployment's job — a container, a network
+namespace, a firewall — and [THREAT_MODEL.md](../THREAT_MODEL.md) says where that
+line is.
 
 ## Classifying failures
 

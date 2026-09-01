@@ -138,8 +138,14 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_EGRESS_POLICY",
 			value:   "unset",
-			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP and first-party SQL PostgreSQL connections. When set it replaces the built-in policy entirely rather than merging with it.",
+			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP, first-party SQL PostgreSQL connections, and every plugin the worker launches. When set it replaces the built-in policy entirely rather than merging with it.",
 			read:    "cmd/flow/egress.go",
+		},
+		{
+			name:    "FLOWSTATE_EGRESS_POLICY_B64",
+			value:   "unset",
+			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one.",
+			read:    "pkg/flowstate/v1/plugin/sdk/egress.go",
 		},
 		{
 			name:    "FLOWSTATE_TASK_POLICY",
@@ -339,18 +345,6 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			purpose: "The value of an `env:` secret. Read only for a name the allowlist carries, and only inside the activity that applies it: the reference is what travels, never the value.",
 			read:    "pkg/flowstate/v1/secrets/env.go",
 			family:  true,
-		},
-		{
-			name:    "FLOWSTATE_SQL_EGRESS_POLICY_B64",
-			value:   "unset",
-			purpose: "Internal grant from the plugin host to the first-party SQL plugin: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; PostgreSQL execution is denied when the grant is absent.",
-			read:    "cmd/flow/plugins.go",
-		},
-		{
-			name:    "FLOWSTATE_SLACK_EGRESS_POLICY_B64",
-			value:   "unset",
-			purpose: "Internal grant from the plugin host to the first-party Slack plugin: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; outbound Slack writes are denied when the grant is absent.",
-			read:    "cmd/flow/plugins.go",
 		},
 		{
 			name:    "FLOWSTATE_SYMBOLS",

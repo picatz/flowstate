@@ -45,10 +45,11 @@ import (
 const egressPolicyEnv = "FLOWSTATE_EGRESS_POLICY"
 
 // maxEgressPolicyBytes keeps policy loading bounded and leaves room below
-// Linux's per-environment-string exec limit after the SQL plugin snapshot is
-// base64 encoded. A policy is configuration, not a data transport; 64 KiB is
-// ample for the supported rules while refusing comment-heavy or accidental
-// files before they can prevent every plugin process from launching.
+// Linux's per-environment-string exec limit after the snapshot every plugin is
+// granted (#1332) is base64 encoded. A policy is configuration, not a data
+// transport; 64 KiB is ample for the supported rules while refusing
+// comment-heavy or accidental files before they can prevent every plugin process
+// from launching.
 const maxEgressPolicyBytes = 64 << 10
 
 // egressPolicySnapshotKey carries the exact policy bytes [applyEgressPolicy]
@@ -72,7 +73,7 @@ func commandContext(cmd *cobra.Command) context.Context {
 // addEgressPolicyFlag declares --egress-policy on a command.
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
-		"path to an egress policy (YAML) governing built-in HTTP and policy-aware first-party plugins such as SQL and Slack (default $"+egressPolicyEnv+"); "+
+		"path to an egress policy (YAML) governing built-in HTTP and every plugin the worker launches (default $"+egressPolicyEnv+"); "+
 			"when set it replaces the default policy entirely, and "+v1.AllowLoopbackEgressEnv+
 			" is ignored; a file that wants loopback says allow_loopback: true")
 }

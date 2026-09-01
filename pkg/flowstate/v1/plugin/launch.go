@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -628,6 +629,11 @@ func tokenPipe(token string) (*os.File, error) {
 // plugin needs is named by an operator in Config.Env, which makes the set of
 // things a plugin can read a reviewable list rather than an accident of how the
 // worker was started.
+//
+// The deployment's egress policy is the one thing every plugin gets without
+// being named: an environment built from nothing is also an environment with no
+// network policy in it, and a plugin cannot inherit what was never there. See
+// [Config.EgressPolicy].
 func pluginEnv(cfg Config, socketPath string) []string {
 	env := []string{
 		protocol.MagicCookieEnv + "=" + protocol.MagicCookieValue,
@@ -635,6 +641,10 @@ func pluginEnv(cfg Config, socketPath string) []string {
 		protocol.SocketEnv + "=" + socketPath,
 		protocol.TokenFDEnv + "=" + strconv.Itoa(tokenFD),
 		protocol.HostFDEnv + "=" + strconv.Itoa(hostFD),
+	}
+
+	if len(cfg.EgressPolicy) > 0 {
+		env = append(env, protocol.EgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(cfg.EgressPolicy))
 	}
 
 	// Operator-supplied entries come last, but cannot override the protocol's
@@ -657,6 +667,12 @@ func pluginEnv(cfg Config, socketPath string) []string {
 // is retired, not free: an operator entry spelling it would put something a
 // plugin might read as the per-launch secret into the environment block, which
 // is exactly the place this protocol stopped keeping secrets.
+//
+// The egress grant is in the list for a different reason than the rest: not to
+// keep the handshake working, but because a policy composed by hand in Env and a
+// policy in [Config.EgressPolicy] are two spellings of one fact, and a
+// deployment that set both would have no way to know which one governed. The
+// field is the spelling; an Env entry under that name is dropped.
 func isProtocolEnv(entry string) bool {
 	for _, name := range []string{
 		protocol.MagicCookieEnv,
@@ -665,6 +681,7 @@ func isProtocolEnv(entry string) bool {
 		protocol.TokenEnv,
 		protocol.TokenFDEnv,
 		protocol.HostFDEnv,
+		protocol.EgressPolicyEnv,
 	} {
 		if len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name {
 			return true

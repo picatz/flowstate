@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -430,6 +431,56 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 	for _, entry := range pluginEnv(cfg, "/tmp/s") {
 		if strings.HasPrefix(entry, "A_WORKER_SECRET") {
 			t.Errorf("the worker's own environment reached the plugin: %q", entry)
+		}
+	}
+}
+
+// TestTheEgressGrantReachesEveryPluginAndCannotBeOverriddenByEnv covers the half
+// of the grant this package owns: that a policy the deployment configured is in
+// the environment of every plugin, under one name, and that the Env list cannot
+// quietly become a second place it is written.
+//
+// The name is not conditioned on which plugin is launching, which is the point —
+// a third-party plugin the host has never heard of gets the same grant as the
+// first-party ones (#1332). What the plugin does with it is
+// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy]'s half.
+func TestTheEgressGrantReachesEveryPluginAndCannotBeOverriddenByEnv(t *testing.T) {
+	t.Parallel()
+
+	policy := []byte("egress:\n  schemes: [https]\n")
+
+	cfg := testConfig(t, t.TempDir()).withDefaults()
+	cfg.EgressPolicy = policy
+	cfg.Env = []string{protocol.EgressPolicyEnv + "=" + base64.StdEncoding.EncodeToString([]byte("egress: {}"))}
+
+	var granted []string
+	for _, entry := range pluginEnv(cfg, "/tmp/s", "real-token") {
+		if name, value, _ := strings.Cut(entry, "="); name == protocol.EgressPolicyEnv {
+			granted = append(granted, value)
+		}
+	}
+
+	if len(granted) != 1 {
+		t.Fatalf("%s appears %d times in the launch environment, want exactly one: %v",
+			protocol.EgressPolicyEnv, len(granted), granted)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(granted[0])
+	if err != nil {
+		t.Fatalf("the grant is not base64: %v", err)
+	}
+	if string(decoded) != string(policy) {
+		t.Errorf("the plugin was granted %q, want the operator's own policy %q", decoded, policy)
+	}
+
+	// A host with no policy grants none, rather than an empty one: an empty
+	// policy read as "no restrictions" is the failure the SDK's refusal exists
+	// to prevent, and it must not be manufactured here.
+	cfg.EgressPolicy = nil
+	cfg.Env = nil
+	for _, entry := range pluginEnv(cfg, "/tmp/s", "real-token") {
+		if strings.HasPrefix(entry, protocol.EgressPolicyEnv+"=") {
+			t.Errorf("a host with no egress policy granted one anyway: %q", entry)
 		}
 	}
 }

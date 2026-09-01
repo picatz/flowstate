@@ -286,6 +286,25 @@ type Config struct {
 	// credential file — belongs here, named by the operator.
 	Env []string
 
+	// EgressPolicy is the deployment's egress policy, as the operator wrote it
+	// and the worker already parsed it for the built-in http task. Empty grants
+	// nothing.
+	//
+	// Every launched plugin receives it, base64-encoded, under
+	// $FLOWSTATE_EGRESS_POLICY_B64 — not by name, and not as an entry an operator
+	// composes in Env, which would make the grant a per-deployment decision
+	// repeated per plugin. It is a field rather than a convention so that a host
+	// embedded in someone else's program has to pass the deployment's policy
+	// deliberately, and so that the one place it is encoded is here.
+	//
+	// A plugin reaches it through
+	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy],
+	// which fails closed when it is absent. Handing it over is not confinement —
+	// nothing stops a process from opening its own socket — it is what makes the
+	// governed path the one a plugin has no reason to leave. Confining a plugin
+	// that wants out is the deployment's job (see THREAT_MODEL.md).
+	EgressPolicy []byte
+
 	// Logger receives host events and plugin stderr. Nil discards them, which
 	// silences the one diagnostic channel a plugin has; prefer passing one.
 	Logger *slog.Logger
@@ -440,6 +459,7 @@ func (c Config) withDefaults() Config {
 	c.PinnedDigests = maps.Clone(c.PinnedDigests)
 	c.PermittedSchemes = slices.Clone(c.PermittedSchemes)
 	c.Env = slices.Clone(c.Env)
+	c.EgressPolicy = slices.Clone(c.EgressPolicy)
 
 	return c
 }

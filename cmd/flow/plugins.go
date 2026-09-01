@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -50,18 +49,6 @@ const pluginSearchPathEnv = "FLOWSTATE_PLUGIN_DIR"
 // environment rather than into every command line.
 const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 
-// sqlEgressPolicyEnv gives the in-tree SQL plugin an immutable base64 encoding
-// of the same operator-owned policy bytes the host parsed for built-in HTTP.
-// The plugin process starts with an empty environment, so forwarding the
-// snapshot here is an explicit grant, not ambient inheritance. SQL itself
-// refuses PostgreSQL when it is absent.
-const sqlEgressPolicyEnv = "FLOWSTATE_SQL_EGRESS_POLICY_B64"
-
-// slackEgressPolicyEnv gives the first-party Slack plugin the same immutable
-// operator-owned snapshot. slack.post refuses to write when it is absent and
-// applies it through netpolicy on the HTTP client's actual dial path.
-const slackEgressPolicyEnv = "FLOWSTATE_SLACK_EGRESS_POLICY_B64"
-
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
@@ -88,9 +75,10 @@ type pluginFlags struct {
 	// all.
 	pinnedDigests map[string]string
 
-	// egressPolicy is the exact operator policy snapshot already parsed by the
-	// host, forwarded to first-party protocol-native plugins that enforce it
-	// on their own socket path.
+	// egressPolicy is the exact operator policy snapshot already parsed by this
+	// process for the built-in http task, fed to [plugin.Config.EgressPolicy]
+	// so that every launched plugin is governed by the policy this deployment
+	// governs its own outbound traffic with.
 	egressPolicy []byte
 }
 
@@ -371,14 +359,6 @@ func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 
 // host builds a host for these flags. The caller owns closing it.
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
-	env := covbuild.Env()
-	if len(f.egressPolicy) > 0 {
-		encoded := base64.StdEncoding.EncodeToString(f.egressPolicy)
-		env = append(env,
-			sqlEgressPolicyEnv+"="+encoded,
-			slackEgressPolicyEnv+"="+encoded,
-		)
-	}
 	return plugin.NewHost(plugin.Config{
 		SearchPath:              f.dirs,
 		AllowInsecureSearchPath: f.allowInsecureDirs,
@@ -387,6 +367,12 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		PermittedSchemes:        f.schemes,
 		HostVersion:             version,
 		Logger:                  logger,
+		// Every plugin, not the ones this file can name. The host encodes it
+		// into the launch environment under one variable, and a plugin reads it
+		// back through sdk.EgressPolicy — so a third-party plugin inherits the
+		// deployment's policy with no wiring here, which is what the two
+		// per-plugin variables this replaced could never do (#1332).
+		EgressPolicy: f.egressPolicy,
 		// pluginEnv (pkg/flowstate/v1/plugin/launch.go) deliberately strips a
 		// launched plugin down to the protocol variables plus whatever an
 		// operator names here — GOCOVERDIR is not ambient by design. Forward
@@ -396,7 +382,7 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		// Without it, a coverage-instrumented plugin binary launched through
 		// this host writes nothing, and #519's plugin blind spot stays closed
 		// only for the tests that build their own Config.Env by hand.
-		Env: env,
+		Env: covbuild.Env(),
 	})
 }
 

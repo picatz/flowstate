@@ -79,6 +79,9 @@ func runFakePlugin() int {
 	if mode == "caller-mode" {
 		return runCallerModePlugin()
 	}
+	if mode == "egress-grant" {
+		return runEgressGrantPlugin()
+	}
 
 	// The progress-relay conformance fixture is likewise a real SDK plugin
 	// rather than a hand-rolled handler, for the identical reason: it exists

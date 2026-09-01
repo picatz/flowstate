@@ -98,6 +98,23 @@ const (
 	// host got the chance to clean up. A plugin reads it and exits on EOF, which
 	// is what keeps a plugin from outliving a host that crashed.
 	HostFDEnv = "FLOWSTATE_PLUGIN_HOST_FD"
+
+	// EgressPolicyEnv carries the deployment's egress policy — the exact bytes
+	// the worker parsed for the built-in http task — base64-encoded, to every
+	// plugin the host launches.
+	//
+	// It is a grant rather than an inheritance. A plugin's environment is built
+	// from nothing (see the host's pluginEnv), so a plugin that reaches the
+	// network is governed by a policy the operator wrote and the worker handed
+	// it, not by whatever the worker's own environment happened to contain. One
+	// name for every plugin, because a per-plugin name is a per-plugin decision
+	// about whether to make the grant at all, and the answer is always yes.
+	//
+	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy] is
+	// what reads it. Nothing here obliges a plugin to; a plugin opening sockets
+	// without it is doing so deliberately, which is the line ARCHITECTURE.md
+	// draws about voluntary enforcement in vetted code.
+	EgressPolicyEnv = "FLOWSTATE_EGRESS_POLICY_B64"
 )
 
 // MagicCookieValue is the value [MagicCookieEnv] must hold.
