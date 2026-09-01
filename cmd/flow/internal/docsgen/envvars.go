@@ -138,13 +138,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_EGRESS_POLICY",
 			value:   "unset",
-			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP, first-party SQL PostgreSQL connections, and every plugin the worker launches. When set it replaces the built-in policy entirely rather than merging with it.",
+			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP and granted to every plugin the worker launches. Enforcement inside a plugin is that plugin's own code, not something the worker can impose on a separate process: `sql` (PostgreSQL connections) and `slack` apply the grant today, while `git`, `github` and `vcs` still reach the network under their own default policy and do not read it — tracked in #1332. When set it replaces the built-in policy entirely rather than merging with it.",
 			read:    "cmd/flow/egress.go",
 		},
 		{
 			name:    "FLOWSTATE_EGRESS_POLICY_B64",
 			value:   "unset",
-			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed, at most 64 KiB before encoding. It is a per-launch snapshot, so a policy file edited afterwards reaches the plugins the worker starts next rather than the ones already running. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one. Set-but-empty is a grant whose policy document is empty, which is what an empty `--egress-policy` file configures; only an unset variable means nothing was granted.",
+			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed, at most 64 KiB before encoding. It is a per-launch snapshot, so a policy file edited afterwards reaches the plugins the worker starts next rather than the ones already running. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one. Set-but-empty is a grant whose policy document is empty, which is what an empty `--egress-policy` file configures; only an unset variable means nothing was granted. Receiving the grant is not enforcing it: `sql` and `slack` read it, `git`, `github` and `vcs` do not yet (#1332).",
 			read:    "pkg/flowstate/v1/plugin/sdk/egress.go",
 		},
 		{

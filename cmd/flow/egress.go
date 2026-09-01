@@ -24,7 +24,13 @@ import (
 //
 // The mechanism is [v1.HTTPTaskDef]: registering it into [v1.DefaultRegistry]
 // replaces the built-in http task with one enforcing the given policy, and every
-// lookup the engine makes goes through that registry. Registration happens before
+// lookup the engine makes goes through that registry. That registration is the
+// only place this file *enforces* anything. The same bytes are also handed to
+// every launched plugin as a grant ([plugin.Config.EgressPolicy]), and a grant is
+// not enforcement: a plugin process opens its own sockets, so whether the policy
+// governs a plugin task is that plugin's code. Today `sql` and `slack` apply it;
+// `git`, `github` and `vcs` build their own default policy and are migrated in
+// #1332. Registration happens before
 // the worker polls and before a local run executes, so a policy that cannot load
 // refuses the command instead of governing some steps and not others.
 //
@@ -82,9 +88,21 @@ func commandContext(cmd *cobra.Command) context.Context {
 }
 
 // addEgressPolicyFlag declares --egress-policy on a command.
+//
+// The help says granted where it used to say governing, and it names which
+// plugins enforce the grant. The difference is not pedantry at this boundary: a
+// plugin process is not confined, so handing it the policy is all a worker can
+// do, and whether a deny rule actually stops a request is that plugin's own
+// code. `git`, `github` and `vcs` still build their own default policy with
+// netpolicy.New and never read the grant, so an operator who wrote a deny rule
+// and read "every plugin the worker launches" was promised enforcement this
+// build does not have. Their migration is #1332's next slice; until it lands the
+// help has to say so rather than let the flag read as a boundary it is not.
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
-		"path to an egress policy (YAML) governing built-in HTTP and every plugin the worker launches (default $"+egressPolicyEnv+"); "+
+		"path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches "+
+			"(default $"+egressPolicyEnv+"); the sql and slack plugins enforce the grant, while git, github and vcs "+
+			"do not read it yet and reach the network under their own default policy, tracked in #1332; "+
 			"when set it replaces the default policy entirely, and "+v1.AllowLoopbackEgressEnv+
 			" is ignored; a file that wants loopback says allow_loopback: true")
 }

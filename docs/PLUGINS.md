@@ -652,6 +652,16 @@ a plugin that wants out is the deployment's job — a container, a network
 namespace, a firewall — and [THREAT_MODEL.md](../THREAT_MODEL.md) says where that
 line is.
 
+**Which first-party plugins enforce the grant today.** The host grants it to
+every plugin it launches, and that is all a host can do; enforcement is each
+plugin's own code. `sql` and `slack` read the grant and apply it on their real
+connection paths. `git`, `github` and `vcs` do not read it yet — they build their
+own default policy with `netpolicy.New`, so a deny rule an operator writes does
+not reach a `git.*`, `github.*` or `vcs.*` task in this build. Migrating them
+onto `sdk.EgressPolicy` is tracked in #1332. An operator relying on
+`--egress-policy` to stop those tasks needs deployment-level confinement until
+that lands.
+
 ## Classifying failures
 
 Whether a step is retried is decided by the error your task returns, and only
