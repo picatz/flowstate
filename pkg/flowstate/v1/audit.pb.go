@@ -100,8 +100,18 @@ const (
 	// built-in http task, at the verdict its policy's transport returns.
 	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS AuditEnforcementPoint = 3
 	// Whether this workload may assume a credential for a federation target,
-	// from the assumption policy. AuthorizeCredential, which refuses before any
-	// assertion is minted.
+	// from the assumption policy. AuthorizeCredential, which records after the
+	// policy has answered and before the credential is used on a request.
+	//
+	// The policy decision happens inside Broker.Authorize, which mints and
+	// exchanges on its way to a credential, so the record is written once that
+	// returns rather than at the moment the rules answered. Under a required
+	// recorder what is stopped is the *use*: the credential is discarded
+	// unused, and nothing about it reaches the request. Minting is not stopped,
+	// so an identity provider may have observed an exchange for a credential
+	// that was then thrown away — the cost of reading the answer where this
+	// seam can see it, rather than evaluating the policy a second time to move
+	// the record earlier.
 	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION AuditEnforcementPoint = 4
 )
 
