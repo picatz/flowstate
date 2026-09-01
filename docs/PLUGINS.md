@@ -412,7 +412,7 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`sdk/sdk.go:610-623`, `protocol.go:171` for the current
+  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:222` for the current
   version). Nothing equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
@@ -617,7 +617,8 @@ Nothing about the protocol requires Go. The services are
 [`proto/flowstate/plugin/v1/plugin.proto`](../proto/flowstate/plugin/v1/plugin.proto),
 spoken over Connect on a Unix socket, and the launch contract — the environment
 variables, the handshake line's fields, the per-request token header, the
-inherited pipe that tells you the host died — is documented end to end in
+inherited descriptor carrying the per-launch token, the inherited pipe that tells
+you the host died — is documented end to end in
 [`pkg/flowstate/v1/plugin/doc.go`](../pkg/flowstate/v1/plugin/doc.go) under
 "The handshake, end to end".
 

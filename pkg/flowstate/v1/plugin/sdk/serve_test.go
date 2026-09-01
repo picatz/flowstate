@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,7 +51,7 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 				protocol.VersionsEnv:    "99",
 			},
 			wantErr: ErrProtocolVersion,
-			wantMsg: fmt.Sprintf("this plugin speaks %d", protocol.Version3),
+			wantMsg: fmt.Sprintf("this plugin speaks %d", protocol.Version4),
 		},
 		{
 			name: "no socket to serve on",
@@ -61,13 +62,38 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 			wantMsg: protocol.SocketEnv + " is not set",
 		},
 		{
-			name: "no token to authenticate the host by",
+			name: "no descriptor to read the token from",
 			env: map[string]string{
 				protocol.MagicCookieEnv: protocol.MagicCookieValue,
 				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
 				protocol.SocketEnv:      "/tmp/s",
 			},
-			wantMsg: protocol.TokenEnv + " is not set",
+			wantMsg: protocol.TokenFDEnv + " is not set",
+		},
+		{
+			// The descriptor number is input from outside this process, so a
+			// value that is not one is refused rather than parsed generously.
+			name: "a token descriptor that is not a number",
+			env: map[string]string{
+				protocol.MagicCookieEnv: protocol.MagicCookieValue,
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
+				protocol.SocketEnv:      "/tmp/s",
+				protocol.TokenFDEnv:     "the-token-itself",
+			},
+			wantMsg: protocol.TokenFDEnv + " does not name an inherited descriptor",
+		},
+		{
+			// stdin, stdout and stderr are not inherited extra descriptors, and
+			// reading a secret from whatever they happen to be is worse than
+			// refusing: on stdout it would also consume the handshake channel.
+			name: "a token descriptor naming stdout",
+			env: map[string]string{
+				protocol.MagicCookieEnv: protocol.MagicCookieValue,
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
+				protocol.SocketEnv:      "/tmp/s",
+				protocol.TokenFDEnv:     "1",
+			},
+			wantMsg: protocol.TokenFDEnv + " does not name an inherited descriptor",
 		},
 	}
 
@@ -75,7 +101,8 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			for _, name := range []string{
 				protocol.MagicCookieEnv, protocol.VersionsEnv,
-				protocol.SocketEnv, protocol.TokenEnv, protocol.HostFDEnv,
+				protocol.SocketEnv, protocol.TokenEnv, protocol.TokenFDEnv,
+				protocol.HostFDEnv,
 			} {
 				t.Setenv(name, "")
 				os.Unsetenv(name)
@@ -98,25 +125,81 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 	}
 }
 
-// TestReadEnvironmentClearsTheToken checks that the token does not stay in the
-// environment, where anything that can read this process can read it.
-func TestReadEnvironmentClearsTheToken(t *testing.T) {
+// TestReadEnvironmentReadsTheTokenOffADescriptor checks the delivery that
+// replaced an environment variable, and that nothing puts the value back.
+//
+// Unsetting a variable was never enough on Linux: /proc/<pid>/environ shows the
+// block the kernel copied at execve(2), so a token delivered there is readable
+// for the process's whole life. The plugin-side half of the fix is that this SDK
+// reads the secret off a descriptor and never writes it into its own
+// environment, which is what the second half of this test pins.
+func TestReadEnvironmentReadsTheTokenOffADescriptor(t *testing.T) {
+	const token = "THE-PER-LAUNCH-TOKEN"
+
 	t.Setenv(protocol.MagicCookieEnv, protocol.MagicCookieValue)
 	t.Setenv(protocol.VersionsEnv, protocol.FormatVersions(protocol.HostVersions()))
 	t.Setenv(protocol.SocketEnv, "/tmp/s")
-	t.Setenv(protocol.TokenEnv, "the-token")
+	t.Setenv(protocol.TokenFDEnv, strconv.Itoa(tokenDescriptor(t, token)))
 
 	env, err := readEnvironment()
 	if err != nil {
 		t.Fatalf("readEnvironment: %v", err)
 	}
 
-	if got := env.token(); got != "the-token" {
-		t.Errorf("the token was not read")
+	if got := env.token(); got != token {
+		t.Errorf("token = %q, want %q", got, token)
 	}
-	if _, still := os.LookupEnv(protocol.TokenEnv); still {
-		t.Error("the token is still in the environment")
+
+	if _, set := os.LookupEnv(protocol.TokenEnv); set {
+		t.Errorf("%s is set; the retired variable must stay empty", protocol.TokenEnv)
 	}
+	for _, entry := range os.Environ() {
+		if strings.Contains(entry, token) {
+			t.Errorf("the token reached this process's environment as %q", entry)
+		}
+	}
+}
+
+// tokenDescriptor returns the number of a descriptor already holding one token
+// line, the way the host hands one to a plugin.
+//
+// The pipe's *os.File is kept alive for the life of this test binary on purpose.
+// readToken closes the descriptor it is given, and a collected *os.File would
+// close that number a second time — by then possibly belonging to something else
+// here. Nothing in this binary needs the wrapper again, so holding it is cheaper
+// than the alternative.
+func tokenDescriptor(t *testing.T, token string) int {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	if err := protocol.WriteToken(writer, token); err != nil {
+		t.Fatalf("writing the token: %v", err)
+	}
+
+	// Closed before the reader ever looks: the token is far smaller than a
+	// pipe's buffer, so the read finds one line and then EOF with nothing to
+	// wait for — which is exactly what the host arranges before a plugin starts.
+	if err := writer.Close(); err != nil {
+		t.Fatalf("closing the token pipe: %v", err)
+	}
+
+	fd := int(reader.Fd())
+
+	keptOpen.Lock()
+	keptOpen.files = append(keptOpen.files, reader)
+	keptOpen.Unlock()
+
+	return fd
+}
+
+// keptOpen holds every pipe end handed to readToken. See [tokenDescriptor].
+var keptOpen struct {
+	sync.Mutex
+	files []*os.File
 }
 
 // TestServeAuthenticatesTheHost checks that a plugin serves only the worker that
@@ -307,8 +390,8 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 	if handshake.Address != socket {
 		t.Errorf("announced address = %q, want %q", handshake.Address, socket)
 	}
-	if handshake.ProtocolVersion != protocol.Version3 {
-		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version3)
+	if handshake.ProtocolVersion != protocol.Version4 {
+		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version4)
 	}
 }
 
@@ -372,7 +455,7 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 	t.Setenv(protocol.MagicCookieEnv, protocol.MagicCookieValue)
 	t.Setenv(protocol.VersionsEnv, protocol.FormatVersions(protocol.HostVersions()))
 	t.Setenv(protocol.SocketEnv, socket)
-	t.Setenv(protocol.TokenEnv, token)
+	t.Setenv(protocol.TokenFDEnv, strconv.Itoa(tokenDescriptor(t, token)))
 
 	// Run writes the handshake to os.Stdout and then points os.Stdout at stderr,
 	// so both are swapped for the duration and put back afterwards.

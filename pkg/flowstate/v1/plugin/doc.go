@@ -87,16 +87,32 @@
 // The host creates a directory only its own user can enter, mode 0700, and
 // assigns a socket path inside it. It launches the binary with an explicit argv
 // and no shell, in its own process group, with an environment carrying: a magic
-// cookie, the protocol versions the host speaks, the socket path, a per-launch
-// secret generated from crypto/rand, and the number of an inherited file
-// descriptor.
+// cookie, the protocol versions the host speaks, the socket path, and the
+// numbers of two inherited file descriptors — one carrying a per-launch secret
+// generated from crypto/rand, one that closes when the host exits.
+//
+// The secret is on a descriptor rather than in the environment, and any language
+// that can inherit one can read it: the host writes the token and a single "\n"
+// to a pipe, closes its end before the plugin starts, and the plugin reads that
+// descriptor to EOF, bounded, takes everything before the newline, and closes
+// it — so the token does not stay reachable through /proc/<pid>/fd, and does not
+// travel to anything the plugin itself launches. There is nothing to wait for
+// and nothing to write back. What made the environment the
+// wrong place is that a variable cannot be withdrawn — on Linux
+// /proc/<pid>/environ shows the block the kernel copied at execve(2), so a
+// secret delivered there is readable for as long as the plugin runs, no matter
+// how promptly the plugin unsets it, and it is collected by anything that sweeps
+// environments into a diagnostic bundle or a core dump.
 //
 // The plugin checks the cookie. Without it — someone ran the binary from a
 // shell — it prints an explanation to stderr and exits, rather than printing a
 // handshake line and speaking a binary protocol into a terminal. It then picks
 // the highest protocol version it shares with the host, or exits saying it
-// cannot serve any of them. It listens on the assigned path, sets the socket to
-// mode 0600, and prints one line to stdout:
+// cannot serve any of them; a plugin built against a host that still put the
+// secret in the environment shares no version with this one, and each side
+// refuses at that point naming both numbers rather than failing later over a
+// credential that is not where it looked. It reads the token, listens on the
+// assigned path, sets the socket to mode 0600, and prints one line to stdout:
 //
 //	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
 //

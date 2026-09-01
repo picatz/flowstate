@@ -15,10 +15,13 @@
 // plugin that finds any of it missing must refuse to serve:
 //
 //	FLOWSTATE_PLUGIN_MAGIC_COOKIE      must equal MagicCookieValue
-//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "2"
+//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "4"
 //	FLOWSTATE_PLUGIN_SOCKET            absolute path the plugin must listen on
-//	FLOWSTATE_PLUGIN_TOKEN             per-launch secret the host will present
+//	FLOWSTATE_PLUGIN_TOKEN_FD          fd carrying the per-launch secret
 //	FLOWSTATE_PLUGIN_HOST_FD           fd that closes when the host exits
+//
+// The secret itself is never in the environment; only the number of the
+// descriptor carrying it is. See [TokenFDEnv] and [ReadToken].
 //
 // # The handshake line
 //
@@ -37,6 +40,7 @@ package protocol
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -63,10 +67,31 @@ const (
 	// channel.
 	SocketEnv = "FLOWSTATE_PLUGIN_SOCKET"
 
-	// TokenEnv carries the per-launch secret the host will present in
-	// [TokenHeader] on every request. A plugin must reject a request that does
-	// not carry it.
+	// TokenEnv carried the per-launch secret directly, up to [Version3]. The
+	// host no longer sets it, and a plugin must not read it.
+	//
+	// It moved to [TokenFDEnv] because an environment variable is not a place a
+	// secret can be withdrawn from. On Linux /proc/<pid>/environ shows the block
+	// the kernel copied at execve(2); a later unsetenv edits the process's own
+	// copy and changes nothing that file shows. The token was therefore readable
+	// for the plugin's whole life — to root, to anything that can ptrace it, and
+	// to any tool that sweeps environments into a diagnostic bundle or a core
+	// dump — rather than for the startup window the SDK's comment claimed.
+	//
+	// The name stays reserved rather than deleted, for the reason [Version1]'s
+	// number does: an operator entry spelling it is still refused, so the name
+	// cannot come back meaning something new.
 	TokenEnv = "FLOWSTATE_PLUGIN_TOKEN"
+
+	// TokenFDEnv carries the number of an inherited file descriptor holding the
+	// per-launch secret the host will present in [TokenHeader] on every request.
+	// A plugin must reject a request that does not carry it.
+	//
+	// The host writes one [ReadToken] line and closes its end before the plugin
+	// starts, so a plugin reads to EOF without waiting on anything. What the
+	// descriptor held is gone once read: it exists in kernel buffer space, not
+	// in any file, and not in the environment block execve(2) copied.
+	TokenFDEnv = "FLOWSTATE_PLUGIN_TOKEN_FD"
 
 	// HostFDEnv carries the number of an inherited file descriptor that the
 	// operating system closes when the host process exits, whether or not the
@@ -83,12 +108,12 @@ const (
 //
 // It is not a security measure and must not be treated as one: it is a constant
 // compiled into every plugin, so anything that can read a plugin binary knows
-// it. [TokenEnv] is the value that authenticates, and the socket's directory
-// permissions are what actually keep other users out.
+// it. The per-launch secret from [TokenFDEnv] is the value that authenticates,
+// and the socket's directory permissions are what actually keep other users out.
 const MagicCookieValue = "flowstate-plugin-8f2b1c4e6a9d47f3b5e8c1a0d9f6b3e7"
 
-// TokenHeader is the HTTP header carrying the per-launch secret from [TokenEnv]
-// on every request the host makes.
+// TokenHeader is the HTTP header carrying the per-launch secret from
+// [TokenFDEnv] on every request the host makes.
 //
 // It is defense in depth behind the socket's permissions: a process that somehow
 // reaches the socket — a bug in a directory mode, a plugin that re-listens
@@ -150,9 +175,10 @@ const Version1 = 1
 // meant something else must never come back meaning something new.
 const Version2 = 2
 
-// Version3 is the current version of the plugin protocol: the same services and
+// Version3 was the third version of the plugin protocol: the same services and
 // routes as [Version2], with the descriptor exchange speaking the twelve-file
-// flowstate/v1 schema rather than the single flowstate/v1/flowstate.proto.
+// flowstate/v1 schema rather than the single flowstate/v1/flowstate.proto. It is
+// no longer served.
 //
 // The number moves because the compatibility it asserts stopped being true.
 // Nothing in the route table changed, and it would have been easy to leave the
@@ -168,13 +194,110 @@ const Version2 = 2
 // side refuses using code that already shipped, which is the only way to reach
 // a host that predates this change. A version that does not move across a
 // breaking change is a version that is lying.
+//
+// What ended version 3 is the launch environment rather than anything on the
+// wire: the per-launch secret moved out of [TokenEnv] onto the descriptor
+// [TokenFDEnv] names. Retired rather than deleted, for the reason [Version1] is.
 const Version3 = 3
+
+// Version4 is the current version of the plugin protocol: the same services and
+// routes as [Version3], with the per-launch secret delivered on an inherited
+// descriptor ([TokenFDEnv]) instead of in the environment ([TokenEnv]).
+//
+// The number moves because the launch contract is half of what the two sides
+// agree on, and this half stopped being mutually satisfiable. A version 3 plugin
+// looks for a variable a version 4 host does not set; a version 4 plugin looks
+// for a descriptor a version 3 host does not pass. Neither is expressible as a
+// route, and neither side can fix it by being generous — a host that kept
+// setting the variable for old plugins would still be leaving the token in
+// /proc/<pid>/environ, which is the entire defect.
+//
+// Left at 3 it would fail the way [Version1]'s doc describes: negotiation
+// agrees, the plugin loads, and then it either refuses to start over a variable
+// name — which reads as a misconfigured deployment rather than two builds that
+// cannot work together — or, for an implementation less careful than this SDK,
+// serves with no token and rejects every request the host makes as
+// unauthenticated. Moving the number turns both into one refusal at startup
+// naming two versions, from whichever side is older.
+const Version4 = 4
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
 // about the process at all. A plugin that never prints a newline must not be
 // able to make the host allocate.
 const MaxHandshakeLine = 4096
+
+// MaxTokenBytes bounds what [ReadToken] will read, newline included.
+//
+// A plugin cannot know it was launched by the host it thinks it was, so the
+// descriptor it is handed is input like any other and gets a limit. The bound is
+// generous against the 26 bytes crypto/rand's text form actually mints and small
+// against a pipe's buffer, so a writer that never sends a newline is a refusal
+// rather than a plugin sitting on an allocation.
+const MaxTokenBytes = 512
+
+// WriteToken writes the per-launch secret in the framing [ReadToken] expects:
+// the token, then one newline, then nothing.
+//
+// The host calls this on the write end of the pipe whose read end the plugin
+// inherits on [TokenFDEnv], and closes that end before the plugin starts. The
+// framing lives beside its reader because a launch contract whose two halves are
+// spelled in two packages is one that drifts.
+func WriteToken(w io.Writer, token string) error {
+	if _, err := io.WriteString(w, token+"\n"); err != nil {
+		return fmt.Errorf("writing the plugin token: %w", err)
+	}
+	return nil
+}
+
+// ReadToken reads the per-launch secret from the descriptor [TokenFDEnv] names.
+//
+// It reads to EOF rather than one line, which is what makes the framing strict:
+// the host writes exactly one newline-terminated token and closes its end, so
+// anything after that newline means this descriptor is not carrying what the
+// protocol says it carries, and the plugin refuses instead of serving on a
+// secret it half-understands.
+//
+// The result goes into a [TokenHeader] comparison, so every byte must be one a
+// header value can hold. A token that could not travel in the header would make
+// every request from the host look unauthenticated — a plugin that appears
+// broken, for a reason nothing in its logs would name.
+func ReadToken(r io.Reader) (string, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, MaxTokenBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading the plugin token: %w", err)
+	}
+
+	if len(raw) > MaxTokenBytes {
+		return "", fmt.Errorf("the plugin token is longer than %d bytes", MaxTokenBytes)
+	}
+
+	// Exactly one newline, at the end. A second line means this descriptor is
+	// carrying something other than what the protocol says, and taking the first
+	// line of it anyway would be the generous reading a launch contract cannot
+	// afford.
+	line := string(raw)
+	if line == "" || strings.IndexByte(line, '\n') != len(line)-1 {
+		return "", fmt.Errorf("the plugin token is not one newline-terminated line")
+	}
+
+	token := line[:len(line)-1]
+	if token == "" {
+		return "", fmt.Errorf("the plugin token is empty")
+	}
+
+	for i := range len(token) {
+		// Visible ASCII only: the printable range a header value may hold,
+		// excluding the space that would let a token carry structure.
+		if token[i] < '!' || token[i] > '~' {
+			return "", fmt.Errorf(
+				"the plugin token holds a byte that cannot travel in %s", TokenHeader,
+			)
+		}
+	}
+
+	return token, nil
+}
 
 // NetworkUnix is the only network a plugin may serve on.
 //
@@ -189,17 +312,19 @@ const NetworkUnix = "unix"
 // highest preference last is not implied — [Negotiate] picks the highest common
 // version.
 //
-// [Version1] and [Version2] are absent because they are not served. A plugin
-// built against either finds no version in common and refuses at startup with a
-// message naming both sides, which is the failure this list exists to produce:
-// one clear refusal before anything runs, rather than a request to a route
-// nobody answers — or, for version 2, a manifest nobody can reconstruct.
+// [Version1], [Version2] and [Version3] are absent because they are not served.
+// A plugin built against any of them finds no version in common and refuses at
+// startup with a message naming both sides, which is the failure this list
+// exists to produce: one clear refusal before anything runs, rather than a
+// request to a route nobody answers, a manifest nobody can reconstruct, or a
+// token nobody delivered.
 //
-// Version 2 is left out rather than offered alongside 3 deliberately. Offering
-// it would let a version 2 plugin negotiate successfully and fail later at
-// descriptor linking, which is precisely the failure the bump exists to
-// prevent. A version that cannot work must not be offered.
-func HostVersions() []int { return []int{Version3} }
+// A retired version is left out rather than offered alongside the current one
+// deliberately. Offering it would let a plugin negotiate successfully and fail
+// later — at descriptor linking for version 2, at reading a secret that is not
+// where it looked for version 3 — which is precisely the failure each bump
+// exists to prevent. A version that cannot work must not be offered.
+func HostVersions() []int { return []int{Version4} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {
