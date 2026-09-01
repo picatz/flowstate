@@ -21,8 +21,9 @@ import (
 // It cannot: [AuditRecord] is this package's generated type, so the audit
 // package imports this one, and the dependency can only run that way. So this
 // package declares the shape it needs and the audit package satisfies it —
-// [audit.Recorder] has exactly these two methods — and cmd/flow, which imports
-// both, installs one into the other.
+// [github.com/picatz/flowstate/pkg/flowstate/v1/audit.Recorder] has exactly
+// these two methods — and cmd/flow, which imports both, installs one into the
+// other.
 //
 // A nil auditor records nothing and errors on nothing. That is the local
 // rehearsal's answer as well as the library default: `flow run local`,
@@ -44,10 +45,10 @@ import (
 // EnforcementSubject is what a worker-side enforcement decision was about, as
 // the seam making it already knows it.
 //
-// The decision itself is deliberately absent, the way [audit.Subject] leaves
-// out the action it derives: a caller says what was decided about, and the
-// verb it calls says which way the decision went, so a seam cannot record an
-// allow carrying a denial's code.
+// The decision itself is deliberately absent, the way the audit package's own
+// Subject leaves out the action it derives: a caller says what was decided
+// about, and the verb it calls says which way the decision went, so a seam
+// cannot record an allow carrying a denial's code.
 type EnforcementSubject struct {
 	// Point is the seam that decided. Required: a decision that cannot say
 	// which policy made it is not evidence of anything.

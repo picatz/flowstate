@@ -205,7 +205,7 @@ func (r *Recorder) Deny(ctx context.Context, subject Subject, code v1.AuditDenyC
 // The other half of the trail (picatz/flowstate#1379): task dispatch, secret
 // access, egress and credential assumption, recorded by the same recorder into
 // the same sinks under the same schema as the control plane's decisions. This
-// is [v1.EnforcementAuditor]'s allow half — the interface lives in the schema's
+// is [flowstatev1.EnforcementAuditor]'s allow half — the interface lives in the schema's
 // own package because that package cannot import this one.
 //
 // A record is written where the policy is consulted, so an allow is written
@@ -222,7 +222,7 @@ func (r *Recorder) EnforcementAllow(ctx context.Context, subject v1.EnforcementS
 // The code, and the rule that matched when one did — never a denial's prose,
 // for the reason [Recorder.Deny] gives and one more: at these seams the prose
 // is built from what the policy was evaluating, which is the workload's own
-// data. See [v1.EnforcementSubject.Rule].
+// data. See [flowstatev1.EnforcementSubject.Rule].
 func (r *Recorder) EnforcementDeny(ctx context.Context, subject v1.EnforcementSubject, code v1.AuditDenyCode) error {
 	return r.recordEnforcement(ctx, subject, v1.AuditDecision_AUDIT_DECISION_DENY, code)
 }
