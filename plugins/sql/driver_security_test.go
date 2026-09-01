@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 
@@ -106,6 +107,75 @@ func TestPostgresAllowedTargetUsesGovernedDial(t *testing.T) {
 	case <-accepted:
 	case <-time.After(time.Second):
 		t.Fatal("allowed postgres target was not dialed")
+	}
+}
+
+// This drives the installed DialFunc directly so the pinned resolution pass
+// cannot satisfy the assertion on its own. The denied listener is the mutation
+// oracle: removing the final CheckAddr makes this call open a real socket.
+func TestPostgresDialFuncIsTheLastPolicyGate(t *testing.T) {
+	policy, err := netpolicy.New(netpolicy.WithSchemes("postgres"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPostgresPolicy(t, policy, func(context.Context, string) ([]string, error) {
+		return []string{"8.8.8.8"}, nil
+	})
+
+	cfg, err := pgx.ParseConfig(postgresDSN("database.example", 5432))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := governPostgresConfig(t.Context(), cfg, secrets.NewScrubber()); err != nil {
+		t.Fatalf("governPostgresConfig: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, network, address, want string
+	}{
+		{"non TCP network", "udp", "127.0.0.1:5432", "only over TCP"},
+		{"missing port", "tcp", "127.0.0.1", "not an IP address and port"},
+		{"unresolved host", "tcp", "database.example:5432", "was not resolved"},
+		{"invalid port", "tcp", "127.0.0.1:0", "invalid port"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, err := cfg.Config.DialFunc(t.Context(), tc.network, tc.address)
+			if conn != nil {
+				conn.Close()
+				t.Fatal("DialFunc returned a connection for an invalid target")
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("DialFunc error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			conn.Close()
+			accepted <- struct{}{}
+		}
+	}()
+
+	conn, err := cfg.Config.DialFunc(t.Context(), "tcp4", listener.Addr().String())
+	if conn != nil {
+		conn.Close()
+		t.Fatal("DialFunc returned a connection for a policy-denied target")
+	}
+	if err == nil || !strings.Contains(err.Error(), "denied by deployment egress policy") {
+		t.Fatalf("DialFunc error = %v, want policy denial", err)
+	}
+	select {
+	case <-accepted:
+		t.Fatal("policy-denied postgres listener accepted a connection; the last dial gate was bypassed")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
