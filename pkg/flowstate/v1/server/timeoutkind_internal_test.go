@@ -68,9 +68,9 @@ func TestTimeoutKindTextDescribesWorkflowNotActivityScope(t *testing.T) {
 // an agent branching on it is meant to be able to tell "repair the file" from
 // "retry" from "escalate" without parsing prose — so the one failure shape
 // that left it blank was the one an agent could do nothing structural with.
-// Every timeout type answers the same kind, because which of Temporal's four
-// clocks ran out is a fact about the sentence and not about whether the run
-// failed on time or on a fault.
+// Every timeout type answers the same permanent run-level kind, because which
+// of Temporal's four clocks ran out is a fact about the sentence and not about
+// whether restarting an already-partly-completed workload is safe.
 func TestTimeoutFailureCarriesTheTimeoutKind(t *testing.T) {
 	for _, kind := range []enums.TimeoutType{
 		enums.TIMEOUT_TYPE_START_TO_CLOSE,
@@ -81,11 +81,55 @@ func TestTimeoutFailureCarriesTheTimeoutKind(t *testing.T) {
 	} {
 		got := timeoutFailure(v1.RunResponse_STATUS_TIMED_OUT, kind)
 
-		require.Equal(t, v1.ErrorKindTimeout.String(), got.GetKind(),
+		require.Equal(t, v1.ErrorKindRunTimeout.String(), got.GetKind(),
 			"a run that ended on a clock must reach a client classified, kind=%s", kind)
-		require.True(t, v1.ErrorKindTimeout.Retryable(),
-			"and as the same retryable kind both drivers give a step-level timeout")
+		require.False(t, v1.ErrorKindRunTimeout.Retryable(),
+			"restarting a run could repeat effects from its completed prefix")
+
+		// And listed where a client looks. [v1.PermanentErrorKinds] is the whole
+		// public answer to "may this be resubmitted", so a kind emitted here and
+		// missing there reads to a client as one worth retrying — which is the one
+		// thing this kind exists to say it is not. The engine's activity retry
+		// policy is derived from that list rather than equal to it; that half is
+		// pinned by engine's TestTheActivityPolicyDropsRunOnlyKinds.
+		require.Contains(t, v1.PermanentErrorKinds(), v1.ErrorKindRunTimeout,
+			"a client checking the permanent enumeration would not find this kind in it")
 		require.Contains(t, got.GetMessage(), timeoutKindText(kind),
 			"the message must still say which clock, kind=%s", kind)
+	}
+}
+
+// TestOnlyATimedOutRunGetsTheRunLevelKind is the negative direction, and the
+// backstop for the class of defect the engine's preStepFailed closes at source.
+//
+// Temporal closes a run whose own budget expired as TIMED_OUT. A timeout that
+// reaches this constructor under any other status is a budget *inside* the run
+// — an activity that outlived its own clock and escaped the workflow
+// untranslated — and it is the shape a new pre-executor activity would arrive
+// in. Assigning the permanent kind to it tells an agent not to resubmit a run
+// that never started, which is both wrong and the most consequential direction
+// to be wrong in, since the whole point of the kind is that it is obeyed.
+//
+// So the run-level fact decides the run-level kind, and everything else is
+// classified as what it is: retryable, the same answer engine.recordedStepKind
+// gives for the identical error one scope in.
+func TestOnlyATimedOutRunGetsTheRunLevelKind(t *testing.T) {
+	for _, status := range []v1.RunResponse_Status{
+		v1.RunResponse_STATUS_FAILED,
+		v1.RunResponse_STATUS_TERMINATED,
+		v1.RunResponse_STATUS_CANCELED,
+	} {
+		got := timeoutFailure(status, enums.TIMEOUT_TYPE_START_TO_CLOSE)
+
+		require.Equal(t, v1.ErrorKindTimeout.String(), got.GetKind(),
+			"a budget inside the run was reported as the run's own, status=%s", status)
+		require.True(t, v1.ErrorKindTimeout.Retryable(),
+			"and as the retryable kind, because nothing says this run's prefix completed")
+
+		// And the sentence must not name a run budget either, for the reason
+		// #788 gives about the wording: an operator sent looking for an execution
+		// timeout that did not fire is a false diagnosis, not a vague one.
+		require.NotContains(t, got.GetMessage(), "this run exceeded",
+			"a run budget that did not fire must not be named, status=%s", status)
 	}
 }

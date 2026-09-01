@@ -483,6 +483,19 @@ func (r *Registry) Register(def TaskDef) error {
 			return fmt.Errorf("task %q credential input %q is not an authority input", def.Name, input)
 		}
 	}
+	// The same shape of claim, checked for the same reason: a task that names an
+	// input it requires as a whole secret reference but never declares as one it
+	// resolves would have that input refused at admission and then handed to the
+	// task unresolved. A plugin's manifest is already held to this when its
+	// [TaskDef] is built (`pkg/flowstate/v1/plugin`'s taskDef); an in-process
+	// definition reaches the registry without passing through that, so the
+	// registry itself is where the two paths meet.
+	for _, input := range def.RequiredSecretInputs {
+		if !slices.Contains(def.SecretInputs, input) {
+			return fmt.Errorf("task %q requires input %q to be a secret reference but does not declare it in secret_inputs",
+				def.Name, input)
+		}
+	}
 
 	// A step names its task directly, so a task named for part of the step
 	// grammar would make one key mean two things — and both readings would be

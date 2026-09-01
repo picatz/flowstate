@@ -51,7 +51,9 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 				protocol.VersionsEnv:    "99",
 			},
 			wantErr: ErrProtocolVersion,
-			wantMsg: fmt.Sprintf("this plugin speaks %d", protocol.Version4),
+			// Both halves: a refusal that names only this side leaves the
+			// operator to work out which of the two builds is the old one.
+			wantMsg: fmt.Sprintf("the host offered 99 and this plugin speaks %d", protocol.Version5),
 		},
 		{
 			name: "no socket to serve on",
@@ -390,8 +392,8 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 	if handshake.Address != socket {
 		t.Errorf("announced address = %q, want %q", handshake.Address, socket)
 	}
-	if handshake.ProtocolVersion != protocol.Version4 {
-		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version4)
+	if handshake.ProtocolVersion != protocol.Version5 {
+		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version5)
 	}
 }
 

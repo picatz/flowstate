@@ -82,6 +82,9 @@ func runFakePlugin() int {
 	if mode == "egress-grant" {
 		return runEgressGrantPlugin()
 	}
+	if mode == "egress-identity" {
+		return runEgressIdentityPlugin()
+	}
 
 	// The progress-relay conformance fixture is likewise a real SDK plugin
 	// rather than a hand-rolled handler, for the identical reason: it exists
@@ -136,9 +139,11 @@ func runFakePlugin() int {
 		// its SDK would announce. Everything else about the line is correct, so
 		// the only thing the host can refuse it for is the version — which is
 		// the point: this is the binary a staggered upgrade actually produces,
-		// not a fixture with a number nobody ever shipped.
+		// not a fixture with a number nobody ever shipped. Version 4 in
+		// particular did ship, on main, before the egress grant existed, which
+		// is the pairing this refusal has to cover.
 		fmt.Printf("%s|%d|%d|unix|%s\n",
-			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3,
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4,
 			os.Getenv(protocol.SocketEnv))
 		time.Sleep(10 * time.Second)
 		return 0
@@ -149,7 +154,7 @@ func runFakePlugin() int {
 		// retired one makes the host refuse on the version and never reach the
 		// address, which passes the test for the wrong reason.
 		fmt.Printf("%s|%d|%d|unix|/tmp/somewhere-else.sock\n",
-			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4)
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version5)
 		time.Sleep(10 * time.Second)
 		return 0
 
@@ -291,7 +296,7 @@ func fakeListen() (net.Listener, error) {
 // fakeAnnounce prints the handshake line.
 func fakeAnnounce() {
 	fmt.Printf("%s|%d|%d|%s|%s\n",
-		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4,
+		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version5,
 		protocol.NetworkUnix, os.Getenv(protocol.SocketEnv))
 }
 

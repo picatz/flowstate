@@ -651,7 +651,7 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version4})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version5})
 	if !ok {
 		// Say what to do, not only what is wrong. This refusal is the whole
 		// point of the version bump: it is reached by whichever side is older,
@@ -662,7 +662,7 @@ func readEnvironment() (environment, error) {
 			"%w: the host offered %s and this plugin speaks %d; "+
 				"a host and its plugins must be upgraded together across this change, "+
 				"so upgrade whichever of the two is older",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version4,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version5,
 		)
 	}
 
@@ -698,6 +698,16 @@ func readEnvironment() (environment, error) {
 	}, nil
 }
 
+// tokenReadTimeout bounds how long a plugin waits for its token line.
+//
+// The host writes the line and closes its end of the pipe before this process
+// starts, so the bytes are already in the kernel buffer by the time anything
+// here reads: the read is a copy, not a wait. Seconds are therefore generous
+// against every honest case, and what they bound is the dishonest one — a
+// launcher that holds the pipe open and writes less than
+// [protocol.MaxTokenBytes], or nothing at all, which no byte bound ever ends.
+const tokenReadTimeout = 5 * time.Second
+
 // readToken reads the per-launch secret off the descriptor the host passed.
 //
 // The secret is not in the environment, and that is the whole point. On Linux
@@ -710,6 +720,12 @@ func readEnvironment() (environment, error) {
 // A descriptor is read once and closed. What it held existed in kernel buffer
 // space, so after this returns the token is in this process's memory and nowhere
 // else that another process can name.
+//
+// The read is bounded in time as well as in bytes. Whoever launched this process
+// decides what reaches the descriptor and when that stops, and [Run] can neither
+// serve nor notice cancellation while this waits — so an unbounded read here is
+// a launch that hangs, where the contract says a plugin which cannot get its
+// token refuses.
 func readToken() (string, error) {
 	raw, ok := os.LookupEnv(protocol.TokenFDEnv)
 	if !ok {
@@ -729,14 +745,29 @@ func readToken() (string, error) {
 		)
 	}
 
-	file := os.NewFile(uintptr(fd), "flowstate-plugin-token")
-	if file == nil {
-		return "", fmt.Errorf("sdk: %s names descriptor %d, which is not open", protocol.TokenFDEnv, fd)
+	file, err := openTokenDescriptor(fd)
+	if err != nil {
+		return "", fmt.Errorf("sdk: %s names descriptor %d, which cannot be read: %w", protocol.TokenFDEnv, fd, err)
 	}
 	defer file.Close()
 
+	// A descriptor the poller will not take is one whose read does not wait on
+	// anybody — a regular file a launcher redirected into place returns its
+	// bytes without a writer being there at all. That is the only case
+	// [os.ErrNoDeadline] reports here, and it is not the case this bound exists
+	// for, so it is skipped rather than refused.
+	if err := file.SetReadDeadline(time.Now().Add(tokenReadTimeout)); err != nil && !errors.Is(err, os.ErrNoDeadline) {
+		return "", fmt.Errorf("sdk: %s: bounding the read of descriptor %d: %w", protocol.TokenFDEnv, fd, err)
+	}
+
 	token, err := protocol.ReadToken(file)
 	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return "", fmt.Errorf(
+				"sdk: %s: descriptor %d carried no complete token line within %s",
+				protocol.TokenFDEnv, fd, tokenReadTimeout,
+			)
+		}
 		return "", fmt.Errorf("sdk: %s: %w", protocol.TokenFDEnv, err)
 	}
 

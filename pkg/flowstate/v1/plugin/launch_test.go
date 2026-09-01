@@ -420,6 +420,13 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 	if want := fmt.Sprintf("%s=%d", protocol.TokenFDEnv, tokenFD); !strings.Contains(joined, want) {
 		t.Errorf("the token descriptor was not passed as %q: %v", want, env)
 	}
+	// The operator's own entry is dropped, not appended after the host's. A
+	// second entry for a name the protocol owns would leave which descriptor a
+	// plugin reads its token from up to whichever copy that plugin's runtime
+	// hands back for the name.
+	if got := strings.Count(joined, protocol.TokenFDEnv+"="); got != 1 {
+		t.Errorf("%s appears %d times, want only the one the host set: %v", protocol.TokenFDEnv, got, env)
+	}
 	if strings.Contains(joined, "hijacked") {
 		t.Errorf("an operator-supplied entry overrode a protocol variable: %v", env)
 	}
@@ -582,4 +589,137 @@ func TestAPluginTaskNamedLikeABuiltinIsNamespacedNotRefused(t *testing.T) {
 	if want := "builtin-task.http"; defs[0].Name != want {
 		t.Errorf("task name = %q, want %q", defs[0].Name, want)
 	}
+}
+
+// TestTheProxyGrantTravelsOnlyWithAProxyPolicy is the launch-environment half of
+// a policy that routes through a proxy.
+//
+// `proxy_from_environment: true` is an operator saying the way out of this
+// deployment is through a proxy. The built-in http task obeys it because it runs
+// in the worker, where HTTP_PROXY is; a plugin's environment is built from
+// nothing, so the identical policy inside a plugin found no proxy and dialled
+// straight out. On a deployment whose egress is only permitted through that
+// proxy, that is the plugin leaving the path the operator controls — with no
+// error on either side, and only for plugins.
+//
+// The negative case is the one that keeps this a grant rather than inheritance:
+// a deployment that did not ask to proxy must not have the worker's variables
+// appear in its plugins at all, because "the environment is built from nothing"
+// is the property everything else here rests on.
+func TestTheProxyGrantTravelsOnlyWithAProxyPolicy(t *testing.T) {
+	// Not t.Parallel(): t.Setenv, since the worker's own environment is the
+	// thing being read.
+	t.Setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+	t.Setenv("HTTPS_PROXY", "http://proxy.invalid:3129")
+	t.Setenv("NO_PROXY", "internal.invalid")
+
+	for _, test := range []struct {
+		name string
+
+		// grant is the deployment's policy.
+		grant []byte
+
+		// wantProxy is whether the launch environment should carry the worker's
+		// proxy variables.
+		wantProxy bool
+	}{
+		{
+			name:      "a policy that proxies brings the proxy",
+			grant:     []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n"),
+			wantProxy: true,
+		},
+		{
+			name:  "a policy that does not proxy brings nothing",
+			grant: []byte("egress:\n  schemes: [https]\n"),
+		},
+		{
+			// Explicitly false rather than absent, because an operator who wrote
+			// the key and turned it off has said something, and it must mean the
+			// same as not writing it.
+			name:  "a policy that turns proxying off brings nothing",
+			grant: []byte("egress:\n  schemes: [https]\n  proxy_from_environment: false\n"),
+		},
+		{
+			name:  "no grant at all brings nothing",
+			grant: nil,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig(t, t.TempDir()).withDefaults()
+			cfg.EgressPolicy = test.grant
+
+			env := pluginEnv(cfg, "/tmp/s")
+
+			for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} {
+				value, found := envValue(env, name)
+				if !test.wantProxy {
+					if found {
+						t.Errorf("%s reached a plugin under a policy that does not proxy: %q\n"+
+							"  the launch environment is built from nothing, and nothing is what a plugin gets\n"+
+							"  unless the deployment granted it",
+							name, value)
+					}
+					continue
+				}
+				if !found {
+					t.Errorf("%s did not reach a plugin under a policy that proxies\n"+
+						"  the plugin will dial directly while the worker's own http task proxies", name)
+					continue
+				}
+				if want := os.Getenv(name); value != want {
+					t.Errorf("%s = %q, want the worker's own value %q verbatim", name, value, want)
+				}
+			}
+		})
+	}
+}
+
+// TestAnOperatorNamedProxyWinsOverTheWorkers keeps the grant from silently
+// overriding a more specific instruction.
+//
+// Config.Env is where an operator names what a plugin may read, and a proxy
+// named there is a decision about *these* plugins rather than about the worker.
+// Emitting both would put two entries under one key in one environment block,
+// which different runtimes resolve differently — so the operator's is the one
+// that travels.
+func TestAnOperatorNamedProxyWinsOverTheWorkers(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://worker-proxy.invalid:3128")
+	t.Setenv("HTTPS_PROXY", "http://worker-proxy.invalid:3129")
+
+	cfg := testConfig(t, t.TempDir()).withDefaults()
+	cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n")
+	cfg.Env = []string{"HTTP_PROXY=http://plugin-proxy.invalid:8080"}
+
+	env := pluginEnv(cfg, "/tmp/s")
+
+	var httpProxies []string
+	for _, entry := range env {
+		if name, value, _ := strings.Cut(entry, "="); name == "HTTP_PROXY" {
+			httpProxies = append(httpProxies, value)
+		}
+	}
+
+	if len(httpProxies) != 1 {
+		t.Fatalf("HTTP_PROXY appears %d times in the launch environment, want exactly one: %q",
+			len(httpProxies), httpProxies)
+	}
+	if httpProxies[0] != "http://plugin-proxy.invalid:8080" {
+		t.Errorf("HTTP_PROXY = %q, want the operator's own entry", httpProxies[0])
+	}
+
+	// The one the operator did not name still comes from the worker, or the rule
+	// above would read as "naming any proxy turns the grant off".
+	if value, found := envValue(env, "HTTPS_PROXY"); !found || value != os.Getenv("HTTPS_PROXY") {
+		t.Errorf("HTTPS_PROXY = %q (found %v), want the worker's own value", value, found)
+	}
+}
+
+// envValue returns the value the launch environment carries for a name.
+func envValue(env []string, want string) (string, bool) {
+	for _, entry := range env {
+		if name, value, _ := strings.Cut(entry, "="); name == want {
+			return value, true
+		}
+	}
+	return "", false
 }

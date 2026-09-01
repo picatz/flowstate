@@ -4,6 +4,7 @@ import (
 	"context"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // Caller is who invoked the task a plugin is executing, and which tenant that
@@ -49,8 +50,37 @@ type callerKey struct{}
 
 // contextWithCaller returns a context carrying who invoked this task and which
 // tenant it belongs to, installed once per request before [Task.Fn] runs.
+//
+// It installs the same identity twice, in two spellings, because two different
+// readers need it and only one of them is this package's. [CallerFromContext]
+// reads the first for a task applying its own per-tenant rules. The second is
+// [netpolicy]'s own context key, which is where the policy behind [HTTPClient]
+// looks when it evaluates an `identity.*` rule — a different key in a different
+// package, invisible from a task's point of view.
+//
+// Without it the documented pattern quietly under-enforces: a plugin that calls
+// [HTTPClient] and passes its task context, exactly as PLUGINS.md teaches, gets
+// every `identity.*` rule evaluated against the zero identity, so an operator's
+// `deny: ['identity.namespace == "team-b"']` never fires for a team-b workload.
+// It fails open and it fails silently: the request succeeds, and nothing on
+// either side reports that a rule did not match because the value it names was
+// never there. The first-party plugins that enforce on their own dial paths
+// bridge this by hand today, which is the evidence that the generic path did
+// not — a mechanism every caller has to remember is not a mechanism.
+//
+// Credentials are not set here, and that is deliberate. Whether a request
+// carries a credential is the plugin's own knowledge about the request it is
+// about to make, not something the SDK can infer from the fact that a task is
+// running; see [netpolicy.ContextWithCredentials].
 func contextWithCaller(ctx context.Context, identity *flowstatev1.WorkloadIdentity, namespace string) context.Context {
-	return context.WithValue(ctx, callerKey{}, Caller{Identity: identity, Namespace: namespace})
+	ctx = context.WithValue(ctx, callerKey{}, Caller{Identity: identity, Namespace: namespace})
+
+	return netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
+		Subject:   identity.GetSubject(),
+		Issuer:    identity.GetIssuer(),
+		Namespace: identity.GetNamespace(),
+		Claims:    identity.GetClaims(),
+	})
 }
 
 // CallerFromContext returns who invoked the task running on ctx, and which

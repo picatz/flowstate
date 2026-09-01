@@ -96,22 +96,40 @@
 // same bytes the built-in http task runs under, bounded at 64 KiB before
 // encoding. Set-but-empty is a policy whose document is empty; unset is no
 // grant, and the reader must fail closed on it rather than treat it as
-// permission. It is part of the launch environment protocol version 4 names, so
-// a plugin that predates it is refused at the handshake rather than launched
-// ungoverned. See [Config.EgressPolicy] and the sdk package's EgressPolicy.
+// permission. It is what protocol version 5 adds to the launch environment, so a
+// plugin that predates it is refused at the handshake rather than launched
+// ungoverned — version 4 shipped before the grant existed, which is why the
+// grant could not be folded into it. See [Config.EgressPolicy] and the sdk
+// package's EgressPolicy.
+//
+// When that policy sets `proxy_from_environment`, the launch environment also
+// carries the worker's own HTTP_PROXY, HTTPS_PROXY and NO_PROXY (and their
+// lowercase spellings), verbatim. Those are not protocol variables — every HTTP
+// stack already reads them — but they are granted rather than inherited, for the
+// same reason the policy is: an environment built from nothing has no proxy in
+// it, so a plugin honouring a proxy policy would dial straight past the proxy
+// its operator requires. When the policy does not proxy, none of them cross.
 //
 // The secret is on a descriptor rather than in the environment, and any language
 // that can inherit one can read it: the host writes the token and a single "\n"
-// to a pipe, closes its end before the plugin starts, and the plugin reads that
-// descriptor to EOF, bounded, takes everything before the newline, and closes
-// it — so the token does not stay reachable through /proc/<pid>/fd, and does not
-// travel to anything the plugin itself launches. There is nothing to wait for
-// and nothing to write back. What made the environment the
-// wrong place is that a variable cannot be withdrawn — on Linux
-// /proc/<pid>/environ shows the block the kernel copied at execve(2), so a
-// secret delivered there is readable for as long as the plugin runs, no matter
-// how promptly the plugin unsets it, and it is collected by anything that sweeps
-// environments into a diagnostic bundle or a core dump.
+// to a pipe, closes its end before the plugin starts, and names the read end's
+// number in FLOWSTATE_PLUGIN_TOKEN_FD. The plugin reads that descriptor to EOF,
+// takes everything before the newline, and closes it — so the token does not
+// stay reachable through /proc/<pid>/fd, and does not travel to anything the
+// plugin itself launches. There is nothing to wait for and nothing to write
+// back. What made the environment the wrong place is that a variable cannot be
+// withdrawn — on Linux /proc/<pid>/environ shows the block the kernel copied at
+// execve(2), so a secret delivered there is readable for as long as the plugin
+// runs, no matter how promptly the plugin unsets it, and it is collected by
+// anything that sweeps environments into a diagnostic bundle or a core dump.
+//
+// That read is bounded in both directions, because a plugin cannot know that the
+// process which launched it is the host it expects: at most 512 bytes, the
+// newline included, and at most five seconds, after which the plugin refuses to
+// serve rather than waiting. Neither bound covers the other. Bytes alone leave a
+// launcher that writes half a line and closes nothing waiting forever; time
+// alone lets one that writes without stopping decide what this process
+// allocates. An implementation in another language needs both.
 //
 // The plugin checks the cookie. Without it — someone ran the binary from a
 // shell — it prints an explanation to stderr and exits, rather than printing a
@@ -123,7 +141,7 @@
 // credential that is not where it looked. It reads the token, listens on the
 // assigned path, sets the socket to mode 0600, and prints one line to stdout:
 //
-//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|5|unix|/var/folders/.../s
 //
 // After that line the plugin never uses stdout again; everything else it says
 // goes to stderr, which the host reads line by line and logs attributed to that

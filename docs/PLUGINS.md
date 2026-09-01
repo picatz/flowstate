@@ -413,8 +413,8 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:222` for the current
-  version). Nothing equivalent covers the Go types you compile against.
+  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:307` for the current
+  version, 5, which the egress grant moved it to). Nothing equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
 pins `github.com/picatz/flowstate v0.0.0-00010101000000-000000000000` behind a
@@ -490,7 +490,7 @@ handshake line starts with "debug: starting", want "FLOWSTATE-PLUGIN" — is thi
 a Flowstate plugin?
 ```
 
-That message is as good as it can be (`internal/protocol/protocol.go:257`), and
+That message is as good as it can be (`internal/protocol/protocol.go:468`), and
 it still names your first debug line as a protocol failure. Log through
 `sdk.WithLogger` or to stderr; after `sdk.Main` is serving, `fmt.Println` is
 harmless, since stdout has been redirected — but Go code writing to file
@@ -597,10 +597,15 @@ operator wrote in `--egress-policy` and the same ones governing the built-in
 It is a snapshot taken at your launch, not a subscription. You hold the bytes
 your own launch carried, so an operator who edits the policy file afterwards
 governs the plugins the worker starts next — the running ones keep what they were
-given until the worker relaunches them. The SDK reads it once, on the first call,
-and answers from that capture forever after: a grant a process could re-read is a
-grant that process can rewrite, and self-granting must not be one line of a
-plugin's own code.
+given until the worker relaunches them. The SDK captures it once, while `sdk.Run`
+is reading the launch environment and before any of your task code has run, and
+answers from that capture forever after; a plugin that serves by hand without
+`Run` captures at its first `EgressPolicy` or `HTTPClient` call instead. A grant a
+process could re-read is a grant that process can rewrite, and self-granting must
+not be one line of a plugin's own code. What stays outside that line is code that
+runs before `Run` — package initialization, or a `main` that does work first —
+which is your own program deciding what its process starts with, and no more than
+opening a raw socket already gives it.
 
 Ask the SDK for a client rather than building one:
 
@@ -672,6 +677,18 @@ empty document builds, which is exactly what the built-in `http` task then runs
 under — so the host sets the grant to the empty string and `sdk.EgressPolicy()`
 parses it. A plugin reading presence with `os.Getenv` instead of `os.LookupEnv`
 collapses the two and denies where the same deployment's built-in task allows.
+
+**A proxy policy brings its proxy with it.** When the deployment's policy sets
+`proxy_from_environment: true`, your launch environment also carries the worker's
+own `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` (and their lowercase spellings),
+copied verbatim — so `sdk.HTTPClient()` routes exactly where the built-in `http`
+task does. They are granted, not inherited: nothing else from the worker's
+environment crosses, and when the policy does not proxy, none of them do either.
+Without that grant a plugin's `http.ProxyFromEnvironment` would find nothing and
+dial straight out, which on a deployment whose egress is only permitted through
+a proxy is the plugin going around the control rather than taking a different
+route. An operator who wants a plugin to use a different proxy names it in the
+host's `Env`, and that entry wins over the worker's.
 
 The policy is at most **64 KiB** before encoding (`plugin.MaxEgressPolicyBytes`).
 It travels as one environment string through `exec`, which Linux bounds at 128

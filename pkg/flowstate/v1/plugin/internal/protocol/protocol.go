@@ -15,14 +15,22 @@
 // plugin that finds any of it missing must refuse to serve:
 //
 //	FLOWSTATE_PLUGIN_MAGIC_COOKIE      must equal MagicCookieValue
-//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "4"
+//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "5"
 //	FLOWSTATE_PLUGIN_SOCKET            absolute path the plugin must listen on
 //	FLOWSTATE_PLUGIN_TOKEN_FD          fd carrying the per-launch secret
 //	FLOWSTATE_PLUGIN_HOST_FD           fd that closes when the host exits
 //	FLOWSTATE_EGRESS_POLICY_B64        the deployment's egress policy, base64
+//	HTTP_PROXY HTTPS_PROXY NO_PROXY    only when the policy proxies (see below)
 //
 // The secret itself is never in the environment; only the number of the
 // descriptor carrying it is. See [TokenFDEnv] and [ReadToken].
+//
+// The last line is not a protocol variable. The proxy variables belong to Go's
+// own [net/http.ProxyFromEnvironment] and to every other HTTP stack that reads
+// them, and they are here because they are *granted* alongside the policy rather
+// than inherited: a plugin's environment is built from nothing, so a policy that
+// says "proxy from the environment" would find no environment to proxy from.
+// See [ProxyEnv].
 //
 // The egress grant is set whenever the deployment configured a policy, and is
 // present-but-empty when that policy is an empty document — which is a policy,
@@ -35,7 +43,7 @@
 // the host captures as that plugin's logs. Reserving stdout for one line is what
 // keeps a plugin's own logging from corrupting the protocol.
 //
-//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|5|unix|/var/folders/.../s
 //
 // The fields are the sentinel, the version of this handshake format, the
 // negotiated protocol version, the network, and the address. The handshake
@@ -162,6 +170,38 @@ const (
 // environment it did not build (sdk.EgressPolicy).
 const MaxEgressPolicyBytes = 64 << 10
 
+// ProxyEnv returns the environment variable names [net/http.ProxyFromEnvironment]
+// reads, in both the uppercase and lowercase spellings it accepts.
+//
+// These are granted, not protocol. Nothing in this package sets or reads them;
+// they are ordinary variables that every HTTP stack already understands, and the
+// host forwards the worker's own values verbatim — and only when the deployment's
+// policy has `proxy_from_environment` enabled, because that is the operator
+// saying the proxy is part of how this deployment reaches the network.
+//
+// Without the grant a plugin dials directly while the worker's built-in http
+// task proxies: the plugin's environment is built from nothing, so
+// ProxyFromEnvironment inside it finds nothing and returns no proxy. On a
+// deployment whose egress leaves through a mandatory proxy that is not a
+// difference in routing, it is the plugin going around the control — silently,
+// and only for plugins.
+//
+// They are deliberately not in [MagicCookieEnv]'s company in the host's
+// isProtocolEnv list: an operator who names a proxy in Config.Env is being more
+// specific than the worker's own environment, and that entry wins rather than
+// being dropped.
+//
+// REQUEST_METHOD is not here. ProxyFromEnvironment also consults it — a
+// non-empty value means the process is a CGI script, and HTTP_PROXY is then
+// ignored as untrusted — and forwarding it would let the worker's environment
+// turn a plugin's proxy off in a way no operator wrote down.
+func ProxyEnv() []string {
+	return []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "no_proxy",
+	}
+}
+
 // MagicCookieValue is the value [MagicCookieEnv] must hold.
 //
 // It exists so that a `flowstate-plugin-*` binary run directly by a curious
@@ -262,7 +302,7 @@ const Version2 = 2
 // [TokenFDEnv] names. Retired rather than deleted, for the reason [Version1] is.
 const Version3 = 3
 
-// Version4 is the current version of the plugin protocol: the same services and
+// Version4 was the fourth version of the plugin protocol: the same services and
 // routes as [Version3], with the per-launch secret delivered on an inherited
 // descriptor ([TokenFDEnv]) instead of in the environment ([TokenEnv]).
 //
@@ -282,17 +322,39 @@ const Version3 = 3
 // unauthenticated. Moving the number turns both into one refusal at startup
 // naming two versions, from whichever side is older.
 //
-// Version 4's launch environment also carries the deployment's egress policy in
-// [EgressPolicyEnv] (#1332), and that is why the grant needs no version of its
-// own. The staggered upgrade a reviewer would otherwise have to worry about —
-// an older plugin under a newer host reaching the network as though no policy
-// were configured, or a newer plugin under an older host finding no grant where
-// it expects one — cannot be reached: neither pairing negotiates. A version 3
-// plugin is refused at the handshake, by name and by number, before it serves
-// anything. What ends a version is the whole contract between the two sides,
-// and the launch environment is part of that contract; a grant added to it
-// without moving the number would be the same lie [Version3]'s doc describes.
+// It is no longer served. What ended it is the launch environment again: the
+// deployment's egress policy in [EgressPolicyEnv] was added to it, and version 4
+// had already shipped without that variable.
+//
+// Retired rather than deleted, for the reason [Version1] is.
 const Version4 = 4
+
+// Version5 is the current version of the plugin protocol: the same services and
+// routes as [Version4], with the deployment's egress policy carried in the
+// launch environment under [EgressPolicyEnv] (#1332).
+//
+// The grant was very nearly folded into version 4, on the reasoning that both
+// changes are launch-environment changes landing in the same release. That was
+// wrong, and the way it was wrong is worth keeping: version 4 had *already
+// shipped* — #1389 merged it before the grant existed — so a host and a plugin
+// both built from that point negotiate 4 and neither knows about the variable,
+// while a host built after the grant also negotiates 4 and does set it. One
+// number would then have named two different launch contracts, which is exactly
+// what a version exists to prevent. A version is not a release note; it names
+// what the two sides may assume about each other, and it can only be spent once.
+//
+// Left at 4 the failure is the quiet one every retired version's doc describes,
+// pointed at an authorization boundary: negotiation agrees, the plugin loads,
+// and then a plugin built before the grant reaches the network with no policy
+// where its operator configured one — no error, no refusal, just an egress
+// control that is not there. Moving the number makes that pairing refuse at the
+// handshake, naming both numbers, from whichever side is older.
+//
+// The grant's *contents* are a separate question from its presence. A later
+// change to what the policy snapshot carries — marking the deployment default,
+// which #1332's decision leaves to PR B — decides its own version question on
+// its own terms; nothing here settles it in advance.
+const Version5 = 5
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -385,19 +447,20 @@ const NetworkUnix = "unix"
 // highest preference last is not implied — [Negotiate] picks the highest common
 // version.
 //
-// [Version1], [Version2] and [Version3] are absent because they are not served.
-// A plugin built against any of them finds no version in common and refuses at
-// startup with a message naming both sides, which is the failure this list
-// exists to produce: one clear refusal before anything runs, rather than a
-// request to a route nobody answers, a manifest nobody can reconstruct, or a
-// token nobody delivered.
+// [Version1] through [Version4] are absent because they are not served. A plugin
+// built against any of them finds no version in common and refuses at startup
+// with a message naming both sides, which is the failure this list exists to
+// produce: one clear refusal before anything runs, rather than a request to a
+// route nobody answers, a manifest nobody can reconstruct, a token nobody
+// delivered, or a network reached under no policy at all.
 //
 // A retired version is left out rather than offered alongside the current one
 // deliberately. Offering it would let a plugin negotiate successfully and fail
 // later — at descriptor linking for version 2, at reading a secret that is not
-// where it looked for version 3 — which is precisely the failure each bump
-// exists to prevent. A version that cannot work must not be offered.
-func HostVersions() []int { return []int{Version4} }
+// where it looked for version 3, at reaching the network ungoverned for version
+// 4 — which is precisely the failure each bump exists to prevent. A version that
+// cannot work must not be offered.
+func HostVersions() []int { return []int{Version5} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {
