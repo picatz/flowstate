@@ -581,7 +581,23 @@ func (e stubExchanger) Exchange(context.Context, auth.Assertion) (auth.Credentia
 		map[string]string{"access_token": e.token})
 }
 
+// unavailableExchanger is the relying party being down: the assumption policy
+// answers as it always does, and everything after it fails.
+type unavailableExchanger struct{ stubExchanger }
+
+func (unavailableExchanger) Exchange(context.Context, auth.Assertion) (auth.Credential, error) {
+	return auth.Credential{}, fmt.Errorf("%w: the token endpoint returned 503", auth.ErrExchangeUnavailable)
+}
+
 func assumeBroker(t *testing.T, token string, opts ...auth.BrokerOption) *auth.Broker {
+	t.Helper()
+
+	return brokerFor(t, stubExchanger{token: token}, opts...)
+}
+
+// brokerFor is [assumeBroker] with the exchanger named, for a test about what
+// happens when the exchange itself fails.
+func brokerFor(t *testing.T, exchanger auth.Exchanger, opts ...auth.BrokerOption) *auth.Broker {
 	t.Helper()
 
 	_, private, err := ed25519.GenerateKey(rand.Reader)
@@ -592,7 +608,7 @@ func assumeBroker(t *testing.T, token string, opts ...auth.BrokerOption) *auth.B
 	require.NoError(t, err)
 
 	broker, err := auth.NewBroker(issuer,
-		append([]auth.BrokerOption{auth.WithTarget("partner-api", stubExchanger{token: token})}, opts...)...)
+		append([]auth.BrokerOption{auth.WithTarget("partner-api", exchanger)}, opts...)...)
 	require.NoError(t, err)
 
 	return broker
@@ -647,6 +663,66 @@ func TestCredentialAssumptionRecordsTheTargetAndNeverTheCredential(t *testing.T)
 	require.Equal(t, `target == "partner-api"`, denied.GetRule())
 
 	requireRecordContains(t, denied, material)
+}
+
+// TestAPermittedAssumptionIsRecordedEvenWhenTheExchangeFails: the decision, not
+// the moment (Codex, picatz/flowstate#1394).
+//
+// [auth.Broker.Authorize] evaluates the assumption policy and then mints,
+// exchanges and applies. When the policy allowed and the exchange then failed,
+// this seam saw an error [assumeDenial] cannot classify, treated it as no
+// decision, and recorded nothing — so an IdP outage erased exactly the allows
+// an operator investigating that outage came to read.
+//
+// The other two directions stay where they already are, rather than being
+// restated here: a refusal is one deny and no allow in
+// TestCredentialAssumptionRecordsTheTargetAndNeverTheCredential, which fails on
+// its own `only` assertion if this change ever turned a refusal into a
+// decision-plus-failure. What is left for this test is the boundary itself —
+// a failure *after* an allow, and an evaluation that never got that far.
+//
+// Mutation-proved: dropping the [auth.AssumptionFailedError] arm from
+// AuthorizeCredential leaves the first case with an empty sink.
+func TestAPermittedAssumptionIsRecordedEvenWhenTheExchangeFails(t *testing.T) {
+	t.Parallel()
+
+	runtime := secretRuntime(t, "unused", auth.SecretAccessPolicy{Allow: []string{"true"}})
+	runtime.Broker = brokerFor(t, unavailableExchanger{},
+		auth.WithAssumeAllowRules(`target == "partner-api"`))
+
+	ctx, sink := auditing(t)
+	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example", nil)
+	require.NoError(t, err)
+
+	err = v1.AuthorizeCredential(ctx, req, "partner-api")
+	require.Error(t, err)
+	require.True(t, auth.Retryable(err),
+		"the exchange failure reaches the caller with the retryability it had: the wrapper is transparent")
+	require.Empty(t, req.Header.Get("Authorization"),
+		"nothing reached the request, which is why this failure is safe to report as retryable")
+
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision(),
+		"the policy permitted this target; the trail has to say so even though the credential never arrived")
+	require.Equal(t, v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION,
+		record.GetEnforcementPoint())
+	require.Equal(t, "partner-api", record.GetResourceKey())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+
+	// An evaluation the context interrupted is still no decision at all.
+	ctx, sink = auditing(t)
+	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	req, err = http.NewRequestWithContext(cancelled, http.MethodGet, "https://api.example", nil)
+	require.NoError(t, err)
+	require.Error(t, v1.AuthorizeCredential(cancelled, req, "partner-api"))
+
+	require.Empty(t, sink.all(),
+		"a request whose context was already done recorded an assumption decision nobody made")
 }
 
 // TestAWorkerWithNoAuthorityRecordsWhatItRefused: a worker that was given no

@@ -509,3 +509,52 @@ func truncate(s string, limit int) string {
 	}
 	return strings.ToValidUTF8(s[:limit], "") + "..."
 }
+
+// AssumptionFailedError reports that the assumption policy permitted a target
+// and obtaining or applying the credential then failed: the assertion could not
+// be minted, the relying party refused or could not be reached, or the
+// credential could not be presented on the request.
+//
+// It exists to separate "the policy said no" from "the policy said yes and the
+// rest went wrong", which are the same error to a caller reading only the
+// message. A caller that records what the policy decided
+// (picatz/flowstate#1379) needs the second case to be recognizable: the
+// decision happened, so it belongs in the trail, and an IdP outage would
+// otherwise erase exactly the allows an operator investigating that outage came
+// to read.
+//
+// It deliberately does not wrap [ErrAssumeDenied]: nothing was refused. It
+// unwraps to the original failure, so [Retryable] and every errors.Is check
+// against [ErrExchangeFailed], [ErrExchangeUnavailable] and the rest answer for
+// it exactly as they answered for the bare value it replaced.
+type AssumptionFailedError struct {
+	// Target is the credential target the policy permitted.
+	Target string
+
+	// Err is the failure that followed: a mint, an exchange, or applying the
+	// credential to the request.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *AssumptionFailedError) Error() string {
+	return fmt.Sprintf("auth: the assumption policy permitted %q and obtaining the credential then failed: %v",
+		truncate(e.Target, 128), e.Err)
+}
+
+// Unwrap returns the original failure.
+func (e *AssumptionFailedError) Unwrap() error { return e.Err }
+
+// assumptionFailed marks a failure that happened after the assumption policy
+// allowed the request, and passes a success (nil) through.
+//
+// Every exit from [Broker.Credential] below the policy call, and the apply in
+// [Broker.Authorize], go through this: those are exactly the paths on which a
+// decision was made and something else then failed.
+func assumptionFailed(target string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &AssumptionFailedError{Target: target, Err: err}
+}

@@ -33,12 +33,18 @@ type TaskRuntime struct {
 // schema makes structurally rather than by scrubbing.
 //
 // The allow is written after [auth.Broker.Authorize] returns, because the
-// policy decision happens inside it, on the way to minting: this seam sees the
-// answer and not the moment. It is still ahead of what the decision permits —
-// the request has not been sent — so a required recorder that cannot write
-// still stops the credential from being used, at the cost of a minted
-// assertion that is then discarded. That is the safe direction; a request
-// leaving with an unrecorded credential is not.
+// policy decision happens inside it, on the way to minting. What the return
+// value carries is therefore not only "did this succeed" but "did the policy
+// decide": a permitted assumption whose mint, exchange or header then failed
+// comes back as [auth.AssumptionFailedError], and its allow is recorded before
+// the failure is returned. An IdP outage must not erase the allows an operator
+// investigating that outage came to read (Codex, picatz/flowstate#1394).
+//
+// Recording is still ahead of what the decision permits — the request has not
+// been sent — so a required recorder that cannot write still stops the
+// credential from being used, at the cost of a minted assertion that is then
+// discarded. That is the safe direction; a request leaving with an unrecorded
+// credential is not.
 func AuthorizeCredential(ctx context.Context, req *http.Request, target string) error {
 	subject := EnforcementSubject{
 		Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION,
@@ -68,13 +74,31 @@ func AuthorizeCredential(ctx context.Context, req *http.Request, target string) 
 		return auditEnforcementAllow(ctx, subject)
 	}
 
+	if _, ok := errors.AsType[*auth.AssumptionFailedError](err); ok {
+		// The policy permitted this target and the credential could not be
+		// obtained or applied. That is a decision followed by a failure, not
+		// the absence of a decision, so the allow is recorded and the failure
+		// is handed back unchanged for the caller to classify — the same
+		// separation [netpolicy.UndecidedError] draws at the egress seam.
+		//
+		// A required recorder that cannot write refuses here as everywhere
+		// else: this attempt failed either way, and the credential was never
+		// applied.
+		if recordErr := auditEnforcementAllow(ctx, subject); recordErr != nil {
+			return recordErr
+		}
+
+		return err
+	}
+
 	code, rule, decided := assumeDenial(err)
 	if !decided {
-		// The broker refuses for reasons that are not decisions: a token
-		// exchange that failed, an identity the run never carried, a context
-		// that expired. Recording those as denials would put refusals in the
-		// trail that no policy made — the rule [taskPolicyRuleFailure] states
-		// for a cancelled evaluation, applied to this seam.
+		// The broker refuses for reasons that are not decisions: an identity
+		// the run never carried, a target this worker was never configured
+		// with, a context that expired before the rules were evaluated.
+		// Recording those as denials would put refusals in the trail that no
+		// policy made — the rule [taskPolicyRuleFailure] states for a
+		// cancelled evaluation, applied to this seam.
 		return err
 	}
 
