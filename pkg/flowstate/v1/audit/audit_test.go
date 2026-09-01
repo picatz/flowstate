@@ -764,6 +764,80 @@ func TestTheSyncProcessorReportsAnExportFailureToTheEmitter(t *testing.T) {
 	require.Equal(t, "AUTHORIZATION_ACTION_MCP_TEST", attributes["flowstate.audit.action"])
 }
 
+// TestTheOTelSinkCarriesTheEnforcementFields: one record shape, every sink.
+//
+// The emitter serialized only the control plane's fields, so a worker decision
+// reaching a collector showed an UNSPECIFIED action, no rpc, and nothing about
+// which seam decided or which rule did — while the stderr record beside it was
+// complete. DEPLOYMENT.md promises "the same record, in the same sinks", and
+// for the OTel sink that was not true (Codex, picatz/flowstate#1394).
+//
+// The absence half matters as much as the presence half: a consumer separating
+// the two halves of one trail should be able to select on the attribute
+// existing, which only works if a control-plane record does not carry it empty.
+//
+// Mutation-proved: dropping either attribute from the emitter fails this, and
+// emitting enforcement_point unconditionally fails the control-plane half.
+func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
+	t.Parallel()
+
+	exporter := &stubExporter{}
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(audit.NewSyncProcessor(exporter)))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(),
+		audit.WithEmitter(audit.NewLogEmitter(provider)), audit.Required())
+	require.NoError(t, err)
+
+	require.NoError(t, recorder.EnforcementDeny(t.Context(), v1.EnforcementSubject{
+		Point:        v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS,
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_ENDPOINT,
+		ResourceKey:  "https://api.example",
+		Rule:         `host == "api.example"`,
+		Identity:     &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+	}, v1.AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE))
+
+	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{
+		RPC:          "Get",
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN,
+		ResourceKey:  "orders-1",
+	}))
+
+	require.Len(t, exporter.exported, 2)
+
+	enforcement := exportedAttributes(exporter.exported[0])
+	require.Equal(t, "AUDIT_ENFORCEMENT_POINT_EGRESS", enforcement["flowstate.audit.enforcement_point"],
+		"a collector cannot say which seam decided")
+	require.Equal(t, `host == "api.example"`, enforcement["flowstate.audit.rule"],
+		"the operator's own rule reaches the collector verbatim, as it reaches stderr")
+	require.Equal(t, "AUDIT_RESOURCE_KIND_ENDPOINT", enforcement["flowstate.audit.resource.kind"],
+		"the worker's resource kinds ride the attribute the control plane's already do")
+	require.Equal(t, "AUDIT_DENY_CODE_DENY_RULE", enforcement["flowstate.audit.deny_code"])
+	require.Equal(t, "deploy-bot", enforcement["flowstate.audit.identity.subject"])
+
+	controlPlane := exportedAttributes(exporter.exported[1])
+	require.NotContains(t, controlPlane, "flowstate.audit.enforcement_point",
+		"absent on a control-plane record, not present and empty: a query for the worker's "+
+			"decisions selects on the attribute existing")
+	require.NotContains(t, controlPlane, "flowstate.audit.rule",
+		"no rule decided this one")
+	require.Equal(t, "Get", controlPlane["flowstate.audit.rpc"])
+}
+
+// exportedAttributes flattens one exported record's attributes, the way the
+// assertions above and [TestTheSyncProcessorReportsAnExportFailureToTheEmitter]
+// both read them.
+func exportedAttributes(record sdklog.Record) map[string]string {
+	attributes := map[string]string{}
+	record.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attributes[string(kv.Key)] = kv.Value.AsString()
+
+		return true
+	})
+
+	return attributes
+}
+
 func isValidUTF8(s string) bool {
 	for _, r := range s {
 		if r == '�' {
