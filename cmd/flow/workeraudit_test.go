@@ -60,6 +60,107 @@ func TestServerDevInstallsTheAuditorForItsEmbeddedWorker(t *testing.T) {
 			"dispatches, secret reads and dials reach no sink")
 }
 
+// TestServerDevStopsItsWorkerBeforeShuttingDownTheAuditSinks: a draining
+// worker still records (Codex, picatz/flowstate#1394).
+//
+// worker.Stop waits for the activities already running, and one of those can
+// reach a task-dispatch, secret, egress or credential seam on its way out.
+// With flushAudit already run, that record meets a shut-down log processor: it
+// vanishes under the best-effort posture, and under --audit-required it fails
+// the activity with the sink's own error. The fix is an explicit stop before
+// the flush, and this is what fails if it is deleted and the worker is left to
+// its defer — which runs after this function, and therefore after the flush.
+//
+// What this exercises and what it cannot: the analysis is syntactic, so it
+// sees the call order written in runServerDev and not the runtime order.
+// Deferred calls are deliberately excluded, so `defer stopWorker()` alone does
+// not satisfy it. That worker.Stop blocks until the drain finishes is
+// Temporal's own contract, cited at the call site rather than asserted here.
+func TestServerDevStopsItsWorkerBeforeShuttingDownTheAuditSinks(t *testing.T) {
+	t.Parallel()
+
+	calls := immediateCallOrderIn(t, "runServerDev")
+
+	stop := indexOfCall(calls, "stopWorker")
+	flush := indexOfCall(calls, "flushAudit")
+
+	require.NotEqual(t, -1, stop,
+		"runServerDev leaves its worker to a deferred stop, which runs after flushAudit: "+
+			"an activity draining through an enforcement seam would record into a shut-down sink")
+	require.NotEqual(t, -1, flush, "runServerDev no longer flushes the audit trail at all")
+	require.Less(t, stop, flush,
+		"the embedded worker must stop, and drain, while its audit sinks are still open")
+}
+
+// immediateCallOrderIn returns the names of the functions called in the named
+// top-level function of this package, in source order, excluding calls made
+// through defer.
+//
+// Deferred calls are excluded because they are the thing being distinguished:
+// `defer w.Stop()` and `stopWorker()` read identically to a walker that counts
+// names, and only the second one happens before the rest of the function body.
+func immediateCallOrderIn(t *testing.T, function string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	fset := token.NewFileSet()
+	var calls []string
+	found := false
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+
+		file, err := parser.ParseFile(fset, filepath.Clean(name), nil, parser.SkipObjectResolution)
+		require.NoError(t, err, "parsing %s", name)
+
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != function || fn.Recv != nil || fn.Body == nil {
+				continue
+			}
+
+			found = true
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch node := n.(type) {
+				case *ast.DeferStmt:
+					// Not part of this function's own order: it runs after
+					// everything below, which is the distinction under test.
+					return false
+				case *ast.CallExpr:
+					switch fun := node.Fun.(type) {
+					case *ast.Ident:
+						calls = append(calls, fun.Name)
+					case *ast.SelectorExpr:
+						calls = append(calls, fun.Sel.Name)
+					}
+				}
+
+				return true
+			})
+		}
+	}
+
+	require.True(t, found, "this package declares no function named %s", function)
+
+	return calls
+}
+
+// indexOfCall returns where name is first called, or -1.
+func indexOfCall(calls []string, name string) int {
+	for i, call := range calls {
+		if call == name {
+			return i
+		}
+	}
+
+	return -1
+}
+
 // TestTheAuditPostureIsOnEveryDeploymentCommandAndNoRehearsal: one flag, one
 // meaning. A deployment states its posture once; a rehearsal has no posture to
 // state because it installs no recorder at all.

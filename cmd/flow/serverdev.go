@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -645,7 +646,12 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("starting the worker: %w", err)
 	}
-	defer w.Stop()
+
+	// Stopped once, whether this function leaves through an error below or
+	// through the shutdown path at the end, which stops it explicitly before
+	// the audit sinks are closed. See there for why the order matters.
+	stopWorker := sync.OnceFunc(w.Stop)
+	defer stopWorker()
 
 	httpServer, listener, err := devHTTPServer(flags, serverOpts, temporal)
 	if err != nil {
@@ -702,13 +708,25 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		logger.Warn("the server was forced down with requests still in flight", "error", err)
 	}
 
-	// The deferred calls above finish the rest, in the order that keeps each
-	// half alive for as long as the half above it can still use it: the worker
-	// stops, then the client it polls through closes, then the plugins it
-	// dispatched to, then the Temporal child process. Telemetry is flushed here,
-	// before any of that, so the last spans belong to a stack that was still
-	// whole when they were recorded. The audit trail's own OTel sink, same
-	// shape, same reason.
+	// The worker stops here rather than only in its defer, and it stops before
+	// the audit sinks are shut down (Codex, picatz/flowstate#1394).
+	//
+	// Stop drains: it waits for the activities already running, and a draining
+	// activity still reaches the enforcement seams this command installed an
+	// auditor for — a task dispatching, a secret resolving, a request leaving.
+	// With the audit trail already flushed, such a record either vanishes into
+	// a shut-down processor or, under --audit-required, fails the activity with
+	// the sink's own "the log processor is shut down". Neither is a thing a
+	// clean shutdown should do to work this stack accepted.
+	//
+	// The rest still finishes in the deferred order that keeps each half alive
+	// for as long as the half above it can still use it: the client the worker
+	// polls through closes, then the plugins it dispatched to, then the
+	// Temporal child process.
+	stopWorker()
+
+	// Telemetry after the worker, for the same reason and one more: the last
+	// spans belong to a stack that was still whole when they were recorded.
 	flushTelemetry()
 	flushAudit()
 
