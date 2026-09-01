@@ -598,9 +598,18 @@ is already in `pkg/flowstate/v1/auth/` has landed.
    (`docs/ARCHITECTURE.md:470-481`).
 6. Task-shape policy's zero case permits everything
    (`pkg/flowstate/v1/taskpolicy.go:133-146`).
-7. The server records allows and denials (`audit.Recorder.Allow`); the worker records
-   nothing, so a transcript still cannot answer "why was this dispatch, resolution or
-   dial permitted" (#1379; #353 principle 2, workstream D).
+7. The worker records its own decisions — task dispatch, secret access, the built-in
+   `http` task's egress, credential assumption — through the same recorder
+   `flow server` uses, and `--audit-required` refuses an action whose record cannot
+   be written at every seam that decides before it acts. The egress and assumption
+   records are written after the effect they permit, which the schema states and the
+   seams classify rather than hide (#1379; #353 principle 2, workstream D). Three
+   things the gap still holds. A first-party plugin enforces the same
+   `--egress-policy` in its own process, and nothing running there can reach this
+   worker's recorder, so the traffic is governed and only the record is missing
+   (#1399). A permitted redirect hop gets no record of its own; the allow names the
+   destination the workload addressed (#1397). And `flow run local` installs no
+   recorder at all, deliberately (`pkg/flowstate/v1/audit`'s package doc).
 8. The stdio agent surface authenticates the process, not the request (#350, #337).
 9. No token revocation, inbound or outbound, within a credential's lifetime.
 10. Windows is an authoring platform, not a worker platform; plugins are AF_UNIX only
