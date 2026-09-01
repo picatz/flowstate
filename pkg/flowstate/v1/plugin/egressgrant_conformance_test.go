@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +15,19 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
+
+// probeAddresses are the address categories the deployment's default policy
+// separates: one it permits, and the three internal ones it exists to deny.
+//
+// Named here rather than inline so the plugin fixture and the expectations
+// computed for it are reading one list; a category checked on one side and not
+// the other is a posture nobody compared.
+var probeAddresses = map[string]netip.AddrPort{
+	"loopback": netip.MustParseAddrPort("127.0.0.1:443"),
+	"private":  netip.MustParseAddrPort("10.0.0.1:443"),
+	"metadata": netip.MustParseAddrPort("169.254.169.254:80"),
+	"public":   netip.MustParseAddrPort("93.184.216.34:443"),
+}
 
 // runEgressGrantPlugin is a real SDK plugin that reports what the grant it was
 // launched with permits.
@@ -33,12 +47,23 @@ func runEgressGrantPlugin() int {
 		}
 		outputs["refusal"] = flowstatev1.NewLiteral("")
 
-		// A destination the two policies below disagree about, so the test can
-		// tell "some policy arrived" from "the operator's policy arrived".
-		if err := policy.CheckAddr(netip.MustParseAddrPort("127.0.0.1:443")); err != nil {
-			outputs["loopback"] = flowstatev1.NewLiteral(err.Error())
-		} else {
-			outputs["loopback"] = flowstatev1.NewLiteral("")
+		isDefault, err := sdk.EgressPolicyIsDeploymentDefault()
+		if err != nil {
+			outputs["refusal"] = flowstatev1.NewLiteral(err.Error())
+			return &flowstatev1.Node_Outputs{NamedValues: outputs}, nil
+		}
+		outputs["deployment_default"] = flowstatev1.NewLiteral(strconv.FormatBool(isDefault))
+
+		// One output per address category the deployment default separates, so
+		// a case can assert the whole posture rather than one answer. Loopback
+		// is the one the operator policies below disagree about, which is what
+		// tells "some policy arrived" from "the operator's policy arrived".
+		for name, addr := range probeAddresses {
+			if err := policy.CheckAddr(addr); err != nil {
+				outputs[name] = flowstatev1.NewLiteral(err.Error())
+			} else {
+				outputs[name] = flowstatev1.NewLiteral("")
+			}
 		}
 
 		return &flowstatev1.Node_Outputs{NamedValues: outputs}, nil
@@ -87,6 +112,11 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 		// wantLoopbackDenied is the check the two granted policies disagree
 		// about.
 		wantLoopbackDenied bool
+
+		// wantDeploymentDefault expects the plugin to report the grant as the
+		// worker's own default, and its posture to match that default's on
+		// every address in probeAddresses.
+		wantDeploymentDefault bool
 	}{
 		{
 			name:               "the operator's policy governs the plugin",
@@ -111,6 +141,17 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 			name:               "an explicitly empty policy is a policy on both sides",
 			grant:              []byte{},
 			wantLoopbackDenied: hostDeniesLoopbackUnderAnEmptyPolicy(t),
+		},
+		{
+			// The launch every default worker makes (#1332, point 6). The
+			// plugin is governed by the same policy the worker's own built-in
+			// http task runs under, and can see that nobody wrote it — which is
+			// what lets sql refuse a database here while git, vcs, github and
+			// slack reach public hosts, on the one grant.
+			name:                  "a worker with no operator policy grants its own default",
+			grant:                 flowstatev1.DefaultEgressPolicyDocument(),
+			wantDeploymentDefault: true,
+			wantLoopbackDenied:    flowstatev1.DefaultEgressPolicy().CheckAddr(probeAddresses["loopback"]) != nil,
 		},
 		{
 			name:        "no policy is refused rather than defaulted",
@@ -156,6 +197,26 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 				assert.NotEmpty(t, loopback, "the plugin permitted what the operator's policy denies")
 			} else {
 				assert.Empty(t, loopback, "the plugin denied what the operator's policy permits: %s", loopback)
+			}
+
+			assert.Equal(t, strconv.FormatBool(test.wantDeploymentDefault),
+				outputs.GetNamedValues()["deployment_default"].GetLiteral().GetStringValue(),
+				"the plugin cannot tell whether an operator decided this policy, so it cannot take a posture toward the default")
+
+			if !test.wantDeploymentDefault {
+				return
+			}
+
+			// The whole posture, computed from the policy this worker's own
+			// http task is running under rather than written down: what makes
+			// the default grant right is that it is that policy, not that it
+			// resembles one. A test naming the categories itself would keep
+			// agreeing after the built-in default moved.
+			workerDefault := flowstatev1.DefaultEgressPolicy()
+			for name, addr := range probeAddresses {
+				denied := outputs.GetNamedValues()[name].GetLiteral().GetStringValue() != ""
+				assert.Equalf(t, workerDefault.CheckAddr(addr) != nil, denied,
+					"the plugin's answer for a %s address differs from the worker's own default", name)
 			}
 		})
 	}

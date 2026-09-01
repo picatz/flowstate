@@ -46,6 +46,27 @@ func TestTheDefaultDocumentSaysItIsTheDefault(t *testing.T) {
 		"the default grant does not identify itself, so every plugin reads it as an operator's policy")
 }
 
+// TestTheDefaultDocumentDoesNotEnableProxyMode pins the one field whose effect
+// reaches past the policy itself.
+//
+// [DefaultEgressPolicy] passes at most WithAllowLoopback, so the built-in http
+// task never routes through HTTP_PROXY; a default grant that said otherwise
+// would put plugins behind a proxy the worker's own task does not use — the one
+// place [netpolicy.WithProxyFromEnvironment] warns the address checks cannot see
+// past — and would have the host forward proxy variables into plugin
+// environments on a policy no operator wrote. Proxy mode is an operator's
+// decision, in an operator's file, and the default carries "off" faithfully
+// because it says nothing.
+func TestTheDefaultDocumentDoesNotEnableProxyMode(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := netpolicy.ParseConfig(DefaultEgressPolicyDocument())
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Egress.ProxyFromEnvironment,
+		"the default grant turns on proxy mode, which the worker's own http task does not run under")
+}
+
 // TestTheDefaultDocumentCannotBeEditedThroughAPreviousCaller keeps the grant a
 // value rather than shared state. Each call hands its result to a plugin launch
 // that clones and forwards it; one caller reaching the slice the next one gets

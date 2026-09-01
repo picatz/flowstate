@@ -502,6 +502,60 @@ func TestThePostureTowardTheDefaultIsThePluginsToTake(t *testing.T) {
 	}
 }
 
+// TestADefaultWorkersGrantIsThatWorkersOwnPosture is the shared proof every
+// plugin migrated onto this constructor inherits (point 3 of #1332's decision),
+// for the launch that is now the common one: a worker started with no
+// --egress-policy.
+//
+// The claim is parity, not resemblance — what the plugin enforces is the policy
+// the worker's own built-in http task is enforcing — so every expectation is
+// computed from [flowstatev1.DefaultEgressPolicy] rather than written down. A
+// test naming the categories itself would agree with this file forever and stop
+// agreeing with the worker the moment the default moved.
+//
+// The public address is checked but not dialed: a unit test that reached the
+// internet to prove a policy permits it would be proving the internet. What is
+// dialed is the denied one, where the listener is the falsifier — it is running,
+// it is reachable, and a policy consulted only where convenient would leave an
+// accept behind.
+func TestADefaultWorkersGrantIsThatWorkersOwnPosture(t *testing.T) {
+	resetGrant(t)
+	t.Setenv(EgressPolicyEnv, base64.StdEncoding.EncodeToString(flowstatev1.DefaultEgressPolicyDocument()))
+
+	granted, err := EgressPolicy()
+	require.NoError(t, err, "the grant a default worker makes was refused")
+
+	isDefault, err := EgressPolicyIsDeploymentDefault()
+	require.NoError(t, err)
+	assert.True(t, isDefault, "the plugin cannot tell that no operator decided this policy")
+
+	host := flowstatev1.DefaultEgressPolicy()
+	for name, addr := range map[string]netip.AddrPort{
+		"public":   netip.MustParseAddrPort("93.184.216.34:443"),
+		"loopback": loopback(t),
+		"private":  netip.MustParseAddrPort("10.0.0.1:443"),
+		"metadata": netip.MustParseAddrPort("169.254.169.254:80"),
+	} {
+		assert.Equalf(t, host.CheckAddr(addr) == nil, granted.CheckAddr(addr) == nil,
+			"the plugin's answer for a %s address differs from the worker's own http task", name)
+	}
+
+	denied, accepts := countingListener(t)
+
+	client, err := HTTPClient()
+	require.NoError(t, err)
+
+	response, err := client.Get("http://" + denied + "/")
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("the default grant let a plugin reach a loopback address the worker's own task cannot")
+	}
+	assert.ErrorIs(t, err, netpolicy.ErrDenied,
+		"the request failed for some reason other than the policy: %v", err)
+	assert.Zero(t, accepts.Load(),
+		"the denied destination was dialed; the default grant is not being applied on the connection path")
+}
+
 // TestAnUnusableGrantHasNoPostureEither keeps the new accessor on the same
 // fail-closed footing as [EgressPolicy].
 //
