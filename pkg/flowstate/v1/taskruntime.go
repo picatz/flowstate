@@ -47,12 +47,21 @@ func AuthorizeCredential(ctx context.Context, req *http.Request, target string) 
 	}
 
 	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
+	if ok {
+		// Before the configured-or-not check below, not after it. A worker
+		// with no broker still refuses a *workload*, and "which tenant tried
+		// to assume this target" is the fact the record exists to carry —
+		// especially for this denial, which is the one an operator meets while
+		// a deployment is still being wired (Codex, picatz/flowstate#1394).
+		// The only record left without an identity is the one where no runtime
+		// reached this seam at all, which has none to name.
+		subject.Identity = ProtoWorkloadIdentity(runtime.Identity)
+	}
+
 	if !ok || runtime.Broker == nil {
 		return auditEnforcementDeny(ctx, subject, AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED,
 			fmt.Errorf("workload identity federation is not configured on this worker"))
 	}
-
-	subject.Identity = ProtoWorkloadIdentity(runtime.Identity)
 
 	err := runtime.Broker.Authorize(ctx, req, runtime.Identity, runtime.Step, target)
 	if err == nil {
@@ -178,13 +187,18 @@ func ResolveSecret(ctx context.Context, ref secrets.Ref) (secrets.Secret, error)
 	}
 
 	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
+	if ok {
+		// Same ordering, same reason as [AuthorizeCredential]: a missing store
+		// or policy is a fact about this worker, and the record still has to
+		// say which workload asked to read the reference.
+		subject.Identity = ProtoWorkloadIdentity(runtime.Identity)
+	}
+
 	if !ok || runtime.Store == nil || runtime.Policy == nil {
 		return secrets.Secret{}, auditEnforcementDeny(ctx, subject,
 			AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED,
 			fmt.Errorf("secret access is not configured on this worker"))
 	}
-
-	subject.Identity = ProtoWorkloadIdentity(runtime.Identity)
 
 	if err := runtime.Policy.Authorize(ctx, runtime.Identity, runtime.Step, ref); err != nil {
 		code, rule, decided := secretDenial(err)

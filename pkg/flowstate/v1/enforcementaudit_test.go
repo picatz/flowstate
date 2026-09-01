@@ -678,6 +678,51 @@ func TestAWorkerWithNoAuthorityRecordsWhatItRefused(t *testing.T) {
 		record.GetEnforcementPoint())
 }
 
+// TestAnUnconfiguredAuthorityRecordsWhoAsked: a worker missing a broker, a
+// store or a policy still refuses a *workload*, and the record has to say
+// which one (Codex, picatz/flowstate#1394).
+//
+// This is the denial an operator meets while a deployment is still being
+// wired, so it is the one most likely to be read — and a NOT_CONFIGURED line
+// that cannot be attributed to a tenant answers none of the questions it is
+// read for. Mutation-proved: moving either identity assignment back below its
+// configured-or-not check fails this.
+func TestAnUnconfiguredAuthorityRecordsWhoAsked(t *testing.T) {
+	t.Parallel()
+
+	runtime := secretRuntime(t, "material", auth.SecretAccessPolicy{Allow: []string{"true"}})
+
+	brokerless := runtime
+	brokerless.Broker = nil
+
+	ctx, sink := auditing(t)
+	ctx = v1.ContextWithTaskRuntime(ctx, brokerless)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example", nil)
+	require.NoError(t, err)
+	require.Error(t, v1.AuthorizeCredential(ctx, req, "partner-api"))
+
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED, record.GetDenyCode())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject(),
+		"a worker with no broker still refused a workload, and the record must name it")
+	require.Equal(t, "acme", record.GetIdentity().GetNamespace())
+
+	storeless := runtime
+	storeless.Store, storeless.Policy = nil, nil
+
+	ctx, sink = auditing(t)
+	ctx = v1.ContextWithTaskRuntime(ctx, storeless)
+
+	_, err = v1.ResolveSecret(ctx, secrets.NewRef("env", "API_TOKEN"))
+	require.Error(t, err)
+
+	record = sink.only(t)
+	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED, record.GetDenyCode())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject(),
+		"the same ordering, at the seam that reads secrets")
+}
+
 // TestARequiredRecorderStopsTheActionItCouldNotRecord is the fail-closed half
 // at the worker seams: an action that cannot be recorded does not happen.
 //
