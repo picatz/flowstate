@@ -597,10 +597,15 @@ operator wrote in `--egress-policy` and the same ones governing the built-in
 It is a snapshot taken at your launch, not a subscription. You hold the bytes
 your own launch carried, so an operator who edits the policy file afterwards
 governs the plugins the worker starts next — the running ones keep what they were
-given until the worker relaunches them. The SDK reads it once, on the first call,
-and answers from that capture forever after: a grant a process could re-read is a
-grant that process can rewrite, and self-granting must not be one line of a
-plugin's own code.
+given until the worker relaunches them. The SDK captures it once, while `sdk.Run`
+is reading the launch environment and before any of your task code has run, and
+answers from that capture forever after; a plugin that serves by hand without
+`Run` captures at its first `EgressPolicy` or `HTTPClient` call instead. A grant a
+process could re-read is a grant that process can rewrite, and self-granting must
+not be one line of a plugin's own code. What stays outside that line is code that
+runs before `Run` — package initialization, or a `main` that does work first —
+which is your own program deciding what its process starts with, and no more than
+opening a raw socket already gives it.
 
 Ask the SDK for a client rather than building one:
 
