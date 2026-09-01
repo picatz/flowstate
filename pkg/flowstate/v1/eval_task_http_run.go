@@ -455,6 +455,25 @@ func egressDenial(err error, endpoint string) egressVerdict {
 	return verdict
 }
 
+// unrecordedRequestKind classifies a required recorder's failure at the egress
+// seam, where — alone among the four — the record is written after the request
+// may already have left.
+//
+// The kind is what decides whether a driver retries, so the question is not
+// "what failed" but "could another attempt repeat an effect": [ErrorKind]'s own
+// default is permanent for exactly this reason, and a bare error would answer
+// [ErrorKindInternal], which is retryable. An unknown outcome is permanent
+// (retrying a POST whose response was lost is how one charge becomes two); an
+// outcome that could not have taken effect twice is [ErrorKindUpstream], so a
+// collector that comes back lets the step succeed on its next attempt.
+func unrecordedRequestKind(outcomeUnknown bool) ErrorKind {
+	if outcomeUnknown {
+		return ErrorKindUpstreamUnknown
+	}
+
+	return ErrorKindUpstream
+}
+
 // refusedEndpoint reads the destination out of a denial's target, so a
 // redirect hop that was refused is recorded as the hop rather than as the URL
 // the workflow wrote.
@@ -745,21 +764,37 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 					NewTaskError("http", ErrorKindPolicyDenied, err))
 			}
 
+			// Whether repeating this request could repeat an effect the first
+			// attempt already had. Decided once, here, because both
+			// classifications below turn on the same question, and answering it
+			// twice is how two answers drift apart.
+			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err)
+
 			// Not a denial, so the policy permitted this request: the transport
 			// evaluates every rule that decides before it spends a rate-limit
 			// token or dials, so a refusal from anything below is a refusal of
 			// a request the policy allowed. Recorded here rather than only on
 			// the success path, or a request the policy permitted and the
 			// network dropped would leave the trail saying nothing was decided.
-			if auditErr := auditEnforcementAllow(ctx, egressSubject); auditErr != nil {
-				return nil, auditErr
+			//
+			// Withheld on a cancelled context, and that is not an optimization:
+			// netpolicy returns a cancelled or expired context as itself rather
+			// than as a verdict (its ruleFailure, the rule [taskPolicyRuleFailure]
+			// states for the dispatch seam), so the policy may never have
+			// answered at all. An allow recorded there would be a sentence the
+			// trail cannot support. The cost is a request that was permitted
+			// and then died with its context going unrecorded; a false allow is
+			// the worse of the two.
+			if ctx.Err() == nil {
+				if auditErr := auditEnforcementAllow(ctx, egressSubject); auditErr != nil {
+					// Classified rather than returned bare: an unclassified
+					// error is [ErrorKindInternal], which is retryable, and a
+					// required sink failing after the request left would then
+					// hand a repeat of a possibly-effective POST to the very
+					// safeguard the next few lines exist to be.
+					return nil, NewTaskError("http", unrecordedRequestKind(outcomeUnknown), auditErr)
+				}
 			}
-
-			// Whether repeating this request could repeat an effect the first
-			// attempt already had. Decided once, here, because both
-			// classifications below turn on the same question, and answering it
-			// twice is how two answers drift apart.
-			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err)
 
 			// The policy's own per-host rate bound (#912 phase two). On the
 			// initial hop the request was never sent, so it is neither a denial
@@ -813,8 +848,17 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// the step here, after the request has already been sent — the cost
 		// the schema's "The worker's half" states for this seam, and the
 		// reason the deny direction is the one write-ahead protects.
+		//
+		// The failure is classified by the same question the body-read failure
+		// below asks, and in the same words: this request reached its peer, so
+		// for a non-idempotent method another attempt would perform the
+		// operation a second time.
 		if err := auditEnforcementAllow(ctx, egressSubject); err != nil {
-			return nil, err
+			repeatable := taskInputs.GetRetryOnUnknownOutcome() ||
+				idempotentMethods[strings.ToUpper(taskInputs.GetMethod())]
+			return nil, NewTaskError("http", unrecordedRequestKind(!repeatable), fmt.Errorf(
+				"%s %s reached its peer and the decision permitting it could not be recorded: %w",
+				taskInputs.GetMethod(), taskInputs.GetUrl(), err))
 		}
 
 		// The body is read before success is decided, because `expect` is an

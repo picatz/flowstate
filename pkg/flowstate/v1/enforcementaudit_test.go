@@ -414,6 +414,73 @@ func TestARefusedRedirectIsRecordedAgainstTheHopThatWasRefused(t *testing.T) {
 		"the record names the hop the policy refused, not the URL the workflow wrote")
 }
 
+// TestACancelledRequestRecordsNoEgressDecision: netpolicy returns a cancelled
+// or expired context as itself rather than as a verdict, so the policy may
+// never have answered — and an allow recorded there would be a sentence the
+// trail cannot support. The same rule the dispatch seam follows for a rule
+// evaluation that ran out of time.
+func TestACancelledRequestRecordsNoEgressDecision(t *testing.T) {
+	t.Parallel()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithAllowRules("true"))
+	require.NoError(t, err)
+
+	ctx, sink := auditing(t)
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url": v1.NewValue("http://127.0.0.1:9/never-sent"),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	require.Empty(t, sink.all(),
+		"a request whose context was already done recorded an egress decision the policy never made")
+}
+
+// TestAnUnrecordableRequestThatReachedItsPeerIsNotRetried: under a required
+// recorder the egress record is written after the request left, so the failure
+// it raises has to carry the classification the sent request earned. An
+// unclassified error is Internal, which is retryable, and retrying a POST that
+// already reached its peer is the effect this task's own error kinds exist to
+// prevent.
+func TestAnUnrecordableRequestThatReachedItsPeerIsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	require.NoError(t, err)
+
+	ctx, sink := auditing(t, audit.Required())
+	sink.fail = errors.New("the collector is down")
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url":    v1.NewValue(server.URL),
+		"method": v1.NewValue(http.MethodPost),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	kind := v1.ClassifyError(err)
+	require.Equal(t, v1.ErrorKindUpstreamUnknown, kind)
+	require.False(t, kind.Retryable(),
+		"a POST that reached its peer must not be repeated because a sink was down")
+
+	// An idempotent method may be attempted again: nothing can happen twice,
+	// and the collector may be back.
+	ctx, sink = auditing(t, audit.Required())
+	sink.fail = errors.New("the collector is down")
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url": v1.NewValue(server.URL),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+	require.True(t, v1.ClassifyError(err).Retryable())
+}
+
 // TestADestinationOutsideThePolicyIsRecordedWithoutARule: netpolicy's six
 // non-rule refusals share one code, because the record already names the
 // destination and no rule decided.

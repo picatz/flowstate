@@ -43,6 +43,20 @@ func TestTheWorkerBuildsAndInstallsTheAuditRecorder(t *testing.T) {
 		"a drained worker's last decisions must reach the sink before the process leaves")
 }
 
+// TestServerDevInstallsTheAuditorForItsEmbeddedWorker: `flow server dev` runs a
+// real worker under this command's own task, egress, secret and credential
+// policies, so an auditor installed only in `runWorker` would leave its
+// --audit-required flag gating half of what one process decides.
+func TestServerDevInstallsTheAuditorForItsEmbeddedWorker(t *testing.T) {
+	t.Parallel()
+
+	calls := callsIn(t, "runServerDev")
+
+	require.Contains(t, calls, "SetDefaultEnforcementAuditor",
+		"runServerDev passes its recorder to server.WithAudit only, so its embedded worker's "+
+			"dispatches, secret reads and dials reach no sink")
+}
+
 // TestTheAuditPostureIsOnEveryDeploymentCommandAndNoRehearsal: one flag, one
 // meaning. A deployment states its posture once; a rehearsal has no posture to
 // state because it installs no recorder at all.

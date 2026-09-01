@@ -612,6 +612,14 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	}
 	serverOpts = append(serverOpts, server.WithAudit(recorder))
 
+	// And this stack's embedded worker (picatz/flowstate#1379). It is a real
+	// worker, with this command's --task-policy, --egress-policy and
+	// --auth-policy governing what it dispatches, resolves and dials, so
+	// leaving it out would make --audit-required above a posture that covers
+	// half of what this one process decides. Installed before the worker
+	// starts polling, below.
+	v1.SetDefaultEnforcementAuditor(recorder)
+
 	if err := server.EnsureSearchAttributesRegistered(cmd.Context(), temporal, devTemporalNamespace); err != nil {
 		logger.Warn("could not register Flowstate's search attributes; "+
 			"`flow list --filter` still works, scanning executions rather than querying an index",
