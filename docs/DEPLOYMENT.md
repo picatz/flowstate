@@ -155,9 +155,14 @@ Credential source is not destination authorization. A worker loading the SQL
 plugin must also receive `--egress-policy` with `postgres` in `egress.schemes`
 and exact allow rules/networks/ports for the database. The host forwards that
 same operator-owned policy snapshot to the first-party SQL plugin, so a file
-replacement during startup cannot make HTTP and SQL enforce different bytes;
-missing policy denies all PostgreSQL connections, and malformed policy prevents
-plugin startup. The SQL plugin checks host and port rules before DNS, resolves
+replacement during startup cannot make HTTP and SQL enforce different bytes. A
+worker started without `--egress-policy` grants the default policy its own
+built-in HTTP task runs under, and the SQL plugin refuses to connect under it
+with a message naming the flag: a database destination is not something a
+deployment authorizes by not writing a file. A malformed policy no longer stops
+the plugin from starting — it is refused at the task boundary instead, so a bad
+file cannot make a plugin the host cannot even describe. The SQL plugin checks
+host and port rules before DNS, resolves
 and authorizes every address for every DSN host, pins that set, rechecks the
 actual TCP target immediately before each connection, requires verified TLS,
 and rejects Unix sockets and filesystem-reading connection options.
@@ -181,11 +186,14 @@ approval. Verified inbound events bridging into Flowstate signals remain a
 separate control-plane concern.
 
 The entire `token` input must be a host-resolved secret reference such as
-`${secret('env:SLACK_BOT_TOKEN')}`. The plugin separately requires an explicit
-`--egress-policy` snapshot permitting HTTPS to `slack.com:443`; absent or
-malformed policy fails closed, and the actual HTTP client enforces DNS, address,
-port, redirect, TLS, credential/identity-aware CEL rules, and response bounds.
-See `examples/plugins/slack/egress-policy.yaml` for the narrow policy shape.
+`${secret('env:SLACK_BOT_TOKEN')}`. Destination authority comes from the worker's
+egress grant, and the actual HTTP client enforces DNS, address, port, redirect,
+TLS, credential/identity-aware CEL rules, and response bounds on it. A worker
+with no `--egress-policy` grants the default policy built-in HTTP runs under,
+which permits public HTTPS and therefore `slack.com:443`; a deployment that wants
+this plugin narrowed to that one destination — or stopped entirely — writes the
+policy, and `examples/plugins/slack/egress-policy.yaml` is that shape. A grant
+that cannot be read at all (no worker launched the process) still fails closed.
 Neither the Flowfile nor the plugin manifest grants that destination authority,
 and running the plugin as another process does not confine its ambient network
 or filesystem access.

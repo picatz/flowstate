@@ -48,9 +48,14 @@ before plugin invocation.
 
 Credential release is not destination authorization. The host forwards the
 exact bounded bytes it already parsed from `--egress-policy` as an immutable
-launch-time snapshot. The plugin builds one `netpolicy.Policy` from those bytes
-and its actual HTTP client performs every DNS, address, port, redirect, TLS, and
-response-byte check. Missing or malformed policy fails closed. The plugin
+launch-time snapshot, or, when no policy was configured, the default its own
+built-in HTTP task runs under. The plugin asks the SDK for that policy
+(`sdk.EgressPolicy`) and its actual HTTP client performs every DNS, address,
+port, redirect, TLS, and response-byte check. The default grant is accepted —
+it permits public HTTPS, which is what this plugin does, and refusing it would
+mean installing the plugin required writing a policy file first — so a
+deployment that wants Slack narrowed or stopped writes one. A grant that cannot
+be read at all fails closed. The plugin
 manifest is only a declaration, not authority; process separation prevents a
 crash from taking down the worker but is not filesystem or network confinement.
 

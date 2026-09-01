@@ -190,25 +190,25 @@ func TestLoopbackDenialUnderAnExplicitPolicyStaysSilent(t *testing.T) {
 	require.NotContains(t, stderr, "NEXT")
 }
 
-// TestTheEgressPolicyFlagDoesNotPromiseEnforcementItDoesNotHave pins the words,
-// because the words are the security claim.
+// TestTheEgressPolicyFlagSaysWhichPluginsEnforceTheGrantAndWhereItStops pins the
+// words, because the words are the security claim.
 //
 // A worker cannot enforce a policy inside a plugin: a plugin is a separate
 // process, and the operating system opens whatever socket it asks for. What the
 // worker does is *grant* the policy, and whether a deny rule stops a request is
-// the receiving plugin's own code. `git`, `github` and `vcs` build their own
-// default policy with netpolicy.New and never read the grant, so while the help
-// said this flag governs "every plugin the worker launches", an operator who
-// wrote a deny rule and ran a `github.*` task reached the destination anyway —
-// a false promise at an egress trust boundary rather than a wording nit.
+// the receiving plugin's own code. Every first-party plugin now applies it
+// (#1321, #1322, #1323), which is a promise this build does keep and the help
+// has to make — an operator reading that git, github and vcs "do not read it
+// yet" would confine tasks that no longer need confining. What the help must
+// still refuse to claim is enforcement over a plugin this build cannot confine.
 //
 // Held here because nothing else would notice: the sentence is generated into
 // docs/reference/cli.md, where this one string is repeated for every command
-// that takes the flag, and it will read as true again the moment someone
+// that takes the flag, and it will read as more than it means the moment someone
 // shortens it. The negative assertion is the load-bearing half — a test that
-// only checked for "granted" would pass on help text that also still claimed to
-// govern every plugin.
-func TestTheEgressPolicyFlagDoesNotPromiseEnforcementItDoesNotHave(t *testing.T) {
+// only checked for the plugin names would pass on help text that also claimed to
+// govern every plugin the worker launches.
+func TestTheEgressPolicyFlagSaysWhichPluginsEnforceTheGrantAndWhereItStops(t *testing.T) {
 	t.Parallel()
 
 	cmd := &cobra.Command{Use: "probe"}
@@ -219,16 +219,28 @@ func TestTheEgressPolicyFlagDoesNotPromiseEnforcementItDoesNotHave(t *testing.T)
 	// Granted, not governed, where plugins are concerned.
 	require.Contains(t, usage, "granted to every plugin the worker launches")
 	require.NotContains(t, usage, "governing built-in HTTP and every plugin",
-		"the flag help claims to govern every plugin again; a grant is not enforcement, and git/github/vcs do not read it")
+		"the flag help claims to govern every plugin; a grant is not enforcement, and a third-party process can ignore it")
 
 	// The claim it does keep: the built-in task is what this flag actually
 	// enforces over.
 	require.Contains(t, usage, "governing built-in HTTP")
 
-	// And the operator is told which plugins enforce it, by name, plus where the
-	// rest are tracked — so the gap is actionable rather than merely hedged.
-	for _, named := range []string{"sql", "slack", "git", "github", "vcs", "#1332"} {
+	// The plugins that do enforce it, by name — the promise this build now
+	// keeps, and the reason an operator no longer needs a workaround for three
+	// of them.
+	for _, named := range []string{"git", "github", "slack", "sql", "vcs"} {
 		require.Containsf(t, usage, named,
 			"the flag help does not name %q, so an operator cannot tell which plugins the policy actually stops", named)
 	}
+	require.Contains(t, usage, "enforce the grant on their own connections")
+
+	// And the limit that survives every migration: a plugin is a process, not a
+	// sandbox.
+	require.Contains(t, usage, "a third-party plugin is a separate process that can ignore it")
+
+	// The stale hedge, in the two spellings it had. Naming them keeps the help
+	// from drifting back to a gap that no longer exists.
+	require.NotContains(t, usage, "do not read it yet")
+	require.NotContains(t, usage, "#1332",
+		"the help still points at the migration issue as though it were pending")
 }

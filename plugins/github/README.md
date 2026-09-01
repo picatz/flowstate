@@ -664,11 +664,16 @@ network-level failure for `issue_comment` is conservatively treated as
 "unknown, do not retry" rather than attempting that distinction and getting
 it wrong in the unsafe direction.
 
-**Every request is bounded and egress-governed.** `client.go` installs one
-`netpolicy.Policy` at startup and hands its `*http.Client` to both the App
-JWT-minting request and every go-github call - so the response-byte cap and
-the (deny-by-default) egress rules cover the GitHub Enterprise Server case
-too, not only github.com.
+**Every request is bounded and egress-governed.** `client.go` takes the
+deployment's own egress policy - the bytes the worker granted this process at
+launch, from its `--egress-policy` or, when the operator configured none, the
+default its built-in HTTP task runs under - and hands its `*http.Client` to both
+the App JWT-minting request and every go-github call. So a deny rule an operator
+writes reaches a `github.*` task, and the response-byte cap and the egress rules
+cover the GitHub Enterprise Server case too, not only github.com. The
+response-byte and timeout bounds are this plugin's own, stated over the grant
+(`sdk.EgressPolicyWithBounds`), because a paginated API response is not the shape
+`max_response_bytes` is sized for.
 
 **Not a clone-based plugin.** Issue #171 tracked a packfile-inflation bound
 across "all three clone-based plugins (vcs, github, git)"; checked directly

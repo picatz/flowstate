@@ -28,11 +28,16 @@ import (
 // only place this file *enforces* anything. The same bytes are also handed to
 // every launched plugin as a grant ([plugin.Config.EgressPolicy]), and a grant is
 // not enforcement: a plugin process opens its own sockets, so whether the policy
-// governs a plugin task is that plugin's code. Today `sql` and `slack` apply it;
-// `git`, `github` and `vcs` build their own default policy and are migrated in
-// #1332. Registration happens before
-// the worker polls and before a local run executes, so a policy that cannot load
-// refuses the command instead of governing some steps and not others.
+// governs a plugin task is that plugin's code. Every first-party plugin now
+// applies it — `git`, `github`, `slack`, `sql` and `vcs`, each on its own
+// connection path (#1332) — and a third-party plugin that asks the SDK for a
+// client gets the same policy without this file knowing its name. Registration
+// happens before the worker polls and before a local run executes, so a policy
+// that cannot load refuses the command instead of governing some steps and not
+// others.
+//
+// With no file, the grant is the deployment default rather than nothing: see
+// [egressPolicySnapshot].
 //
 // `flow run local` takes the same flag because local runs exist to tell an author
 // what production will do: rehearsing under the policy the workers run is the
@@ -110,22 +115,22 @@ func commandContext(cmd *cobra.Command) context.Context {
 
 // addEgressPolicyFlag declares --egress-policy on a command.
 //
-// The help says granted where it used to say governing, and it names which
-// plugins enforce the grant. The difference is not pedantry at this boundary: a
-// plugin process is not confined, so handing it the policy is all a worker can
-// do, and whether a deny rule actually stops a request is that plugin's own
-// code. `git`, `github` and `vcs` still build their own default policy with
-// netpolicy.New and never read the grant, so an operator who wrote a deny rule
-// and read "every plugin the worker launches" was promised enforcement this
-// build does not have. Their migration is #1332's next slice; until it lands the
-// help has to say so rather than let the flag read as a boundary it is not.
+// The help says granted where it used to say governing, and it names both what
+// enforces the grant and where enforcement stops. The difference is not pedantry
+// at this boundary: a plugin process is not confined, so handing it the policy is
+// all a worker can do, and whether a deny rule actually stops a request is that
+// plugin's own code. Every first-party plugin now applies it, which is what the
+// help says; what it must not say is that the flag governs *any* plugin, because
+// a third-party process can open its own socket and this build cannot stop it.
+// A deployment that must stop one confines it (THREAT_MODEL.md).
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
 		"path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches "+
-			"(default $"+egressPolicyEnv+"); the sql and slack plugins enforce the grant, while git, github and vcs "+
-			"do not read it yet and reach the network under their own default policy, tracked in #1332; "+
-			"when set it replaces the default policy entirely, and "+v1.AllowLoopbackEgressEnv+
-			" is ignored; a file that wants loopback says allow_loopback: true")
+			"(default $"+egressPolicyEnv+"); the first-party git, github, slack, sql and vcs plugins enforce the "+
+			"grant on their own connections, while a third-party plugin is a separate process that can ignore it; "+
+			"with no file every plugin is granted the same default policy built-in HTTP runs under, which sql "+
+			"refuses to reach a database under; when set it replaces the default policy entirely, and "+
+			v1.AllowLoopbackEgressEnv+" is ignored; a file that wants loopback says allow_loopback: true")
 }
 
 // applyEgressPolicy loads the configured policy file and registers the http task

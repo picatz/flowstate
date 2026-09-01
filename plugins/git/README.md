@@ -324,10 +324,12 @@ HTTP Basic auth. The one path a URL-embedded credential would otherwise
 leak through - an error message that echoes the URL back - never arises,
 since no URL this plugin accepts can carry one in the first place.
 
-**Bounded egress, and the bound this version does not close.** The same
-egress policy `plugins/vcs` installs bounds every response byte crossing
-go-git's HTTP transport, on every status code, reused unchanged here for
-both reads and the write's own clone-then-push. What it does not bound is
+**Bounded egress, and the bound this version does not close.** The deployment's
+own egress policy — granted to this process at launch, the same one `plugins/vcs`
+takes — governs every destination, and this plugin's clone-sized response bound
+is stated over it (`sdk.EgressPolicyWithBounds`), so every response byte crossing
+go-git's HTTP transport is bounded on every status code, for both reads and the
+write's own clone-then-push. What it does not bound is
 decompressed size - a small pack that inflates to an enormous object graph
 ("pack bomb") is a real class of attack neither go-git nor this plugin
 closes today. Said plainly here rather than left for someone to discover,
