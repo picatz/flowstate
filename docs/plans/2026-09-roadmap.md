@@ -86,8 +86,8 @@ any case set not called from both a local and a durable test
    the exact "three surfaces describe it, no code performs it" failure the
    August ledger warned about.
 3. **Advisory windows lapsed.** The `appearance` job's `continue-on-error` was
-   due out on 2026-08-12 and is still set (#1319, `ci.yml:621-631`), and the
-   gate's own hazards under parallel waves are open: #1306 (a worktree agent
+   due out on 2026-08-12 and was still set at the snapshot (#1319; dropped on
+   this branch), and the gate's own hazards under parallel waves are open: #1306 (a worktree agent
    cannot tell the gate its merge-base; a nine-PR wave merged unverified) and
    #489 (back-to-back merges can break main with every check green, blocked 19
    days).
@@ -105,6 +105,20 @@ snapshot's; the five passes hold the detail.
 | **Ingress & the human loop** | Webhooks with HMAC/Stripe verification, idempotency, bounded and timing-levelled; schedules; manual triggers with reasons; `slack.post` outbound | A webhook can only start a run (`server/webhook.go:780`) — it cannot answer a `wait_for_signal:` gate, so the Slack-approval loop is one bridge short; no outbound webhook signing; no event→signal provider capability |
 | **Ecosystem** | Plugin protocol with handshake, path hardening, digest pins, host-resolved secrets, caller identity on the wire | Local `--plugin-dir` is the only distribution; no scaffolder or conformance harness (#713); ~1000 duplicated lines across five plugins (#1333); no CEL policy *on* plugin calls; no sandbox tier below the process (T3 documented, not built) |
 | **Verification & process** | Diff-scoped gate mirrored into CI's plan/verdict; weekly deep tier (fuzz, soak, 2000-schedule DST, dual-driver examples); hooks; skills with drift-proof mirrors | Factory ledger stalled; #1306/#489 gate hazards; fuzz reproducers self-published against SECURITY.md (#965); merge-queue enforcement unverifiable from the tree; docs/CI.md omits `editors.yml` and `release.yml` |
+
+### By surface
+
+The same tree read the way a person or an agent meets it. One line of strength
+and the thin edge per surface; the numbers are the language/toolchain pass's.
+
+| Surface | Strong | Thin |
+| --- | --- | --- |
+| **CLI** (31 verbs) | A written design language (CLI.md, CLI_DESIGN.md): two audiences, stable exit codes, `-o json` everywhere, printed output pinned by recorded goldens; `init` scaffolds a workflow and its test that pass `validate`/`test`/`fix --check` immediately | The terminal debug session cannot record itself for `flow debug replay` — only the MCP tool can (#928) |
+| **MCP** (21 tools) | 18 derived from the service descriptor so a new RPC is a tool on regeneration; six answer with no server (validate, compile, catalog, run_local, test, debug); embedded DSL/catalog/examples resources; an authorized HTTP subset | Cannot validate a composed workflow (#1376); stdio authenticates the process, not the request (#337, #350); validate/compile take a different input convention from the rest (#1290) |
+| **LSP** | Diagnostics with machine-appliable `edits`, scope-accurate completion three levels deep, hover, definition, symbols, formatting, code actions; five editors documented; Neovim verified in CI byte-for-byte | No rename, references, semantic tokens or signature help; type checking stops at `dyn` (#1383); VS Code unverified in a real window (#585); no tree-sitter grammar (#135) |
+| **API / RPC** | Connect over HTTP/1.1 and HTTP/2, proto-first, every CLI verb a projection of an RPC, reference docs generated from the descriptors and pinned | Scopes published and enforced by nothing (#1014); no Update or streaming Watch (#133); `list --filter` is a bounded scan (#1384) |
+| **DAP** | `flow dap` serves the terminal debugger's session to an editor over stdio, with function breakpoints on step ids; scripted sessions replay | Local driver only (#928 slice 2); line breakpoints are accepted unverified; no VS Code debug-type contribution (#585) |
+| **Embedding** | A four-call Go API (`NewTasks`/`Register`/`Install`, `Compile`, `RunLocal`, `RunDurable`) with two registries by design so concurrent embedders do not collide | `Compile` is parse-only, so validate-grade diagnostics need a second call; a Go task registered with a nil descriptor silently opts out of validation, docs and completion |
 
 ## The thesis for September
 
@@ -196,7 +210,9 @@ Must-land is marked; cut from the bottom, never from must-land.
 3. **#1306** — let a worktree agent hand the gate its merge-base; the gate is
    the thing 29 merges/day stand on. *(must)*
 4. **#1319** — drop the lapsed `continue-on-error` so `appearance` fails
-   loudly again; 19 days overdue by its own comment. *(must, trivial)*
+   loudly again; 19 days overdue by its own comment. *(must, trivial)* —
+   **landed on this branch**, on the evidence that the job passed on the
+   latest `main` runs that exercised it.
 5. **#965** — stop the deep tier self-publishing fuzz reproducers in public
    issues, per SECURITY.md's own embargo posture.
 6. **#489** — decide the back-to-back-merge answer (merge queue or
@@ -212,7 +228,10 @@ Must-land is marked; cut from the bottom, never from must-land.
    docs/CI.md's two missing workflows. AUTHORIZATION_FRESHNESS.md is
    deliberately outside the sweep — #1380 owns its implement-or-correct
    decision, since the answer may be code. The claims that are *true* (and
-   the audit found many) stay untouched.
+   the audit found many) stay untouched. — **Landed on this branch**, every
+   enumerated item re-verified against the merged tree before editing, plus
+   one stale code comment the sweep turned up on the way (`cmd/flow/tls.go`
+   still said "no ACME here" beside `acme.go`).
 8. **Egress to every plugin** — land the #1332 decision (a generic,
    immutable, explicit grant rather than per-plugin env constants), then
    execute #1321/#1322/#1323 so `github`/`vcs`/`git` obey the operator's
