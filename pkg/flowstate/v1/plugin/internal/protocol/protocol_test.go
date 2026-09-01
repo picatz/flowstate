@@ -13,7 +13,7 @@ func TestHandshakeRoundTrip(t *testing.T) {
 
 	want := Handshake{
 		HandshakeVersion: HandshakeVersion,
-		ProtocolVersion:  Version3,
+		ProtocolVersion:  Version4,
 		Network:          NetworkUnix,
 		Address:          "/var/folders/abc/fsplug123/s",
 	}
@@ -195,5 +195,101 @@ func TestNegotiate(t *testing.T) {
 				t.Errorf("Negotiate = %d, want %d", got, test.want)
 			}
 		})
+	}
+}
+
+// TestTokenRoundTrip checks that what the host writes is what a plugin reads.
+// The two halves of the token's framing are defined here together so that they
+// cannot drift the way two copies of a launch contract would.
+func TestTokenRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const want = "MZWQ4YTRJZGE0N2YZYJVLOGMXYTBK"
+
+	var buf strings.Builder
+	if err := WriteToken(&buf, want); err != nil {
+		t.Fatalf("WriteToken: %v", err)
+	}
+
+	got, err := ReadToken(strings.NewReader(buf.String()))
+	if err != nil {
+		t.Fatalf("ReadToken(%q): %v", buf.String(), err)
+	}
+	if got != want {
+		t.Errorf("round trip = %q, want %q", got, want)
+	}
+}
+
+// TestReadToken covers what a plugin must refuse.
+//
+// A plugin cannot know it was launched by the host it thinks it was, so the
+// descriptor it is handed is input like any other: bounded, strictly framed, and
+// rejected rather than interpreted generously. A token accepted here goes
+// straight into a TokenHeader comparison, and one that could not travel in that
+// header would make every request the real host makes look unauthenticated.
+func TestReadToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		raw         string
+		wantMessage string
+	}{
+		{
+			name:        "nothing at all",
+			raw:         "",
+			wantMessage: "not one newline-terminated line",
+		},
+		{
+			name:        "no newline, so nothing says the writer finished",
+			raw:         "tok",
+			wantMessage: "not one newline-terminated line",
+		},
+		{
+			name:        "a second line, so this descriptor carries something else",
+			raw:         "tok\nmore\n",
+			wantMessage: "not one newline-terminated line",
+		},
+		{
+			name:        "a newline and nothing before it",
+			raw:         "\n",
+			wantMessage: "is empty",
+		},
+		{
+			name:        "longer than the bound",
+			raw:         strings.Repeat("t", MaxTokenBytes) + "\n",
+			wantMessage: "longer than",
+		},
+		{
+			name:        "a byte no header value can hold",
+			raw:         "tok\ren\n",
+			wantMessage: "cannot travel in " + TokenHeader,
+		},
+		{
+			name:        "a space, which would let a token carry structure",
+			raw:         "tok en\n",
+			wantMessage: "cannot travel in " + TokenHeader,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ReadToken(strings.NewReader(test.raw))
+			if err == nil {
+				t.Fatalf("ReadToken(%q) = %q, want a refusal", test.raw, got)
+			}
+			if !strings.Contains(err.Error(), test.wantMessage) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), test.wantMessage)
+			}
+		})
+	}
+
+	// The bound is a limit on what is read, not only on what is reported: a
+	// writer that never sends a newline must not be able to make a plugin
+	// allocate. Twice the bound is refused after reading one byte past it.
+	if _, err := ReadToken(strings.NewReader(strings.Repeat("t", 8*MaxTokenBytes))); err == nil {
+		t.Error("ReadToken accepted a stream with no newline in it")
 	}
 }
