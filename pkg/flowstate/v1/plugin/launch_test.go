@@ -723,3 +723,83 @@ func envValue(env []string, want string) (string, bool) {
 	}
 	return "", false
 }
+
+// TestAnOperatorNamedProxyOverridesBothSpellings is the half of the override
+// rule that a per-name skip got wrong.
+//
+// HTTP_PROXY and http_proxy are two spellings of one variable, and Go's
+// ProxyFromEnvironment takes the uppercase when it sees both. Skipping only the
+// spelling the operator wrote therefore forwarded the worker's ambient
+// HTTP_PROXY beside an operator's `http_proxy` override — and then preferred it.
+// The override an operator was told they had made lost to exactly the value it
+// was written to replace, with nothing anywhere reporting a conflict.
+//
+// Both directions, because a fix that special-cased one spelling would pass the
+// other half of this table while leaving the same hole open in the mirror.
+func TestAnOperatorNamedProxyOverridesBothSpellings(t *testing.T) {
+	for _, test := range []struct {
+		name string
+
+		// configured is the operator's entry in Config.Env.
+		configured string
+
+		// ambient is the pair of worker variables neither of which may cross.
+		ambient [2]string
+	}{
+		{
+			name:       "a lowercase override suppresses the uppercase ambient value",
+			configured: "http_proxy=http://plugin-proxy.invalid:8080",
+			ambient:    [2]string{"HTTP_PROXY", "http_proxy"},
+		},
+		{
+			name:       "an uppercase override suppresses the lowercase ambient value",
+			configured: "HTTP_PROXY=http://plugin-proxy.invalid:8080",
+			ambient:    [2]string{"HTTP_PROXY", "http_proxy"},
+		},
+		{
+			name:       "the same rule holds for NO_PROXY",
+			configured: "no_proxy=plugin.internal.invalid",
+			ambient:    [2]string{"NO_PROXY", "no_proxy"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// The worker has both spellings set, which is what makes the
+			// preference order observable at all.
+			for _, name := range test.ambient {
+				t.Setenv(name, "http://worker-proxy.invalid:3128")
+			}
+
+			cfg := testConfig(t, t.TempDir()).withDefaults()
+			cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n")
+			cfg.Env = []string{test.configured}
+
+			env := pluginEnv(cfg, "/tmp/s")
+
+			configuredName, configuredValue, _ := strings.Cut(test.configured, "=")
+			for _, name := range test.ambient {
+				value, found := envValue(env, name)
+				if name == configuredName {
+					if !found || value != configuredValue {
+						t.Errorf("%s = %q (found %v), want the operator's own entry %q",
+							name, value, found, configuredValue)
+					}
+					continue
+				}
+				if found {
+					t.Errorf("%s = %q reached a plugin beside the operator's %s override\n"+
+						"  the two are one variable, and ProxyFromEnvironment prefers the uppercase,\n"+
+						"  so the override loses to the value it was written to replace",
+						name, value, configuredName)
+				}
+			}
+
+			// A variable the operator said nothing about is unaffected, or the
+			// rule above would read as "naming any proxy turns the grant off".
+			t.Setenv("HTTPS_PROXY", "http://worker-proxy.invalid:3129")
+			if value, found := envValue(pluginEnv(cfg, "/tmp/s"), "HTTPS_PROXY"); !found ||
+				value != "http://worker-proxy.invalid:3129" {
+				t.Errorf("HTTPS_PROXY = %q (found %v), want the worker's own value", value, found)
+			}
+		})
+	}
+}

@@ -690,8 +690,8 @@ func pluginEnv(cfg Config, socketPath string) []string {
 // So the proxy inputs are granted, like the policy itself, and tied to the same
 // switch: when the policy proxies, the worker's own values cross verbatim; when
 // it does not, none of them do. An operator who wants a plugin to reach a
-// different proxy names it in [Config.Env], and that entry wins — see the skip
-// below.
+// different proxy names it in [Config.Env], and that entry wins — in either
+// spelling, for the whole variable; see the skip below.
 //
 // The flag is read out of the grant rather than carried beside it, so there is
 // one source of truth for what this deployment's policy says. A grant that does
@@ -708,24 +708,39 @@ func proxyGrant(cfg Config) []string {
 	}
 
 	var granted []string
-	for _, name := range protocol.ProxyEnv() {
-		value, ok := os.LookupEnv(name)
-		if !ok {
-			continue
-		}
-
+	for _, pair := range protocol.ProxyEnv() {
 		// An operator naming this variable in Config.Env is more specific than
 		// the worker's ambient value, and duplicate keys in one environment
 		// block are read differently by different runtimes. Skip rather than
 		// emit both.
-		if slices.ContainsFunc(cfg.Env, func(entry string) bool { return isEnvNamed(entry, name) }) {
+		//
+		// Per pair, not per name. HTTP_PROXY and http_proxy are two spellings of
+		// one variable, and ProxyFromEnvironment takes the uppercase when both
+		// are set — so forwarding the ambient HTTP_PROXY beside an operator's
+		// `http_proxy` override would leave the override outvoted by exactly the
+		// value it was written to replace, with nothing anywhere to say so.
+		// Either spelling being configured settles the variable, and neither
+		// ambient spelling crosses.
+		if configuredInEnv(cfg.Env, pair) {
 			continue
 		}
 
-		granted = append(granted, name+"="+value)
+		for _, name := range pair {
+			if value, ok := os.LookupEnv(name); ok {
+				granted = append(granted, name+"="+value)
+			}
+		}
 	}
 
 	return granted
+}
+
+// configuredInEnv reports whether an operator named either spelling of one proxy
+// variable in [Config.Env].
+func configuredInEnv(env []string, pair [2]string) bool {
+	return slices.ContainsFunc(env, func(entry string) bool {
+		return isEnvNamed(entry, pair[0]) || isEnvNamed(entry, pair[1])
+	})
 }
 
 // isEnvNamed reports whether a KEY=VALUE entry has the given key.

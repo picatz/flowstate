@@ -160,8 +160,16 @@ const (
 // environment it did not build (sdk.EgressPolicy).
 const MaxEgressPolicyBytes = 64 << 10
 
-// ProxyEnv returns the environment variable names [net/http.ProxyFromEnvironment]
-// reads, in both the uppercase and lowercase spellings it accepts.
+// ProxyEnv returns the proxy variables [net/http.ProxyFromEnvironment] reads,
+// grouped so that the two spellings of one variable stay one variable.
+//
+// Each entry is a pair, uppercase first, which is the order ProxyFromEnvironment
+// itself prefers: given both HTTP_PROXY and http_proxy it takes the uppercase.
+// The grouping is not cosmetic. Treating the six names as six independent
+// variables meant an operator who overrode `http_proxy` still had the worker's
+// ambient HTTP_PROXY forwarded beside it, and the uppercase one is the one that
+// wins — so the override an operator was told they had made silently lost to the
+// value it was written to replace.
 //
 // These are granted, not protocol. Nothing in this package sets or reads them;
 // they are ordinary variables that every HTTP stack already understands, and the
@@ -179,16 +187,17 @@ const MaxEgressPolicyBytes = 64 << 10
 // They are deliberately not in [MagicCookieEnv]'s company in the host's
 // isProtocolEnv list: an operator who names a proxy in Config.Env is being more
 // specific than the worker's own environment, and that entry wins rather than
-// being dropped.
+// being dropped — per pair, so naming either spelling settles the variable.
 //
 // REQUEST_METHOD is not here. ProxyFromEnvironment also consults it — a
 // non-empty value means the process is a CGI script, and HTTP_PROXY is then
 // ignored as untrusted — and forwarding it would let the worker's environment
 // turn a plugin's proxy off in a way no operator wrote down.
-func ProxyEnv() []string {
-	return []string{
-		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-		"http_proxy", "https_proxy", "no_proxy",
+func ProxyEnv() [][2]string {
+	return [][2]string{
+		{"HTTP_PROXY", "http_proxy"},
+		{"HTTPS_PROXY", "https_proxy"},
+		{"NO_PROXY", "no_proxy"},
 	}
 }
 
