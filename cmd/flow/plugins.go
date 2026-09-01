@@ -767,10 +767,15 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 }
 
 // checkSQLPluginSecurityContract prevents a partially upgraded deployment from
-// pairing this host with the pre-egress-policy SQL binary. Protocol version 3
-// remains compatible for every other plugin; SQL is singled out by its own
-// manifest name (rather than its renameable executable name) and must assert
-// the two claims this host enforces before either task can be registered.
+// pairing this host with the pre-egress-policy SQL binary. SQL is singled out by
+// its own manifest name (rather than its renameable executable name) and must
+// assert the two claims this host enforces before either task can be registered.
+//
+// The protocol version is a separate gate and does not replace this one. It
+// refuses a plugin built against a retired launch contract, which is a statement
+// about what the two processes may assume of each other; this is a statement
+// about what one particular plugin promises to enforce, and a rebuilt SQL binary
+// speaking the current version could still be one that makes neither claim.
 //
 // This is deliberately not satisfied by the egress environment grant alone:
 // an old SQL process ignores unknown environment and would otherwise retain

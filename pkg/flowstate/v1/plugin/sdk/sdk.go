@@ -651,7 +651,7 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version4})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version5})
 	if !ok {
 		// Say what to do, not only what is wrong. This refusal is the whole
 		// point of the version bump: it is reached by whichever side is older,
@@ -662,7 +662,7 @@ func readEnvironment() (environment, error) {
 			"%w: the host offered %s and this plugin speaks %d; "+
 				"a host and its plugins must be upgraded together across this change, "+
 				"so upgrade whichever of the two is older",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version4,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version5,
 		)
 	}
 

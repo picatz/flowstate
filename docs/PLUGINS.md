@@ -413,8 +413,8 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:222` for the current
-  version). Nothing equivalent covers the Go types you compile against.
+  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:307` for the current
+  version, 5, which the egress grant moved it to). Nothing equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
 pins `github.com/picatz/flowstate v0.0.0-00010101000000-000000000000` behind a
@@ -490,7 +490,7 @@ handshake line starts with "debug: starting", want "FLOWSTATE-PLUGIN" — is thi
 a Flowstate plugin?
 ```
 
-That message is as good as it can be (`internal/protocol/protocol.go:257`), and
+That message is as good as it can be (`internal/protocol/protocol.go:468`), and
 it still names your first debug line as a protocol failure. Log through
 `sdk.WithLogger` or to stderr; after `sdk.Main` is serving, `fmt.Println` is
 harmless, since stdout has been redirected — but Go code writing to file

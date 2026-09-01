@@ -96,9 +96,11 @@
 // same bytes the built-in http task runs under, bounded at 64 KiB before
 // encoding. Set-but-empty is a policy whose document is empty; unset is no
 // grant, and the reader must fail closed on it rather than treat it as
-// permission. It is part of the launch environment protocol version 4 names, so
-// a plugin that predates it is refused at the handshake rather than launched
-// ungoverned. See [Config.EgressPolicy] and the sdk package's EgressPolicy.
+// permission. It is what protocol version 5 adds to the launch environment, so a
+// plugin that predates it is refused at the handshake rather than launched
+// ungoverned — version 4 shipped before the grant existed, which is why the
+// grant could not be folded into it. See [Config.EgressPolicy] and the sdk
+// package's EgressPolicy.
 //
 // The secret is on a descriptor rather than in the environment, and any language
 // that can inherit one can read it: the host writes the token and a single "\n"
@@ -131,7 +133,7 @@
 // credential that is not where it looked. It reads the token, listens on the
 // assigned path, sets the socket to mode 0600, and prints one line to stdout:
 //
-//	FLOWSTATE-PLUGIN|1|4|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|5|unix|/var/folders/.../s
 //
 // After that line the plugin never uses stdout again; everything else it says
 // goes to stderr, which the host reads line by line and logs attributed to that
