@@ -134,32 +134,41 @@ func nodeFailed(err error) error {
 	return failedAt(err, "")
 }
 
-// varsFailed reports a failure of the run's own `vars:` activity, translating
-// the one shape of it that nothing else in the chain classifies.
+// preStepFailed reports a failure of one of the activities a run executes
+// before its first step, translating the one shape of it that nothing else in
+// the chain classifies. `what` names that work in the run's own words and is
+// the half of the sentence a person reads.
 //
-// That activity is scheduled before the executor exists, so its failure leaves
-// [runWorkflow] without passing through [nodeFailed], and [classifyRunError]
-// rewraps only an [ErrRunFailed] — so whatever this returns unchanged reaches
-// the client as itself. For an expression failure that is exactly right: it
-// arrives as a [temporal.ApplicationError] carrying the kind [WorkflowVars]
-// classified and the same sentence [v1.EvalVars] gives the local driver, and
-// wrapping it would prepend a position the local driver does not.
+// These activities — the run's `vars:`, the pinned-plugin admission check — are
+// scheduled before the executor exists, so their failures leave [runWorkflow]
+// without passing through [nodeFailed], and [classifyRunError] rewraps only an
+// [ErrRunFailed]. Whatever this returns unchanged therefore reaches the client
+// as itself. For a classified failure that is exactly right: it arrives as a
+// [temporal.ApplicationError] carrying the kind the activity decided and the
+// sentence the local driver gives for the same file, and wrapping it would
+// prepend a position the local driver does not, over a failure that already
+// classified itself.
 //
 // A timeout is the shape that needed this, because nothing anywhere classifies
 // one. It reached the server's own fallback (server.failureError) as a bare
 // [temporal.TimeoutError], and that fallback reads one as the *run's* execution
 // timeout — correctly, on the rule that a step's timeout is always translated
-// before it gets there (#788). This activity was the one path still reaching it
-// untranslated, so a run whose `vars:` timed out before its first step ran was
-// reported as "this run exceeded its execution timeout" and classified with the
-// permanent run-level kind: a budget named that had not fired, and a permanent
-// verdict on the one run where nothing has happened yet and restarting is safe.
+// before it gets there (#788). These were the paths still reaching it
+// untranslated, so a run whose `vars:` or plugin admission timed out before its
+// first step ran was reported as "this run exceeded its execution timeout" and
+// classified with the permanent run-level kind: a budget named that had not
+// fired, and a permanent verdict on the one run where nothing has happened yet
+// and restarting is safe.
 //
-// Translated, it is what it is — a failed run whose `vars:` did not finish —
-// and [recordedStepKind] answers [v1.ErrorKindTimeout] for it exactly as it does
-// for a step, so its retryability is the activity's own policy's rather than a
-// judgement about a run that never started.
-func varsFailed(err error) error {
+// Translated, it is what it is — a failed run whose pre-step work did not
+// finish — and [recordedStepKind] answers [v1.ErrorKindTimeout] for it exactly
+// as it does for a step, so its retryability is the activity's own policy's
+// rather than a judgement about a run that never started.
+//
+// A `call:`'s own `vars:` needs none of this: that dispatch is made from inside
+// the executor and already returns through [nodeFailed] (execute.go), which is
+// the same wrapping by a shorter route.
+func preStepFailed(err error, what string) error {
 	if _, ok := errors.AsType[*temporal.TimeoutError](err); !ok {
 		return err
 	}
@@ -170,7 +179,7 @@ func varsFailed(err error) error {
 	// reachable, which is what keeps recordedStepKind's answer the activity's.
 	return nodeFailed(&durableStepTimeoutError{
 		err:     err,
-		message: "timed out: the workflow's vars: did not finish evaluating",
+		message: "timed out: " + what,
 	})
 }
 
@@ -531,7 +540,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			// could take without being refused.
 			Identity: st.GetIdentity(),
 		}).Get(ctx, &evaluated); err != nil {
-			return nil, varsFailed(err)
+			return nil, preStepFailed(err, "the workflow's vars: did not finish evaluating")
 		}
 		vars = evaluated.GetAmbientVars()
 		st.Vars = vars

@@ -2118,7 +2118,28 @@ func failureError(
 // timeout. A whole-run timeout has its own permanent kind: unlike retrying a
 // step attempt, restarting the run can repeat effects from an already-completed
 // prefix whose outcome is known only to the workload's operator.
+//
+// The status is what says whether this *is* that. Temporal closes a run whose
+// own execution or run budget expired as TIMED_OUT; an activity timeout that
+// escaped the workflow closes it FAILED, and reaches here only because nothing
+// upstream translated it. The engine translates the paths that can do that
+// (engine's preStepFailed, and durableStepTimeoutMessage for a step), so this
+// arm should be unreachable — but "should be unreachable" is not a thing to
+// assert by assigning the permanent kind to whatever arrives. A kind that says
+// "do not resubmit" is the wrong answer to give an agent about a run that never
+// started, and it is the answer a new pre-executor activity added without its
+// own translation would silently acquire. So the run-level kind is assigned on
+// the run-level fact rather than on the shape of the error, and anything else
+// timing out is classified as what it is: retryable, exactly as
+// engine.recordedStepKind answers for the same error one scope in.
 func timeoutFailure(status v1.RunResponse_Status, kind enums.TimeoutType) *v1.RunResponse_Error {
+	if status != v1.RunResponse_STATUS_TIMED_OUT {
+		return &v1.RunResponse_Error{
+			Message: status.String() + ": timed out (a budget inside the run expired, not the run's own)",
+			Kind:    v1.ErrorKindTimeout.String(),
+		}
+	}
+
 	return &v1.RunResponse_Error{
 		Message: status.String() + ": timed out (" + timeoutKindText(kind) + ")",
 		Kind:    v1.ErrorKindRunTimeout.String(),

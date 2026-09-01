@@ -98,3 +98,38 @@ func TestTimeoutFailureCarriesTheTimeoutKind(t *testing.T) {
 			"the message must still say which clock, kind=%s", kind)
 	}
 }
+
+// TestOnlyATimedOutRunGetsTheRunLevelKind is the negative direction, and the
+// backstop for the class of defect the engine's preStepFailed closes at source.
+//
+// Temporal closes a run whose own budget expired as TIMED_OUT. A timeout that
+// reaches this constructor under any other status is a budget *inside* the run
+// — an activity that outlived its own clock and escaped the workflow
+// untranslated — and it is the shape a new pre-executor activity would arrive
+// in. Assigning the permanent kind to it tells an agent not to resubmit a run
+// that never started, which is both wrong and the most consequential direction
+// to be wrong in, since the whole point of the kind is that it is obeyed.
+//
+// So the run-level fact decides the run-level kind, and everything else is
+// classified as what it is: retryable, the same answer engine.recordedStepKind
+// gives for the identical error one scope in.
+func TestOnlyATimedOutRunGetsTheRunLevelKind(t *testing.T) {
+	for _, status := range []v1.RunResponse_Status{
+		v1.RunResponse_STATUS_FAILED,
+		v1.RunResponse_STATUS_TERMINATED,
+		v1.RunResponse_STATUS_CANCELED,
+	} {
+		got := timeoutFailure(status, enums.TIMEOUT_TYPE_START_TO_CLOSE)
+
+		require.Equal(t, v1.ErrorKindTimeout.String(), got.GetKind(),
+			"a budget inside the run was reported as the run's own, status=%s", status)
+		require.True(t, v1.ErrorKindTimeout.Retryable(),
+			"and as the retryable kind, because nothing says this run's prefix completed")
+
+		// And the sentence must not name a run budget either, for the reason
+		// #788 gives about the wording: an operator sent looking for an execution
+		// timeout that did not fire is a false diagnosis, not a vague one.
+		require.NotContains(t, got.GetMessage(), "this run exceeded",
+			"a run budget that did not fire must not be named, status=%s", status)
+	}
+}
