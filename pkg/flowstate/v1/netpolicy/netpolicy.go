@@ -345,6 +345,18 @@ func (p *Policy) newClient() *http.Client {
 type attrs struct {
 	scheme string
 	host   string
+
+	// afterRedirect is [http.Request.Response] != nil for the request these
+	// attributes came from: an earlier request in this chain reached its peer.
+	//
+	// It travels with the rest because the dialer is the second place an
+	// *UndecidedError is produced — connection-scoped rules are evaluated
+	// there — and the dialer cannot see the request. Without it a hop whose
+	// connection rules the context interrupted would report as though this
+	// policy had never decided anything, retracting an origin's allow for a
+	// request that already left. [Policy.checkRequestHop] carries the same
+	// fact for the request-scoped rules.
+	afterRedirect bool
 }
 
 // attrsKey is the context key for attrs. It is an unexported empty struct type so
@@ -393,8 +405,9 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// the dialer needs are attached to a copy.
 	if !rt.policy.connRules.empty() {
 		req = req.Clone(withAttrs(req.Context(), attrs{
-			scheme: strings.ToLower(req.URL.Scheme),
-			host:   ruleHost(req.URL),
+			scheme:        strings.ToLower(req.URL.Scheme),
+			host:          ruleHost(req.URL),
+			afterRedirect: req.Response != nil,
 		}))
 	}
 
@@ -650,7 +663,19 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		}
 	}
 
-	return p.evalConnRules(ctx, address, a.scheme, a.host, addrPort)
+	err = p.evalConnRules(ctx, address, a.scheme, a.host, addrPort)
+
+	// The same mark [Policy.checkRequestHop] makes for the request-scoped
+	// rules, made here because this is the other place an evaluation can be
+	// interrupted — and, with connection rules configured, the place every
+	// redirect hop passes through: keep-alives are off (see newClient), so
+	// each hop dials.
+	var undecided *UndecidedError
+	if a.afterRedirect && errors.As(err, &undecided) {
+		undecided.AfterRedirect = true
+	}
+
+	return err
 }
 
 // checkResolvedAddr applies the control-plane reservation before the ordinary
@@ -759,7 +784,11 @@ func (p *Policy) checkRequestHop(req *http.Request) error {
 // it resolves to is only checked then. Use [Policy.CheckAddr] to check a resolved
 // address.
 //
-// The returned error wraps [ErrDenied] and is a [*DenyError].
+// The returned error wraps [ErrDenied] and is a [*DenyError], with one
+// exception: a rule the caller's context interrupted returns an
+// [*UndecidedError], which deliberately wraps neither. Nothing was refused
+// there, so a caller must report it as itself — a check that did not finish —
+// rather than as a denial its policy never made.
 func (p *Policy) CheckURL(ctx context.Context, method string, u *url.URL) error {
 	if u == nil {
 		return &DenyError{Reason: ReasonRequest, Detail: "no URL was given"}

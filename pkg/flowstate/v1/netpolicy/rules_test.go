@@ -359,6 +359,39 @@ func Test_Policy_checkRequestHop_marksAnInterruptedRedirectHop(t *testing.T) {
 		"the mark does not cost the context checks every caller makes of it")
 }
 
+// Test_Policy_controlDial_marksAnInterruptedRedirectHop: the dialer is the
+// second place an evaluation can be interrupted, and it is the one every
+// redirect hop passes through — connection rules disable keep-alives, so each
+// hop dials.
+//
+// Unmarked, an interrupted hop here reads as "this policy never decided", which
+// retracts the allow for an origin that already reached its peer. The dialer
+// cannot see the request, so the fact rides in [attrs] with the rest.
+func Test_Policy_controlDial_marksAnInterruptedRedirectHop(t *testing.T) {
+	policy, err := New(WithAllowLoopback(), WithDenyRules(`int(ip) > 0`))
+	require.NoError(t, err)
+	require.False(t, policy.connRules.empty(),
+		"the rule must be connection-scoped, or this exercises the request path instead")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var undecided *UndecidedError
+
+	origin := withAttrs(ctx, attrs{scheme: "http", host: "127.0.0.1"})
+	err = policy.controlDial(origin, "tcp", "127.0.0.1:9", nil)
+	require.ErrorAs(t, err, &undecided)
+	require.False(t, undecided.AfterRedirect, "the request the caller made is not a hop")
+
+	hop := withAttrs(ctx, attrs{scheme: "http", host: "127.0.0.1", afterRedirect: true})
+	err = policy.controlDial(hop, "tcp", "127.0.0.1:9", nil)
+	require.ErrorAs(t, err, &undecided)
+	require.True(t, undecided.AfterRedirect,
+		"an interrupted connection-rule evaluation on a hop must not read as a request this policy never decided")
+	require.ErrorIs(t, err, context.Canceled,
+		"the mark does not cost the context checks every caller makes of it")
+}
+
 func Test_Policy_rules_evaluationErrorIsInspectable(t *testing.T) {
 	_, port := testServer(t, "ok")
 
