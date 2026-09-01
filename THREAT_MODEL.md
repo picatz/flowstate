@@ -363,12 +363,15 @@ constructor because heartbeat details are written into history
 
 **Limits.** Everything that legitimately goes into history goes in unsealed. History
 confidentiality today is whatever the cluster's database and filesystem encryption
-provide: the codec seam exists and is set on both drivers' clients from one
-configuration, with failure-path encoding forced on whenever a codec is configured
+provide. The codec seam is a prototype: one resolution point (`cmd/flow/codec.go`)
+feeds the Temporal client options `flow server` and `flow worker` build, with
+failure-path encoding forced on whenever a codec is configured
 (`pkg/flowstate/v1/payloadcodec`, the payload paragraphs of `docs/ARCHITECTURE.md`),
-but the only codec `flow` ships is the null codec (`cmd/flow/codec.go`), so nothing
-is sealed unless a deployment supplies its own. Nothing is forgettable: there is no
-erasure path.
+but the lookup behind it always returns the null codec and no flag or plugin
+supplies another, so a stock deployment cannot configure history encryption until
+that lookup ships. `flow run local` resolves and validates the same configuration
+and applies it nowhere, because an in-process run has no persisted boundary for a
+codec to sit on. Nothing is forgettable: there is no erasure path.
 
 **Planned.** A shipped encrypting codec, and a claim-check offload codec for
 payloads too large for history — the seam they occupy landed; the codecs are #353
