@@ -145,6 +145,22 @@ func remoteCommitShas(t *testing.T, remoteDir, branch string) []string {
 	return shas
 }
 
+// TestCommitPushTaskBoundaryDoesNotTreatModeAsAuthorization records the
+// compatibility half of this task's execution-mode posture. With no production
+// caller, the task still reaches its ordinary input validation; the real local
+// repository mutations below prove the write path that follows. A future mode
+// gate would change this error before any credential or network fixture was
+// involved and fail this test.
+func TestCommitPushTaskBoundaryDoesNotTreatModeAsAuthorization(t *testing.T) {
+	_, err := gitCommitPush(context.Background(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "url") {
+		t.Fatalf("gitCommitPush with no production caller error = %v, want ordinary url validation", err)
+	}
+	if strings.Contains(err.Error(), "production") || strings.Contains(err.Error(), "rehearsal") {
+		t.Fatalf("gitCommitPush treated execution mode as write authorization: %v", err)
+	}
+}
+
 // TestCommitPushIdempotentRetryWithTimestamp is finding 1's deterministic
 // half: with timestamp supplied, the same inputs given twice produce the
 // identical sha, and the second call lands nothing new - it finds its own
