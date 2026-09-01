@@ -75,8 +75,29 @@ const maxEgressPolicyBytes = plugin.MaxEgressPolicyBytes
 // that distinction, which is why it is the clone used on both hops.
 type egressPolicySnapshotKey struct{}
 
+// egressPolicySnapshot returns the policy every plugin this command launches is
+// granted: the operator's file when one was configured, and otherwise the
+// deployment default written down ([v1.DefaultEgressPolicyDocument]).
+//
+// The default is a grant, not the absence of one. A worker started with no
+// --egress-policy still runs its own built-in http task under a policy, and a
+// plugin handed nothing cannot tell that deployment from one that never
+// launched it through a worker at all — so it either refuses work a default
+// worker has always done or, worse, decides for itself what "no policy" means.
+// Forwarding the default leaves `sdk.EgressPolicy`'s fail-closed refusal to
+// mean exactly one thing: nothing granted this process anything (#1332).
+//
+// It defaults here rather than in [applyEgressPolicy] so that a command which
+// launches plugins without taking the flag — `flow plugins`, `flow tasks`,
+// `flow validate` — grants the same document as one that does. Those commands
+// only ask a plugin what it can do, but a grant that appears and disappears
+// with the command doing the asking is a difference a plugin would have to
+// explain, and there is nothing to explain.
 func egressPolicySnapshot(cmd *cobra.Command) []byte {
 	data, _ := commandContext(cmd).Value(egressPolicySnapshotKey{}).([]byte)
+	if data == nil {
+		return v1.DefaultEgressPolicyDocument()
+	}
 	return slices.Clone(data)
 }
 
@@ -145,18 +166,32 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 		return fmt.Errorf("parsing egress policy %s: %w", path, err)
 	}
 
+	// deployment_default is the worker's own signature on the document it grants
+	// a plugin when no operator file was configured, and a plugin decides what
+	// it will do under the default from it (sql refuses a database; git, vcs,
+	// github and slack accept). An operator file wearing that signature would be
+	// telling those plugins the operator had written nothing — refused here, at
+	// the one place an operator's own bytes enter, rather than left to mean
+	// something different in each plugin that reads it.
+	if cfg.DeploymentDefault {
+		return fmt.Errorf(
+			"egress policy %s sets deployment_default; that key marks the default policy a worker "+
+				"grants its plugins when no --egress-policy is configured, and is not something a "+
+				"policy file says about itself — delete it", path)
+	}
+
 	policy, err := cfg.Policy()
 	if err != nil {
 		return fmt.Errorf("egress policy %s: %w", path, err)
 	}
 
-	// Non-nil even for a zero-byte file. Nil is how
-	// [plugin.Config.EgressPolicy] spells "nothing was configured", and an
-	// operator who named a file configured a policy — the one this function just
-	// registered over the built-in http task. Letting an empty file arrive there
-	// as nil is what made the two sides disagree: the built-in task ran the
-	// policy an empty document builds while every plugin was told there was no
-	// grant at all.
+	// Non-nil even for a zero-byte file. Nil is how this command spells "no
+	// operator file", which [egressPolicySnapshot] answers with the deployment
+	// default — and an operator who named a file configured a policy, the one
+	// this function just registered over the built-in http task. Letting an
+	// empty file arrive as nil is what made the two sides disagree: the built-in
+	// task ran the policy an empty document builds while every plugin was
+	// granted the default instead of the operator's own empty one.
 	snapshot := slices.Clone(data)
 	if snapshot == nil {
 		snapshot = []byte{}

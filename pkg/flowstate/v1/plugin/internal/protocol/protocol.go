@@ -123,6 +123,16 @@ const (
 	// closed on it. os.Getenv cannot tell those apart; os.LookupEnv can, and is
 	// what both sides use.
 	//
+	// A worker with no operator policy configured grants its own default,
+	// written out as a document marked `deployment_default: true`
+	// (flowstatev1.DefaultEgressPolicyDocument), rather than leaving the
+	// variable out. So under `flow` the variable is always set, and unset means
+	// only that whatever launched this process is not a Flowstate worker. A
+	// plugin that reads the marker can take a posture toward the default —
+	// `sql` refuses a database under it, everything else accepts it — which is
+	// a decision it could not make if the default and no grant at all arrived
+	// as the same thing (#1332).
+	//
 	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy] is
 	// what reads it. Nothing here obliges a plugin to; a plugin opening sockets
 	// without it is doing so deliberately, which is the line ARCHITECTURE.md

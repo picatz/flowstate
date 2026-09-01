@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // loopbackWorkflow dials a port nothing listens on, on loopback, so the http
@@ -93,8 +94,82 @@ func TestAnOversizedEgressPolicyIsRefusedBeforeItCanReachAPluginEnvironment(t *t
 
 	err := applyEgressPolicy(cmd)
 	require.ErrorContains(t, err, "exceeds the 65536-byte limit")
-	require.Empty(t, egressPolicySnapshot(cmd),
-		"an oversized policy reached the SQL plugin snapshot despite being refused")
+	require.NotContains(t, string(egressPolicySnapshot(cmd)), "#",
+		"an oversized policy reached the plugin grant despite being refused")
+}
+
+// TestAWorkerWithNoPolicyGrantsItsOwnDefault is point 6 of #1332's decision: the
+// grant is never absent under the host.
+//
+// A worker started with no --egress-policy still runs its built-in http task
+// under a policy, and handing its plugins nothing made "the deployment's
+// default" and "nothing launched me" the same value — so a plugin migrated onto
+// the SDK constructor would refuse on every default worker, which is what a dev
+// laptop's `flow worker` is. The grant is the default written down, and it says
+// that it is the default so a plugin can decide what to do under it.
+//
+// Compared against [v1.DefaultEgressPolicyDocument] rather than a document this
+// test spells, because what makes the grant right is that it is the *same*
+// default the http task on this worker is enforcing, not that it looks like a
+// default.
+func TestAWorkerWithNoPolicyGrantsItsOwnDefault(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "default-grant"}
+	addEgressPolicyFlag(cmd)
+	addPluginFlags(cmd)
+	require.NoError(t, applyEgressPolicy(cmd))
+
+	flags, err := pluginFlagsOf(cmd)
+	require.NoError(t, err)
+	require.NotNil(t, flags.egressPolicy,
+		"a worker with no --egress-policy granted its plugins nothing, so every one of them fails closed")
+	require.Equal(t, v1.DefaultEgressPolicyDocument(), flags.egressPolicy,
+		"the grant is not the default policy this worker's own http task runs under")
+
+	cfg, err := netpolicy.ParseConfig(flags.egressPolicy)
+	require.NoError(t, err)
+	require.True(t, cfg.DeploymentDefault,
+		"the default grant does not identify itself, so a plugin reads it as a policy an operator wrote")
+}
+
+// TestACommandThatOnlyDescribesPluginsGrantsTheSameDefault keeps the grant from
+// depending on which command did the launching. `flow plugins` does not take
+// --egress-policy because it runs no task, but a plugin that finds no grant
+// there and one everywhere else has a difference to explain that means nothing.
+func TestACommandThatOnlyDescribesPluginsGrantsTheSameDefault(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "describe-only"}
+	addPluginFlags(cmd)
+
+	flags, err := pluginFlagsOf(cmd)
+	require.NoError(t, err)
+	require.Equal(t, v1.DefaultEgressPolicyDocument(), flags.egressPolicy,
+		"a command that only describes plugins granted something other than the deployment default")
+}
+
+// TestAnOperatorPolicyCannotClaimToBeTheDeploymentDefault closes the one hole
+// the in-document marker opens.
+//
+// `deployment_default` is the worker's signature on a policy no operator wrote,
+// and plugins act on it — sql refuses a database under the default, and would
+// refuse under an operator's real policy that claimed to be one. The refusal is
+// here, where an operator's own bytes enter, rather than in each plugin.
+func TestAnOperatorPolicyCannotClaimToBeTheDeploymentDefault(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "claimed-default"}
+	addEgressPolicyFlag(cmd)
+
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("deployment_default: true\negress:\n  schemes: [https]\n"), 0o600))
+	require.NoError(t, cmd.Flags().Set("egress-policy", path))
+
+	err := applyEgressPolicy(cmd)
+	require.ErrorContains(t, err, "deployment_default")
+	require.ErrorContains(t, err, path,
+		"the refusal does not name the file the operator has to edit")
 }
 
 // TestLoopbackDenialUnderAnExplicitPolicyStaysSilent is #387's negative

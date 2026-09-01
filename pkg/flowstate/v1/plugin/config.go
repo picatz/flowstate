@@ -300,7 +300,16 @@ type Config struct {
 	Env []string
 
 	// EgressPolicy is the deployment's egress policy, as the operator wrote it
-	// and the worker already parsed it for the built-in http task.
+	// and the worker already parsed it for the built-in http task — or, when the
+	// deployment configured none, that deployment's default written down
+	// ([github.com/picatz/flowstate/pkg/flowstate/v1.DefaultEgressPolicyDocument]).
+	//
+	// `flow` always sets it, so nil here means an embedding program granted
+	// nothing rather than a deployment having no policy: the two used to be the
+	// same value, which made every plugin on a default worker refuse the work
+	// that worker's own http task was doing under its default policy. A host
+	// embedded in another program that has an egress posture of its own should
+	// forward it here for the same reason a worker does (#1332).
 	//
 	// Nil is no grant; non-nil is a grant, including an empty one. That
 	// distinction is the whole of it, and length is not: an operator who points
