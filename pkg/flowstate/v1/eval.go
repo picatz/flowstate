@@ -810,8 +810,9 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 }
 
 // MapKeyTypeError is what [LiteralToGo] refuses a map key with: a Go
-// map[string]any cannot hold an integer, unsigned, or boolean key, so a value
-// holding one has no plain spelling at all.
+// map[string]any holds string keys and nothing else, so a value keyed by
+// anything CEL also allows — an int, an unsigned int, a bool — has no plain
+// spelling at all.
 //
 // A named type rather than a bare sentence because two places now read the same
 // judgement. The projection in `cmd/flow` keeps the schema's tagged encoding for
@@ -834,14 +835,37 @@ func (e *MapKeyTypeError) Error() string {
 		e.KeyType)
 }
 
+// LiteralKindError is what [LiteralToGo] refuses a literal with when the union
+// holds a kind no plain Go value can spell at all — a type, an enum, or a
+// packed message, none of which a Flowfile can write and each of which a
+// hand-built specification or a future profile could still carry here.
+//
+// Named for the same reason [MapKeyTypeError] is: [CheckOutputValue] refuses a
+// declared container that would otherwise reach the projection's fallback, and
+// the rule about what will not convert has to be the projection's own rather
+// than a second one beside it.
+type LiteralKindError struct {
+	// Kind is the Go type of the schema's oneof arm, and only that.
+	//
+	// Not the value: this travels into the failure text of a run whose output
+	// may be declared `sensitive:`, and every part of a value is part of the
+	// value (invariant 7). A kind is a fact about the schema instead.
+	Kind string
+}
+
+func (e *LiteralKindError) Error() string {
+	return fmt.Sprintf("a %s cannot be converted to a Go value", e.Kind)
+}
+
 // mapKeyTypeName names a map key's type in the vocabulary a declaration is
 // written in.
 //
-// [DeclaredTypeName] over [inputTypeOf] covers every key CEL can produce — a map
-// key is a string, an int, an unsigned int, or a bool and nothing else — which
-// is what lets a refusal about one read in the same words a declared type does.
-// [literalKindName] answers for a key only a hand-built literal could hold, so
-// the sentence stays a sentence rather than naming "no type".
+// [DeclaredTypeName] over [inputTypeOf] answers for CEL's own key set — a CEL
+// map key is a string, an int, an unsigned int, or a bool — which is what lets a
+// refusal about one read in the same words a declared type does. The schema's
+// literal union is wider than that set, so a hand-built specification can carry
+// a key [inputTypeOf] has no declared type for; [literalKindName] names those,
+// and the sentence stays a sentence rather than naming "no type".
 func mapKeyTypeName(key *expr.Value) string {
 	if t, ok := inputTypeOf(key); ok {
 		return DeclaredTypeName(t)
@@ -904,7 +928,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 		}
 		return object, nil
 	default:
-		return nil, fmt.Errorf("a %T cannot be converted to a Go value", kind)
+		return nil, &LiteralKindError{Kind: fmt.Sprintf("%T", kind)}
 	}
 }
 

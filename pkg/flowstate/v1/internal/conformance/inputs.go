@@ -462,6 +462,47 @@ func InputOutputCases(httpBaseURL string) []Case {
 				`a struct is a map with string keys`,
 		},
 		{
+			// `list` makes the same promise `struct` does — the projection
+			// converts a whole output and gives up on all of it — so a map keyed
+			// by an int inside an element defeats the plain array exactly as an
+			// outer key defeats an object. One rule, two declared containers,
+			// which is why both are decided by the one check rather than by a
+			// second one written for lists later.
+			Name:          "a list output holding a map keyed by an int fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-list-int-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("items", `[{1: "value"}]`, v1.InputDeclaration_TYPE_LIST),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "items" is declared list but holds a map with int keys; ` +
+				`a list reads back as a plain array, whose maps have string keys`,
+		},
+		{
+			// The positive direction for the other container, for the reason the
+			// struct one above has it: a rule that refused every list of maps
+			// would take the ordinary shape with it, and an empty list is a legal
+			// answer.
+			Name: "a list output round-trips as the array it computed",
+			Workflow: declares("outputs-list-string-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("items", `[{"host": "a"}]`, v1.InputDeclaration_TYPE_LIST),
+					typedOutput("nothing", `[]`, v1.InputDeclaration_TYPE_LIST),
+				},
+				says("a", "hello"),
+			),
+			ExpectedOutputs: answers(
+				held("a"),
+				map[string]*v1.Value{
+					"items":   v1.NewLiteralList(map[string]any{"host": "a"}),
+					"nothing": v1.NewLiteralList(),
+				},
+			),
+		},
+		{
 			// The bound half of the same sentence, and a both-drivers case for
 			// the reason the withholding ones are: an output's value is sized by
 			// whoever produced it, up to [v1.MaxTaskOutputBytes], and the

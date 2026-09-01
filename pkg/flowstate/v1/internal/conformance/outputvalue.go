@@ -115,6 +115,24 @@ func OutputValueRefusalCases() []Refusal {
 			Contains: `output "detail" is declared struct but computed a map with int keys; ` +
 				`a struct is a map with string keys`,
 		},
+		{
+			// The other declared container, refused at the same boundary by the
+			// same check. Its own case rather than a variation, because the
+			// sentence a `list` earns names a different promise — the plain
+			// array, not the plain object — and a fix that closed only the outer
+			// map would pass this one.
+			Name: "a literal list output holding an int-keyed map is refused at submit",
+			Workflow: declares("outputs-literal-list-int-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					literalOutput("items", v1.NewLiteralList(intKeyedMap().GetLiteral()),
+						v1.InputDeclaration_TYPE_LIST),
+				},
+				says("a", "hello"),
+			),
+			Contains: `output "items" is declared list but holds a map with int keys; ` +
+				`a list reads back as a plain array, whose maps have string keys`,
+		},
 	}
 }
 

@@ -405,21 +405,36 @@ func checkOutputValueType(wf *v1.Workflow, declaration *v1.OutputDeclaration, fi
 			return nil
 		}
 		if known == declared {
-			if keyType, decided := structKeyMismatch(declared, inferred); decided {
+			if keyType, decided := containerKeyMismatch(declared, inferred); decided {
 				// The one mismatch matching kinds cannot see: a map keyed by
-				// anything is a map, and `struct` promises the plain object a
-				// caller reads (see [v1.CheckOutputValue] on the projection this
-				// keeps honest). Reported here only where the checker decided
-				// the key type — `${{}}` types as `map(dyn, dyn)` and a
-				// mixed-key literal as `map(dyn, …)`, and which keys either
-				// holds is a fact about the value, left to completion (#1404).
+				// anything is a map, and a list holding one is still a list,
+				// while both declared types promise the plain value a caller
+				// reads (see [v1.CheckOutputValue] on the projection this keeps
+				// honest). Reported here only where the checker decided the key
+				// type — `${{}}` types as `map(dyn, dyn)` and a mixed-key
+				// literal as `map(dyn, …)`, and which keys either holds is a
+				// fact about the value, left to completion (#1404).
+				//
+				// The sentence says "is typed as" rather than "always produces"
+				// because this arm is a type check and the two are not the same
+				// claim. `${false ? {1: "a"} : {}}` types as `map(int, string)`
+				// — cel-go joins the branches — and evaluates to `{}`, which
+				// [v1.LiteralToGo] converts happily. So the type-level rule here
+				// and the value-level rule at completion agree on every
+				// non-empty value and part company on an empty map an int-typed
+				// expression produced, which this refuses by its type. That is
+				// the same judgement every other arm of this function makes, and
+				// the author's fix is the same one: write a struct-typed
+				// expression. Deciding it by walking the AST for non-empty map
+				// literals would buy a contrived case with a second walk.
 				return &Diagnostic{
 					Field: field, Value: declaration.GetName(),
 					Code: v1.DiagnosticCodeTypeMismatch,
 					Message: fmt.Sprintf(
-						"output %q is declared %s, but this expression always produces a map with %s keys; "+
-							"a struct is a map with string keys",
-						declaration.GetName(), v1.DeclaredTypeName(declared), v1.DeclaredTypeName(keyType)),
+						"output %q is declared %s, but this expression is typed as %s with %s keys; %s",
+						declaration.GetName(), v1.DeclaredTypeName(declared),
+						containerHolds(declared), v1.DeclaredTypeName(keyType),
+						containerKeyRule(declared)),
 				}
 			}
 
@@ -500,19 +515,44 @@ func staticExpressionType(wf *v1.Workflow, parsed *expr.ParsedExpr) (v1.InputDec
 	return t, inferred, ok
 }
 
-// structKeyMismatch reports the key type that makes inferred a map a `struct`
-// output may not hold, and false for every other declared type.
+// containerKeyMismatch reports the key type that makes inferred a value a
+// declared container may not hold, and false for every other declared type.
 //
 // The declared-type guard lives here rather than at the call site so the two
-// halves of one question — "is this a struct?" and "are its keys strings?" —
-// read as one. Only `struct` asks it: an untyped output promises nothing about
-// its projection, and the sentence this decides is written about a struct.
-func structKeyMismatch(declared v1.InputDeclaration_Type, inferred *cel.Type) (v1.InputDeclaration_Type, bool) {
-	if declared != v1.InputDeclaration_TYPE_STRUCT {
+// halves of one question — "is this a container?" and "are its map keys
+// strings?" — read as one. `struct` and `list` both ask it, because the
+// projection converts a whole output and gives up on all of it: a map with an
+// int key defeats the array a `list` promised from inside an element exactly as
+// it defeats a `struct` from the top. The scalar types do not ask, and an
+// untyped output promises nothing about its projection at all.
+func containerKeyMismatch(declared v1.InputDeclaration_Type, inferred *cel.Type) (v1.InputDeclaration_Type, bool) {
+	if declared != v1.InputDeclaration_TYPE_STRUCT && declared != v1.InputDeclaration_TYPE_LIST {
 		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
 	}
 
 	return nonStringMapKeyType(inferred)
+}
+
+// containerHolds names what the refused expression produced, and
+// containerKeyRule the promise it broke.
+//
+// Two clauses rather than two whole sentences, so the shared middle — the key
+// type, named the same way at both checks — stays one string a reader can match
+// across `flow validate` and a run's failure.
+func containerHolds(declared v1.InputDeclaration_Type) string {
+	if declared == v1.InputDeclaration_TYPE_LIST {
+		return "a list holding a map"
+	}
+
+	return "a map"
+}
+
+func containerKeyRule(declared v1.InputDeclaration_Type) string {
+	if declared == v1.InputDeclaration_TYPE_LIST {
+		return "a list reads back as a plain array, whose maps have string keys"
+	}
+
+	return "a struct is a map with string keys"
 }
 
 // nonStringMapKeyType reports the key type of the first map inside t that a
@@ -520,9 +560,15 @@ func structKeyMismatch(declared v1.InputDeclaration_Type, inferred *cel.Type) (v
 // string or was not decided.
 //
 // Recursive through a map's value type and a list's element type, mirroring
-// [v1.LiteralToGo]'s own recursion over the value — the conversion `type:
-// struct` promises will succeed — so the static half judges the same shape the
-// completion half does rather than the outer map alone.
+// [v1.LiteralToGo]'s own recursion over the value — the conversion a declared
+// `struct` or `list` promises will succeed — so the static half judges the same
+// shape the completion half does rather than the outer container alone.
+//
+// Keys only. The completion check also refuses a container holding a kind with
+// no plain value at all (a type, an enum, a packed message), and that is not one
+// more arm of this switch: those have no key to name and the sentence about them
+// is a different sentence. They stay a completion-time judgement, which costs an
+// author nothing here — no Flowfile can write one.
 //
 // `dyn` is silence rather than a refusal, and that is the whole reason this
 // returns a decision instead of a type: `${{}}` types as `map(dyn, dyn)` because
