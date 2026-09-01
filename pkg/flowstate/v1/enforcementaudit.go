@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+	"time"
 )
 
 // The worker's audit seams (picatz/flowstate#1379).
@@ -242,4 +243,66 @@ func auditEnforcementDeny(ctx context.Context, subject EnforcementSubject, code 
 	}
 
 	return refusal
+}
+
+// auditWriteGrace bounds a record written after the thing it records may
+// already have happened.
+//
+// Such a write no longer runs under the caller's deadline (see
+// [auditEnforcementAllowLate]), so it needs one of its own: a sink that has
+// stopped answering must cost this activity a few seconds, not hold its slot
+// until the worker is drained. Short for the same reason cmd/flow's
+// telemetryFlushTimeout is short — the point is to let a nearly-finished
+// export finish, not to guarantee delivery to a collector that is gone.
+const auditWriteGrace = 5 * time.Second
+
+// lateAuditContext returns the context a write-behind record is emitted under:
+// the caller's, minus its cancellation, plus a bound of our own.
+//
+// [context.WithoutCancel] rather than [context.Background] because the context
+// carries what the write needs — the auditor this seam resolves through, and
+// whatever a deployment put there for its sinks — and a fresh context would
+// lose all of it while fixing only the cancellation.
+func lateAuditContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), auditWriteGrace)
+}
+
+// auditEnforcementAllowLate records a decision whose subject may already have
+// happened, detached from the caller's cancellation.
+//
+// The egress seam is the one that needs this, and the reason is the write-ahead
+// exception the schema already states for it: the verdict is reached inside the
+// policy's transport, so the record is written after the request left. A
+// request cancelled after the policy allowed it returns from Do with its
+// context already done, and an emitter that honours the context it is handed —
+// [github.com/picatz/flowstate/pkg/flowstate/v1/audit.NewSyncProcessor] passes
+// it straight to the exporter — would then fail to export exactly the record
+// that matters most: the one naming a request that left and whose outcome
+// nobody knows (Codex, picatz/flowstate#1394).
+//
+// Detaching is safe here precisely because the write is late. Nothing is being
+// held back pending the record, so a cancelled caller waiting a moment longer
+// costs an already-failing step a bounded delay and buys the trail the line it
+// exists for.
+//
+// The seams that record *before* they act — task dispatch, secret access,
+// credential assumption — deliberately keep the live context. There, refusing
+// early is the whole point: a cancelled caller should stop, and a record that
+// outlived its request would be recording something that did not happen.
+func auditEnforcementAllowLate(ctx context.Context, subject EnforcementSubject) error {
+	ctx, cancel := lateAuditContext(ctx)
+	defer cancel()
+
+	return auditEnforcementAllow(ctx, subject)
+}
+
+// auditEnforcementDenyLate is [auditEnforcementDeny] for a refusal that may
+// arrive after an earlier hop of the same request already reached its peer —
+// a redirect the policy refused, which can be decided while the caller's
+// context is done. Same detachment, same bound, same reason.
+func auditEnforcementDenyLate(ctx context.Context, subject EnforcementSubject, code AuditDenyCode, refusal error) error {
+	ctx, cancel := lateAuditContext(ctx)
+	defer cancel()
+
+	return auditEnforcementDeny(ctx, subject, code, refusal)
 }

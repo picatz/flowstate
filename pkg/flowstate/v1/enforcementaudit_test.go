@@ -504,6 +504,90 @@ func TestARequestCancelledAfterThePolicyPermittedItIsStillRecorded(t *testing.T)
 	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
 }
 
+// contextHonouringSink refuses to write once the context it is handed is done,
+// which is what a real exporter does: [audit.NewSyncProcessor] passes the
+// emitter's context straight to Export, and an OTLP exporter checks it.
+//
+// The in-memory sink every other test here uses ignores its context, which is
+// why the cancellation test above passed while the OTel sink could not have
+// exported the record it asserts (Codex, picatz/flowstate#1394).
+type contextHonouringSink struct {
+	mu      sync.Mutex
+	records []*v1.AuditRecord
+}
+
+func (s *contextHonouringSink) Emit(ctx context.Context, record *v1.AuditRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.records = append(s.records, record)
+
+	return nil
+}
+
+func (s *contextHonouringSink) all() []*v1.AuditRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]*v1.AuditRecord(nil), s.records...)
+}
+
+// TestACancelledRequestsRecordStillReachesASinkThatHonoursItsContext: the
+// record for a request that left must survive the cancellation that ended the
+// request.
+//
+// The seam writes this one after the request has gone, so the caller's context
+// is routinely already done by the time it runs — and a sink that honours its
+// context would then refuse the write, leaving the trail silent about a
+// request whose outcome nobody knows, and under --audit-required failing the
+// step for a collector that was never actually asked.
+//
+// Mutation-proved: passing the request's own context to the write makes this
+// fail with an empty sink and a recorder failure.
+func TestACancelledRequestsRecordStillReachesASinkThatHonoursItsContext(t *testing.T) {
+	t.Parallel()
+
+	reached := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(reached)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	require.NoError(t, err)
+
+	sink := &contextHonouringSink{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink), audit.Required())
+	require.NoError(t, err)
+
+	ctx := v1.NewContextWithEnforcementAuditor(t.Context(), recorder)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	go func() {
+		<-reached
+		cancel()
+	}()
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url":    v1.NewValue(server.URL + "/hangs"),
+		"method": v1.NewValue(http.MethodPost),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err, "the request itself was cancelled")
+	require.False(t, v1.AuditRecorderUnavailable(err),
+		"the sink was writable; only the request was cancelled, and the record must not have been refused with it")
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, records[0].GetDecision())
+	require.Equal(t, server.URL, records[0].GetResourceKey())
+}
+
 // TestAnUnrecordableRequestThatReachedItsPeerIsNotRetried: under a required
 // recorder the egress record is written after the request left, so the failure
 // it raises has to carry the classification the sent request earned. An

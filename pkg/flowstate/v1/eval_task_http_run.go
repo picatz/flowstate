@@ -842,7 +842,11 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			// them is what stops a denied request from being retried.
 			if errors.Is(err, netpolicy.ErrDenied) {
 				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
-				return nil, auditEnforcementDeny(ctx, egressSubject, verdict.Code,
+
+				// Late, because a refused redirect hop is decided after an
+				// earlier hop of this request already reached its peer, and can
+				// be decided while the caller's context is done.
+				return nil, auditEnforcementDenyLate(ctx, egressSubject, verdict.Code,
 					NewTaskError("http", ErrorKindPolicyDenied, err))
 			}
 
@@ -880,7 +884,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			// [taskPolicyRuleFailure] states for the dispatch seam still holds
 			// for the one case that is genuinely undecided.
 			if !policyUndecided {
-				if auditErr := auditEnforcementAllow(ctx, egressSubject); auditErr != nil {
+				if auditErr := auditEnforcementAllowLate(ctx, egressSubject); auditErr != nil {
 					// Classified rather than returned bare: an unclassified
 					// error is [ErrorKindInternal], which is retryable, and a
 					// required sink failing after the request left would then
@@ -947,7 +951,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// below asks, and in the same words: this request reached its peer, so
 		// for a non-idempotent method another attempt would perform the
 		// operation a second time.
-		if err := auditEnforcementAllow(ctx, egressSubject); err != nil {
+		if err := auditEnforcementAllowLate(ctx, egressSubject); err != nil {
 			repeatable := taskInputs.GetRetryOnUnknownOutcome() ||
 				idempotentMethods[strings.ToUpper(taskInputs.GetMethod())]
 			return nil, NewTaskError("http", unrecordedRequestKind(!repeatable), fmt.Errorf(
