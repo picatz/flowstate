@@ -109,3 +109,11 @@ created today by this account) before filing, not only the backlog.
 Receiver-cost update: bot findings accepted this evening, seventeen;
 disputed with evidence, one (a Copilot CEL parse claim); deferred with an
 issue each, three.
+
+Third own error, later the same evening: the lead recorded a decision on
+#489 that named CI work to do (`merge_group` support) from the roadmap's
+memory of the tree rather than from the tree; the builder dispatched for it
+found the whole of it already on main from #688 and correctly refused to
+fabricate a diff. Rule: a decision record that names work to do is written
+after a grep for the mechanism, not before; "unverifiable from the tree" in
+an older plan is a claim to re-check, not a fact to build on.

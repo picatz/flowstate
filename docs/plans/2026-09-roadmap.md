@@ -219,8 +219,9 @@ Must-land is marked; cut from the bottom, never from must-land.
    issues, per SECURITY.md's own embargo posture.
 6. **#489** — decide the back-to-back-merge answer (merge queue or
    re-verification), even if the fix lands later. — **Decided** (recorded on
-   #489): the merge queue; `merge_group` support in `ci.yml` lands as its own
-   PR this week, and the ruleset flip follows it.
+   #489): the merge queue. The CI half already shipped in #688 (`merge_group`
+   trigger, queue-safe concurrency, the full job set forced); the one step
+   left is the ruleset flip in the repository settings, per docs/CI.md.
 
 ### Build (PR candidates)
 
