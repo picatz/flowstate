@@ -117,3 +117,24 @@ found the whole of it already on main from #688 and correctly refused to
 fabricate a diff. Rule: a decision record that names work to do is written
 after a grep for the mechanism, not before; "unverifiable from the tree" in
 an older plan is a claim to re-check, not a fact to build on.
+
+Night addendum, same wave. At 22:00 UTC the account's five-hour token
+window closed (overage is disabled at the organization level) and cut all
+seven running agents off mid-task: two mid-edit with uncommitted work in
+their worktrees, two before their first write, whose empty worktrees the
+harness then removed as unchanged. Nothing pushed was lost, but the wave
+stood still for an hour and a quarter and two builders restarted from
+recreated worktrees. Facts worth keeping: an agent stopped this way keeps
+its transcript and resumes on one message, paying to re-read its context
+once the prompt cache has cooled; a fresh agent pays the same reading plus
+the orientation it has not done. Rule: resume, do not re-dispatch, an agent
+that stopped on a limit. Second rule: stagger. Seven parallel builders on
+one window reach the same reset together; the lead resumes the slices
+closest to landing first — two PRs in their last review round and one flake
+fix — and holds the largest build until those are pushed, so a second stop
+leaves finished work rather than seven half-finished branches. Third: the
+owner's other sessions draw on the same window, so a wave is sized against
+the account, not the session. One more CI anomaly for the evening's list: a
+push at 21:59 created no workflow run at all, with no skip marker in the
+message; the next push is the re-trigger, and the standing rule holds — no
+empty commit to kick CI.
