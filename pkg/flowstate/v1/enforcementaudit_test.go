@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -870,6 +871,120 @@ func TestASinkOutageIsRetryableAtTheSeamsThatRecordBeforeTheyAct(t *testing.T) {
 		"the recorder's own failure has to stay recognizable through the task error that carries it")
 
 	require.Empty(t, sink.all(), "the failing sink recorded nothing, which is the premise of the test")
+}
+
+// TestARequestHeldBackBeforeItLeftIsNotPermanent: the classification a
+// never-sent request earns, including when the audit sink is what failed
+// (Codex, picatz/flowstate#1394).
+//
+// This worker's own rate limiter refuses on the initial hop *before* the dial,
+// so nothing reached the peer. Reported as UpstreamUnknown — which is what
+// happened when the required sink's failure was classified through a question
+// that only asked "is this method idempotent" — a POST nobody sent became
+// permanent, and a collector coming back could not let the step succeed.
+//
+// Mutation-proved: removing the rate-limit arm from [requestNeverLeft] makes
+// the first case UpstreamUnknown again.
+func TestARequestHeldBackBeforeItLeftIsNotPermanent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	// One token, and a refill measured in hours: the second request through
+	// this policy is refused on its initial hop, deterministically.
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(),
+		netpolicy.WithMaxRequestsPerSecondPerProcess("127.0.0.1", 0.001))
+	require.NoError(t, err)
+
+	post := map[string]*v1.Value{
+		"url":    v1.NewValue(server.URL),
+		"method": v1.NewValue(http.MethodPost),
+	}
+
+	ctx, sink := auditing(t, audit.Required())
+
+	// Drains the bucket. This one is sent and answered.
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, post, &v1.Scope{Identity: testIdentity()})
+	require.NoError(t, err)
+
+	// Held back before the dial, and the sink cannot record the decision.
+	sink.fail = errors.New("the collector is down")
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, post, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+	require.True(t, v1.AuditRecorderUnavailable(err),
+		"the sink's failure is what this step is reporting")
+
+	kind := v1.ClassifyError(err)
+	require.True(t, kind.Retryable(),
+		"a POST the rate limiter refused before the dial never left, so a repeat repeats nothing; "+
+			"reporting it permanently means a recovered collector cannot let the step succeed")
+	require.NotEqual(t, v1.ErrorKindUpstreamUnknown, kind)
+
+	// And the decision this seam records for such a request is the allow: the
+	// rules admitted it, and the bucket is not a policy refusal. A fresh sink,
+	// because the successful request above already wrote one.
+	ctx, sink = auditing(t)
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, post, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
+	require.Equal(t, v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS,
+		record.GetEnforcementPoint())
+	require.Equal(t, server.URL, record.GetResourceKey())
+}
+
+// TestARedirectHopHeldBackStaysUnknown is the other side of the same
+// distinction, and the one #912 phase two already drew: an earlier hop reached
+// its peer, so the original request *was* sent and replaying it may repeat an
+// effect that already happened.
+//
+// The bucket is per host, so the hop is addressed as localhost while the
+// workflow's own request goes to 127.0.0.1: two keys, one machine.
+func TestARedirectHopHeldBackStaysUnknown(t *testing.T) {
+	t.Parallel()
+
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer destination.Close()
+
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(destination.URL, "http://"))
+	require.NoError(t, err)
+	hop := "http://localhost:" + port + "/next"
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, hop, http.StatusFound)
+	}))
+	defer origin.Close()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(),
+		netpolicy.WithMaxRequestsPerSecondPerProcess("localhost", 0.001))
+	require.NoError(t, err)
+
+	ctx, _ := auditing(t)
+
+	// Drains the hop host's bucket, so the redirect below is what meets an
+	// empty one.
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url": v1.NewValue(hop),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.NoError(t, err)
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url":    v1.NewValue(origin.URL + "/start"),
+		"method": v1.NewValue(http.MethodPost),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	require.Equal(t, v1.ErrorKindUpstreamUnknown, v1.ClassifyError(err),
+		"the original POST reached its peer before the next hop was held back, so whether it took effect is unknown")
+	require.False(t, v1.ClassifyError(err).Retryable())
 }
 
 // TestALocalRehearsalRecordsNothing: `flow run local` installs no auditor, and

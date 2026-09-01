@@ -70,6 +70,53 @@ func retriableTransportFailure(method string, err error) bool {
 	return false
 }
 
+// requestNeverLeft reports whether an error from [http.Client.Do] means this
+// request was refused before anything was sent, and so cannot have taken
+// effect.
+//
+// It is the other half of [retriableTransportFailure]'s question. That one asks
+// whether a *sent* request may be repeated; this one asks whether there was a
+// send at all, and a "no" makes the method irrelevant: a POST nobody made is
+// safe to make again. Kept as one predicate because the alternative is the
+// defect it was written for — a rate-limited POST classified permanently by one
+// branch (its audit record could not be written) and retryably by the next,
+// from the same error.
+//
+// The complete list of what refuses before the dial, from netpolicy's errors
+// and the order [netpolicy.Policy]'s round tripper applies its checks in:
+//
+//   - A per-host rate refusal on the request the workflow made. The bucket is
+//     consulted after every rule has admitted the request and before the dial,
+//     so nothing was sent. On a *redirect* hop the opposite holds — an earlier
+//     hop reached its peer — which is what AfterRedirect distinguishes, and
+//     which is why this is not simply "is it a rate limit".
+//   - An evaluation the caller's context interrupted, on the request itself
+//     rather than on a later hop: the rules never finished, so no dial
+//     followed. Same AfterRedirect reasoning.
+//   - A policy denial ([netpolicy.DenyError]) does not reach here: the branch
+//     above answers it permanently, which is the right answer for a refused
+//     first request and for a refused redirect hop alike, and permanent is
+//     what a denial deserves either way.
+//   - A request that could not be built, a body that could not be encoded, or
+//     a reference that could not be resolved all return before Do is called,
+//     so they are not classified here at all.
+//   - [netpolicy.BodyTooLargeError] is the response side: the request was
+//     sent and the peer answered, so it is not this, and the read path below
+//     keeps its own unknown-outcome reasoning.
+func requestNeverLeft(err error) bool {
+	var limited *netpolicy.RateLimitedError
+	if errors.As(err, &limited) {
+		return !limited.AfterRedirect
+	}
+
+	var undecided *netpolicy.UndecidedError
+	if errors.As(err, &undecided) {
+		return !undecided.AfterRedirect
+	}
+
+	return false
+}
+
 // firstHeaderValues flattens response headers to one value per name, which is
 // the shape the schema declares and the shape a workflow author expects when
 // writing ${steps.<id>.headers['Content-Type']}.
@@ -778,6 +825,11 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			var undecided *netpolicy.UndecidedError
 			policyUndecided := errors.As(err, &undecided) && !undecided.AfterRedirect
 
+			// Whether this request provably never left the worker, read off
+			// the same unscrubbed error and for the same reason. One answer,
+			// used by every classification below (see [requestNeverLeft]).
+			neverLeft := requestNeverLeft(err)
+
 			// The egress verdict, read off the same unscrubbed error and for
 			// the same reason: this is what the record's deny code, rule and
 			// refused destination are built from, and after the scrub they are
@@ -795,10 +847,17 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			}
 
 			// Whether repeating this request could repeat an effect the first
-			// attempt already had. Decided once, here, because both
-			// classifications below turn on the same question, and answering it
+			// attempt already had. Decided once, here, because every
+			// classification below turns on the same question, and answering it
 			// twice is how two answers drift apart.
-			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err)
+			//
+			// A request that never left cannot have taken effect, whatever its
+			// method: that is [requestNeverLeft], and it is asked here rather
+			// than at each use so a new "refused before the dial" error cannot
+			// be permanent in one branch and retryable in another (Codex,
+			// picatz/flowstate#1394).
+			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !neverLeft &&
+				!retriableTransportFailure(taskInputs.GetMethod(), err)
 
 			// Not a denial, so the policy permitted this request: the transport
 			// evaluates every rule that decides before it spends a rate-limit
