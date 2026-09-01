@@ -953,6 +953,14 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 				err := env.GetWorkflowError()
 				require.Error(t, err, "the run was expected to fail")
 				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+				if test.ExpectedErrorOmits != "" {
+					// The durable half of #1396's claim, and the one that
+					// matters most: this error is what Temporal writes into the
+					// run's history, so a value reaching it is a value that
+					// outlives the process that computed it.
+					require.NotContains(t, err.Error(), test.ExpectedErrorOmits,
+						"the failure text carries something this case says it must not")
+				}
 
 				return
 			}

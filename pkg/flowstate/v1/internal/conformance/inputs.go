@@ -350,7 +350,76 @@ func InputOutputCases(httpBaseURL string) []Case {
 			),
 			ExpectedErrorContains: `output "channel" is "canary", which is not one of the values channel declares`,
 		},
+		{
+			// #1396, and the reason it is a conformance case rather than a unit
+			// test: the sentence a refused output produces *is* the run's
+			// failure text, and a run's failure text is what each driver
+			// persists — locally as the error a caller reads, durably as the
+			// workflow's own failure in Temporal's history. A value withheld by
+			// one driver and echoed by the other would be invariant 7 broken on
+			// exactly one of them, which is the divergence a shared case exists
+			// to make impossible.
+			//
+			// [Case.ExpectedErrorOmits] carries the whole claim; the substring
+			// beside it only says the author still learns which promise broke.
+			Name:          "a sensitive enum output outside its declared values withholds the value",
+			ExpectFailure: true,
+			Workflow: declares("outputs-sensitive-enum-violated",
+				nil,
+				[]*v1.OutputDeclaration{
+					sensitive(typedOutput("token", `"`+sensitiveAnswer+`"`,
+						v1.InputDeclaration_TYPE_ENUM, "stable", "beta")),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "token" is ` + v1.SensitiveMarker +
+				`, which is not one of the values token declares: "stable", "beta"`,
+			ExpectedErrorOmits: sensitiveAnswer,
+		},
+		{
+			// The other refusal a declared output can earn, on the same claim.
+			// `must:` predates the type, so this half of #1396 predates #1392 —
+			// and it reaches durable history by the identical route, which is
+			// why both are pinned here rather than only the newer one.
+			Name:          "a sensitive output failing its own must withholds the value",
+			ExpectFailure: true,
+			Workflow: declares("outputs-sensitive-must-violated",
+				nil,
+				[]*v1.OutputDeclaration{
+					mustSatisfy(sensitive(output("token", `"`+sensitiveAnswer+`"`)), `this == "expected"`),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: "output \"token\" must satisfy `this == \"expected\"`; got " + v1.SensitiveMarker,
+			ExpectedErrorOmits:    sensitiveAnswer,
+		},
 	}
+}
+
+// sensitiveAnswer is the value the two #1396 cases compute.
+//
+// Closed rather than fetched, so what those cases observe is a property of the
+// diagnostic under both drivers rather than of the http server standing beside
+// them, and distinctive enough that a substring assertion about its absence
+// means something.
+const sensitiveAnswer = "sk-live-0PENSESAME"
+
+// sensitive marks a declared output the way a file's `sensitive: true` does.
+//
+// A modifier over [output] and [typedOutput] rather than a third constructor,
+// because sensitivity is orthogonal to whether a declaration also states a
+// type — the same reason the schema carries it as its own field.
+func sensitive(decl *v1.OutputDeclaration) *v1.OutputDeclaration {
+	decl.Sensitive = true
+
+	return decl
+}
+
+// mustSatisfy attaches a `must:` predicate over `this` to a declared output.
+func mustSatisfy(decl *v1.OutputDeclaration, must string) *v1.OutputDeclaration {
+	decl.Must = &must
+
+	return decl
 }
 
 // A Refusal is a submission both drivers must reject, and the words they must

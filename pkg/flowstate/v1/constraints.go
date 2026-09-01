@@ -680,7 +680,7 @@ func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
 		return err
 	}
 
-	return checkEnumMembership("output", decl.GetName(), t, decl.GetValues(), lit)
+	return checkEnumMembership("output", decl.GetName(), t, decl.GetValues(), decl.GetSensitive(), lit)
 }
 
 // CheckInputConstraints applies a declaration's standard-rule constraints and
@@ -791,8 +791,16 @@ func CheckOutputConstraint(decl *OutputDeclaration, value *Value) error {
 	}
 	satisfied, ok := out.Value().(bool)
 	if !ok || !satisfied {
-		got, _ := literalToNative(lit)
-		return fmt.Errorf("output %q must satisfy `%s`; got %v", decl.GetName(), decl.GetMust(), got)
+		// The predicate stays in the sentence and the value may not: `must:` is
+		// written in the file, and the value is what the run computed. See
+		// [redactedIfSensitive] for why an output's own refusal is the last
+		// place that value can be withheld.
+		return fmt.Errorf("output %q must satisfy `%s`; got %s",
+			decl.GetName(), decl.GetMust(), redactedIfSensitive(decl.GetSensitive(), func() string {
+				got, _ := literalToNative(lit)
+
+				return fmt.Sprintf("%v", got)
+			}))
 	}
 
 	return nil
@@ -1251,7 +1259,15 @@ func checkHTTPResponseElementBound(url string, parsedJSON *expr.Value) error {
 // [nearest.Name] — the one did-you-mean rule this repository keeps in one
 // place rather than four.
 func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) error {
-	return checkEnumMembership("input", name, decl.GetType(), decl.GetValues(), lit)
+	// Not decl.GetSensitive(), deliberately. An input's value is one the caller
+	// handed this process, so it is in [SensitiveInputValues]' set and leaves
+	// the failure sentence through `cmd/flow`'s `redactFailureError` — the
+	// mechanism written for exactly this text. Withholding it a second time
+	// here would be a second spelling of one redaction, and would cost the
+	// author of a *file* the word that tells them what they typed wrong, since
+	// `flow validate` reaches this against a literal `default:` with no run and
+	// no run failure anywhere in sight.
+	return checkEnumMembership("input", name, decl.GetType(), decl.GetValues(), false, lit)
 }
 
 // checkEnumMembership is the membership rule itself, over a declared type and
@@ -1262,7 +1278,18 @@ func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) e
 // answering with a value outside its declared set has broken the same kind of
 // promise a caller submitting one has. kind is the noun the sentence names the
 // declaration by, "input" or "output".
-func checkEnumMembership(kind, name string, t InputDeclaration_Type, values []string, lit *expr.Value) error {
+//
+// sensitive withholds the value from the sentence, and only the value: the
+// declaration names itself, says its value was not in the set, and lists the
+// set, because all three are written in the file rather than computed by the
+// run. See [redactedIfSensitive] for why an output needs this where an input
+// does not.
+//
+// The did-you-mean clause goes with the value rather than staying beside the
+// marker. It is computed *from* the withheld string, so offering one narrows a
+// reader's guess to the strings within [nearest.MaxDistance] of a declared
+// choice — a smaller leak than the value, and a leak.
+func checkEnumMembership(kind, name string, t InputDeclaration_Type, values []string, sensitive bool, lit *expr.Value) error {
 	if t != InputDeclaration_TYPE_ENUM {
 		return nil
 	}
@@ -1279,7 +1306,12 @@ func checkEnumMembership(kind, name string, t InputDeclaration_Type, values []st
 	}
 
 	message := fmt.Sprintf("%s %q is %s, which is not one of the values %s declares: %s",
-		kind, name, strconv.Quote(got), name, quotedStrings(values))
+		kind, name, redactedIfSensitive(sensitive, func() string { return strconv.Quote(got) }),
+		name, quotedStrings(values))
+	if sensitive {
+		return fmt.Errorf("%s", message)
+	}
+
 	// Distance is at least the difference between the two rune counts. Avoid
 	// its O(len(got)*len(choice)) work when got is too long to be within the
 	// repository-wide suggestion limit of even the longest declared choice.
@@ -1294,6 +1326,34 @@ func checkEnumMembership(kind, name string, t InputDeclaration_Type, values []st
 	}
 
 	return fmt.Errorf("%s", message)
+}
+
+// redactedIfSensitive renders a value for a diagnostic that names it, or
+// [SensitiveMarker] in its place when the declaration that produced the value
+// is marked `sensitive:`.
+//
+// # Why an output needs this and an input does not
+//
+// A refusal from [EvalRunOutputs] *is* the run's failure text: it is returned
+// before there is a [RunOutputs] for a renderer to redact, and it is what gets
+// persisted as the run's answer. The redaction that clears a sensitive value
+// out of that text — `cmd/flow`'s `redactFailureError`, over
+// [SensitiveInputValues] — is built from the run's *arguments*, because those
+// are the values the process holding the file also holds. A value the workload
+// computed is in neither: nothing outside this package ever saw it, and by the
+// time anything could, the sentence quoting it is already durable history
+// (AGENTS.md invariant 7). So the withholding has to happen where the sentence
+// is composed, which is here.
+//
+// render is a closure rather than a rendered string so that a withheld value
+// costs nothing to format and, more to the point, is never converted to text
+// that a later edit could pick up by accident.
+func redactedIfSensitive(sensitive bool, render func() string) string {
+	if sensitive {
+		return SensitiveMarker
+	}
+
+	return render()
 }
 
 // quotedStrings renders a list of strings the way a diagnostic quotes a

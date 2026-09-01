@@ -596,6 +596,10 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 				// gives.
 				require.Error(t, err, "the run was expected to fail")
 				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+				if test.ExpectedErrorOmits != "" {
+					require.NotContains(t, err.Error(), test.ExpectedErrorOmits,
+						"the failure text carries something this case says it must not")
+				}
 
 				return
 			}
