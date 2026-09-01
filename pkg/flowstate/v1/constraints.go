@@ -87,8 +87,17 @@ func constraintCELType(t InputDeclaration_Type) *cel.Type {
 var mustEnvs sync.Map // map[InputDeclaration_Type]*mustEnvResult
 
 // outputMustEnv is the one environment every OutputDeclaration.must compiles
-// against: `this` typed dyn, because an output carries no declared type the
-// way an input does — see OutputDeclaration's schema doc.
+// against: `this` typed dyn.
+//
+// Dyn even now that an output may declare a `type:`, and deliberately: the
+// type is optional and always will be (see [OutputDeclaration.type]), so
+// binding `this` to it would make the same `must:` compile against a
+// different `this` depending on whether a neighbouring key is present, and
+// an author who adds a type to a working declaration would be shown an
+// error in an expression they did not touch. What the declared type buys is
+// checked separately and unconditionally by [CheckOutputValue], which runs
+// before the `must:` does; tightening this binding is its own question,
+// beside the `must:` scope one [OutputDeclaration.must] records.
 //
 // Built from the current profile's own library set — see [mustEnvFor]'s doc
 // for why that set, and not a hand-copied one, is what belongs here.
@@ -396,7 +405,7 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 				"to be a closed set of anything", name)
 	}
 	if t == InputDeclaration_TYPE_ENUM && len(decl.Values) > 0 {
-		if err := checkEnumValuesShape(name, decl.Values); err != nil {
+		if err := checkEnumValuesShape("input", name, decl.Values); err != nil {
 			return err
 		}
 	}
@@ -424,8 +433,15 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 // [CheckInputConstraintShape] can return, so a caller distinguishes this
 // case with [errors.As] rather than by matching message text.
 type EnumValuesShapeError struct {
-	// Name is the input's own name, folded into [EnumValuesShapeError.Error]'s
-	// message.
+	// Kind is which half of the contract the declaration is — "input" or
+	// "output" — since both declare `values:` under the identical rules and a
+	// message naming the wrong one would send an author to the wrong block.
+	// Empty reads as "input", so a caller predating an output's own `values:`
+	// keeps the sentence it had.
+	Kind string
+
+	// Name is the declaration's own name, folded into
+	// [EnumValuesShapeError.Error]'s message.
 	Name string
 
 	// Field is the path of the value at fault, relative to the declaration
@@ -443,7 +459,12 @@ type EnumValuesShapeError struct {
 // which names a rule ID and a generic bound rather than the actual member or
 // count at fault.
 func (e *EnumValuesShapeError) Error() string {
-	return fmt.Sprintf("input %q %s", e.Name, e.message)
+	kind := e.Kind
+	if kind == "" {
+		kind = "input"
+	}
+
+	return fmt.Sprintf("%s %q %s", kind, e.Name, e.message)
 }
 
 // checkEnumValuesShape applies the schema's own bound on a declared enum's
@@ -467,7 +488,7 @@ func (e *EnumValuesShapeError) Error() string {
 // protovalidate's own message does not carry, per CLAUDE.md's rule that a
 // diagnostic surfaced to an author is written for an editor rather than
 // wrapped from the validator that found it.
-func checkEnumValuesShape(name string, values []string) error {
+func checkEnumValuesShape(kind, name string, values []string) error {
 	probe := &InputDeclaration{
 		Name:   "x",
 		Type:   InputDeclaration_TYPE_ENUM,
@@ -484,14 +505,14 @@ func checkEnumValuesShape(name string, values []string) error {
 		// The validator itself could not be run at all (see
 		// [ErrValidatorUnavailable]) — fail closed per CLAUDE.md rather than
 		// let a declaration this function could not actually check through.
-		return fmt.Errorf("input %q values: %w", name, verr)
+		return fmt.Errorf("%s %q values: %w", kind, name, verr)
 	}
 
 	for _, v := range invalid.Violations {
 		switch {
 		case v.Field == "values" && v.Rule == "repeated.max_items":
 			return &EnumValuesShapeError{
-				Name: name, Field: v.Field,
+				Kind: kind, Name: name, Field: v.Field,
 				message: fmt.Sprintf(
 					"declares %d values, but an enum may declare at most 64; trim the list, or split it "+
 						"into more than one input", len(values)),
@@ -499,19 +520,19 @@ func checkEnumValuesShape(name string, values []string) error {
 		case v.Field == "values" && v.Rule == "repeated.unique":
 			if dup, idx := firstDuplicateEnumValue(values); idx >= 0 {
 				return &EnumValuesShapeError{
-					Name: name, Field: v.Field,
+					Kind: kind, Name: name, Field: v.Field,
 					message: fmt.Sprintf(
 						"value %d (%q) repeats one already declared; an enum's values must be distinct",
 						idx, dup),
 				}
 			}
 			return &EnumValuesShapeError{
-				Name: name, Field: v.Field,
+				Kind: kind, Name: name, Field: v.Field,
 				message: "declares two identical values; an enum's values must be distinct",
 			}
 		case strings.HasPrefix(v.Field, "values[") && v.Rule == "string.min_len":
 			return &EnumValuesShapeError{
-				Name: name, Field: v.Field,
+				Kind: kind, Name: name, Field: v.Field,
 				message: fmt.Sprintf(
 					"value %d is empty; every enum value must be at least 1 character",
 					enumValueIndex(v.Field)),
@@ -523,7 +544,7 @@ func checkEnumValuesShape(name string, values []string) error {
 				length = utf8.RuneCountInString(values[idx])
 			}
 			return &EnumValuesShapeError{
-				Name: name, Field: v.Field,
+				Kind: kind, Name: name, Field: v.Field,
 				message: fmt.Sprintf(
 					"value %d is %d characters, over the 128 an enum value may hold", idx, length),
 			}
@@ -536,7 +557,7 @@ func checkEnumValuesShape(name string, values []string) error {
 	// yet. Fail closed rather than silently accept a declaration the server
 	// would still refuse: the raw validator message is worse than a
 	// hand-written one, but it is far better than reporting nothing wrong.
-	return fmt.Errorf("input %q %s", name, invalid.Error())
+	return fmt.Errorf("%s %q %s", kind, name, invalid.Error())
 }
 
 // firstDuplicateEnumValue returns the first value in values that repeats one
@@ -573,16 +594,94 @@ func enumValueIndex(field string) int {
 	return n
 }
 
-// CheckOutputConstraintShape is [CheckInputConstraintShape] for an output's
-// `must:`, the only constraint an output declares.
+// CheckOutputConstraintShape is [CheckInputConstraintShape] for an output: the
+// two set-facts a declared `type:` brings with it, and the `must:` that was
+// this function's whole subject before there was a type to have facts about.
+//
+// The `values:` rules are the input ones reached rather than restated —
+// [checkEnumValuesShape] derives its own bound from the schema, so the two
+// declarations cannot come to disagree about how many members an enum may have
+// or how long one may be.
 func CheckOutputConstraintShape(decl *OutputDeclaration) error {
+	name := decl.GetName()
+	t := decl.GetType()
+
+	if len(decl.Values) > 0 && t != InputDeclaration_TYPE_ENUM {
+		return fmt.Errorf(
+			"output %q declares values but is declared %s; values apply only to an enum output",
+			name, DeclaredTypeName(t))
+	}
+	if t == InputDeclaration_TYPE_ENUM && len(decl.Values) == 0 {
+		return fmt.Errorf(
+			"output %q is declared enum but declares no values; an enum needs at least one member "+
+				"to be a closed set of anything", name)
+	}
+	if t == InputDeclaration_TYPE_ENUM {
+		if err := checkEnumValuesShape("output", name, decl.Values); err != nil {
+			return err
+		}
+	}
+
 	if decl.Must == nil {
 		return nil
 	}
 	if _, err := CompileOutputMustExpression(decl.GetMust()); err != nil {
-		return fmt.Errorf("output %q %w", decl.GetName(), err)
+		return fmt.Errorf("output %q %w", name, err)
 	}
 	return nil
+}
+
+// CheckOutputValue refuses a computed output whose value does not have the type
+// its declaration promised, or whose value is outside a declared enum's set.
+//
+// The counterpart of [CheckInputValue] and [checkEnumConstraint], pointed the
+// other way: an input is a value a caller chose and is refused while the caller
+// is still there to be told, and an output is a value the run computed and is
+// refused before it is reported as the run's answer. Both drivers reach this
+// through [EvalRunOutputs], which is what makes the two agree by construction
+// rather than by two matching implementations (invariant 3).
+//
+// Nil for an output that declares no type, which is every declaration written
+// before there was one to declare and every declaration that still chooses not
+// to — see [OutputDeclaration.type] on why that stays legal. Nil, too, for a
+// value with no literal to judge: an expression the engine could not evaluate is
+// a different failure, reported by whoever computed it.
+//
+// Also called by `flow validate` against a literal (or an all-constant
+// structure) written directly under `value:`, where the answer is knowable
+// without running anything — the same static-half/run-half split
+// [CheckInputValue] has between a `with:` argument and a submitted one.
+func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
+	t := decl.GetType()
+	if t == InputDeclaration_TYPE_UNSPECIFIED {
+		return nil
+	}
+
+	lit := value.GetLiteral()
+	if lit == nil {
+		if _, isStructure := value.GetKind().(*Value_Structure_); !isStructure {
+			return nil
+		}
+		// A mapping or list written directly under `value:` compiles to a
+		// structure rather than to a literal (see structure.go), and its type
+		// is knowable regardless: flattened by the same function
+		// [EvalRunOutputs] flattens it with, so a static answer and a run-time
+		// one cannot differ. A structure that will not flatten holds something
+		// a declared output may not hold at all, which is refused elsewhere
+		// and is not this function's judgement to make.
+		flattened, err := structureLiteral(value)
+		if err != nil {
+			return nil
+		}
+		lit = flattened
+	}
+
+	if err := checkDeclaredLiteralType("output", "computed", decl.GetName(), t, lit); err != nil {
+		return err
+	}
+
+	return checkEnumMembership("output", decl.GetName(), t, decl.GetValues(),
+		outputValueRendering(decl), lit)
 }
 
 // CheckInputConstraints applies a declaration's standard-rule constraints and
@@ -693,8 +792,22 @@ func CheckOutputConstraint(decl *OutputDeclaration, value *Value) error {
 	}
 	satisfied, ok := out.Value().(bool)
 	if !ok || !satisfied {
-		got, _ := literalToNative(lit)
-		return fmt.Errorf("output %q must satisfy `%s`; got %v", decl.GetName(), decl.GetMust(), got)
+		// The predicate stays in the sentence and the value may not: `must:` is
+		// written in the file, and the value is what the run computed. See
+		// [redactedIfSensitive] for why an output's own refusal is the last
+		// place that value can be withheld.
+		//
+		// Bounded on the way in for the reason [checkEnumMembership] states:
+		// `must:` may be declared on an output of any type, so the rendering
+		// here is a whole task result — a string, or a map of them — and an
+		// unbounded one would be a failure the durable driver cannot persist
+		// while the local driver returns it.
+		return fmt.Errorf("output %q must satisfy `%s`; got %s",
+			decl.GetName(), decl.GetMust(), redactedIfSensitive(decl.GetSensitive(), func() string {
+				got, _ := literalToNative(lit)
+
+				return truncateForError(fmt.Sprintf("%v", got))
+			}))
 	}
 
 	return nil
@@ -1153,7 +1266,33 @@ func checkHTTPResponseElementBound(url string, parsedJSON *expr.Value) error {
 // [nearest.Name] — the one did-you-mean rule this repository keeps in one
 // place rather than four.
 func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) error {
-	if decl.GetType() != InputDeclaration_TYPE_ENUM {
+	return checkEnumMembership("input", name, decl.GetType(), decl.GetValues(), inputValueRendering, lit)
+}
+
+// checkEnumMembership is the membership rule itself, over a declared type and
+// its choices rather than over a message that holds them.
+//
+// Written this way because an output declares the identical pair (see
+// [OutputDeclaration.type]) and the rule about them is one rule: a run
+// answering with a value outside its declared set has broken the same kind of
+// promise a caller submitting one has. kind is the noun the sentence names the
+// declaration by, "input" or "output".
+//
+// rendering says how the refusal may print the value, which is the one thing
+// the two sides do not share — see [valueRendering].
+//
+// The did-you-mean clause goes with a withheld value rather than staying beside
+// the marker. It is computed *from* the withheld string, so offering one
+// narrows a reader's guess to the strings within [nearest.MaxDistance] of a
+// declared choice — a smaller leak than the value, and a leak.
+func checkEnumMembership(
+	kind, name string,
+	t InputDeclaration_Type,
+	values []string,
+	rendering valueRendering,
+	lit *expr.Value,
+) error {
+	if t != InputDeclaration_TYPE_ENUM {
 		return nil
 	}
 	s, ok := lit.GetKind().(*expr.Value_StringValue)
@@ -1162,28 +1301,131 @@ func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) e
 	}
 	got := s.StringValue
 
-	for _, choice := range decl.GetValues() {
+	for _, choice := range values {
 		if choice == got {
 			return nil
 		}
 	}
 
-	message := fmt.Sprintf("input %q is %s, which is not one of the values %s declares: %s",
-		name, strconv.Quote(got), name, quotedStrings(decl.GetValues()))
+	// Trimmed before it is quoted, not after, and everything below reads the
+	// trimmed string rather than the original: [strconv.Quote] expands a
+	// control byte to six characters, so quoting first would build the
+	// oversized sentence the trim exists to prevent before shortening it.
+	shown := rendering.show(got)
+
+	message := fmt.Sprintf("%s %q is %s, which is not one of the values %s declares: %s",
+		kind, name, redactedIfSensitive(rendering.sensitive, func() string { return strconv.Quote(shown) }),
+		name, quotedStrings(values))
+	if rendering.sensitive {
+		return fmt.Errorf("%s", message)
+	}
+
 	// Distance is at least the difference between the two rune counts. Avoid
 	// its O(len(got)*len(choice)) work when got is too long to be within the
 	// repository-wide suggestion limit of even the longest declared choice.
 	maxChoiceRunes := 0
-	for _, choice := range decl.GetValues() {
+	for _, choice := range values {
 		maxChoiceRunes = max(maxChoiceRunes, utf8.RuneCountInString(choice))
 	}
-	if utf8.RuneCountInString(got) <= maxChoiceRunes+nearest.MaxDistance {
-		if suggestion, ok := nearest.Name(got, decl.GetValues()); ok {
+	// Over `shown`, so a trimmed side computes its suggestion from the bounded
+	// string rather than the original. A value long enough to be trimmed is
+	// already further from every declared choice than [nearest.MaxDistance]
+	// allows, so nothing that would have earned a suggestion loses one; on the
+	// untrimmed side `shown` is `got` and this is the guard it always was.
+	if utf8.RuneCountInString(shown) <= maxChoiceRunes+nearest.MaxDistance {
+		if suggestion, ok := nearest.Name(shown, values); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		}
 	}
 
 	return fmt.Errorf("%s", message)
+}
+
+// valueRendering is how a refusal may print the value it is about.
+//
+// Both halves say the same thing from opposite ends: an *input* is a value the
+// caller handed this process while the caller is still there to be told, and an
+// *output* is a value the run computed and is refused into durable history. So
+// the two differ in exactly two ways and are otherwise one rule
+// ([checkEnumMembership]), which is why this travels as a value rather than as
+// a second copy of the membership check.
+type valueRendering struct {
+	// sensitive withholds the value, and only the value: the declaration still
+	// names itself, still says the value was not in the set, and still lists
+	// the set, because all three are written in the file rather than computed
+	// by the run. See [redactedIfSensitive].
+	sensitive bool
+
+	// bounded trims the value to what a sentence can carry. See
+	// [outputValueRendering] for why only one side sets it.
+	bounded bool
+}
+
+// show renders one value under this rendering's length rule.
+func (r valueRendering) show(s string) string {
+	if r.bounded {
+		return truncateForError(s)
+	}
+
+	return s
+}
+
+// inputValueRendering prints a submitted value whole and in the clear.
+//
+// Neither flag, and both deliberately. `sensitive:` is not set here because an
+// input's value is already in [SensitiveInputValues]' set and leaves the
+// failure sentence through `cmd/flow`'s `redactFailureError` — the mechanism
+// written for exactly this text — so withholding it again would be a second
+// spelling of one redaction, and would cost the author of a *file* the word
+// that tells them what they typed wrong, since `flow validate` reaches this
+// against a literal `default:` with no run and no run failure in sight.
+//
+// `bounded` is not set because a submitted value is weighed by
+// [CheckSubmissionSize] before it gets here and is the caller's own text to
+// read back, which `TestBindRunInputsBoundsEnumSuggestionWork` pins
+// deliberately: the quadratic suggestion scan is what that path bounds, not the
+// sentence.
+var inputValueRendering = valueRendering{}
+
+// outputValueRendering prints a computed value withheld if the declaration says
+// so, and trimmed always.
+//
+// Trimmed always because the size is not the workflow author's choice: an
+// output's value is whatever a task answered with, up to [MaxTaskOutputBytes],
+// and this sentence *is* the run's failure. Temporal has a blob limit, so an
+// unbounded one is a failure the durable driver cannot persist while the local
+// driver simply returns it — invariant 3 broken by a diagnostic, and invariant
+// 5 unbounded at a seam another party controls.
+func outputValueRendering(decl *OutputDeclaration) valueRendering {
+	return valueRendering{sensitive: decl.GetSensitive(), bounded: true}
+}
+
+// redactedIfSensitive renders a value for a diagnostic that names it, or
+// [SensitiveMarker] in its place when the declaration that produced the value
+// is marked `sensitive:`.
+//
+// # Why an output needs this and an input does not
+//
+// A refusal from [EvalRunOutputs] *is* the run's failure text: it is returned
+// before there is a [RunOutputs] for a renderer to redact, and it is what gets
+// persisted as the run's answer. The redaction that clears a sensitive value
+// out of that text — `cmd/flow`'s `redactFailureError`, over
+// [SensitiveInputValues] — is built from the run's *arguments*, because those
+// are the values the process holding the file also holds. A value the workload
+// computed is in neither: nothing outside this package ever saw it, and by the
+// time anything could, the sentence quoting it is already durable history
+// (AGENTS.md invariant 7). So the withholding has to happen where the sentence
+// is composed, which is here.
+//
+// render is a closure rather than a rendered string so that a withheld value
+// costs nothing to format and, more to the point, is never converted to text
+// that a later edit could pick up by accident.
+func redactedIfSensitive(sensitive bool, render func() string) string {
+	if sensitive {
+		return SensitiveMarker
+	}
+
+	return render()
 }
 
 // quotedStrings renders a list of strings the way a diagnostic quotes a

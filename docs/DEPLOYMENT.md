@@ -1280,28 +1280,33 @@ way the Temporal SDK handler is: inside `initTelemetry`, gated on
 not on tracing or logging alone — via
 `go.opentelemetry.io/contrib/instrumentation/runtime`
 (`cmd/flow/telemetry.go`, beside where the meter provider is built). That
-package's v0.61.0 still defaults `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` to
-`true`, so what actually reaches a collector today is the
-`process.runtime.go.*` set rather than the newer `go.memory.*` convention;
-either name is what an operator should dashboard for the CPU/memory guidance
-below:
+package's v0.70.0 flipped `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS`'s default
+from `true` to `false`, so what actually reaches a collector today is the
+`go.memory.*`/`go.goroutine.count` convention below, not the older
+`process.runtime.go.*` set — which the package still emits under that exact
+name for an operator who opts back in, but Flowstate does not, so this
+document tracks what ships by default:
 
 | Metric | Type | Unit | Meaning |
 | --- | --- | --- | --- |
-| `process.runtime.go.mem.heap_alloc` | up-down counter | bytes | Heap bytes currently allocated |
-| `process.runtime.go.mem.heap_idle` | up-down counter | bytes | Heap bytes idle (unused, uncommitted) |
-| `process.runtime.go.mem.heap_inuse` | up-down counter | bytes | Heap bytes in in-use spans |
-| `process.runtime.go.mem.heap_objects` | up-down counter | — | Number of allocated heap objects |
-| `process.runtime.go.mem.heap_released` | up-down counter | bytes | Heap bytes released to the OS |
-| `process.runtime.go.mem.heap_sys` | up-down counter | bytes | Heap bytes obtained from the OS |
-| `process.runtime.go.mem.live_objects` | up-down counter | — | Number of live objects |
-| `process.runtime.go.mem.lookups` | counter | — | Pointer lookups performed by the runtime |
-| `process.runtime.go.gc.count` | counter | — | Completed GC cycles |
-| `process.runtime.go.gc.pause_ns` | histogram | ns | Per-pause GC stop-the-world duration |
-| `process.runtime.go.gc.pause_total_ns` | counter | ns | Cumulative GC stop-the-world duration |
-| `process.runtime.go.goroutines` | up-down counter | — | Live goroutine count |
-| `process.runtime.go.cgo.calls` | counter | — | Cumulative cgo calls made |
+| `go.memory.used` | up-down counter | bytes | Runtime memory in use, split by the `go.memory.type` attribute (`stack`, `other`) |
+| `go.memory.limit` | up-down counter | bytes | Configured Go memory limit (`GOMEMLIMIT`), if one is set |
+| `go.memory.allocated` | counter | bytes | Cumulative heap bytes allocated by the application |
+| `go.memory.allocations` | counter | allocations | Cumulative heap allocation count |
+| `go.memory.gc.goal` | up-down counter | bytes | Heap size target for the end of the next GC cycle |
+| `go.goroutine.count` | up-down counter | goroutines | Live goroutine count |
+| `go.processor.limit` | up-down counter | threads | `GOMAXPROCS`: OS threads that can run user Go code at once |
+| `go.config.gogc` | up-down counter | percent | Configured `GOGC` heap-growth target (100 by default) |
 | `runtime.uptime` | counter | ms | Time since the process started reporting |
+
+The per-region heap breakdown (`heap_idle`/`heap_inuse`/`heap_sys`/
+`heap_released`, object and pointer-lookup counts) and the GC-pause histogram
+the deprecated set used to carry have no successor in this table: the new
+convention reports memory as the two-way `go.memory.used` split above and
+does not wire a GC-pause instrument by default (the package's separate
+`NewProducer`, which would add `go.schedule.duration`, is not registered
+here). That detail now lives only behind `--internal-listen` and pprof, same
+as before for anything a gauge never covered.
 
 Registered whenever metrics are enabled — including a short client command
 like `flow get`, not only `flow server`/`flow worker` — but that costs a
@@ -1310,10 +1315,9 @@ exporter or a second goroutine; see the doc comment beside
 `otelruntime.Start` in `cmd/flow/telemetry.go` for why splitting this by verb
 was rejected. On the two long-running processes it is the answer to the "How
 to read this process's own CPU/memory" guidance below without reaching for
-pprof: `process.runtime.go.mem.heap_alloc` and `process.runtime.go.goroutines`
-climbing together tracks the same "is this worker's own memory the
-constraint" question a heap profile answers, over OTLP instead of a loopback
-`kubectl exec`.
+pprof: `go.memory.used` and `go.goroutine.count` climbing together tracks the
+same "is this worker's own memory the constraint" question a heap profile
+answers, over OTLP instead of a loopback `kubectl exec`.
 
 **Run-lifecycle metrics** (#917), the gap the paragraph above used to record
 rather than fill: a run's own started/completed/failed and its duration,
@@ -1566,11 +1570,12 @@ room.
 registered on both binaries once metrics are enabled (`OTEL_METRICS_EXPORTER`
 or an OTLP metrics endpoint — see [Go runtime metrics](#metrics) above for the
 full table), so an operator who already points `OTEL_EXPORTER_OTLP_ENDPOINT`
-somewhere gets `process.runtime.go.mem.heap_alloc`,
-`process.runtime.go.gc.pause_ns` and `process.runtime.go.goroutines` on a
-dashboard for free — no flag, no pprof session, no shell into the pod. What
-the worker *also* has, for the deeper "which allocation" or "which stack"
-question a gauge cannot answer, is `--internal-listen`
+somewhere gets `go.memory.used` and `go.goroutine.count` on a dashboard for
+free — no flag, no pprof session, no shell into the pod. GC-pause detail is
+no longer part of that free set (see the note under [Go runtime
+metrics](#metrics)); it joins "which allocation" and "which stack" as a
+question a gauge cannot answer. What the worker *also* has, for exactly that
+class of question, is `--internal-listen`
 (`FLOWSTATE_INTERNAL_ADDRESS`), off by default, loopback or refused, described
 under [Health checks and probes](#health-checks-and-probes) above along with
 what turning it on exposes. Start the worker with it, then, from inside that
@@ -1610,11 +1615,12 @@ Read both signals before changing it, in either direction:
   `temporal_sticky_cache_hit`/`_miss` beside it for the hit-rate half of the
   same picture). A forced eviction is a replay an operator is paying for that
   more cache would have avoided.
-- **Lower** when `process.runtime.go.mem.heap_alloc` (see "How to read this
-  process's own CPU/memory" above) climbs with cache size, and a heap profile
-  taken through `--internal-listen` shows the sticky cache rather than
-  activity execution as the growth. A larger cache is memory traded for fewer
-  replays; on a memory-constrained worker that trade can go the other way.
+- **Lower** when `go.memory.used` (`go.memory.type=other`; see "How to read
+  this process's own CPU/memory" above) climbs with cache size, and a heap
+  profile taken through `--internal-listen` shows the sticky cache rather
+  than activity execution as the growth. A larger cache is memory traded for
+  fewer replays; on a memory-constrained worker that trade can go the other
+  way.
 
 **The zero sentinel means something different here than on the other four
 flags — do not assume it generalizes.** `worker.SetStickyWorkflowCacheSize`

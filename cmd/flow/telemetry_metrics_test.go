@@ -335,14 +335,22 @@ func TestRuntimeMetricsRegisterWhenMetricsAreConfigured(t *testing.T) {
 
 	shutdown(context.Background())
 
-	// v0.61.0 still defaults OTEL_GO_X_DEPRECATED_RUNTIME_METRICS to true, so
-	// these are the process.runtime.go.* names the package emits absent that
-	// override — see the comment beside otelruntime.Start in initTelemetry.
-	_, ok := collector.instrument("process.runtime.go.mem.heap_alloc")
-	require.True(t, ok, "process.runtime.go.mem.heap_alloc never reached the collector: %v", collector.instrumentNames())
+	// v0.70.0 defaults OTEL_GO_X_DEPRECATED_RUNTIME_METRICS to false (v0.61.0
+	// defaulted it to true), so these are the go.memory.*/go.goroutine.count
+	// names the package emits absent that override — see the comment beside
+	// otelruntime.Start in initTelemetry. go.memory.used is the successor this
+	// assertion picks: like the old process.runtime.go.mem.heap_alloc it
+	// replaces, it is a point-in-time gauge of runtime memory in use (now
+	// split by the go.memory.type attribute rather than a name suffix),
+	// which matches this test's intent — proving runtime metrics register at
+	// all — better than go.memory.allocated, the new package's cumulative
+	// bytes-ever-allocated counter and a false-cognate for "heap_alloc" by
+	// name alone.
+	_, ok := collector.instrument("go.memory.used")
+	require.True(t, ok, "go.memory.used never reached the collector: %v", collector.instrumentNames())
 
-	_, ok = collector.instrument("process.runtime.go.goroutines")
-	require.True(t, ok, "process.runtime.go.goroutines never reached the collector: %v", collector.instrumentNames())
+	_, ok = collector.instrument("go.goroutine.count")
+	require.True(t, ok, "go.goroutine.count never reached the collector: %v", collector.instrumentNames())
 }
 
 // TestRuntimeMetricsAbsentWhenMetricsAreOff is the negative direction: a

@@ -216,7 +216,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_PLUGIN_TOKEN",
 			value:   "unset",
-			purpose: "Handshake: the per-launch token a plugin authenticates its host with. Set by the host on the child process.",
+			purpose: "Retired: it carried the per-launch token up to plugin protocol version 3, and nothing sets or reads it now (#1336). The name stays reserved, so a plugin still does not see it if a deployment sets it.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_TOKEN_FD",
+			value:   "unset",
+			purpose: "Handshake: the descriptor carrying the per-launch token a plugin authenticates its host with. Set by the host on the child process; never configured by an operator. The token itself is never in the environment, because /proc/<pid>/environ would then expose it for the plugin's whole life (#1336).",
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{

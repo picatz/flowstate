@@ -1651,6 +1651,21 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 			"resolving task capabilities before durable execution: %w", err))
 	}
+
+	// Read from the same registry and immediately after resolving task
+	// capabilities above, because that resolution has already refused any
+	// unknown task; this check only has to rely on
+	// [v1.TaskDef.RequiredSecretInputs] for the tasks the registry knows.
+	//
+	// Unlike the refusals below, this one is not compiler parity alone: the harm
+	// it prevents is complete before any other mechanism gets a turn. A literal
+	// in an input a task requires as a whole secret reference is carried into
+	// workflow history by admission itself, and the plugin host's own refusal
+	// happens at dispatch, after the credential is already durable. See
+	// [v1.CheckRequiredSecretInputs].
+	if err := v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, err)
@@ -2241,10 +2256,9 @@ func failureError(
 	// above already follows and the schema states: `kind` is "always set
 	// alongside Message" (service.proto), and leaving it empty made the one
 	// failure this branch exists for the one failure a programmatic consumer
-	// could read nothing structural from. [v1.ErrorKindTimeout] is what
-	// engine.recordedStepKind answers for the step-level shape of this (#915),
-	// and a run-level timeout is that same fact one scope out — so it is the
-	// same word rather than a second one meaning the same thing.
+	// could read nothing structural from. It must not reuse the retryable
+	// [v1.ErrorKindTimeout] that engine.recordedStepKind answers for a step:
+	// restarting a whole run can repeat effects from steps that already finished.
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		return timeoutFailure(status, timeoutErr.TimeoutType())
@@ -2267,14 +2281,34 @@ func failureError(
 // (service.proto), and this branch — the one shape of failure with nothing in
 // the chain to read a classification back out of — was the one leaving it
 // empty, so the only failure an agent could read nothing structural from was a
-// timeout. [v1.ErrorKindTimeout] is what engine.recordedStepKind answers for
-// the step-level shape of this (#915); a run-level timeout is that same fact
-// one scope out, so it is the same word rather than a second one meaning the
-// same thing, and the message is what says which scope.
+// timeout. A whole-run timeout has its own permanent kind: unlike retrying a
+// step attempt, restarting the run can repeat effects from an already-completed
+// prefix whose outcome is known only to the workload's operator.
+//
+// The status is what says whether this *is* that. Temporal closes a run whose
+// own execution or run budget expired as TIMED_OUT; an activity timeout that
+// escaped the workflow closes it FAILED, and reaches here only because nothing
+// upstream translated it. The engine translates the paths that can do that
+// (engine's preStepFailed, and durableStepTimeoutMessage for a step), so this
+// arm should be unreachable — but "should be unreachable" is not a thing to
+// assert by assigning the permanent kind to whatever arrives. A kind that says
+// "do not resubmit" is the wrong answer to give an agent about a run that never
+// started, and it is the answer a new pre-executor activity added without its
+// own translation would silently acquire. So the run-level kind is assigned on
+// the run-level fact rather than on the shape of the error, and anything else
+// timing out is classified as what it is: retryable, exactly as
+// engine.recordedStepKind answers for the same error one scope in.
 func timeoutFailure(status v1.RunResponse_Status, kind enums.TimeoutType) *v1.RunResponse_Error {
+	if status != v1.RunResponse_STATUS_TIMED_OUT {
+		return &v1.RunResponse_Error{
+			Message: status.String() + ": timed out (a budget inside the run expired, not the run's own)",
+			Kind:    v1.ErrorKindTimeout.String(),
+		}
+	}
+
 	return &v1.RunResponse_Error{
 		Message: status.String() + ": timed out (" + timeoutKindText(kind) + ")",
-		Kind:    v1.ErrorKindTimeout.String(),
+		Kind:    v1.ErrorKindRunTimeout.String(),
 	}
 }
 

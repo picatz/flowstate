@@ -1362,8 +1362,12 @@ func (x *InputDeclaration) GetValues() []string {
 // never from a caller.
 //
 // Deferred to the compiler for the same reasons as [InputDeclaration]: that two
-// declarations do not share a name, and that the expression's references resolve
-// against the scope a finished run actually has.
+// declarations do not share a name, that the expression's references resolve
+// against the scope a finished run actually has, and — since `type:` arrived —
+// that `values:` is written only beside `type: enum` and that an enum declares
+// at least one member. Those last two are set-facts about a declaration rather
+// than about a single field, which is what puts them out of protovalidate's
+// reach here and into [CheckOutputConstraintShape].
 type OutputDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is what the value is called in the run's result.
@@ -1389,7 +1393,56 @@ type OutputDeclaration struct {
 	// marks an input's: display etiquette, never containment. See that field's
 	// doc comment for the honesty this comes with; nothing about the two differs
 	// beyond which side of a run they describe.
-	Sensitive     bool `protobuf:"varint,5,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
+	Sensitive bool `protobuf:"varint,5,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
+	// Type is the shape this output's value has, so that a workflow's result is
+	// declared in the same place and in the same vocabulary its arguments are.
+	//
+	// [InputDeclaration.Type] itself rather than a second enum beside it. The
+	// vocabulary is one vocabulary — the six data types plus `enum` — and a
+	// parallel copy of it would be the "one value written down twice" failure the
+	// input enum's own comment already argues against, one message down. That the
+	// enum is nested in [InputDeclaration] is where it was first needed, not a
+	// claim about what it describes; every helper that reads one
+	// ([DeclaredTypeName], [ParseDeclaredType], [StringShaped], [CheckInputValue]'s
+	// literal half) therefore reads this too, unchanged.
+	//
+	// Optional, and permanently so, which is the difference from
+	// [InputDeclaration.type]. An input's type is required because a value arrives
+	// from a caller and is refused at submit if it does not match; an output's
+	// value is computed by the run from expressions the file already contains, so
+	// an undeclared type is not a hole in a trust boundary — it is a workflow that
+	// has not said what it answers with. Declarations written before this field
+	// existed stay legal and keep meaning exactly what they meant.
+	//
+	// What it does where it *is* declared, in the two directions a contract is
+	// read:
+	//
+	//   - Toward the author: `flow validate` reports a declared type that
+	//     contradicts what is statically knowable about `value:` — a literal, a
+	//     closed expression, a bare reference to a typed input — and stays silent
+	//     where nothing is knowable, since an expression over step outputs types
+	//     as `dyn` and a guess there would be a false diagnostic.
+	//   - Toward the caller: the value the run computes is checked against this
+	//     before it is reported, by [CheckOutputValue] inside [EvalRunOutputs],
+	//     which both drivers call at the same moment. A declared type nothing
+	//     enforced would be decoration, which is the rule that kept the input
+	//     enum out of an earlier phase than its checker.
+	//
+	// `flow breaking` reads it as the guarantee it is: removing or changing it
+	// weakens what callers were promised, the mirror of an input type narrowing.
+	Type InputDeclaration_Type `protobuf:"varint,6,opt,name=type,proto3,enum=flowstate.v1.InputDeclaration_Type" json:"type,omitempty"`
+	// Values is the closed set of strings a `type: enum` output may report,
+	// carrying the identical per-declaration shape rules
+	// [InputDeclaration.values] does — non-empty, bounded, distinct — and bounded
+	// for the identical reason: the declared choices are rendered into the
+	// sentence a run that produced something else fails with.
+	//
+	// Whether `values` may be present at all (only beside `TYPE_ENUM`) and
+	// whether an enum declares at least one are set-facts about this declaration,
+	// and belong to the compiler for a Flowfile and to
+	// [CheckOutputConstraintShape] for a hand-built specification — the same
+	// split the input field's own comment draws.
+	Values        []string `protobuf:"bytes,7,rep,name=values,proto3" json:"values,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1457,6 +1510,20 @@ func (x *OutputDeclaration) GetSensitive() bool {
 		return x.Sensitive
 	}
 	return false
+}
+
+func (x *OutputDeclaration) GetType() InputDeclaration_Type {
+	if x != nil {
+		return x.Type
+	}
+	return InputDeclaration_TYPE_UNSPECIFIED
+}
+
+func (x *OutputDeclaration) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
 }
 
 // RunOutputs is what one run computed for its declared outputs.
@@ -3487,14 +3554,16 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\x8c\x02\n" +
+	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xfc\x02\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x05value\x12/\n" +
 	"\vdescription\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12\x17\n" +
 	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01\x12\x1c\n" +
-	"\tsensitive\x18\x05 \x01(\bR\tsensitiveB\x0e\n" +
+	"\tsensitive\x18\x05 \x01(\bR\tsensitive\x12A\n" +
+	"\x04type\x18\x06 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12+\n" +
+	"\x06values\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06valuesB\x0e\n" +
 	"\f_descriptionB\a\n" +
 	"\x05_must\"\xae\x01\n" +
 	"\n" +
@@ -3677,63 +3746,64 @@ var file_flowstate_v1_workflow_proto_depIdxs = []int32{
 	35, // 15: flowstate.v1.InputDeclaration.default:type_name -> flowstate.v1.Value
 	35, // 16: flowstate.v1.InputDeclaration.example:type_name -> flowstate.v1.Value
 	35, // 17: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
-	25, // 18: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
-	36, // 19: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
-	12, // 20: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
-	13, // 21: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
-	11, // 22: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
-	16, // 23: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
-	14, // 24: flowstate.v1.Node.loop:type_name -> flowstate.v1.Loop
-	35, // 25: flowstate.v1.Node.value:type_name -> flowstate.v1.Value
-	15, // 26: flowstate.v1.Node.switch:type_name -> flowstate.v1.Switch
-	35, // 27: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
-	17, // 28: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
-	27, // 29: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
-	10, // 30: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
-	36, // 31: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
-	37, // 32: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
-	35, // 33: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
-	38, // 34: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
-	35, // 35: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
-	39, // 36: flowstate.v1.Wait.signal_batch:type_name -> flowstate.v1.SignalBatch
-	37, // 37: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
-	35, // 38: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
-	35, // 39: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
-	9,  // 40: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
-	29, // 41: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
-	9,  // 42: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
-	35, // 43: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
-	35, // 44: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
-	35, // 45: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
-	35, // 46: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
-	30, // 47: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
-	31, // 48: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
-	2,  // 49: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
-	32, // 50: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
-	37, // 51: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
-	18, // 52: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
-	37, // 53: flowstate.v1.StepPolicy.total_timeout:type_name -> google.protobuf.Duration
-	37, // 54: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	37, // 55: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
-	24, // 56: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	8,  // 57: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
-	35, // 58: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
-	34, // 59: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
-	26, // 60: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	35, // 61: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
-	28, // 62: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	35, // 63: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 64: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	9,  // 65: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
-	35, // 66: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
-	9,  // 67: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
-	9,  // 68: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
-	35, // 69: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	70, // [70:70] is the sub-list for method output_type
-	70, // [70:70] is the sub-list for method input_type
-	70, // [70:70] is the sub-list for extension type_name
-	70, // [70:70] is the sub-list for extension extendee
-	0,  // [0:70] is the sub-list for field type_name
+	1,  // 18: flowstate.v1.OutputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
+	25, // 19: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
+	36, // 20: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
+	12, // 21: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
+	13, // 22: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
+	11, // 23: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
+	16, // 24: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
+	14, // 25: flowstate.v1.Node.loop:type_name -> flowstate.v1.Loop
+	35, // 26: flowstate.v1.Node.value:type_name -> flowstate.v1.Value
+	15, // 27: flowstate.v1.Node.switch:type_name -> flowstate.v1.Switch
+	35, // 28: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
+	17, // 29: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
+	27, // 30: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
+	10, // 31: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
+	36, // 32: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
+	37, // 33: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
+	35, // 34: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
+	38, // 35: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
+	35, // 36: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
+	39, // 37: flowstate.v1.Wait.signal_batch:type_name -> flowstate.v1.SignalBatch
+	37, // 38: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
+	35, // 39: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
+	35, // 40: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
+	9,  // 41: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
+	29, // 42: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
+	9,  // 43: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
+	35, // 44: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
+	35, // 45: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
+	35, // 46: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
+	35, // 47: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
+	30, // 48: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
+	31, // 49: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
+	2,  // 50: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
+	32, // 51: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
+	37, // 52: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
+	18, // 53: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
+	37, // 54: flowstate.v1.StepPolicy.total_timeout:type_name -> google.protobuf.Duration
+	37, // 55: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	37, // 56: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
+	24, // 57: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	8,  // 58: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
+	35, // 59: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
+	34, // 60: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
+	26, // 61: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	35, // 62: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
+	28, // 63: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	35, // 64: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
+	35, // 65: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	9,  // 66: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
+	35, // 67: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
+	9,  // 68: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
+	9,  // 69: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
+	35, // 70: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	71, // [71:71] is the sub-list for method output_type
+	71, // [71:71] is the sub-list for method input_type
+	71, // [71:71] is the sub-list for extension type_name
+	71, // [71:71] is the sub-list for extension extendee
+	0,  // [0:71] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_workflow_proto_init() }
