@@ -153,6 +153,16 @@ func WithCredentials(ctx context.Context) context.Context {
 //
 // A rule naming `credentials` therefore means one thing across the built-in task
 // and every plugin, which is what makes it writable at all.
+//
+// A deployment's own proxy credential is not a workload credential and is not
+// marked. Under `proxy_from_environment`, Go synthesizes Proxy-Authorization
+// from the userinfo in the operator's HTTP_PROXY at write time, onto the
+// request's extra headers rather than req.Header, addressed to the proxy — on a
+// CONNECT for https, and consumed by the first outbound proxy for plain http. It
+// never reaches the host a rule names, the built-in task does not count it
+// either, and marking it here alone would make the same rule mean two things.
+// Proxy-Authorization is in this list for the other case: a plugin that sets the
+// header itself, which is a credential the plugin holds.
 var credentialHeaders = []string{"Authorization", "Proxy-Authorization", "Cookie"}
 
 // credentialMarkingTransport marks a request as credentialed before the governed

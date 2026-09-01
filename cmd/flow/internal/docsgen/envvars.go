@@ -148,6 +148,42 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/plugin/sdk/egress.go",
 		},
 		{
+			name:    "HTTP_PROXY",
+			value:   "unset",
+			purpose: "The worker's own proxy for plain HTTP, read by Go's `http.ProxyFromEnvironment` and honoured by the built-in `http` task when the egress policy sets `proxy_from_environment`. Under that policy the worker also grants it to every plugin it launches, verbatim, because a plugin's environment is built from nothing and would otherwise dial past the proxy the operator requires; under any other policy it is not forwarded. `http_proxy` is the same variable and Go prefers this spelling when both are set, so naming either one in the plugin host's `Env` replaces both.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "http_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `HTTP_PROXY`, and the same variable: Go's `http.ProxyFromEnvironment` reads both and prefers the uppercase. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "HTTPS_PROXY",
+			value:   "unset",
+			purpose: "The worker's own proxy for HTTPS, read by Go's `http.ProxyFromEnvironment`. Granted to launched plugins exactly as `HTTP_PROXY` is, and only when the egress policy sets `proxy_from_environment`.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "https_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `HTTPS_PROXY`, and the same variable. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "NO_PROXY",
+			value:   "unset",
+			purpose: "Hosts the worker reaches directly rather than through a proxy, read by Go's `http.ProxyFromEnvironment`. Granted to launched plugins alongside the proxy variables, and only when the egress policy sets `proxy_from_environment` — without it a plugin would proxy destinations the worker itself does not.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "no_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `NO_PROXY`, and the same variable. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
 			name:    "FLOWSTATE_TASK_POLICY",
 			value:   "unset",
 			purpose: "Default for `--task-policy`: a YAML task-shape policy (#187) governing which identities may dispatch which tasks. When set it replaces the built-in policy (no restriction) entirely rather than merging with it.",

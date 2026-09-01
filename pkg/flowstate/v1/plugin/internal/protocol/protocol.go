@@ -160,16 +160,8 @@ const (
 // environment it did not build (sdk.EgressPolicy).
 const MaxEgressPolicyBytes = 64 << 10
 
-// ProxyEnv returns the proxy variables [net/http.ProxyFromEnvironment] reads,
-// grouped so that the two spellings of one variable stay one variable.
-//
-// Each entry is a pair, uppercase first, which is the order ProxyFromEnvironment
-// itself prefers: given both HTTP_PROXY and http_proxy it takes the uppercase.
-// The grouping is not cosmetic. Treating the six names as six independent
-// variables meant an operator who overrode `http_proxy` still had the worker's
-// ambient HTTP_PROXY forwarded beside it, and the uppercase one is the one that
-// wins — so the override an operator was told they had made silently lost to the
-// value it was written to replace.
+// The proxy variables a launched plugin is granted when the deployment's policy
+// proxies, in the two spellings [net/http.ProxyFromEnvironment] accepts.
 //
 // These are granted, not protocol. Nothing in this package sets or reads them;
 // they are ordinary variables that every HTTP stack already understands, and the
@@ -184,6 +176,12 @@ const MaxEgressPolicyBytes = 64 << 10
 // difference in routing, it is the plugin going around the control — silently,
 // and only for plugins.
 //
+// Each variable has two spellings and they are one variable: ProxyFromEnvironment
+// takes the uppercase when it sees both, so a host granting one spelling while an
+// operator configured the other would leave the operator's choice outvoted by the
+// value it was written to replace. They are granted or withheld together; see the
+// host's proxyGrant.
+//
 // They are deliberately not in [MagicCookieEnv]'s company in the host's
 // isProtocolEnv list: an operator who names a proxy in Config.Env is being more
 // specific than the worker's own environment, and that entry wins rather than
@@ -193,13 +191,20 @@ const MaxEgressPolicyBytes = 64 << 10
 // non-empty value means the process is a CGI script, and HTTP_PROXY is then
 // ignored as untrusted — and forwarding it would let the worker's environment
 // turn a plugin's proxy off in a way no operator wrote down.
-func ProxyEnv() [][2]string {
-	return [][2]string{
-		{"HTTP_PROXY", "http_proxy"},
-		{"HTTPS_PROXY", "https_proxy"},
-		{"NO_PROXY", "no_proxy"},
-	}
-}
+//
+// Each is a named constant rather than an element of a list the host ranges
+// over, so that every os.LookupEnv naming one resolves to a literal. The
+// environment-documentation drift test (cmd/flow/internal/docsgen) reads call
+// sites, and a read whose name it cannot follow is a hole in exactly the shape
+// that test defends.
+const (
+	HTTPProxyEnv       = "HTTP_PROXY"
+	HTTPProxyLowerEnv  = "http_proxy"
+	HTTPSProxyEnv      = "HTTPS_PROXY"
+	HTTPSProxyLowerEnv = "https_proxy"
+	NoProxyEnv         = "NO_PROXY"
+	NoProxyLowerEnv    = "no_proxy"
+)
 
 // MagicCookieValue is the value [MagicCookieEnv] must hold.
 //

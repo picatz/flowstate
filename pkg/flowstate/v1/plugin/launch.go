@@ -707,8 +707,30 @@ func proxyGrant(cfg Config) []string {
 		return nil
 	}
 
+	// Each variable is read at a call site naming its own constant rather than
+	// through a range over a list of names. Ranging reads the same six variables
+	// and is shorter, but it hides which ones from the environment-documentation
+	// drift test (cmd/flow/internal/docsgen), whose resolver follows a literal or
+	// a constant and nothing else — and a read it cannot follow is a hole in
+	// exactly the shape that test defends.
 	var granted []string
-	for _, pair := range protocol.ProxyEnv() {
+	for _, variable := range []proxyVariable{
+		{
+			upper: protocol.HTTPProxyEnv, lower: protocol.HTTPProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyLowerEnv)),
+		},
+		{
+			upper: protocol.HTTPSProxyEnv, lower: protocol.HTTPSProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyLowerEnv)),
+		},
+		{
+			upper: protocol.NoProxyEnv, lower: protocol.NoProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.NoProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.NoProxyLowerEnv)),
+		},
+	} {
 		// An operator naming this variable in Config.Env is more specific than
 		// the worker's ambient value, and duplicate keys in one environment
 		// block are read differently by different runtimes. Skip rather than
@@ -721,25 +743,45 @@ func proxyGrant(cfg Config) []string {
 		// value it was written to replace, with nothing anywhere to say so.
 		// Either spelling being configured settles the variable, and neither
 		// ambient spelling crosses.
-		if configuredInEnv(cfg.Env, pair) {
+		if configuredInEnv(cfg.Env, variable.upper, variable.lower) {
 			continue
 		}
 
-		for _, name := range pair {
-			if value, ok := os.LookupEnv(name); ok {
-				granted = append(granted, name+"="+value)
-			}
+		if variable.upperValue.set {
+			granted = append(granted, variable.upper+"="+variable.upperValue.value)
+		}
+		if variable.lowerValue.set {
+			granted = append(granted, variable.lower+"="+variable.lowerValue.value)
 		}
 	}
 
 	return granted
 }
 
+// proxyVariable is one proxy setting in the two spellings
+// [net/http.ProxyFromEnvironment] accepts, with what the worker holds for each.
+type proxyVariable struct {
+	upper, lower           string
+	upperValue, lowerValue proxyValue
+}
+
+// proxyValue is one environment read: the value, and whether it was set at all.
+type proxyValue struct {
+	value string
+	set   bool
+}
+
+// proxyValueOf adapts [os.LookupEnv]'s two results, so a read can stay one
+// expression naming its constant.
+func proxyValueOf(value string, set bool) proxyValue {
+	return proxyValue{value: value, set: set}
+}
+
 // configuredInEnv reports whether an operator named either spelling of one proxy
 // variable in [Config.Env].
-func configuredInEnv(env []string, pair [2]string) bool {
+func configuredInEnv(env []string, upper, lower string) bool {
 	return slices.ContainsFunc(env, func(entry string) bool {
-		return isEnvNamed(entry, pair[0]) || isEnvNamed(entry, pair[1])
+		return isEnvNamed(entry, upper) || isEnvNamed(entry, lower)
 	})
 }
 
