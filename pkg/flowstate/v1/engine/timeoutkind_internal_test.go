@@ -105,3 +105,78 @@ func TestRecordedStepKindKeepsANestedRunsClassification(t *testing.T) {
 
 	require.Equal(t, v1.ErrorKindPolicyDenied, recordedStepKind(inner))
 }
+
+// TestVarsTimeoutIsNotTheRunsExecutionTimeout is [varsFailed]'s reason, asserted
+// where it can be: the run's `vars:` activity is the one activity whose timeout
+// used to leave this driver untranslated, and the server's fallback reads an
+// untranslated timeout as the run's own execution budget expiring.
+//
+// The claim is therefore two-sided. The message must name `vars:` — an operator
+// told "this run exceeded its execution timeout" goes looking for a run budget
+// that did not fire — and the classification must stay the activity's, because
+// nothing had run yet and the run-level kind says the opposite: that a completed
+// prefix may have applied effects an operator has to weigh before restarting.
+func TestVarsTimeoutIsNotTheRunsExecutionTimeout(t *testing.T) {
+	for _, timeoutType := range []enums.TimeoutType{
+		enums.TIMEOUT_TYPE_START_TO_CLOSE,
+		enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE,
+		enums.TIMEOUT_TYPE_SCHEDULE_TO_START,
+		enums.TIMEOUT_TYPE_HEARTBEAT,
+	} {
+		t.Run(timeoutType.String(), func(t *testing.T) {
+			// The envelope stood in for by `%w`, for the reason
+			// [TestRecordedStepKindClassifiesEveryTimeout] gives: the SDK exports
+			// no *ActivityError constructor, and both are a chain to look through.
+			err := varsFailed(fmt.Errorf("activity error: %w",
+				temporal.NewTimeoutError(timeoutType, nil)))
+
+			var failed *ErrRunFailed
+			require.ErrorAs(t, err, &failed,
+				"an untranslated timeout here is what the server reads as the run's own")
+
+			require.Contains(t, failed.Message, "vars:",
+				"the sentence must name what timed out, kind=%s", timeoutType)
+			require.NotContains(t, failed.Message, "execution timeout",
+				"a run budget that did not fire must not be named, kind=%s", timeoutType)
+
+			// And the kind the activity's own policy governs, not the permanent
+			// run-level one. Retryable is the assertion that distinguishes them:
+			// [v1.ErrorKindRunTimeout] is permanent by construction.
+			require.Equal(t, v1.ErrorKindTimeout, failed.errorKind(), "kind=%s", timeoutType)
+			require.True(t, failed.errorKind().Retryable(),
+				"nothing had run, so this is the activity's timeout and not the run's")
+		})
+	}
+}
+
+// TestVarsFailureKeepsItsOwnAccount is the negative direction, and the reason
+// [varsFailed] translates one shape rather than wrapping everything.
+//
+// A `vars:` expression that failed already crosses the activity boundary as an
+// application error carrying its own kind and the sentence [v1.EvalVars] gives
+// the local driver for the same file. Wrapping that would prepend a position
+// the local driver does not, and re-classify a failure that classified itself —
+// so it must reach the client exactly as it arrived.
+func TestVarsFailureKeepsItsOwnAccount(t *testing.T) {
+	err := activityError("vars", v1.NewTaskError("vars", v1.ErrorKindExpression,
+		errors.New("no such key: missing")), false)
+
+	require.Same(t, err, varsFailed(err),
+		"a failure that classified itself must travel as itself")
+	require.Equal(t, v1.ErrorKindExpression, recordedStepKind(varsFailed(err)))
+}
+
+// TestVarsCancellationIsNotAFailure pins that a run somebody stopped while its
+// `vars:` were being evaluated still reads as CANCELED.
+//
+// Temporal decides that from the error's type and [ErrRunFailed] formats a type
+// away, so this is the assertion that fails if [varsFailed] is ever widened to
+// wrap more than the one shape it translates — [nodeFailed]'s own cancellation
+// check being the backstop underneath if it is.
+func TestVarsCancellationIsNotAFailure(t *testing.T) {
+	canceled := temporal.NewCanceledError()
+
+	require.Same(t, canceled, varsFailed(canceled))
+	require.True(t, temporal.IsCanceledError(varsFailed(canceled)),
+		"a stopped run must not be reported as one that failed")
+}

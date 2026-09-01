@@ -85,7 +85,13 @@ func TestTimeoutFailureCarriesTheTimeoutKind(t *testing.T) {
 			"a run that ended on a clock must reach a client classified, kind=%s", kind)
 		require.False(t, v1.ErrorKindRunTimeout.Retryable(),
 			"restarting a run could repeat effects from its completed prefix")
-		require.Contains(t, v1.PermanentErrorKinds(), v1.ErrorKindRunTimeout)
+
+		// And permanent by [v1.ErrorKind.Retryable]'s default alone. The kind is
+		// synthesized here, run-side, from Temporal's own timeout; no activity
+		// ever fails with it, so listing it in [v1.PermanentErrorKinds] would put
+		// a string no activity returns into every step's NonRetryableErrorTypes.
+		require.NotContains(t, v1.PermanentErrorKinds(), v1.ErrorKindRunTimeout,
+			"that list is the activity boundary's, and this kind never crosses it")
 		require.Contains(t, got.GetMessage(), timeoutKindText(kind),
 			"the message must still say which clock, kind=%s", kind)
 	}

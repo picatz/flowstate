@@ -134,6 +134,46 @@ func nodeFailed(err error) error {
 	return failedAt(err, "")
 }
 
+// varsFailed reports a failure of the run's own `vars:` activity, translating
+// the one shape of it that nothing else in the chain classifies.
+//
+// That activity is scheduled before the executor exists, so its failure leaves
+// [runWorkflow] without passing through [nodeFailed], and [classifyRunError]
+// rewraps only an [ErrRunFailed] — so whatever this returns unchanged reaches
+// the client as itself. For an expression failure that is exactly right: it
+// arrives as a [temporal.ApplicationError] carrying the kind [WorkflowVars]
+// classified and the same sentence [v1.EvalVars] gives the local driver, and
+// wrapping it would prepend a position the local driver does not.
+//
+// A timeout is the shape that needed this, because nothing anywhere classifies
+// one. It reached the server's own fallback (server.failureError) as a bare
+// [temporal.TimeoutError], and that fallback reads one as the *run's* execution
+// timeout — correctly, on the rule that a step's timeout is always translated
+// before it gets there (#788). This activity was the one path still reaching it
+// untranslated, so a run whose `vars:` timed out before its first step ran was
+// reported as "this run exceeded its execution timeout" and classified with the
+// permanent run-level kind: a budget named that had not fired, and a permanent
+// verdict on the one run where nothing has happened yet and restarting is safe.
+//
+// Translated, it is what it is — a failed run whose `vars:` did not finish —
+// and [recordedStepKind] answers [v1.ErrorKindTimeout] for it exactly as it does
+// for a step, so its retryability is the activity's own policy's rather than a
+// judgement about a run that never started.
+func varsFailed(err error) error {
+	if _, ok := errors.AsType[*temporal.TimeoutError](err); !ok {
+		return err
+	}
+
+	// [durableStepTimeoutError] rather than a second wrapper meaning the same
+	// thing: it carries a translated sentence for [ErrRunFailed.Message] while
+	// [durableStepTimeoutError.Unwrap] leaves the Temporal error underneath
+	// reachable, which is what keeps recordedStepKind's answer the activity's.
+	return nodeFailed(&durableStepTimeoutError{
+		err:     err,
+		message: "timed out: the workflow's vars: did not finish evaluating",
+	})
+}
+
 // failedAt builds the run failure, optionally prefixed by a position.
 func failedAt(err error, position string) error {
 	recorded, fromTask := recordedStepError(err)
@@ -491,7 +531,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			// could take without being refused.
 			Identity: st.GetIdentity(),
 		}).Get(ctx, &evaluated); err != nil {
-			return nil, err
+			return nil, varsFailed(err)
 		}
 		vars = evaluated.GetAmbientVars()
 		st.Vars = vars

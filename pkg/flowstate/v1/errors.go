@@ -87,6 +87,17 @@ const (
 	// step attempt. Earlier steps may already have applied non-idempotent effects,
 	// so the safe answer is permanent: an operator must decide whether a new run
 	// is appropriate.
+	//
+	// Permanent through [ErrorKind.Retryable]'s default rather than through
+	// [PermanentErrorKinds], and the distinction is the whole reason this kind
+	// is absent from that list. That list is the activity boundary's
+	// NonRetryableErrorTypes (the engine's nonRetryableErrorTypes), whose
+	// contract is that every entry names a type an activity can actually fail
+	// with — and no activity can fail with this one. It is synthesized run-side
+	// from Temporal's own timeout, which never crosses that boundary as an
+	// ApplicationError, so listing it would put a string no activity returns
+	// into every step's retry policy: the shape of drift that function's own
+	// doc records against the policy it replaced.
 	ErrorKindRunTimeout ErrorKind = "RunTimeout"
 
 	// ErrorKindInternal indicates a defect in Flowstate itself. These are
@@ -152,7 +163,6 @@ func PermanentErrorKinds() []ErrorKind {
 		ErrorKindPolicyDenied,
 		ErrorKindLimitExceeded,
 		ErrorKindUpstreamUnknown,
-		ErrorKindRunTimeout,
 	}
 }
 

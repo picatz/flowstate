@@ -7,8 +7,10 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // A run that failed used to be asked why, and answer with the status again.
@@ -271,4 +273,81 @@ func TestGetAndListAgreeAboutWhenARunStarted(t *testing.T) {
 		listVisibilityPrecision, "a listing and a Get disagree about when the run started")
 	assert.WithinDuration(t, listed.GetCloseTime().AsTime(), got.Msg.GetCloseTime().AsTime(),
 		listVisibilityPrecision, "a listing and a Get disagree about when the run finished")
+}
+
+// TestARunThatOutlivedItsBudgetIsClassifiedPermanent drives [failureError]'s
+// timeout branch through a real server and a real Temporal, which is the whole
+// of why it exists beside the unit test of `timeoutFailure` next door.
+//
+// That test pins what the constructor builds. It cannot pin that anything calls
+// it: the branch reached for a run that ended on a clock is the one shape of
+// failure with no application error in its chain to read a classification back
+// out of, and it stayed green through the entire life of the empty `kind` it
+// was written to fix. So this asks the question from outside — start a run that
+// cannot finish inside the deployment's ceiling, then read the answer a client
+// gets — and it is the assertion that fails if that branch stops being taken.
+//
+// The kind matters more than the sentence, and it is why this is worth a real
+// Temporal. `RunTimeout` is permanent: an agent reading it must not resubmit,
+// because a run that spent a whole execution budget may have completed steps
+// whose effects are not idempotent, and only the workload's operator knows.
+// Reporting the step-level, retryable `Timeout` here is an instruction to do
+// the one thing that is unsafe.
+func TestARunThatOutlivedItsBudgetIsClassifiedPermanent(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	// The one setting that produces a whole-run timeout: a deployment's ceiling
+	// on a workload chain. There is deliberately no default for it, so a test
+	// that wants this shape has to be the deployment that asks for one.
+	flowstate := mustNew(t, temporal,
+		server.WithNamespace("team-a"),
+		server.WithExecutionTimeout(3*time.Second))
+
+	// Parked on a wait two orders of magnitude longer than that ceiling, so the
+	// clock that ends this run is unambiguously the run's own — a step budget
+	// racing it would be testing the branch this is written to stay out of.
+	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name: "outlasts-its-budget",
+			Steps: []*v1.Node{{
+				Id: "linger",
+				Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind: &v1.Wait_Duration{Duration: durationpb.New(10 * time.Minute)},
+				}},
+			}},
+		},
+	}))
+	require.NoError(t, err)
+
+	var got *v1.GetResponse
+	require.Eventually(t, func() bool {
+		resp, gerr := flowstate.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: started.Msg.GetWorkflowId(),
+		}))
+		if gerr != nil {
+			return false
+		}
+		got = resp.Msg
+
+		return got.GetStatus() != v1.RunResponse_STATUS_RUNNING
+	}, 60*time.Second, 200*time.Millisecond, "the run never reached a terminal state")
+
+	require.Equal(t, v1.RunResponse_STATUS_TIMED_OUT, got.GetStatus(),
+		"a run that outlived its execution budget ended some other way")
+
+	require.Equal(t, v1.ErrorKindRunTimeout.String(), got.GetError().GetKind(),
+		"the run-level timeout reached a client unclassified, or as a step's retryable kind")
+	require.False(t, v1.ErrorKindRunTimeout.Retryable(),
+		"the kind a client is handed here must be the one that says not to resubmit")
+
+	// And still says what happened, in words. The classification is what an agent
+	// branches on; this is what the person reading `flow get` is owed, and the
+	// empty-`kind` fix must not have quietly cost them it.
+	require.Contains(t, got.GetError().GetMessage(), "timed out",
+		"the run's reason no longer says it ended on a clock")
+	require.NotEqual(t, got.GetStatus().String(), got.GetError().GetMessage(),
+		"the reason is the status restated, which is what this branch exists to stop")
 }
