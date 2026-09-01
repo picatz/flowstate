@@ -83,6 +83,28 @@ breaks when an example changes. `tools/gate/ci_test.go` pins the workflow's job
 list, each job's `if:` expression, and the `verdict` job's `needs:` against the
 plan, so the two halves cannot drift apart without a test failing.
 
+#### Telling the gate its base
+
+Every repair above needs the network, so a sandboxed checkout with no reachable
+remote reaches the fallback and runs wide — which, for a caller with a bounded
+budget, is not slow but interrupted, and an interrupted gate verifies nothing.
+Nine pull requests in one wave reported exactly that (#1306).
+
+A caller that already knows its base can say so, with `-base` or the
+`FLOWSTATE_GATE_BASE` environment variable it defaults from — the same
+flag-defaulting-to-env spelling `-event` uses, so a harness can set it once for
+every invocation its agents make. `baseFor` resolves the value to a commit and
+hands it to `changedFiles` exactly as a derived one, so scope keeps one
+computation and one opinion. A value this checkout cannot resolve is an error
+naming it, never a fall-through to the whole-tree fallback: falling through
+would reproduce the symptom while looking like the flag worked.
+
+It is a local-tier input, and the CI tier rejects one rather than ignoring one.
+There the base decides which *required* jobs run, so a base a pull request could
+set would let it narrow the gate that judges it — #964's hole arriving through a
+new door. `go run ./tools/gate -ci` therefore exits non-zero naming the base it
+was handed, and keeps deriving its own from a ref it controls.
+
 ### Why the conditional jobs are not the required checks
 
 GitHub's semantics for a conditional required check fail in *both* directions,
