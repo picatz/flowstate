@@ -183,3 +183,26 @@ Embed this in every dispatch prompt:
 > model should change, never as a progress bar. The literary register
 > belongs to durable doctrine and does not leak into PR bodies or review
 > replies. Reviews may return PASS; finding-count is not the metric.
+
+## Decisions do not block on the owner
+
+The lead decides. When a design record has more than one credible shape, or
+a decision would otherwise wait on the owner, the lead convenes a working
+session rather than a question: two agents brief with opposite positions
+(each argues one shape end to end against the invariants, with a concrete
+sketch, the failure it forecloses, and the cost it accepts), the lead reads
+both against the tree, decides, and records the decision on the issue with
+the reasoning and the alternative refused. The record names what evidence
+would reopen it. A builder is dispatched from the recorded decision, never
+from the debate.
+
+Working sessions have one question, a reading list, a word budget, and a
+deadline; they are read-only and produce memos, not commits. A session is
+worth its tokens when the wrong shape would cost a protocol bump, a schema
+change, or a trust-boundary rewrite to undo; it is not worth them for a
+naming choice or a bound's value, which the builder decides in the commit
+body. The owner's standing instruction (2026-09-01) is that decisions,
+sequencing and the merge of a green, reviewed PR are the lead's to make;
+what still goes to the owner is the materially irreversible or externally
+consequential act: a first release, a deletion of state, a change to
+production or security controls outside the repository.
