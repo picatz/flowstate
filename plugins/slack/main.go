@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
@@ -11,10 +9,7 @@ import (
 )
 
 func main() {
-	if err := installEgressPolicy(); err != nil {
-		fmt.Fprintf(os.Stderr, "slack: %v\n", err)
-		os.Exit(1)
-	}
+	installEgressPolicy()
 
 	sdk.Main(sdk.Plugin{
 		Name:        "slack",

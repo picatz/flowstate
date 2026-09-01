@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
@@ -11,10 +9,7 @@ import (
 )
 
 func main() {
-	if err := installEgressPolicy(); err != nil {
-		fmt.Fprintf(os.Stderr, "vcs: %v\n", err)
-		os.Exit(1)
-	}
+	installEgressPolicy()
 
 	sdk.Main(sdk.Plugin{
 		Name:        "vcs",
@@ -55,15 +50,14 @@ func main() {
 //
 // There is no long-lived backend connection to check - every clone is a
 // fresh, self-contained request - so the only thing worth reporting here is
-// whether the egress policy this process built at startup is the one every
-// task is actually using, which installEgressPolicy already guarantees by
-// the time Main is reached. A real "can I reach GitHub/GitLab/wherever"
+// whether the deployment's egress policy reached this process, which is what
+// every task is governed by. A real "can I reach GitHub/GitLab/wherever"
 // check would be a check on the *remote* this run happens to name, which
 // is not this plugin's to assume - a health check answers "is this plugin
 // able to serve," not "is the internet up."
+//
+// Describe and the catalog keep working when this is unhealthy, deliberately:
+// knowing what a plugin offers is not the same as being able to reach a remote.
 func checkHealth(_ context.Context) error {
-	if egressPolicy == nil {
-		return fmt.Errorf("egress policy was never installed")
-	}
-	return nil
+	return requireEgressPolicy()
 }

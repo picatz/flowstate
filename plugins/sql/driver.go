@@ -50,8 +50,7 @@ func openDB(ctx context.Context, engine sqlv1.Engine, dsn string, scrubber *secr
 
 	case sqlv1.Engine_ENGINE_POSTGRES:
 		if egressPolicy == nil {
-			return nil, sdk.PermissionDenied(
-				"postgres requires an operator egress policy passed with --egress-policy; the SQL plugin denies network access when it is absent")
+			return nil, sdk.PermissionDenied("%v", postgresRefusal())
 		}
 		cfg, err := pgx.ParseConfigWithOptions(dsn, pgx.ParseConfigOptions{
 			ConnStringAllowedKeys: []string{
@@ -132,7 +131,7 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 		// the eventual TCP connection would be refused.
 		target := &url.URL{Scheme: "postgres", Host: net.JoinHostPort(ep.host, strconv.Itoa(int(ep.port)))}
 		if err := egressPolicy.CheckURL(policyCtx, http.MethodConnect, target); err != nil {
-			return sdk.PermissionDenied("postgres destination is denied by deployment egress policy")
+			return classifyEgressCheck(err)
 		}
 		if _, ok := resolved[ep.host]; ok {
 			continue
@@ -161,7 +160,7 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 					continue
 				}
 				if err := egressPolicy.CheckConnection(policyCtx, "postgres", ep.host, netip.AddrPortFrom(ip, candidate.port)); err != nil {
-					return sdk.PermissionDenied("postgres destination is denied by deployment egress policy")
+					return classifyEgressCheck(err)
 				}
 			}
 		}

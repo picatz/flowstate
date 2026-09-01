@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"github.com/go-git/go-git/v5"
@@ -11,34 +12,78 @@ import (
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// egressPolicy is the one netpolicy.Policy this process builds, installed as
-// go-git's http(s) transport at startup - see plugins/vcs/clone.go for the
-// full argument, which applies here unchanged: every byte this plugin reads
-// from or writes to a remote crosses it, and it is built once because
-// netpolicy.New compiles CEL rules and go-git's client registry is a
-// process-wide default per scheme, not a per-request option.
+// egressPolicy is the deployment's own egress policy, granted to this process
+// at launch and installed as go-git's http(s) transport at startup - see
+// plugins/vcs/clone.go for the full argument, which applies here unchanged:
+// every byte this plugin reads from or writes to a remote crosses it, and it
+// is installed once because go-git's client registry is a process-wide
+// default per scheme, not a per-request option.
+//
+// It used to be a policy this plugin built for itself, which meant a deny rule
+// an operator wrote in --egress-policy did not reach a git.* task at all
+// (#1321). The rules are now the deployment's; the two bounds this plugin
+// states for its own transport are not, because a packfile is not the shape of
+// response the operator's file is sized for - see
+// [sdk.EgressPolicyWithBounds].
+//
+// Nil means the grant could not be used, and [egressRefusal] says why.
 var egressPolicy *netpolicy.Policy
 
-// installEgressPolicy builds the policy and registers it as the client every
-// go-git https operation in this process uses - reads and writes alike, since
-// [githttp.NewClient] backs both upload-pack (clone/fetch) and receive-pack
-// (push) sessions.
-func installEgressPolicy() error {
-	policy, err := netpolicy.New(
-		netpolicy.WithMaxResponseBytes(maxResponseBytes),
-		netpolicy.WithTimeout(requestTimeout),
-	)
+// egressRefusal is why there is no policy, kept so the task boundary can
+// refuse with the SDK's message - which names the environment variable and the
+// worker that sets it - rather than with a denial of its own invention.
+var egressRefusal error
+
+// installEgressPolicy takes the deployment's grant and registers it as the
+// client every go-git https operation in this process uses - reads and writes
+// alike, since [githttp.NewClient] backs both upload-pack (clone/fetch) and
+// receive-pack (push) sessions.
+//
+// An unusable grant does not stop the process. A plugin launched to be asked
+// what it can do - `flow plugins`, `flow tasks`, a catalog build - has no use
+// for a policy, and refusing to start would turn one bad policy file into a
+// plugin the host cannot even describe. What it must not do is leave go-git's
+// own default client installed, which is ungoverned: [refusingTransport] takes
+// that slot instead, so the fail-closed answer holds even for a path that
+// forgot to ask.
+func installEgressPolicy() {
+	policy, err := sdk.EgressPolicyWithBounds(maxResponseBytes, requestTimeout)
 	if err != nil {
-		return fmt.Errorf("building the egress policy: %w", err)
+		egressRefusal = err
+		client.InstallProtocol("https", githttp.NewClient(&http.Client{Transport: refusingTransport{err}}))
+		return
 	}
+
 	egressPolicy = policy
-
 	client.InstallProtocol("https", githttp.NewClient(policy.Client()))
-
-	return nil
 }
+
+// requireEgressPolicy is what every task calls before it reaches a remote.
+//
+// The transport below would refuse anyway; this is here for the answer's
+// shape rather than its existence. A refusal arriving as a transport error
+// reads as a network failure a retry might fix, when in fact nothing about
+// this worker will change until it is relaunched with a grant.
+func requireEgressPolicy() error {
+	if egressPolicy != nil {
+		return nil
+	}
+
+	return sdk.PermissionDenied("this plugin was launched without a usable egress policy: %v", egressRefusal)
+}
+
+// refusingTransport answers every request with why the grant could not be
+// used, and dials nothing.
+//
+// go-git resolves its http client from a process-wide registry, so the choice
+// at startup is between a governed client and *some* client - leaving the slot
+// alone leaves go-git's own, which is bound by nothing the deployment said.
+type refusingTransport struct{ err error }
+
+func (t refusingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, t.err }
 
 // cloneOptions is what every task in this plugin asks of a clone. token is a
 // closure, never a plain string field, for the containment reason
@@ -104,6 +149,10 @@ func cloneBoundedWithInflationCap(ctx context.Context, opts cloneOptions, maxInf
 	// doc comment.
 	if opts.depth <= 0 || opts.depth > maxResumeCloneDepth {
 		return nil, fmt.Errorf("clone depth %d is out of bounds (1-%d)", opts.depth, maxResumeCloneDepth)
+	}
+
+	if err := requireEgressPolicy(); err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)

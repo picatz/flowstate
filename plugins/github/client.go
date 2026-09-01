@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -15,37 +14,63 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// egressPolicy is the one netpolicy.Policy this process builds. Every
-// request this plugin makes - minting an installation token, and every
-// go-github call - goes through the *http.Client it produces, which is what
-// makes the response-byte cap and the (denied by default) egress rules
-// actual enforcement rather than a comment: netpolicy caps a response body
-// in its RoundTripper itself, on every response regardless of status code,
-// covering exactly the gap CLAUDE.md's own connect-go lesson names - a
-// library's non-2xx error path that forgets to apply a caller-configured
-// read limit.
+// egressPolicy is the deployment's egress policy, granted to this process at
+// launch. Every request this plugin makes - minting an installation token, and
+// every go-github call - goes through the *http.Client it produces, which is
+// what makes the response-byte cap and the egress rules actual enforcement
+// rather than a comment: netpolicy caps a response body in its RoundTripper
+// itself, on every response regardless of status code, covering exactly the gap
+// CLAUDE.md's own connect-go lesson names - a library's non-2xx error path that
+// forgets to apply a caller-configured read limit.
 //
-// It is built once, at process start, the same reasoning
-// flowstate-plugin-vcs's installEgressPolicy gives for doing the same.
+// The rules are the deployment's, not this plugin's. Until #1323 this process
+// built its own safe default, so a GitHub Enterprise operator could not
+// authorize their private API network through --egress-policy, and a deny rule
+// they wrote did not reach a github.* task at all. What stays this plugin's own
+// are the two transport bounds: a paginated API response is not the shape
+// max_response_bytes is sized for - see [sdk.EgressPolicyWithBounds].
+//
+// It is taken once, at process start, the same reasoning
+// flowstate-plugin-vcs's installEgressPolicy gives for doing the same. Nil
+// means the grant could not be used, and [egressRefusal] says why.
 var egressPolicy *netpolicy.Policy
 
-func installEgressPolicy() error {
-	policy, err := netpolicy.New(
-		netpolicy.WithMaxResponseBytes(maxResponseBytes),
-		netpolicy.WithTimeout(requestTimeout*time.Second),
-	)
+// egressRefusal is why there is no policy, kept so the task boundary can refuse
+// with the SDK's message - which names the environment variable and the worker
+// that sets it - rather than with a denial of its own invention.
+var egressRefusal error
+
+// installEgressPolicy takes the deployment's grant.
+//
+// An unusable grant does not stop the process. A plugin launched to be asked
+// what it can do - `flow plugins`, `flow tasks`, a catalog build - has no use
+// for a policy, and refusing to start would turn one bad policy file into a
+// plugin the host cannot even describe. Every path that would reach the network
+// goes through [egressClient], which refuses instead.
+func installEgressPolicy() {
+	policy, err := sdk.EgressPolicyWithBounds(maxResponseBytes, requestTimeout*time.Second)
 	if err != nil {
-		return fmt.Errorf("building the egress policy: %w", err)
+		egressRefusal = err
+		return
 	}
+
 	egressPolicy = policy
-	return nil
 }
 
 // egressClient returns the governed client every network call in this
 // plugin uses - the App JWT token-minting request in auth.go, and every
 // go-github call built by newClient below.
-func egressClient() *http.Client {
-	return egressPolicy.Client()
+//
+// It returns an error rather than an ungoverned client when the grant could not
+// be used, which is the whole of this plugin's fail-closed posture: there is no
+// second client to fall back to, and a nil policy here would panic rather than
+// silently reach GitHub, which is not a distinction worth relying on.
+func egressClient() (*http.Client, error) {
+	if egressPolicy == nil {
+		return nil, sdk.PermissionDenied("this plugin was launched without a usable egress policy: %v", egressRefusal)
+	}
+
+	return egressPolicy.Client(), nil
 }
 
 // effectiveAPIBase resolves the API base a call actually reaches, after
@@ -103,7 +128,12 @@ func newClient(token, baseURL string) (*github.Client, string, error) {
 		return nil, "", err
 	}
 
-	client := github.NewClient(egressClient())
+	governed, err := egressClient()
+	if err != nil {
+		return nil, "", err
+	}
+
+	client := github.NewClient(governed)
 
 	if token != "" {
 		client = client.WithAuthToken(token)

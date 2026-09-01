@@ -289,7 +289,12 @@ func mintInstallationToken(ctx context.Context, cfg authConfig) (string, time.Ti
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := egressClient().Do(req)
+	governed, err := egressClient()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	resp, err := governed.Do(req)
 	if err != nil {
 		return "", time.Time{}, sdk.Unavailable("reaching the GitHub API to mint an installation token: %v", err)
 	}

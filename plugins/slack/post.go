@@ -63,7 +63,7 @@ func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	}
 	if egressPolicy == nil {
 		return nil, sdk.PermissionDenied(
-			"slack.post requires an operator egress policy passed with --egress-policy; network access is denied when it is absent")
+			"slack.post has no usable egress policy, so no destination is authorized: %v", egressRefusal)
 	}
 
 	var in slackv1.PostInputs
