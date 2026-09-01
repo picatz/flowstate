@@ -66,10 +66,47 @@ const EgressPolicyEnv = protocol.EgressPolicyEnv
 // It is safe for concurrent use, and [netpolicy.Policy.Client] hands out a copy
 // per caller, so a plugin that reassigns the transport on a client it was given
 // disables the policy for itself alone.
+//
+// What the policy permits is only half of what a plugin needs to know about it.
+// [EgressPolicyIsDeploymentDefault] is the other half: whether an operator wrote
+// this policy or the worker forwarded its own default.
 func EgressPolicy() (*netpolicy.Policy, error) {
 	captureEgressGrant()
 
 	return grant.policy, grant.err
+}
+
+// EgressPolicyIsDeploymentDefault reports whether the grant is the deployment
+// default — the policy the worker's own built-in http task runs under when no
+// operator configured `--egress-policy` — rather than a policy an operator
+// wrote. It fails closed exactly as [EgressPolicy] does: no grant and a
+// malformed grant are errors naming [EgressPolicyEnv], not a false.
+//
+// There are two defensible postures toward the default, and which one a plugin
+// takes is the plugin's decision, not the SDK's:
+//
+// Accept it. The default denies internal address ranges, loopback, and cloud
+// metadata, and permits public http and https — which is the policy the built-in
+// http task on that worker is already fetching under. A plugin whose work is
+// reaching a public endpoint (git, vcs, github, slack) accepts it, and a default
+// worker then reaches public hosts uniformly, which is the behavior those
+// plugins have always had. Refusing instead would mean that installing a plugin
+// requires writing a policy file to get back what the worker already does.
+//
+// Refuse it. A plugin whose authority is of a different class than an HTTP fetch
+// — sql reaching a database, where the destination is the credential's whole
+// meaning — treats the absence of an operator's decision as the absence of
+// permission, and refuses with a message naming `--egress-policy` so the
+// operator knows what would grant it. That is #1320's decision, kept.
+//
+// What is never right is treating the default as no grant at all. The worker
+// granted its own policy deliberately; a plugin that reads it as nothing either
+// refuses work every default worker has always done or invents a posture the
+// deployment never expressed.
+func EgressPolicyIsDeploymentDefault() (bool, error) {
+	captureEgressGrant()
+
+	return grant.deploymentDefault, grant.err
 }
 
 // captureEgressGrant reads and parses the grant, once per process.
@@ -85,7 +122,7 @@ func EgressPolicy() (*netpolicy.Policy, error) {
 // policy, latched here so that answer does not depend on when they ask.
 func captureEgressGrant() {
 	grant.once.Do(func() {
-		grant.policy, grant.err = parseEgressGrant(os.LookupEnv(EgressPolicyEnv))
+		grant.policy, grant.deploymentDefault, grant.err = parseEgressGrant(os.LookupEnv(EgressPolicyEnv))
 	})
 }
 
@@ -125,6 +162,13 @@ type egressGrant struct {
 	once   sync.Once
 	policy *netpolicy.Policy
 	err    error
+
+	// deploymentDefault is the document's own account of where it came from,
+	// kept beside the policy it built rather than re-derived: the parse that
+	// answers "what may I reach" is the same one that answers "who decided",
+	// and a second read of the environment to ask the second question would be
+	// a second grant.
+	deploymentDefault bool
 }
 
 // grant is a pointer so that this package's own tests can put a fresh capture in
@@ -132,12 +176,13 @@ type egressGrant struct {
 // which is the only setting where the capture has to be undone.
 var grant = &egressGrant{}
 
-// parseEgressGrant turns the encoded grant into a policy, or says why it could
-// not. present is [os.LookupEnv]'s second result: false is no grant, true with
-// an empty string is a grant whose document is empty.
-func parseEgressGrant(encoded string, present bool) (*netpolicy.Policy, error) {
+// parseEgressGrant turns the encoded grant into a policy and the document's own
+// account of where it came from, or says why it could not. present is
+// [os.LookupEnv]'s second result: false is no grant, true with an empty string
+// is a grant whose document is empty.
+func parseEgressGrant(encoded string, present bool) (*netpolicy.Policy, bool, error) {
 	if !present {
-		return nil, fmt.Errorf(
+		return nil, false, fmt.Errorf(
 			"sdk: no egress policy: %s is not set, so there is no destination this plugin is "+
 				"known to be permitted to reach. A Flowstate worker sets it from its own "+
 				"--egress-policy (or $FLOWSTATE_EGRESS_POLICY); a plugin run outside one has no "+
@@ -157,31 +202,31 @@ func parseEgressGrant(encoded string, present bool) (*netpolicy.Policy, error) {
 	// by hand — and "the caller checked" is not a bound (AGENTS.md's fifth
 	// invariant).
 	if maxEncoded := base64.StdEncoding.EncodedLen(protocol.MaxEgressPolicyBytes); len(encoded) > maxEncoded {
-		return nil, fmt.Errorf(
+		return nil, false, fmt.Errorf(
 			"sdk: the egress policy in %s is over the %d-byte limit once decoded (%d encoded bytes, at most %d)",
 			EgressPolicyEnv, protocol.MaxEgressPolicyBytes, len(encoded), maxEncoded)
 	}
 
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("sdk: decoding the egress policy in %s: %w", EgressPolicyEnv, err)
+		return nil, false, fmt.Errorf("sdk: decoding the egress policy in %s: %w", EgressPolicyEnv, err)
 	}
 
 	if len(data) > protocol.MaxEgressPolicyBytes {
-		return nil, fmt.Errorf(
+		return nil, false, fmt.Errorf(
 			"sdk: the egress policy in %s is %d bytes, over the %d-byte limit",
 			EgressPolicyEnv, len(data), protocol.MaxEgressPolicyBytes)
 	}
 
 	cfg, err := netpolicy.ParseConfig(data)
 	if err != nil {
-		return nil, fmt.Errorf("sdk: parsing the egress policy in %s: %w", EgressPolicyEnv, err)
+		return nil, false, fmt.Errorf("sdk: parsing the egress policy in %s: %w", EgressPolicyEnv, err)
 	}
 
 	policy, err := cfg.Policy()
 	if err != nil {
-		return nil, fmt.Errorf("sdk: building the egress policy in %s: %w", EgressPolicyEnv, err)
+		return nil, false, fmt.Errorf("sdk: building the egress policy in %s: %w", EgressPolicyEnv, err)
 	}
 
-	return policy, nil
+	return policy, cfg.DeploymentDefault, nil
 }

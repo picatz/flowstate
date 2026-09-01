@@ -454,3 +454,82 @@ func TestRunCapturesTheGrantBeforeTaskCodeCanRewriteIt(t *testing.T) {
 	assert.Error(t, got.loopbackErr,
 		"a task granted itself loopback by writing its own environment before the first EgressPolicy call")
 }
+
+// TestThePostureTowardTheDefaultIsThePluginsToTake is point 7 of #1332: the SDK
+// reports whether an operator decided this policy or the worker forwarded its
+// own default, and each plugin decides what that means for its own work.
+//
+// Both directions are load-bearing, and they fail in opposite ways. A default
+// read as an operator's policy lets `sql` open a database on a worker whose
+// operator never authorized a destination; an operator's policy read as the
+// default makes `sql` refuse the very file that was written to permit it.
+func TestThePostureTowardTheDefaultIsThePluginsToTake(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		grant string
+		want  bool
+	}{
+		{
+			name:  "the worker's own default says so",
+			grant: grantOf("deployment_default: true\negress: {}\n"),
+			want:  true,
+		},
+		{
+			// The same posture as the default, written by an operator. What
+			// separates them is who decided, which is exactly what a policy
+			// compared by its rules could not tell apart.
+			name:  "an operator's policy does not",
+			grant: grantOf("egress: {}\n"),
+		},
+		{
+			name:  "nor does an operator's policy that says something",
+			grant: grantOf("egress:\n  schemes: [https]\n  allow_loopback: true\n"),
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resetGrant(t)
+			t.Setenv(EgressPolicyEnv, testCase.grant)
+
+			isDefault, err := EgressPolicyIsDeploymentDefault()
+			require.NoError(t, err)
+			assert.Equal(t, testCase.want, isDefault,
+				"the plugin cannot tell who decided this policy, so it cannot take a posture toward the default")
+
+			policy, err := EgressPolicy()
+			require.NoError(t, err, "the marker cost the plugin the policy itself")
+			assert.NotNil(t, policy)
+		})
+	}
+}
+
+// TestAnUnusableGrantHasNoPostureEither keeps the new accessor on the same
+// fail-closed footing as [EgressPolicy].
+//
+// A boolean has a tempting third answer — false — for a grant that never
+// arrived, and false here reads as "an operator wrote this", which is the one
+// thing an absent or unreadable grant is not. Both callers of this in-tree
+// (`sql` refusing, `git`/`vcs`/`github` accepting) branch on it, so a false
+// standing in for an error would hand `sql` a policy it does not have and hand
+// the others nothing to refuse with.
+func TestAnUnusableGrantHasNoPostureEither(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		resetGrant(t)
+		noGrant(t)
+
+		isDefault, err := EgressPolicyIsDeploymentDefault()
+		require.Error(t, err, "an absent grant answered the posture question instead of refusing")
+		assert.False(t, isDefault)
+		assert.Contains(t, err.Error(), EgressPolicyEnv,
+			"the refusal does not name the grant, so an operator cannot act on it")
+	})
+
+	t.Run("malformed", func(t *testing.T) {
+		resetGrant(t)
+		t.Setenv(EgressPolicyEnv, grantOf("deployment_default: true\negress:\n  schemes: [https\n"))
+
+		isDefault, err := EgressPolicyIsDeploymentDefault()
+		require.Error(t, err, "a grant that does not parse answered the posture question instead of refusing")
+		assert.False(t, isDefault,
+			"a document that could not be parsed was believed about where it came from")
+	})
+}
