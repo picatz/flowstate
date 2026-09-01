@@ -1651,6 +1651,21 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 			"resolving task capabilities before durable execution: %w", err))
 	}
+
+	// Read from the same registry and immediately after resolving task
+	// capabilities above, because that resolution has already refused any
+	// unknown task; this check only has to rely on
+	// [v1.TaskDef.RequiredSecretInputs] for the tasks the registry knows.
+	//
+	// Unlike the refusals below, this one is not compiler parity alone: the harm
+	// it prevents is complete before any other mechanism gets a turn. A literal
+	// in an input a task requires as a whole secret reference is carried into
+	// workflow history by admission itself, and the plugin host's own refusal
+	// happens at dispatch, after the credential is already durable. See
+	// [v1.CheckRequiredSecretInputs].
+	if err := v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, err)
