@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -77,6 +77,7 @@ check:
 	fi
 	$(MAKE) test ARTIFACT_SWEEP=1
 	$(MAKE) test-plugins
+	$(MAKE) plugin-examples
 	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
 	go run ./cmd/flow lint --strict examples/
@@ -146,6 +147,29 @@ test-plugins:
 		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
+
+# Build the first-party plugins into an isolated directory, compare their
+# descriptors and security claims with the portable reviewed catalog, then
+# validate every plugin example against the complete native catalog from that
+# same build without executing plugin tasks. A plugin
+# module changing its task contract, a stale catalog, and an invalid example are
+# therefore one failing gate rather than three ways CI can stay silent (#1342).
+plugin-examples:
+	@generated="$$(mktemp "$${TMPDIR:-/tmp}/flowstate-plugin-contracts.XXXXXX")"; \
+	validation="$$(mktemp "$${TMPDIR:-/tmp}/flowstate-plugin-validation.XXXXXX")"; \
+	trap 'rm -f "$$generated" "$$validation"' EXIT HUP INT TERM; \
+	tools/pluginexamples/catalog.sh "$$generated" "$$validation"; \
+	diff -u examples/plugins/plugins.lock.json "$$generated" || { \
+		echo "plugin example catalog drifted; run 'make plugin-example-catalog-update' and review the result" >&2; \
+		exit 1; \
+	}; \
+	go run ./cmd/flow validate --plugin-catalog "$$validation" examples/plugins/
+
+# The explicit write side of plugin-examples. The check above never repairs the
+# artifact it judges; an author runs this target and reviews the portable
+# descriptor and claims-digest changes like any other generated contract.
+plugin-example-catalog-update:
+	tools/pluginexamples/catalog.sh examples/plugins/plugins.lock.json
 
 # The other half of `test-plugins`, and the reason that target now names it.
 #
