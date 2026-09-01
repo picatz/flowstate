@@ -559,13 +559,14 @@ provider access, and every resolved value is registered with the activity's
 scrubber so an echo cannot reach a step output or a task error. An input a
 `TaskManifest` did not name is refused rather than resolved, fail-closed in both
 directions. A manifest may additionally put an input in
-`required_secret_inputs`; it must also be in `secret_inputs`, and the compiler and
-host then refuse a literal before it can enter durable history or cross the plugin
-socket. That controls where credential material comes from, not what destination
-it authorizes. That hand-off is sound only because "the plugin" is a process on the
-same machine, reached over a socket only the worker can open — a future remote
-plugin endpoint must not resolve-then-send the same way without a per-endpoint
-release policy deciding first whether that endpoint may receive the value at all.
+`required_secret_inputs`; it must also be in `secret_inputs`, and the compiler, the
+control plane admitting a specification, and the host then refuse a literal before
+it can enter durable history or cross the plugin socket. That controls where
+credential material comes from, not what destination it authorizes. That hand-off
+is sound only because "the plugin" is a process on the same machine, reached over
+a socket only the worker can open — a future remote plugin endpoint must not
+resolve-then-send the same way without a per-endpoint release policy deciding
+first whether that endpoint may receive the value at all.
 
 **Scrubbing is a containment tier for accidents, and it is worth being exact about
 which failures it does and does not cover, because the two look similar until

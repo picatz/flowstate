@@ -3,11 +3,14 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
 // TestOpenRefusesBadPlugins is the heart of the host's fail-closed behavior: for
@@ -397,27 +400,41 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 	cfg := testConfig(t, t.TempDir()).withDefaults()
 	cfg.Env = []string{
 		"SOMETHING=configured",
-		// An operator cannot override what the protocol owns.
+		// An operator cannot override what the protocol owns, including the
+		// retired name: the host no longer sets FLOWSTATE_PLUGIN_TOKEN, and an
+		// operator entry must not be able to put a secret back in the
+		// environment block under it.
 		"FLOWSTATE_PLUGIN_TOKEN=hijacked",
+		"FLOWSTATE_PLUGIN_TOKEN_FD=9",
 	}
 
-	env := pluginEnv(cfg, "/tmp/s", "real-token")
+	env := pluginEnv(cfg, "/tmp/s")
 
 	joined := strings.Join(env, "\n")
 
 	if !strings.Contains(joined, "SOMETHING=configured") {
 		t.Errorf("configured environment was not passed: %v", env)
 	}
-	if !strings.Contains(joined, "FLOWSTATE_PLUGIN_TOKEN=real-token") {
-		t.Errorf("the real token was not passed: %v", env)
+	if want := fmt.Sprintf("%s=%d", protocol.TokenFDEnv, tokenFD); !strings.Contains(joined, want) {
+		t.Errorf("the token descriptor was not passed as %q: %v", want, env)
+	}
+	// The operator's own entry is dropped, not appended after the host's. A
+	// second entry for a name the protocol owns would leave which descriptor a
+	// plugin reads its token from up to whichever copy that plugin's runtime
+	// hands back for the name.
+	if got := strings.Count(joined, protocol.TokenFDEnv+"="); got != 1 {
+		t.Errorf("%s appears %d times, want only the one the host set: %v", protocol.TokenFDEnv, got, env)
 	}
 	if strings.Contains(joined, "hijacked") {
 		t.Errorf("an operator-supplied entry overrode a protocol variable: %v", env)
 	}
+	if strings.Contains(joined, protocol.TokenEnv+"=") {
+		t.Errorf("the retired %s reached a plugin's environment: %v", protocol.TokenEnv, env)
+	}
 
 	// Nothing from this process leaked in.
 	t.Setenv("A_WORKER_SECRET", "should-not-travel")
-	for _, entry := range pluginEnv(cfg, "/tmp/s", "real-token") {
+	for _, entry := range pluginEnv(cfg, "/tmp/s") {
 		if strings.HasPrefix(entry, "A_WORKER_SECRET") {
 			t.Errorf("the worker's own environment reached the plugin: %q", entry)
 		}

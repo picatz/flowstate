@@ -21,11 +21,16 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
-// hostFD is the file descriptor a plugin inherits the host-liveness pipe on.
+// hostFD and tokenFD are the descriptors a plugin inherits the host-liveness
+// pipe and the per-launch token on.
 //
 // Descriptors 0, 1 and 2 are stdin, stdout and stderr, and os/exec assigns
-// Cmd.ExtraFiles from 3 upwards, so the first extra file is always 3.
-const hostFD = 3
+// Cmd.ExtraFiles from 3 upwards, so these follow the order of the ExtraFiles
+// slice built in launch.
+const (
+	hostFD  = 3
+	tokenFD = 4
+)
 
 // instance is one running plugin process: handshaked, connected, and alive until
 // something stops it.
@@ -174,6 +179,23 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	// process it belonged to ends.
 	token := rand.Text()
 
+	// It is handed over on its own inherited descriptor rather than in the
+	// environment, because an environment variable cannot be withdrawn. On Linux
+	// /proc/<pid>/environ shows the block the kernel copied at execve(2), so a
+	// token placed there stays readable for as long as the plugin runs, however
+	// promptly the plugin unsets it, and it is swept up by anything that
+	// collects environments — a diagnostic bundle, a core dump. A pipe leaves
+	// nothing behind: the token sits in kernel buffer space until the plugin
+	// reads it, and after that it exists only in the plugin's memory.
+	tokenPipeR, err := tokenPipe(token)
+	if err != nil {
+		hostPipeW.Close()
+		stdoutR.Close()
+		stderrR.Close()
+		return nil, pluginError(found.Name, found.Path, fmt.Errorf("%w: %w", ErrLaunch, err))
+	}
+	defer tokenPipeR.Close()
+
 	// An explicit argv with exactly one element: the executable. No shell, so
 	// nothing in the path or the environment is interpreted, and no arguments,
 	// so there is nothing for a plugin to be configured with that an operator
@@ -193,11 +215,11 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	cmd := exec.CommandContext(procCtx, execPath)
 	cmd.Args = []string{found.Path}
 	cmd.Dir = socketDir
-	cmd.Env = pluginEnv(cfg, socketPath, token)
+	cmd.Env = pluginEnv(cfg, socketPath)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
-	cmd.ExtraFiles = []*os.File{hostPipeR}
+	cmd.ExtraFiles = []*os.File{hostPipeR, tokenPipeR}
 
 	isolateProcessGroup(cmd)
 
@@ -207,7 +229,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	cmd.WaitDelay = cfg.ShutdownGrace
 
 	if image != nil && image.pinned {
-		if err := image.prepareForExec([]*os.File{stdin, stdoutW, stderrW, hostPipeR}); err != nil {
+		if err := image.prepareForExec([]*os.File{stdin, stdoutW, stderrW, hostPipeR, tokenPipeR}); err != nil {
 			hostPipeW.Close()
 			stdoutR.Close()
 			stderrR.Close()
@@ -240,9 +262,10 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	log = log.With("pid", inst.pid)
 	log.Debug("plugin launched", "path", found.Path, "socket", socketPath)
 
-	// The child holds its own copies of the write ends and of the pipe's read
-	// end; ours must go, or nothing here ever sees EOF.
+	// The child holds its own copies of the write ends and of the inherited read
+	// ends; ours must go, or nothing here ever sees EOF.
 	hostPipeR.Close()
+	tokenPipeR.Close()
 	stdoutW.Close()
 	stderrW.Close()
 
@@ -567,6 +590,36 @@ func makeSocketDir(base string) (dir, socket string, err error) {
 	return dir, socket, nil
 }
 
+// tokenPipe returns the read end of a pipe already holding the per-launch token,
+// for the plugin to inherit on tokenFD.
+//
+// The token is written and the write end closed before the process starts, so
+// the plugin reads one line and then EOF without the host having to stay and
+// feed it — and a plugin that never reads costs nothing, because a token is
+// orders of magnitude smaller than a pipe's buffer and the bytes are discarded
+// when both ends close.
+func tokenPipe(token string) (*os.File, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("token pipe: %w", err)
+	}
+
+	if err := protocol.WriteToken(w, token); err != nil {
+		w.Close()
+		r.Close()
+		return nil, err
+	}
+
+	// Closed here rather than deferred: the plugin's read must reach EOF, and
+	// nothing else the host does depends on this end staying open.
+	if err := w.Close(); err != nil {
+		r.Close()
+		return nil, fmt.Errorf("token pipe: %w", err)
+	}
+
+	return r, nil
+}
+
 // pluginEnv builds the environment a plugin is launched with.
 //
 // It starts empty rather than from the worker's own environment. The worker's
@@ -575,18 +628,18 @@ func makeSocketDir(base string) (dir, socket string, err error) {
 // plugin needs is named by an operator in Config.Env, which makes the set of
 // things a plugin can read a reviewable list rather than an accident of how the
 // worker was started.
-func pluginEnv(cfg Config, socketPath, token string) []string {
+func pluginEnv(cfg Config, socketPath string) []string {
 	env := []string{
 		protocol.MagicCookieEnv + "=" + protocol.MagicCookieValue,
 		protocol.VersionsEnv + "=" + protocol.FormatVersions(cfg.protocolVersions()),
 		protocol.SocketEnv + "=" + socketPath,
-		protocol.TokenEnv + "=" + token,
+		protocol.TokenFDEnv + "=" + strconv.Itoa(tokenFD),
 		protocol.HostFDEnv + "=" + strconv.Itoa(hostFD),
 	}
 
 	// Operator-supplied entries come last, but cannot override the protocol's
-	// own: a Config.Env that redefined the socket path or the token would break
-	// the handshake in a way that looks like a plugin bug.
+	// own: a Config.Env that redefined the socket path or a token descriptor
+	// would break the handshake in a way that looks like a plugin bug.
 	for _, entry := range cfg.Env {
 		if isProtocolEnv(entry) {
 			continue
@@ -599,12 +652,18 @@ func pluginEnv(cfg Config, socketPath, token string) []string {
 
 // isProtocolEnv reports whether an operator-supplied entry would collide with
 // one the protocol owns.
+//
+// protocol.TokenEnv is in the list although the host no longer sets it. The name
+// is retired, not free: an operator entry spelling it would put something a
+// plugin might read as the per-launch secret into the environment block, which
+// is exactly the place this protocol stopped keeping secrets.
 func isProtocolEnv(entry string) bool {
 	for _, name := range []string{
 		protocol.MagicCookieEnv,
 		protocol.VersionsEnv,
 		protocol.SocketEnv,
 		protocol.TokenEnv,
+		protocol.TokenFDEnv,
 		protocol.HostFDEnv,
 	} {
 		if len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name {

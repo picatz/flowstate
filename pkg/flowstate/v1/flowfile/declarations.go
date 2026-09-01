@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/google/cel-go/cel"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -329,9 +332,170 @@ func validateDeclaredOutputs(wf *v1.Workflow, scope refScope, index int) Diagnos
 		// expression itself compiles and type-checks as a bool predicate, the
 		// same load-time half [validateInputConstraintShape] runs for an input.
 		if err := v1.CheckOutputConstraintShape(declaration); err != nil {
-			ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
+			ds = append(ds, Diagnostic{Field: outputConstraintShapeField(declaration, field, err), Message: err.Error()})
+		}
+
+		if d := checkOutputValueType(wf, declaration, field); d != nil {
+			ds = append(ds, *d)
 		}
 	}
 
 	return ds
+}
+
+// outputConstraintShapeField decides which part of a declaration a
+// [v1.CheckOutputConstraintShape] error is about, the way
+// [inputConstraintShapeField] does for its own half and for the same reason: a
+// `values:` list beside a type that is not enum has a line of its own, and
+// sending the reader to the declaration as a whole would point past it.
+//
+// Only that one case, because it is the only one with a more specific home.
+// An enum with no `values:` at all has no line to point at, and a `must:` that
+// will not compile is reported against the declaration for the reason the
+// input side reports it there.
+func outputConstraintShapeField(declaration *v1.OutputDeclaration, field string, err error) string {
+	var shapeErr *v1.EnumValuesShapeError
+	if errors.As(err, &shapeErr) {
+		return field + "." + shapeErr.Field
+	}
+	if len(declaration.GetValues()) > 0 && declaration.GetType() != v1.InputDeclaration_TYPE_ENUM {
+		return field + ".values"
+	}
+
+	return field
+}
+
+// checkOutputValueType reports a declared output type that contradicts what is
+// statically knowable about the expression under `value:`, and nothing at all
+// where nothing is knowable.
+//
+// The knowable set is deliberately small and each member of it is exact:
+//
+//   - A literal, or an all-constant mapping or list, whose type is the value
+//     itself. Judged by [v1.CheckOutputValue] — the same function the run
+//     reaches through [v1.EvalRunOutputs], so a file `flow validate` passed
+//     cannot fail this check at completion instead.
+//   - A bare `${inputs.<name>}` naming an input this workflow declares, whose
+//     type is that declaration's. This is the shape most typed outputs have —
+//     an argument handed back to a caller who no longer holds it — and it is
+//     the one reference the file answers for on its own.
+//   - A closed expression the profile's own checker can pin down without
+//     knowing anything the file does not hold: `${1 + 2}`, `${"a" + "b"}`.
+//     The identical machinery [checkCallArgumentType] uses on a `with:`
+//     argument, reached the same way.
+//
+// Everything else — an expression over a step's outputs, a var, a loop's
+// results — types as `dyn`, which is read as "not knowable" rather than as a
+// mismatch. That is not a shortfall this slice could close by trying harder:
+// `checkExpressionTypes` declares every referenced name `dyn` on purpose (see
+// celcheck.go), and a checker guessing at a step's output type would report
+// mismatches against workflows that are correct.
+func checkOutputValueType(wf *v1.Workflow, declaration *v1.OutputDeclaration, field string) *Diagnostic {
+	declared := declaration.GetType()
+	if declared == v1.InputDeclaration_TYPE_UNSPECIFIED {
+		return nil
+	}
+
+	value := declaration.GetValue()
+	switch value.GetKind().(type) {
+	case *v1.Value_Expr:
+		known, ok := staticExpressionType(wf, value.GetExpr())
+		if !ok || known == declared {
+			return nil
+		}
+		if v1.StringShaped(known) && v1.StringShaped(declared) {
+			// One of the two is an enum, and an enum value travels as a string
+			// (see [v1.StringShaped]) — so the shapes agree and only membership
+			// could still be wrong. That is a value-level question nothing here
+			// can answer, and [v1.CheckOutputValue] answers it at completion,
+			// against the value the run actually produced.
+			return nil
+		}
+
+		return &Diagnostic{
+			Field: field, Value: declaration.GetName(),
+			Code: v1.DiagnosticCodeTypeMismatch,
+			Message: fmt.Sprintf(
+				"output %q is declared %s, but this expression always produces %s",
+				declaration.GetName(), v1.DeclaredTypeName(declared), v1.DeclaredTypeName(known)),
+		}
+
+	default:
+		// A literal or a structure, exact either way.
+		if err := v1.CheckOutputValue(declaration, value); err != nil {
+			return &Diagnostic{
+				Field: field, Value: declaration.GetName(),
+				Code: v1.DiagnosticCodeTypeMismatch, Message: err.Error(),
+			}
+		}
+
+		return nil
+	}
+}
+
+// staticExpressionType reports the declared type an output expression is known
+// to produce, and false where it is not knowable.
+//
+// The input-reference arm comes first because the checker cannot reach it: an
+// environment that declares every referenced name `dyn` types `inputs.release`
+// as `dyn` however precisely the file declared `release`. Widening that
+// environment is #177's road rather than this one's, so the one reference whose
+// type the file already states is answered here directly.
+func staticExpressionType(wf *v1.Workflow, parsed *expr.ParsedExpr) (v1.InputDeclaration_Type, bool) {
+	if parsed == nil {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+
+	if t, ok := declaredInputRefType(wf, parsed.GetExpr()); ok {
+		return t, true
+	}
+
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()))
+	if err != nil {
+		// A defect in this build rather than in the file; the same answer
+		// [checkCallArgumentType] gives for the identical call.
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+
+	checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+	if issues != nil && issues.Err() != nil {
+		// Does not type-check on its own terms, which [checkExpressionTypes]
+		// already reports; a second sentence here would say the same thing in
+		// a different voice.
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+
+	return declaredTypeOfCEL(checked.OutputType())
+}
+
+// declaredInputRefType reports the type wf declares for a bare
+// `${inputs.<name>}`, and false for anything else — including an input the
+// workflow does not declare (reported as an unresolved reference, not as a
+// type mismatch) and one whose own `type:` is missing.
+//
+// Bare specifically: a selection *through* the reference (`inputs.config.host`)
+// reaches inside a value whose shape this schema does not describe, so its type
+// is not knowable and saying so is the honest answer.
+func declaredInputRefType(wf *v1.Workflow, e *expr.Expr) (v1.InputDeclaration_Type, bool) {
+	sel, ok := e.GetExprKind().(*expr.Expr_SelectExpr)
+	if !ok || sel.SelectExpr.GetTestOnly() {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+	ident, ok := sel.SelectExpr.GetOperand().GetExprKind().(*expr.Expr_IdentExpr)
+	if !ok || ident.IdentExpr.GetName() != v1.InputsRoot {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+
+	for _, input := range wf.GetDeclaredInputs() {
+		if input.GetName() != sel.SelectExpr.GetField() {
+			continue
+		}
+		if input.GetType() == v1.InputDeclaration_TYPE_UNSPECIFIED {
+			return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+		}
+
+		return input.GetType(), true
+	}
+
+	return v1.InputDeclaration_TYPE_UNSPECIFIED, false
 }

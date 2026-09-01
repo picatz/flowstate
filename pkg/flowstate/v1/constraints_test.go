@@ -529,6 +529,115 @@ func TestOutputMustAcceptsAConformingAnswer(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestCheckOutputValue is the type half of the same contract, for a hand-built
+// specification: a declared type is checked against the value the run computed
+// before that value is reported, and an output that declares no type is not
+// checked at all — which is what keeps every declaration written before the
+// field existed legal.
+func TestCheckOutputValue(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name        string
+		declaration *v1.OutputDeclaration
+		value       *v1.Value
+		contains    string // Empty means the value must be accepted.
+	}{
+		{
+			name:        "an undeclared type accepts anything",
+			declaration: &v1.OutputDeclaration{Name: "answer"},
+			value:       v1.NewLiteral("whatever"),
+		},
+		{
+			name:        "a value of the declared type is accepted",
+			declaration: &v1.OutputDeclaration{Name: "count", Type: v1.InputDeclaration_TYPE_INT},
+			value:       v1.NewLiteral(int64(3)),
+		},
+		{
+			name:        "a value of another type is refused",
+			declaration: &v1.OutputDeclaration{Name: "count", Type: v1.InputDeclaration_TYPE_INT},
+			value:       v1.NewLiteral("three"),
+			contains:    `output "count" is declared int but computed string`,
+		},
+		{
+			name: "an enum member is accepted",
+			declaration: &v1.OutputDeclaration{
+				Name: "status", Type: v1.InputDeclaration_TYPE_ENUM, Values: []string{"ok", "degraded"},
+			},
+			value: v1.NewLiteral("degraded"),
+		},
+		{
+			name: "a value outside the declared set is refused, with the set named",
+			declaration: &v1.OutputDeclaration{
+				Name: "status", Type: v1.InputDeclaration_TYPE_ENUM, Values: []string{"ok", "degraded"},
+			},
+			value:    v1.NewLiteral("degrade"),
+			contains: `not one of the values status declares: "ok", "degraded"; did you mean "degraded"?`,
+		},
+		{
+			name: "an enum that computed something not string-shaped is refused",
+			declaration: &v1.OutputDeclaration{
+				Name: "status", Type: v1.InputDeclaration_TYPE_ENUM, Values: []string{"ok"},
+			},
+			value:    v1.NewLiteral(int64(1)),
+			contains: `output "status" is declared enum but computed int`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := v1.CheckOutputValue(test.declaration, test.value)
+			if test.contains == "" {
+				assert.NoError(t, err)
+
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.contains)
+		})
+	}
+}
+
+// TestCheckOutputConstraintShapeRefusesAMalformedEnum is the fail-closed half
+// for a specification that never was a Flowfile: `values:` beside a type that
+// is not enum, and an enum with no values, are set-facts protovalidate cannot
+// state per-field, so they are refused here — and therefore at submit, since
+// [v1.BindRunInputs] runs this before anything executes.
+func TestCheckOutputConstraintShapeRefusesAMalformedEnum(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+		Name: "status", Type: v1.InputDeclaration_TYPE_STRING, Values: []string{"ok"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares values but is declared string")
+
+	err = v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+		Name: "status", Type: v1.InputDeclaration_TYPE_ENUM,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is declared enum but declares no values")
+
+	// The per-member rules are the input ones reached rather than restated, so
+	// what has to be checked is that the sentence they come back in names the
+	// half of the contract the author is looking at.
+	err = v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+		Name: "status", Type: v1.InputDeclaration_TYPE_ENUM, Values: []string{"ok", "ok"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `output "status"`)
+	assert.Contains(t, err.Error(), "must be distinct")
+
+	var shapeErr *v1.EnumValuesShapeError
+	require.ErrorAs(t, err, &shapeErr,
+		"a per-member violation must carry its own field path, so a diagnostic can point at the member")
+	assert.Equal(t, "values", shapeErr.Field)
+
+	assert.NoError(t, v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+		Name: "status", Type: v1.InputDeclaration_TYPE_ENUM, Values: []string{"ok"},
+	}))
+}
+
 // TestMustRefusesAnOversizedList proves the bound found while writing
 // TestMustIsCostBounded: the CEL cost limit is abstract cost units tracked
 // during evaluation, and does not reliably bound wall-clock time against a

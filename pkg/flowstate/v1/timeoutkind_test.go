@@ -104,3 +104,24 @@ func TestTimeoutSurvivesTheDurableWire(t *testing.T) {
 	require.True(t, ok, "every kind a classifier produces must parse back")
 	require.Equal(t, v1.ErrorKindTimeout, kind)
 }
+
+// TestRunTimeoutSurvivesTheDurableWire is the same round trip for the run-level
+// kind, and it is the half the server's own emitted-string test cannot make.
+//
+// That test pins what `timeoutFailure` writes into `RunResponse.Error.kind`.
+// This pins that the same string parses back through the closed lookup — two
+// halves of one round trip. Dropping the [v1.ParseErrorKind] case would leave
+// the first half green while a client reading a kind off the wire got
+// "unrecognized" for a value this build emits, which is the failure the closed
+// lookup exists to make visible rather than to cause.
+//
+// Here rather than beside that test because [v1.ParseErrorKind] belongs to the
+// execution-independent layer, and a kind only one package can name is how the
+// two drivers came to disagree before.
+func TestRunTimeoutSurvivesTheDurableWire(t *testing.T) {
+	kind, ok := v1.ParseErrorKind(v1.ErrorKindRunTimeout.String())
+	require.True(t, ok, "every kind a classifier produces must parse back")
+	require.Equal(t, v1.ErrorKindRunTimeout, kind)
+	require.False(t, kind.Retryable(),
+		"the kind that survives the wire must be the permanent one that was sent")
+}

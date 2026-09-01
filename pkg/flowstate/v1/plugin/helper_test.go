@@ -134,7 +134,7 @@ func runFakePlugin() int {
 		// retired one makes the host refuse on the version and never reach the
 		// address, which passes the test for the wrong reason.
 		fmt.Printf("%s|%d|%d|unix|/tmp/somewhere-else.sock\n",
-			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3)
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4)
 		time.Sleep(10 * time.Second)
 		return 0
 
@@ -276,9 +276,45 @@ func fakeListen() (net.Listener, error) {
 // fakeAnnounce prints the handshake line.
 func fakeAnnounce() {
 	fmt.Printf("%s|%d|%d|%s|%s\n",
-		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3,
+		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4,
 		protocol.NetworkUnix, os.Getenv(protocol.SocketEnv))
 }
+
+// fakeToken reads the per-launch token off the descriptor the host passed, the
+// way a real plugin's SDK does — which makes every test that talks to a fake
+// also a test that fd delivery works end to end.
+//
+// Once, because the descriptor yields the token and then EOF: a second read
+// would find nothing. An empty result is a failed read, and [fakeHandler]
+// refuses every request rather than letting "" match an absent header.
+var fakeToken = sync.OnceValue(func() string {
+	fd, err := strconv.Atoi(os.Getenv(protocol.TokenFDEnv))
+	if err != nil {
+		return ""
+	}
+
+	file := os.NewFile(uintptr(fd), "token")
+	if file == nil {
+		return ""
+	}
+	defer file.Close()
+
+	token, err := protocol.ReadToken(file)
+	if err != nil {
+		return ""
+	}
+
+	// A test that needs the exact value this launch minted says where to leave
+	// it. Only TestTheTokenIsNotInTheProcessEnvironment sets this, and it needs
+	// the real string to prove that string is nowhere in /proc/<pid>/environ —
+	// an assertion about the variable name alone would pass on a host that had
+	// merely renamed it.
+	if sink := os.Getenv("FLOWSTATE_TEST_TOKEN_SINK"); sink != "" {
+		_ = os.WriteFile(sink, []byte(token), 0o600)
+	}
+
+	return token
+})
 
 // fakeHandler builds the services this fake serves.
 func fakeHandler(mode string) (http.Handler, error) {
@@ -293,7 +329,7 @@ func fakeHandler(mode string) (http.Handler, error) {
 		connect.WithInterceptors(connect.UnaryInterceptorFunc(
 			func(next connect.UnaryFunc) connect.UnaryFunc {
 				return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-					if req.Header().Get(protocol.TokenHeader) != os.Getenv(protocol.TokenEnv) {
+					if want := fakeToken(); want == "" || req.Header().Get(protocol.TokenHeader) != want {
 						return nil, connect.NewError(connect.CodePermissionDenied,
 							errors.New("missing or wrong plugin token"))
 					}

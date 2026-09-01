@@ -69,6 +69,30 @@ type Case struct {
 	// sentence".
 	ExpectedErrorContains string
 
+	// ExpectedErrorOmits is a substring an ExpectFailure case's error must
+	// *not* contain, for the cases whose claim is about what a failure does not
+	// say. ExpectedErrorContains cannot make that claim: a sentence can hold
+	// the expected wording and the forbidden material at once, and a case about
+	// a value withheld from a diagnostic is precisely the case where it does.
+	//
+	// Both drivers assert it, because a failure sentence is where a value the
+	// workload computed enters durable history, and a driver that composed the
+	// sentence differently would be the one that leaked (#1396). Empty means
+	// the case makes no such claim, which is every case that predates one.
+	ExpectedErrorOmits string
+
+	// ExpectedErrorMaxBytes caps how large an ExpectFailure case's rendered
+	// error may be, for the cases whose claim is that a diagnostic bounds
+	// something another party sized.
+	//
+	// Both drivers assert it against their own rendering, wrapper text and all,
+	// which is the honest comparison: the durable driver's failure carries
+	// Temporal's own framing around the sentence and is what has to fit in
+	// history, so a cap set from the local driver's shorter string alone would
+	// pass while the run that matters could not be persisted. Zero means the
+	// case makes no such claim.
+	ExpectedErrorMaxBytes int
+
 	// ExpectedOutputsPredicate checks a run's outputs when the exact value is
 	// not what is under test — a run-time CEL error's precise wording, say,
 	// which is a property of the expression evaluator rather than of the two

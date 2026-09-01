@@ -119,11 +119,9 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		if slices.Contains(def.RequiredSecretInputs, name) {
 			if task.GetInputs()[name].GetSecretRef() == nil {
 				ds = append(ds, Diagnostic{
-					Step:  stepID,
-					Field: name,
-					Message: fmt.Sprintf(
-						"task %q requires input %q to be a whole secret reference such as ${secret('env:NAME')}, never a literal",
-						def.Name, name),
+					Step:    stepID,
+					Field:   name,
+					Message: v1.RequiredSecretInputMessage(def.Name, name),
 				})
 			}
 			continue

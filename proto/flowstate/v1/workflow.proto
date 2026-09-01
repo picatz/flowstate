@@ -1079,8 +1079,12 @@ message InputDeclaration {
 // never from a caller.
 //
 // Deferred to the compiler for the same reasons as [InputDeclaration]: that two
-// declarations do not share a name, and that the expression's references resolve
-// against the scope a finished run actually has.
+// declarations do not share a name, that the expression's references resolve
+// against the scope a finished run actually has, and — since `type:` arrived —
+// that `values:` is written only beside `type: enum` and that an enum declares
+// at least one member. Those last two are set-facts about a declaration rather
+// than about a single field, which is what puts them out of protovalidate's
+// reach here and into [CheckOutputConstraintShape].
 message OutputDeclaration {
   // Name is what the value is called in the run's result.
   //
@@ -1121,6 +1125,68 @@ message OutputDeclaration {
   // doc comment for the honesty this comes with; nothing about the two differs
   // beyond which side of a run they describe.
   bool sensitive = 5;
+
+  // Type is the shape this output's value has, so that a workflow's result is
+  // declared in the same place and in the same vocabulary its arguments are.
+  //
+  // [InputDeclaration.Type] itself rather than a second enum beside it. The
+  // vocabulary is one vocabulary — the six data types plus `enum` — and a
+  // parallel copy of it would be the "one value written down twice" failure the
+  // input enum's own comment already argues against, one message down. That the
+  // enum is nested in [InputDeclaration] is where it was first needed, not a
+  // claim about what it describes; every helper that reads one
+  // ([DeclaredTypeName], [ParseDeclaredType], [StringShaped], [CheckInputValue]'s
+  // literal half) therefore reads this too, unchanged.
+  //
+  // Optional, and permanently so, which is the difference from
+  // [InputDeclaration.type]. An input's type is required because a value arrives
+  // from a caller and is refused at submit if it does not match; an output's
+  // value is computed by the run from expressions the file already contains, so
+  // an undeclared type is not a hole in a trust boundary — it is a workflow that
+  // has not said what it answers with. Declarations written before this field
+  // existed stay legal and keep meaning exactly what they meant.
+  //
+  // What it does where it *is* declared, in the two directions a contract is
+  // read:
+  //
+  //   - Toward the author: `flow validate` reports a declared type that
+  //     contradicts what is statically knowable about `value:` — a literal, a
+  //     closed expression, a bare reference to a typed input — and stays silent
+  //     where nothing is knowable, since an expression over step outputs types
+  //     as `dyn` and a guess there would be a false diagnostic.
+  //   - Toward the caller: the value the run computes is checked against this
+  //     before it is reported, by [CheckOutputValue] inside [EvalRunOutputs],
+  //     which both drivers call at the same moment. A declared type nothing
+  //     enforced would be decoration, which is the rule that kept the input
+  //     enum out of an earlier phase than its checker.
+  //
+  // `flow breaking` reads it as the guarantee it is: removing or changing it
+  // weakens what callers were promised, the mirror of an input type narrowing.
+  InputDeclaration.Type type = 6 [(buf.validate.field).enum = {defined_only: true}];
+
+  // Values is the closed set of strings a `type: enum` output may report,
+  // carrying the identical per-declaration shape rules
+  // [InputDeclaration.values] does — non-empty, bounded, distinct — and bounded
+  // for the identical reason: the declared choices are rendered into the
+  // sentence a run that produced something else fails with.
+  //
+  // Whether `values` may be present at all (only beside `TYPE_ENUM`) and
+  // whether an enum declares at least one are set-facts about this declaration,
+  // and belong to the compiler for a Flowfile and to
+  // [CheckOutputConstraintShape] for a hand-built specification — the same
+  // split the input field's own comment draws.
+  repeated string values = 7 [
+    (buf.validate.field).repeated = {
+      max_items: 64
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+    }
+  ];
 }
 
 // RunOutputs is what one run computed for its declared outputs.
