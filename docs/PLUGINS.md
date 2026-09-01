@@ -618,6 +618,24 @@ if err != nil {
 response, err := client.Do(request)
 ```
 
+**Credentials.** An operator's rule may name `credentials` — as in
+`deny: ['credentials && !(host in ["partner.example"])']`, which says a secret
+leaves only towards one place. The client marks a request automatically when it
+carries an `Authorization`, `Proxy-Authorization` or `Cookie` header, which is
+the same set the built-in `http` task counts, so one rule means one thing across
+both. Nothing else in a request is recognizable as a secret, so when your
+credential is somewhere the SDK cannot see — a token in a query string, a
+signature in a custom header, a credential in the body — say so:
+
+```go
+response, err := client.Do(request.WithContext(sdk.WithCredentials(ctx)))
+```
+
+Call it whenever the request carries a secret the header set above would miss; a
+rule written to keep credentials off an unapproved host is silently weaker for
+every request that does not. It only ever marks — there is no way to tell the
+policy a request is *not* credentialed.
+
 That client checks the destination before the request goes out, again in the
 dialer for every address it actually connects to, and again on every redirect
 hop — so a hostname that resolves to something the policy denies is refused where

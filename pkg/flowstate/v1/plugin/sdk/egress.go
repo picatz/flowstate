@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -99,6 +100,13 @@ func captureEgressGrant() {
 // is the same code: a second implementation of it would be a second thing to keep
 // correct.
 //
+// Requests that carry a credential are marked as such, so that a rule naming
+// `credentials` — `deny: ['credentials && !(host in ["partner.example"])']`, the
+// rule that says a secret leaves only towards one place — decides a plugin's
+// request the same way it decides the built-in http task's. See
+// [credentialMarkingTransport] for what counts and [WithCredentials] for the
+// credentials this cannot see.
+//
 // Use it for every outbound request. A plugin that builds its own
 // [net/http.Client] is stopped by nothing here, but it has left the path the
 // worker governs, and a deployment that cares is entitled to notice.
@@ -108,7 +116,88 @@ func HTTPClient() (*http.Client, error) {
 		return nil, err
 	}
 
-	return policy.Client(), nil
+	client := policy.Client()
+	client.Transport = credentialMarkingTransport{next: client.Transport}
+
+	return client, nil
+}
+
+// WithCredentials marks every request made on the returned context as carrying a
+// credential, for a policy rule that names `credentials`.
+//
+// [HTTPClient] already marks what it can see — see [credentialMarkingTransport]
+// — and this is for what it cannot: a token in a query string, a signature in a
+// custom header, a credential in the body. Nothing in an HTTP request makes
+// those recognizable as secrets, so the plugin attaching one is the only thing
+// that knows, and a rule written to keep credentials away from an unapproved
+// host is silently weaker for every request that does not say so.
+//
+// It only ever marks. There is no way to un-mark a request through this package,
+// because "this is not a credential" is not a claim the SDK should let a caller
+// make to the operator's policy on its own say-so.
+func WithCredentials(ctx context.Context) context.Context {
+	return netpolicy.ContextWithCredentials(ctx, true)
+}
+
+// credentialHeaders are the request headers whose presence means a credential is
+// on this request.
+//
+// It mirrors what the built-in http task counts (eval_task_http_run.go's
+// taskCarriesCredential), translated from that task's inputs to what a plugin's
+// request actually looks like: `bearer:` and `credential:` are exactly an
+// Authorization header by the time either reaches the wire, and a secret
+// reference nested in `headers:` is a header a plugin sets itself. Proxy
+// authorization and cookies are here because they are credentials by
+// construction — a rule that keeps secrets away from a host should not turn on
+// which header a deployment's auth scheme happens to use.
+//
+// A rule naming `credentials` therefore means one thing across the built-in task
+// and every plugin, which is what makes it writable at all.
+var credentialHeaders = []string{"Authorization", "Proxy-Authorization", "Cookie"}
+
+// credentialMarkingTransport marks a request as credentialed before the governed
+// transport evaluates it.
+//
+// The documented pattern is [HTTPClient] plus the task context, and that context
+// says nothing about the request that has not been built yet — so a plugin that
+// resolves a worker-held secret and sets an Authorization header was evaluated
+// with `credentials` false, and a rule written to keep credentials away from an
+// unapproved host did not fire. It failed open and said nothing, on the one path
+// the guide teaches. The first-party plugins mark by hand; a third-party plugin
+// was never told it had to.
+//
+// This is deliberately the narrow, mechanical half: what an outgoing request
+// makes visible, decided the same way for every plugin. It never un-marks — a
+// request already carrying the mark keeps it — because the mark is an assertion
+// to the operator's policy and only a caller may make it, never withdraw it.
+type credentialMarkingTransport struct {
+	next http.RoundTripper
+}
+
+func (t credentialMarkingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	next := t.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
+
+	if !carriesCredential(req) {
+		return next.RoundTrip(req)
+	}
+
+	// Clone rather than mutate: a RoundTripper must not modify the request it
+	// was handed, and Clone is how a context is changed for one hop.
+	return next.RoundTrip(req.Clone(WithCredentials(req.Context())))
+}
+
+// carriesCredential reports whether the request shows a credential the SDK can
+// recognize without being told.
+func carriesCredential(req *http.Request) bool {
+	for _, name := range credentialHeaders {
+		if req.Header.Get(name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // egressGrant holds what this process was launched with, parsed once.

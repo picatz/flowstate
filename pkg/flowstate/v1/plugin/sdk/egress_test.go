@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"strconv"
@@ -453,4 +454,130 @@ func TestRunCapturesTheGrantBeforeTaskCodeCanRewriteIt(t *testing.T) {
 	require.NoError(t, got.err)
 	assert.Error(t, got.loopbackErr,
 		"a task granted itself loopback by writing its own environment before the first EgressPolicy call")
+}
+
+// TestACredentialedRequestIsMarkedWithoutTheCallerSayingSo is the rule
+// `credentials` is written to express, checked on the path the guide teaches.
+//
+// A plugin that resolves a worker-held secret and sets an Authorization header
+// was evaluated with `credentials` false, because the task context says nothing
+// about a request that had not been built yet. An operator's
+// `deny: ['credentials && !(host in [...])']` — a secret leaves only towards one
+// place — therefore did not fire, the request went out, and nothing on either
+// side reported that a rule had been skipped. The first-party plugins mark by
+// hand; a third-party plugin following PLUGINS.md was never told it had to.
+//
+// The permitted case is what makes the denial evidence about the credential
+// rather than about the destination: same client, same URL, same policy, one
+// header.
+func TestACredentialedRequestIsMarkedWithoutTheCallerSayingSo(t *testing.T) {
+	resetGrant(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv(EgressPolicyEnv, grantOf(
+		"egress:\n  schemes: [http, https]\n  allow_loopback: true\n  deny: ['credentials']\n"))
+
+	client, err := HTTPClient()
+	require.NoError(t, err)
+
+	for _, testCase := range []struct {
+		name string
+
+		// header is the credential-bearing header this request carries, if any.
+		header string
+
+		wantDenied bool
+	}{
+		{
+			name:       "an Authorization header is a credential",
+			header:     "Authorization",
+			wantDenied: true,
+		},
+		{
+			// Both are credentials by construction, and a rule keeping secrets
+			// off a host should not turn on which one a deployment's auth
+			// scheme happens to use.
+			name:       "a Proxy-Authorization header is a credential",
+			header:     "Proxy-Authorization",
+			wantDenied: true,
+		},
+		{
+			name:       "a Cookie header is a credential",
+			header:     "Cookie",
+			wantDenied: true,
+		},
+		{
+			name: "an unauthenticated request is not",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+			require.NoError(t, err)
+			if testCase.header != "" {
+				request.Header.Set(testCase.header, "the-secret")
+			}
+
+			response, err := client.Do(request)
+			if !testCase.wantDenied {
+				require.NoError(t, err, "an unauthenticated request was refused by a credentials rule")
+				response.Body.Close()
+				return
+			}
+
+			if err == nil {
+				response.Body.Close()
+				t.Fatal("a credentialed request was not seen as one by the policy")
+			}
+			assert.ErrorIs(t, err, netpolicy.ErrDenied,
+				"the request failed for some reason other than the credentials rule: %v", err)
+		})
+	}
+}
+
+// TestACredentialTheSDKCannotSeeIsMarkedByTheCaller covers the half no transport
+// can infer.
+//
+// A token in a query string, a signature in a custom header, a credential in the
+// body: nothing about the request makes any of those recognizable as a secret,
+// so the plugin attaching one is the only thing that knows. [WithCredentials] is
+// how it says so, and a rule written to keep credentials off an unapproved host
+// is silently weaker for every request that does not.
+func TestACredentialTheSDKCannotSeeIsMarkedByTheCaller(t *testing.T) {
+	resetGrant(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv(EgressPolicyEnv, grantOf(
+		"egress:\n  schemes: [http, https]\n  allow_loopback: true\n  deny: ['credentials']\n"))
+
+	client, err := HTTPClient()
+	require.NoError(t, err)
+
+	// The same URL twice: once as the SDK sees it, which is not credentialed as
+	// far as anything can tell, and once with the caller's own assertion.
+	target := server.URL + "/?access_token=the-secret"
+
+	unmarked, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	require.NoError(t, err)
+	response, err := client.Do(unmarked)
+	require.NoError(t, err,
+		"nothing in this request is recognizable as a credential, so the policy should not have refused it")
+	response.Body.Close()
+
+	marked, err := http.NewRequestWithContext(WithCredentials(t.Context()), http.MethodGet, target, nil)
+	require.NoError(t, err)
+	response, err = client.Do(marked)
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("a request the caller marked as credentialed was not refused by a credentials rule")
+	}
+	assert.ErrorIs(t, err, netpolicy.ErrDenied,
+		"the marked request failed for some reason other than the credentials rule: %v", err)
 }
