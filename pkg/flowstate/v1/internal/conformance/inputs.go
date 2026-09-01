@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -53,6 +54,20 @@ func input(name string, t v1.InputDeclaration_Type, required bool, defaultValue 
 // output declares one output computed by an expression.
 func output(name, expression string) *v1.OutputDeclaration {
 	return &v1.OutputDeclaration{Name: name, Value: v1.NewExpr(expression)}
+}
+
+// typedOutput declares one output that also says what its value is.
+//
+// values is the closed set for a `type: enum` declaration and is left empty for
+// every other type, which is the same pairing an input declares — see
+// [v1.OutputDeclaration.type].
+func typedOutput(name, expression string, t v1.InputDeclaration_Type, values ...string) *v1.OutputDeclaration {
+	return &v1.OutputDeclaration{
+		Name:   name,
+		Value:  v1.NewExpr(expression),
+		Type:   t,
+		Values: values,
+	}
 }
 
 // answers is the run outputs a case expects, beside the steps it expects to have
@@ -271,7 +286,190 @@ func InputOutputCases(httpBaseURL string) []Case {
 				},
 			),
 		},
+		{
+			// A declared output type changes nothing about the answer, which is
+			// the claim: the same three values, in the same message, under both
+			// drivers. What it changes is that each one is now checked against
+			// its declaration before it is reported — by [v1.CheckOutputValue]
+			// inside [v1.EvalRunOutputs], the one function both drivers reach at
+			// the one moment they evaluate outputs — so a driver that skipped
+			// the check, or ran it against a differently-shaped value, would
+			// diverge here rather than in production.
+			//
+			// All four kinds of declaration in one case, on purpose: a string, an
+			// int computed rather than echoed, an enum whose value is inside its
+			// declared set, and an untyped output beside them, which is the shape
+			// every workflow written before there was a type to declare still has.
+			Name: "typed outputs round-trip as themselves",
+			Workflow: declares("outputs-typed",
+				[]*v1.InputDeclaration{
+					input("name", v1.InputDeclaration_TYPE_STRING, true, nil),
+					{
+						Name:   "channel",
+						Type:   v1.InputDeclaration_TYPE_ENUM,
+						Values: []string{"stable", "beta"},
+					},
+				},
+				[]*v1.OutputDeclaration{
+					typedOutput("said", "steps.a.said", v1.InputDeclaration_TYPE_STRING),
+					typedOutput("length", "size(steps.a.said)", v1.InputDeclaration_TYPE_INT),
+					typedOutput("channel", "inputs.channel", v1.InputDeclaration_TYPE_ENUM, "stable", "beta"),
+					output("untyped", `"whatever"`),
+				},
+				echoes("a", httpBaseURL, "inputs.name"),
+			),
+			Inputs: map[string]*v1.Value{
+				"name":    v1.NewLiteral("world"),
+				"channel": v1.NewLiteral("beta"),
+			},
+			ExpectedOutputs: answers(
+				&v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{"a": said("world")}},
+				map[string]*v1.Value{
+					"said":    v1.NewLiteral("world"),
+					"length":  v1.NewLiteral(int64(5)),
+					"channel": v1.NewLiteral("beta"),
+					"untyped": v1.NewLiteral("whatever"),
+				},
+			),
+		},
+		{
+			// The negative direction of the same claim, which is what makes the
+			// case above worth having: a declared type that nothing enforced
+			// would be decoration. The expression is a closed one so the value it
+			// produces is a fact about this file rather than about the http
+			// server, and it is outside the set the declaration closed — so the
+			// run fails at the one moment there is nothing left to retry, under
+			// both drivers, with the declaration's own choices in the sentence.
+			Name:          "an enum output outside its declared values fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-enum-violated",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("channel", `"canary"`, v1.InputDeclaration_TYPE_ENUM, "stable", "beta"),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "channel" is "canary", which is not one of the values channel declares`,
+		},
+		{
+			// #1396, and the reason it is a conformance case rather than a unit
+			// test: the sentence a refused output produces *is* the run's
+			// failure text, and a run's failure text is what each driver
+			// persists — locally as the error a caller reads, durably as the
+			// workflow's own failure in Temporal's history. A value withheld by
+			// one driver and echoed by the other would be invariant 7 broken on
+			// exactly one of them, which is the divergence a shared case exists
+			// to make impossible.
+			//
+			// [Case.ExpectedErrorOmits] carries the whole claim; the substring
+			// beside it only says the author still learns which promise broke.
+			Name:          "a sensitive enum output outside its declared values withholds the value",
+			ExpectFailure: true,
+			Workflow: declares("outputs-sensitive-enum-violated",
+				nil,
+				[]*v1.OutputDeclaration{
+					sensitive(typedOutput("token", `"`+sensitiveAnswer+`"`,
+						v1.InputDeclaration_TYPE_ENUM, "stable", "beta")),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "token" is ` + v1.SensitiveMarker +
+				`, which is not one of the values token declares: "stable", "beta"`,
+			ExpectedErrorOmits: sensitiveAnswer,
+		},
+		{
+			// The other refusal a declared output can earn, on the same claim.
+			// `must:` predates the type, so this half of #1396 predates #1392 —
+			// and it reaches durable history by the identical route, which is
+			// why both are pinned here rather than only the newer one.
+			Name:          "a sensitive output failing its own must withholds the value",
+			ExpectFailure: true,
+			Workflow: declares("outputs-sensitive-must-violated",
+				nil,
+				[]*v1.OutputDeclaration{
+					mustSatisfy(sensitive(output("token", `"`+sensitiveAnswer+`"`)), `this == "expected"`),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: "output \"token\" must satisfy `this == \"expected\"`; got " + v1.SensitiveMarker,
+			ExpectedErrorOmits:    sensitiveAnswer,
+		},
+		{
+			// The bound half of the same sentence, and a both-drivers case for
+			// the reason the withholding ones are: an output's value is sized by
+			// whoever produced it, up to [v1.MaxTaskOutputBytes], and the
+			// refusal used to quote all of it. Temporal has a blob limit, so an
+			// unbounded sentence is a failure the durable driver cannot persist
+			// while the local driver returns it — invariant 3 broken by a
+			// diagnostic, which is the shape a unit test on one side would miss.
+			//
+			// The value is a closed expression for the reason the case above it
+			// gives: what it produces is a fact about this file rather than
+			// about the http server. It is far larger than any bound a sentence
+			// could reasonably carry and still ordinary ASCII, so an unbounded
+			// rendering fails the cap by orders of magnitude rather than
+			// marginally.
+			Name:          "a rejected enum output's value is bounded in the failure",
+			ExpectFailure: true,
+			Workflow: declares("outputs-enum-violated-large",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("channel", `"`+strings.Repeat("x", oversizedOutputBytes)+`"`,
+						v1.InputDeclaration_TYPE_ENUM, "stable", "beta"),
+				},
+				says("a", "hello"),
+			),
+			// Still an author-readable sentence: the output and the closed set
+			// are what the file declared, and neither is sized by the run.
+			ExpectedErrorContains: `not one of the values channel declares: "stable", "beta"`,
+			ExpectedErrorMaxBytes: maxConformanceRefusalBytes,
+		},
 	}
+}
+
+// oversizedOutputBytes is how long the rejected value in the bound case above
+// is.
+//
+// Large enough that an unbounded refusal misses [maxConformanceRefusalBytes] by
+// more than an order of magnitude, and small enough to sit far under
+// [v1.MaxRunStateBytes] — it travels in the workflow specification, which the
+// durable driver carries in `RunState` through every segment, so a case that
+// proved the point by nearly blowing a different bound would be its own defect.
+const oversizedOutputBytes = 32 << 10
+
+// maxConformanceRefusalBytes caps the rendered failure in that case.
+//
+// Sized for the durable driver rather than the local one: Temporal's framing
+// wraps the sentence and repeats it, so the string this is asserted against is
+// several times the message itself. Still two orders of magnitude below
+// [oversizedOutputBytes], which is what makes it a real assertion rather than a
+// formality.
+const maxConformanceRefusalBytes = 2048
+
+// sensitiveAnswer is the value the two #1396 cases compute.
+//
+// Closed rather than fetched, so what those cases observe is a property of the
+// diagnostic under both drivers rather than of the http server standing beside
+// them, and distinctive enough that a substring assertion about its absence
+// means something.
+const sensitiveAnswer = "sk-live-0PENSESAME"
+
+// sensitive marks a declared output the way a file's `sensitive: true` does.
+//
+// A modifier over [output] and [typedOutput] rather than a third constructor,
+// because sensitivity is orthogonal to whether a declaration also states a
+// type — the same reason the schema carries it as its own field.
+func sensitive(decl *v1.OutputDeclaration) *v1.OutputDeclaration {
+	decl.Sensitive = true
+
+	return decl
+}
+
+// mustSatisfy attaches a `must:` predicate over `this` to a declared output.
+func mustSatisfy(decl *v1.OutputDeclaration, must string) *v1.OutputDeclaration {
+	decl.Must = &must
+
+	return decl
 }
 
 // A Refusal is a submission both drivers must reject, and the words they must
@@ -293,6 +491,13 @@ type Refusal struct {
 	// Contains is a fragment the refusal's message must carry, so the case pins
 	// which rule refused rather than only that something did.
 	Contains string
+
+	// Omits is a fragment the refusal's message must not carry, for the cases
+	// whose claim is about what a refusal does not say. Contains cannot make
+	// that claim: a sentence can hold the expected wording and the forbidden
+	// material at once, and a refusal about a `sensitive:` declaration is
+	// exactly where it does (#1396). Empty means the case makes no such claim.
+	Omits string
 }
 
 // InputRefusalCases returns submissions that must be refused before anything runs,

@@ -49,6 +49,15 @@ steps:
             # about the run and is rooted. Both are in scope here.
             message: ${host + " <- " + inputs.release}
 
+  # The two counts every output below is derived from, each stated once and read
+  # back by name. Eight typed outputs over two facts is exactly the shape
+  # docs/STYLE.md R5 is about: written inline, the same `size(...)` call would
+  # appear five times and five copies can drift apart.
+  - id: placed
+    value: ${size(steps.roll_out.results)}
+  - id: requested
+    value: ${size(inputs.targets)}
+
   # The run still narrates itself for a person watching. That is a different thing
   # from the result: this line goes to stderr and vanishes, and the outputs above are
   # data a caller can address by name.
@@ -58,18 +67,86 @@ steps:
 outputs:
   # An argument, echoed back. Worth doing: an output is what a caller reads, and a
   # caller who ran this from a script does not necessarily still hold what it sent.
+  #
+  # `type:` is the other half of the signature `inputs:` above declares, and this
+  # is the file that shows the whole vocabulary because this is the file whose
+  # subject is `outputs:`. It is optional — an output written before there was a
+  # type to declare stays legal, and most of the corpus is that — and where it is
+  # written it does two things: `flow validate` refuses a declared type that
+  # contradicts what it can see about `value:` (this one is a bare reference to a
+  # `string` input, so it is exact), and the run checks the value it computed
+  # against the declaration before reporting it. A declared type nothing enforced
+  # would be decoration.
   release:
     value: ${inputs.release}
+    type: string
     description: the release this run placed
 
   # A value computed from a step. A loop reports every iteration through its own
   # `results`, which outlives the block — so counting them here is counting what
   # actually happened rather than what was asked for.
   hosts_placed:
-    value: ${size(steps.roll_out.results)}
+    value: ${steps.placed.value}
+    type: int
     description: how many hosts the run reached
+
+  # The argument itself rather than a count of it, so a caller holding only the
+  # result can still say which hosts were asked for.
+  targets:
+    value: ${inputs.targets}
+    type: list
+    description: the hosts this run was asked to reach
+
+  # A question a caller would otherwise answer by comparing two of the outputs
+  # above, which is work the run already did.
+  complete:
+    value: ${steps.placed.value == steps.requested.value}
+    type: bool
+    description: whether every requested host was reached
+
+  # The same fact as a ratio, which is what a dashboard wants and a boolean cannot
+  # give. `double()` on both sides deliberately: two ints divide as ints, and every
+  # partial rollout would report 0.
+  #
+  # The zero case is guarded rather than left to the arithmetic. `targets: []` is a
+  # legal `type: list` argument, and 0.0/0.0 is NaN — which *is* a float, so
+  # `type: float` accepts it and `-o json` then reports the string "NaN" to a
+  # caller reading `.runOutputs.coverage` as a number. A declared type bounds the
+  # shape of an answer, not its arithmetic, so an expression that can produce a
+  # non-number has to say what it means instead. It answers 1.0 because `complete:`
+  # above already answers true for the same run — nothing was requested, so nothing
+  # was missed, and two outputs describing one rollout must not contradict each
+  # other.
+  coverage:
+    value: "${(steps.requested.value == 0) ? 1.0 : (double(steps.placed.value) / double(steps.requested.value))}"
+    type: float
+    description: the fraction of requested hosts the run reached
+
+  # An enum output is the one type that also closes a set. `values:` is what a
+  # caller may switch on, and a run computing anything outside it fails rather than
+  # reporting a word nobody downstream handles — the same key, under the same
+  # rules, as an enum input's. Both members are reachable, which is what makes the
+  # set worth closing: the two cases in workflow.test.yaml report a different one.
+  scope:
+    value: '${(steps.requested.value > 2) ? "fleet" : "canary"}'
+    type: enum
+    values:
+      - canary
+      - fleet
+    description: how wide this rollout was
+
+  # A structured answer, for a caller that would rather read one value than five.
+  # A mapping under `value:` is one expression that builds a map, which is what
+  # `type: struct` names — the same word an input declares for the same shape.
+  detail:
+    value:
+      release: ${inputs.release}
+      hosts_placed: ${steps.placed.value}
+    type: struct
+    description: the release and the host count in one value
 
   # Steps and inputs in one expression, which is the shape most results have: what
   # was asked for, and what came of it.
   summary:
-    value: ${"placed %s on %d host(s)".format([inputs.release, size(steps.roll_out.results)])}
+    value: ${"placed %s on %d host(s)".format([inputs.release, steps.placed.value])}
+    type: string

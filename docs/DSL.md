@@ -630,6 +630,19 @@ checker — `inputs`, `outputs`, `check:`, and `env.Check` land together or not 
 
 This is slower to a demo and faster to something trustworthy.
 
+*Since written:* `outputs:` shipped as `declared_outputs` without the `type:` half, so
+for several rounds a workflow declared its arguments and left its result undeclared —
+half a signature, and the half a caller reads. `type:` (and `values:`, for `type: enum`)
+is now on an output too, in the same vocabulary an input uses and reading the same
+enum, optional forever so that every declaration written before it stays legal. The
+paragraph above is the reason it did not ship as decoration: `flow validate` refuses a
+declared type that contradicts what it can see about `value:` — a literal, a closed
+expression, a bare `${inputs.<name>}` — and stays quiet where an expression over step
+outputs types as `dyn`, while the value the run computed is checked against the
+declaration by `EvalRunOutputs` before it is reported, on both drivers. Structured and
+named types are still #637's and #177's questions; this is the anonymous floor they
+stand on. See `examples/computed-outputs/`.
+
 ### `state:` gets a byte bound now, not an open question
 
 The proposal flags a bound on entity `state:` as an open question. It is not one.

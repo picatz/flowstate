@@ -76,6 +76,7 @@ func corpusSizes() map[string]int {
 		"LoopExhaustionTranscriptCases":   len(LoopExhaustionTranscriptCases()),
 		"NestedErrorTextCases":            len(NestedErrorTextCases()),
 		"OutputShapingCases":              len(OutputShapingCases(standIn)),
+		"OutputValueRefusalCases":         len(OutputValueRefusalCases()),
 		"PartialTranscriptCases":          len(PartialTranscriptCases()),
 		"PendingWaitCases":                len(PendingWaitCases()),
 		"PluginTaskInputCases":            len(PluginTaskInputCases()),

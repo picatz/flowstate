@@ -70,6 +70,9 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 				value = &Value{Kind: &Value_Literal{Literal: literal}}
 			}
 
+			if err := CheckOutputValue(declaration, value); err != nil {
+				return nil, err
+			}
 			if err := CheckOutputConstraint(declaration, value); err != nil {
 				return nil, err
 			}
@@ -88,6 +91,15 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 			return nil, fmt.Errorf("output %q: converting result: %w", name, err)
 		}
 		computed := &Value{Kind: &Value_Literal{Literal: literal}}
+
+		if err := CheckOutputValue(declaration, computed); err != nil {
+			// Before the `must:` below rather than after, so a workflow that
+			// declared `type: int` and computed a string is told which promise
+			// it broke rather than being told a predicate over `this` did not
+			// evaluate. The two are one contract read in order: the shape
+			// first, then the rule over a value of that shape.
+			return nil, err
+		}
 
 		if err := CheckOutputConstraint(declaration, computed); err != nil {
 			// A workflow claiming a `must:` on its own answer has that answer
