@@ -145,6 +145,27 @@ tell each agent where it sits: who rebases on whom, and which PR carries
 a shared surface (a CLAUDE.md amendment, a schema change) that the others
 must not touch in flight.
 
+## Bot review findings
+
+Codex and Copilot review every pull request, and the account's Codex
+security-review lane rate-limits under waves (#1352 was found in a sweep
+of ~45 merges made while it did). The rule dispatched with every builder,
+recorded here so a session does not re-derive it:
+
+- A bot finding is a bug report. Verify it against the tree before
+  anything else; the diff is not evidence about itself.
+- Real: fix and push. The pushed fix is the reply — no narration, no
+  thanks, no restating the finding.
+- Wrong: one reply with evidence (file:line, the test that proves it),
+  then leave the thread for the merger.
+- Resolve only threads you addressed; the merge guard denies a merge with
+  any thread unresolved, so an unaddressed thread is a blocked merge, not
+  a nit.
+- If a bot's findings stop converging — each fix draws a new or reshaped
+  one — stop pushing for them and hand the lead what is still flagged.
+- A Codex "usage limit" refusal is a review that did not happen, not a
+  pass; the lead schedules a security-review skill pass for that PR.
+
 ## The communication constitution
 
 Embed this in every dispatch prompt:
