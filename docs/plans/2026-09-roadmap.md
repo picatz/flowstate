@@ -244,7 +244,10 @@ Must-land is marked; cut from the bottom, never from must-land.
    `runWorker` so task-policy, secret, egress and assumption decisions
    (allows included) leave the same trail server RPCs already do; #1018's
    decided contract at the second of its two homes, #353's principle 2 made
-   true past the RPC boundary.
+   true past the RPC boundary. — PR #1394; its review left two gaps
+   deliberately outside it: #1397 (a permitted redirect chain leaves one
+   record, not one per hop) and #1399 (a plugin enforcing the same policy in
+   its own process leaves none).
 10. **Typed outputs, schema first** (#1377) — `type:` on output declarations
     (mirroring `inputs:`), compile + validate + both drivers + `flow breaking`
     awareness; the B1-style opener for everything in P3. — PR #1392.
@@ -275,6 +278,15 @@ control-plane capability has zero callers), #1382 (the doc-truth sweep,
 enumerated), #1383 (thread task descriptors into `env.Check`), #1384
 (search-attribute pushdown for `list --filter`), #1385 (compensation
 observability through `Get`/timeline), #1386 (the factory ledger cadence).
+
+**Filed by the wave itself** (2026-09-01, each from a review finding or a
+measured friction rather than from the census): #1388 (the gate's no-scope
+fallback), #1393 (launch inputs as a schema-owned shape; #1398 was a
+duplicate filed after a context reset and is closed into it), #1395 (the
+signal-carry-bound test trips the deadlock detector on a loaded runner),
+#1396 (a sensitive output's out-of-set value echoed unredacted; being fixed
+inside #1392 after Codex raised it there too), #1397 (per-hop egress
+records), #1399 (plugin-process enforcement decisions unrecorded).
 
 **Found already claimed — advance, never re-file:** the webhook→signal
 bridge is #96 (promotion proposed in its thread); scope enforcement is

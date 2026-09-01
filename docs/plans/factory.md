@@ -86,3 +86,26 @@ appended by the dispatching session before it ends, with the measurement
 line above filled from what that session actually observed. Second rule:
 at most two full gates run concurrently on one machine; the rest of a wave
 verifies with targeted package tests and lets PR CI be the gate.
+
+Evening addendum, same wave. Bot second passes: every push drew a fresh
+Codex pass, and the second passes were not noise — #1394's found the
+over-correction of a first-pass fix (a blanket cancelled-context guard that
+withheld allows for requests that had already left) and a
+permanent-versus-retryable inversion at the secret seam; #1390's found a
+help-text over-claim at the egress boundary; #1392's found the
+sensitive-output leak this session had already filed as #1396. Rule: a
+finding on a fix is read as carefully as a finding on the original, and a
+documented deferral gets an issue number in the reply, not a promise. CI
+infrastructure: three failures this evening were not the PR's — a Go module
+proxy stream error in the editors workflow, a `sum.golang.org` stream error
+installing vhs in `appearance`, and a browser-launch test in `cmd/flow`
+timing out under load on #1281 — each handled as one standing-down comment
+plus one re-run, never a second re-run. Own error: re-running a superseded
+editors run cancelled the newer head's run through the workflow's
+concurrency group; rule: re-run only the run for the current head. Own
+error: after a context reset the lead filed #1398 duplicating its own #1393
+from an hour earlier; rule: dup-check the session's own filings (issues
+created today by this account) before filing, not only the backlog.
+Receiver-cost update: bot findings accepted this evening, seventeen;
+disputed with evidence, one (a Copilot CEL parse claim); deferred with an
+issue each, three.
