@@ -961,6 +961,13 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 					require.NotContains(t, err.Error(), test.ExpectedErrorOmits,
 						"the failure text carries something this case says it must not")
 				}
+				if test.ExpectedErrorMaxBytes > 0 {
+					// Asserted against the durable rendering, Temporal's own
+					// framing included, because that is the string this driver
+					// has to persist into history.
+					require.Less(t, len(err.Error()), test.ExpectedErrorMaxBytes,
+						"the failure text is larger than this case's bound")
+				}
 
 				return
 			}

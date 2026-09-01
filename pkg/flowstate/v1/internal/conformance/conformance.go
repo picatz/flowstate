@@ -81,6 +81,18 @@ type Case struct {
 	// the case makes no such claim, which is every case that predates one.
 	ExpectedErrorOmits string
 
+	// ExpectedErrorMaxBytes caps how large an ExpectFailure case's rendered
+	// error may be, for the cases whose claim is that a diagnostic bounds
+	// something another party sized.
+	//
+	// Both drivers assert it against their own rendering, wrapper text and all,
+	// which is the honest comparison: the durable driver's failure carries
+	// Temporal's own framing around the sentence and is what has to fit in
+	// history, so a cap set from the local driver's shorter string alone would
+	// pass while the run that matters could not be persisted. Zero means the
+	// case makes no such claim.
+	ExpectedErrorMaxBytes int
+
 	// ExpectedOutputsPredicate checks a run's outputs when the exact value is
 	// not what is under test — a run-time CEL error's precise wording, say,
 	// which is a property of the expression evaluator rather than of the two

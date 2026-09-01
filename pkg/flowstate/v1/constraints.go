@@ -680,7 +680,8 @@ func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
 		return err
 	}
 
-	return checkEnumMembership("output", decl.GetName(), t, decl.GetValues(), decl.GetSensitive(), lit)
+	return checkEnumMembership("output", decl.GetName(), t, decl.GetValues(),
+		outputValueRendering(decl), lit)
 }
 
 // CheckInputConstraints applies a declaration's standard-rule constraints and
@@ -795,11 +796,17 @@ func CheckOutputConstraint(decl *OutputDeclaration, value *Value) error {
 		// written in the file, and the value is what the run computed. See
 		// [redactedIfSensitive] for why an output's own refusal is the last
 		// place that value can be withheld.
+		//
+		// Bounded on the way in for the reason [checkEnumMembership] states:
+		// `must:` may be declared on an output of any type, so the rendering
+		// here is a whole task result — a string, or a map of them — and an
+		// unbounded one would be a failure the durable driver cannot persist
+		// while the local driver returns it.
 		return fmt.Errorf("output %q must satisfy `%s`; got %s",
 			decl.GetName(), decl.GetMust(), redactedIfSensitive(decl.GetSensitive(), func() string {
 				got, _ := literalToNative(lit)
 
-				return fmt.Sprintf("%v", got)
+				return truncateForError(fmt.Sprintf("%v", got))
 			}))
 	}
 
@@ -1259,15 +1266,7 @@ func checkHTTPResponseElementBound(url string, parsedJSON *expr.Value) error {
 // [nearest.Name] — the one did-you-mean rule this repository keeps in one
 // place rather than four.
 func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) error {
-	// Not decl.GetSensitive(), deliberately. An input's value is one the caller
-	// handed this process, so it is in [SensitiveInputValues]' set and leaves
-	// the failure sentence through `cmd/flow`'s `redactFailureError` — the
-	// mechanism written for exactly this text. Withholding it a second time
-	// here would be a second spelling of one redaction, and would cost the
-	// author of a *file* the word that tells them what they typed wrong, since
-	// `flow validate` reaches this against a literal `default:` with no run and
-	// no run failure anywhere in sight.
-	return checkEnumMembership("input", name, decl.GetType(), decl.GetValues(), false, lit)
+	return checkEnumMembership("input", name, decl.GetType(), decl.GetValues(), inputValueRendering, lit)
 }
 
 // checkEnumMembership is the membership rule itself, over a declared type and
@@ -1279,17 +1278,20 @@ func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) e
 // promise a caller submitting one has. kind is the noun the sentence names the
 // declaration by, "input" or "output".
 //
-// sensitive withholds the value from the sentence, and only the value: the
-// declaration names itself, says its value was not in the set, and lists the
-// set, because all three are written in the file rather than computed by the
-// run. See [redactedIfSensitive] for why an output needs this where an input
-// does not.
+// rendering says how the refusal may print the value, which is the one thing
+// the two sides do not share — see [valueRendering].
 //
-// The did-you-mean clause goes with the value rather than staying beside the
-// marker. It is computed *from* the withheld string, so offering one narrows a
-// reader's guess to the strings within [nearest.MaxDistance] of a declared
-// choice — a smaller leak than the value, and a leak.
-func checkEnumMembership(kind, name string, t InputDeclaration_Type, values []string, sensitive bool, lit *expr.Value) error {
+// The did-you-mean clause goes with a withheld value rather than staying beside
+// the marker. It is computed *from* the withheld string, so offering one
+// narrows a reader's guess to the strings within [nearest.MaxDistance] of a
+// declared choice — a smaller leak than the value, and a leak.
+func checkEnumMembership(
+	kind, name string,
+	t InputDeclaration_Type,
+	values []string,
+	rendering valueRendering,
+	lit *expr.Value,
+) error {
 	if t != InputDeclaration_TYPE_ENUM {
 		return nil
 	}
@@ -1305,10 +1307,16 @@ func checkEnumMembership(kind, name string, t InputDeclaration_Type, values []st
 		}
 	}
 
+	// Trimmed before it is quoted, not after, and everything below reads the
+	// trimmed string rather than the original: [strconv.Quote] expands a
+	// control byte to six characters, so quoting first would build the
+	// oversized sentence the trim exists to prevent before shortening it.
+	shown := rendering.show(got)
+
 	message := fmt.Sprintf("%s %q is %s, which is not one of the values %s declares: %s",
-		kind, name, redactedIfSensitive(sensitive, func() string { return strconv.Quote(got) }),
+		kind, name, redactedIfSensitive(rendering.sensitive, func() string { return strconv.Quote(shown) }),
 		name, quotedStrings(values))
-	if sensitive {
+	if rendering.sensitive {
 		return fmt.Errorf("%s", message)
 	}
 
@@ -1319,13 +1327,77 @@ func checkEnumMembership(kind, name string, t InputDeclaration_Type, values []st
 	for _, choice := range values {
 		maxChoiceRunes = max(maxChoiceRunes, utf8.RuneCountInString(choice))
 	}
-	if utf8.RuneCountInString(got) <= maxChoiceRunes+nearest.MaxDistance {
-		if suggestion, ok := nearest.Name(got, values); ok {
+	// Over `shown`, so a trimmed side computes its suggestion from the bounded
+	// string rather than the original. A value long enough to be trimmed is
+	// already further from every declared choice than [nearest.MaxDistance]
+	// allows, so nothing that would have earned a suggestion loses one; on the
+	// untrimmed side `shown` is `got` and this is the guard it always was.
+	if utf8.RuneCountInString(shown) <= maxChoiceRunes+nearest.MaxDistance {
+		if suggestion, ok := nearest.Name(shown, values); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		}
 	}
 
 	return fmt.Errorf("%s", message)
+}
+
+// valueRendering is how a refusal may print the value it is about.
+//
+// Both halves say the same thing from opposite ends: an *input* is a value the
+// caller handed this process while the caller is still there to be told, and an
+// *output* is a value the run computed and is refused into durable history. So
+// the two differ in exactly two ways and are otherwise one rule
+// ([checkEnumMembership]), which is why this travels as a value rather than as
+// a second copy of the membership check.
+type valueRendering struct {
+	// sensitive withholds the value, and only the value: the declaration still
+	// names itself, still says the value was not in the set, and still lists
+	// the set, because all three are written in the file rather than computed
+	// by the run. See [redactedIfSensitive].
+	sensitive bool
+
+	// bounded trims the value to what a sentence can carry. See
+	// [outputValueRendering] for why only one side sets it.
+	bounded bool
+}
+
+// show renders one value under this rendering's length rule.
+func (r valueRendering) show(s string) string {
+	if r.bounded {
+		return truncateForError(s)
+	}
+
+	return s
+}
+
+// inputValueRendering prints a submitted value whole and in the clear.
+//
+// Neither flag, and both deliberately. `sensitive:` is not set here because an
+// input's value is already in [SensitiveInputValues]' set and leaves the
+// failure sentence through `cmd/flow`'s `redactFailureError` — the mechanism
+// written for exactly this text — so withholding it again would be a second
+// spelling of one redaction, and would cost the author of a *file* the word
+// that tells them what they typed wrong, since `flow validate` reaches this
+// against a literal `default:` with no run and no run failure in sight.
+//
+// `bounded` is not set because a submitted value is weighed by
+// [CheckSubmissionSize] before it gets here and is the caller's own text to
+// read back, which `TestBindRunInputsBoundsEnumSuggestionWork` pins
+// deliberately: the quadratic suggestion scan is what that path bounds, not the
+// sentence.
+var inputValueRendering = valueRendering{}
+
+// outputValueRendering prints a computed value withheld if the declaration says
+// so, and trimmed always.
+//
+// Trimmed always because the size is not the workflow author's choice: an
+// output's value is whatever a task answered with, up to [MaxTaskOutputBytes],
+// and this sentence *is* the run's failure. Temporal has a blob limit, so an
+// unbounded one is a failure the durable driver cannot persist while the local
+// driver simply returns it — invariant 3 broken by a diagnostic, and invariant
+// 5 unbounded at a seam another party controls.
+func outputValueRendering(decl *OutputDeclaration) valueRendering {
+	return valueRendering{sensitive: decl.GetSensitive(), bounded: true}
 }
 
 // redactedIfSensitive renders a value for a diagnostic that names it, or

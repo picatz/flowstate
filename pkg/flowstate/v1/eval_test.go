@@ -600,6 +600,10 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 					require.NotContains(t, err.Error(), test.ExpectedErrorOmits,
 						"the failure text carries something this case says it must not")
 				}
+				if test.ExpectedErrorMaxBytes > 0 {
+					require.Less(t, len(err.Error()), test.ExpectedErrorMaxBytes,
+						"the failure text is larger than this case's bound")
+				}
 
 				return
 			}

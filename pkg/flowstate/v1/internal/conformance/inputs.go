@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -393,8 +394,57 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedErrorContains: "output \"token\" must satisfy `this == \"expected\"`; got " + v1.SensitiveMarker,
 			ExpectedErrorOmits:    sensitiveAnswer,
 		},
+		{
+			// The bound half of the same sentence, and a both-drivers case for
+			// the reason the withholding ones are: an output's value is sized by
+			// whoever produced it, up to [v1.MaxTaskOutputBytes], and the
+			// refusal used to quote all of it. Temporal has a blob limit, so an
+			// unbounded sentence is a failure the durable driver cannot persist
+			// while the local driver returns it — invariant 3 broken by a
+			// diagnostic, which is the shape a unit test on one side would miss.
+			//
+			// The value is a closed expression for the reason the case above it
+			// gives: what it produces is a fact about this file rather than
+			// about the http server. It is far larger than any bound a sentence
+			// could reasonably carry and still ordinary ASCII, so an unbounded
+			// rendering fails the cap by orders of magnitude rather than
+			// marginally.
+			Name:          "a rejected enum output's value is bounded in the failure",
+			ExpectFailure: true,
+			Workflow: declares("outputs-enum-violated-large",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("channel", `"`+strings.Repeat("x", oversizedOutputBytes)+`"`,
+						v1.InputDeclaration_TYPE_ENUM, "stable", "beta"),
+				},
+				says("a", "hello"),
+			),
+			// Still an author-readable sentence: the output and the closed set
+			// are what the file declared, and neither is sized by the run.
+			ExpectedErrorContains: `not one of the values channel declares: "stable", "beta"`,
+			ExpectedErrorMaxBytes: maxConformanceRefusalBytes,
+		},
 	}
 }
+
+// oversizedOutputBytes is how long the rejected value in the bound case above
+// is.
+//
+// Large enough that an unbounded refusal misses [maxConformanceRefusalBytes] by
+// more than an order of magnitude, and small enough to sit far under
+// [v1.MaxRunStateBytes] — it travels in the workflow specification, which the
+// durable driver carries in `RunState` through every segment, so a case that
+// proved the point by nearly blowing a different bound would be its own defect.
+const oversizedOutputBytes = 32 << 10
+
+// maxConformanceRefusalBytes caps the rendered failure in that case.
+//
+// Sized for the durable driver rather than the local one: Temporal's framing
+// wraps the sentence and repeats it, so the string this is asserted against is
+// several times the message itself. Still two orders of magnitude below
+// [oversizedOutputBytes], which is what makes it a real assertion rather than a
+// formality.
+const maxConformanceRefusalBytes = 2048
 
 // sensitiveAnswer is the value the two #1396 cases compute.
 //
