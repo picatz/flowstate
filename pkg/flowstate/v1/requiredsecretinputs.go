@@ -39,8 +39,9 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // invariant 7 has already been broken.
 //
 // registry is the deployment's task registry, read the way
-// [ResolveTaskCapabilities] reads it and called after it, so a plugin task's
-// declared claim is present rather than absent for the tasks a plugin supplies.
+// [ResolveTaskCapabilities] reads it. This check runs after that resolution
+// because an unknown task is already refused there, so it only has to rely on
+// [TaskDef.RequiredSecretInputs] for the tasks the registry knows.
 // A task the registry does not have is skipped: that specification is already
 // refused by [ResolveTaskCapabilities], and answering the question a second
 // time here could only add a second sentence about the same missing task. A nil
