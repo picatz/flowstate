@@ -589,8 +589,9 @@ is already in `pkg/flowstate/v1/auth/` has landed.
    offloading codec is #113, #271; #353 A.1 specifies it.
 2. No erasure. Nothing forgets (#353 A.2).
 3. `flow server` serves plaintext when given no certificate, and refuses to do so off
-   loopback unless `--tls-terminated-upstream` asserts a terminator in front — an
-   assertion it cannot verify (`cmd/flow/tls.go`); in-process TLS and ACME exist.
+   loopback unless `--tls-terminated-upstream` asserts a terminator or another
+   reachability boundary in front — an assertion it cannot verify
+   (`cmd/flow/tls.go`); in-process TLS and ACME exist.
 4. Egress enforcement is in-process and therefore honest only while every task is our
    code (#341 invariant 1).
 5. A launched plugin is trusted code with the worker's authority

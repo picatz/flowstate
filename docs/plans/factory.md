@@ -53,10 +53,10 @@ Source: `2026-09-roadmap.md` (the step-back review), issues #1376–#1388.
 Dispatched: six builders and one reviewer at the deep tier, one mechanical
 slice (a dependabot retidy) at the cheap tier, all in isolated worktrees on
 one four-core machine. Landed the same day: two dependabot merges, PRs
-#1387 (#1306 gate base channel), #1389 (#1336 token on a descriptor),
-#1390 (#1332 egress grant, PR A), the #1281 review-and-fix, the #1372
-retidy; the doc-truth sweep (#1382) and the appearance flip (#1319) on
-the review branch itself.
+#1387 (#1306 gate base channel), #1389 (#1336 token on a descriptor), the
+#1281 review-and-fix, and the #1372 retidy. PR #1390 (#1332 egress grant,
+PR A) reached review; the doc-truth sweep (#1382) and the appearance flip
+(#1319) landed on the review branch itself.
 
 Friction, measured: five concurrent `go run ./tools/gate` runs pushed the
 load average to 50–80, turned ten-minute gates into forty-minute ones, and
