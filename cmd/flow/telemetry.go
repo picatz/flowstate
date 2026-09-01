@@ -418,22 +418,31 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		// would (see "Both execution drivers must agree" in CLAUDE.md for why
 		// that shape of bug keeps recurring here).
 		//
-		// go.opentelemetry.io/contrib/instrumentation/runtime v0.61.0 still
-		// defaults OTEL_GO_X_DEPRECATED_RUNTIME_METRICS to true — the stable
-		// go.memory.*/go.goroutine.count convention this package now also
-		// implements is opt-out-of-the-opt-out away, not the default — so
-		// [otelruntime.Start] registers the process.runtime.go.* names: mem
-		// stats (heap_alloc, heap_idle, heap_inuse, heap_objects,
-		// heap_released, heap_sys, lookups, live_objects), gc.count,
-		// gc.pause_ns/gc.pause_total_ns, goroutines, cgo.calls and
-		// runtime.uptime. Read via runtime.ReadMemStats and runtime/metrics,
-		// the same sources pprof reads. [otelruntime.Start] only registers
-		// callbacks; it opens no goroutine and no connection of its own, so
-		// its cost is what the periodic reader already pays to collect
-		// everything else on this provider. Naming a flowstate-specific env
-		// var to force the newer convention would be a second spelling of a
-		// switch the upstream package already owns, so this takes the
-		// package's own default rather than overriding it.
+		// go.opentelemetry.io/contrib/instrumentation/runtime v0.70.0 flipped
+		// OTEL_GO_X_DEPRECATED_RUNTIME_METRICS's default from true to false
+		// (the minor-and-patch bump that took this repo from v0.61.0 to
+		// v0.70.0 is what broke TestRuntimeMetricsRegisterWhenMetricsAreConfigured),
+		// so [otelruntime.Start] now registers the stable
+		// go.memory.*/go.goroutine.count convention by default: go.memory.used
+		// (by go.memory.type: stack, other), go.memory.limit,
+		// go.memory.allocated, go.memory.allocations, go.memory.gc.goal,
+		// go.goroutine.count, go.processor.limit and go.config.gogc — plus the
+		// unprefixed runtime.uptime, unaffected by either convention. The
+		// deprecated process.runtime.go.* names (mem stats, gc.count,
+		// gc.pause_ns/gc.pause_total_ns, cgo.calls among them) still exist
+		// verbatim in the package for an operator who opts back in, but
+		// nothing here does, so they no longer reach a collector; see
+		// docs/DEPLOYMENT.md's Go runtime metrics table for what does. Read
+		// via runtime/metrics, the same source pprof's own runtime/metrics-
+		// based views read (the deprecated set, alone, still reads through the
+		// older runtime.ReadMemStats — one more reason not to opt back into
+		// it). [otelruntime.Start] only registers callbacks; it opens no
+		// goroutine and no connection of its own, so its cost is what the
+		// periodic reader already pays to collect everything else on this
+		// provider. Naming a flowstate-specific env var to opt back into the
+		// deprecated names would be a second spelling of a switch the
+		// upstream package already owns, so this takes the package's own
+		// default rather than overriding it.
 		//
 		// Started unconditionally whenever config.metrics is true, which is
 		// also true for `flow get`, `flow list` and every other short client
