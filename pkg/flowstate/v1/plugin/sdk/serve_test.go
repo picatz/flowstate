@@ -419,6 +419,9 @@ func TestServeRecoversTaskPanicsPerCall(t *testing.T) {
 	require.NoError(t, stream.Err())
 	require.NoError(t, stream.Close())
 
+	require.Eventually(t, func() bool {
+		return strings.Count(logs.String(), "plugin task panicked; outcome unknown") == 2
+	}, time.Second, time.Millisecond, "the asynchronous panic reports did not reach the SDK logger")
 	logText := logs.String()
 	require.Equal(t, 2, strings.Count(logText, "plugin task panicked; outcome unknown"))
 	require.Equal(t, 2, strings.Count(logText, "panic="+panicSecret))

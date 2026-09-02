@@ -3,6 +3,9 @@ package sdk
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,7 +15,20 @@ import (
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
+
+type blockingWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return len(p), nil
+}
 
 // TestTaskServiceExecuteInstallsCallerBeforeFn checks the wiring
 // [CallerFromContext] depends on: taskService.Execute installs the request's
@@ -44,6 +60,77 @@ func TestTaskServiceExecuteInstallsCallerBeforeFn(t *testing.T) {
 	require.True(t, gotOK, "Fn ran without a caller installed on its context")
 	assert.Equal(t, "ci", gotCaller.Identity.GetSubject())
 	assert.Equal(t, "team-a", gotCaller.Namespace)
+}
+
+func TestTaskServiceScrubsPanicBeforeConfiguredLogger(t *testing.T) {
+	t.Parallel()
+
+	const material = "resolved-secret-in-panic"
+	var logs syncBuffer
+	ctx := context.WithValue(t.Context(), telemetryKey{}, telemetryContext{
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	svc := &taskService{plugin: "example", tasks: map[string]Task{
+		"panic": {
+			Name:         "panic",
+			SecretInputs: []string{"token"},
+			Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+				panic("received " + material)
+			},
+		},
+	}}
+
+	_, err := svc.Execute(ctx, connect.NewRequest(&pluginv1.ExecuteRequest{
+		Task: &flowstatev1.Task{
+			Name:   "panic",
+			Inputs: map[string]*flowstatev1.Value{"token": flowstatev1.NewLiteral(material)},
+		},
+	}))
+	requireUnknownOutcomeWithoutPanicValue(t, err, material)
+	require.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "plugin task panicked; outcome unknown")
+	}, time.Second, time.Millisecond)
+	assert.NotContains(t, logs.String(), material)
+	assert.Contains(t, logs.String(), secrets.Redacted)
+}
+
+func TestTaskServicePanicVerdictDoesNotWaitForLogger(t *testing.T) {
+	t.Parallel()
+
+	writer := &blockingWriter{started: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { writer.once.Do(func() { close(writer.started) }); close(writer.release) })
+	ctx := context.WithValue(t.Context(), telemetryKey{}, telemetryContext{
+		logger: slog.New(slog.NewTextHandler(writer, nil)),
+	})
+	svc := &taskService{plugin: "example", tasks: map[string]Task{
+		"panic": {
+			Name: "panic",
+			Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+				panic("boom")
+			},
+		},
+	}}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Execute(ctx, connect.NewRequest(&pluginv1.ExecuteRequest{
+			Task: &flowstatev1.Task{Name: "panic"},
+		}))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		requireUnknownOutcomeWithoutPanicValue(t, err, "boom")
+	case <-time.After(time.Second):
+		t.Fatal("the unknown-outcome response waited for the configured logger")
+	}
+
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("the asynchronous panic report never reached the configured logger")
+	}
 }
 
 // TestTaskConnectErrorMarksOnlyTheInheritedRequestDeadline proves the SDK's

@@ -93,6 +93,7 @@ import (
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // ErrNotLaunchedByHost reports that the process was not started by a Flowstate
@@ -1138,8 +1139,20 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[plugin
 type taskService struct {
 	pluginv1connect.UnimplementedTaskServiceHandler
 
-	plugin string
-	tasks  map[string]Task
+	plugin          string
+	tasks           map[string]Task
+	panicReportOnce sync.Once
+	panicReports    chan taskPanicReport
+}
+
+const maxPendingTaskPanicReports = 16
+
+type taskPanicReport struct {
+	ctx          context.Context
+	task         string
+	value        any
+	stack        []byte
+	secretValues []string
 }
 
 // call runs plugin-authored task code behind the SDK's per-call panic boundary.
@@ -1153,54 +1166,95 @@ func (s *taskService) call(
 	inputs map[string]*flowstatev1.Value,
 	scope *flowstatev1.Scope,
 ) (outputs *flowstatev1.Node_Outputs, err error) {
+	secretValues := taskSecretValues(task, inputs)
 	defer func() {
 		if value := recover(); value != nil {
 			outputs = nil
-			s.reportPanic(ctx, task.Name, value, debug.Stack())
 			err = OutcomeUnknown("task %q panicked; outcome unknown", task.Name)
+			s.queuePanicReport(ctx, task.Name, secretValues, value, debug.Stack())
 		}
 	}()
 
 	return task.Fn(ctx, inputs, scope)
 }
 
-// reportPanic keeps diagnostics best-effort: a plugin-supplied logger, meter,
-// or panic formatter must not turn the recovered task panic back into the
-// net/http transport failure this boundary exists to prevent.
-func (s *taskService) reportPanic(ctx context.Context, task string, value any, stack []byte) {
+func taskSecretValues(task Task, inputs map[string]*flowstatev1.Value) []string {
+	values := make([]string, 0, len(task.SecretInputs))
+	for _, name := range task.SecretInputs {
+		if value := inputs[name].GetLiteral().GetStringValue(); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// queuePanicReport keeps telemetry outside the response path. A custom logger,
+// panic formatter, or meter provider can block forever; none may delay the
+// permanent verdict and turn it back into a retryable host timeout. One lazily
+// started worker and a bounded queue contain that failure to this process.
+func (s *taskService) queuePanicReport(ctx context.Context, task string, secretValues []string, value any, stack []byte) {
+	s.panicReportOnce.Do(func() {
+		s.panicReports = make(chan taskPanicReport, maxPendingTaskPanicReports)
+		go s.reportPanics()
+	})
+
+	report := taskPanicReport{
+		ctx:          context.WithoutCancel(ctx),
+		task:         task,
+		value:        value,
+		stack:        stack,
+		secretValues: secretValues,
+	}
+	select {
+	case s.panicReports <- report:
+	default:
+		// Telemetry is best-effort. Never block an unknown-outcome response
+		// behind a saturated or stuck diagnostic sink.
+	}
+}
+
+func (s *taskService) reportPanics() {
+	for report := range s.panicReports {
+		s.reportPanic(report)
+	}
+}
+
+func (s *taskService) reportPanic(report taskPanicReport) {
 	defer func() { _ = recover() }()
 
-	Logger(ctx).ErrorContext(ctx, "plugin task panicked; outcome unknown",
-		metricschema.PluginName, s.plugin,
-		metricschema.TaskName, task,
-		"panic", printablePanicValue(value),
-		"stack", string(stack),
-	)
+	meter := Meter(report.ctx)
+	if meter != nil {
+		if counter, err := meter.Int64Counter(metricschema.InstrumentPluginTaskPanics); err == nil {
+			counter.Add(report.ctx, 1, metricschema.WithAttributes(
+				attribute.String(metricschema.PluginName, s.plugin),
+				attribute.String(metricschema.TaskName, report.task),
+			))
+		}
+	}
 
-	meter := Meter(ctx)
-	if meter == nil {
-		return
+	panicValue := printablePanicValue(report.value)
+	scrubber := secrets.NewScrubber()
+	for _, value := range report.secretValues {
+		scrubber.AddValue(value)
 	}
-	counter, err := meter.Int64Counter(metricschema.InstrumentPluginTaskPanics)
-	if err != nil {
-		return
-	}
-	counter.Add(ctx, 1, metricschema.WithAttributes(
-		attribute.String(metricschema.PluginName, s.plugin),
-		attribute.String(metricschema.TaskName, task),
-	))
+	panicValue = scrubber.Scrub(panicValue)
+
+	Logger(report.ctx).ErrorContext(report.ctx, "plugin task panicked; outcome unknown",
+		metricschema.PluginName, s.plugin,
+		metricschema.TaskName, report.task,
+		"panic", panicValue,
+		"stack", string(report.stack),
+	)
 }
 
 // printablePanicValue treats a panic's words as input-derived diagnostic text:
-// useful in the plugin's scrubbed stderr, never copied into the RPC error. It
-// deliberately does not truncate: cutting through a delivered secret before
-// the host's stderr scrubber sees it could leave an unmatched fragment. The
-// host owns the captured-line bound and suppresses overlong lines while it has
-// secret material to protect.
+// useful in a scrubbed plugin log, never copied into the RPC error. This runs
+// only on the bounded reporting worker, so a plugin-defined String or Error
+// method cannot delay the unknown-outcome response.
 func printablePanicValue(value any) (text string) {
 	defer func() {
 		if recover() != nil {
-			text = "<panic value could not be formatted>"
+			text = fmt.Sprintf("<%T could not be formatted>", value)
 		}
 	}()
 	return fmt.Sprint(value)
