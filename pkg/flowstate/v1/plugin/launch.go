@@ -22,7 +22,6 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // hostFD and tokenFD are the descriptors a plugin inherits the host-liveness
@@ -402,8 +401,9 @@ func (i *instance) handshake(cfg Config, stdout io.Reader, log *slog.Logger) (pr
 		var reported int
 		pumpPluginLog(reader, cfg.MaxStderrLine, func(line string, truncated bool) {
 			if reported++; reported <= 10 {
+				line, scrubbed := i.stderrSecrets.scrubFramedLine(line, truncated)
 				log.Warn("plugin wrote to stdout after the handshake, which the protocol reserves",
-					"line", line, "truncated", truncated)
+					"line", line, "truncated", truncated, "scrubbed", scrubbed)
 			}
 		})
 	}()
@@ -855,15 +855,10 @@ func isProtocolEnv(entry string) bool {
 // the pump can no longer call allow.
 func stderrRelayFunc(cfg Config, log *slog.Logger, scrubber *stderrSecretScrubber) (relay func(line string, truncated bool), flush func() string) {
 	logLine := func(line string, truncated bool) {
-		var scrubbed bool
-		if scrubber.mustSuppressFramedLine(truncated) {
-			// A prefix or one physical line cannot be matched against a retained
-			// value that crosses the framing boundary. Suppress it rather than
-			// relay part of a secret.
-			line, scrubbed = secrets.Redacted, true
-		} else {
-			line, scrubbed = scrubber.scrub(line)
-		}
+		// A prefix or one physical line cannot be matched against a retained
+		// value that crosses the framing boundary. Suppress it rather than
+		// relay part of a secret.
+		line, scrubbed := scrubber.scrubFramedLine(line, truncated)
 		log.Info("plugin log", "line", line, "truncated", truncated, "scrubbed", scrubbed)
 	}
 	if cfg.MaxStderrLinesPerMinute < 0 {

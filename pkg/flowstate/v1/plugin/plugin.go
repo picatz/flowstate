@@ -391,11 +391,11 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	var health Health
 	switch {
 	case err != nil:
-		errText, scrubbed := inst.stderrSecrets.scrub(err.Error())
+		healthErr, scrubbed := inst.stderrSecrets.scrubError(err)
 		health = Health{
 			Status:        HealthUnreachable,
 			CheckedAt:     time.Now(),
-			Err:           pluginError(p.name, p.path, errors.New(errText)),
+			Err:           pluginError(p.name, p.path, healthErr),
 			errorScrubbed: scrubbed,
 		}
 	case resp.Msg.GetStatus() == pluginv1.HealthResponse_STATUS_SERVING:

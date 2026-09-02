@@ -523,7 +523,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
-	case "secret-task", "secret-task-error", "secret-task-log", "secret-task-health", "secret-task-health-error":
+	case "secret-task", "secret-task-error", "secret-task-log", "secret-task-stdout", "secret-task-health", "secret-task-health-error":
 		// Declares one input, "message", as accepting a host secret reference —
 		// the manifest field TestResolvePluginSecretInputs* and
 		// TestPluginTaskResolvesAndScrubsHostSecret exist to exercise.
@@ -773,6 +773,11 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 			time.Sleep(25 * time.Millisecond)
 			fmt.Fprintf(os.Stderr, "late: %s\n", received)
 		}()
+		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
+
+	case "secret-task-stdout":
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		fmt.Fprintln(os.Stdout, received)
 		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
 
 	case "secret-task-health", "secret-task-health-error":

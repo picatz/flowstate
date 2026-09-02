@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -133,6 +134,28 @@ func (s *stderrSecretScrubber) scrub(text string) (string, bool) {
 	return text, text != original
 }
 
+func (s *stderrSecretScrubber) scrubError(err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	now := s.now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.prune(now) {
+		s.rebuild()
+	}
+	if s.saturated {
+		return errors.New(secrets.Redacted), true
+	}
+	if s.combined == nil {
+		return err, false
+	}
+	scrubbed := s.combined.ScrubError(err)
+	return scrubbed, scrubbed.Error() != err.Error()
+}
+
 func (s *stderrSecretScrubber) hasEntries() bool {
 	now := s.now()
 
@@ -145,7 +168,7 @@ func (s *stderrSecretScrubber) hasEntries() bool {
 	return s.saturated || len(s.entries) > 0
 }
 
-func (s *stderrSecretScrubber) mustSuppressFramedLine(truncated bool) bool {
+func (s *stderrSecretScrubber) scrubFramedLine(text string, truncated bool) (string, bool) {
 	now := s.now()
 
 	s.mu.Lock()
@@ -154,7 +177,14 @@ func (s *stderrSecretScrubber) mustSuppressFramedLine(truncated bool) bool {
 	if s.prune(now) {
 		s.rebuild()
 	}
-	return s.saturated || s.multiline > 0 || (truncated && len(s.entries) > 0)
+	if s.saturated || s.multiline > 0 || (truncated && len(s.entries) > 0) {
+		return secrets.Redacted, true
+	}
+	original := text
+	if s.combined != nil {
+		text = s.combined.Scrub(text)
+	}
+	return text, text != original
 }
 
 func (s *stderrSecretScrubber) prune(now time.Time) bool {

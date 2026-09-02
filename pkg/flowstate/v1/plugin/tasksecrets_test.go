@@ -343,6 +343,36 @@ func TestPluginTaskScrubsResolvedSecretFromStderr(t *testing.T) {
 	assert.GreaterOrEqual(t, strings.Count(output, secrets.Redacted), 4)
 }
 
+func TestPluginTaskScrubsResolvedSecretFromReservedStdout(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-accidentally-written-to-stdout"
+	var logged capturedLogs
+	cfg := testConfig(t, pluginDir(t, "secret-task-stdout"))
+	cfg.Logger = newCapturingLogger(t, &logged)
+	host := openHost(t, cfg)
+
+	defs := host.TaskDefs()
+	require.Len(t, defs, 1)
+	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}},
+	}, nil)
+	require.NoError(t, err)
+
+	require.True(t, waitFor(t, time.Second, func() bool {
+		return strings.Contains(logged.String(), "protocol reserves")
+	}), "the plugin's reserved stdout line was not relayed")
+	host.Close(t.Context())
+
+	output := logged.String()
+	assert.NotContains(t, output, material)
+	assert.Contains(t, output, secrets.Redacted)
+	assert.Contains(t, output, "scrubbed=true")
+}
+
 func TestPluginHealthScrubsBeforeBoundingItsMessage(t *testing.T) {
 	t.Parallel()
 
