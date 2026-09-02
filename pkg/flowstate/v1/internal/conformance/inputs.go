@@ -708,6 +708,28 @@ func InputRefusalCases() []Refusal {
 			Contains: `input "region" uses value_type without a legacy type`,
 		},
 		{
+			// The same declaration nested in a callee must be found while the
+			// parent is admitted, not when execution reaches the call after an
+			// earlier parent step has already made a request.
+			Name: "a callee structural-only input is refused before its caller starts",
+			Workflow: declares("calls-structural-only-input",
+				nil,
+				nil,
+				says("before-call", "side effect"),
+				callNode("callee", declares("inputs-structural-only-callee",
+					[]*v1.InputDeclaration{{
+						Name: "region",
+						ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+							Scalar: v1.Type_SCALAR_STRING,
+						}},
+					}},
+					nil,
+					says("inside", "unreachable"),
+				), nil),
+			),
+			Contains: `step "callee" calls workflow "inputs-structural-only-callee": input "region" uses value_type without a legacy type`,
+		},
+		{
 			// A workflow declaring nothing at all, which is every workflow written
 			// before this feature existed: it takes no arguments, and a caller sending
 			// one is refused rather than having it silently ignored.

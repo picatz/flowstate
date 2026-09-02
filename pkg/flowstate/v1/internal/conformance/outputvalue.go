@@ -66,6 +66,29 @@ func OutputValueRefusalCases() []Refusal {
 			Contains: `output "answer" uses value_type without a legacy type`,
 		},
 		{
+			// Search embedded callees at parent admission. Discovering this only
+			// when CallScope binds the callee would permit the preceding parent
+			// step to run before the unsupported declaration is refused.
+			Name: "a callee structural-only output is refused before its caller starts",
+			Workflow: declares("calls-structural-only-output",
+				nil,
+				nil,
+				says("before-call", "side effect"),
+				callNode("callee", declares("outputs-structural-only-callee",
+					nil,
+					[]*v1.OutputDeclaration{{
+						Name:  "answer",
+						Value: v1.NewLiteral("ok"),
+						ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+							Scalar: v1.Type_SCALAR_STRING,
+						}},
+					}},
+					says("inside", "unreachable"),
+				), nil),
+			),
+			Contains: `step "callee" calls workflow "outputs-structural-only-callee": output "answer" uses value_type without a legacy type`,
+		},
+		{
 			// The enum half. A literal string outside the declared set is a
 			// promise the specification breaks against itself, knowable without
 			// running anything.

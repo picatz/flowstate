@@ -76,15 +76,11 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 // execution context. A top-level workflow records its own profile; an old
 // unprofiled callee inherits its caller's through [CalleeProfile].
 func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (map[string]*Value, error) {
+	if err := checkExecutableDeclarationTypes(wf); err != nil {
+		return nil, err
+	}
+
 	for _, declaration := range wf.GetDeclaredOutputs() {
-		// The structural field lands before its runtime projection. A hand-built
-		// specification may carry it already, so fail closed instead of treating
-		// the legacy zero value as "no declared output type" and silently
-		// reporting a value that was never checked. The edition that teaches the
-		// runtime to consume ValueType removes this temporary compatibility gate.
-		if declaration.GetValueType() != nil && declaration.GetType() == InputDeclaration_TYPE_UNSPECIFIED {
-			return nil, fmt.Errorf("output %q uses value_type without a legacy type; structural declaration types are not executable yet", declaration.GetName())
-		}
 		if err := CheckOutputConstraintShape(profile, declaration); err != nil {
 			return nil, err
 		}
@@ -168,12 +164,6 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
-		// Check every declaration, including an omitted optional input. Otherwise
-		// such a workflow could start while a supplied value for the same contract
-		// would be refused later as legacy-unspecified.
-		if declaration.GetValueType() != nil && declaration.GetType() == InputDeclaration_TYPE_UNSPECIFIED {
-			return nil, fmt.Errorf("input %q uses value_type without a legacy type; structural declaration types are not executable yet", declaration.GetName())
-		}
 		declared[declaration.GetName()] = declaration
 	}
 
@@ -245,6 +235,31 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 	}
 
 	return bound, nil
+}
+
+// checkExecutableDeclarationTypes is the temporary seam between the additive
+// structural schema and the edition that teaches runtime checks to consume it.
+// Programmatic submissions can carry a schema-valid structural-only declaration
+// before the compiler writes one, so refuse it rather than interpreting the
+// legacy zero value as unspecified and silently skipping enforcement.
+//
+// Every embedded callee is checked before the root workflow starts. Waiting to
+// bind a callee's arguments inside CallScope would let earlier parent steps make
+// requests before discovering that the callee's contract cannot be enforced.
+func checkExecutableDeclarationTypes(wf *Workflow) error {
+	return walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+		for _, declaration := range current.GetDeclaredInputs() {
+			if declaration.GetValueType() != nil && declaration.GetType() == InputDeclaration_TYPE_UNSPECIFIED {
+				return fmt.Errorf("input %q uses value_type without a legacy type; structural declaration types are not executable yet", declaration.GetName())
+			}
+		}
+		for _, declaration := range current.GetDeclaredOutputs() {
+			if declaration.GetValueType() != nil && declaration.GetType() == InputDeclaration_TYPE_UNSPECIFIED {
+				return fmt.Errorf("output %q uses value_type without a legacy type; structural declaration types are not executable yet", declaration.GetName())
+			}
+		}
+		return nil
+	})
 }
 
 // CheckInputDefault reports whether a declaration's default is a value of the type

@@ -50,8 +50,8 @@ func parsePluginVersion(v string) ([3]uint64, bool) {
 	return out, true
 }
 
-// maxPluginScanDepth bounds how deeply the plugin walks descend, through loop
-// bodies, parallel branches, and inlined callees.
+// maxWorkflowScanDepth bounds how deeply whole-specification walks descend,
+// through loop bodies, parallel branches, and inlined callees.
 //
 // The same bound the other whole-specification walks use, for the same reason
 // ([maxVarScanDepth]): a specification built in process is not depth-limited by
@@ -60,73 +60,71 @@ func parsePluginVersion(v string) ([3]uint64, bool) {
 // which weighs the whole message. A call tree that fans out multiplies bytes at
 // every level exactly as it multiplies work here, so the byte bound is what
 // keeps a diamond of calls from multiplying this walk unboundedly.
-const maxPluginScanDepth = maxVarScanDepth
+const maxWorkflowScanDepth = maxVarScanDepth
 
-// walkPluginWorkflows visits wf and every workflow embedded in it by a `call:`.
+// walkEmbeddedWorkflows visits wf and every workflow embedded in it by a `call:`.
 //
-// A callee is compiled into its caller's specification (see flowfile/call.go), so
-// its `plugins:` block travels with the submission and is as much a part of what a
-// run needs as the top level's. A walk that stopped at the call would pin the half
-// of a specification that happens to be spelled at the top.
+// A callee is compiled into its caller's specification (see flowfile/call.go),
+// so every whole-specification check must include it. A walk that stopped at the
+// call would validate only the half of a specification spelled at the top.
 //
 // visit runs on each workflow *before* the depth guard below has descended into
 // that workflow's own steps, so the guard bounds where this walk goes next and
 // says nothing about what visit spends. A visit that traverses the workflow it
 // is handed must not turn wire-chosen nesting into Go recursion depth of its
-// own: [RequiredTaskNames]'s visit runs [WalkWorkflow], which traverses with a
-// work stack for exactly this reason (#1284), and the other two callers —
-// [ResolvePlugins] and [PinnedPlugins] — read only the plugin fields of the
-// workflow they are handed.
-func walkPluginWorkflows(wf *Workflow, depth int, visit func(wf *Workflow) error) error {
+// own: [RequiredTaskNames]'s visit runs [WalkWorkflow], whose work stack exists
+// for exactly this reason (#1284); the other visitors read only bounded fields
+// on the workflow they are handed.
+func walkEmbeddedWorkflows(wf *Workflow, depth int, visit func(wf *Workflow) error) error {
 	if wf == nil {
 		return nil
 	}
-	if depth > maxPluginScanDepth {
-		// Fail closed: past this the walk cannot say which plugins a specification
-		// needs, and a check that cannot decide must not allow.
+	if depth > maxWorkflowScanDepth {
+		// Fail closed: past this the walk cannot inspect a whole specification,
+		// and a check that cannot decide must not allow.
 		return fmt.Errorf("steps nest more than %d deep, past what a specification is checked to; "+
-			"nothing this deep can be confirmed to declare the plugins it uses", maxPluginScanDepth)
+			"nothing this deep can be fully inspected", maxWorkflowScanDepth)
 	}
 	if err := visit(wf); err != nil {
 		return err
 	}
 
-	return walkPluginNodes(wf.GetSteps(), depth, visit)
+	return walkEmbeddedWorkflowNodes(wf.GetSteps(), depth, visit)
 }
 
-func walkPluginNodes(nodes []*Node, depth int, visit func(wf *Workflow) error) error {
-	if depth > maxPluginScanDepth {
+func walkEmbeddedWorkflowNodes(nodes []*Node, depth int, visit func(wf *Workflow) error) error {
+	if depth > maxWorkflowScanDepth {
 		return fmt.Errorf("steps nest more than %d deep, past what a specification is checked to; "+
-			"nothing this deep can be confirmed to declare the plugins it uses", maxPluginScanDepth)
+			"nothing this deep can be fully inspected", maxWorkflowScanDepth)
 	}
 
 	for _, node := range nodes {
 		if loop := node.GetForEach(); loop != nil {
-			if err := walkPluginNodes(loop.GetBody(), depth+1, visit); err != nil {
+			if err := walkEmbeddedWorkflowNodes(loop.GetBody(), depth+1, visit); err != nil {
 				return err
 			}
 		}
 		if loop := node.GetLoop(); loop != nil {
-			if err := walkPluginNodes(loop.GetBody(), depth+1, visit); err != nil {
+			if err := walkEmbeddedWorkflowNodes(loop.GetBody(), depth+1, visit); err != nil {
 				return err
 			}
 		}
 		if parallel := node.GetParallel(); parallel != nil {
 			for _, branch := range parallel.GetBranches() {
-				if err := walkPluginNodes(branch.GetSteps(), depth+1, visit); err != nil {
+				if err := walkEmbeddedWorkflowNodes(branch.GetSteps(), depth+1, visit); err != nil {
 					return err
 				}
 			}
 		}
 		if sw := node.GetSwitch(); sw != nil {
 			for _, body := range SwitchBodies(sw) {
-				if err := walkPluginNodes(body, depth+1, visit); err != nil {
+				if err := walkEmbeddedWorkflowNodes(body, depth+1, visit); err != nil {
 					return err
 				}
 			}
 		}
 		if callee := node.GetCall().GetWorkflow(); callee != nil {
-			if err := walkPluginWorkflows(callee, depth+1, visit); err != nil {
+			if err := walkEmbeddedWorkflows(callee, depth+1, visit); err != nil {
 				return fmt.Errorf("step %q calls workflow %q: %w", node.GetId(), callee.GetName(), err)
 			}
 		}
@@ -159,7 +157,7 @@ func ResolvePlugins(wf *Workflow, catalog *PluginCatalog) error {
 		available[p.GetName()] = p
 	}
 
-	return walkPluginWorkflows(wf, 0, func(wf *Workflow) error {
+	return walkEmbeddedWorkflows(wf, 0, func(wf *Workflow) error {
 		resolved, err := resolveOne(wf, available, catalog.GetClaimsSchemaVersion())
 		if err != nil {
 			return err
@@ -293,7 +291,7 @@ func PinnedPlugins(wf *Workflow) ([]*ResolvedPlugin, error) {
 		byName = make(map[string]*ResolvedPlugin)
 	)
 
-	err := walkPluginWorkflows(wf, 0, func(wf *Workflow) error {
+	err := walkEmbeddedWorkflows(wf, 0, func(wf *Workflow) error {
 		requirements, resolved := wf.GetPluginRequirements(), wf.GetResolvedPlugins()
 		if len(resolved) != len(requirements) {
 			return fmt.Errorf("workflow %q requires %d plugins and is pinned to %d; "+
