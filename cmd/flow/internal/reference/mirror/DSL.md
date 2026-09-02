@@ -3905,25 +3905,31 @@ shared cases (`conformance.ForEachTripCountCases`, two verified callers) assert 
 is *reached* rather than only not exceeded: a list of exactly the ceiling runs, and
 the case checks that every one of those iterations was recorded.
 
-A `for_each` that runs as one **atomic stretch of history** carries a second bound,
-on the product the trip count multiplies into. A sequential top-level `for_each` is
-paced: every body step counts against the step budget, and every iteration boundary
-is a Continue-As-New seam where the engine also reads Temporal's own
-history-pressure hint. Declare `max_parallel:` above one — or write the loop inside
-a `parallel:` branch, another loop's body, or a `switch:` arm, where suspension is
-already illegal — and that pacing disappears: the whole fan-out runs with no seam
-inside it, in a single execution whose history Temporal terminates at 51,200
-events. A termination delivers no workflow task, so the run's compensation log
-never executes — which is why 1,000 items over a 60-step body, every number inside
-the bounds above, must not be allowed to start. So when a `for_each` will run
-atomically, both drivers weigh `len(items) ×` the body's worst-case activity count
-against `v1.MaxAtomicBlockActivities` (5,000 — sized under the event cap at the
+A **suspension-opaque stretch of history** carries a second bound on all the work
+before its next Continue-As-New seam. A sequential top-level `for_each` is paced:
+every body step counts against the step budget, and every iteration boundary is a
+seam where the engine also reads Temporal's own history-pressure hint. Declare
+`max_parallel:` above one — or write the loop inside a `parallel:` branch, another
+loop's body, or a `switch:` arm, where suspension is already illegal — and that
+pacing disappears. A `parallel:` block is suspension-opaque too: all of its branches
+dispatch before the join, so their combined work is one segment rather than one
+segment per branch. Temporal terminates an execution whose history reaches 51,200
+events, delivering no workflow task in which compensation could run. That is why
+neither 1,000 items over a 60-step body nor 100 parallel branches of 100 tasks may
+start as one block. Both drivers therefore weigh the whole enclosing atomic body —
+including sibling `parallel:` blocks and nested `for_each` products — against
+`v1.MaxAtomicBlockActivities` before dispatch. An atomic `for_each` uses its resolved
+`len(items) ×` body count; the other bodies use their static worst-case count.
+`flow validate` reports every statically oversized segment, and submission repeats
+the check for hand-built Protobuf specifications; the execution checks remain as
+backstops and for item counts known only after expression evaluation. The
+ceiling is 5,000, sized under the event cap at the
 worst dispatch shape the atomic placements admit, sequential, where every activity
 costs its own three events plus a workflow-task triplet to dispatch the next;
-headroom spent in the safe direction) at
-the same pre-dispatch moment `v1.CheckForEachItems` runs, and refuse the crossing
-with one shared sentence naming the step, the item count, the per-iteration count
-and the ceiling (`v1.AtomicBlockActivitiesError`). The body is weighed at static
+headroom is spent in the safe direction. Atomic `for_each` refusals preserve the
+shared sentence naming the step, item count, per-iteration count and ceiling
+(`v1.AtomicBlockActivitiesError`); enclosing-body refusals preserve
+`v1.AtomicBlockBodyActivitiesError`. The body is weighed at static
 worst case — a `switch:` counts its widest arm, a `call:` its callee, a nested loop
 its ceiling times its body, an `if:` is assumed to hold, a task with `undo:` counts
 twice because the compensation is a second activity the same execution schedules
@@ -3934,8 +3940,9 @@ because the alternative to refusing a little early is a termination that skips
 compensation. The remedies are the sentence's: run the loop sequentially at the top
 level so it paces itself, narrow `items:`, shrink the body, or page the work across
 runs as `examples/paged-fan-out` does. The shared cases
-(`conformance.ForEachAtomicBlockCases`, two verified callers) assert exactly-at
-runs and one-item-past is refused, in both atomic placements. The concurrent join
+(`conformance.ForEachAtomicBlockCases` and `conformance.ParallelAtomicBlockCases`,
+each with two verified callers) assert exactly-at runs and the first crossing is
+refused before dispatch, including sibling parallel blocks. The concurrent join
 also copies each iteration's step count back into the run's budget, so the seams
 *after* a concurrent block weigh what it actually ran rather than counting the
 whole fan-out as one step.

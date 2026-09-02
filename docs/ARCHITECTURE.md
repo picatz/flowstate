@@ -304,7 +304,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Query | a run's live position, served through `Get` and rendered by `flow get`/`flow watch` **(done)**; richer state as it earns a place |
 | Update | synchronous request/response against a running workload |
 | Child workflow | `call:` — a callee's whole compiled specification runs nested inside the caller's own execution, isolated from the caller's scope and reachable only through its declared `inputs:`/`outputs:`, resolved at compile time so filesystem access never reaches a worker **(done)**; still in the caller's own history rather than a separate one, which a *literal* Temporal child workflow would give — a call is transparent to Continue-As-New in the meantime (see DSL.md), so a callee's own steps count against the same step budget the caller's do |
-| Continue-As-New | transparent history and payload management **(done)**; a suspension-opaque block — a `for_each` with `max_parallel:`, or one inside a `parallel:` branch, a loop body or a `switch:` arm — has no seam inside it, so its items × body product is bounded by `MaxAtomicBlockActivities` before dispatch, keeping one atomic stretch under the history-event cap Temporal would otherwise force-terminate (skipping compensation) at |
+| Continue-As-New | transparent history and payload management **(done)**; a suspension-opaque block — a `parallel:` block and all its branches, or a `for_each` with `max_parallel:` or inside a parallel branch, loop body or switch arm — has no seam inside it, so the whole enclosing body's worst-case activity count is bounded by `MaxAtomicBlockActivities` before dispatch, keeping one atomic stretch under the history-event cap Temporal would otherwise force-terminate (skipping compensation) at |
 | Worker Deployment Versioning | `flow worker --deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
 | Dynamic workflow registration | not used, deliberately: one *static* interpreter type, `Run`, registered pinned by `engine.RegisterWorkflows`, with the workload arriving as a `RunState` argument rather than as a workflow type name **(done)** — which is what gives one pinned version for the whole fleet, one stable type for the replay corpus to register against, and one place determinism is enforced. The cost is that every run's WorkflowType is `Run`, so Temporal-side per-type tooling sees one name, and the workload's declared name rides in the run's memo instead. See [One interpreter, not a workflow type per workload](#one-interpreter-not-a-workflow-type-per-workload) |
 | Schedules | `triggers: { schedule: ... }` declares a cadence — cron expressions or an interval, with a time zone, jitter and an overlap policy — and `flow schedule create\|list\|describe\|delete\|pause\|resume\|trigger` acts on it **(done)**; the declaration starts nothing, because a file that begins running on merge is a surprise, and arguments are bound and type-checked once at creation rather than at each firing. Calendar specs, start/end bounds, a catchup window and pause-on-failure are declared beside the cadence (`flowfile/triggers.go`'s schedule keys), and backfill is a creation-time request bounded in intervals and span (`flow schedule create --backfill`, `ScheduleBackfill`) **(done)** |
@@ -584,7 +584,15 @@ plugin process receives a value over the socket, never a reference and never
 provider access, and every resolved value is registered with the activity's
 scrubber so an echo cannot reach a step output or a task error. An input a
 `TaskManifest` did not name is refused rather than resolved, fail-closed in both
-directions. A manifest may additionally put an input in
+directions. The host also retains at most 256 values delivered to each plugin
+process while their calls are in flight and for five minutes after return, and
+applies the same encoded-form scrubbing to relayed stderr, reserved post-handshake
+stdout, health text, and manifest text before logging them; a `scrubbed=true`
+attribute marks a redacted record. Raw retained values are additionally bounded
+to 8 MiB before encoded forms are built. If either bound is reached entirely by
+in-flight values, the host suppresses plugin-controlled log text for that
+process rather than evicting a value that can still leak. A manifest may
+additionally put an input in
 `required_secret_inputs`; it must also be in `secret_inputs`, and the compiler, the
 control plane admitting a specification, and the host then refuse a literal before
 it can enter durable history or cross the plugin socket. That controls where
@@ -773,12 +781,6 @@ not be, while both resolved from one flat namespace and the binding silently won
 that rule always had: an iterator is bare too, so it and the clock genuinely do share a
 namespace, and a body saying `${now}` would mean the item everywhere except inside a
 wait. A collision is only unrepresentable between the two halves, not within one.
-
-One wrinkle lives in the schema rather than in either driver: `Node.Outputs.named_values`
-is required, so an empty map is not something a message can say. A signal that carries
-nothing therefore travels with its payload *absent*, and the server substitutes empty
-outputs on arrival. That is what keeps `${steps.approval.timed_out}` resolving on a gate
-somebody answered with nothing to add.
 
 Suspension interacts with waiting in one direction only, and the direction is not the
 obvious one. The step budget is checked *between* nodes, after a node has returned, so a

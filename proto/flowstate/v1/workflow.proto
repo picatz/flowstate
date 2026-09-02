@@ -1224,8 +1224,7 @@ message Node {
   // can be used to pass data between nodes.
   message Outputs {
     map<string, Value> named_values = 1 [
-      (buf.validate.field).required = true,
-      (google.api.field_behavior) = REQUIRED,
+      (google.api.field_behavior) = OPTIONAL,
       (buf.validate.field).map = {
         keys: {string: {min_len: 1}}
       }

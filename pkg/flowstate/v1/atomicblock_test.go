@@ -207,3 +207,101 @@ func TestCheckAtomicBlockActivitiesBoundary(t *testing.T) {
 	require.Contains(t, err.Error(), strconv.Itoa(20))
 	require.Contains(t, err.Error(), strconv.Itoa(MaxAtomicBlockActivities))
 }
+
+func TestCheckAtomicBlockBodyActivitiesBoundary(t *testing.T) {
+	require.NoError(t, CheckAtomicBlockBodyActivities(tasks(MaxAtomicBlockActivities)),
+		"a body exactly at the ceiling must run")
+
+	err := CheckAtomicBlockBodyActivities(tasks(MaxAtomicBlockActivities + 1))
+	require.EqualError(t, err, AtomicBlockBodyActivitiesError(MaxAtomicBlockActivities).Error(),
+		"a body past the ceiling must use the stable shared diagnostic")
+}
+
+func TestCheckWorkflowAtomicBlockActivities(t *testing.T) {
+	parallel := func(id string, count int) *Node {
+		branches := make([]*Parallel_Branch, 0, (count+99)/100)
+		for offset := 0; offset < count; offset += 100 {
+			steps := make([]*Node, 0, min(100, count-offset))
+			for i := range min(100, count-offset) {
+				steps = append(steps, task(id+"-"+strconv.Itoa(offset+i)))
+			}
+			branches = append(branches, &Parallel_Branch{Steps: steps})
+		}
+		return &Node{Id: id, Kind: &Node_Parallel{Parallel: &Parallel{Branches: branches}}}
+	}
+
+	t.Run("separate top-level segments each get the full ceiling", func(t *testing.T) {
+		require.NoError(t, CheckWorkflowAtomicBlockActivities(&Workflow{Steps: []*Node{
+			parallel("first", 3_000),
+			parallel("second", 3_000),
+		}}))
+	})
+
+	t.Run("one parallel block past the ceiling is refused", func(t *testing.T) {
+		err := CheckWorkflowAtomicBlockActivities(&Workflow{Steps: []*Node{
+			parallel("block", MaxAtomicBlockActivities+1),
+		}})
+		require.EqualError(t, err,
+			`step "block": `+AtomicBlockBodyActivitiesError(MaxAtomicBlockActivities).Error())
+	})
+
+	t.Run("sibling blocks in one switch arm share its segment", func(t *testing.T) {
+		wf := &Workflow{Steps: []*Node{{
+			Id: "choose",
+			Kind: &Node_Switch{Switch: &Switch{Cases: []*Switch_Case{{Steps: []*Node{
+				parallel("first", 3_000),
+				parallel("second", 3_000),
+			}}}}},
+		}}}
+		err := CheckWorkflowAtomicBlockActivities(wf)
+		require.EqualError(t, err,
+			`step "choose": `+AtomicBlockBodyActivitiesError(MaxAtomicBlockActivities).Error())
+	})
+
+	t.Run("a transparent call preserves the failing step path", func(t *testing.T) {
+		wf := &Workflow{Steps: []*Node{{
+			Id: "invoke",
+			Kind: &Node_Call{Call: &Call{Workflow: &Workflow{Steps: []*Node{
+				parallel("block", MaxAtomicBlockActivities+1),
+			}}}},
+		}}}
+		err := CheckWorkflowAtomicBlockActivities(wf)
+		require.EqualError(t, err,
+			`step "invoke": step "block": `+AtomicBlockBodyActivitiesError(MaxAtomicBlockActivities).Error())
+	})
+}
+
+func BenchmarkCheckParallelAtomicBlockActivities(b *testing.B) {
+	branches := make([]*Parallel_Branch, 50)
+	for i := range branches {
+		branches[i] = &Parallel_Branch{Steps: tasks(100)}
+	}
+	parallel := &Parallel{Branches: branches}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := CheckParallelAtomicBlockActivities(parallel); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkCheckWorkflowAtomicBlockActivities(b *testing.B) {
+	branches := make([]*Parallel_Branch, 50)
+	for i := range branches {
+		branches[i] = &Parallel_Branch{Steps: tasks(100)}
+	}
+	wf := &Workflow{Steps: []*Node{{
+		Id:   "block",
+		Kind: &Node_Parallel{Parallel: &Parallel{Branches: branches}},
+	}}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := CheckWorkflowAtomicBlockActivities(wf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

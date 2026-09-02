@@ -777,8 +777,21 @@ constructors rather than as a bare error (`sdk/errors.go:22-30`):
 > [!WARNING]
 > An error from a plugin is surfaced to users and written to workflow history,
 > which is durable and broadly readable. Never interpolate a secret, a token, or
-> a credential-bearing backend message into one. The same applies to what a
-> `Health` check returns, which the engine logs (`sdk/sdk.go:979-989`).
+> a credential-bearing backend message into one. The same applies to stderr and
+> what a `Health` check returns, which the engine logs (`sdk/sdk.go:979-989`). As
+> accidental containment, the host scrubs known resolved values and their common
+> encodings from plugin stderr, reserved post-handshake stdout, health text, and
+> manifest text. It retains at most 256 delivered values per plugin process while
+> their calls are in flight and for five minutes after return, and marks a changed
+> log record with `scrubbed=true`. While any values are retained, the host
+> suppresses the content of a truncated stderr line because a captured prefix
+> cannot be matched safely against a secret crossing the line bound. If all 256 slots hold
+> in-flight values, or the 8 MiB raw-value budget cannot admit another, it
+> suppresses plugin-controlled log text for the rest of that process rather than
+> forget a value that can still leak. Multiline secret retention suppresses
+> framed stderr content, and a health message at the SDK's size boundary is
+> suppressed while values are retained because either may contain only a secret
+> fragment. Do not rely on this against deliberate transformation or disclosure.
 
 ## Writing one in another language
 
