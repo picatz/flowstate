@@ -658,6 +658,54 @@ anything, and a plugin cannot tell "the operator allowed it all" from "nobody
 told me". A plugin run outside a worker — directly, from a shell — sees the same
 refusal, which is the correct answer rather than a bug.
 
+**A worker with no `--egress-policy` still grants a policy.** It grants the one
+its own built-in `http` task runs under: internal ranges denied, loopback denied
+unless the worker opted in, public HTTP and HTTPS permitted. The document says so
+about itself (`deployment_default: true`), and `sdk.EgressPolicyIsDeploymentDefault()`
+reports it, so absent now means only that no worker launched this process.
+
+That marker is part of protocol version 6, and it needed a version of its own
+rather than arriving quietly: `netpolicy.ParseConfig` is strict, so a plugin
+built against version 5 refuses the whole document over the unknown key. A host
+and its plugins are refused at the handshake when they disagree about this,
+which is the failure to prefer over a plugin reporting an operator's policy as
+malformed.
+
+Which posture to take toward the default is yours, and both are defensible. A
+plugin whose work is an ordinary request to a public host accepts it — `git`,
+`vcs`, `github` and `slack` do, so a worker nobody configured reaches public hosts
+uniformly, and installing a plugin does not require writing a policy file to get
+back what the worker already does. A plugin whose authority is of another class
+refuses it: `sql` will not open a database connection under a policy no operator
+wrote, and says `--egress-policy` in the refusal so the remedy is in the message.
+What is never right is treating the default as no grant at all.
+
+```go
+isDefault, err := sdk.EgressPolicyIsDeploymentDefault()
+if err != nil {
+	return nil, sdk.Failed("egress: %v", err)
+}
+if isDefault {
+	return nil, sdk.PermissionDenied(
+		"this task requires an operator egress policy passed with --egress-policy")
+}
+```
+
+**A protocol that is not an HTTP fetch may state its own bounds.**
+`sdk.HTTPClientWithBounds(maxResponseBytes, timeout)` is `sdk.HTTPClient()` for a
+transport whose responses are not the shape an operator sizes
+`max_response_bytes` for — a git packfile, a paginated API listing — and
+`sdk.EgressPolicyWithBounds` returns the same policy for a plugin that needs the
+policy itself. Both change what is *bounded* and never what may be *reached*:
+schemes, address categories, networks, ports, rules, redirects and the TLS floor
+come from the grant untouched, and the client marks credentials exactly as
+`sdk.HTTPClient()` does. Prefer the client: composing your own out of the policy
+loses the marking, and an operator's `deny: ['credentials && ...']` evaluating
+false for a clone that sends a token is a rule that did not fire rather than one
+that allowed. The consequence worth knowing: an operator's `max_response_bytes`
+governs built-in HTTP and every plugin using `sdk.HTTPClient()`, not a bound a
+plugin states for its own transport.
+
 **Absent means the variable is not set, not that it is empty.** An operator whose
 `--egress-policy` names an empty document has configured a policy — the one an
 empty document builds, which is exactly what the built-in `http` task then runs
@@ -693,15 +741,15 @@ a plugin that wants out is the deployment's job — a container, a network
 namespace, a firewall — and [THREAT_MODEL.md](../THREAT_MODEL.md) says where that
 line is.
 
-**Which first-party plugins enforce the grant today.** The host grants it to
-every plugin it launches, and that is all a host can do; enforcement is each
-plugin's own code. `sql` and `slack` read the grant and apply it on their real
-connection paths. `git`, `github` and `vcs` do not read it yet — they build their
-own default policy with `netpolicy.New`, so a deny rule an operator writes does
-not reach a `git.*`, `github.*` or `vcs.*` task in this build. Migrating them
-onto `sdk.EgressPolicy` is tracked in #1332. An operator relying on
-`--egress-policy` to stop those tasks needs deployment-level confinement until
-that lands.
+**Which first-party plugins enforce the grant.** The host grants it to every
+plugin it launches, and that is all a host can do; enforcement is each plugin's
+own code. All five first-party plugins read it and apply it on their real
+connection paths: `slack` and `github` through the governed HTTP client, `git`
+and `vcs` on go-git's transport, `sql` on every resolved PostgreSQL socket
+target. A deny rule an operator writes therefore reaches a `git.*`, `github.*`,
+`slack.*`, `sql.*` or `vcs.*` task. A plugin nobody in this repository wrote is
+still a separate process that can decline to ask, which is what deployment-level
+confinement is for.
 
 ## Classifying failures
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
@@ -67,10 +68,117 @@ const EgressPolicyEnv = protocol.EgressPolicyEnv
 // It is safe for concurrent use, and [netpolicy.Policy.Client] hands out a copy
 // per caller, so a plugin that reassigns the transport on a client it was given
 // disables the policy for itself alone.
+//
+// What the policy permits is only half of what a plugin needs to know about it.
+// [EgressPolicyIsDeploymentDefault] is the other half: whether an operator wrote
+// this policy or the worker forwarded its own default.
 func EgressPolicy() (*netpolicy.Policy, error) {
 	captureEgressGrant()
 
 	return grant.policy, grant.err
+}
+
+// EgressPolicyIsDeploymentDefault reports whether the grant is the deployment
+// default — the policy the worker's own built-in http task runs under when no
+// operator configured `--egress-policy` — rather than a policy an operator
+// wrote. It fails closed exactly as [EgressPolicy] does: no grant and a
+// malformed grant are errors naming [EgressPolicyEnv], not a false.
+//
+// There are two defensible postures toward the default, and which one a plugin
+// takes is the plugin's decision, not the SDK's:
+//
+// Accept it. The default denies internal address ranges, loopback, and cloud
+// metadata, and permits public http and https — which is the policy the built-in
+// http task on that worker is already fetching under. A plugin whose work is
+// reaching a public endpoint (git, vcs, github, slack) accepts it, and a default
+// worker then reaches public hosts uniformly, which is the behavior those
+// plugins have always had. Refusing instead would mean that installing a plugin
+// requires writing a policy file to get back what the worker already does.
+//
+// Refuse it. A plugin whose authority is of a different class than an HTTP fetch
+// — sql reaching a database, where the destination is the credential's whole
+// meaning — treats the absence of an operator's decision as the absence of
+// permission, and refuses with a message naming `--egress-policy` so the
+// operator knows what would grant it. That is #1320's decision, kept.
+//
+// What is never right is treating the default as no grant at all. The worker
+// granted its own policy deliberately; a plugin that reads it as nothing either
+// refuses work every default worker has always done or invents a posture the
+// deployment never expressed.
+func EgressPolicyIsDeploymentDefault() (bool, error) {
+	captureEgressGrant()
+
+	return grant.cfg.DeploymentDefault, grant.err
+}
+
+// EgressPolicyWithBounds returns the granted policy with the given response-size
+// and request-time bounds in place of the ones the grant carries.
+//
+// It exists for a plugin whose protocol is not an HTTP fetch. The grant's own
+// bounds are sized for one — a response body that flows into workflow history,
+// which is why [netpolicy.DefaultMaxResponseBytes] is a megabyte — and a git
+// packfile or a paginated API response is not that shape. A plugin bounded at
+// the grant's default would fail on the first real clone, on a worker whose
+// operator configured nothing and asked for nothing.
+//
+// The bounds are the plugin's, and they are applied after the grant, so a
+// deployment cannot tighten them through --egress-policy: `max_response_bytes`
+// in an operator's file governs the built-in http task and any plugin using
+// [HTTPClient], not the clone bound a git plugin states for its own transport.
+// Everything that decides *where* a request may go — schemes, address
+// categories, networks, ports, CEL rules, redirects, the TLS floor, rate limits
+// — comes from the grant untouched, which is the half of a policy that
+// authorizes rather than sizes. A plugin cannot reach a destination the
+// deployment denied by passing a bound here.
+//
+// It fails closed exactly as [EgressPolicy] does, and builds a policy per call
+// (compiling the grant's rules again), so a plugin calls it once at startup and
+// keeps what it gets. [HTTPClientWithBounds] is the client to take from it.
+//
+// Both bounds must be positive. A non-positive one is netpolicy's spelling for
+// "unbounded", so accepting it would let this function remove a bound the grant
+// carries rather than replace it, which is the one thing neither this nor a
+// policy file may do.
+func EgressPolicyWithBounds(maxResponseBytes int64, timeout time.Duration) (*netpolicy.Policy, error) {
+	// Positive, for the reason a policy file's own max_response_bytes and
+	// timeout must be: netpolicy reads a non-positive bound as no bound, so
+	// passing zero here would hand back a policy that reads a response of any
+	// size or waits forever — a bound removed rather than replaced. An operator
+	// cannot write that in a policy file ([netpolicy.Config.Options] refuses
+	// it), and this is the same surface reached from Go.
+	if maxResponseBytes <= 0 {
+		return nil, fmt.Errorf(
+			"sdk: maxResponseBytes must be positive, got %d; the body cap cannot be removed, only raised",
+			maxResponseBytes)
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf(
+			"sdk: timeout must be positive, got %s; the request bound cannot be removed, only raised",
+			timeout)
+	}
+
+	captureEgressGrant()
+	if grant.err != nil {
+		return nil, grant.err
+	}
+
+	opts, err := grant.cfg.Options()
+	if err != nil {
+		// Unreachable through the capture, which already built a policy from
+		// these options. Kept because a silent nil here would be an ungoverned
+		// policy, which is the one outcome this package never produces.
+		return nil, fmt.Errorf("sdk: reading the egress policy in %s: %w", EgressPolicyEnv, err)
+	}
+
+	policy, err := netpolicy.New(append(opts,
+		netpolicy.WithMaxResponseBytes(maxResponseBytes),
+		netpolicy.WithTimeout(timeout),
+	)...)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: building the egress policy in %s with this plugin's bounds: %w", EgressPolicyEnv, err)
+	}
+
+	return policy, nil
 }
 
 // captureEgressGrant reads and parses the grant, once per process.
@@ -86,7 +194,7 @@ func EgressPolicy() (*netpolicy.Policy, error) {
 // policy, latched here so that answer does not depend on when they ask.
 func captureEgressGrant() {
 	grant.once.Do(func() {
-		grant.policy, grant.err = parseEgressGrant(os.LookupEnv(EgressPolicyEnv))
+		grant.policy, grant.cfg, grant.err = parseEgressGrant(os.LookupEnv(EgressPolicyEnv))
 	})
 }
 
@@ -112,6 +220,32 @@ func captureEgressGrant() {
 // worker governs, and a deployment that cares is entitled to notice.
 func HTTPClient() (*http.Client, error) {
 	policy, err := EgressPolicy()
+	if err != nil {
+		return nil, err
+	}
+
+	client := policy.Client()
+	client.Transport = credentialMarkingTransport{next: client.Transport}
+
+	return client, nil
+}
+
+// HTTPClientWithBounds returns an HTTP client governed by
+// [EgressPolicyWithBounds] — the deployment's policy, with this plugin's own
+// response-size and request-time bounds in place of the grant's.
+//
+// It is [HTTPClient] for a transport whose responses are not the shape an
+// operator sizes `max_response_bytes` for: a git packfile, a paginated API
+// listing. Everything else is the same client, including the credential marking,
+// which is the half a plugin composing its own client out of
+// [EgressPolicyWithBounds] would quietly lose — an operator's
+// `deny: ['credentials && ...']` evaluating false for a clone that sends a token
+// is a rule that did not fire rather than one that allowed.
+//
+// It builds a policy per call, as [EgressPolicyWithBounds] does, so a plugin
+// asks once at startup and keeps what it gets.
+func HTTPClientWithBounds(maxResponseBytes int64, timeout time.Duration) (*http.Client, error) {
+	policy, err := EgressPolicyWithBounds(maxResponseBytes, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -266,6 +400,14 @@ type egressGrant struct {
 	once   sync.Once
 	policy *netpolicy.Policy
 	err    error
+
+	// cfg is the document the policy was built from, kept so the questions the
+	// built policy cannot answer are answered from the same parse rather than
+	// from a second read of the environment: where the grant came from
+	// ([EgressPolicyIsDeploymentDefault]), and what a plugin rebuilding it with
+	// its own transport bounds has to start from ([EgressPolicyWithBounds]). A
+	// second read would be a second grant.
+	cfg netpolicy.Config
 }
 
 // grant is a pointer so that this package's own tests can put a fresh capture in
@@ -273,12 +415,13 @@ type egressGrant struct {
 // which is the only setting where the capture has to be undone.
 var grant = &egressGrant{}
 
-// parseEgressGrant turns the encoded grant into a policy, or says why it could
-// not. present is [os.LookupEnv]'s second result: false is no grant, true with
-// an empty string is a grant whose document is empty.
-func parseEgressGrant(encoded string, present bool) (*netpolicy.Policy, error) {
+// parseEgressGrant turns the encoded grant into a policy and the document's own
+// account of where it came from, or says why it could not. present is
+// [os.LookupEnv]'s second result: false is no grant, true with an empty string
+// is a grant whose document is empty.
+func parseEgressGrant(encoded string, present bool) (*netpolicy.Policy, netpolicy.Config, error) {
 	if !present {
-		return nil, fmt.Errorf(
+		return nil, netpolicy.Config{}, fmt.Errorf(
 			"sdk: no egress policy: %s is not set, so there is no destination this plugin is "+
 				"known to be permitted to reach. A Flowstate worker sets it from its own "+
 				"--egress-policy (or $FLOWSTATE_EGRESS_POLICY); a plugin run outside one has no "+
@@ -298,31 +441,31 @@ func parseEgressGrant(encoded string, present bool) (*netpolicy.Policy, error) {
 	// by hand — and "the caller checked" is not a bound (AGENTS.md's fifth
 	// invariant).
 	if maxEncoded := base64.StdEncoding.EncodedLen(protocol.MaxEgressPolicyBytes); len(encoded) > maxEncoded {
-		return nil, fmt.Errorf(
+		return nil, netpolicy.Config{}, fmt.Errorf(
 			"sdk: the egress policy in %s is over the %d-byte limit once decoded (%d encoded bytes, at most %d)",
 			EgressPolicyEnv, protocol.MaxEgressPolicyBytes, len(encoded), maxEncoded)
 	}
 
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("sdk: decoding the egress policy in %s: %w", EgressPolicyEnv, err)
+		return nil, netpolicy.Config{}, fmt.Errorf("sdk: decoding the egress policy in %s: %w", EgressPolicyEnv, err)
 	}
 
 	if len(data) > protocol.MaxEgressPolicyBytes {
-		return nil, fmt.Errorf(
+		return nil, netpolicy.Config{}, fmt.Errorf(
 			"sdk: the egress policy in %s is %d bytes, over the %d-byte limit",
 			EgressPolicyEnv, len(data), protocol.MaxEgressPolicyBytes)
 	}
 
 	cfg, err := netpolicy.ParseConfig(data)
 	if err != nil {
-		return nil, fmt.Errorf("sdk: parsing the egress policy in %s: %w", EgressPolicyEnv, err)
+		return nil, netpolicy.Config{}, fmt.Errorf("sdk: parsing the egress policy in %s: %w", EgressPolicyEnv, err)
 	}
 
 	policy, err := cfg.Policy()
 	if err != nil {
-		return nil, fmt.Errorf("sdk: building the egress policy in %s: %w", EgressPolicyEnv, err)
+		return nil, netpolicy.Config{}, fmt.Errorf("sdk: building the egress policy in %s: %w", EgressPolicyEnv, err)
 	}
 
-	return policy, nil
+	return policy, cfg, nil
 }

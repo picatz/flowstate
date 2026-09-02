@@ -28,11 +28,16 @@ import (
 // only place this file *enforces* anything. The same bytes are also handed to
 // every launched plugin as a grant ([plugin.Config.EgressPolicy]), and a grant is
 // not enforcement: a plugin process opens its own sockets, so whether the policy
-// governs a plugin task is that plugin's code. Today `sql` and `slack` apply it;
-// `git`, `github` and `vcs` build their own default policy and are migrated in
-// #1332. Registration happens before
-// the worker polls and before a local run executes, so a policy that cannot load
-// refuses the command instead of governing some steps and not others.
+// governs a plugin task is that plugin's code. Every first-party plugin now
+// applies it — `git`, `github`, `slack`, `sql` and `vcs`, each on its own
+// connection path (#1332) — and a third-party plugin that asks the SDK for a
+// client gets the same policy without this file knowing its name. Registration
+// happens before the worker polls and before a local run executes, so a policy
+// that cannot load refuses the command instead of governing some steps and not
+// others.
+//
+// With no file, the grant is the deployment default rather than nothing: see
+// [egressPolicySnapshot].
 //
 // `flow run local` takes the same flag because local runs exist to tell an author
 // what production will do: rehearsing under the policy the workers run is the
@@ -75,9 +80,47 @@ const maxEgressPolicyBytes = plugin.MaxEgressPolicyBytes
 // that distinction, which is why it is the clone used on both hops.
 type egressPolicySnapshotKey struct{}
 
+// egressPolicySnapshot returns the policy every plugin this command launches is
+// granted: the operator's file when one was configured, and otherwise the
+// deployment default written down ([v1.DefaultEgressPolicyDocument]).
+//
+// The default is a grant, not the absence of one. A worker started with no
+// --egress-policy still runs its own built-in http task under a policy, and a
+// plugin handed nothing cannot tell that deployment from one that never
+// launched it through a worker at all — so it either refuses work a default
+// worker has always done or, worse, decides for itself what "no policy" means.
+// Forwarding the default leaves `sdk.EgressPolicy`'s fail-closed refusal to
+// mean exactly one thing: nothing granted this process anything (#1332).
+//
+// It defaults here rather than in [applyEgressPolicy] so that a command which
+// launches plugins without taking the flag — `flow plugins`, `flow tasks`,
+// `flow validate` — grants the same document as one that does. Those commands
+// only ask a plugin what it can do, but a grant that appears and disappears
+// with the command doing the asking is a difference a plugin would have to
+// explain, and there is nothing to explain.
 func egressPolicySnapshot(cmd *cobra.Command) []byte {
 	data, _ := commandContext(cmd).Value(egressPolicySnapshotKey{}).([]byte)
+	if data == nil {
+		return v1.DefaultEgressPolicyDocument()
+	}
 	return slices.Clone(data)
+}
+
+// setEgressPolicySnapshot records the document every plugin this command
+// launches will be granted.
+//
+// One writer, because the grant and the policy registered over the built-in http
+// task are the same deployment's answer, and a command that set one without the
+// other governs its own task and its plugins differently. That is exactly what
+// `flow mcp` did before it called this: it registered a deny-everything policy
+// for the built-in task and left the snapshot unset, so plugins were granted the
+// ordinary default and a model could drive a git or github task to a public host
+// the same process refused to fetch.
+//
+// A nil document means no policy was configured, which [egressPolicySnapshot]
+// answers with the deployment default.
+func setEgressPolicySnapshot(cmd *cobra.Command, document []byte) {
+	cmd.SetContext(context.WithValue(commandContext(cmd), egressPolicySnapshotKey{}, document))
 }
 
 func commandContext(cmd *cobra.Command) context.Context {
@@ -89,22 +132,22 @@ func commandContext(cmd *cobra.Command) context.Context {
 
 // addEgressPolicyFlag declares --egress-policy on a command.
 //
-// The help says granted where it used to say governing, and it names which
-// plugins enforce the grant. The difference is not pedantry at this boundary: a
-// plugin process is not confined, so handing it the policy is all a worker can
-// do, and whether a deny rule actually stops a request is that plugin's own
-// code. `git`, `github` and `vcs` still build their own default policy with
-// netpolicy.New and never read the grant, so an operator who wrote a deny rule
-// and read "every plugin the worker launches" was promised enforcement this
-// build does not have. Their migration is #1332's next slice; until it lands the
-// help has to say so rather than let the flag read as a boundary it is not.
+// The help says granted where it used to say governing, and it names both what
+// enforces the grant and where enforcement stops. The difference is not pedantry
+// at this boundary: a plugin process is not confined, so handing it the policy is
+// all a worker can do, and whether a deny rule actually stops a request is that
+// plugin's own code. Every first-party plugin now applies it, which is what the
+// help says; what it must not say is that the flag governs *any* plugin, because
+// a third-party process can open its own socket and this build cannot stop it.
+// A deployment that must stop one confines it (THREAT_MODEL.md).
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
 		"path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches "+
-			"(default $"+egressPolicyEnv+"); the sql and slack plugins enforce the grant, while git, github and vcs "+
-			"do not read it yet and reach the network under their own default policy, tracked in #1332; "+
-			"when set it replaces the default policy entirely, and "+v1.AllowLoopbackEgressEnv+
-			" is ignored; a file that wants loopback says allow_loopback: true")
+			"(default $"+egressPolicyEnv+"); the first-party git, github, slack, sql and vcs plugins enforce the "+
+			"grant on their own connections, while a third-party plugin is a separate process that can ignore it; "+
+			"with no file every plugin is granted the same default policy built-in HTTP runs under, which sql "+
+			"refuses to reach a database under; when set it replaces the default policy entirely, and "+
+			v1.AllowLoopbackEgressEnv+" is ignored; a file that wants loopback says allow_loopback: true")
 }
 
 // applyEgressPolicy loads the configured policy file and registers the http task
@@ -120,7 +163,7 @@ func addEgressPolicyFlag(cmd *cobra.Command) {
 // fail-open this flag exists to prevent. The file's path is on every error;
 // [netpolicy.New] already names the rule and the compile problem.
 func applyEgressPolicy(cmd *cobra.Command) error {
-	cmd.SetContext(context.WithValue(commandContext(cmd), egressPolicySnapshotKey{}, []byte(nil)))
+	setEgressPolicySnapshot(cmd, nil)
 	path, _ := cmd.Flags().GetString("egress-policy")
 	if path == "" {
 		return nil
@@ -145,23 +188,37 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 		return fmt.Errorf("parsing egress policy %s: %w", path, err)
 	}
 
+	// deployment_default is the worker's own signature on the document it grants
+	// a plugin when no operator file was configured, and a plugin decides what
+	// it will do under the default from it (sql refuses a database; git, vcs,
+	// github and slack accept). An operator file wearing that signature would be
+	// telling those plugins the operator had written nothing — refused here, at
+	// the one place an operator's own bytes enter, rather than left to mean
+	// something different in each plugin that reads it.
+	if cfg.DeploymentDefault {
+		return fmt.Errorf(
+			"egress policy %s sets deployment_default; that key marks the default policy a worker "+
+				"grants its plugins when no --egress-policy is configured, and is not something a "+
+				"policy file says about itself — delete it", path)
+	}
+
 	policy, err := cfg.Policy()
 	if err != nil {
 		return fmt.Errorf("egress policy %s: %w", path, err)
 	}
 
-	// Non-nil even for a zero-byte file. Nil is how
-	// [plugin.Config.EgressPolicy] spells "nothing was configured", and an
-	// operator who named a file configured a policy — the one this function just
-	// registered over the built-in http task. Letting an empty file arrive there
-	// as nil is what made the two sides disagree: the built-in task ran the
-	// policy an empty document builds while every plugin was told there was no
-	// grant at all.
+	// Non-nil even for a zero-byte file. Nil is how this command spells "no
+	// operator file", which [egressPolicySnapshot] answers with the deployment
+	// default — and an operator who named a file configured a policy, the one
+	// this function just registered over the built-in http task. Letting an
+	// empty file arrive as nil is what made the two sides disagree: the built-in
+	// task ran the policy an empty document builds while every plugin was
+	// granted the default instead of the operator's own empty one.
 	snapshot := slices.Clone(data)
 	if snapshot == nil {
 		snapshot = []byte{}
 	}
-	cmd.SetContext(context.WithValue(cmd.Context(), egressPolicySnapshotKey{}, snapshot))
+	setEgressPolicySnapshot(cmd, snapshot)
 
 	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for egress policy %s: %w", path, err)

@@ -62,7 +62,7 @@ func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	}
 	if egressPolicy == nil {
 		return nil, sdk.PermissionDenied(
-			"slack.post requires an operator egress policy passed with --egress-policy; network access is denied when it is absent")
+			"slack.post has no usable egress policy, so no destination is authorized: %v", egressRefusal)
 	}
 
 	var in slackv1.PostInputs
@@ -77,7 +77,15 @@ func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, err
 	}
 
-	response, err := sendPost(ctx, egressPolicy.Client(), chatPostMessageURL, token, &in)
+	// The SDK's client, not egressPolicy.Client(): it is the same policy, plus
+	// the credential marking this request needs. The policy above is what the
+	// boundary check reads; this is what the request crosses.
+	governed, err := sdk.HTTPClient()
+	if err != nil {
+		return nil, sdk.PermissionDenied("slack.post has no usable egress policy: %v", err)
+	}
+
+	response, err := sendPost(ctx, governed, chatPostMessageURL, token, &in)
 	if err != nil {
 		return nil, err
 	}
@@ -134,13 +142,13 @@ func validatePost(in *slackv1.PostInputs) error {
 }
 
 func sendPost(ctx context.Context, client *http.Client, endpoint, token string, in *slackv1.PostInputs) (*postResponse, error) {
-	caller, _ := sdk.CallerFromContext(ctx)
-	identity := caller.Identity
-	ctx = netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
-		Subject: identity.GetSubject(), Issuer: identity.GetIssuer(),
-		Namespace: identity.GetNamespace(), Claims: identity.GetClaims(),
-	})
-	ctx = netpolicy.ContextWithCredentials(ctx, true)
+	// Nothing is marked here any more, and both halves moved for the same
+	// reason: they are the SDK's. The calling workload's identity is installed
+	// where netpolicy looks when the task call is delivered, and the bearer
+	// token below travels in an Authorization header, which sdk.HTTPClient's
+	// transport marks as a credential before the policy is evaluated. A second
+	// install of either would be one fact written twice. sdk.WithCredentials is
+	// for a request whose credential no header shows; this is not one.
 
 	body, err := json.Marshal(postRequest{
 		Channel: in.GetChannel(), Text: in.GetText(), ClientMsgID: in.GetMessageKey(), ThreadTS: in.GetThreadTs(),

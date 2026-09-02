@@ -76,9 +76,6 @@ func TestAuthenticatedClientRefusesWorkflowSelectedBaseURL(t *testing.T) {
 
 func TestAuthenticatedClientUsesOperatorSelectedBaseURL(t *testing.T) {
 	t.Setenv(envAPIBaseURL, "https://github.example.com/api/v3")
-	if err := installEgressPolicy(); err != nil {
-		t.Fatalf("installEgressPolicy: %v", err)
-	}
 
 	client, _, err := newClient("credential", "")
 	if err != nil {
@@ -106,9 +103,6 @@ func TestAuthenticatedClientUsesOperatorSelectedBaseURL(t *testing.T) {
 // somewhere far away.
 func TestAuthenticatedClientKeepsTheGitHubComDefault(t *testing.T) {
 	t.Setenv(envAPIBaseURL, "")
-	if err := installEgressPolicy(); err != nil {
-		t.Fatalf("installEgressPolicy: %v", err)
-	}
 
 	authenticated, _, err := newClient("credential", "")
 	if err != nil {

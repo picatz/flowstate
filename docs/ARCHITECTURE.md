@@ -545,16 +545,25 @@ deployment's egress policy in its environment (`plugin.Config.EgressPolicy`), an
 the SDK's `EgressPolicy`/`HTTPClient` build the governed client from it — checked
 in the dialer, re-checked on redirects, refusing rather than defaulting when the
 grant is absent — so a plugin built on that constructor is governed with no
-plugin-specific wiring. The SQL plugin reads the same grant and applies it to every
-resolved PostgreSQL socket target, because its connection path is not HTTP. What
-the grant buys is that the governed path is the convenient one; arbitrary
-third-party plugin code that opens its own sockets still requires
+plugin-specific wiring. A worker with no `--egress-policy` grants the default
+policy its own built-in HTTP task runs under, marked as the default in the
+document, so "absent" means only that no worker launched this process and each
+plugin can take its own posture toward a policy nobody wrote. The SQL and git
+plugins read the same grant and apply it on their own connection paths — a
+resolved PostgreSQL socket target, a go-git transport — because those are not
+HTTP; a plugin whose protocol needs a different response or time bound takes
+`sdk.HTTPClientWithBounds`, which changes what is bounded and never what may be
+reached, and marks credentials exactly as `sdk.HTTPClient` does. A credential no
+header shows — a password inside a DSN — is the plugin's own to declare, which is
+what `sdk.WithCredentials` and the SQL plugin's dial path do. What the grant buys is that the governed path is the convenient
+one; arbitrary third-party plugin code that opens its own sockets still requires
 deployment/substrate confinement. The grant is therefore universal and
-enforcement is not: `sql` and `slack` consume it today, while the in-tree `git`,
-`github` and `vcs` plugins still build their own default policy and are migrated
-onto the constructor in #1332's next slice. A deployment that must stop those
-tasks reaching a destination confines them rather than relying on the policy
-file.
+enforcement is voluntary: every first-party plugin — `git`, `github`, `slack`,
+`sql`, `vcs` — consumes it, and `sql` additionally refuses to reach a database
+under the default, because a database destination is not something a deployment
+can be said to have authorized by not writing a file. A deployment that must stop
+a plugin it did not write reaching a destination confines it rather than relying
+on the policy file.
 A plugin is an extension of the engine's capability, not an exemption from its
 rules.
 

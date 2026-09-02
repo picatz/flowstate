@@ -30,6 +30,13 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+
+	// The one place a test binary can stand in for a worker's launch; see
+	// grantTestEgressPolicy (egress_test.go). Not on the helper path above,
+	// which is a real launched plugin and gets its grant from the host that
+	// launches it.
+	grantTestEgressPolicy()
+
 	os.Exit(m.Run())
 }
 

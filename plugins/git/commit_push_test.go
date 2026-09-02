@@ -167,11 +167,7 @@ func TestCommitPushTaskBoundaryDoesNotTreatModeAsAuthorization(t *testing.T) {
 	// Install the fixture client into go-git's process-wide protocol registry,
 	// then restore the production governed client for every following test.
 	client.InstallProtocol("https", githttp.NewClient(server.Client()))
-	t.Cleanup(func() {
-		if err := installEgressPolicy(); err != nil {
-			t.Fatalf("restoring governed git transport: %v", err)
-		}
-	})
+	t.Cleanup(installEgressPolicy)
 
 	_, err := gitCommitPush(context.Background(), map[string]*flowstatev1.Value{
 		"url":       flowstatev1.NewValue(server.URL + "/repo.git"),
