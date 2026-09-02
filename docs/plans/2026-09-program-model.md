@@ -85,6 +85,34 @@ is the other's test; the surfaces (#1565, #1566, #1568) as they earn slices;
   measurement (2,119 bytes with, 875 without, on a one-expression probe) and
   the decision.
 
+## The second pass, same day
+
+The other axes the question has: what the IR carries for a program that
+outgrows one execution, for policy that has to see the program and not only
+one call, and for a run that has to change under an operator. One new
+measurement, taken the same way as the first pass: a three-step callee called
+four times compiles to 44,398 bytes against 11,341 for one call, because
+`Call.workflow` embeds a copy per site (#172 states the design; nothing had
+weighed it).
+
+| Group | Issues |
+| --- | --- |
+| The program that outgrows one execution | #1582 (callees content-addressed inside the spec), #1583 (one `Dependencies(wf)` graph replacing four walkers), #1585 (sizing over the graph; ranked cut candidates for D4 and #156) |
+| The program as a review surface | #1584 (`flow explain`, and `--against` as `breaking` for effects) |
+| The run that changes under an operator | #1587 (`flow migrate`, `flow rerun --from`; `Frame.next_node` is positional), #1592 (`Workflow.budget` with `loop:`'s three properties) |
+| Policy that sees the program | #1588 (pre-flight of task-shape, secret and assumption policy at submit), #1589 (resource-aware server authorization from attested facts), #1590 (`flowstate.policy.v1`; files as a projection), #1591 (`needs` narrowing claims on task descriptors) |
+
+Recommended order inside the pass: #1583 first, because #1584 and #1585 read
+it and #1484 lands underneath it either way; #1582 with #1564; #1590 before
+#1589 and #1588, so the rules they add are written once against a schema;
+#1587 and #1592 are decisions the owner takes and reorder nothing.
+
+Deliberately not filed on this pass: a tuple-store authorization system or a
+second policy language (#1589 binds facts the server already attests into the
+one CEL vocabulary); per-step inline policy in the file (#104's by-reference
+rule stands); reopening the held Flowfile egress declaration (DSL.md holds it;
+#1591 is the narrowing half #721 already says is safe).
+
 ## Deliberately not filed
 
 - A WASM plugin ABI, remote plugin distribution and browser execution: #102,
@@ -101,6 +129,8 @@ is the other's test; the surfaces (#1565, #1566, #1568) as they earn slices;
 - Two `flow compile` probes, one `flow run local` probe and one
   `flow validate` probe against a binary built from `dc9429d`, bounded by
   `timeout 60`, outputs quoted in the issues.
+- Second pass: two more `flow compile` probes (one call site, four call sites
+  to one callee), bounded the same way, numbers quoted in #1582 and #1562.
 - No `go test`, `tools/gate` or `make check` for the audit itself: nothing in
   the tree changed. This file was checked with
   `go test ./cmd/flow -run 'TestInternalDocumentsSayTheyAreInternal|TestDocsIndex'`.
