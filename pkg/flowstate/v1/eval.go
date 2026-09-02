@@ -857,6 +857,34 @@ func (e *LiteralKindError) Error() string {
 	return fmt.Sprintf("a %s cannot be converted to a Go value", e.Kind)
 }
 
+// LiteralDepthError is what [LiteralToGo] refuses a literal with when its lists
+// and maps nest past [MaxStructureDepth].
+//
+// Depth is the resource this walk spends, and the walk is recursive, so a value
+// nested deeply enough exhausts a goroutine's stack — a crash of the whole
+// process, which no caller can recover from, in place of an answer. The bound is
+// [MaxStructureDepth] rather than a number of this file's own, per the
+// one-constant rule [maxConstraintValueDepth] states at length: this descends an
+// `expr.Value`'s lists and maps, which is the identical resource
+// [walkConstraintValue] and [CheckStructureDepth] already bound at 32 wherever a
+// value can arrive. Every value this system already accepts is inside it, so the
+// guard refuses nothing that used to convert.
+//
+// It terminates a cyclic literal too, without a visited set. A cycle is only
+// constructible in process — a protobuf message decoded from the wire is a tree
+// — so an embedder that has already broken that contract gets a refusal at depth
+// rather than an unbounded descent.
+type LiteralDepthError struct {
+	// Depth is the bound, not how deep the value went: the walk stops at the
+	// bound, so how much further the value nests is exactly what it did not
+	// measure.
+	Depth int
+}
+
+func (e *LiteralDepthError) Error() string {
+	return fmt.Sprintf("nests deeper than the %d levels this conversion can walk", e.Depth)
+}
+
 // mapKeyTypeName names a map key's type in the vocabulary a declaration is
 // written in.
 //
@@ -881,7 +909,27 @@ func mapKeyTypeName(key *expr.Value) string {
 // This is the one spelling of that conversion: flowtest and embed both call
 // it rather than each keeping their own copy of the switch, so a step's
 // recorded value reads back the same way no matter which package reads it.
+//
+// Bounded by [MaxStructureDepth], which is why the recursion is a separate
+// function carrying a depth: the guard belongs to the walk rather than to any
+// one caller, so every one of them — the run document's projection, flowtest,
+// flowdebug, embed, and [CheckOutputValue] — is answered rather than crashed by
+// a value nested past what a recursive walk can afford. See [LiteralDepthError].
 func LiteralToGo(v *expr.Value) (any, error) {
+	return literalToGo(v, 0)
+}
+
+// literalToGo is [LiteralToGo]'s recursion, counting how far it has descended.
+//
+// depth increments on the way into a list element and into a map entry, which is
+// the accounting [walkConstraintValue] uses over the same value — so a literal
+// one walk accepts is one the other accepts, rather than two walks agreeing on a
+// constant and disagreeing about what it counts.
+func literalToGo(v *expr.Value, depth int) (any, error) {
+	if depth > MaxStructureDepth {
+		return nil, &LiteralDepthError{Depth: MaxStructureDepth}
+	}
+
 	switch kind := v.GetKind().(type) {
 	case nil, *expr.Value_NullValue:
 		return nil, nil
@@ -900,7 +948,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 	case *expr.Value_ListValue:
 		list := make([]any, 0, len(kind.ListValue.GetValues()))
 		for i, element := range kind.ListValue.GetValues() {
-			native, err := LiteralToGo(element)
+			native, err := literalToGo(element, depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("element %d: %w", i, err)
 			}
@@ -920,7 +968,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 				return nil, &MapKeyTypeError{KeyType: mapKeyTypeName(entry.GetKey())}
 			}
 			name := key.StringValue
-			native, err := LiteralToGo(entry.GetValue())
+			native, err := literalToGo(entry.GetValue(), depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("key %q: %w", name, err)
 			}

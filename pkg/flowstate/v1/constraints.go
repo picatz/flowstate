@@ -741,6 +741,21 @@ func checkContainerValue(name string, declared InputDeclaration_Type, lit *expr.
 			name, DeclaredTypeName(declared), keyErr.KeyType)
 	}
 
+	var depthErr *LiteralDepthError
+	if errors.As(err, &depthErr) {
+		// The walk stopped at the bound rather than descending to find out how
+		// much further this goes, so the sentence names the bound and not a
+		// depth. Reached before anything runs, through [BindRunInputs] — which
+		// is the point: this walk is recursive and runs at a submit boundary an
+		// in-process caller reaches with a hand-built specification, ahead of
+		// [CheckSubmissionSize], so without the guard a deep enough literal
+		// crashed the embedding process instead of being refused (invariant 5).
+		return fmt.Errorf("output %q is declared %s but nests deeper than the %d levels this server "+
+			"can walk while converting it to the plain value that type promises; flatten it, or have "+
+			"a step read it from a reference instead of declaring it nested this deep",
+			name, DeclaredTypeName(declared), depthErr.Depth)
+	}
+
 	var kindErr *LiteralKindError
 	if errors.As(err, &kindErr) {
 		return fmt.Errorf("output %q is declared %s but holds a %s, which has no plain value to read back; "+
@@ -750,7 +765,7 @@ func checkContainerValue(name string, declared InputDeclaration_Type, lit *expr.
 	// A conversion failure this function has no named error for is a kind
 	// [LiteralToGo] gained without one, which is that function's contract to
 	// keep rather than a sentence to guess at here. Accepted, exactly as it was
-	// before either name existed, so a new arm there degrades to the old
+	// before any of the names existed, so a new arm there degrades to the old
 	// fallback instead of refusing runs with a message nobody wrote.
 	return nil
 }
