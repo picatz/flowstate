@@ -12,7 +12,7 @@ import (
 	"github.com/google/go-github/v75/github"
 )
 
-// newPagedTestServer starts an httptest server that serves count JSON
+// newPagedTestServer creates an in-memory httptest server that serves count JSON
 // records, itemJSON(i) for i in [0, count), paginated at whatever per_page
 // a request asks for (falling back to defaultPerPage when unset - go-github
 // omits per_page entirely when this task's own perPage matches its
@@ -31,7 +31,7 @@ import (
 func newPagedTestServer(t *testing.T, count, defaultPerPage int, itemJSON func(i int) string) *github.Client {
 	t.Helper()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		page, _ := strconv.Atoi(q.Get("page"))
 		if page < 1 {
@@ -59,9 +59,8 @@ func newPagedTestServer(t *testing.T, count, defaultPerPage int, itemJSON func(i
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, "[%s]", strings.Join(items, ","))
 	}))
-	t.Cleanup(server.Close)
 
-	client := github.NewClient(http.DefaultClient)
+	client := github.NewClient(server.Client())
 	base := strings.TrimSuffix(server.URL, "/") + "/"
 	client, err := client.WithEnterpriseURLs(base, base)
 	if err != nil {
@@ -132,7 +131,7 @@ func newMutableIssueServerFrom(t *testing.T, start, n, defaultPerPage int) (clie
 	}
 	next := start + n
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		current := append([]int(nil), numbers...)
 		mu.Unlock()
@@ -165,9 +164,8 @@ func newMutableIssueServerFrom(t *testing.T, start, n, defaultPerPage int) (clie
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, "[%s]", strings.Join(items, ","))
 	}))
-	t.Cleanup(server.Close)
 
-	httpClient := github.NewClient(http.DefaultClient)
+	httpClient := github.NewClient(server.Client())
 	base := strings.TrimSuffix(server.URL, "/") + "/"
 	httpClient, err := httpClient.WithEnterpriseURLs(base, base)
 	if err != nil {
@@ -202,7 +200,7 @@ func newMutableIssueServerFrom(t *testing.T, start, n, defaultPerPage int) (clie
 	return httpClient, grow, remove, insertFront
 }
 
-// newEmptyThenRealServer starts an httptest server that answers the first
+// newEmptyThenRealServer creates an in-memory httptest server that answers the first
 // emptyPages page requests with a zero-item page and a Link "next" header
 // (a legitimate GitHub response shape - CLAUDE.md's own List lesson: a
 // large result set can be computed with the first several pages empty and
@@ -218,7 +216,7 @@ func newMutableIssueServerFrom(t *testing.T, start, n, defaultPerPage int) (clie
 func newEmptyThenRealServer(t *testing.T, emptyPages, defaultPerPage, count int, itemJSON func(i int) string) *github.Client {
 	t.Helper()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		page, _ := strconv.Atoi(q.Get("page"))
 		if page < 1 {
@@ -253,9 +251,8 @@ func newEmptyThenRealServer(t *testing.T, emptyPages, defaultPerPage, count int,
 		}
 		fmt.Fprintf(w, "[%s]", strings.Join(items, ","))
 	}))
-	t.Cleanup(server.Close)
 
-	client := github.NewClient(http.DefaultClient)
+	client := github.NewClient(server.Client())
 	base := strings.TrimSuffix(server.URL, "/") + "/"
 	client, err := client.WithEnterpriseURLs(base, base)
 	if err != nil {

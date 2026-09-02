@@ -41,11 +41,11 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 		},
 	), nil, nil)
 
-	server := httptest.NewServer(handler)
-	defer server.Close()
+	server := httptest.NewTestServer(t, handler)
+	client := server.Client()
 
 	t.Run("discovery answers without a credential", func(t *testing.T) {
-		response, err := server.Client().Get(server.URL + auth.DiscoveryPath)
+		response, err := client.Get(server.URL + auth.DiscoveryPath)
 		require.NoError(t, err)
 		defer response.Body.Close()
 
@@ -60,7 +60,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 	})
 
 	t.Run("workload issuer metadata answers without a credential", func(t *testing.T) {
-		response, err := server.Client().Get(server.URL + auth.WorkloadIssuerMetadataPath)
+		response, err := client.Get(server.URL + auth.WorkloadIssuerMetadataPath)
 		require.NoError(t, err)
 		defer response.Body.Close()
 
@@ -79,7 +79,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 	})
 
 	t.Run("the key set answers without a credential", func(t *testing.T) {
-		response, err := server.Client().Get(server.URL + broker.Issuer().JWKSPath())
+		response, err := client.Get(server.URL + broker.Issuer().JWKSPath())
 		require.NoError(t, err)
 		defer response.Body.Close()
 
@@ -94,7 +94,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 	t.Run("the API still refuses an unauthenticated caller", func(t *testing.T) {
 		// The other half of the property. Without this, a handler that simply
 		// applied no authentication anywhere would pass the two tests above.
-		response, err := server.Client().Get(server.URL + "/flowstate.v1.WorkflowService/Run")
+		response, err := client.Get(server.URL + "/flowstate.v1.WorkflowService/Run")
 		require.NoError(t, err)
 		defer response.Body.Close()
 
@@ -113,11 +113,11 @@ func TestNoUnauthenticatedRoutesWithoutFederation(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 	), nil, nil)
 
-	server := httptest.NewServer(handler)
-	defer server.Close()
+	server := httptest.NewTestServer(t, handler)
+	client := server.Client()
 
 	for _, path := range []string{auth.DiscoveryPath, auth.WorkloadIssuerMetadataPath, auth.DefaultJWKSPath, "/"} {
-		response, err := server.Client().Get(server.URL + path)
+		response, err := client.Get(server.URL + path)
 		require.NoError(t, err)
 		response.Body.Close()
 
@@ -185,10 +185,10 @@ func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 			t.Error("a health probe reached the RPC handler")
 		}), nil, nil)
 
-	server := httptest.NewServer(handler)
-	defer server.Close()
+	server := httptest.NewTestServer(t, handler)
+	client := server.Client()
 
-	resp, err := http.Get(server.URL + "/healthz")
+	resp, err := client.Get(server.URL + "/healthz")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -200,7 +200,7 @@ func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 	require.Zero(t, n, "the health endpoint answered with content: %q", body[:n])
 
 	// The method discipline the identity documents' handler keeps.
-	post, err := http.Post(server.URL+"/healthz", "text/plain", nil)
+	post, err := client.Post(server.URL+"/healthz", "text/plain", nil)
 	require.NoError(t, err)
 	defer post.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, post.StatusCode)
@@ -295,10 +295,10 @@ func TestPublicMuxDoesNotServePprof(t *testing.T) {
 	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil, nil)
 
-	server := httptest.NewServer(handler)
-	defer server.Close()
+	server := httptest.NewTestServer(t, handler)
+	client := server.Client()
 
-	resp, err := server.Client().Get(server.URL + "/debug/pprof/")
+	resp, err := client.Get(server.URL + "/debug/pprof/")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -335,13 +335,13 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 		}}, staticStore(t))
 	require.NoError(t, err)
 
-	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
+	served := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a delivery reached the RPC handler")
 		}), receiver, nil))
-	defer served.Close()
+	servedClient := served.Client()
 
-	resp, err := served.Client().Post(served.URL+"/webhooks/order-webhook/storefront",
+	resp, err := servedClient.Post(served.URL+"/webhooks/order-webhook/storefront",
 		"application/json", bytes.NewReader([]byte(`{"id":"evt_1"}`)))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -351,11 +351,11 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode,
 		"a delivery was answered by something other than the receiver")
 
-	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
+	unconfigured := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil, nil))
-	defer unconfigured.Close()
+	unconfiguredClient := unconfigured.Client()
 
-	absent, err := unconfigured.Client().Post(unconfigured.URL+"/webhooks/order-webhook/storefront",
+	absent, err := unconfiguredClient.Post(unconfigured.URL+"/webhooks/order-webhook/storefront",
 		"application/json", bytes.NewReader([]byte(`{"id":"evt_1"}`)))
 	require.NoError(t, err)
 	defer absent.Body.Close()
@@ -404,12 +404,12 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, pr)
 
-	configured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
+	configured := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, pr))
-	defer configured.Close()
+	configuredClient := configured.Client()
 
-	resp, err := configured.Client().Get(configured.URL + pr.Path())
+	resp, err := configuredClient.Get(configured.URL + pr.Path())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -427,17 +427,17 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 	// names no vocabulary.
 	require.Equal(t, v1.AuthorizationActionScopes(), publishedScopes(t, doc))
 
-	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
+	unconfigured := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, nil))
-	defer unconfigured.Close()
+	unconfiguredClient := unconfigured.Client()
 
 	// No route is mounted at all: the mux's "/" pattern is what answers, and
 	// that is the authenticated default route — so a GET with no credential
 	// meets the authenticator, exactly as an unconfigured --webhook does (see
 	// TestTheWebhookRouteIsMountedOnlyWhenConfigured). What must NOT happen is
 	// the request reaching an RFC 9728 handler that serves an empty document.
-	absent, err := unconfigured.Client().Get(unconfigured.URL + pr.Path())
+	absent, err := unconfiguredClient.Get(unconfigured.URL + pr.Path())
 	require.NoError(t, err)
 	defer absent.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, absent.StatusCode,
@@ -461,12 +461,12 @@ func TestProtectedResourceChallengeMatchesServedDocument(t *testing.T) {
 	}, policy)
 	require.NoError(t, err)
 
-	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
+	server := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, pr))
-	defer server.Close()
+	client := server.Client()
 
-	resp, err := server.Client().Post(server.URL+"/flowstate.v1.WorkflowService/Run",
+	resp, err := client.Post(server.URL+"/flowstate.v1.WorkflowService/Run",
 		"application/json", strings.NewReader("{}"))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -479,7 +479,7 @@ func TestProtectedResourceChallengeMatchesServedDocument(t *testing.T) {
 	// from this same server (rewritten onto the test server's own address,
 	// since pr.MetadataURL() names the configured production host) and must
 	// answer with a document RFC 9728 accepts.
-	docResp, err := server.Client().Get(server.URL + pr.Path())
+	docResp, err := client.Get(server.URL + pr.Path())
 	require.NoError(t, err)
 	defer docResp.Body.Close()
 	require.Equal(t, http.StatusOK, docResp.StatusCode)
@@ -507,10 +507,10 @@ func TestProtectedResourceChallengeUnaffectedByForgedHost(t *testing.T) {
 	}, policy)
 	require.NoError(t, err)
 
-	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
+	server := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, pr))
-	defer server.Close()
+	client := server.Client()
 
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run",
 		strings.NewReader("{}"))
@@ -518,7 +518,7 @@ func TestProtectedResourceChallengeUnaffectedByForgedHost(t *testing.T) {
 	req.Host = "attacker.example.com"
 	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
 
-	resp, err := server.Client().Do(req)
+	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
