@@ -43,8 +43,9 @@ const (
 // the [Plugin] that supervises it, so that a restart replaces this wholesale
 // rather than mutating it.
 type instance struct {
-	name string
-	path string
+	name          string
+	path          string
+	stderrSecrets *stderrSecretScrubber
 
 	cmd  *exec.Cmd
 	pid  int
@@ -249,17 +250,18 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	}
 
 	inst = &instance{
-		name:       found.Name,
-		path:       found.Path,
-		cmd:        cmd,
-		pid:        cmd.Process.Pid,
-		proc:       cmd.Process,
-		socketDir:  socketDir,
-		socketPath: socketPath,
-		hostPipe:   hostPipeW,
-		stdout:     stdoutR,
-		stderr:     stderrR,
-		exited:     make(chan struct{}),
+		name:          found.Name,
+		path:          found.Path,
+		stderrSecrets: newStderrSecretScrubber(cfg.stderrClock),
+		cmd:           cmd,
+		pid:           cmd.Process.Pid,
+		proc:          cmd.Process,
+		socketDir:     socketDir,
+		socketPath:    socketPath,
+		hostPipe:      hostPipeW,
+		stdout:        stdoutR,
+		stderr:        stderrR,
+		exited:        make(chan struct{}),
 	}
 
 	log = log.With("pid", inst.pid)
@@ -287,7 +289,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	inst.pumps.Add(1)
 	go func() {
 		defer inst.pumps.Done()
-		relay, flush := stderrRelayFunc(cfg, log)
+		relay, flush := stderrRelayFunc(cfg, log, inst.stderrSecrets)
 		pumpPluginLog(stderrR, cfg.MaxStderrLine, relay)
 		if summary := flush(); summary != "" {
 			log.Warn(summary)
@@ -399,8 +401,9 @@ func (i *instance) handshake(cfg Config, stdout io.Reader, log *slog.Logger) (pr
 		var reported int
 		pumpPluginLog(reader, cfg.MaxStderrLine, func(line string, truncated bool) {
 			if reported++; reported <= 10 {
+				line, scrubbed := i.stderrSecrets.scrubFramedLine(line, truncated)
 				log.Warn("plugin wrote to stdout after the handshake, which the protocol reserves",
-					"line", line, "truncated", truncated)
+					"line", line, "truncated", truncated, "scrubbed", scrubbed)
 			}
 		})
 	}()
@@ -850,11 +853,16 @@ func isProtocolEnv(entry string) bool {
 // is a common reason, and often the one this limiter's summary would explain
 // — leaves its last window's count unreported. flush recovers it once, after
 // the pump can no longer call allow.
-func stderrRelayFunc(cfg Config, log *slog.Logger) (relay func(line string, truncated bool), flush func() string) {
+func stderrRelayFunc(cfg Config, log *slog.Logger, scrubber *stderrSecretScrubber) (relay func(line string, truncated bool), flush func() string) {
+	logLine := func(line string, truncated bool) {
+		// A prefix or one physical line cannot be matched against a retained
+		// value that crosses the framing boundary. Suppress it rather than
+		// relay part of a secret.
+		line, scrubbed := scrubber.scrubFramedLine(line, truncated)
+		log.Info("plugin log", "line", line, "truncated", truncated, "scrubbed", scrubbed)
+	}
 	if cfg.MaxStderrLinesPerMinute < 0 {
-		return func(line string, truncated bool) {
-			log.Info("plugin log", "line", line, "truncated", truncated)
-		}, func() string { return "" }
+		return logLine, func() string { return "" }
 	}
 
 	limiter := newStderrLimiter(cfg.MaxStderrLinesPerMinute, stderrRateWindow, cfg.stderrClock)
@@ -864,7 +872,7 @@ func stderrRelayFunc(cfg Config, log *slog.Logger) (relay func(line string, trun
 				log.Warn(summary)
 			}
 			if ok {
-				log.Info("plugin log", "line", line, "truncated", truncated)
+				logLine(line, truncated)
 			}
 		}, func() string {
 			return limiter.flush()

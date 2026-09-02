@@ -150,6 +150,34 @@ func Test_Scrubber_Add(t *testing.T) {
 	})
 }
 
+func Test_Scrubber_ScrubWithUsesTheRequestedReplacement(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber(NewSecret(NewRef("env", "TOKEN"), "secret-value"))
+	require.Equal(t, "saw <hidden>", scrubber.ScrubWith("saw secret-value", "<hidden>"))
+}
+
+func Test_Scrubber_AddScrubberComposesOneMatchingPass(t *testing.T) {
+	t.Parallel()
+
+	combined := NewScrubber()
+	combined.AddScrubber(NewScrubber(NewSecret(NewRef("env", "SHORT"), "E")))
+	combined.AddScrubber(NewScrubber(NewSecret(NewRef("env", "MARKER"), "prefix"+Redacted+"suffix")))
+
+	require.Equal(t, Redacted+" "+Redacted, combined.Scrub("E prefix"+Redacted+"suffix"))
+}
+
+func Test_Scrubber_ScrubFailsClosedAtComparisonBound(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber()
+	for i := range 16 {
+		scrubber.AddValue(strings.Repeat("A", 1023) + string(rune('a'+i)))
+	}
+
+	require.Equal(t, Redacted, scrubber.Scrub(strings.Repeat("A", 64<<10)))
+}
+
 func Test_Scrubber_Contains(t *testing.T) {
 	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "needle-value"))
 

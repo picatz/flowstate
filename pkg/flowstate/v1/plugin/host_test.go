@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -675,6 +677,24 @@ func TestHealthNotServingDoesNotRestart(t *testing.T) {
 	}
 	if state := p.State(); state != StateReady {
 		t.Errorf("state = %v, want ready", state)
+	}
+}
+
+func TestCheckHealthPreservesUnchangedRPCErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	host := openHost(t, testConfig(t, pluginDir(t, "health-fails")))
+	p, ok := host.Lookup("health-fails")
+	if !ok {
+		t.Fatal("plugin was not launched")
+	}
+
+	health := p.CheckHealth(t.Context())
+	if health.Status != HealthUnreachable {
+		t.Fatalf("health = %v, want unreachable", health.Status)
+	}
+	if code := connect.CodeOf(health.Err); code != connect.CodeUnavailable {
+		t.Errorf("health error code = %v, want %v (err: %v)", code, connect.CodeUnavailable, health.Err)
 	}
 }
 

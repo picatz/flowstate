@@ -130,11 +130,19 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		// the response, and the error — is registered against from here on.
 		// See [resolvePluginSecretInputs] for why this is where it has to
 		// happen, and for the boundary this local transport depends on.
-		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, requiredSecretInputs, inputs)
+		var releaseLogSecrets []func()
+		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, requiredSecretInputs, inputs, func(secret secrets.Secret) {
+			releaseLogSecrets = append(releaseLogSecrets, inst.stderrSecrets.add(secret))
+		})
 		if err != nil {
 			callErr = err
 			return nil, err
 		}
+		defer func() {
+			for _, release := range releaseLogSecrets {
+				release()
+			}
+		}()
 
 		identity, _ := IdentityFromContext(ctx)
 		if scope.GetLocal() {
@@ -386,6 +394,7 @@ func resolvePluginSecretInputs(
 	declared []string,
 	required []string,
 	inputs map[string]*flowstatev1.Value,
+	registerForLogs func(secrets.Secret),
 ) (map[string]*flowstatev1.Value, *secrets.Scrubber, error) {
 	scrubber := secrets.NewScrubber()
 
@@ -394,6 +403,7 @@ func resolvePluginSecretInputs(
 	}
 
 	resolved := make(map[string]*flowstatev1.Value, len(inputs))
+	var resolvedSecrets []secrets.Secret
 	for name, v := range inputs {
 		ref, isWholeRef := v.GetKind().(*flowstatev1.Value_SecretRef)
 
@@ -419,6 +429,7 @@ func resolvePluginSecretInputs(
 					"resolving input %q (%s): %w", name, secretRefText(ref.SecretRef), err))
 			}
 			scrubber.Add(secret)
+			resolvedSecrets = append(resolvedSecrets, secret)
 			resolved[name] = &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: &expr.Value{
 				Kind: &expr.Value_StringValue{StringValue: secret.Reveal()},
 			}}}
@@ -435,6 +446,11 @@ func resolvePluginSecretInputs(
 
 		default:
 			resolved[name] = v
+		}
+	}
+	if registerForLogs != nil {
+		for _, secret := range resolvedSecrets {
+			registerForLogs(secret)
 		}
 	}
 

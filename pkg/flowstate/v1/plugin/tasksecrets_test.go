@@ -1,8 +1,10 @@
 package plugin
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,7 +35,7 @@ func TestResolvePluginSecretInputsRefusesUndeclaredInput(t *testing.T) {
 		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: "TOKEN",
 		}}},
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"message"`)
 	assert.Contains(t, err.Error(), "did not declare")
@@ -60,7 +62,7 @@ func TestResolvePluginSecretInputsRefusesWithNoDeclaredInputsAtAll(t *testing.T)
 		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: "TOKEN",
 		}}},
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "declares no inputs that accept one")
 }
@@ -85,7 +87,7 @@ func TestResolvePluginSecretInputsRefusesNestedReference(t *testing.T) {
 
 	_, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"headers"}, nil, map[string]*flowstatev1.Value{
 		"headers": nested,
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nested inside a list or a mapping")
 	assert.Contains(t, err.Error(), "no plugin task input accepts")
@@ -104,7 +106,7 @@ func TestResolvePluginSecretInputsFailsClosedWithoutRuntime(t *testing.T) {
 		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: "TOKEN",
 		}}},
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
 }
@@ -116,7 +118,7 @@ func TestResolvePluginSecretInputsPassesOrdinaryInputsThrough(t *testing.T) {
 
 	resolved, _, err := resolvePluginSecretInputs(t.Context(), "example.task", nil, nil, map[string]*flowstatev1.Value{
 		"name": flowstatev1.NewLiteral("world"),
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "world", resolved["name"].GetLiteral().GetStringValue())
 }
@@ -128,7 +130,7 @@ func TestResolvePluginSecretInputsRefusesLiteralForRequiredInput(t *testing.T) {
 		t.Run(task, func(t *testing.T) {
 			_, _, err := resolvePluginSecretInputs(t.Context(), task, []string{"dsn"}, []string{"dsn"}, map[string]*flowstatev1.Value{
 				"dsn": flowstatev1.NewLiteral("postgres://credential@example.invalid/database"),
-			})
+			}, nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), `input "dsn" must be a whole secret reference`)
 			assert.NotContains(t, err.Error(), "credential@example.invalid")
@@ -309,6 +311,115 @@ func TestPluginTaskScrubsSecretFromRPCFailure(t *testing.T) {
 		assert.NotContains(t, fmtSprint(verb, holder), material, "leaked via "+verb+" on a struct")
 		assert.NotContains(t, fmtSprint(verb, slice), material, "leaked via "+verb+" on a slice")
 	}
+}
+
+func TestPluginTaskScrubsResolvedSecretFromStderr(t *testing.T) {
+	t.Parallel()
+
+	const material = `host-secret-"for-plugin-log"`
+	var logged capturedLogs
+	cfg := testConfig(t, pluginDir(t, "secret-task-log"))
+	cfg.Logger = newCapturingLogger(t, &logged)
+	host := openHost(t, cfg)
+
+	defs := host.TaskDefs()
+	require.Len(t, defs, 1)
+	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}},
+	}, nil)
+	require.NoError(t, err)
+
+	require.True(t, waitFor(t, time.Second, func() bool {
+		return strings.Count(logged.String(), "scrubbed=true") >= 4
+	}), "the plugin's immediate and post-return log lines were not all relayed")
+	host.Close(t.Context())
+
+	output := logged.String()
+	assert.NotContains(t, output, material)
+	assert.NotContains(t, output, base64.StdEncoding.EncodeToString([]byte(material)))
+	assert.GreaterOrEqual(t, strings.Count(output, secrets.Redacted), 4)
+}
+
+func TestPluginTaskScrubsResolvedSecretFromReservedStdout(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-accidentally-written-to-stdout"
+	var logged capturedLogs
+	cfg := testConfig(t, pluginDir(t, "secret-task-stdout"))
+	cfg.Logger = newCapturingLogger(t, &logged)
+	host := openHost(t, cfg)
+
+	defs := host.TaskDefs()
+	require.Len(t, defs, 1)
+	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}},
+	}, nil)
+	require.NoError(t, err)
+
+	require.True(t, waitFor(t, time.Second, func() bool {
+		return strings.Contains(logged.String(), "protocol reserves")
+	}), "the plugin's reserved stdout line was not relayed")
+	host.Close(t.Context())
+
+	output := logged.String()
+	assert.NotContains(t, output, material)
+	assert.Contains(t, output, secrets.Redacted)
+	assert.Contains(t, output, "scrubbed=true")
+}
+
+func TestPluginHealthScrubsBeforeBoundingItsMessage(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-crossing-the-health-message-bound"
+	host := openHost(t, testConfig(t, pluginDir(t, "secret-task-health")))
+	defs := host.TaskDefs()
+	require.Len(t, defs, 1)
+	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}},
+	}, nil)
+	require.NoError(t, err)
+
+	p, ok := host.Lookup("secret-task-health")
+	require.True(t, ok)
+	health := p.CheckHealth(t.Context())
+	require.Equal(t, HealthNotServing, health.Status)
+	assert.NotContains(t, health.Message, material)
+	assert.Contains(t, health.Message, secrets.Redacted)
+	assert.True(t, health.messageScrubbed)
+}
+
+func TestPluginHealthScrubsRPCErrorBeforeReturningIt(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-in-health-rpc-error"
+	host := openHost(t, testConfig(t, pluginDir(t, "secret-task-health-error")))
+	defs := host.TaskDefs()
+	require.Len(t, defs, 1)
+	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}},
+	}, nil)
+	require.NoError(t, err)
+
+	p, ok := host.Lookup("secret-task-health-error")
+	require.True(t, ok)
+	health := p.CheckHealth(t.Context())
+	require.Equal(t, HealthUnreachable, health.Status)
+	require.Error(t, health.Err)
+	assert.NotContains(t, health.Err.Error(), material)
+	assert.Contains(t, health.Err.Error(), secrets.Redacted)
+	assert.True(t, health.errorScrubbed)
 }
 
 // TestPluginTaskFn spells out the sorted-name message
