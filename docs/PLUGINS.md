@@ -743,13 +743,15 @@ line is.
 
 **Which first-party plugins enforce the grant.** The host grants it to every
 plugin it launches, and that is all a host can do; enforcement is each plugin's
-own code. All five first-party plugins read it and apply it on their real
-connection paths: `slack` and `github` through the governed HTTP client, `git`
-and `vcs` on go-git's transport, `sql` on every resolved PostgreSQL socket
+own code. The five first-party destination clients read it and apply it on their
+real connection paths: `slack` and `github` through the governed HTTP client,
+`git` and `vcs` on go-git's transport, `sql` on every resolved PostgreSQL socket
 target. A deny rule an operator writes therefore reaches a `git.*`, `github.*`,
-`slack.*`, `sql.*` or `vcs.*` task. A plugin nobody in this repository wrote is
-still a separate process that can decline to ask, which is what deployment-level
-confinement is for.
+`slack.*`, `sql.*` or `vcs.*` task. The first-party Codex plugin is different: it
+launches an operator-selected subprocess whose separate sandbox policy denies
+network access by default, but when that policy permits network access the child
+does not enforce this grant. It needs deployment-level confinement, just like a
+third-party plugin that declines to ask.
 
 ## Classifying failures
 

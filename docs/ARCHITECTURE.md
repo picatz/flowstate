@@ -558,12 +558,15 @@ header shows — a password inside a DSN — is the plugin's own to declare, whi
 what `sdk.WithCredentials` and the SQL plugin's dial path do. What the grant buys is that the governed path is the convenient
 one; arbitrary third-party plugin code that opens its own sockets still requires
 deployment/substrate confinement. The grant is therefore universal and
-enforcement is voluntary: every first-party plugin — `git`, `github`, `slack`,
-`sql`, `vcs` — consumes it, and `sql` additionally refuses to reach a database
-under the default, because a database destination is not something a deployment
-can be said to have authorized by not writing a file. A deployment that must stop
-a plugin it did not write reaching a destination confines it rather than relying
-on the policy file.
+enforcement is voluntary: the five first-party destination clients — `git`,
+`github`, `slack`, `sql`, `vcs` — consume it, and `sql` additionally refuses to
+reach a database under the default, because a database destination is not
+something a deployment can be said to have authorized by not writing a file.
+The first-party Codex plugin instead launches an operator-selected subprocess;
+when its separate sandbox policy permits network access, that process does not
+enforce the Flowstate grant and requires substrate confinement too. A deployment
+that must stop any plugin or child process leaving the governed path confines it
+rather than relying on the policy file.
 A plugin is an extension of the engine's capability, not an exemption from its
 rules.
 

@@ -198,11 +198,12 @@ func TestLoopbackDenialUnderAnExplicitPolicyStaysSilent(t *testing.T) {
 // A worker cannot enforce a policy inside a plugin: a plugin is a separate
 // process, and the operating system opens whatever socket it asks for. What the
 // worker does is *grant* the policy, and whether a deny rule stops a request is
-// the receiving plugin's own code. Every first-party plugin now applies it
-// (#1321, #1322, #1323), which is a promise this build does keep and the help
-// has to make — an operator reading that git, github and vcs "do not read it
-// yet" would confine tasks that no longer need confining. What the help must
-// still refuse to claim is enforcement over a plugin this build cannot confine.
+// the receiving plugin's own code. The five first-party destination clients now
+// apply it (#1321, #1322, #1323), which is a promise this build does keep and
+// the help has to make — an operator reading that git, github and vcs "do not
+// read it yet" would confine tasks that no longer need confining. What the help
+// must still refuse to claim is enforcement over Codex's separately launched
+// child or a third-party plugin this build cannot confine.
 //
 // Held here because nothing else would notice: the sentence is generated into
 // docs/reference/cli.md, where this one string is repeated for every command
@@ -236,9 +237,9 @@ func TestTheEgressPolicyFlagSaysWhichPluginsEnforceTheGrantAndWhereItStops(t *te
 	}
 	require.Contains(t, usage, "enforce the grant on their own connections")
 
-	// And the limit that survives every migration: a plugin is a process, not a
-	// sandbox.
-	require.Contains(t, usage, "a third-party plugin is a separate process that can ignore it")
+	// And the limit that survives every migration: a grant is not a sandbox,
+	// including for the child launched by the first-party Codex plugin.
+	require.Contains(t, usage, "the first-party Codex child and a third-party plugin can ignore it")
 
 	// The stale hedge, in the two spellings it had. Naming them keeps the help
 	// from drifting back to a gap that no longer exists.

@@ -136,15 +136,16 @@ func commandContext(cmd *cobra.Command) context.Context {
 // enforces the grant and where enforcement stops. The difference is not pedantry
 // at this boundary: a plugin process is not confined, so handing it the policy is
 // all a worker can do, and whether a deny rule actually stops a request is that
-// plugin's own code. Every first-party plugin now applies it, which is what the
-// help says; what it must not say is that the flag governs *any* plugin, because
-// a third-party process can open its own socket and this build cannot stop it.
-// A deployment that must stop one confines it (THREAT_MODEL.md).
+// plugin's own code. The five first-party destination clients apply it, which is
+// what the help says; what it must not say is that the flag governs *any* plugin,
+// because the first-party Codex child and a third-party process can open their
+// own sockets and this build cannot stop them. A deployment that must stop one
+// confines it (THREAT_MODEL.md).
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
 		"path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches "+
 			"(default $"+egressPolicyEnv+"); the first-party git, github, slack, sql and vcs plugins enforce the "+
-			"grant on their own connections, while a third-party plugin is a separate process that can ignore it; "+
+			"grant on their own connections, while the first-party Codex child and a third-party plugin can ignore it; "+
 			"with no file every plugin is granted the same default policy built-in HTTP runs under, which sql "+
 			"refuses to reach a database under; when set it replaces the default policy entirely, and "+
 			v1.AllowLoopbackEgressEnv+" is ignored; a file that wants loopback says allow_loopback: true")
