@@ -601,10 +601,12 @@ callee under the same result, cancellation and compensation semantics, and a
 shared conformance case set proves the two agree, without which
 `flow run local` would rehearse a mode it does not have (Codex, on #1479); then Update with update-with-start (L); D6's `parallel:` bound (M);
 D7's timeout kind (S); the structured compensation record on `RunState`,
-`Get` and the timeline (#1385, L); a read-only account of a finished durable
-run from history (new, M, the smallest durable-debugging slice and the
-substrate #928's attach would display anyway); search-attribute pushdown with
-a two-configuration equivalence test (#1384, L).
+`Get` and the timeline (#1385, L) — which is what remains of the
+durable-account idea once #1478 is withdrawn, since `GetTimeline` already
+reads history and `flow timeline` and the MCP tool already render it, so the
+work is a new field on an existing answer rather than a new reader;
+search-attribute pushdown with a two-configuration equivalence test
+(#1384, L).
 
 ### Wave G — the factory (this week, S items, one builder)
 
@@ -643,8 +645,21 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
 
 - **Delete** `Value.Type` (#1285): zero readers, and the live vocabulary now
   has two consumers of the other enum.
-- **Retire** `InputDeclaration.Type`'s enum behind the `Type` message after
-  one edition; reserve the numbers.
+- **Retire** `InputDeclaration.Type`'s enum behind the `Type` message —
+  *additively*, and this is the one place the delete-rather-than-deprecate
+  posture does not apply. `RunState.workflow` is a whole `Workflow`
+  (`run.proto`), so every declaration is serialized into durable Temporal
+  history, which is what makes a run self-describing under invariant 10;
+  `proto/buf.yaml` declares `FILE` and `WIRE`, and CI runs `buf breaking`
+  against `origin/main`. Replacing field 2 with a message and reserving the
+  number is therefore a wire break that CI would fail, and worse would strand
+  an in-flight run: a worker on the new schema decoding an old history would
+  drop the enum into unknown fields and lose the declaration. So the `Type`
+  message takes a *new* field number, both are carried while any history can
+  hold the old one, the compiler writes only the new field, and the enum's
+  numbers are reserved in a later change gated on a drain or a documented
+  migration — not in the edition PR (Codex, on #1479). The Flowfile spelling
+  still changes in one edition; the wire does not.
 - **Retire** bare `type: list` and `type: struct`; `flow fix` writes
   `list(dyn)` and `map(string, dyn)`.
 - **Retire** `json_parse` for `json.parse` (#1454, R3); `flow fix` rewrites it.
@@ -739,7 +754,7 @@ checked.
 | S | `--protected-resource-revision` | `cmd/flow/protectedresource.go` |
 | S | #1386/#1103/#1382 closes; #1307/#1311 AGENTS.md lines | `AGENTS.md`, skills |
 | S | `deep.yml`'s false "visible to collaborators only" line, ahead of #965 | `.github/workflows/deep.yml:180` |
-| S | Doc-truth pass (invariant 3 wording, STYLE.md row, THREAT_MODEL cites, DSL.md fifteenth round) | `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/STYLE.md`, `THREAT_MODEL.md`, `docs/DSL.md` |
+| S | Doc-truth pass (the `StepExecutor` wording, STYLE.md row, THREAT_MODEL cites, DSL.md fifteenth round). Not `AGENTS.md`: its invariants stand | `docs/ARCHITECTURE.md`, `docs/STYLE.md`, `THREAT_MODEL.md`, `docs/DSL.md` |
 | M | #1425 `MergedStepIDs` + conformance | `eval.go`, `engine/execute.go`, `flowfile/validate.go`, `conformance/` |
 | M | D6 `parallel:` atomic bound | `atomicblock.go`, both `runParallel`s, `conformance/` |
 | M | #1449 `NamespaceReachCases` + one rooted replay history | `conformance/`, `engine/testdata/replay/` |
@@ -791,9 +806,12 @@ is recorded on its issue; the owner reopens by commenting.
 ## Risks
 
 - **The type edition is the one schema change that touches everything.**
-  It lands as one wave with one schema owner, `buf breaking` clean, the enum
-  kept readable for one edition, and every `examples/` file carried by
-  `flow fix` in the same PR that changes the grammar. The risk is
+  It lands as one wave with one schema owner and `buf breaking` clean —
+  which is achievable only because the change is additive: the `Type` message
+  takes a new field number and the enum keeps its own, since the spec travels
+  in durable history and reserving field 2 would strand an in-flight run (see
+  the retirement list). Every `examples/` file is carried by `flow fix` in the
+  same PR that changes the grammar. The risk is
   overreach — the numeric model and the boundary kinds are enough; message
   types and the `types:` block the CEL spelling points at (#177) are
   explicitly not this edition.
