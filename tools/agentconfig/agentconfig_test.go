@@ -198,7 +198,19 @@ func TestClaudeSessionUsesThePinnedGoToolchain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var goVersion string
+	for _, line := range strings.Split(string(read(t, filepath.Join(root, "go.mod"))), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "go" {
+			goVersion = fields[1]
+			break
+		}
+	}
+	if goVersion == "" {
+		t.Fatal("go.mod has no go directive")
+	}
 	goEnv := exec.Command(goBinary, "env", "GOROOT")
+	goEnv.Env = append(os.Environ(), "GOTOOLCHAIN=go"+goVersion)
 	output, err := goEnv.CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve pinned GOROOT: %v\n%s", err, output)
