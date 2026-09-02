@@ -1,7 +1,6 @@
 package plugin
 
 import (
-	"strings"
 	"sync"
 	"time"
 
@@ -24,10 +23,11 @@ const (
 // process. Each entry hides its plaintext inside secrets.Scrubber's closure, so
 // formatting this registry cannot itself disclose the values it protects.
 type stderrSecretScrubber struct {
-	mu      sync.Mutex
-	entries []stderrSecretEntry
-	nextID  uint64
-	now     func() time.Time
+	mu       sync.Mutex
+	entries  []stderrSecretEntry
+	combined *secrets.Scrubber
+	nextID   uint64
+	now      func() time.Time
 }
 
 type stderrSecretEntry struct {
@@ -56,6 +56,7 @@ func (s *stderrSecretScrubber) add(secret secrets.Secret) func() {
 		clear(s.entries[:extra])
 		s.entries = s.entries[extra:]
 	}
+	s.rebuild()
 	s.mu.Unlock()
 
 	var once sync.Once
@@ -85,27 +86,29 @@ func (s *stderrSecretScrubber) scrub(text string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.prune(now)
+	if s.prune(now) {
+		s.rebuild()
+	}
 	original := text
-	for _, entry := range s.entries {
-		text = scrubOutsideRedactions(entry.scrubber, text)
+	if s.combined != nil {
+		text = s.combined.Scrub(text)
 	}
 	return text, text != original
 }
 
-// scrubOutsideRedactions prevents one retained scrubber from treating the
-// placeholder produced by another as fresh input. This matters for short
-// secrets such as "E": repeatedly scrubbing the E in "[REDACTED]" would grow
-// one bounded input line exponentially.
-func scrubOutsideRedactions(scrubber *secrets.Scrubber, text string) string {
-	parts := strings.Split(text, secrets.Redacted)
-	for i := range parts {
-		parts[i] = scrubber.Scrub(parts[i])
+func (s *stderrSecretScrubber) hasEntries() bool {
+	now := s.now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.prune(now) {
+		s.rebuild()
 	}
-	return strings.Join(parts, secrets.Redacted)
+	return len(s.entries) > 0
 }
 
-func (s *stderrSecretScrubber) prune(now time.Time) {
+func (s *stderrSecretScrubber) prune(now time.Time) bool {
 	kept := s.entries[:0]
 	for _, entry := range s.entries {
 		if !entry.active && !now.Before(entry.expires) {
@@ -114,5 +117,15 @@ func (s *stderrSecretScrubber) prune(now time.Time) {
 		kept = append(kept, entry)
 	}
 	clear(s.entries[len(kept):])
+	changed := len(kept) != len(s.entries)
 	s.entries = kept
+	return changed
+}
+
+func (s *stderrSecretScrubber) rebuild() {
+	combined := secrets.NewScrubber()
+	for _, entry := range s.entries {
+		combined.AddScrubber(entry.scrubber)
+	}
+	s.combined = combined
 }

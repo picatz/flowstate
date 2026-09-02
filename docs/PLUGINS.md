@@ -783,8 +783,10 @@ constructors rather than as a bare error (`sdk/errors.go:22-30`):
 > encodings from plugin logs, health text, and manifest text. It retains at most
 > 256 delivered values per plugin process while their calls are in flight and
 > for five minutes after return, and marks a changed log record with
-> `scrubbed=true`; do not rely on this against deliberate transformation or
-> disclosure.
+> `scrubbed=true`. While any values are retained, the host suppresses the
+> content of a truncated stderr line because a captured prefix cannot be matched
+> safely against a secret crossing the line bound. Do not rely on this against
+> deliberate transformation or disclosure.
 
 ## Writing one in another language
 

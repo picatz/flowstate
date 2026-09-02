@@ -72,6 +72,10 @@ type scrubState struct {
 
 	// needles is sorted longest first.
 	needles []string
+
+	// byFirst keeps the same order within the only needles that can match at
+	// one byte, avoiding a scan of every registered encoding per input byte.
+	byFirst map[byte][]string
 }
 
 // NewScrubber returns a scrubber that redacts the given secrets.
@@ -125,6 +129,45 @@ func (s *Scrubber) AddValue(value string) {
 	slices.SortFunc(state.needles, func(a, b string) int {
 		return cmp.Or(cmp.Compare(len(b), len(a)), strings.Compare(a, b))
 	})
+	indexNeedles(state)
+}
+
+// AddScrubber registers every value and encoded form held by other without
+// exposing them to the caller. It is for composing independently scoped
+// scrubbers into one matching pass; adding a scrubber to itself is a no-op.
+func (s *Scrubber) AddScrubber(other *Scrubber) {
+	if s == other {
+		return
+	}
+
+	other.mu.RLock()
+	needles := slices.Clone(other.readLocked())
+	other.mu.RUnlock()
+	if len(needles) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.stateLocked()
+	for _, needle := range needles {
+		if _, ok := state.seen[needle]; ok {
+			continue
+		}
+		state.seen[needle] = struct{}{}
+		state.needles = append(state.needles, needle)
+	}
+	slices.SortFunc(state.needles, func(a, b string) int {
+		return cmp.Or(cmp.Compare(len(b), len(a)), strings.Compare(a, b))
+	})
+	indexNeedles(state)
+}
+
+func indexNeedles(state *scrubState) {
+	state.byFirst = make(map[byte][]string)
+	for _, needle := range state.needles {
+		state.byFirst[needle[0]] = append(state.byFirst[needle[0]], needle)
+	}
 }
 
 // Reset drops every registered value.
@@ -169,6 +212,13 @@ func (s *Scrubber) Len() int {
 
 // Scrub replaces every registered value in text with [Redacted].
 func (s *Scrubber) Scrub(text string) string {
+	return s.ScrubWith(text, Redacted)
+}
+
+// ScrubWith replaces every registered value in text with replacement. It is
+// useful when a caller must distinguish newly redacted spans while composing
+// several bounded scrubbers; most callers should use [Scrubber.Scrub].
+func (s *Scrubber) ScrubWith(text, replacement string) string {
 	if text == "" {
 		return text
 	}
@@ -176,11 +226,29 @@ func (s *Scrubber) Scrub(text string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, needle := range s.readLocked() {
-		text = strings.ReplaceAll(text, needle, Redacted)
+	if s.state == nil {
+		return text
 	}
+	state := s.state()
 
-	return text
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		matched := ""
+		for _, needle := range state.byFirst[text[i]] {
+			if strings.HasPrefix(text[i:], needle) {
+				matched = needle
+				break
+			}
+		}
+		if matched != "" {
+			out.WriteString(replacement)
+			i += len(matched)
+			continue
+		}
+		out.WriteByte(text[i])
+		i++
+	}
+	return out.String()
 }
 
 // Contains reports whether text holds any registered value. Use it to assert that

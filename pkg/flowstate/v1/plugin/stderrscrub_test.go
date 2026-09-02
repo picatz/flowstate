@@ -95,3 +95,34 @@ func TestStderrSecretScrubberDoesNotRescrubItsPlaceholder(t *testing.T) {
 	assert.True(t, changed)
 	assert.Equal(t, secrets.Redacted, got)
 }
+
+func TestStderrSecretScrubberMatchesASecretContainingTheRedactionMarker(t *testing.T) {
+	t.Parallel()
+
+	material := "prefix" + secrets.Redacted + "suffix"
+	scrubber := newStderrSecretScrubber(nil)
+	scrubber.add(secrets.NewSecret(&flowstatev1.SecretRef{Scheme: "test", Name: "marker"}, material))
+
+	got, changed := scrubber.scrub("logged: " + material)
+	assert.True(t, changed)
+	assert.Equal(t, "logged: "+secrets.Redacted, got)
+}
+
+func TestStderrRelaySuppressesTruncatedLinesWhileSecretsAreRetained(t *testing.T) {
+	t.Parallel()
+
+	const material = "a-secret-longer-than-the-captured-prefix"
+	var logged capturedLogs
+	cfg := Config{MaxStderrLinesPerMinute: -1, Logger: newCapturingLogger(t, &logged)}
+	scrubber := newStderrSecretScrubber(nil)
+	scrubber.add(secrets.NewSecret(&flowstatev1.SecretRef{Scheme: "test", Name: "long"}, material))
+	relay, _ := stderrRelayFunc(cfg, cfg.logger(), scrubber)
+
+	relay(material[:12], true)
+
+	output := logged.String()
+	assert.NotContains(t, output, material[:12])
+	assert.Contains(t, output, secrets.Redacted)
+	assert.Contains(t, output, "truncated=true")
+	assert.Contains(t, output, "scrubbed=true")
+}
