@@ -134,6 +134,17 @@ var evaluationCostEstimator interpreter.ActualCostEstimator = byteCostEstimator{
 // unchanged. Every call producing neither a string, bytes, nor a list takes
 // that path.
 func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, result ref.Val) *uint64 {
+	// Canonical map traversal sorts once before a comprehension walks the map.
+	// Charge the preflighted entry and string-key work recorded by the ordered
+	// view rather than letting determinism introduce an unmetered path.
+	if function == orderedMapFunction && len(args) == 1 {
+		if ordered, ok := result.(orderedMap); ok {
+			return &ordered.cost
+		}
+		cost := uint64(0)
+		return &cost
+	}
+
 	var chars int64
 
 	// json_parse and digest.sha256 are priced by what they were *handed* rather

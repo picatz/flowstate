@@ -44,14 +44,12 @@ import (
 //
 // # Only a list may be folded
 //
-// CEL's comprehension machinery also iterates maps — over their *keys*, in
-// Go's own randomized map order (#1359) — so a fold over a map is a value that
-// can differ between two evaluations of the same expression over the same
-// data. The local driver would record whichever answer it got; the durable
-// driver re-evaluates conditions on replay, where a different answer is the
-// nondeterminism invariant 4 exists to keep out of workflow-side code.
-// `{'a': 'x', 'b': 'y', 'c': 'z'}.sum()` measurably produces three different
-// strings across forty runs. Flagged by review on #1345.
+// CEL's comprehension machinery iterates a map over its keys, while a fold's
+// ordinary use is to combine values. Treating `m.sum()` as a sum of keys and
+// making `reduce`'s one element variable mean a key would be surprising beside
+// their list contract, so both macros require the author to select map values
+// explicitly. Map traversal itself is canonicalized by celmap.go (#1359), but
+// that does not answer which values an author intended to combine.
 //
 // So both expansions refuse a non-list receiver before iterating, inside the
 // expansion itself — the guard has to be spelled in the same standard-CEL
@@ -63,9 +61,9 @@ import (
 // bare identifier `list` would be collected by flowfile's type-check
 // declarations (celcheck.go) and collide with the standard environment's own
 // type identifier. The refusal itself is a key lookup on an empty map, whose
-// error carries the one sentence an author needs: fold a map by ordering its
-// keys first — `m.map(k, k).sort().map(k, m[k]).sum()` is the deterministic
-// spelling, and it stays an author's explicit choice.
+// error carries the one sentence an author needs: select the map's values
+// explicitly — `m.map(k, k).sort().map(k, m[k]).sum()` also makes a chosen
+// business order visible at the call site.
 //
 // # The `sum` expansion
 //
@@ -153,7 +151,7 @@ func bindReceiver(mef cel.MacroExprFactory, inputVar string, target, body ast.Ex
 }
 
 // listOnly returns the bound receiver where it is a list, and a refusal
-// naming the deterministic map spelling where it is not. See "Only a list may
+// naming the explicit map-value spelling where it is not. See "Only a list may
 // be folded" above for why the test avoids the bare identifier `list` and why
 // the refusal is a key lookup.
 func listOnly(mef cel.MacroExprFactory, inputVar, macroName string) ast.Expr {
@@ -162,8 +160,8 @@ func listOnly(mef cel.MacroExprFactory, inputVar, macroName string) ast.Expr {
 		mef.NewCall("type", mef.NewList()))
 
 	refusal := mef.NewCall(operators.Index, mef.NewMap(), mef.NewLiteral(types.String(
-		macroName+" folds a list, and this receiver is not one; a map's iteration order "+
-			"is undefined, so order its keys first — m.map(k, k).sort().map(k, m[k])")))
+		macroName+" folds a list, and this receiver is not one; select a map's values "+
+			"explicitly — m.map(k, k).sort().map(k, m[k])")))
 
 	return mef.NewCall(operators.Conditional, isList, mef.NewIdent(inputVar), refusal)
 }
