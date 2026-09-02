@@ -1207,9 +1207,8 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks 
 	return items
 }
 
-// stepKeyCandidates is dslCandidates("steps", ...), minus timeout,
-// total_timeout and retry once the step at the cursor has already committed to
-// a kind that refuses all three.
+// stepKeyCandidates is dslCandidates("steps", ...), with placement-specific
+// properties removed once the outline knows they cannot apply.
 //
 // checkPolicyPlacement (flowfile/parse_wait.go) refuses
 // timeout:/total_timeout:/retry: on
@@ -1219,16 +1218,28 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks 
 // diagnostic then refuses. current is nil (no kind chosen yet, or not inside
 // a step at all) and current.kindKey == "" (a task, or a kind not decided
 // yet) both still offer the full menu: both are exactly the cases where
-// all three are legal or might become so.
+// all three are legal or might become so. `digest:` is meaningful only beside
+// `call:`, and `async:` only on task steps outside a for_each body or parallel
+// branch. Both stay available on an empty step because the author can still
+// choose the kind that makes them legal.
 func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) []lsp.CompletionItem {
-	if current == nil || current.kindKey == "" {
+	if current == nil {
 		return dslCandidates("steps", prefix, replace)
 	}
 
 	all := dslCandidates("steps", prefix, replace)
 	items := make([]lsp.CompletionItem, 0, len(all))
 	for _, item := range all {
-		if item.Label == "timeout" || item.Label == "total_timeout" || item.Label == "retry" {
+		if current.kindKey != "" && (item.Label == "timeout" || item.Label == "total_timeout" || item.Label == "retry") {
+			continue
+		}
+		if (current.kindKey != "" || current.taskName != "") && current.kindKey != "call" && item.Label == "digest" {
+			continue
+		}
+		if current.kindKey != "" && item.Label == "async" {
+			continue
+		}
+		if current.taskName != "" && current.concurrent && item.Label == "async" {
 			continue
 		}
 		items = append(items, item)

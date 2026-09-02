@@ -226,6 +226,11 @@ type outlineStep struct {
 	// indent is the column of the dash that opens the step, which is deeper for a
 	// step inside a for_each body or a parallel branch.
 	indent int
+
+	// concurrent is true when the step is inside a for_each body or parallel
+	// branch. Those are the two placements that already multiply work and where
+	// the shared execution model therefore refuses async task steps.
+	concurrent bool
 }
 
 // contains reports whether a line belongs to the step.
@@ -267,15 +272,15 @@ func scanOutline(ix *lineIndex, tasks *v1.Registry) []*outlineStep {
 
 	var steps []*outlineStep
 	for l := range ix.lineCount() {
-		m := dashLine.FindStringSubmatch(ix.line(l))
-		if m == nil || !entryIndents[len(m[1])] {
+		dash := dashLine.FindStringSubmatch(ix.line(l))
+		if dash == nil || !entryIndents[len(dash[1])] {
 			continue
 		}
 		steps = append(steps, &outlineStep{
 			index:     len(steps),
 			startLine: l,
 			idLine:    -1,
-			indent:    len(m[1]),
+			indent:    len(dash[1]),
 		})
 	}
 
@@ -288,6 +293,23 @@ func scanOutline(ix *lineIndex, tasks *v1.Registry) []*outlineStep {
 			s.endLine = steps[i+1].startLine - 1
 		}
 		fillStep(ix, s, s.indent, tasks)
+	}
+
+	// Reconstruct the step ancestry from the entry indentation after fillStep has
+	// identified each ancestor's actual kind. This avoids mistaking an ordinary
+	// nested mapping key named `parallel` for the parallel step kind.
+	var ancestors []*outlineStep
+	for _, s := range steps {
+		for len(ancestors) > 0 && ancestors[len(ancestors)-1].indent >= s.indent {
+			ancestors = ancestors[:len(ancestors)-1]
+		}
+		for _, ancestor := range ancestors {
+			if ancestor.kindKey == "for_each" || ancestor.kindKey == "parallel" {
+				s.concurrent = true
+				break
+			}
+		}
+		ancestors = append(ancestors, s)
 	}
 	return steps
 }

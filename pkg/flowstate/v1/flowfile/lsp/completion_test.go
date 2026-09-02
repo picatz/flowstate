@@ -360,8 +360,8 @@ edition: v2026.3
 			// The regression for a Codex finding on #665: once a step has committed
 			// to a kind checkPolicyPlacement refuses timeout:/retry: on, completion
 			// must stop recommending either — selecting one used to produce the
-			// diagnostic that check writes immediately. Every other step key stays
-			// offered, because the refusal is specific to those two.
+			// diagnostic that check writes immediately. Kind-specific async and
+			// digest properties are withheld for the same reason.
 			name: "timeout and retry are withheld once a step has chosen a refused kind",
 			src: `name: c
 steps:
@@ -373,7 +373,7 @@ steps:
 edition: v2026.3
 `,
 			want:    []string{"id", "description", "if", "vars", "continue_on_error"},
-			notWant: []string{"timeout", "retry"},
+			notWant: []string{"timeout", "retry", "async", "digest"},
 		},
 		{
 			// Fresh evidence after the fixture above: scanOutline ends a step's
@@ -414,6 +414,64 @@ steps:
 edition: v2026.3
 `,
 			want: []string{"timeout", "retry"},
+		},
+		{
+			name: "a call offers its digest but not async",
+			src: `name: c
+steps:
+  - id: child
+    call: ./child.yaml
+    |
+edition: v2026.3
+`,
+			want:    []string{"digest"},
+			notWant: []string{"async", "timeout", "retry"},
+		},
+		{
+			name: "an ordinary task offers async but not digest",
+			src: `name: c
+steps:
+  - id: a
+    log:
+      message: hi
+    |
+edition: v2026.3
+`,
+			want:    []string{"async"},
+			notWant: []string{"digest"},
+		},
+		{
+			name: "a task inside a parallel branch does not offer async",
+			src: `name: c
+steps:
+  - id: branches
+    parallel:
+      - steps:
+          - id: inner
+            log:
+              message: hi
+            |
+edition: v2026.3
+`,
+			notWant: []string{"async", "digest"},
+		},
+		{
+			name: "a task inside a loop body still offers async",
+			src: `name: c
+steps:
+  - id: repeat
+    loop:
+      until: ${false}
+      max_iterations: 1
+      steps:
+        - id: inner
+          log:
+            message: hi
+          |
+edition: v2026.3
+`,
+			want:    []string{"async"},
+			notWant: []string{"digest"},
 		},
 		{
 			// The mapping form of a gate. The scalar form takes a name directly, so

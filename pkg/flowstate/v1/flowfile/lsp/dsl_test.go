@@ -1324,17 +1324,23 @@ func TestDurationsAreChecked(t *testing.T) {
 func TestHoverDocumentsEveryDSLKey(t *testing.T) {
 	t.Parallel()
 
-	// The edition is the one this build compiles rather than a literal, so the
-	// fixture stays a document `flow validate` accepts when a new one is added.
+	// The edition is the one this build compiles rather than a literal. Root
+	// blocks use their smallest meaningful forms rather than empty declarations,
+	// so hover is exercised on the same shapes the compiler accepts.
 	src := "edition: " + flowfile.CurrentEdition + "\n" + `name: all-keys
 labels: {}
 description: everything
 inputs: {}
 outputs: {}
-triggers: {}
+triggers:
+  manual:
+    require_reason: true
 signals: {}
-debug: {}
-concurrency: {}
+debug:
+  allow:
+    - subject: "https://issuer.example.com#sre@example.com"
+concurrency:
+  key: ${"all-keys"}
 plugins: {}
 vars:
   region: eu-west-1
