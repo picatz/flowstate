@@ -113,6 +113,9 @@ Every dispatch prompt carries:
 - **An explicit `model`.** Never dispatch on inheritance.
 - **A report budget**, stated in words and in content.
 - **The gate tier expected**: diff-scoped, not full `make check`.
+- **The format spelling expected**: `make fmt` for repair and the diff-scoped
+  gate for verification, never a bare `gofmt` or `go env GOROOT`; the Makefile
+  resolves the formatter from the toolchain version named by `go.mod`.
 - **Claims verified against main at write time.** A load-bearing assertion
   about the tree ("X is reserved", "Y already lands this") is checked
   against origin/main before it enters the prompt. Wave-1 friction item 6:
