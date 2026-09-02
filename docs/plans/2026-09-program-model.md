@@ -143,6 +143,33 @@ post-mortem answer that needs neither); embedding the Temporal dev server
 (#377 decided the child process and named when to revisit); a run profile
 verb (#1485 surfaces measured CEL cost and #1585 the static sizes).
 
+## The analysis framework, expanded
+
+Owner steer (2026-09-02, evening): the analyzer contract is the center of
+the testing and analysis work, in the shape `go/analysis` and Buf's check
+plugins give it, and it should be extensible, pluggable and dogfooded. #1597
+became the umbrella; its record maps each `go/analysis` piece onto the tree
+(the package is the root program plus its callee table; `TypesInfo` is the
+scope table and the checked expressions; `passes/inspect` is #1501's one
+traversal; `buildssa` is the flow graph; facts are keyed by program digest;
+`unitchecker` is a plugin capability) and carries the migration ledger of
+every existing check. The count that motivated it: the validator is one
+1,900-line file with 18 `validate*`/`check*` functions, and at least seven
+other one-consumer walks over the same message exist beside it.
+
+| Slice | Issue |
+| --- | --- |
+| the second IR: a control-flow graph joined to #1583's def-use edges, built once | #1601 |
+| `# want` fixtures and `.golden` fixes, one `Run` for every analyzer | #1602 |
+| facts across `call:` and module boundaries, cached by digest | #1603 |
+| the out-of-process protocol and `CAPABILITY_ANALYSIS` | #1604 |
+| one checker for five hosts, a narrowing project file, tiers, the ledger | #1605 |
+
+Three questions were left open on the record rather than decided: in-file
+suppression (recommended none; disables live in the project file), severity
+narrowing, and whether the package lives beside the IR or importable without
+the engine (#406 decides).
+
 ## Deliberately not filed
 
 - A WASM plugin ABI, remote plugin distribution and browser execution: #102,
