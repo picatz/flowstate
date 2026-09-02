@@ -297,6 +297,10 @@ func TestTypedOutputAcceptsAContainerWhoseKeysCouldBeStrings(t *testing.T) {
     type: struct
 `,
 		`  release:
+    value: '${{"": "a"}}'
+    type: struct
+`,
+		`  release:
     value: '${{}}'
     type: struct
 `,

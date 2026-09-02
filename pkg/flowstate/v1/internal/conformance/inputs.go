@@ -400,12 +400,14 @@ func InputOutputCases(httpBaseURL string) []Case {
 			// and an empty one are that. Here because the refusal below is only
 			// worth having if the shape it guards still passes — a key check
 			// written as "every map is suspect" would take the empty map with
-			// it, and an empty answer is a legal answer.
+			// it, and an empty answer is a legal answer. The empty string is also
+			// a legal string key, rather than the absence of a key.
 			Name: "a struct output round-trips as the map it computed",
 			Workflow: declares("outputs-struct-string-keys",
 				nil,
 				[]*v1.OutputDeclaration{
 					typedOutput("detail", `{"host": "a"}`, v1.InputDeclaration_TYPE_STRUCT),
+					typedOutput("blank", `{"": "value"}`, v1.InputDeclaration_TYPE_STRUCT),
 					typedOutput("nothing", `{}`, v1.InputDeclaration_TYPE_STRUCT),
 				},
 				says("a", "hello"),
@@ -418,6 +420,7 @@ func InputOutputCases(httpBaseURL string) []Case {
 				held("a"),
 				map[string]*v1.Value{
 					"detail":  v1.NewLiteralMap(map[string]any{"host": "a"}),
+					"blank":   v1.NewLiteralMap(map[string]any{"": "value"}),
 					"nothing": v1.NewLiteralMap(map[string]any{}),
 				},
 			),

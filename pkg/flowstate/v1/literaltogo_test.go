@@ -8,11 +8,12 @@ import (
 )
 
 // TestLiteralToGoStringKeyedMap is the direction that always worked: a map
-// whose keys are strings round-trips to a map[string]any with every entry
-// present.
+// whose keys are strings, including the empty string, round-trips to a
+// map[string]any with every entry present.
 func TestLiteralToGoStringKeyedMap(t *testing.T) {
 	m := &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{
 		Entries: []*expr.MapValue_Entry{
+			{Key: str(""), Value: str("empty")},
 			{Key: str("a"), Value: str("one")},
 			{Key: str("b"), Value: str("two")},
 		},
@@ -26,8 +27,8 @@ func TestLiteralToGoStringKeyedMap(t *testing.T) {
 	if !ok {
 		t.Fatalf("LiteralToGo returned %T, want map[string]any", got)
 	}
-	if object["a"] != "one" || object["b"] != "two" || len(object) != 2 {
-		t.Fatalf("LiteralToGo returned %#v, want {a:one, b:two}", object)
+	if object[""] != "empty" || object["a"] != "one" || object["b"] != "two" || len(object) != 3 {
+		t.Fatalf("LiteralToGo returned %#v, want {\"\":empty, a:one, b:two}", object)
 	}
 }
 
