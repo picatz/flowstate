@@ -76,6 +76,90 @@ func (AuditDecision) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_audit_proto_rawDescGZIP(), []int{0}
 }
 
+// AuditEnforcementPoint is the closed list of worker-side seams that decide
+// something about a workload already running.
+//
+// Closed and small, for the reason AuditDenyCode is: a value here that no seam
+// emits is a spelling nobody reads. Each of these is one function, and the
+// engine reaches every one of them through both drivers — see
+// pkg/flowstate/v1/enforcementaudit.go, which names the seam beside each
+// value.
+type AuditEnforcementPoint int32
+
+const (
+	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED AuditEnforcementPoint = 0
+	// Whether this identity may dispatch this task, from the deployment's
+	// task-shape policy. CheckTaskPolicy, the one check both drivers make once
+	// per dispatch.
+	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH AuditEnforcementPoint = 1
+	// Whether this workload may read this secret reference, from the secret
+	// access policy. ResolveSecret, before the store is consulted, so a cache
+	// cannot turn a denied read into an allowed one.
+	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS AuditEnforcementPoint = 2
+	// Whether this request may leave the worker, from the egress policy. The
+	// built-in http task, at the verdict its policy's transport returns.
+	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS AuditEnforcementPoint = 3
+	// Whether this workload may assume a credential for a federation target,
+	// from the assumption policy. AuthorizeCredential, which records after the
+	// policy has answered and before the credential is used on a request.
+	//
+	// The policy decision happens inside Broker.Authorize, which mints and
+	// exchanges on its way to a credential, so the record is written once that
+	// returns rather than at the moment the rules answered. Under a required
+	// recorder what is stopped is the *use*: the credential is discarded
+	// unused, and nothing about it reaches the request. Minting is not stopped,
+	// so an identity provider may have observed an exchange for a credential
+	// that was then thrown away — the cost of reading the answer where this
+	// seam can see it, rather than evaluating the policy a second time to move
+	// the record earlier.
+	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION AuditEnforcementPoint = 4
+)
+
+// Enum value maps for AuditEnforcementPoint.
+var (
+	AuditEnforcementPoint_name = map[int32]string{
+		0: "AUDIT_ENFORCEMENT_POINT_UNSPECIFIED",
+		1: "AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH",
+		2: "AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS",
+		3: "AUDIT_ENFORCEMENT_POINT_EGRESS",
+		4: "AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION",
+	}
+	AuditEnforcementPoint_value = map[string]int32{
+		"AUDIT_ENFORCEMENT_POINT_UNSPECIFIED":           0,
+		"AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH":         1,
+		"AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS":         2,
+		"AUDIT_ENFORCEMENT_POINT_EGRESS":                3,
+		"AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION": 4,
+	}
+)
+
+func (x AuditEnforcementPoint) Enum() *AuditEnforcementPoint {
+	p := new(AuditEnforcementPoint)
+	*p = x
+	return p
+}
+
+func (x AuditEnforcementPoint) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AuditEnforcementPoint) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_audit_proto_enumTypes[1].Descriptor()
+}
+
+func (AuditEnforcementPoint) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_audit_proto_enumTypes[1]
+}
+
+func (x AuditEnforcementPoint) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AuditEnforcementPoint.Descriptor instead.
+func (AuditEnforcementPoint) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_audit_proto_rawDescGZIP(), []int{1}
+}
+
 // AuditResourceKind names what resource_key addresses.
 type AuditResourceKind int32
 
@@ -90,6 +174,29 @@ const (
 	AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE AuditResourceKind = 2
 	// A whole tenant, which is what a listing addresses.
 	AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE AuditResourceKind = 3
+	// A task, addressed by the qualified name a step dispatches, such as
+	// "http" or "codex.exec". Registry names, not author prose.
+	AuditResourceKind_AUDIT_RESOURCE_KIND_TASK AuditResourceKind = 4
+	// A secret, addressed by the reference that names it — "scheme:name", the
+	// reference a workflow author wrote and never the value it resolves to.
+	// Nothing resolved reaches this record: the seam records the decision
+	// before the store is consulted, so on a denial no value exists yet, and on
+	// an allow the value is returned to the task and not to the trail.
+	AuditResourceKind_AUDIT_RESOURCE_KIND_SECRET AuditResourceKind = 5
+	// A network destination, addressed as scheme://host:port.
+	//
+	// Only that much of the URL. The path, query, fragment and userinfo are
+	// request content — a webhook URL carries its credential in the path, a
+	// query string carries tokens — and netpolicy's own tracing comment already
+	// refuses them for a span. This trail is narrower than a span's audience
+	// (an operator reading their own deployment's decisions, not a shared
+	// collector) and an egress record that cannot say where the request was
+	// going would not answer the question it exists for, so the destination
+	// stays and its content does not.
+	AuditResourceKind_AUDIT_RESOURCE_KIND_ENDPOINT AuditResourceKind = 6
+	// A credential target, addressed by the operator-configured target name a
+	// workload asked to assume. Never the credential.
+	AuditResourceKind_AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET AuditResourceKind = 7
 )
 
 // Enum value maps for AuditResourceKind.
@@ -99,12 +206,20 @@ var (
 		1: "AUDIT_RESOURCE_KIND_RUN",
 		2: "AUDIT_RESOURCE_KIND_SCHEDULE",
 		3: "AUDIT_RESOURCE_KIND_NAMESPACE",
+		4: "AUDIT_RESOURCE_KIND_TASK",
+		5: "AUDIT_RESOURCE_KIND_SECRET",
+		6: "AUDIT_RESOURCE_KIND_ENDPOINT",
+		7: "AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET",
 	}
 	AuditResourceKind_value = map[string]int32{
-		"AUDIT_RESOURCE_KIND_UNSPECIFIED": 0,
-		"AUDIT_RESOURCE_KIND_RUN":         1,
-		"AUDIT_RESOURCE_KIND_SCHEDULE":    2,
-		"AUDIT_RESOURCE_KIND_NAMESPACE":   3,
+		"AUDIT_RESOURCE_KIND_UNSPECIFIED":       0,
+		"AUDIT_RESOURCE_KIND_RUN":               1,
+		"AUDIT_RESOURCE_KIND_SCHEDULE":          2,
+		"AUDIT_RESOURCE_KIND_NAMESPACE":         3,
+		"AUDIT_RESOURCE_KIND_TASK":              4,
+		"AUDIT_RESOURCE_KIND_SECRET":            5,
+		"AUDIT_RESOURCE_KIND_ENDPOINT":          6,
+		"AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET": 7,
 	}
 )
 
@@ -119,11 +234,11 @@ func (x AuditResourceKind) String() string {
 }
 
 func (AuditResourceKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_audit_proto_enumTypes[1].Descriptor()
+	return file_flowstate_v1_audit_proto_enumTypes[2].Descriptor()
 }
 
 func (AuditResourceKind) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_audit_proto_enumTypes[1]
+	return &file_flowstate_v1_audit_proto_enumTypes[2]
 }
 
 func (x AuditResourceKind) Number() protoreflect.EnumNumber {
@@ -132,7 +247,7 @@ func (x AuditResourceKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AuditResourceKind.Descriptor instead.
 func (AuditResourceKind) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_audit_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_audit_proto_rawDescGZIP(), []int{2}
 }
 
 // AuditDenyCode is the closed set of reasons a decision was a denial.
@@ -164,6 +279,33 @@ const (
 	// operation refused it. FlowstateServer.authorizeSignal's name-level policy
 	// check is the first emitter.
 	AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED AuditDenyCode = 4
+	// A deny rule matched. The rule field carries which one.
+	//
+	// The four codes below are the worker's, and they are finer than
+	// POLICY_DENIED for the reason this enum's own comment gives: these four
+	// situations look identical to a caller and are completely different to the
+	// operator who has to act on them.
+	AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE AuditDenyCode = 5
+	// Nothing permitted it: allow rules are configured and none matched, or the
+	// policy is an allowlist and holds none. No rule decided, so rule is empty.
+	AuditDenyCode_AUDIT_DENY_CODE_NO_ALLOW_RULE AuditDenyCode = 6
+	// A rule could not be evaluated, and rules fail closed. The one code an
+	// operator should page on: it means the policy is refusing work because the
+	// policy itself is broken, not because it decided anything. The rule's own
+	// evaluation error is deliberately absent — see the rule field.
+	AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR AuditDenyCode = 7
+	// The deployment configured nothing that could have permitted this: no
+	// secret rules at all (where absence means nothing may be read), no such
+	// credential target, or a worker with no secret or federation authority
+	// installed.
+	AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED AuditDenyCode = 8
+	// The destination itself is outside what the egress policy permits — its
+	// scheme, its port, the address it resolved to, a redirect it attempted, or
+	// the control plane it addressed. One code for the six netpolicy reasons
+	// that are not rule decisions, because what an operator does about them is
+	// the same: the record names the destination, and the policy's own bounds
+	// are configuration they already hold.
+	AuditDenyCode_AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED AuditDenyCode = 9
 )
 
 // Enum value maps for AuditDenyCode.
@@ -174,13 +316,23 @@ var (
 		2: "AUDIT_DENY_CODE_RESOURCE_NOT_FOUND",
 		3: "AUDIT_DENY_CODE_TENANT_MISMATCH",
 		4: "AUDIT_DENY_CODE_POLICY_DENIED",
+		5: "AUDIT_DENY_CODE_DENY_RULE",
+		6: "AUDIT_DENY_CODE_NO_ALLOW_RULE",
+		7: "AUDIT_DENY_CODE_RULE_ERROR",
+		8: "AUDIT_DENY_CODE_NOT_CONFIGURED",
+		9: "AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED",
 	}
 	AuditDenyCode_value = map[string]int32{
-		"AUDIT_DENY_CODE_UNSPECIFIED":          0,
-		"AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE": 1,
-		"AUDIT_DENY_CODE_RESOURCE_NOT_FOUND":   2,
-		"AUDIT_DENY_CODE_TENANT_MISMATCH":      3,
-		"AUDIT_DENY_CODE_POLICY_DENIED":        4,
+		"AUDIT_DENY_CODE_UNSPECIFIED":               0,
+		"AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE":      1,
+		"AUDIT_DENY_CODE_RESOURCE_NOT_FOUND":        2,
+		"AUDIT_DENY_CODE_TENANT_MISMATCH":           3,
+		"AUDIT_DENY_CODE_POLICY_DENIED":             4,
+		"AUDIT_DENY_CODE_DENY_RULE":                 5,
+		"AUDIT_DENY_CODE_NO_ALLOW_RULE":             6,
+		"AUDIT_DENY_CODE_RULE_ERROR":                7,
+		"AUDIT_DENY_CODE_NOT_CONFIGURED":            8,
+		"AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED": 9,
 	}
 )
 
@@ -195,11 +347,11 @@ func (x AuditDenyCode) String() string {
 }
 
 func (AuditDenyCode) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_audit_proto_enumTypes[2].Descriptor()
+	return file_flowstate_v1_audit_proto_enumTypes[3].Descriptor()
 }
 
 func (AuditDenyCode) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_audit_proto_enumTypes[2]
+	return &file_flowstate_v1_audit_proto_enumTypes[3]
 }
 
 func (x AuditDenyCode) Number() protoreflect.EnumNumber {
@@ -208,23 +360,28 @@ func (x AuditDenyCode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AuditDenyCode.Descriptor instead.
 func (AuditDenyCode) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_audit_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_v1_audit_proto_rawDescGZIP(), []int{3}
 }
 
-// AuditRecord is one authorization decision, as the server made it.
+// AuditRecord is one authorization or enforcement decision, as this deployment
+// made it.
 //
-// Every field is set by the server. The only value here a caller influences at
-// all is resource_key, which is the identifier they addressed — bounded below,
-// and an identifier is not a payload: without it the record cannot say which
-// run was reached, which is the question an audit trail exists to answer. RPC
-// and MCP tool names are accepted only after resolving them against the
-// server's registered, authorization-bound operation table; the caller's raw
-// tools/call name is never copied here.
+// Every field is set by the server or the worker. The only value here a caller
+// influences at all is resource_key, which is the identifier they addressed —
+// bounded below, and an identifier is not a payload: without it the record
+// cannot say which run was reached, which is the question an audit trail
+// exists to answer. RPC and MCP tool names are accepted only after resolving
+// them against the server's registered, authorization-bound operation table;
+// the caller's raw tools/call name is never copied here.
 type AuditRecord struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The action authorized, from the deployment's one closed vocabulary.
 	//
-	// Never UNSPECIFIED: a decision about no action is not a decision.
+	// Set for a control-plane decision and never UNSPECIFIED there: a decision
+	// about no action is not a decision. UNSPECIFIED exactly when
+	// enforcement_point names the decision instead — see "The worker's half"
+	// above — which the message rule above holds to, so the two vocabularies
+	// cannot both be absent and cannot both be present.
 	Action AuthorizationAction `protobuf:"varint,1,opt,name=action,proto3,enum=flowstate.v1.AuthorizationAction" json:"action,omitempty"`
 	// Allow or deny. Never UNSPECIFIED, for the same reason.
 	Decision AuditDecision `protobuf:"varint,2,opt,name=decision,proto3,enum=flowstate.v1.AuditDecision" json:"decision,omitempty"`
@@ -282,6 +439,61 @@ type AuditRecord struct {
 	// untrusted tools/call string before lookup. Arguments, prompts and results
 	// are deliberately absent from this record.
 	McpTool string `protobuf:"bytes,9,opt,name=mcp_tool,json=mcpTool,proto3" json:"mcp_tool,omitempty"`
+	// The worker-side seam that made the decision, for an enforcement record.
+	// UNSPECIFIED on a control-plane record, where action names the operation
+	// instead. See "The worker's half" above.
+	EnforcementPoint AuditEnforcementPoint `protobuf:"varint,12,opt,name=enforcement_point,json=enforcementPoint,proto3,enum=flowstate.v1.AuditEnforcementPoint" json:"enforcement_point,omitempty"`
+	// The operator's own policy rule that decided, verbatim.
+	//
+	// This is the provenance half of picatz/flowstate#353's principle 2 — a
+	// record that says a dispatch was refused and cannot say by *what* leaves
+	// the operator reading it exactly where they started — and it is the one
+	// string in this message whose bytes were neither chosen by this deployment
+	// at compile time nor bounded by another schema. It is admitted for the
+	// same reason issuer_name and role are, and under the same rule: it is
+	// operator-authored configuration, never a caller's, a peer's, or a
+	// workload's text.
+	//
+	// What that rule excludes is more important than what it admits. A denial's
+	// Detail field is not this: for a rule that failed to *evaluate*, that text
+	// quotes the CEL evaluation error, which can quote the data the rule was
+	// reading. So a rule-error denial carries the deny code and nothing else,
+	// and only a rule that matched — whose source text is configuration and
+	// nothing more — is copied here. The rest of the denial's prose stays on the
+	// error the caller receives, which is not durable.
+	//
+	// Empty when no single rule decided: a policy with nothing configured, an
+	// allowlist nothing matched, a destination refused by the policy's own
+	// scheme, port or address bounds, or an allow at a seam whose evaluator does
+	// not report which rule permitted it. The evaluated facts are then still in
+	// the record — the attested identity, and the resource the rule read — which
+	// is what makes an allow legible without one.
+	Rule string `protobuf:"bytes,13,opt,name=rule,proto3" json:"rule,omitempty"`
+	// Which attempt at one dispatch this decision was made for, counting from 1.
+	//
+	// A retried task is dispatched again, and each dispatch is decided again:
+	// both drivers consult the task-shape policy per attempt, so each attempt
+	// has a decision of its own and the trail says which one it belongs to.
+	// Recording only the first would be a guess that the first was recorded —
+	// and under a required recorder a first attempt whose record could not be
+	// written is exactly the attempt that gets retried, which would leave the
+	// work that then ran with no record at all
+	// (Codex, picatz/flowstate#1394).
+	//
+	// The number is the substrate's own: Temporal's activity attempt durably,
+	// the retry loop's counter locally, so the two agree without either one
+	// inventing it. Zero on every record that is not about a dispatch attempt —
+	// a control-plane decision, and the worker's other three seams, which are
+	// reached once per attempt by construction and have no attempt of their own
+	// to name.
+	//
+	// Bounded on the way in, the way rule's bytes are: the seam clamps to
+	// flowstatev1.MaxDispatchAttempt rather than letting an int that does not
+	// fit a uint32 arrive as some other number. The bound is deliberately not a
+	// validation rule — a record that cannot be built is an action that does not
+	// happen, and an implausible retry policy is a configuration to fix rather
+	// than a dispatch to refuse.
+	Attempt uint32 `protobuf:"varint,14,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	// The operator-chosen trusted-issuer entry that admitted the caller.
 	// Unlike identity.issuer, which names who signed the credential, this names
 	// the exact policy row that accepted it. It is bounded before emission; it
@@ -388,6 +600,27 @@ func (x *AuditRecord) GetMcpTool() string {
 	return ""
 }
 
+func (x *AuditRecord) GetEnforcementPoint() AuditEnforcementPoint {
+	if x != nil {
+		return x.EnforcementPoint
+	}
+	return AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED
+}
+
+func (x *AuditRecord) GetRule() string {
+	if x != nil {
+		return x.Rule
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetAttempt() uint32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
 func (x *AuditRecord) GetIssuerName() string {
 	if x != nil {
 		return x.IssuerName
@@ -406,10 +639,9 @@ var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa7\b\n" +
-	"\vAuditRecord\x12E\n" +
-	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\n" +
-	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12C\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcf\v\n" +
+	"\vAuditRecord\x12C\n" +
+	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\bdecision\x12\xb2\x01\n" +
 	"\x03rpc\x18\x03 \x01(\tB\x9f\x01\xbaH\x9b\x01\xba\x01\x97\x01\n" +
@@ -421,27 +653,46 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"decided_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\tdecidedAt\x12B\n" +
 	"\tdeny_code\x18\b \x01(\x0e2\x1b.flowstate.v1.AuditDenyCodeB\b\xbaH\x05\x82\x01\x02\x10\x01R\bdenyCode\x12\xbc\x01\n" +
 	"\bmcp_tool\x18\t \x01(\tB\xa0\x01\xbaH\x9c\x01\xba\x01\x98\x01\n" +
-	"\x15audit_record.mcp_tool\x128mcp_tool must be empty or a bounded registered tool name\x1aEthis == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))R\amcpTool\x12)\n" +
+	"\x15audit_record.mcp_tool\x128mcp_tool must be empty or a bounded registered tool name\x1aEthis == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))R\amcpTool\x12Z\n" +
+	"\x11enforcement_point\x18\f \x01(\x0e2#.flowstate.v1.AuditEnforcementPointB\b\xbaH\x05\x82\x01\x02\x10\x01R\x10enforcementPoint\x12\x1c\n" +
+	"\x04rule\x18\r \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04rule\x12\x18\n" +
+	"\aattempt\x18\x0e \x01(\rR\aattempt\x12)\n" +
 	"\vissuer_name\x18\n" +
 	" \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\n" +
 	"issuerName\x12\x1c\n" +
-	"\x04role\x18\v \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x04role:\x8e\x01\xbaH\x8a\x01\x1a\x87\x01\n" +
-	"\x16audit_record.operation\x12Bexactly one of rpc or mcp_tool must identify the audited operation\x1a)(this.rpc != '') != (this.mcp_tool != '')*b\n" +
+	"\x04role\x18\v \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x04role:\xa4\x03\xbaH\xa0\x03\x1a\xd0\x01\n" +
+	"\x16audit_record.operation\x12Uexactly one of rpc, mcp_tool or enforcement_point must identify the audited operation\x1a_[this.rpc != '', this.mcp_tool != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xca\x01\n" +
+	"\x13audit_record.action\x12taction names the authorization vocabulary and is set for an rpc or mcp_tool decision, never for an enforcement point\x1a=(this.action != 0) == (this.rpc != '' || this.mcp_tool != '')*b\n" +
 	"\rAuditDecision\x12\x1e\n" +
 	"\x1aAUDIT_DECISION_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14AUDIT_DECISION_ALLOW\x10\x01\x12\x17\n" +
-	"\x13AUDIT_DECISION_DENY\x10\x02*\x9a\x01\n" +
+	"\x13AUDIT_DECISION_DENY\x10\x02*\xed\x01\n" +
+	"\x15AuditEnforcementPoint\x12'\n" +
+	"#AUDIT_ENFORCEMENT_POINT_UNSPECIFIED\x10\x00\x12)\n" +
+	"%AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH\x10\x01\x12)\n" +
+	"%AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS\x10\x02\x12\"\n" +
+	"\x1eAUDIT_ENFORCEMENT_POINT_EGRESS\x10\x03\x121\n" +
+	"-AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION\x10\x04*\xa5\x02\n" +
 	"\x11AuditResourceKind\x12#\n" +
 	"\x1fAUDIT_RESOURCE_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17AUDIT_RESOURCE_KIND_RUN\x10\x01\x12 \n" +
 	"\x1cAUDIT_RESOURCE_KIND_SCHEDULE\x10\x02\x12!\n" +
-	"\x1dAUDIT_RESOURCE_KIND_NAMESPACE\x10\x03*\xca\x01\n" +
+	"\x1dAUDIT_RESOURCE_KIND_NAMESPACE\x10\x03\x12\x1c\n" +
+	"\x18AUDIT_RESOURCE_KIND_TASK\x10\x04\x12\x1e\n" +
+	"\x1aAUDIT_RESOURCE_KIND_SECRET\x10\x05\x12 \n" +
+	"\x1cAUDIT_RESOURCE_KIND_ENDPOINT\x10\x06\x12)\n" +
+	"%AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET\x10\a*\xff\x02\n" +
 	"\rAuditDenyCode\x12\x1f\n" +
 	"\x1bAUDIT_DENY_CODE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE\x10\x01\x12&\n" +
 	"\"AUDIT_DENY_CODE_RESOURCE_NOT_FOUND\x10\x02\x12#\n" +
 	"\x1fAUDIT_DENY_CODE_TENANT_MISMATCH\x10\x03\x12!\n" +
-	"\x1dAUDIT_DENY_CODE_POLICY_DENIED\x10\x04B\xa9\x01\n" +
+	"\x1dAUDIT_DENY_CODE_POLICY_DENIED\x10\x04\x12\x1d\n" +
+	"\x19AUDIT_DENY_CODE_DENY_RULE\x10\x05\x12!\n" +
+	"\x1dAUDIT_DENY_CODE_NO_ALLOW_RULE\x10\x06\x12\x1e\n" +
+	"\x1aAUDIT_DENY_CODE_RULE_ERROR\x10\a\x12\"\n" +
+	"\x1eAUDIT_DENY_CODE_NOT_CONFIGURED\x10\b\x12-\n" +
+	")AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED\x10\tB\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"AuditProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
@@ -457,29 +708,31 @@ func file_flowstate_v1_audit_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_audit_proto_rawDescData
 }
 
-var file_flowstate_v1_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_flowstate_v1_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_flowstate_v1_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_flowstate_v1_audit_proto_goTypes = []any{
 	(AuditDecision)(0),            // 0: flowstate.v1.AuditDecision
-	(AuditResourceKind)(0),        // 1: flowstate.v1.AuditResourceKind
-	(AuditDenyCode)(0),            // 2: flowstate.v1.AuditDenyCode
-	(*AuditRecord)(nil),           // 3: flowstate.v1.AuditRecord
-	(AuthorizationAction)(0),      // 4: flowstate.v1.AuthorizationAction
-	(*WorkloadIdentity)(nil),      // 5: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(AuditEnforcementPoint)(0),    // 1: flowstate.v1.AuditEnforcementPoint
+	(AuditResourceKind)(0),        // 2: flowstate.v1.AuditResourceKind
+	(AuditDenyCode)(0),            // 3: flowstate.v1.AuditDenyCode
+	(*AuditRecord)(nil),           // 4: flowstate.v1.AuditRecord
+	(AuthorizationAction)(0),      // 5: flowstate.v1.AuthorizationAction
+	(*WorkloadIdentity)(nil),      // 6: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
 }
 var file_flowstate_v1_audit_proto_depIdxs = []int32{
-	4, // 0: flowstate.v1.AuditRecord.action:type_name -> flowstate.v1.AuthorizationAction
+	5, // 0: flowstate.v1.AuditRecord.action:type_name -> flowstate.v1.AuthorizationAction
 	0, // 1: flowstate.v1.AuditRecord.decision:type_name -> flowstate.v1.AuditDecision
-	5, // 2: flowstate.v1.AuditRecord.identity:type_name -> flowstate.v1.WorkloadIdentity
-	1, // 3: flowstate.v1.AuditRecord.resource_kind:type_name -> flowstate.v1.AuditResourceKind
-	6, // 4: flowstate.v1.AuditRecord.decided_at:type_name -> google.protobuf.Timestamp
-	2, // 5: flowstate.v1.AuditRecord.deny_code:type_name -> flowstate.v1.AuditDenyCode
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	6, // 2: flowstate.v1.AuditRecord.identity:type_name -> flowstate.v1.WorkloadIdentity
+	2, // 3: flowstate.v1.AuditRecord.resource_kind:type_name -> flowstate.v1.AuditResourceKind
+	7, // 4: flowstate.v1.AuditRecord.decided_at:type_name -> google.protobuf.Timestamp
+	3, // 5: flowstate.v1.AuditRecord.deny_code:type_name -> flowstate.v1.AuditDenyCode
+	1, // 6: flowstate.v1.AuditRecord.enforcement_point:type_name -> flowstate.v1.AuditEnforcementPoint
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_audit_proto_init() }
@@ -494,7 +747,7 @@ func file_flowstate_v1_audit_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_audit_proto_rawDesc), len(file_flowstate_v1_audit_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,

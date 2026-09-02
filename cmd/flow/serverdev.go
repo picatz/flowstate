@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -612,6 +613,14 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	}
 	serverOpts = append(serverOpts, server.WithAudit(recorder))
 
+	// And this stack's embedded worker (picatz/flowstate#1379). It is a real
+	// worker, with this command's --task-policy, --egress-policy and
+	// --auth-policy governing what it dispatches, resolves and dials, so
+	// leaving it out would make --audit-required above a posture that covers
+	// half of what this one process decides. Installed before the worker
+	// starts polling, below.
+	v1.SetDefaultEnforcementAuditor(recorder)
+
 	if err := server.EnsureSearchAttributesRegistered(cmd.Context(), temporal, devTemporalNamespace); err != nil {
 		logger.Warn("could not register Flowstate's search attributes; "+
 			"`flow list --filter` still works, scanning executions rather than querying an index",
@@ -620,10 +629,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		serverOpts = append(serverOpts, server.WithSearchAttributesRegistered())
 	}
 
-	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{
-		Interceptors:             temporalWorkerInterceptors(),
-		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
-	})
+	w := worker.New(temporal, engine.RunTaskQueueName, devWorkerOptions())
 	engine.Register(w, runtime)
 
 	// Before the listener below exists, and that order is load-bearing rather
@@ -637,7 +643,12 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("starting the worker: %w", err)
 	}
-	defer w.Stop()
+
+	// Stopped once, whether this function leaves through an error below or
+	// through the shutdown path at the end, which stops it explicitly before
+	// the audit sinks are closed. See there for why the order matters.
+	stopWorker := sync.OnceFunc(w.Stop)
+	defer stopWorker()
 
 	httpServer, listener, err := devHTTPServer(flags, serverOpts, temporal)
 	if err != nil {
@@ -694,17 +705,50 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		logger.Warn("the server was forced down with requests still in flight", "error", err)
 	}
 
-	// The deferred calls above finish the rest, in the order that keeps each
-	// half alive for as long as the half above it can still use it: the worker
-	// stops, then the client it polls through closes, then the plugins it
-	// dispatched to, then the Temporal child process. Telemetry is flushed here,
-	// before any of that, so the last spans belong to a stack that was still
-	// whole when they were recorded. The audit trail's own OTel sink, same
-	// shape, same reason.
+	// The worker stops here rather than only in its defer, and it stops before
+	// the audit sinks are shut down (Codex, picatz/flowstate#1394).
+	//
+	// Stop drains: it waits for the activities already running, and a draining
+	// activity still reaches the enforcement seams this command installed an
+	// auditor for — a task dispatching, a secret resolving, a request leaving.
+	// With the audit trail already flushed, such a record either vanishes into
+	// a shut-down processor or, under --audit-required, fails the activity with
+	// the sink's own "the log processor is shut down". Neither is a thing a
+	// clean shutdown should do to work this stack accepted.
+	//
+	// The rest still finishes in the deferred order that keeps each half alive
+	// for as long as the half above it can still use it: the client the worker
+	// polls through closes, then the plugins it dispatched to, then the
+	// Temporal child process.
+	stopWorker()
+
+	// Telemetry after the worker, for the same reason and one more: the last
+	// spans belong to a stack that was still whole when they were recorded.
 	flushTelemetry()
 	flushAudit()
 
 	return nil
+}
+
+// devWorkerOptions configures this stack's embedded worker.
+//
+// WorkerStopTimeout is the one that is easy to leave out and expensive to:
+// the SDK's zero value does not mean "wait forever", it means the drain races
+// a timer that has already fired, so Stop returns without waiting for the
+// activities still running (see [v1.DefaultWorkerStopTimeout], which says the
+// same thing for `flow worker`). This command stops its worker before it shuts
+// down the audit sinks precisely so a draining activity's last records reach a
+// live one — and with no stop timeout there is no drain for that ordering to
+// protect (Codex, picatz/flowstate#1394).
+//
+// The constant rather than a flag: this stack is a laptop's, and the flag
+// `flow worker` carries exists for deployments whose own grace period differs.
+func devWorkerOptions() worker.Options {
+	return worker.Options{
+		Interceptors:             temporalWorkerInterceptors(),
+		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
+		WorkerStopTimeout:        v1.DefaultWorkerStopTimeout,
+	}
 }
 
 // devUIPort renders the UI port the way [testsuite.DevServerOptions] wants it,

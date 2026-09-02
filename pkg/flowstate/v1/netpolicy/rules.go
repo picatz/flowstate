@@ -74,12 +74,18 @@ func (rs ruleSet) evaluate(ctx context.Context, target string, vars map[string]a
 // ruleFailure converts a rule evaluation failure into a denial, so that a rule
 // that cannot be evaluated fails closed.
 //
-// A cancelled or expired context is returned as itself rather than as a denial:
-// running out of time is not a policy decision, and reporting it as one would tell
-// an operator their rules rejected a request that in fact never finished.
+// A cancelled or expired context is reported as an [*UndecidedError] rather than
+// as a denial: running out of time is not a policy decision, and reporting it as
+// one would tell an operator their rules rejected a request that in fact never
+// finished. The type is what a caller needs to tell "this policy never answered"
+// from "this policy answered, and then the request died" — a distinction a bare
+// context error cannot carry, because the transport and the peer return context
+// errors too. It unwraps to the context's own error, so every errors.Is check
+// against [context.Canceled] and [context.DeadlineExceeded] answers exactly as
+// it did for the bare value this replaced.
 func ruleFailure(ctx context.Context, kind, src, target string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
+		return &UndecidedError{Target: target, Err: ctxErr}
 	}
 
 	return &DenyError{

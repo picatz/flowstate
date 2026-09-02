@@ -51,6 +51,66 @@ func DefaultTaskPolicy() *TaskPolicy {
 // it by guessing a string key.
 type taskPolicyContextKey struct{}
 
+// dispatchAttemptContextKey is the unexported type a dispatch's attempt number
+// is keyed under, alongside the policy this file already carries.
+type dispatchAttemptContextKey struct{}
+
+// NewContextWithDispatchAttempt returns a context saying which attempt at one
+// dispatch is about to run, so [CheckTaskPolicy]'s record can name it.
+//
+// The number comes from the substrate, which is the only thing that knows it:
+// Temporal's activity attempt durably, [runStepWithPolicy]'s own loop counter
+// locally. Both drivers consult the policy on every attempt and record what it
+// answered, so the trail has one decision per attempt and the two drivers
+// produce the same count for the same run (picatz/flowstate#1394).
+//
+// A fact about one invocation rather than about the deployment, so it travels
+// the way [ObserveTaskAttempt]'s own attempt does — from the substrate, into
+// the shared seam, as data.
+func NewContextWithDispatchAttempt(ctx context.Context, attempt int) context.Context {
+	return context.WithValue(ctx, dispatchAttemptContextKey{}, boundedDispatchAttempt(attempt))
+}
+
+// MaxDispatchAttempt is the largest attempt number a record carries.
+//
+// The number reaches the record as a uint32, and an int that does not fit one
+// would arrive as something else entirely rather than as an obviously wrong
+// number — the truncation is the problem, not the size. Clamped rather than
+// refused, for the reason [audit.MaxRuleBytes] is: the seam's job is to record
+// the decision, and a retry policy with more attempts than this is a
+// configuration to fix, not a reason to fail the dispatch or lose the record.
+//
+// The ceiling is far above any retry policy anyone should write and far below
+// where the value stops being readable.
+const MaxDispatchAttempt = 1_000_000
+
+// boundedDispatchAttempt renders an attempt as the record can carry it: at
+// least the first, at most [MaxDispatchAttempt].
+func boundedDispatchAttempt(attempt int) int {
+	if attempt < 1 {
+		return 1
+	}
+	if attempt > MaxDispatchAttempt {
+		return MaxDispatchAttempt
+	}
+
+	return attempt
+}
+
+// dispatchAttemptIn reports which attempt at this dispatch ctx describes,
+// defaulting to the first.
+//
+// The default is what makes this safe at a seam with callers that know nothing
+// about it: an unset context is a first attempt, which is what a caller that
+// does not retry has, and what every direct caller of [CheckTaskPolicy] means.
+func dispatchAttemptIn(ctx context.Context) int {
+	if attempt, ok := ctx.Value(dispatchAttemptContextKey{}).(int); ok {
+		return boundedDispatchAttempt(attempt)
+	}
+
+	return 1
+}
+
 // NewContextWithTaskPolicy returns a context carrying policy, consulted by
 // [TaskPolicyIn] ahead of the process-wide default. For a run whose
 // task-shape policy must not be (or cannot be) the process global — the
@@ -94,16 +154,18 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // classification egress and secret denials already carry, which is what
 // makes [ClassifyError] mark it non-retryable rather than falling through to
 // the [ErrorKindInternal] default an unclassified error would get. A
-// denial retried is a denial repeated for no reason: the policy's answer
-// does not change between attempts of the same dispatch.
+// denial retried is a denial repeated for no reason: nothing a retry does
+// changes the rule that refused it, and the operator who would change it is
+// not in the loop.
 //
-// Called once per dispatch, above wherever a driver retries a failed
-// attempt — [runStepWithPolicy] for the local driver, each activity entry
-// point for the durable one (`engine/activities.go`) — never inside the
-// retry loop itself. A dispatch's identity and task name do not change
-// between retries of the same step, so evaluating this once is not an
-// optimization so much as it is the accurate description of what the policy
-// governs: one dispatch, one decision.
+// Called once per dispatch attempt on both drivers: inside the durable
+// driver's activity, which Temporal re-invokes to retry, and inside
+// [runStepWithPolicy]'s retry loop locally. A retried task is dispatched
+// again, so it is decided again and recorded again;
+// [NewContextWithDispatchAttempt] is how each driver says which attempt this
+// is, and the record carries it. The answer can differ between attempts — an
+// operator tightening a policy mid-run is exactly that — which is why the
+// check runs per attempt rather than once above the retries.
 //
 // local is [Scope.GetLocal] — true for any local-driver entry point's own
 // rehearsal (`flow run local`, `flow test`, `flow task run`, ...), never
@@ -123,12 +185,44 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // message — set on the error strictly after the decision, never consulted
 // by anything that decides.
 func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentity, local bool) error {
-	err := TaskPolicyIn(ctx).Check(ctx, task, identity)
-	if err == nil {
-		return nil
+	rule, err := TaskPolicyIn(ctx).check(ctx, task, identity)
+
+	// The audit subject is the same either way: this identity, this task, and
+	// the rule that decided. Built once so an allow and a deny cannot describe
+	// the same dispatch differently (picatz/flowstate#1379).
+	subject := EnforcementSubject{
+		Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
+		Identity:     identity,
+		ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
+		ResourceKey:  task,
+		Rule:         rule,
+
+		// Which attempt this decision belongs to. Both drivers decide again on
+		// every attempt, so every attempt's decision is recorded and the record
+		// says which one it is (see AuditRecord.attempt).
+		Attempt: uint32(dispatchAttemptIn(ctx)),
 	}
 
-	if denied, ok := errors.AsType[*TaskPolicyDeniedError](err); ok {
+	if err == nil {
+		// Recorded before the task runs, which is what the write-ahead rule
+		// asks of this seam: the record is written while the dispatch it
+		// permits is still ahead of it. A required recorder that could not
+		// write refuses the dispatch, which is the whole of "an action that
+		// cannot be recorded does not happen".
+		//
+		// Once per attempt, because a retried task is dispatched again and the
+		// policy decides again — both drivers now consult it per attempt, so
+		// each attempt has a decision of its own and each decision is written
+		// down. Recording only the first attempt would assume the first was
+		// recorded, and under a required recorder the attempt whose record
+		// could not be written is precisely the one that gets retried: the work
+		// would then run with no allow anywhere in the trail
+		// (Codex, picatz/flowstate#1394).
+		return auditEnforcementAllow(ctx, subject)
+	}
+
+	denied, isDecision := errors.AsType[*TaskPolicyDeniedError](err)
+	if isDecision {
 		denied.Local = local
 
 		// Provenance, recorded here for the same reason and under the same
@@ -154,5 +248,39 @@ func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentit
 	}
 	RecordPolicyDenial(ctx, metricschema.SurfaceTaskDispatch, task, driver)
 
-	return NewTaskError(task, ErrorKindPolicyDenied, err)
+	refusal := NewTaskError(task, ErrorKindPolicyDenied, err)
+
+	if !isDecision {
+		// Not something the policy decided. [taskPolicyRuleFailure] returns a
+		// cancelled or expired context as itself, and running out of time is
+		// not a decision — a record saying the rules refused this dispatch
+		// would be a sentence the trail must not hold. The error keeps the
+		// classification it has always had; only the record is withheld.
+		return refusal
+	}
+
+	// The metric counts refusals; the record says which identity was refused
+	// which task by which rule. Both, because a rate cannot answer "why was
+	// this dispatch refused" and a record cannot answer "how often".
+	return auditEnforcementDeny(ctx, subject, taskPolicyDenyCode(denied.Reason), refusal)
+}
+
+// taskPolicyDenyCode maps a task-shape denial's own closed reason onto the
+// audit schema's closed deny code.
+//
+// Both sets are closed and neither is derived from the other, so the mapping
+// is written once, here, rather than at the seam: a reason added to
+// [TaskPolicyReason] without a code arrives as UNSPECIFIED, which is visible
+// in the trail rather than silently recorded as something it is not.
+func taskPolicyDenyCode(reason TaskPolicyReason) AuditDenyCode {
+	switch reason {
+	case TaskPolicyReasonDenyRule:
+		return AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE
+	case TaskPolicyReasonNoAllowRule:
+		return AuditDenyCode_AUDIT_DENY_CODE_NO_ALLOW_RULE
+	case TaskPolicyReasonRuleError:
+		return AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR
+	default:
+		return AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED
+	}
 }

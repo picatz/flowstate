@@ -328,8 +328,29 @@ type TaskPolicy struct {
 //
 // A nil *TaskPolicy permits everything: see the package doc's "zero case".
 func (p *TaskPolicy) Check(ctx context.Context, task string, identity *WorkloadIdentity) error {
+	_, err := p.check(ctx, task, identity)
+	return err
+}
+
+// check is [TaskPolicy.Check] with the provenance an audit record needs: the
+// source text of the rule that decided, whichever way it decided.
+//
+// Unexported and paired with the exported wrapper rather than replacing it,
+// because the provenance has exactly one reader — [CheckTaskPolicy]'s audit
+// seam, in this package — and every other caller asks a yes-or-no question. A
+// second exported spelling of one decision is how two callers come to disagree
+// about what "denied" means.
+//
+// The rule is empty when no single rule decided: no policy configured, an
+// allowlist nothing matched, or a rule that could not be evaluated. That last
+// one is deliberate and is stated once here for all four enforcement seams: a
+// rule-error denial's detail quotes the CEL evaluation error, which can quote
+// the data the rule was reading, so a failing rule is recorded by its code and
+// not by its text. See proto/flowstate/v1/audit.proto's comment on
+// AuditRecord.rule.
+func (p *TaskPolicy) check(ctx context.Context, task string, identity *WorkloadIdentity) (string, error) {
 	if p == nil || p.rules.empty() {
-		return nil
+		return "", nil
 	}
 
 	claims := identity.GetClaims()
@@ -445,14 +466,20 @@ func (rs taskPolicyRuleSet) empty() bool {
 // the dispatch is denied. Deny rules run first and take precedence, then
 // allow rules gate the dispatch when any are configured. A rule that fails
 // to evaluate fails closed — see [taskPolicyRuleFailure].
-func (rs taskPolicyRuleSet) evaluate(ctx context.Context, task string, vars map[string]any) error {
+//
+// The first return is the source text of the rule that decided, for
+// [TaskPolicy.check]'s audit provenance: the deny rule that matched, or the
+// allow rule that permitted. Empty when no rule decided — an allowlist nothing
+// matched, a set with no allow rules where nothing denied, or a rule that
+// could not be evaluated.
+func (rs taskPolicyRuleSet) evaluate(ctx context.Context, task string, vars map[string]any) (string, error) {
 	for _, r := range rs.deny {
 		matched, err := r.eval(ctx, vars)
 		if err != nil {
-			return taskPolicyRuleFailure(ctx, "deny", r.src, task, err)
+			return "", taskPolicyRuleFailure(ctx, "deny", r.src, task, err)
 		}
 		if matched {
-			return &TaskPolicyDeniedError{
+			return r.src, &TaskPolicyDeniedError{
 				Task:   task,
 				Reason: TaskPolicyReasonDenyRule,
 				Detail: r.src,
@@ -461,20 +488,20 @@ func (rs taskPolicyRuleSet) evaluate(ctx context.Context, task string, vars map[
 	}
 
 	if len(rs.allow) == 0 {
-		return nil
+		return "", nil
 	}
 
 	for _, r := range rs.allow {
 		matched, err := r.eval(ctx, vars)
 		if err != nil {
-			return taskPolicyRuleFailure(ctx, "allow", r.src, task, err)
+			return "", taskPolicyRuleFailure(ctx, "allow", r.src, task, err)
 		}
 		if matched {
-			return nil
+			return r.src, nil
 		}
 	}
 
-	return &TaskPolicyDeniedError{
+	return "", &TaskPolicyDeniedError{
 		Task:   task,
 		Reason: TaskPolicyReasonNoAllowRule,
 		Detail: "no allow rule matched",

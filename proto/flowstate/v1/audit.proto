@@ -84,29 +84,67 @@ option go_package = "flowstatev1";
 // an AuditRecord into a memo, a search attribute, a signal payload or a
 // workflow argument. If you are about to be the first, that is the bug.
 
-// AuditRecord is one authorization decision, as the server made it.
+// # The worker's half
 //
-// Every field is set by the server. The only value here a caller influences at
-// all is resource_key, which is the identifier they addressed — bounded below,
-// and an identifier is not a payload: without it the record cannot say which
-// run was reached, which is the question an audit trail exists to answer. RPC
-// and MCP tool names are accepted only after resolving them against the
-// server's registered, authorization-bound operation table; the caller's raw
-// tools/call name is never copied here.
+// Everything above describes a decision about a *caller*, made by the control
+// plane, keyed by AuthorizationAction. picatz/flowstate#1379 records the other
+// half: the decisions a worker makes about the workload it is already running
+// — whether this task may dispatch, whether this secret may be read, whether
+// this request may leave, whether this credential may be assumed.
+//
+// They are the same kind of record and share every field that means the same
+// thing (the decision, the attested identity, the server clock, the deny
+// code), which is why they are one message and one trail rather than two. What
+// they cannot share is the operation vocabulary. AuthorizationAction is the
+// deployment's OAuth-scope list, and authorization.proto states in its own
+// words that internal enforcement points "are deliberately not named here": a
+// scope a client could request for `secret.read` would be a spelling nothing
+// grants. So an enforcement decision names its seam through
+// AuditEnforcementPoint instead, and leaves action UNSPECIFIED — the one case
+// where that is not "a decision about no action", because the enforcement
+// point *is* the action.
+//
+// The four seams and nothing else. Each is the single place its policy is
+// consulted, so a record written there is written where the decision is made
+// rather than where its consequence is noticed. Egress is the one exception,
+// and it is exact: the verdict is reached inside the policy's own transport,
+// so the http task records what the transport answered. That means an egress
+// allow is written after the request left, not before. The alternative was a
+// second evaluation of the same policy to move the record earlier, which is a
+// second evaluator for one concept and the thing the architecture refuses; the
+// cost is stated here rather than hidden, and the deny direction — the one
+// that must not be missing — is unaffected, since a denied request never left.
+
+// AuditRecord is one authorization or enforcement decision, as this deployment
+// made it.
+//
+// Every field is set by the server or the worker. The only value here a caller
+// influences at all is resource_key, which is the identifier they addressed —
+// bounded below, and an identifier is not a payload: without it the record
+// cannot say which run was reached, which is the question an audit trail
+// exists to answer. RPC and MCP tool names are accepted only after resolving
+// them against the server's registered, authorization-bound operation table;
+// the caller's raw tools/call name is never copied here.
 message AuditRecord {
   option (buf.validate.message).cel = {
     id: "audit_record.operation"
-    message: "exactly one of rpc or mcp_tool must identify the audited operation"
-    expression: "(this.rpc != '') != (this.mcp_tool != '')"
+    message: "exactly one of rpc, mcp_tool or enforcement_point must identify the audited operation"
+    expression: "[this.rpc != '', this.mcp_tool != '', this.enforcement_point != 0].filter(set, set).size() == 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "audit_record.action"
+    message: "action names the authorization vocabulary and is set for an rpc or mcp_tool decision, never for an enforcement point"
+    expression: "(this.action != 0) == (this.rpc != '' || this.mcp_tool != '')"
   };
 
   // The action authorized, from the deployment's one closed vocabulary.
   //
-  // Never UNSPECIFIED: a decision about no action is not a decision.
-  AuthorizationAction action = 1 [(buf.validate.field).enum = {
-    defined_only: true
-    not_in: [0]
-  }];
+  // Set for a control-plane decision and never UNSPECIFIED there: a decision
+  // about no action is not a decision. UNSPECIFIED exactly when
+  // enforcement_point names the decision instead — see "The worker's half"
+  // above — which the message rule above holds to, so the two vocabularies
+  // cannot both be absent and cannot both be present.
+  AuthorizationAction action = 1 [(buf.validate.field).enum = {defined_only: true}];
 
   // Allow or deny. Never UNSPECIFIED, for the same reason.
   AuditDecision decision = 2 [(buf.validate.field).enum = {
@@ -183,6 +221,64 @@ message AuditRecord {
     expression: "this == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))"
   }];
 
+  // The worker-side seam that made the decision, for an enforcement record.
+  // UNSPECIFIED on a control-plane record, where action names the operation
+  // instead. See "The worker's half" above.
+  AuditEnforcementPoint enforcement_point = 12 [(buf.validate.field).enum.defined_only = true];
+
+  // The operator's own policy rule that decided, verbatim.
+  //
+  // This is the provenance half of picatz/flowstate#353's principle 2 — a
+  // record that says a dispatch was refused and cannot say by *what* leaves
+  // the operator reading it exactly where they started — and it is the one
+  // string in this message whose bytes were neither chosen by this deployment
+  // at compile time nor bounded by another schema. It is admitted for the
+  // same reason issuer_name and role are, and under the same rule: it is
+  // operator-authored configuration, never a caller's, a peer's, or a
+  // workload's text.
+  //
+  // What that rule excludes is more important than what it admits. A denial's
+  // Detail field is not this: for a rule that failed to *evaluate*, that text
+  // quotes the CEL evaluation error, which can quote the data the rule was
+  // reading. So a rule-error denial carries the deny code and nothing else,
+  // and only a rule that matched — whose source text is configuration and
+  // nothing more — is copied here. The rest of the denial's prose stays on the
+  // error the caller receives, which is not durable.
+  //
+  // Empty when no single rule decided: a policy with nothing configured, an
+  // allowlist nothing matched, a destination refused by the policy's own
+  // scheme, port or address bounds, or an allow at a seam whose evaluator does
+  // not report which rule permitted it. The evaluated facts are then still in
+  // the record — the attested identity, and the resource the rule read — which
+  // is what makes an allow legible without one.
+  string rule = 13 [(buf.validate.field).string.max_bytes = 256];
+
+  // Which attempt at one dispatch this decision was made for, counting from 1.
+  //
+  // A retried task is dispatched again, and each dispatch is decided again:
+  // both drivers consult the task-shape policy per attempt, so each attempt
+  // has a decision of its own and the trail says which one it belongs to.
+  // Recording only the first would be a guess that the first was recorded —
+  // and under a required recorder a first attempt whose record could not be
+  // written is exactly the attempt that gets retried, which would leave the
+  // work that then ran with no record at all
+  // (Codex, picatz/flowstate#1394).
+  //
+  // The number is the substrate's own: Temporal's activity attempt durably,
+  // the retry loop's counter locally, so the two agree without either one
+  // inventing it. Zero on every record that is not about a dispatch attempt —
+  // a control-plane decision, and the worker's other three seams, which are
+  // reached once per attempt by construction and have no attempt of their own
+  // to name.
+  //
+  // Bounded on the way in, the way rule's bytes are: the seam clamps to
+  // flowstatev1.MaxDispatchAttempt rather than letting an int that does not
+  // fit a uint32 arrive as some other number. The bound is deliberately not a
+  // validation rule — a record that cannot be built is an action that does not
+  // happen, and an implausible retry policy is a configuration to fix rather
+  // than a dispatch to refuse.
+  uint32 attempt = 14;
+
   // The operator-chosen trusted-issuer entry that admitted the caller.
   // Unlike identity.issuer, which names who signed the credential, this names
   // the exact policy row that accepted it. It is bounded before emission; it
@@ -216,6 +312,47 @@ enum AuditDecision {
   AUDIT_DECISION_DENY = 2;
 }
 
+// AuditEnforcementPoint is the closed list of worker-side seams that decide
+// something about a workload already running.
+//
+// Closed and small, for the reason AuditDenyCode is: a value here that no seam
+// emits is a spelling nobody reads. Each of these is one function, and the
+// engine reaches every one of them through both drivers — see
+// pkg/flowstate/v1/enforcementaudit.go, which names the seam beside each
+// value.
+enum AuditEnforcementPoint {
+  AUDIT_ENFORCEMENT_POINT_UNSPECIFIED = 0;
+
+  // Whether this identity may dispatch this task, from the deployment's
+  // task-shape policy. CheckTaskPolicy, the one check both drivers make once
+  // per dispatch.
+  AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH = 1;
+
+  // Whether this workload may read this secret reference, from the secret
+  // access policy. ResolveSecret, before the store is consulted, so a cache
+  // cannot turn a denied read into an allowed one.
+  AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS = 2;
+
+  // Whether this request may leave the worker, from the egress policy. The
+  // built-in http task, at the verdict its policy's transport returns.
+  AUDIT_ENFORCEMENT_POINT_EGRESS = 3;
+
+  // Whether this workload may assume a credential for a federation target,
+  // from the assumption policy. AuthorizeCredential, which records after the
+  // policy has answered and before the credential is used on a request.
+  //
+  // The policy decision happens inside Broker.Authorize, which mints and
+  // exchanges on its way to a credential, so the record is written once that
+  // returns rather than at the moment the rules answered. Under a required
+  // recorder what is stopped is the *use*: the credential is discarded
+  // unused, and nothing about it reaches the request. Minting is not stopped,
+  // so an identity provider may have observed an exchange for a credential
+  // that was then thrown away — the cost of reading the answer where this
+  // seam can see it, rather than evaluating the policy a second time to move
+  // the record earlier.
+  AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION = 4;
+}
+
 // AuditResourceKind names what resource_key addresses.
 enum AuditResourceKind {
   // No resource was reached at all. Validate, Compile and GetCatalog are the
@@ -231,6 +368,33 @@ enum AuditResourceKind {
 
   // A whole tenant, which is what a listing addresses.
   AUDIT_RESOURCE_KIND_NAMESPACE = 3;
+
+  // A task, addressed by the qualified name a step dispatches, such as
+  // "http" or "codex.exec". Registry names, not author prose.
+  AUDIT_RESOURCE_KIND_TASK = 4;
+
+  // A secret, addressed by the reference that names it — "scheme:name", the
+  // reference a workflow author wrote and never the value it resolves to.
+  // Nothing resolved reaches this record: the seam records the decision
+  // before the store is consulted, so on a denial no value exists yet, and on
+  // an allow the value is returned to the task and not to the trail.
+  AUDIT_RESOURCE_KIND_SECRET = 5;
+
+  // A network destination, addressed as scheme://host:port.
+  //
+  // Only that much of the URL. The path, query, fragment and userinfo are
+  // request content — a webhook URL carries its credential in the path, a
+  // query string carries tokens — and netpolicy's own tracing comment already
+  // refuses them for a span. This trail is narrower than a span's audience
+  // (an operator reading their own deployment's decisions, not a shared
+  // collector) and an egress record that cannot say where the request was
+  // going would not answer the question it exists for, so the destination
+  // stays and its content does not.
+  AUDIT_RESOURCE_KIND_ENDPOINT = 6;
+
+  // A credential target, addressed by the operator-configured target name a
+  // workload asked to assume. Never the credential.
+  AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET = 7;
 }
 
 // AuditDenyCode is the closed set of reasons a decision was a denial.
@@ -264,4 +428,36 @@ enum AuditDenyCode {
   // operation refused it. FlowstateServer.authorizeSignal's name-level policy
   // check is the first emitter.
   AUDIT_DENY_CODE_POLICY_DENIED = 4;
+
+  // A deny rule matched. The rule field carries which one.
+  //
+  // The four codes below are the worker's, and they are finer than
+  // POLICY_DENIED for the reason this enum's own comment gives: these four
+  // situations look identical to a caller and are completely different to the
+  // operator who has to act on them.
+  AUDIT_DENY_CODE_DENY_RULE = 5;
+
+  // Nothing permitted it: allow rules are configured and none matched, or the
+  // policy is an allowlist and holds none. No rule decided, so rule is empty.
+  AUDIT_DENY_CODE_NO_ALLOW_RULE = 6;
+
+  // A rule could not be evaluated, and rules fail closed. The one code an
+  // operator should page on: it means the policy is refusing work because the
+  // policy itself is broken, not because it decided anything. The rule's own
+  // evaluation error is deliberately absent — see the rule field.
+  AUDIT_DENY_CODE_RULE_ERROR = 7;
+
+  // The deployment configured nothing that could have permitted this: no
+  // secret rules at all (where absence means nothing may be read), no such
+  // credential target, or a worker with no secret or federation authority
+  // installed.
+  AUDIT_DENY_CODE_NOT_CONFIGURED = 8;
+
+  // The destination itself is outside what the egress policy permits — its
+  // scheme, its port, the address it resolved to, a redirect it attempted, or
+  // the control plane it addressed. One code for the six netpolicy reasons
+  // that are not rule decisions, because what an operator does about them is
+  // the same: the record names the destination, and the policy's own bounds
+  // are configuration they already hold.
+  AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED = 9;
 }
