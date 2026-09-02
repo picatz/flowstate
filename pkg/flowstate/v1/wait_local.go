@@ -202,6 +202,22 @@ type LocalSignals struct {
 	// [NewPolicedLocalSignals].
 	starter    *WorkloadIdentity
 	hasStarter bool
+
+	// consumed is the webhook delivery ids a wait in this run has already
+	// taken, this driver's copy of [RunState.consumed_delivery_ids] — a field
+	// here rather than a message field because a local run is one process and
+	// has no Continue-As-New to carry anything across.
+	//
+	// It is read and written only through [ConsumeDeliveryID], the same
+	// function the durable driver's intake calls, and at the same *moment*: a
+	// delivery is recorded when a wait takes it, never when it is queued. The
+	// distinction is observable and the conformance cases pin it — a delivery
+	// queued behind a gate that then times out was never consumed, so a
+	// redelivery of it may still answer a later gate, on both drivers.
+	//
+	// Guarded by mu, like everything else here: deliveries arrive from whatever
+	// is listening while the run executes on another goroutine.
+	consumed []string
 }
 
 // NewLocalSignals returns an empty [LocalSignals] with no policy to enforce:
@@ -242,6 +258,50 @@ func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
 // unreachable.
 func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *WorkloadIdentity, hasStarter bool) *LocalSignals {
 	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter}
+}
+
+// admitLocked reports whether a wait may take this delivery, recording it as
+// consumed when it may. Called with s.mu held.
+//
+// This is the local driver's half of the dedupe, and the whole of the sharing
+// is that both halves call [ConsumeDeliveryID]: durably the seam is
+// `executor.admitDelivery` over `RunState.consumed_delivery_ids`, here it is
+// this over [LocalSignals.consumed], and the *function that decides* is one.
+// A second membership test would be the drift invariant 3 exists to catch, and
+// it would be invisible until a redelivery answered a gate on one driver only.
+//
+// A delivery with no id — every local delivery, every `flow signal`, every
+// scripted signal that names none — is always admitted and never recorded.
+func (s *LocalSignals) admitLocked(delivery *SignalDelivery) bool {
+	consumed, fresh := ConsumeDeliveryID(s.consumed, delivery.GetSender().GetDeliveryId())
+	if !fresh {
+		return false
+	}
+	s.consumed = consumed
+
+	return true
+}
+
+// takeLocked reads the next delivery for name that this run has not already
+// consumed, without blocking. Called with s.mu held.
+//
+// The loop is the dedupe at the point a wait *takes* a delivery: a redelivery
+// sitting at the head of the queue is discarded and the next one is read, so a
+// duplicate never occupies a gate's non-blocking look at what has arrived.
+func (s *LocalSignals) takeLocked(name string) (*SignalDelivery, bool) {
+	queue := s.queueLocked(name)
+	for {
+		select {
+		case delivery := <-queue:
+			if !s.admitLocked(delivery) {
+				continue
+			}
+
+			return delivery, true
+		default:
+			return nil, false
+		}
+	}
 }
 
 // localSignalQueueDepth bounds how many undelivered signals of one name are held.
@@ -434,13 +494,13 @@ func (w *signalWait) armDeadline(clock Clock, name string, timeout time.Duration
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	select {
-	case delivery := <-s.queueLocked(name):
+	if delivery, ok := s.takeLocked(name); ok {
 		// Answered before it ever waited, so no deadline is created — a gate
 		// that does not wait must not spend its `timeout:` either. See
-		// [waitForSignalLocally].
+		// [waitForSignalLocally]. Through [LocalSignals.takeLocked], so a
+		// redelivery queued ahead of a genuine delivery does not make this gate
+		// arm a deadline it did not need.
 		return nil, delivery, true
-	default:
 	}
 
 	deadline = clock.After(timeout)
@@ -465,12 +525,10 @@ func (w *signalWait) withdrawDeadline() bool {
 
 // tryReceiveSignal implements [signalPeeker].
 func (s *LocalSignals) tryReceiveSignal(name string) (*SignalDelivery, bool) {
-	select {
-	case delivery := <-s.queue(name):
-		return delivery, true
-	default:
-		return nil, false
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.takeLocked(name)
 }
 
 // WaitForSignal implements [SignalWaiter].
@@ -488,17 +546,31 @@ func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Ou
 	_, leave := s.enterSignalWait(name)
 	defer leave()
 
-	select {
-	case delivery := <-s.queue(name):
+	if delivery, ok := s.tryReceiveSignal(name); ok {
 		return delivery.GetPayload(), delivery.GetSender(), nil
-	default:
 	}
 
-	select {
-	case delivery := <-s.queue(name):
-		return delivery.GetPayload(), delivery.GetSender(), nil
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+	// The blocking half, and the loop around it is the dedupe: a redelivery this
+	// run has already consumed does not answer this gate, so the wait resumes
+	// under the same ctx — whose deadline, where the caller set one, is
+	// untouched. That is the durable driver's rule as well, and for the same
+	// reason: a stream of replays must not be able to hold a bounded gate open
+	// past its own `timeout:`.
+	for {
+		select {
+		case delivery := <-s.queue(name):
+			s.mu.Lock()
+			admitted := s.admitLocked(delivery)
+			s.mu.Unlock()
+
+			if !admitted {
+				continue
+			}
+
+			return delivery.GetPayload(), delivery.GetSender(), nil
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
 	}
 }
 

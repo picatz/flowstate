@@ -586,7 +586,17 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
-		signals: &signalCarry{pending: st.GetPendingSignals()},
+		signals: &signalCarry{
+			pending: st.GetPendingSignals(),
+
+			// And the delivery ids earlier segments already answered gates
+			// with. Carried for the reason the pending list is: a `loop:`
+			// around a gate outlives a segment, so a run that forgot what it
+			// had consumed would take a redelivery on the far side of a
+			// suspension — the one case a receiver-side table could not catch
+			// either, since it is the run's own history that decides it.
+			consumed: st.GetConsumedDeliveryIds(),
+		},
 
 		// The run's debug lease, if anybody takes one. Built per segment and
 		// holding no lease to begin with, which is the honest starting state
@@ -685,7 +695,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// a signal channel it never read. A workload whose approval arrived
 		// while it was on an earlier step would otherwise resume with the
 		// approval gone and wait forever.
-		pending := drainSignals(ctx, st.Workflow, exec.signals.pending)
+		pending := drainSignals(ctx, st.Workflow, exec.signals.pending, exec.signals.consumed)
 
 		// And the one channel the engine owns rather than the specification. A
 		// pause ask buffered when this segment ran out of budget would otherwise
@@ -711,6 +721,12 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			MetricWorkflowName: st.GetMetricWorkflowName(),
 
 			PendingSignals: pending,
+
+			// The webhook delivery ids this run has taken at a gate, add-only
+			// and already ring-bounded by [v1.ConsumeDeliveryID] as they were
+			// recorded. Weighed by [v1.CheckRunStateSize] along with everything
+			// else below, which is the bound that actually protects the run.
+			ConsumedDeliveryIds: exec.signals.consumed,
 
 			// Evaluated once for the whole run, not once per segment. A continued
 			// run takes whichever interpreter version is current (invariant 10), so

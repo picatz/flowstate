@@ -186,10 +186,19 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// finishing on the other.
 	channel := workflow.GetSignalChannel(e.ctx, name)
 
+	//
+	// A redelivery found here is dropped and the peek repeats, so that a
+	// duplicate buffered ahead of a genuine delivery does not consume this
+	// gate's one non-blocking look at the channel.
 	var early v1.SignalDelivery
-	if channel.ReceiveAsync(&early) {
+	for channel.ReceiveAsync(&early) {
+		if !e.admitDelivery(early.GetSender()) {
+			continue
+		}
+
 		workflow.GetLogger(e.ctx).Info("step consumed a signal that arrived earlier in this run",
 			"id", node.GetId(), "signal", name)
+
 		return v1.SignalOutputs(early.GetPayload(), early.GetSender(), false), nil
 	}
 
@@ -251,11 +260,6 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// and it is the same construction with or without a deadline; only the timer
 	// case is conditional.
 	var received bool
-	selector := workflow.NewSelector(e.ctx)
-	selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
-		received = c.Receive(e.ctx, &delivery)
-	})
-	selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
 
 	// The timer, when there is one, is built on its own cancellable child
 	// context rather than on e.ctx directly, so that whichever branch wins the
@@ -281,17 +285,47 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// this point for the first time, after the fix deploys records the
 	// marker once and gets the cancelling behaviour from then on, including
 	// its own later replays.
-	var cancelTimer workflow.CancelFunc
+	var (
+		cancelTimer workflow.CancelFunc
+		timer       workflow.Future
+	)
 	if bounded {
 		timerCtx := e.ctx
 		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
 		}
-		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, timeout,
-			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())}),
-			func(workflow.Future) {})
+		timer = workflow.NewTimerWithOptions(timerCtx, timeout,
+			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())})
 	}
-	selector.Select(e.ctx)
+
+	// The wait proper, and the loop around it is the dedupe: a delivery this run
+	// has already consumed does not answer this gate, so the gate goes back to
+	// waiting — under the timer it already armed, which is why the timer is
+	// created once above rather than inside the loop. Re-arming it per iteration
+	// would let a stream of redeliveries hold a bounded gate open past its own
+	// `timeout:`, which is the exact denial a replay would otherwise buy.
+	//
+	// The selector is rebuilt each time and that costs no command: it is
+	// workflow-local bookkeeping over the same channel, the same `ctx.Done()`
+	// and the same already-started timer future. Every iteration past the first
+	// issues nothing at all, so a replay sees the identical command sequence.
+	for {
+		received = false
+
+		selector := workflow.NewSelector(e.ctx)
+		selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
+			received = c.Receive(e.ctx, &delivery)
+		})
+		selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
+		if timer != nil {
+			selector.AddFuture(timer, func(workflow.Future) {})
+		}
+		selector.Select(e.ctx)
+
+		if !received || e.ctx.Err() != nil || e.admitDelivery(delivery.GetSender()) {
+			break
+		}
+	}
 
 	// Freed as soon as the selector resolves, whichever way it resolved. This
 	// is a no-op when the timer branch itself is what woke the selector: the
@@ -382,7 +416,7 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 	// is subtlety two's other half: a batch that finds anything here resolves
 	// without ever parking, so it evaluates no prompt and announces no wait,
 	// which is the single wait's own rule for its early-arrival peek.
-	deliveries = drainInto(e.ctx, channel, deliveries, limit)
+	deliveries = e.drainInto(channel, deliveries, limit)
 
 	if len(deliveries) > 0 {
 		workflow.GetLogger(e.ctx).Info("step drained signals that had already arrived",
@@ -429,29 +463,47 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 		received bool
 	)
 
-	selector := workflow.NewSelector(e.ctx)
-	selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
-		received = c.Receive(e.ctx, &delivery)
-	})
-	selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
-
 	// Subtlety four, the version gate. The same changeID as the single wait's,
 	// deliberately: it names one decision — "this engine cancels an answered
 	// gate's timer" — and a run that reached that decision through either
 	// spelling must replay it the same way. A second changeID would record a
 	// second marker for the same behaviour and give a replaying run two
 	// answers to one question.
-	var cancelTimer workflow.CancelFunc
+	var (
+		cancelTimer workflow.CancelFunc
+		timer       workflow.Future
+	)
 	if bounded {
 		timerCtx := e.ctx
 		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
 		}
-		selector.AddFuture(workflow.NewTimerWithOptions(timerCtx, timeout,
-			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())}),
-			func(workflow.Future) {})
+		timer = workflow.NewTimerWithOptions(timerCtx, timeout,
+			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())})
 	}
-	selector.Select(e.ctx)
+
+	// Subtlety five, and the newest: a redelivery does not wake this gate
+	// either. The same loop, the same once-armed timer and the same reasoning
+	// as [executor.waitForSignal]'s — written out twice, like the four above
+	// it, and pinned by the same conformance cases that hold the two spellings
+	// to one answer.
+	for {
+		received = false
+
+		selector := workflow.NewSelector(e.ctx)
+		selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
+			received = c.Receive(e.ctx, &delivery)
+		})
+		selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
+		if timer != nil {
+			selector.AddFuture(timer, func(workflow.Future) {})
+		}
+		selector.Select(e.ctx)
+
+		if !received || e.ctx.Err() != nil || e.admitDelivery(delivery.GetSender()) {
+			break
+		}
+	}
 
 	if cancelTimer != nil {
 		cancelTimer()
@@ -480,7 +532,7 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 	// that arrived alongside it and is sitting on the channel now. This is the
 	// whole saving — a burst delivered while one workflow task was pending is
 	// read here in that one task rather than in one task each.
-	deliveries = drainInto(e.ctx, channel, []*v1.SignalDelivery{{
+	deliveries = e.drainInto(channel, []*v1.SignalDelivery{{
 		Payload: delivery.GetPayload(),
 		Sender:  delivery.GetSender(),
 	}}, limit)
@@ -526,11 +578,19 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 // The two loops never run against one channel at once — one runs while a step
 // executes, the other while the run suspends — and `ReceiveAsync` removes what
 // it reads, so a delivery is taken by exactly one of them.
-func drainInto(ctx workflow.Context, channel workflow.ReceiveChannel, deliveries []*v1.SignalDelivery, limit int) []*v1.SignalDelivery {
+func (e *executor) drainInto(channel workflow.ReceiveChannel, deliveries []*v1.SignalDelivery, limit int) []*v1.SignalDelivery {
 	for len(deliveries) < limit {
 		var delivery v1.SignalDelivery
 		if !channel.ReceiveAsync(&delivery) {
 			break
+		}
+
+		// A redelivery does not fill a slot: it is dropped and the drain keeps
+		// reading, so a burst containing one duplicate still yields as many
+		// genuine deliveries as the bound allows. A method rather than the free
+		// function it was, for exactly this — the seen set is the executor's.
+		if !e.admitDelivery(delivery.GetSender()) {
+			continue
 		}
 
 		deliveries = append(deliveries, &v1.SignalDelivery{
@@ -550,6 +610,11 @@ func (e *executor) recordOutputs(node *v1.Node, outputs *v1.Node_Outputs) {
 
 // takePendingSignal consumes an early-arriving signal, if one is held for this
 // name.
+//
+// A carried delivery whose id this run has already taken is *removed and
+// skipped* rather than returned: it is a redelivery of something a gate already
+// answered, and returning it would let a `loop:` around the wait answer its next
+// iteration with an approval somebody gave once. See [executor.admitDelivery].
 func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, *v1.SignalSender, bool) {
 	if e.signals == nil {
 		return nil, nil, false
@@ -562,10 +627,55 @@ func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, *v1.SignalS
 		// Consumed, so a second wait on the same name blocks rather than being
 		// satisfied twice by one signal.
 		e.signals.pending = append(e.signals.pending[:i:i], e.signals.pending[i+1:]...)
+		if !e.admitDelivery(pending.GetSender()) {
+			// Dropped, and the search continues from the top: the slice was
+			// just rewritten, so restarting is both simpler and correct where
+			// resuming at i would skip whatever slid into that position.
+			return e.takePendingSignal(name)
+		}
+
 		return pending.GetPayload(), pending.GetSender(), true
 	}
 
 	return nil, nil, false
+}
+
+// admitDelivery is the dedupe, at the one moment a delivery becomes a gate's
+// answer: it reports whether this run may take the delivery, and records it if
+// so.
+//
+// Every intake point on this driver funnels through here — the carried signal
+// above, the two channel receives in [executor.waitForSignal], and the batch's
+// own take and drain — because "already consumed" has to mean the same thing at
+// all of them. The local driver reaches the identical rule through
+// [v1.ConsumeDeliveryID], which is the shared function rather than a second
+// implementation of the same membership test.
+//
+// A sender with no delivery id is always admitted and never recorded: `flow
+// signal`, `SignalWithStart` and every local delivery carry none, and a
+// deduplication keyed on the empty string would make the first such signal
+// suppress every one after it.
+//
+// This is workflow code and it stays deterministic: the whole of it is a slice
+// membership test and an append over state the run already carries. Nothing
+// here reads a clock, verifies a signature, or asks anything outside the run —
+// those are the receiver's, server-side, before the delivery ever arrives.
+func (e *executor) admitDelivery(sender *v1.SignalSender) bool {
+	if e.signals == nil {
+		return true
+	}
+
+	consumed, fresh := v1.ConsumeDeliveryID(e.signals.consumed, sender.GetDeliveryId())
+	if !fresh {
+		workflow.GetLogger(e.ctx).Info(
+			"dropped a redelivery of a signal this run has already consumed",
+			"delivery", sender.GetDeliveryId())
+
+		return false
+	}
+	e.signals.consumed = consumed
+
+	return true
 }
 
 // takePendingSignals consumes up to limit early-arriving signals held for this
@@ -586,9 +696,18 @@ func (e *executor) takePendingSignals(name string, limit int) []*v1.SignalDelive
 		kept  []*v1.PendingSignal
 	)
 
+	dropped := false
 	for _, pending := range e.signals.pending {
 		if pending.GetName() != name || len(taken) >= limit {
 			kept = append(kept, pending)
+
+			continue
+		}
+		if !e.admitDelivery(pending.GetSender()) {
+			// Removed from the carry and not taken: a redelivery of something a
+			// gate already answered is neither this batch's business nor worth
+			// carrying across another suspension.
+			dropped = true
 
 			continue
 		}
@@ -598,7 +717,7 @@ func (e *executor) takePendingSignals(name string, limit int) []*v1.SignalDelive
 		})
 	}
 
-	if len(taken) > 0 {
+	if len(taken) > 0 || dropped {
 		e.signals.pending = kept
 	}
 
@@ -639,7 +758,7 @@ func (e *executor) takePendingSignals(name string, limit int) []*v1.SignalDelive
 // workload should never approach, and crossing it here is worth an operator's
 // attention, so it is logged once — as a warning about a wait that may be
 // missing, not as a decision about what to keep.
-func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.PendingSignal) []*v1.PendingSignal {
+func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.PendingSignal, consumed []string) []*v1.PendingSignal {
 	pending := carried
 	warned := len(pending) > v1.MaxPendingSignals
 
@@ -650,6 +769,21 @@ func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.Pending
 			var delivery v1.SignalDelivery
 			if !channel.ReceiveAsync(&delivery) {
 				break
+			}
+
+			// The one delivery this does not carry, and it is not the promise
+			// above being broken: a redelivery of something a gate has already
+			// consumed was answered when its original was, so carrying it would
+			// hold state for a delivery no wait will ever take — and would put
+			// it in front of a `loop:`'s next iteration, which is the whole
+			// failure the consumed set exists to prevent. Nothing is unsaid
+			// here; the sender was told the truth the first time.
+			if v1.DeliveryWasConsumed(consumed, delivery.GetSender().GetDeliveryId()) {
+				workflow.GetLogger(ctx).Info(
+					"dropped a redelivery of a signal this run has already consumed",
+					"signal", name, "delivery", delivery.GetSender().GetDeliveryId())
+
+				continue
 			}
 
 			workflow.GetLogger(ctx).Info(
