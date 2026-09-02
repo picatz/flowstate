@@ -78,7 +78,7 @@ Measured at the snapshot:
 | Language | 8 node kinds, 5 roots, 2 built-in tasks, 16 plugin tasks, 12 CEL libraries in profile `2026.1`, edition `v2026.3` |
 | Surfaces | 33 top-level `flow` verbs; 21 MCP tools; LSP with 7 capabilities; DAP; ~82 CI-validated examples; 54 conformance case-set files enforced two-sided by an AST walk |
 | Docs | 18,699 lines under `docs/` plus the threat model; 7 generated references pinned by drift tests; a tested-complete index |
-| Health probes | `go build ./...` clean, `go vet` clean, gate and agent-config tests green; 1,910 of 1,940 exported declarations under `pkg/flowstate` documented |
+| Health probes, run by the passes at `40cc365` (not re-run by the PR that lands this file) | `go build ./...` clean, `go vet` clean, gate and agent-config tests green; 1,910 of 1,940 exported declarations under `pkg/flowstate` documented |
 
 The velocity is real and the discard rate is low, which argues the dispatch
 discipline works. What the speed cost is the subject of the next section.
@@ -149,10 +149,6 @@ reaches. Found on four surfaces this pass:
   enforcement half an operator cannot reach (#1380, understated).
 - `netpolicy.WithControlPlane` (#1381) and `Issuer.Rotate`/`RevokeKey`
   (#1019): the same shape, already filed.
-- `GetWorkflowHistory` has four callers in the module and all four are tests,
-  so the post-hoc question about a durable run — which step, how many
-  attempts, what error — has no surface, while its rendering exists three
-  times locally.
 
 And its mirror, green-when-wrong, reproduced on the test layer: a stub whose
 `returns:` the task cannot produce passes (#1295); a misspelled signal name is
@@ -160,8 +156,12 @@ delivered into the void and the case passes (#1443); `flow test` has no
 plugin flag at all, so `make check` runs every shipped plugin example's suite
 blind (#1294) — and that is how four of sixteen first-party plugin tasks
 shipped unable to return a non-empty result (`git.log`, `git.ls_remote`,
-`vcs.log`, `vcs.diff`; #1456 lists three). No test in the tree executes any
-plugin task end to end; the reachability suites assert `ValidateSource` only.
+`vcs.log`, `vcs.diff`; #1456 lists three). The coverage gap is narrower than this pass
+first wrote it: `reachable_test.go`'s "the run reaches the plugin process"
+subtest and `TestPluginTaskEndToEndRespectsTenantBoundary` do execute a plugin
+through its real process. What no test covers is any of the four broken tasks,
+and what nothing checks at all is a plugin's outputs against its declared
+`output_message` (Codex, on #1479; #1476 narrowed to what survives).
 
 ### F3. One mechanism, many copies
 
@@ -176,7 +176,7 @@ axis the passes looked at:
 | The plugin substrate | `sdk` | `installEgressPolicy` ×5, `resolveSecret` ×3, `isNetworkUnavailable` ×3, `packBoundedStorer` ×2, and `requestTimeout` as a `Duration` in two modules and an `int` of seconds in a third (#1333) |
 | The caller identity | one meaning (#565) | three registered CEL native types (`netpolicy.Identity`, `v1.taskPolicyIdentity`, `auth.callerIdentity`) |
 | The step address | none | five surfaces spell "which step, how nested" five ways (#1439) |
-| "One executor" | ~40 shared `v1.*` rule functions | two tree-walkers (`eval.go`, `engine/execute.go`); the `StepExecutor` type AGENTS.md and ARCHITECTURE.md name does not exist |
+| "One executor" | ~40 shared `v1.*` rule functions | two tree-walkers (`eval.go`, `engine/execute.go`); the `StepExecutor` type ARCHITECTURE.md names does not exist. AGENTS.md never names it: its invariants 2 and 3 are already accurate as written |
 
 The one duplication in the tree that has a guard is the step-key vocabulary
 (`grammarStepKeys` vs `stepPropertyKeys`, held by `TestEveryGrammarKeyIsReserved`).
@@ -236,8 +236,7 @@ core, three controls the documents describe as mechanisms are conventions:
 `plan` and `verdict` are required by no ruleset (#489, fired twice on
 record), the deep tier publishes working fuzz reproducers while SECURITY.md
 forbids reporters from doing the same and private vulnerability reporting is
-off (#965), and a green local gate may have skipped its `appearance` leg
-without saying so. Two more are unfiled: the six plugin modules — carrying
+off (#965). Two more are unfiled: the six plugin modules — carrying
 go-git, pgx, sqlite, go-github and an OpenAI client — are scanned by neither
 `govulncheck` nor `staticcheck` anywhere, because every invocation runs
 `./...` from the root; and the factory's receiver-cost numbers are the only
@@ -378,8 +377,13 @@ non-negotiable in the implementation: `PARENT_CLOSE_POLICY_REQUEST_CANCEL`
 with `WaitForCancellation` (the SDK's `TERMINATE` default skips `undo:`);
 the callee compensates as a unit ordered at the call's structural position;
 the engine writes the tenant, signal-policy and starter memos into
-`ChildWorkflowOptions.Memo` explicitly; the parent waits on
-`GetChildWorkflowExecution().Get()` before returning. Update, with
+`ChildWorkflowOptions.Memo` explicitly; the parent waits on the child
+future's own result-bearing `Get` before returning. That last one is stated
+here against what #133's third comment says, and the correction matters:
+`GetChildWorkflowExecution().Get()` resolves when the child has *started*, so
+a parent that waited on it would return with the child still running, and
+`REQUEST_CANCEL` would then cancel the very work `undo:` is ordered around
+(Codex, on #1479). Update, with
 update-with-start in the same decision, follows — it is an absence a signal
 plus a poll routes around, where the inline call is a ceiling nothing routes
 around. *Refused:* Nexus ahead of either (design note only), and a literal
@@ -474,8 +478,8 @@ where it is: it is the nearly-irreversible move the track itself flagged, and
 the recommendation on the issue stands for the owner.
 
 **D13. The process controls stop being conventions.** The gate declines the
-wide leg by name under the no-scope fallback (#1388); the `appearance` leg
-reports "not run" rather than passing; `govulncheck` and `staticcheck` walk
+wide leg by name under the no-scope fallback (#1388); `govulncheck` and
+`staticcheck` walk
 the plugin modules, added to `ciDecisions` so `verdict` sees them; fuzz
 crashers upload as private run artifacts and the deep tier stops filing
 reproducers in public issues (#965, #1187); #1386 closes on the ledger's own
@@ -518,9 +522,14 @@ test.
 11. **#1327**, **#1326** `--require-plugin-pins`; digests in the human output. *S*
 12. **#1450** load-time warning on a deny-only task policy; **#1341** the
     concurrency sentence. *S*
-13. The doc-truth items this pass found (one PR): invariant 3's "one
-    `StepExecutor`" in AGENTS.md and ARCHITECTURE.md becomes "one set of
-    shared rules, two walkers, proved equal by a shared corpus"; STYLE.md's
+13. The doc-truth items this pass found (one PR): ARCHITECTURE.md's "one
+    `StepExecutor`" (lines 72, 81, 151, 718, 721) names a type that does not
+    exist, and becomes a description of the mechanism that does — one set of
+    shared rules, two drivers walking them, proved equal by a shared corpus.
+    AGENTS.md is *not* in this rewrite: it never names `StepExecutor`, and
+    invariants 2 and 3 stay exactly as written, since relaxing an invariant to
+    match an implementation is the failure mode rather than the fix (Codex,
+    on #1479); STYLE.md's
     decided-spellings row that still names `min:`/`max:`/`unique:` as
     canonical after DSL.md retired them; THREAT_MODEL's stale line cites and
     §5's heading; DSL.md's missing fifteenth round from the type audit's
@@ -587,8 +596,7 @@ a two-configuration equivalence test (#1384, L).
 
 ### Wave G — the factory (this week, S items, one builder)
 
-D13 in full: #1388, the appearance "not run" line, plugin-module scanning in
-`ciDecisions`, #1187's artifact upload, #965's disposition once the owner
+D13 in full: #1388, plugin-module scanning in `ciDecisions`, #1187's artifact upload, #965's disposition once the owner
 picks the reproducer home, #1386 and #1103 closed, the AGENTS.md line routing
 capacity questions to `tools/fleet` (#1307), #1311's toolchain sentence, the
 CDP wall-clock wait replaced with a poll (#1324), and one computed metric:
@@ -667,14 +675,11 @@ real):
   and `flow fix` on a `v`-typo of the oldest edition.
 - #1474 — `govulncheck` and `staticcheck` never scan the six plugin
   modules.
-- #1475 — the gate's `appearance` leg passes when its tools are
-  absent.
 - #1476 — the host never checks a plugin's outputs against its
-  declared `output_message`, and no test executes any plugin task end to end.
+  declared `output_message`; narrowed after review to drop its false
+  no-end-to-end-coverage half.
 - #1477 — manifest input-name lists are never cross-checked against
   the descriptor's fields, so a `required_secret_inputs` typo fails open.
-- #1478 — a read-only account of a finished durable run:
-  `GetWorkflowHistory` has four callers, all tests.
 
 **Advanced by comment, not re-filed:** #1426 (the `wait.go:462` sibling),
 #1456 (`git.ls_remote` is the fourth), #1380 (the revision flag and the
@@ -683,12 +688,24 @@ admitted it), #1340 (`lint`, `schedule`, `dap` take no plugin flags), #135
 (semantic tokens as the cheap route), #1216 (a changelog mechanism is a
 seventh criterion), #1011/#548 (three CEL identity types to converge).
 
+**Filed and then withdrawn, by this PR's own review:** #1475 (the gate
+already prints `appearance: NOT VERIFIED locally (… absent)` and counts it on
+the verdict line — `tools/gate/main.go:524-530`, `:1112`) and #1478
+(`GetTimeline` reads `GetWorkflowHistory` at `server/timeline.go:232`,
+`TimelineEntry` carries step, attempt, timer, signal and ending kinds, and the
+surface is reachable from `flow timeline` and from the `GetTimeline` MCP tool
+at `cmd/flow/internal/mcp/mcp.go:634`). Both premises came from a subagent
+grep scoped to one package and generalized in the write-up, and both survived
+the lead's read; the review bots caught them. Recorded here rather than
+quietly deleted, because a slate that never reports a withdrawal is not being
+checked.
+
 **Decisions recorded on their issues:** #1452 (D1), #1432 + #1436 + #1462
 (D2), #1437 + #1425 + #1428 (D3), #133 (D4), #908 (D5), #1310 (D7), #1447
 (D8), #923 (D9, a pointer to the existing answer), #1456 + #1440 + #1393 +
 #1431 (D10), #1343 + #1344 (D11), #1430 + #1014 + #1380 (D12).
 
-**To close:** #1382, #1386, #1103; #580 re-titled to defect 5 and the
+**To close:** #1382, #1386, #1103, and the two withdrawn above; #580 re-titled to defect 5 and the
 `--secret-*-namespace` asymmetry.
 
 ## PR candidates, by size
@@ -720,7 +737,6 @@ seventh criterion), #1011/#548 (three CEL identity types to converge).
 | M | #1333 `plugintoolkit` | `plugins/*`, a new shared package |
 | M | #1388 gate declines the wide leg; plugin-module scanning in `ciDecisions` | `tools/gate/main.go`, `ci.go`, `Makefile`, `ci.yml` |
 | M | SARIF/JUnit; workflow inventory; MCP prompts + resource + fix tool | `cmd/flow/`, `internal/mcp/` |
-| M | durable run account | `server/`, `cmd/flow/timeline.go` |
 | M | `codex.exec base_ref` | `plugins/codex`, `plugins/git` |
 | L | D1+D2 the type edition | `workflow.proto`, `flowfile/`, `eval.go`, `celenv.go`, `rundoc.go`, `docs/reference/values.md` |
 | L | #1437 the reference-model registry | `pkg/flowstate/v1/`, `flowfile/`, `lsp/`, `flowdebug/`, `flowtest/`, `cmd/flow/taskrun.go` |

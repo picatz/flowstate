@@ -238,9 +238,12 @@ the last five candidates were dup-checked against the open titles already
 in the lead's context — rule: dup-check in batches of no more than eight
 searches, and hold the open-title list from the first listing. One report
 called a decided question (#923) unanswered because the answer lived four
-comments down; rule: a decision comment opens with the word *Decided* so a
-grep finds it, and a brief that asks "is X decided" names the comment
-anchor when the lead knows it. Two reports independently found the same
+comments down; rule: a decision comment's first line begins with the token
+`Decided`, styled if you like but with nothing before it, so that
+`grep -E '^\*{0,2}Decided'` finds it — this PR's own review caught that
+`**Decided**` defeats a plain `^Decided`, which is exactly what the rule was
+for; and a brief that asks "is X decided" names the comment anchor when the
+lead knows it. Two reports independently found the same
 unfiled gap (#1430's second-frontend framing), which is the signal the
 brief was well cut.
 
@@ -251,6 +254,20 @@ prints, and `list`/`map` as type-level functions need no parser change —
 and D1 was amended on the PR with the evidence. Rule: before deciding a
 spelling, print what the toolchain already prints for the same thing; the
 lead applied R3 to the DSL and not to its own choice.
+
+Review caught what the lead did not, three times: the write-up asserted that
+`GetWorkflowHistory` had only test callers, that no test executes a plugin task
+end to end, and that the gate's `appearance` leg passes silently when its tools
+are absent. All three are false at `40cc365` — `server/timeline.go:232`,
+`plugin/reachable_test.go:135`, `tools/gate/main.go:524` — and two filed issues
+(#1475, #1478) were withdrawn on the strength of it. Each began as a subagent
+grep scoped to one package and was generalized to "the module" or "the tree" in
+the write-up; the lead's re-read of load-bearing citations did not re-run them.
+Rule: a claim of the form "nothing in the tree does X" is a repository-wide
+command with its output in the report, or it is written as the narrower thing
+actually checked. Codex caught a fourth in prose the lead wrote rather than
+inherited: a child-workflow requirement that would have shipped a real bug, and
+a proposal to rewrite an AGENTS.md invariant that AGENTS.md does not contain.
 
 Receiver-cost: zero clarification turns; owner turns, three, two about
 budget and one the steer above; owner edits to our artifacts, none —
