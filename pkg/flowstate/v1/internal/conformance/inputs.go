@@ -690,6 +690,24 @@ func InputRefusalCases() []Refusal {
 			Contains: `input "region" is a secret reference`,
 		},
 		{
+			// The structural schema lands before its runtime projection. Even an
+			// optional input nobody supplied must refuse the workflow at submit;
+			// otherwise the same contract starts or fails based only on whether a
+			// caller happened to provide a value.
+			Name: "a structural-only input is refused until the runtime projects it",
+			Workflow: declares("inputs-structural-only",
+				[]*v1.InputDeclaration{{
+					Name: "region",
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_STRING,
+					}},
+				}},
+				nil,
+				says("a", "hello"),
+			),
+			Contains: `input "region" uses value_type without a legacy type`,
+		},
+		{
 			// A workflow declaring nothing at all, which is every workflow written
 			// before this feature existed: it takes no arguments, and a caller sending
 			// one is refused rather than having it silently ignored.

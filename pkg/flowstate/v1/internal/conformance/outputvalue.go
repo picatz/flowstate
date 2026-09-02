@@ -47,6 +47,25 @@ func literalOutput(name string, value *v1.Value, t v1.InputDeclaration_Type, val
 func OutputValueRefusalCases() []Refusal {
 	return []Refusal{
 		{
+			// A structural declaration is schema-valid before the runtime knows
+			// how to enforce it. Refuse the whole workflow at submit rather than
+			// reading the legacy zero value as an untyped output and reporting an
+			// unchecked answer.
+			Name: "a structural-only output is refused until the runtime projects it",
+			Workflow: declares("outputs-structural-only",
+				nil,
+				[]*v1.OutputDeclaration{{
+					Name:  "answer",
+					Value: v1.NewLiteral("ok"),
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_STRING,
+					}},
+				}},
+				says("a", "hello"),
+			),
+			Contains: `output "answer" uses value_type without a legacy type`,
+		},
+		{
 			// The enum half. A literal string outside the declared set is a
 			// promise the specification breaks against itself, knowable without
 			// running anything.
