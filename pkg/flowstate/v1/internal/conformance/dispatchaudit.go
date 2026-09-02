@@ -21,9 +21,10 @@ import (
 // difference only shows on a step that is attempted more than once. The
 // durable driver's check is inside the activity, and Temporal retries by
 // invoking the activity again; the local driver's is inside its own retry
-// loop. Both therefore decide per attempt, and both record what was decided —
-// but that is a claim about two code paths meeting, which is exactly the shape
-// invariant 3 exists to hold to evidence.
+// loop. Both therefore decide per attempt and record what was decided, while a
+// stable dispatch_id says those records are executions of one logical
+// dispatch. That is a claim about two code paths meeting, which is exactly the
+// shape invariant 3 exists to hold to evidence.
 //
 // An ordinary success proves nothing here: one attempt is one record on any
 // implementation, which is agreement that was never at risk. The case has to
@@ -132,8 +133,8 @@ func AssertADecisionPerDispatchAttempt(tb testing.TB, driver string, records []*
 }
 
 // AssertDispatchAttemptsRecorded requires exactly one dispatch record for this
-// fixture per attempt, in attempt order, each carrying its own attempt number
-// and the decision want names for it.
+// fixture per attempt, in attempt order, each carrying its own attempt number,
+// the decision want names for it, and one stable logical dispatch id.
 //
 // The attempt numbers are asserted rather than only the count, because a seam
 // that recorded one attempt twice would otherwise pass — and a trail that
@@ -164,6 +165,17 @@ func AssertDispatchAttemptsRecorded(tb testing.TB, driver string, records []*v1.
 			tb.Errorf("%s recorded attempt %d in the record for the %s attempt; a trail that cannot "+
 				"tell one attempt's decision from another's is not one",
 				driver, record.GetAttempt(), dispatchOrdinal(i+1))
+		}
+	}
+
+	dispatchID := got[0].GetDispatchId()
+	if dispatchID == "" {
+		tb.Errorf("%s recorded no logical dispatch id; retry allows are indistinguishable duplicates", driver)
+	}
+	for _, record := range got[1:] {
+		if record.GetDispatchId() != dispatchID {
+			tb.Errorf("%s changed logical dispatch id from %q to %q across retries",
+				driver, dispatchID, record.GetDispatchId())
 		}
 	}
 }

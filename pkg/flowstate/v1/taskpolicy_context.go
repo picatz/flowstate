@@ -55,6 +55,19 @@ type taskPolicyContextKey struct{}
 // is keyed under, alongside the policy this file already carries.
 type dispatchAttemptContextKey struct{}
 
+// dispatchIDContextKey is the unexported key for one logical dispatch's stable
+// identity. It sits beside the substrate's attempt because both facts describe
+// the same retry series.
+type dispatchIDContextKey struct{}
+
+// NewContextWithDispatchID returns a context identifying one logical task
+// dispatch. The id must stay stable across its execution attempts; callers use
+// the substrate's own identity rather than deriving one from task or step names
+// that can repeat in loops and nested workflows.
+func NewContextWithDispatchID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, dispatchIDContextKey{}, id)
+}
+
 // NewContextWithDispatchAttempt returns a context saying which attempt at one
 // dispatch is about to run, so [CheckTaskPolicy]'s record can name it.
 //
@@ -109,6 +122,14 @@ func dispatchAttemptIn(ctx context.Context) int {
 	}
 
 	return 1
+}
+
+// dispatchIDIn returns the logical dispatch id carried by ctx, or empty for a
+// direct or legacy caller that has no substrate identity to supply.
+func dispatchIDIn(ctx context.Context) string {
+	id, _ := ctx.Value(dispatchIDContextKey{}).(string)
+
+	return id
 }
 
 // NewContextWithTaskPolicy returns a context carrying policy, consulted by
@@ -200,7 +221,8 @@ func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentit
 		// Which attempt this decision belongs to. Both drivers decide again on
 		// every attempt, so every attempt's decision is recorded and the record
 		// says which one it is (see AuditRecord.attempt).
-		Attempt: uint32(dispatchAttemptIn(ctx)),
+		Attempt:    uint32(dispatchAttemptIn(ctx)),
+		DispatchID: dispatchIDIn(ctx),
 	}
 
 	if err == nil {

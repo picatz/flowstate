@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -2432,6 +2433,14 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // durable driver's two authority-carrying activity entry points write, from the
 // same constant. See [StartTaskSpan].
 func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope, stepID string) (*Node_Outputs, error) {
+	// One identity for this logical dispatch, stable across the retry loop
+	// below. A UUID rather than task or step names: both can repeat in loops,
+	// calls, and parallel branches, while an audit consumer needs to collapse
+	// only the attempts that belong to this invocation.
+	if EnforcementAuditorIn(ctx) != nil {
+		ctx = NewContextWithDispatchID(ctx, uuid.NewString())
+	}
+
 	// Resolved here, above the loop, because this is the position the durable
 	// driver resolves at: in workflow code, before an activity is scheduled
 	// (`engine/execute.go`'s runTask). Inputs are part of the *specification*, so

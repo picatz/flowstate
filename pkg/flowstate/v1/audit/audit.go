@@ -44,6 +44,12 @@ const MaxProvenanceBytes = auth.MaxPolicyProvenanceBytes
 // is spent where the value is.
 const MaxRuleBytes = 256
 
+// MaxDispatchIDBytes bounds the substrate-generated identity grouping task
+// attempts into one logical dispatch. The schema says the same number; the
+// recorder enforces it because Temporal owns activity-id generation and no
+// external component gets to choose audit record size without a bound.
+const MaxDispatchIDBytes = 256
+
 // Emitter writes one record to one sink.
 //
 // The error is the reason this interface exists rather than an
@@ -282,6 +288,7 @@ func (r *Recorder) recordEnforcement(ctx context.Context, subject v1.Enforcement
 		DenyCode:         code,
 		Rule:             boundString(subject.Rule, MaxRuleBytes),
 		Attempt:          subject.Attempt,
+		DispatchId:       boundString(subject.DispatchID, MaxDispatchIDBytes),
 	}
 
 	return r.emit(ctx, record, decision, subject.Point.String())

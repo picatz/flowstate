@@ -43,6 +43,7 @@ const (
 	attrEnforcementPoint = "flowstate.audit.enforcement_point"
 	attrRule             = "flowstate.audit.rule"
 	attrAttempt          = "flowstate.audit.attempt"
+	attrDispatchID       = "flowstate.audit.dispatch_id"
 
 	attrSubject    = "flowstate.audit.identity.subject"
 	attrIssuer     = "flowstate.audit.identity.issuer"
@@ -122,6 +123,9 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	// another's should select on the attribute existing rather than on a zero.
 	if record.GetAttempt() != 0 {
 		attrs = append(attrs, attribute.Int64(attrAttempt, int64(record.GetAttempt())))
+	}
+	if record.GetDispatchId() != "" {
+		attrs = append(attrs, attribute.String(attrDispatchID, record.GetDispatchId()))
 	}
 
 	// Verbatim, because it is the operator's own rule and the seam that set it

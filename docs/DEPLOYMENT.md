@@ -1426,6 +1426,18 @@ because it addressed the control plane. `RULE_ERROR` is the one to alert on: it
 means a rule could not be evaluated and the policy is failing closed on work it
 never decided about.
 
+Task policy remains fresh across retries: local and Temporal workers evaluate
+it before every execution attempt. Those records are grouped by `dispatch_id`,
+which is stable for the logical step dispatch, and each carries the substrate's
+1-based `attempt`. Two allow records with one `dispatch_id` therefore mean one
+logical dispatch was permitted on two execution attempts, not that two
+independent dispatches were authorized. Count logical dispatches by non-empty
+`dispatch_id`; inspect attempts when asking whether a policy change took effect
+between retries. Older records can have an empty `dispatch_id` and cannot be
+grouped into logical dispatches after the fact. Report those records separately
+as ungrouped execution-attempt decisions rather than collapsing the empty
+values into one dispatch or presenting each as a known logical dispatch.
+
 One narrowing on `EGRESS`: those records are the built-in `http` task's
 decisions. A first-party plugin — `slack`, `sql` — enforces the same
 `--egress-policy` in its own process, and nothing running there can reach this

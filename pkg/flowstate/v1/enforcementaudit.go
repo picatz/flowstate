@@ -77,6 +77,13 @@ type EnforcementSubject struct {
 	// which dispatch attempt they belong to. See AuditRecord.attempt.
 	Attempt uint32
 
+	// DispatchID identifies the logical task dispatch whose execution attempt
+	// this decision belongs to. Stable across retries: a digest of Temporal's
+	// workflow/run/activity coordinates durably, a generated id scoped to one
+	// local dispatch. Empty at every other seam and for legacy/direct callers
+	// that have no substrate id.
+	DispatchID string
+
 	// Rule is the operator's own policy rule that decided, verbatim, when a
 	// single rule did. Empty otherwise — see the schema's own comment on
 	// AuditRecord.rule for when that is.

@@ -52,15 +52,15 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	// field's own comment in proto/flowstate/v1/audit.proto for what that
 	// excludes.
 	//
-	// attempt is the same first kind and the least interesting of them: an
+	// attempt and dispatch_id are the same first kind: an
 	// integer the substrate counts, from Temporal's activity info or a retry
-	// loop's own counter. A workload cannot choose it, and there is no string
-	// in it for anything to be smuggled through.
+	// loop's own counter, and an identity Temporal supplies or Flowstate
+	// generates. A workload cannot choose either.
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
 		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
-		"attempt",
+		"attempt", "dispatch_id",
 	}
 
 	got := make([]string, 0, fields.Len())
@@ -558,15 +558,17 @@ func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) 
 	require.NoError(t, err)
 
 	require.NoError(t, recorder.EnforcementAllow(t.Context(), v1.EnforcementSubject{
-		Point: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS,
+		Point: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
 		Identity: &v1.WorkloadIdentity{
 			Subject:   "deploy-bot",
 			Namespace: "acme",
 			Claims:    map[string]string{"team": "payments"},
 		},
-		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SECRET,
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
 		ResourceKey:  strings.Repeat("é", audit.MaxResourceKeyBytes),
 		Rule:         strings.Repeat("é", audit.MaxRuleBytes),
+		Attempt:      1,
+		DispatchID:   strings.Repeat("é", audit.MaxDispatchIDBytes),
 	}))
 
 	require.Len(t, sink.records, 1)
@@ -580,6 +582,8 @@ func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) 
 	require.True(t, isValidUTF8(record.GetResourceKey()), "the resource bound cut a rune in half")
 	require.LessOrEqual(t, len(record.GetRule()), audit.MaxRuleBytes)
 	require.True(t, isValidUTF8(record.GetRule()), "the rule bound cut a rune in half")
+	require.LessOrEqual(t, len(record.GetDispatchId()), audit.MaxDispatchIDBytes)
+	require.True(t, isValidUTF8(record.GetDispatchId()), "the dispatch id bound cut a rune in half")
 
 	// The same number on both sides of the boundary: what the recorder emits
 	// is what the schema accepts.
@@ -613,8 +617,18 @@ func TestTheSchemaHoldsTheTwoOperationVocabulariesApart(t *testing.T) {
 		ResourceKind:     v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
 		ResourceKey:      "http",
 		DecidedAt:        timestamppb.Now(),
+		Attempt:          1,
+		DispatchId:       "activity-12",
 	}
 	require.NoError(t, v1.Validate(enforcement))
+
+	misplacedDispatch := proto.Clone(enforcement).(*v1.AuditRecord)
+	misplacedDispatch.EnforcementPoint = v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS
+	require.Error(t, v1.Validate(misplacedDispatch), "an egress record carried a task dispatch id")
+
+	unattemptedDispatch := proto.Clone(enforcement).(*v1.AuditRecord)
+	unattemptedDispatch.Attempt = 0
+	require.Error(t, v1.Validate(unattemptedDispatch), "a dispatch id named no execution attempt")
 
 	controlPlane := &v1.AuditRecord{
 		Action:    v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
@@ -796,11 +810,13 @@ func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, recorder.EnforcementDeny(t.Context(), v1.EnforcementSubject{
-		Point:        v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS,
-		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_ENDPOINT,
-		ResourceKey:  "https://api.example",
-		Rule:         `host == "api.example"`,
+		Point:        v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
+		ResourceKey:  "http",
+		Rule:         `task == "http"`,
 		Identity:     &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Attempt:      2,
+		DispatchID:   "activity-12",
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE))
 
 	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{
@@ -812,12 +828,14 @@ func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
 	require.Len(t, exporter.exported, 2)
 
 	enforcement := exportedAttributes(exporter.exported[0])
-	require.Equal(t, "AUDIT_ENFORCEMENT_POINT_EGRESS", enforcement["flowstate.audit.enforcement_point"],
+	require.Equal(t, "AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH", enforcement["flowstate.audit.enforcement_point"],
 		"a collector cannot say which seam decided")
-	require.Equal(t, `host == "api.example"`, enforcement["flowstate.audit.rule"],
+	require.Equal(t, `task == "http"`, enforcement["flowstate.audit.rule"],
 		"the operator's own rule reaches the collector verbatim, as it reaches stderr")
-	require.Equal(t, "AUDIT_RESOURCE_KIND_ENDPOINT", enforcement["flowstate.audit.resource.kind"],
+	require.Equal(t, "AUDIT_RESOURCE_KIND_TASK", enforcement["flowstate.audit.resource.kind"],
 		"the worker's resource kinds ride the attribute the control plane's already do")
+	require.Equal(t, "2", enforcement["flowstate.audit.attempt"])
+	require.Equal(t, "activity-12", enforcement["flowstate.audit.dispatch_id"])
 	require.Equal(t, "AUDIT_DENY_CODE_DENY_RULE", enforcement["flowstate.audit.deny_code"])
 	require.Equal(t, "deploy-bot", enforcement["flowstate.audit.identity.subject"])
 
@@ -827,6 +845,8 @@ func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
 			"decisions selects on the attribute existing")
 	require.NotContains(t, controlPlane, "flowstate.audit.rule",
 		"no rule decided this one")
+	require.NotContains(t, controlPlane, "flowstate.audit.dispatch_id")
+	require.NotContains(t, controlPlane, "flowstate.audit.attempt")
 	require.Equal(t, "Get", controlPlane["flowstate.audit.rpc"])
 }
 
@@ -836,7 +856,7 @@ func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
 func exportedAttributes(record sdklog.Record) map[string]string {
 	attributes := map[string]string{}
 	record.WalkAttributes(func(kv attribute.KeyValue) bool {
-		attributes[string(kv.Key)] = kv.Value.AsString()
+		attributes[string(kv.Key)] = fmt.Sprint(kv.Value.AsInterface())
 
 		return true
 	})
