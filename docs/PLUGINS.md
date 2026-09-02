@@ -785,8 +785,10 @@ constructors rather than as a bare error (`sdk/errors.go:22-30`):
 > for five minutes after return, and marks a changed log record with
 > `scrubbed=true`. While any values are retained, the host suppresses the
 > content of a truncated stderr line because a captured prefix cannot be matched
-> safely against a secret crossing the line bound. Do not rely on this against
-> deliberate transformation or disclosure.
+> safely against a secret crossing the line bound. If all 256 slots hold
+> in-flight values, it suppresses plugin-controlled log text for the rest of that
+> process rather than forget a value that can still leak. Do not rely on this
+> against deliberate transformation or disclosure.
 
 ## Writing one in another language
 

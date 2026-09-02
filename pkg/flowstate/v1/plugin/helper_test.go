@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -522,7 +523,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
-	case "secret-task", "secret-task-error", "secret-task-log":
+	case "secret-task", "secret-task-error", "secret-task-log", "secret-task-health":
 		// Declares one input, "message", as accepting a host secret reference —
 		// the manifest field TestResolvePluginSecretInputs* and
 		// TestPluginTaskResolvesAndScrubsHostSecret exist to exercise.
@@ -564,6 +565,8 @@ type fakePluginService struct {
 	mode     string
 }
 
+var fakeHealthMessage atomic.Value
+
 func (s *fakePluginService) Describe(context.Context, *connect.Request[pluginv1.DescribeRequest]) (*connect.Response[pluginv1.DescribeResponse], error) {
 	if s.mode == "describe-fails" {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("describe is broken"))
@@ -580,6 +583,12 @@ func (s *fakePluginService) Health(context.Context, *connect.Request[pluginv1.He
 		}), nil
 	case "health-fails":
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("cannot answer"))
+	case "secret-task-health":
+		message, _ := fakeHealthMessage.Load().(string)
+		return connect.NewResponse(&pluginv1.HealthResponse{
+			Status:  pluginv1.HealthResponse_STATUS_NOT_SERVING,
+			Message: strings.Repeat("x", 1000) + message,
+		}), nil
 	default:
 		return connect.NewResponse(&pluginv1.HealthResponse{
 			Status: pluginv1.HealthResponse_STATUS_SERVING,
@@ -761,6 +770,11 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 			time.Sleep(25 * time.Millisecond)
 			fmt.Fprintf(os.Stderr, "late: %s\n", received)
 		}()
+		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
+
+	case "secret-task-health":
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		fakeHealthMessage.Store(received)
 		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
 	}
 

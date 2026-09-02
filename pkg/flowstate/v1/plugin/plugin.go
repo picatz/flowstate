@@ -114,6 +114,8 @@ type Health struct {
 	// Err is why the plugin could not be reached, when Status is
 	// [HealthUnreachable].
 	Err error
+
+	messageScrubbed bool
 }
 
 // stableRun is how long a plugin has to stay up before its restart budget is
@@ -398,10 +400,12 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 		// Anything that is not explicitly serving is treated as not serving,
 		// including STATUS_UNSPECIFIED. A plugin that does not say it can serve
 		// has not said it can serve.
+		message, scrubbed := inst.stderrSecrets.scrub(resp.Msg.GetMessage())
 		health = Health{
-			Status:    HealthNotServing,
-			CheckedAt: time.Now(),
-			Message:   truncate(resp.Msg.GetMessage(), 1024),
+			Status:          HealthNotServing,
+			CheckedAt:       time.Now(),
+			Message:         truncate(message, 1024),
+			messageScrubbed: scrubbed,
 		}
 	}
 
@@ -680,6 +684,7 @@ func (p *Plugin) supervise() {
 				// correctly with an identical one that will answer the same
 				// way, so this is reported and left alone.
 				message, scrubbed := inst.stderrSecrets.scrub(health.Message)
+				scrubbed = scrubbed || health.messageScrubbed
 				p.log.Warn("plugin reports it cannot serve; its backend is the thing to look at, not the plugin",
 					"message", message, "scrubbed", scrubbed)
 			case HealthUnreachable:

@@ -343,6 +343,30 @@ func TestPluginTaskScrubsResolvedSecretFromStderr(t *testing.T) {
 	assert.GreaterOrEqual(t, strings.Count(output, secrets.Redacted), 4)
 }
 
+func TestPluginHealthScrubsBeforeBoundingItsMessage(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-crossing-the-health-message-bound"
+	host := openHost(t, testConfig(t, pluginDir(t, "secret-task-health")))
+	defs := host.TaskDefs()
+	require.Len(t, defs, 1)
+	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}},
+	}, nil)
+	require.NoError(t, err)
+
+	p, ok := host.Lookup("secret-task-health")
+	require.True(t, ok)
+	health := p.CheckHealth(t.Context())
+	require.Equal(t, HealthNotServing, health.Status)
+	assert.NotContains(t, health.Message, material)
+	assert.Contains(t, health.Message, secrets.Redacted)
+	assert.True(t, health.messageScrubbed)
+}
+
 // TestPluginTaskFn spells out the sorted-name message
 // [acceptedPluginSecretInputsHelp] renders, so a change to its wording is
 // caught here rather than only by a human reading a diagnostic in a terminal.

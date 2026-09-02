@@ -45,10 +45,11 @@ func TestStderrSecretScrubberEvictsOldestAtCountBound(t *testing.T) {
 	now := time.Unix(0, 0)
 	scrubber := newStderrSecretScrubber(func() time.Time { return now })
 	for i := range maxStderrSecrets + 1 {
-		scrubber.add(secrets.NewSecret(
+		release := scrubber.add(secrets.NewSecret(
 			&flowstatev1.SecretRef{Scheme: "test", Name: fmt.Sprintf("token-%d", i)},
 			fmt.Sprintf("secret-value-%d", i),
 		))
+		release()
 		now = now.Add(time.Nanosecond)
 	}
 
@@ -58,6 +59,24 @@ func TestStderrSecretScrubberEvictsOldestAtCountBound(t *testing.T) {
 	assert.Contains(t, got, "secret-value-0", "the oldest value must be evicted")
 	assert.NotContains(t, got, "secret-value-1")
 	assert.NotContains(t, got, "secret-value-256")
+}
+
+func TestStderrSecretScrubberFailsClosedWhenEveryBoundedEntryIsActive(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newStderrSecretScrubber(nil)
+	for i := range maxStderrSecrets + 1 {
+		scrubber.add(secrets.NewSecret(
+			&flowstatev1.SecretRef{Scheme: "test", Name: fmt.Sprintf("active-%d", i)},
+			fmt.Sprintf("active-secret-%d", i),
+		))
+	}
+
+	require.Len(t, scrubber.entries, maxStderrSecrets)
+	assert.True(t, scrubber.saturated)
+	got, changed := scrubber.scrub("an unrelated diagnostic")
+	assert.True(t, changed)
+	assert.Equal(t, secrets.Redacted, got)
 }
 
 func TestStderrRelayScrubsEncodingsAndMarksTheRecord(t *testing.T) {

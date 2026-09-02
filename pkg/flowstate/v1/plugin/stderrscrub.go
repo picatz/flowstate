@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -19,15 +20,18 @@ const (
 	maxStderrSecrets = 256
 )
 
-// stderrSecretScrubber retains a bounded tail of values delivered to one plugin
-// process. Each entry hides its plaintext inside secrets.Scrubber's closure, so
-// formatting this registry cannot itself disclose the values it protects.
+// stderrSecretScrubber retains a bounded set of values delivered to one plugin
+// process, preferring in-flight entries over the post-call tail and failing
+// closed if active deliveries fill the bound. Each entry hides its plaintext
+// inside secrets.Scrubber's closure, so formatting this registry cannot itself
+// disclose the values it protects.
 type stderrSecretScrubber struct {
-	mu       sync.Mutex
-	entries  []stderrSecretEntry
-	combined *secrets.Scrubber
-	nextID   uint64
-	now      func() time.Time
+	mu        sync.Mutex
+	entries   []stderrSecretEntry
+	combined  *secrets.Scrubber
+	saturated bool
+	nextID    uint64
+	now       func() time.Time
 }
 
 type stderrSecretEntry struct {
@@ -48,14 +52,29 @@ func (s *stderrSecretScrubber) add(secret secrets.Secret) func() {
 	now := s.now()
 
 	s.mu.Lock()
-	s.prune(now)
+	if s.saturated {
+		s.mu.Unlock()
+		return func() {}
+	}
+	if s.prune(now) {
+		s.rebuild()
+	}
+	if len(s.entries) == maxStderrSecrets {
+		oldestInactive := slices.IndexFunc(s.entries, func(entry stderrSecretEntry) bool { return !entry.active })
+		if oldestInactive < 0 {
+			// Forgetting an in-flight value would allow its next log line out.
+			// Suppress plugin-controlled log text for this process from now on
+			// instead; the instance boundary resets this fail-closed state.
+			s.saturated = true
+			s.mu.Unlock()
+			return func() {}
+		}
+		clear(s.entries[oldestInactive : oldestInactive+1])
+		s.entries = slices.Delete(s.entries, oldestInactive, oldestInactive+1)
+	}
 	s.nextID++
 	id := s.nextID
 	s.entries = append(s.entries, stderrSecretEntry{id: id, active: true, scrubber: secrets.NewScrubber(secret)})
-	if extra := len(s.entries) - maxStderrSecrets; extra > 0 {
-		clear(s.entries[:extra])
-		s.entries = s.entries[extra:]
-	}
 	s.rebuild()
 	s.mu.Unlock()
 
@@ -89,6 +108,9 @@ func (s *stderrSecretScrubber) scrub(text string) (string, bool) {
 	if s.prune(now) {
 		s.rebuild()
 	}
+	if s.saturated {
+		return secrets.Redacted, true
+	}
 	original := text
 	if s.combined != nil {
 		text = s.combined.Scrub(text)
@@ -105,7 +127,7 @@ func (s *stderrSecretScrubber) hasEntries() bool {
 	if s.prune(now) {
 		s.rebuild()
 	}
-	return len(s.entries) > 0
+	return s.saturated || len(s.entries) > 0
 }
 
 func (s *stderrSecretScrubber) prune(now time.Time) bool {
