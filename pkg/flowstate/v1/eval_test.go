@@ -550,6 +550,24 @@ func TestRunWorkflowAtomicBlockBound(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowParallelAtomicBlockBound(t *testing.T) {
+	for _, test := range conformance.ParallelAtomicBlockCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "an over-ceiling atomic body must be refused")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains,
+					"the refusal must name the enclosing step")
+				require.Contains(t, err.Error(), v1.AtomicBlockBodyActivitiesError(v1.MaxAtomicBlockActivities).Error(),
+					"both drivers must preserve the shared refusal sentence")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowCall covers `call:` in the local driver.
 //
 // The same cases run against the durable driver in the engine package — see

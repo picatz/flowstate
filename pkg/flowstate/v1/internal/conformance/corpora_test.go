@@ -78,6 +78,7 @@ func corpusSizes() map[string]int {
 		"OutputShapingCases":              len(OutputShapingCases(standIn)),
 		"OutputValueRefusalCases":         len(OutputValueRefusalCases()),
 		"PartialTranscriptCases":          len(PartialTranscriptCases()),
+		"ParallelAtomicBlockCases":        len(ParallelAtomicBlockCases()),
 		"PendingWaitCases":                len(PendingWaitCases()),
 		"PluginTaskInputCases":            len(PluginTaskInputCases()),
 		"PolicyCases":                     len(PolicyCases()),

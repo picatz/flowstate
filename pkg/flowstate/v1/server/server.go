@@ -1731,6 +1731,14 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Statically known atomic segments are already too large before any input
+	// resolves. Refuse them here so a hand-built Protobuf specification gets the
+	// same admission answer as a compiled Flowfile; the drivers retain their
+	// pre-dispatch checks as backstops and for resolved for_each item counts.
+	if err := v1.CheckWorkflowAtomicBlockActivities(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Size is a separate question from validity, and it has to be asked here
 	// because here is where somebody is still listening.
 	//

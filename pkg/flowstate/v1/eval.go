@@ -1984,6 +1984,9 @@ func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, pla
 	if err != nil {
 		return nil, err
 	}
+	if err := CheckAtomicBlockBodyActivities(body); err != nil {
+		return nil, &SwitchBodyError{Err: err, Selection: outputs}
+	}
 
 	// enterAtomicBlock because the durable driver runs the taken body at
 	// `susp + 1` — a switch is never a suspension position — so a for_each
@@ -2058,6 +2061,13 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 	// [CheckForEachItems]'s exact reasoning one bound over.
 	if loop.GetMaxParallel() > 1 || inAtomicBlock(ctx) {
 		if err := CheckAtomicBlockActivities(len(items), loop.GetBody()); err != nil {
+			return nil, err
+		}
+	} else if len(items) > 0 {
+		// A paced loop has a seam between iterations, but each individual body
+		// is still one atomic segment. Weigh it once before the first iteration
+		// rather than once per item.
+		if err := CheckAtomicBlockBodyActivities(loop.GetBody()); err != nil {
 			return nil, err
 		}
 	}
@@ -2189,6 +2199,9 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 	if err != nil {
 		return nil, err
 	}
+	if err := CheckAtomicBlockBodyActivities(loop.GetBody()); err != nil {
+		return nil, err
+	}
 
 	resultsBytes := 0
 	iterations := make([]*Workflow_StepOutputs, 0)
@@ -2300,6 +2313,9 @@ func onlyBodyOutputs(body []*Node, scope *Workflow_StepOutputs) *Workflow_StepOu
 // compensation log ordered by who finished first is exactly the completion order
 // #418 promises is never observable.
 func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *UndoLog, depth int) error {
+	if err := CheckParallelAtomicBlockActivities(parallel); err != nil {
+		return err
+	}
 	before := cloneStepOutputs(scope.GetOutputs())
 
 	// Each branch's outputs, merged only at the join and only when every branch

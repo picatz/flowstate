@@ -818,6 +818,9 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 	if err != nil {
 		return nodeFailed(err)
 	}
+	if err := v1.CheckAtomicBlockBodyActivities(body); err != nil {
+		return nodeFailed(&v1.SwitchBodyError{Err: err, Selection: outputs})
+	}
 
 	if err := e.runNodes(body, depth+1, susp+1); err != nil {
 		// Wrapped so the selection survives the failure: failedAt reads the
@@ -1288,6 +1291,13 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 		if err := v1.CheckAtomicBlockActivities(len(items), loop.GetBody()); err != nil {
 			return nodeFailed(err)
 		}
+	} else if len(items) > 0 {
+		// A paced loop has a seam between iterations, but each individual body
+		// is still one atomic segment. Weigh it once before the first iteration
+		// rather than once per item.
+		if err := v1.CheckAtomicBlockBodyActivities(loop.GetBody()); err != nil {
+			return nodeFailed(err)
+		}
 	}
 
 	name := v1.IteratorName(loop)
@@ -1447,6 +1457,9 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		if err != nil {
 			return nodeFailed(err)
 		}
+	}
+	if err := v1.CheckAtomicBlockBodyActivities(loop.GetBody()); err != nil {
+		return nodeFailed(err)
 	}
 
 	// True the moment this segment is continuing a loop an earlier segment
@@ -1792,6 +1805,9 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 
 // runParallel runs branches concurrently and merges their outputs.
 func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp int) error {
+	if err := v1.CheckParallelAtomicBlockActivities(parallel); err != nil {
+		return nodeFailed(err)
+	}
 	branches := parallel.GetBranches()
 
 	// Computed once, outside the loop: every branch runs at the same position,

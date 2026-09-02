@@ -1726,6 +1726,31 @@ func TestRunWorkflowAtomicBlockBound(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowParallelAtomicBlockBound(t *testing.T) {
+	for _, test := range conformance.ParallelAtomicBlockCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			env := atABound(budgetEnv(t))
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "an over-ceiling atomic body must be refused")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains,
+					"the refusal must name the enclosing step")
+				require.Contains(t, err.Error(), v1.AtomicBlockBodyActivitiesError(v1.MaxAtomicBlockActivities).Error(),
+					"both drivers must preserve the shared refusal sentence")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+		})
+	}
+}
+
 // TestAConcurrentForEachCountsItsBodyStepsAgainstTheBudget pins the
 // `processed` copy-back at the concurrent join: a `max_parallel > 1` loop
 // used to advance the step budget by one however many body steps its workers
