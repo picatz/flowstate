@@ -55,12 +55,15 @@ var egressRefusal error
 // plugin has exactly one egress policy, and go-git's global registration
 // model is a fine fit for that.
 //
-// An unusable grant does not stop the process: a plugin launched only to be
-// described has no use for a policy, and refusing to start would turn one bad
-// policy file into a plugin the host cannot even list. It must not leave
-// go-git's own default client in that slot either, since that client is
-// governed by nothing - [refusingTransport] takes it instead, so the
-// fail-closed answer holds even on a path that forgot to ask.
+// A grant this process cannot use does not stop it, and under `flow` no such
+// grant arrives: a policy that cannot be parsed or built is refused when the CLI
+// reads the operator's file and again by plugin.NewHost before any plugin is
+// launched. What is left is a launch by something that is not a Flowstate worker
+// - a shell, a third-party host - which grants nothing, and which is still worth
+// answering "here is what I can do" to. It must not leave go-git's own default
+// client in that slot either, since that client is governed by nothing -
+// [refusingTransport] takes it instead, so the fail-closed answer holds even on
+// a path that forgot to ask.
 func installEgressPolicy() {
 	governed, err := sdk.HTTPClientWithBounds(maxResponseBytes, requestTimeout)
 	if err != nil {

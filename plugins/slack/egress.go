@@ -35,9 +35,13 @@ var egressRefusal error
 // documented on [sdk.EgressPolicyIsDeploymentDefault]; `sql` takes the other one
 // for a reason that is about databases, not about grants.
 //
-// An unusable grant does not stop the process: discovery and validation stay
-// available without network authority, and slackPost refuses at the task
-// boundary before it decodes inputs or attempts a write.
+// A grant this process cannot use does not stop it. Under `flow` no such grant
+// arrives - a policy that cannot be parsed or built is refused when the CLI
+// reads the operator's file and again by plugin.NewHost - so this covers a
+// launch by something that is not a Flowstate worker, which grants nothing.
+// Discovery and validation stay available there without network authority, and
+// slackPost refuses at the task boundary before it decodes inputs or attempts a
+// write.
 func installEgressPolicy() {
 	policy, err := sdk.EgressPolicy()
 	if err != nil {

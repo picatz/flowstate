@@ -41,10 +41,12 @@ var egressRefusal error
 
 // installEgressPolicy takes the deployment's grant.
 //
-// An unusable grant does not stop the process. A plugin launched to be asked
-// what it can do - `flow plugins`, `flow tasks`, a catalog build - has no use
-// for a policy, and refusing to start would turn one bad policy file into a
-// plugin the host cannot even describe. Every path that would reach the network
+// A grant this process cannot use does not stop it, and under `flow` no such
+// grant arrives: a policy that cannot be parsed or built is refused when the CLI
+// reads the operator's file and again by plugin.NewHost before any plugin is
+// launched. What is left is a launch by something that is not a Flowstate worker
+// - a shell, a third-party host - which grants nothing, and which is still worth
+// answering "here is what I can do" to. Every path that would reach the network
 // goes through [egressClient], which refuses instead.
 func installEgressPolicy() {
 	// The SDK's client rather than policy.Client(): every request this plugin

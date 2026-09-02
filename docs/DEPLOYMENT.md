@@ -159,9 +159,11 @@ replacement during startup cannot make HTTP and SQL enforce different bytes. A
 worker started without `--egress-policy` grants the default policy its own
 built-in HTTP task runs under, and the SQL plugin refuses to connect under it
 with a message naming the flag: a database destination is not something a
-deployment authorizes by not writing a file. A malformed policy no longer stops
-the plugin from starting — it is refused at the task boundary instead, so a bad
-file cannot make a plugin the host cannot even describe. The SQL plugin checks
+deployment authorizes by not writing a file. That refusal does not stop the
+plugin from serving discovery and validation, so `flow plugins` and `flow tasks`
+still describe it. A malformed policy never reaches the plugin at all: `flow`
+refuses the file when it reads it, and the plugin host refuses the grant before
+it launches anything. The SQL plugin checks
 host and port rules before DNS, resolves
 and authorizes every address for every DSN host, pins that set, rechecks the
 actual TCP target immediately before each connection, requires verified TLS,

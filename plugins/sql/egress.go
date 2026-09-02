@@ -46,8 +46,13 @@ var egressRefusal error
 // than nothing (see [sdk.EgressPolicyIsDeploymentDefault] for the two postures
 // and why `git`, `vcs`, `github` and `slack` take the other).
 //
-// An unusable grant does not stop the process: catalog and validation-only
-// launches keep working without pretending this plugin can connect anywhere.
+// Neither refusal stops the process. The deployment default is a grant this
+// plugin declines to act on rather than one it cannot read, and a launch by
+// something that is not a Flowstate worker grants nothing at all; a policy that
+// cannot be parsed or built never reaches here, being refused when the CLI reads
+// the operator's file and again by plugin.NewHost. In every one of those states
+// catalog and validation-only launches keep working, without pretending this
+// plugin can connect anywhere.
 func installEgressPolicy() {
 	policy, err := sdk.EgressPolicy()
 	if err != nil {
