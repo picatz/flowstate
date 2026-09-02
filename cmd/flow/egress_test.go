@@ -238,8 +238,12 @@ func TestTheEgressPolicyFlagSaysWhichPluginsEnforceTheGrantAndWhereItStops(t *te
 	require.Contains(t, usage, "enforce the grant on their own connections")
 
 	// And the limit that survives every migration: a grant is not a sandbox,
-	// including for the child launched by the first-party Codex plugin.
-	require.Contains(t, usage, "the first-party Codex child and a third-party plugin can ignore it")
+	// including for the child launched by the first-party Codex plugin. The
+	// CLI's control-plane traffic and agent-started commands have different
+	// controls, so the help must not collapse them into one conditional claim.
+	require.Contains(t, usage, "Codex CLI control-plane traffic always bypasses the grant")
+	require.Contains(t, usage, "network from commands its agent starts follows Codex sandbox policy")
+	require.Contains(t, usage, "a third-party plugin can ignore the grant")
 
 	// The stale hedge, in the two spellings it had. Naming them keeps the help
 	// from drifting back to a gap that no longer exists.

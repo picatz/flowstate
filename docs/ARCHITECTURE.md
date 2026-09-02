@@ -563,10 +563,11 @@ enforcement is voluntary: the five first-party destination clients — `git`,
 reach a database under the default, because a database destination is not
 something a deployment can be said to have authorized by not writing a file.
 The first-party Codex plugin instead launches an operator-selected subprocess;
-when its separate sandbox policy permits network access, that process does not
-enforce the Flowstate grant and requires substrate confinement too. A deployment
-that must stop any plugin or child process leaving the governed path confines it
-rather than relying on the policy file.
+the Codex CLI's own control-plane traffic always bypasses the Flowstate grant,
+which is not passed to the child. Its separate sandbox policy governs network
+access only for commands the agent starts. A deployment that must stop any
+plugin or child process leaving the governed path confines it rather than
+relying on the policy file.
 A plugin is an extension of the engine's capability, not an exemption from its
 rules.
 

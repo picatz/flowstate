@@ -145,7 +145,8 @@ func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
 		"path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches "+
 			"(default $"+egressPolicyEnv+"); the first-party git, github, slack, sql and vcs plugins enforce the "+
-			"grant on their own connections, while the first-party Codex child and a third-party plugin can ignore it; "+
+			"grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network "+
+			"from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; "+
 			"with no file every plugin is granted the same default policy built-in HTTP runs under, which sql "+
 			"refuses to reach a database under; when set it replaces the default policy entirely, and "+
 			v1.AllowLoopbackEgressEnv+" is ignored; a file that wants loopback says allow_loopback: true")
