@@ -138,3 +138,31 @@ the account, not the session. One more CI anomaly for the evening's list: a
 push at 21:59 created no workflow run at all, with no skip marker in the
 message; the next push is the re-trigger, and the standing rule holds — no
 empty commit to kick CI.
+
+Small hours, same wave. Five merges between 23:55 and 01:03 UTC: #1410
+(the carry-test deadlock budget), #1409 (container output keys, then the
+walk's depth bound), #1390 (the egress grant, after three security passes
+and sixteen resolved threads), #1394 (the worker audit, after four), with
+the roadmap's own #1402 earlier in the evening. What the second half of the
+night taught. Bot third and fourth passes kept finding real siblings of a
+fixed finding rather than noise — the resolver path beside the task path
+for the identity install, the redirect hook's three early returns beside
+the rule path for the hop mark, an unbuildable grant beside a malformed one
+— so the rule is: after a fix, grep for the fixed shape's siblings before
+pushing, because the next pass will. Second: a design just landed was
+reversed on the next finding when it deserved to be — the attempt-1-only
+dispatch record could lose the very record whose failure caused the retry,
+and one record per attempt on both drivers replaced it inside the hour; a
+decision's cost is one push, not a defense. Third: the security reviewer
+ran beside CI on every head, in one worktree, its findings folded into the
+push already in flight; that is what held each PR to one review round per
+push. Fourth: "fold it into one push" arrives late as often as not — twice
+an agent had already pushed when the next item came, and each extra push
+cost a CI cycle and a bot pass; the remedy is for the lead to batch
+findings for a few minutes when several are landing at once, not to hurry
+the agent. Fifth, on protocol: a key a strict parser refuses is not
+additive, so #1411 takes the plugin protocol to 6 for the default grant's
+marker where #1393 had hoped PR B could stay at 5 — the version-4 lesson
+applied before it bit. Receiver-cost update for the night: bot findings
+acted on, sixteen; refuted with evidence, one (a deployment's proxy
+credential is not a workload credential); owner turns needed, zero.
