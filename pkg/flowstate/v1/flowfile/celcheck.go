@@ -127,11 +127,6 @@ func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 				// literals. Type-checking it too would report one mistake twice, in
 				// two voices.
 
-			case v1.SlotCallArgument:
-				// validate_call.go checks a `with:` argument against the callee's
-				// own declarations, which is the check that can be specific about
-				// it.
-
 			default:
 				ds = append(ds, typeErrors(site.Step, site.Field(), site.Value)...)
 			}
@@ -152,8 +147,8 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 	v1.WalkNodes(nodes, v1.Walk{
 		Value: func(site v1.ValueSite) {
 			switch site.Slot {
-			case v1.SlotSwitchCaseValue, v1.SlotCallArgument:
-				// See [checkExpressionTypes] for both.
+			case v1.SlotSwitchCaseValue:
+				// See [checkExpressionTypes].
 
 			default:
 				// Every input, including the ones a task evaluates itself. The

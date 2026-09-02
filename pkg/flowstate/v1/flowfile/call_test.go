@@ -342,6 +342,30 @@ steps:
 	require.Contains(t, ds.Error(), "list elements")
 }
 
+func TestCallArgumentWithAnInvalidLiteralIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+name: callee
+inputs:
+  subject:
+    type: bool
+steps:
+  - id: done
+    value: ok
+`)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+name: caller
+steps:
+  - id: invoke
+    call: ./callee.yaml
+    with:
+      subject: ${'abc'.matches('[')}
+`)
+
+	diagnostics := mustValidate(t, caller)
+	require.ErrorContains(t, diagnostics, "invalid matches argument")
+}
+
 // TestCallArgumentAtTheElementBoundAccepted is the boundary: exactly the
 // element bound's worth of items is satisfiable, so it must not be refused.
 func TestCallArgumentAtTheElementBoundAccepted(t *testing.T) {

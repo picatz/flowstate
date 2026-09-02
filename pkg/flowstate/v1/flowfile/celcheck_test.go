@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -135,6 +136,73 @@ func TestAnExpressionThatCannotEvaluateIsReported(t *testing.T) {
 			assert.Contains(t, strings.Join(reported, "\n"), test.says)
 		})
 	}
+}
+
+func TestInvalidCELLiteralsAreReported(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		expr string
+		says string
+	}{
+		{name: "regex", expr: `'abc'.matches('[')`, says: "invalid matches argument"},
+		{name: "duration", expr: `duration('3 days')`, says: "invalid duration"},
+		{name: "timestamp", expr: `timestamp('yesterday')`, says: "invalid timestamp"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reported := diagnosticsFor(t, sayingInStep(test.expr))
+			require.NotEmpty(t, reported)
+			assert.Contains(t, strings.Join(reported, "\n"), test.says)
+		})
+	}
+}
+
+func TestInvalidCELLiteralsHavePositionedTypeDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+name: invalid-literals
+steps:
+  - id: bad_regex
+    value: ${'abc'.matches('[')}
+  - id: bad_duration
+    value: ${duration('3 days')}
+  - id: bad_timestamp
+    value: ${timestamp('yesterday')}
+`))
+	require.NoError(t, err)
+	require.Len(t, diagnostics, 3)
+	for _, diagnostic := range diagnostics {
+		assert.Positive(t, diagnostic.Line)
+		assert.Positive(t, diagnostic.Column)
+		assert.Equal(t, v1.DiagnosticCodeTypeMismatch, diagnostic.Code)
+	}
+}
+
+func TestInvalidRegexMustIsReportedWithoutAValue(t *testing.T) {
+	t.Parallel()
+
+	reported := diagnosticsFor(t, `edition: v2026.3
+name: invalid-must
+inputs:
+  subject:
+    type: string
+    must: this.matches('[')
+steps:
+  - id: done
+    value: ok
+`)
+	require.NotEmpty(t, reported)
+	assert.Contains(t, strings.Join(reported, "\n"), "invalid matches argument")
+}
+
+func TestMixedAggregateLiteralsRemainValid(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, diagnosticsFor(t, sayingInStep(`string([1, 'a'].size())`)))
 }
 
 // TestNothingIsReportedAboutAnExpressionThatIsFine is the direction that decides

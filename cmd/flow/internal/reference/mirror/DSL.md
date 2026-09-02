@@ -4207,24 +4207,13 @@ examples was already `required: true`, so the difference does not show here —
 but it is a difference, and the diagnostic asks a person to look rather than
 have `flow fix` decide silently.
 
-One gap the move opens, honestly stated: `pattern:`'s own regex was checked
-by [`CheckInputConstraintShape`](../pkg/flowstate/v1/constraints.go) —
-`regexp.Compile` against the declaration alone — so an unusable pattern was
-reported at load time even on a declaration with no example and no default to
-check it against. `must:`'s regex only reaches `regexp.Compile` inside
-`matches()`, which CEL evaluates rather than type-checks: `CompileMustExpression`
-parses and type-checks the *expression*, but a string literal argument to a
-function is just a string as far as the type checker is concerned, so
-`must: this.matches('[')` compiles clean and only fails once something
-evaluates it — an example, a default, or a submitted value. `flow validate`
-still catches it at author time for every declaration that carries an example
-or a default, which is the shape every constrained input in this repository's
-own examples has, but an input with neither would carry an unusable regex
-silently until the first run that submits a value for it. Closing that gap
-fully would mean teaching the type checker to evaluate a literal regex
-argument to `matches()` specifically, which is more machinery than this move
-asked for and is left as a known, written-down difference rather than quietly
-accepted.
+Literal regexes in `must:` retain `pattern:`'s author-time safety:
+`CompileMustExpression` runs CEL's checked-AST regex validator, so
+`must: this.matches('[')` is refused even when the declaration has no example,
+default, or submitted value. The same checking environment validates literal
+duration and timestamp conversions. Mixed list and map literals remain valid;
+their dynamic element values are part of the language and do not create a
+guaranteed runtime failure.
 
 *Since written, a fourth time:* **`min:`/`max:` and `unique:` are retired — V2 and
 V3 of the DSL audit (#234), which V1 above unblocked.** Both followed `pattern:`

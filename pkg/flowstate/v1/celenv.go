@@ -753,6 +753,18 @@ func ProfileNames() []string {
 func buildEnv(libs []string) (*cel.Env, error) {
 	opts := make([]cel.EnvOption, 0, len(libs)+len(durationLibrary())+1)
 
+	// These validators reject literal calls that are guaranteed to fail at run
+	// time. They belong on the shared profile environment so every checker —
+	// ordinary Flowfile expressions, call arguments, and must constraints —
+	// inherits exactly the same policy. Mixed aggregate literals remain valid:
+	// list and map values are dynamically typed, and homogeneity is not a
+	// runtime-correctness requirement.
+	opts = append(opts, cel.ASTValidators(
+		cel.ValidateDurationLiterals(),
+		cel.ValidateTimestampLiterals(),
+		cel.ValidateRegexLiterals(),
+	))
+
 	// Always present rather than opt-in, unlike the libraries below. A
 	// `wait_until:` step has no `libs:` key to enable anything with — the
 	// expression is the whole of the step — so a unit only reachable through opt-in

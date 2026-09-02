@@ -338,6 +338,14 @@ func TestMustRefusesAnUnknownName(t *testing.T) {
 	assert.Contains(t, err.Error(), "steps")
 }
 
+func TestMustRefusesAnInvalidRegexLiteral(t *testing.T) {
+	t.Parallel()
+
+	_, err := v1.CompileMustExpression(v1.CurrentProfile, `this.matches('[')`, v1.InputDeclaration_TYPE_STRING)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid matches argument")
+}
+
 // TestMustRefusesANonBoolExpression catches a must: that compiles but is not a
 // predicate, which would otherwise be silently truthy-tested at the wrong
 // moment.
