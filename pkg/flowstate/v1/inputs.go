@@ -240,11 +240,11 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 // CheckDeclarationTypes reports whether every declaration in a workflow and its
 // embedded callees can be enforced by this runtime.
 //
-// It is currently the temporary seam between the additive structural schema and
-// the edition that teaches runtime checks to consume it.
-// Programmatic submissions can carry a schema-valid structural-only declaration
-// before the compiler writes one, so refuse it rather than interpreting the
-// legacy zero value as unspecified and silently skipping enforcement.
+// It is currently the runtime half of the additive structural rollout. The
+// schema requires a legacy projection while old readers can still receive a
+// specification, but hand-built local messages do not necessarily pass through
+// schema validation. Refuse one here rather than interpreting the legacy zero
+// value as unspecified and silently skipping enforcement.
 //
 // Every embedded callee is checked before the root workflow starts. Waiting to
 // bind a callee's arguments inside CallScope would let earlier parent steps make

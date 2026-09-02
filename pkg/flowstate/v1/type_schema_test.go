@@ -104,10 +104,10 @@ func TestTypeValidationRefusesMalformedKinds(t *testing.T) {
 }
 
 // TestDeclarationTypeMigration pins the additive wire contract: all seven
-// legacy input kinds remain valid and readable, new-only inputs are valid, and
-// a writer that sends both representations cannot make old and new readers
-// enforce different contracts. Outputs preserve their historical unspecified
-// meaning while applying the same agreement rule when both fields are set.
+// legacy input kinds remain valid and readable, structural-only declarations
+// stay invalid while old readers can receive them, and a writer that sends both
+// representations cannot make old and new readers enforce different contracts.
+// Outputs preserve their historical unspecified meaning when no type is declared.
 func TestDeclarationTypeMigration(t *testing.T) {
 	t.Parallel()
 
@@ -150,13 +150,13 @@ func TestDeclarationTypeMigration(t *testing.T) {
 		})
 	}
 
-	require.NoError(t, v1.Validate(&v1.InputDeclaration{
+	require.Error(t, v1.Validate(&v1.InputDeclaration{
 		Name: "value", ValueType: scalarType(v1.Type_SCALAR_BYTES),
 	}))
 	require.Error(t, v1.Validate(&v1.InputDeclaration{Name: "value"}))
 
 	require.NoError(t, v1.Validate(&v1.OutputDeclaration{Name: "value", Value: v1.NewExpr("42")}))
-	require.NoError(t, v1.Validate(&v1.OutputDeclaration{
+	require.Error(t, v1.Validate(&v1.OutputDeclaration{
 		Name: "value", Value: v1.NewExpr("42"), ValueType: scalarType(v1.Type_SCALAR_INT),
 	}))
 	require.NoError(t, v1.Validate(&v1.OutputDeclaration{

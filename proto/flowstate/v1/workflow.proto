@@ -724,12 +724,13 @@ message ResolvedPlugin {
 // # What the schema checks, and what the compiler checks
 //
 // The schema checks what a single declaration can be wrong about on its own: the
-// name is a CEL identifier of bounded length, one type representation is present,
-// dual type representations agree, and the description fits. Everything that is
-// a fact about a *set* of declarations, or about a name CEL's lexer will not
-// accept, is the compiler's: protovalidate rules are per-field and RE2 has no
-// negative lookahead, so a rule spelled here that cannot hold is worse than no
-// rule, per this file's own history with nineteen of them.
+// name is a CEL identifier of bounded length, the legacy type projection is
+// present during the additive rollout, dual type representations agree, and the
+// description fits. Everything that is a fact about a *set* of declarations, or
+// about a name CEL's lexer will not accept, is the compiler's: protovalidate
+// rules are per-field and RE2 has no negative lookahead, so a rule spelled here
+// that cannot hold is worse than no rule, per this file's own history with
+// nineteen of them.
 //
 // Deferred to the compiler, deliberately and in one list so nobody has to
 // rediscover it:
@@ -750,8 +751,8 @@ message ResolvedPlugin {
 message InputDeclaration {
   option (buf.validate.message).cel = {
     id: "input_declaration.type_present"
-    message: "either value_type or the legacy type must declare the input type"
-    expression: "has(this.value_type) || this.type != 0"
+    message: "the legacy type is required until structural-only declarations are safe across rolling upgrades"
+    expression: "this.type != 0"
   };
   option (buf.validate.message).cel = {
     id: "input_declaration.type_agrees"
@@ -1056,11 +1057,12 @@ message InputDeclaration {
     }
   ];
 
-  // ValueType is the structural type used by edition-aware writers. The legacy
-  // enum above remains readable because declarations are serialized in durable
-  // run history. Neither field is individually required: the message rules
-  // require one representation and reject dual representations that do not
-  // agree.
+  // ValueType is the structural type used by edition-aware writers. During the
+  // additive rollout, a writer that sets it must also project the same meaning
+  // into the legacy enum: an older worker ignores this unknown field, so a
+  // structural-only declaration is unsafe until the edition/profile boundary
+  // guarantees that old readers refuse it. The message rules require that
+  // projection and reject dual representations that do not agree.
   .flowstate.v1.Type value_type = 18;
 }
 
@@ -1082,6 +1084,11 @@ message InputDeclaration {
 // than about a single field, which is what puts them out of protovalidate's
 // reach here and into [CheckOutputConstraintShape].
 message OutputDeclaration {
+  option (buf.validate.message).cel = {
+    id: "output_declaration.legacy_type_present_with_value_type"
+    message: "value_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades"
+    expression: "!has(this.value_type) || this.type != 0"
+  };
   option (buf.validate.message).cel = {
     id: "output_declaration.type_agrees"
     message: "value_type and the legacy type must describe the same output type when both are set"
@@ -1184,8 +1191,10 @@ message OutputDeclaration {
 
   // ValueType is the structural type used by edition-aware writers when an
   // output declares one. Absence still means that the output has no declared
-  // type. The legacy enum remains readable for durable histories, and the
-  // message rule rejects two set representations that disagree.
+  // type. During the additive rollout, a writer that sets this field must also
+  // project the same meaning into the legacy enum so an older worker cannot
+  // silently treat the output as untyped. The message rules require that
+  // projection and reject dual representations that disagree.
   Type value_type = 8;
 }
 

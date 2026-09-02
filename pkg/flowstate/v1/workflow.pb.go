@@ -1005,12 +1005,13 @@ func (x *ResolvedPlugin) GetClaimsSchemaVersion() uint32 {
 // # What the schema checks, and what the compiler checks
 //
 // The schema checks what a single declaration can be wrong about on its own: the
-// name is a CEL identifier of bounded length, one type representation is present,
-// dual type representations agree, and the description fits. Everything that is
-// a fact about a *set* of declarations, or about a name CEL's lexer will not
-// accept, is the compiler's: protovalidate rules are per-field and RE2 has no
-// negative lookahead, so a rule spelled here that cannot hold is worse than no
-// rule, per this file's own history with nineteen of them.
+// name is a CEL identifier of bounded length, the legacy type projection is
+// present during the additive rollout, dual type representations agree, and the
+// description fits. Everything that is a fact about a *set* of declarations, or
+// about a name CEL's lexer will not accept, is the compiler's: protovalidate
+// rules are per-field and RE2 has no negative lookahead, so a rule spelled here
+// that cannot hold is worse than no rule, per this file's own history with
+// nineteen of them.
 //
 // Deferred to the compiler, deliberately and in one list so nobody has to
 // rediscover it:
@@ -1210,11 +1211,12 @@ type InputDeclaration struct {
 	// submission gets back, so an unbounded set is an unbounded response the
 	// caller controls the shape of.
 	Values []string `protobuf:"bytes,17,rep,name=values,proto3" json:"values,omitempty"`
-	// ValueType is the structural type used by edition-aware writers. The legacy
-	// enum above remains readable because declarations are serialized in durable
-	// run history. Neither field is individually required: the message rules
-	// require one representation and reject dual representations that do not
-	// agree.
+	// ValueType is the structural type used by edition-aware writers. During the
+	// additive rollout, a writer that sets it must also project the same meaning
+	// into the legacy enum: an older worker ignores this unknown field, so a
+	// structural-only declaration is unsafe until the edition/profile boundary
+	// guarantees that old readers refuse it. The message rules require that
+	// projection and reject dual representations that do not agree.
 	ValueType     *Type `protobuf:"bytes,18,opt,name=value_type,json=valueType,proto3" json:"value_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1434,8 +1436,10 @@ type OutputDeclaration struct {
 	Values []string `protobuf:"bytes,7,rep,name=values,proto3" json:"values,omitempty"`
 	// ValueType is the structural type used by edition-aware writers when an
 	// output declares one. Absence still means that the output has no declared
-	// type. The legacy enum remains readable for durable histories, and the
-	// message rule rejects two set representations that disagree.
+	// type. During the additive rollout, a writer that sets this field must also
+	// project the same meaning into the legacy enum so an older worker cannot
+	// silently treat the output as untyped. The message rules require that
+	// projection and reject dual representations that disagree.
 	ValueType     *Type `protobuf:"bytes,8,opt,name=value_type,json=valueType,proto3" json:"value_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3519,7 +3523,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x12task_schema_digest\x18\x04 \x01(\tR\x10taskSchemaDigest\x12/\n" +
 	"\x13distribution_digest\x18\x05 \x01(\tR\x12distributionDigest\x12#\n" +
 	"\rclaims_digest\x18\x06 \x01(\tR\fclaimsDigest\x122\n" +
-	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\xba\f\n" +
+	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\xc1\f\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12A\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12\x1a\n" +
@@ -3546,8 +3550,8 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\tTYPE_BOOL\x10\x04\x12\x0f\n" +
 	"\vTYPE_STRUCT\x10\x05\x12\r\n" +
 	"\tTYPE_LIST\x10\x06\x12\r\n" +
-	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\b:\xc7\x05\xbaH\xc3\x05\x1a\x8a\x01\n" +
-	"\x1einput_declaration.type_present\x12@either value_type or the legacy type must declare the input type\x1a&has(this.value_type) || this.type != 0\x1a\xb3\x04\n" +
+	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\b:\xce\x05\xbaH\xca\x05\x1a\x91\x01\n" +
+	"\x1einput_declaration.type_present\x12_the legacy type is required until structural-only declarations are safe across rolling upgrades\x1a\x0ethis.type != 0\x1a\xb3\x04\n" +
 	"\x1dinput_declaration.type_agrees\x12Rvalue_type and the legacy type must describe the same input type when both are set\x1a\xbd\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
 	"\f_descriptionB\n" +
 	"\n" +
@@ -3558,7 +3562,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xee\a\n" +
+	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xc4\t\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
@@ -3569,7 +3573,8 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x04type\x18\x06 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12+\n" +
 	"\x06values\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
 	"\n" +
-	"value_type\x18\b \x01(\v2\x12.flowstate.v1.TypeR\tvalueType:\xbc\x04\xbaH\xb8\x04\x1a\xb5\x04\n" +
+	"value_type\x18\b \x01(\v2\x12.flowstate.v1.TypeR\tvalueType:\x92\x06\xbaH\x8e\x06\x1a\xd3\x01\n" +
+	"6output_declaration.legacy_type_present_with_value_type\x12pvalue_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades\x1a'!has(this.value_type) || this.type != 0\x1a\xb5\x04\n" +
 	"\x1eoutput_declaration.type_agrees\x12Svalue_type and the legacy type must describe the same output type when both are set\x1a\xbd\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
 	"\f_descriptionB\a\n" +
 	"\x05_must\"\xae\x01\n" +
