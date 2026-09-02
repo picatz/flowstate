@@ -628,7 +628,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		var evaluated v1.Scope
 		if err := workflow.ExecuteActivity(withSummary(e.ctx, callVarsSummary(e.path, node.GetId())), WorkflowVars, &v1.Scope{
 			AmbientVars: callee.GetVars(),
-			Profile:     v1.CalleeProfile(e.scope, callee),
+			Profile:     v1.CalleeProfile(e.scope.GetProfile(), callee),
 
 			// The calling run's identity, for the reason the other WorkflowVars
 			// dispatch carries it: a called workflow's vars are still this run's

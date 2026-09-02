@@ -168,17 +168,18 @@ func mustBaseEnv(libs []string, extra ...cel.EnvOption) (*cel.Env, error) {
 // expressions, building it on first use. TYPE_UNSPECIFIED binds `this` as dyn
 // for output constraints.
 func mustEnvFor(profile string, t InputDeclaration_Type) (*cel.Env, error) {
+	profile = canonicalProfile(profile)
+	key := mustEnvKey{profile: profile, t: t}
+	if cached, ok := mustEnvs.Load(key); ok {
+		res := cached.(*mustEnvResult)
+		return res.env, res.err
+	}
+
 	libs, err := ProfileLibraries(profile)
 	if err != nil {
 		// Refuse before the caller-controlled profile becomes a cache key. The
 		// successful key space is bounded by the profiles this build knows.
 		return nil, fmt.Errorf("resolve profile libraries: %w", err)
-	}
-
-	key := mustEnvKey{profile: profile, t: t}
-	if cached, ok := mustEnvs.Load(key); ok {
-		res := cached.(*mustEnvResult)
-		return res.env, res.err
 	}
 
 	env, err := mustBaseEnv(libs, cel.Variable("this", constraintCELType(t)))

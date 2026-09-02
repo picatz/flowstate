@@ -42,4 +42,11 @@ func TestMustUsesTheWorkflowProfile(t *testing.T) {
 	}
 	_, err = BindRunInputs(wf, map[string]*Value{"value": NewLiteral("value")})
 	require.ErrorContains(t, err, "undeclared reference to 'trim'")
+
+	// An unprofiled callee inherits the caller's profile for all of its CEL,
+	// including the input constraints bound before CallScope can exist.
+	wf.Profile = ""
+	_, err = CallScope(NewScope(profile, nil), wf,
+		map[string]*Value{"value": NewLiteral("value")}, nil)
+	require.ErrorContains(t, err, "undeclared reference to 'trim'")
 }
