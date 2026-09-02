@@ -101,6 +101,12 @@ const (
 	SlotWebhookArgument
 	// SlotWebhookVerify is one entry of a webhook trigger's `verify:`.
 	SlotWebhookVerify
+	// SlotWebhookSignalCorrelate is a webhook trigger's `signal.correlate:` —
+	// the expression naming the run a delivery answers.
+	SlotWebhookSignalCorrelate
+	// SlotWebhookSignalArgument is one entry of a webhook trigger's
+	// `signal.with:`, the payload a delivery carries to the gate.
+	SlotWebhookSignalArgument
 
 	// SlotCondition is a step's `if:`.
 	SlotCondition
@@ -178,6 +184,9 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotWebhookIdempotencyKey: "Workflow.triggers.webhooks[].idempotency_key",
 		SlotWebhookArgument:       "Workflow.triggers.webhooks[].arguments{}",
 		SlotWebhookVerify:         "Workflow.triggers.webhooks[].verify{}",
+
+		SlotWebhookSignalCorrelate: "Workflow.triggers.webhooks[].signal.correlate",
+		SlotWebhookSignalArgument:  "Workflow.triggers.webhooks[].signal.arguments{}",
 
 		SlotCondition:        "Workflow.steps[].condition",
 		SlotStepVar:          "Workflow.steps[].vars{}",
@@ -302,6 +311,10 @@ func (s ValueSite) Field() string {
 		return s.triggerPath() + ".with." + s.Name
 	case SlotWebhookVerify:
 		return s.triggerPath() + ".verify." + s.Name
+	case SlotWebhookSignalCorrelate:
+		return s.triggerPath() + ".signal.correlate"
+	case SlotWebhookSignalArgument:
+		return s.triggerPath() + ".signal.with." + s.Name
 	case SlotCondition:
 		return "if"
 	case SlotTaskInput:
@@ -484,6 +497,25 @@ func walkWorkflowValuesAfterSteps(wf *Workflow, w Walk) {
 				Index: i,
 				Value: webhook.GetVerify()[key],
 			})
+		}
+
+		if signal := webhook.GetSignal(); signal != nil {
+			w.value(ValueSite{
+				Slot:  SlotWebhookSignalCorrelate,
+				Owner: name,
+				Index: i,
+				Value: signal.GetCorrelate(),
+			})
+
+			for _, argument := range slices.Sorted(maps.Keys(signal.GetArguments())) {
+				w.value(ValueSite{
+					Slot:  SlotWebhookSignalArgument,
+					Name:  argument,
+					Owner: name,
+					Index: i,
+					Value: signal.GetArguments()[argument],
+				})
+			}
 		}
 	}
 }
