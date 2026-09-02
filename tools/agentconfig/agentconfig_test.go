@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -169,6 +170,10 @@ func TestAmpSettingsUsePortableSkillsWithoutRepositoryPermissionPrompts(t *testi
 }
 
 func TestClaudeSessionUsesThePinnedGoToolchain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude session hook requires Bash and POSIX symlinks")
+	}
+
 	root := repoRoot(t)
 	data := read(t, filepath.Join(root, ".claude", "settings.json"))
 	var settings struct {
