@@ -114,3 +114,53 @@ func TestABridgeAddressedFromUnsignedHeadersIsRefusedInTheFile(t *testing.T) {
 	require.Containsf(t, found.Message, "hmac_sha256",
 		"the diagnostic has to name the scheme whose signature does not cover this")
 }
+
+// TestTheAddressingRefusalUnderlinesTheExpressionItIsAbout pins the routing the
+// diagnostic does, which used to be a substring match on the refusal's prose:
+// correct until somebody reworded the sentence, at which point the squiggle
+// moves to the wrong line and nothing fails.
+//
+// Both positions, because a rule with one arm under test is a rule whose other
+// arm is decided by whatever the string happens to contain.
+func TestTheAddressingRefusalUnderlinesTheExpressionItIsAbout(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		from  string
+		to    string
+		field string
+	}{
+		{
+			name:  "a header-derived correlation underlines correlate:",
+			from:  "correlate: ${event.body.order}",
+			to:    `correlate: ${event.headers["x-order"]}`,
+			field: "triggers[0].signal.correlate",
+		},
+		{
+			name:  "a header-derived delivery id underlines idempotency_key:",
+			from:  "idempotency_key: ${event.body.trigger_id}",
+			to:    `idempotency_key: ${event.headers["x-request-id"]}`,
+			field: "triggers[0].idempotency_key",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds := validateSource(t, strings.Replace(bridgeSource(""), test.from, test.to, 1))
+
+			var found *flowfile.Diagnostic
+			for i, d := range ds {
+				if strings.Contains(d.Message, "does not sign a delivery's headers") {
+					found = &ds[i]
+
+					break
+				}
+			}
+
+			require.NotNilf(t, found, "the addressing rule did not fire; diagnostics were %v", ds)
+			require.Equalf(t, test.field, found.Field,
+				"the diagnostic underlines the expression an author has to edit")
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -1628,11 +1629,19 @@ func validateWebhookSignal(wf *v1.Workflow, at string, webhook *v1.WebhookTrigge
 	// trigger's own `idempotency_key:` where that is. Positioned rather than
 	// folded into one sentence against the entry, because the fix is an edit to
 	// one specific expression.
+	//
+	// The position comes off the refusal itself ([v1.WebhookAddressingError]),
+	// not off its wording. Reading it out of the sentence worked and would have
+	// gone on working right up until somebody reworded the sentence, at which
+	// point the squiggle moves to the wrong line and every test still passes.
 	if err := v1.CheckWebhookSignalAddressing(webhook); err != nil {
 		field := fieldPath(signalPath, "correlate")
-		if strings.Contains(err.Error(), "`idempotency_key:`") {
+
+		var addressing *v1.WebhookAddressingError
+		if errors.As(err, &addressing) && addressing.Field == v1.WebhookAddressingIdempotencyKey {
 			field = fieldPath(at, "idempotency_key")
 		}
+
 		ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
 	}
 

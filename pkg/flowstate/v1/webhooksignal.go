@@ -269,6 +269,49 @@ func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigg
 		webhook, name, qualified, qualified)
 }
 
+// WebhookAddressingField names which of a trigger's two addressing expressions
+// a [WebhookAddressingError] is about.
+//
+// A typed value rather than a sentence a caller matches against: the diagnostic
+// layer has to underline one expression or the other, and deriving that from
+// the refusal's prose makes rewording the sentence silently move the squiggle
+// to the wrong line. The rule decides; the presentation reads what it decided.
+type WebhookAddressingField string
+
+const (
+	// WebhookAddressingCorrelate is the `signal.correlate:` expression, which
+	// chooses which run a delivery answers.
+	WebhookAddressingCorrelate WebhookAddressingField = "signal.correlate"
+
+	// WebhookAddressingIdempotencyKey is the trigger's `idempotency_key:`,
+	// which on a bridge mints the delivery id the run's replay ring recognizes.
+	WebhookAddressingIdempotencyKey WebhookAddressingField = "idempotency_key"
+)
+
+// WebhookAddressingError is [CheckWebhookSignalAddressing]'s refusal, carrying
+// the expression it is about beside the sentence a person reads.
+type WebhookAddressingError struct {
+	// Field is which expression must change.
+	Field WebhookAddressingField
+
+	// Webhook is the trigger the expression belongs to.
+	Webhook string
+
+	// Schemes are the declared schemes whose signatures do not cover headers,
+	// named in the sentence so an author knows what would have to change for
+	// the expression to be admissible.
+	Schemes []string
+}
+
+func (e *WebhookAddressingError) Error() string {
+	return fmt.Sprintf("webhook %q writes a `%s:` over `%s.%s`, and %s does not sign a delivery's "+
+		"headers — only its body. Anybody who has seen one valid delivery could replay that body "+
+		"and signature with a different header, and this expression decides which run the replay "+
+		"answers. Address the run from `%s.%s` instead",
+		e.Webhook, e.Field, EventRoot, EventHeadersField,
+		strings.Join(e.Schemes, " and "), EventRoot, EventBodyField)
+}
+
 // CheckWebhookSignalAddressing refuses a bridge that decides *which run* from
 // bytes its own `verify:` does not sign.
 //
@@ -312,22 +355,21 @@ func CheckWebhookSignalAddressing(trigger *WebhookTrigger) error {
 	}
 
 	for _, addressed := range []struct {
-		field string
+		field WebhookAddressingField
 		value *Value
 	}{
-		{field: "signal.correlate", value: trigger.GetSignal().GetCorrelate()},
-		{field: "idempotency_key", value: trigger.GetIdempotencyKey()},
+		{field: WebhookAddressingCorrelate, value: trigger.GetSignal().GetCorrelate()},
+		{field: WebhookAddressingIdempotencyKey, value: trigger.GetIdempotencyKey()},
 	} {
 		if !celExprReadsEventHeaders(addressed.value.GetExpr().GetExpr()) {
 			continue
 		}
 
-		return fmt.Errorf("webhook %q writes a `%s:` over `%s.%s`, and %s does not sign a delivery's "+
-			"headers — only its body. Anybody who has seen one valid delivery could replay that body "+
-			"and signature with a different header, and this expression decides which run the replay "+
-			"answers. Address the run from `%s.%s` instead",
-			trigger.GetName(), addressed.field, EventRoot, EventHeadersField,
-			strings.Join(unsigned, " and "), EventRoot, EventBodyField)
+		return &WebhookAddressingError{
+			Field:   addressed.field,
+			Webhook: trigger.GetName(),
+			Schemes: unsigned,
+		}
 	}
 
 	return nil

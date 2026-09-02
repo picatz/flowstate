@@ -218,6 +218,22 @@ type LocalSignals struct {
 	// Guarded by mu, like everything else here: deliveries arrive from whatever
 	// is listening while the run executes on another goroutine.
 	consumed []string
+
+	// queued counts, per delivery id, the deliveries sitting in a queue that
+	// no wait has taken yet.
+	//
+	// It exists for one question, asked at enqueue: *will* a wait admit this
+	// delivery? [consumed] answers it for a replay of something already taken,
+	// and cannot answer it for a replay that arrives while its own original is
+	// still queued — both look unconsumed, and both would then withdraw a
+	// deadline, one of them from a wait that goes on to drop its copy and park
+	// with no timer. Two bounded waits on one name is exactly that shape.
+	//
+	// Counted rather than a set because the same id may legitimately be queued
+	// and dropped several times; the entry is removed when it reaches zero, so
+	// this holds only what is actually in flight and cannot grow with a run's
+	// history the way [consumed] deliberately does.
+	queued map[string]int
 }
 
 // NewLocalSignals returns an empty [LocalSignals] with no policy to enforce:
@@ -260,6 +276,55 @@ func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *Workload
 	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter}
 }
 
+// willAdmitLocked reports whether some wait is going to be able to take this
+// delivery, without recording anything. Called with s.mu held.
+//
+// This is the enqueue-time half of the dedupe, and it is not the same question
+// [LocalSignals.admitLocked] answers. That one runs when a wait has the
+// delivery in hand and one answer is already settled; this one runs before any
+// wait has seen it, so it has to account for the copies still queued ahead of
+// it as well as the ids already taken.
+//
+// A delivery with no id is always admissible: nothing deduplicates it, so some
+// wait will take it.
+func (s *LocalSignals) willAdmitLocked(id string) bool {
+	if id == "" {
+		return true
+	}
+
+	return !DeliveryWasConsumed(s.consumed, id) && s.queued[id] == 0
+}
+
+// enqueuedLocked records that a delivery is now sitting in a queue, and
+// dequeuedLocked that one has left it. Both called with s.mu held.
+//
+// Every path that removes a delivery from a queue calls the second, whether the
+// wait went on to take it or to drop it as a redelivery: what this counts is
+// what is *in flight*, and a dropped copy is no longer in flight either.
+func (s *LocalSignals) enqueuedLocked(delivery *SignalDelivery) {
+	id := delivery.GetSender().GetDeliveryId()
+	if id == "" {
+		return
+	}
+	if s.queued == nil {
+		s.queued = map[string]int{}
+	}
+	s.queued[id]++
+}
+
+func (s *LocalSignals) dequeuedLocked(delivery *SignalDelivery) {
+	id := delivery.GetSender().GetDeliveryId()
+	if id == "" {
+		return
+	}
+	if s.queued[id] <= 1 {
+		delete(s.queued, id)
+
+		return
+	}
+	s.queued[id]--
+}
+
 // admitLocked reports whether a wait may take this delivery, recording it as
 // consumed when it may. Called with s.mu held.
 //
@@ -293,6 +358,7 @@ func (s *LocalSignals) takeLocked(name string) (*SignalDelivery, bool) {
 	for {
 		select {
 		case delivery := <-queue:
+			s.dequeuedLocked(delivery)
 			if !s.admitLocked(delivery) {
 				continue
 			}
@@ -403,8 +469,13 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Asked before the enqueue, because the enqueue is what makes this delivery
+	// one of the copies the question is about.
+	admissible := s.willAdmitLocked(sender.GetDeliveryId())
+
 	select {
 	case s.queueLocked(name) <- delivery:
+		s.enqueuedLocked(delivery)
 	default:
 		return fmt.Errorf(
 			"flowstate: %d signals named %q are already waiting to be read", localSignalQueueDepth, name)
@@ -416,18 +487,30 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	// the same signal — whichever of them this payload reaches, exactly one
 	// stops needing its deadline.
 	//
-	// Unless this payload answers nothing. A redelivery of something a gate
-	// already consumed is queued (the waiting loop is what drops it, at the one
-	// intake seam both drivers share) but it does *not* release a wait, so
-	// withdrawing a deadline here would retire a timer nothing is going to
-	// replace: under a [VirtualClock] the deadline is deregistered, the clock
-	// stops counting it, and the wait parks forever on a channel that will never
-	// fire — a `flow test` case hanging where it should have reported a timeout.
-	// The durable driver keeps its timer armed across a skipped duplicate (the
-	// timer is created once, outside the selector loop), so consulting the
-	// consumed set here is what keeps the two drivers' observable answer the
-	// same. Read-only: recording is the consuming wait's, not a delivery's.
-	if DeliveryWasConsumed(s.consumed, sender.GetDeliveryId()) {
+	// Unless this payload answers nothing. A delivery no wait will take — a
+	// replay of one already consumed, or a second copy queued behind its own
+	// original — is queued all the same (the waiting loop is what drops it, at
+	// the one intake seam both drivers share) but it releases nobody, so
+	// withdrawing a deadline for it retires a timer nothing replaces: under a
+	// [VirtualClock] the deadline is deregistered, the clock stops counting it,
+	// and the wait it belonged to parks forever on a channel that will never
+	// fire. The durable driver keeps that wait's timer armed across a skipped
+	// duplicate — its timer is created once, outside the selector loop — so
+	// asking [LocalSignals.willAdmitLocked] here is what keeps the two drivers'
+	// observable answer the same.
+	//
+	// # Why the question is asked here and not where the wait admits it
+	//
+	// Because the withdrawal has to happen under this lock, before the payload
+	// is visible to anyone. Between a payload becoming visible and the woken
+	// wait being scheduled, that wait is runnable and cannot say so, and any
+	// other participant's clock call in that window — a scripted sender merely
+	// leaving is enough — finds a deadline nobody is waiting under any more and
+	// advances time to it. That is #278, and
+	// `flowtest`'s TestAnsweredGateDoesNotDragTheClockToItsUnusedDeadline fails
+	// within milliseconds if this moves to the admitting wait. So the enqueue
+	// decides, and the only thing that had to change is the question it asks.
+	if !admissible {
 		return nil
 	}
 
@@ -576,6 +659,7 @@ func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Ou
 		select {
 		case delivery := <-s.queue(name):
 			s.mu.Lock()
+			s.dequeuedLocked(delivery)
 			admitted := s.admitLocked(delivery)
 			s.mu.Unlock()
 

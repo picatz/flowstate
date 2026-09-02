@@ -99,3 +99,87 @@ func TestARedeliveryDoesNotWithdrawAParkedWaitsDeadline(t *testing.T) {
 	require.Equal(t, 0, clock.Pending(),
 		"a genuine delivery must still release the wait it answers, deadline and all")
 }
+
+// TestTwoParallelWaitsKeepTheDeadlineOfWhicheverDropsTheReplay is the second
+// shape of the same defect, and the one the consumed set alone cannot see.
+//
+// Two bounded waits on one name — concurrent gates, which the withdrawal loop's
+// own comment has always contemplated — with a delivery and its replay both
+// queued before either wait runs. At enqueue neither copy is *consumed*: the
+// original has not been taken yet. So both looked admissible, both withdrew a
+// deadline, and the wait that went on to drop its copy was left parked with no
+// timer, while the durable driver keeps that wait's timer armed.
+//
+// The question the enqueue has to ask is not "has this been taken" but "will a
+// wait take this", which has to account for the copies queued ahead of it. That
+// is what [LocalSignals.queued] is for.
+//
+// The withdrawal stays at the enqueue rather than moving to the admitting wait,
+// and that is not a preference: `flowtest`'s
+// TestAnsweredGateDoesNotDragTheClockToItsUnusedDeadline fails when it moves,
+// because between a payload becoming visible and the woken wait being scheduled
+// the clock can advance to a deadline nobody needs any more (#278).
+func TestTwoParallelWaitsKeepTheDeadlineOfWhicheverDropsTheReplay(t *testing.T) {
+	t.Parallel()
+
+	const name = "stage-approved"
+
+	clock := NewVirtualClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	// Three participants, none of which parks, so nothing advances underneath
+	// the assertions: what is under test is which deadlines survive.
+	clock.Enter()
+	clock.Enter()
+	clock.Enter()
+
+	signals := NewLocalSignals()
+
+	click := func() *SignalSender {
+		sender := LocalSignalSender()
+		sender.DeliveryId = "click-a"
+
+		return sender
+	}
+	approval := func() *Node_Outputs {
+		return &Node_Outputs{NamedValues: map[string]*Value{"approved": NewLiteral(true)}}
+	}
+
+	// Two concurrent gates, both parked with a deadline before anything
+	// arrives.
+	first, leaveFirst := signals.enterSignalWait(name)
+	defer leaveFirst()
+	firstDeadline, _, delivered := first.armDeadline(clock, name, time.Hour)
+	require.False(t, delivered)
+	require.NotNil(t, firstDeadline)
+
+	second, leaveSecond := signals.enterSignalWait(name)
+	defer leaveSecond()
+	secondDeadline, _, delivered := second.armDeadline(clock, name, time.Hour)
+	require.False(t, delivered)
+	require.NotNil(t, secondDeadline)
+
+	require.Equal(t, 2, clock.Pending(), "both gates should be parked under their own deadline")
+
+	// The delivery and its replay, both queued before either gate reads
+	// anything — a provider retry landing in the same instant as the original.
+	require.NoError(t, signals.DeliverFrom(name, approval(), click()))
+	require.NoError(t, signals.DeliverFrom(name, approval(), click()))
+
+	require.Equal(t, 1, clock.Pending(),
+		"one delivery answers one gate, so exactly one deadline is withdrawn: withdrawing two "+
+			"leaves the gate that drops the replay parked with no timer, and it never lapses")
+
+	// And the queue really does hold one answer and one drop: the first take
+	// admits, the second finds nothing left.
+	taken, ok := signals.tryReceiveSignal(name)
+	require.True(t, ok, "the genuine delivery did not reach a gate")
+	require.True(t, taken.GetPayload().GetNamedValues()["approved"].GetLiteral().GetBoolValue())
+
+	_, ok = signals.tryReceiveSignal(name)
+	require.False(t, ok, "the replay was admitted by the second gate")
+
+	// The other gate is still holding a live deadline, which is what will lapse
+	// it — the whole point.
+	require.Equal(t, 1, clock.Pending(),
+		"the gate that dropped the replay must still have something to time it out")
+}
