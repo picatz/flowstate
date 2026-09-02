@@ -202,6 +202,21 @@ match. A run's id is a digest over tenant, workflow, trigger and idempotency key
 a redelivery joins rather than duplicating and a key cannot address another tenant's
 run or be read back out of the id.
 
+A trigger declaring `signal:` answers a gate instead of starting a run, over the
+same route and past the same verification. What that adds is one authorization and
+one address, both decided by the server: the delivery acts as the principal the
+receiver already mints (`flowstate://webhook#<workflow>/<trigger>`, the receiver's
+namespace) and is checked by `authorizeSignal`/`SignalPolicyCheck` — the function
+`flow signal` is checked by, unchanged — while the run it reaches is composed by
+`EntityWorkflowID` from the receiver's own namespace and the entity key
+`correlate:` evaluates to, never from a workflow id in the payload. The signal
+zero case is closed for this route in the specification rather than at delivery: a
+`signal:` whose name has no `signals:` rule that could admit its trigger is refused
+when the file compiles and again when the receiver registers it, so a key holder
+cannot reach an unpoliced gate. A delivery the run has already consumed is dropped
+by the engine at intake, on both drivers, against a bounded add-only set of
+delivery-id digests carried in `RunState`; the receiver keeps no ledger.
+
 **Limits.** The route inherits the listener's TLS posture above: with no certificate
 configured, a signature and body are on the wire in the clear unless something in
 front of the listener terminates TLS or bounds who can reach it, which is what
@@ -210,8 +225,26 @@ proves possession of a shared key, not the sender's identity: anyone holding the
 can deliver. `--secret-require-namespace` is incompatible with the receiver, which
 resolves in the deployment's own tenant.
 
+The bridge inherits that identity limit and does not narrow it: a delivery attests
+the trigger, so `distinct_from_starter:` on a bridged gate separates triggers rather
+than people, and nothing on this path establishes *who clicked* — a workflow needing
+two distinct humans either side of a gate cannot get them from a webhook. Anyone
+holding one trigger's key can answer any gate that trigger's `signals:` rules admit,
+in that trigger's workflow, for any run whose entity key they can name; the entity
+key is attacker-supplied in the sense that it comes from a signed payload, so it is
+as trustworthy as the key holder and no more. The consumed-id set is per run and
+bounded at `MaxPendingSignals`: a replay is caught while the id is still in the
+window, and a run that has answered more than that many deliveries since has
+evicted it. Post-verification refusals are precise rather than levelled — an
+unaddressed delivery answers 404 and a policy refusal 403 — which is safe only
+because reaching either requires having already signed the body.
+
 **Planned.** Per-trigger rate limits, enable and disable per deployment beyond the
-flag, and stored deliveries for replay, #490, not landed.
+flag, and stored deliveries for replay, #490, not landed. For the bridge: a wait-side
+`accepts:` declaration, so a payload's shape is checked against a signature rather
+than passed through (#96), and asymmetric schemes that could attest a person rather
+than a key holder — the evidence that would make `distinct_from_starter:` mean on
+this route what it means everywhere else.
 
 ### Server to worker
 

@@ -40,6 +40,7 @@ headings below, not this list.*
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
   - [`triggers:` — the file declares a cadence, a person creates it *(landed)*](#triggers--the-file-declares-a-cadence-a-person-creates-it-landed)
   - [`triggers:` as a list of call sites — `webhook:` *(landed)*](#triggers-as-a-list-of-call-sites--webhook-landed)
+  - [A `webhook:` may answer a gate instead of starting a run — `signal:` *(landed)*](#a-webhook-may-answer-a-gate-instead-of-starting-a-run--signal-landed)
   - [`manual:` narrows, and the body can read how a run started](#manual-narrows-and-the-body-can-read-how-a-run-started)
   - [`${...}` stays; `!expr` is refused](#-stays-expr-is-refused)
   - [`value:` landed, on the evidence the refusal asked for (#411)](#value-landed-on-the-evidence-the-refusal-asked-for-411)
@@ -1663,6 +1664,102 @@ is refused, naming both, because a declaration that could contradict the arithme
 is one fact written down twice. `examples/webhook-trigger` is the worked example —
 its third case replays a captured delivery with an edited body and asserts the
 arithmetic refuses it — and it runs in CI like the rest.
+
+### A `webhook:` may answer a gate instead of starting a run — `signal:` *(landed)*
+
+The block above turns a delivery into a *start*. The other thing an integration wants
+is the opposite direction: a run is already parked at a `wait_for_signal:`, somebody
+clicks a button in Slack, and that click has to reach the gate. That is a `signal:`
+block where the entry would otherwise write `with:`:
+
+```yaml
+signals:
+  stage-approved:
+    allow:
+      - subject: flowstate://webhook#deploy-gate/slack-approval
+
+triggers:
+  - webhook: slack-approval
+    verify:
+      hmac_sha256: ${secret('vault:slack/signing')}
+    idempotency_key: ${event.body.trigger_id}
+    signal:
+      name: stage-approved                                  # a signal this file waits for
+      correlate: ${event.body.actions[0].value}             # the run's entity key
+      with:
+        approved: ${event.body.actions[0].action_id == "approve"}
+```
+
+**`signal:` and `with:` are mutually exclusive**, refused together with a positioned
+diagnostic rather than resolved by precedence. One binds a new run's `inputs:` and the
+other answers a run that is already waiting; whichever a precedence rule picked, the
+other would be a key an author wrote and nothing read, which is the shape
+[docs/STYLE.md](STYLE.md)'s R6 refuses.
+
+**`correlate:` yields the run's *entity key*, not its workflow id.** The receiver
+composes the address the way `RunRequest.entity_key` and
+`SignalWithStartRequest.entity_key` compose it — the deployment's own namespace joined
+to this key — so the grammar is the entity-key grammar (lowercase letters, digits and
+dashes) and a delivery cannot reach a run addressed any other way. A workflow id lifted
+out of a payload was the obvious alternative and is refused: a payload is sender-shaped,
+neither verification scheme signs headers, and an id read from one would let a key
+holder name any run in the tenant. Like `idempotency_key:`, the expression must
+name `event` — a `correlate:` that cannot vary with the delivery addresses one run for
+every delivery this webhook will ever receive — and the same residual applies: naming
+the delivery is provable, depending on it is not.
+
+**The gate's `signals:` policy must name the trigger, and this is the one place the
+zero case is closed.** A signal name with no `signals:` entry admits any sender; that
+is the deliberate opt-in rule everywhere else, and it is not tolerable on a route
+anybody can POST to, where "any sender" means "whoever holds one signing key". So
+`flow validate` refuses a `signal:` whose name has no explicit policy with a rule that
+could admit the trigger's principal:
+
+```
+webhook "slack-approval" answers signal "stage-approved", which declares no `signals:`
+policy; a signal with no policy admits any sender, and this one is answerable by
+whoever holds this webhook's signing key
+```
+
+The principal is the *trigger*: `flowstate://webhook#<workflow>/<trigger>`, issued by
+a scheme no identity provider can mint, so a rule naming a webhook cannot collide with
+one naming a person. It is the same principal the receiver already records as a
+webhook-started run's starter, checked by the same `authorizeSignal` and
+`SignalPolicyCheck` a `flow signal` goes through — there is no second policy language
+here. What a signature attests is possession of a key rather than a person, so
+`distinct_from_starter:` on a bridged gate separates triggers rather than humans, and
+a workflow that needs two distinct people either side of a gate cannot get them from a
+webhook today.
+
+**`with:` is passed through, for now.** A `wait_for_signal:` declares no signature for
+what it accepts — it takes whatever shape arrives and shapes it with its own
+`outputs:` — so nothing checks these names against anything, in either direction. That
+is why the spelling is `with:` rather than `payload:`: when a wait grows an `accepts:`
+declaration, the call site is already written the way every other call site in this
+language is written, and the check becomes the same two-directional check a trigger's
+`with:` already gets against `inputs:`. Until then, the names are the author's to keep
+consistent, and `outputs:` on the wait is where a payload is given a shape.
+
+**A redelivery answers one gate, not two.** Webhook delivery is at-least-once, so the
+same click arrives twice as a matter of course. With a single gate that is harmless;
+with a `loop:` around the wait it is not, because a replay would answer the *next*
+turn — a stage approved by nobody. The run therefore records the delivery ids it has
+consumed and drops a repeat at intake, on both drivers, bounded as a ring at 128 and
+weighed with the rest of the run's carried state. Nothing an author writes turns this
+on; a delivery is deduped because it is a delivery. The receiver keeps no table of its
+own, and answers a redelivery exactly as it answered the first: 200, the same
+`joined` shape a redelivered *start* gets, because the run existed either way.
+
+A delivery whose `correlate:` names no run in this tenant is refused with a 404 and a
+`Retry-After`, and one the gate's policy will not take is refused with a 403 — precise
+rather than levelled, because reaching either means having already signed the body.
+Every refusal *before* that point is the one status and one sentence the start path
+gives, with the same timing.
+
+`examples/webhook-approval-bridge` is the worked example, and its `flow test` cases are
+the readable statement of all three claims: a click approves a stage, the same click
+delivered twice approves one, and a click from a sender the policy does not name never
+reaches the gate at all.
 
 ### `manual:` narrows, and the body can read how a run started
 
