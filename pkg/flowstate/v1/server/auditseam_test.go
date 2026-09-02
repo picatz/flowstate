@@ -93,6 +93,7 @@ func TestTheAuditSeamIsNotBypassed(t *testing.T) {
 			"authorizeRun":    "the audited wrapper: this is where the record is written",
 			"Signal":          "walks a Continue-As-New chain from its first run id to the current one, which is one decision reached in two lookups; it audits once itself",
 			"SignalWithStart": "audits when the request is admitted, before anything is created; the already-running branch re-resolves that same decision",
+			"answer":          "the webhook-to-signal bridge: it reaches one decision — is there a run here, and will its `signals:` take an answer from this trigger — and audits that decision itself, denial and acceptance both, under the WebhookSignal verb",
 		},
 		"authorizeScheduleDecision": {
 			"authorizeSchedule": "the audited wrapper: this is where the record is written",
