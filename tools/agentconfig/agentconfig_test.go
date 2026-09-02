@@ -224,7 +224,7 @@ func TestClaudeSessionUsesThePinnedGoToolchain(t *testing.T) {
 	if err := os.Symlink(goBinary, filepath.Join(baseBin, "go")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("/bin/false", filepath.Join(baseBin, "gofmt")); err != nil {
+	if err := os.WriteFile(filepath.Join(baseBin, "gofmt"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	basePath := baseBin + ":/usr/bin:/bin"
