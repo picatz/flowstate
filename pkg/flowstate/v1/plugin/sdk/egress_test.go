@@ -882,3 +882,40 @@ func TestABoundedClientKeepsTheGrantsRulesAndTheCredentialMark(t *testing.T) {
 	require.NoError(t, err, "the bounded client refused an unauthenticated request the policy permits")
 	plain.Body.Close()
 }
+
+// TestABoundMustBeRaisedRatherThanRemoved is the direction an exported
+// constructor has to hold that its callers happen not to exercise.
+//
+// netpolicy spells "unbounded" as a non-positive bound, so a plugin passing zero
+// here — from a constant it forgot to set, or an int64 that came from somewhere
+// — would get back a policy that reads a response of any size or waits forever,
+// with the grant's own bound silently removed rather than replaced. A policy
+// file cannot ask for that ([netpolicy.Config.Options] refuses it in the same
+// words), and this is the same surface reached from Go.
+func TestABoundMustBeRaisedRatherThanRemoved(t *testing.T) {
+	resetGrant(t)
+	t.Setenv(EgressPolicyEnv, grantOf("egress:\n  schemes: [https]\n"))
+
+	for _, testCase := range []struct {
+		name             string
+		maxResponseBytes int64
+		timeout          time.Duration
+		wantIn           string
+	}{
+		{name: "no response bound", maxResponseBytes: 0, timeout: time.Second, wantIn: "maxResponseBytes must be positive"},
+		{name: "a negative response bound", maxResponseBytes: -1, timeout: time.Second, wantIn: "maxResponseBytes must be positive"},
+		{name: "no timeout", maxResponseBytes: 1 << 20, timeout: 0, wantIn: "timeout must be positive"},
+		{name: "a negative timeout", maxResponseBytes: 1 << 20, timeout: -time.Second, wantIn: "timeout must be positive"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			policy, err := EgressPolicyWithBounds(testCase.maxResponseBytes, testCase.timeout)
+			require.Error(t, err, "a bound this removes was accepted")
+			assert.Nil(t, policy)
+			assert.Contains(t, err.Error(), testCase.wantIn)
+
+			client, err := HTTPClientWithBounds(testCase.maxResponseBytes, testCase.timeout)
+			require.Error(t, err, "the client constructor accepted what the policy constructor refused")
+			assert.Nil(t, client, "an unbounded client escaped a refused bound")
+		})
+	}
+}

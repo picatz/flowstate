@@ -30,10 +30,14 @@ func TestIssueCommentWritesWithoutAProductionCaller(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	// The governed client this plugin would have taken from a grant permitting
-	// the fixture server, built here because a test binary is not launched by a
-	// worker. It is a client rather than a policy so that this test exercises
-	// the same object production does, credential marking included.
+	// A governed client standing in for the one this plugin takes from a grant
+	// permitting the fixture server, built here because a test binary is not
+	// launched by a worker. It is netpolicy's own client, so it carries the
+	// destination checks and the response bound but not the SDK's credential
+	// marking — that transport comes from sdk.HTTPClientWithBounds, and what it
+	// marks is covered where it lives (pkg/flowstate/v1/plugin/sdk) and end to
+	// end in reachable/egress_test.go, rather than here, where the subject is
+	// the comment task.
 	old := egressClientOnce
 	policy, err := netpolicy.New(
 		netpolicy.WithAllowLoopback(),

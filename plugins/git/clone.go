@@ -11,26 +11,25 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// egressPolicy is the deployment's own egress policy, granted to this process
-// at launch and installed as go-git's http(s) transport at startup - see
-// plugins/vcs/clone.go for the full argument, which applies here unchanged:
-// every byte this plugin reads from or writes to a remote crosses it, and it
-// is installed once because go-git's client registry is a process-wide
-// default per scheme, not a per-request option.
+// egressClient is the client the deployment's own egress policy governs,
+// granted to this process at launch and installed as go-git's http(s) transport
+// at startup - see plugins/vcs/clone.go for the full argument, which applies
+// here unchanged: every byte this plugin reads from or writes to a remote
+// crosses it, and it is installed once because go-git's client registry is a
+// process-wide default per scheme, not a per-request option.
 //
-// It used to be a policy this plugin built for itself, which meant a deny rule
-// an operator wrote in --egress-policy did not reach a git.* task at all
-// (#1321). The rules are now the deployment's; the two bounds this plugin
+// The policy behind it used to be one this plugin built for itself, which meant
+// a deny rule an operator wrote in --egress-policy did not reach a git.* task at
+// all (#1321). The rules are now the deployment's; the two bounds this plugin
 // states for its own transport are not, because a packfile is not the shape of
 // response the operator's file is sized for - see
-// [sdk.EgressPolicyWithBounds].
+// [sdk.HTTPClientWithBounds].
 //
 // Nil means the grant could not be used, and [egressRefusal] says why.
-var egressPolicy *netpolicy.Policy
+var egressClient *http.Client
 
 // egressRefusal is why there is no policy, kept so the task boundary can
 // refuse with the SDK's message - which names the environment variable and the
@@ -55,6 +54,14 @@ var egressRefusal error
 // ungoverned: [refusingTransport] takes that slot instead, so the fail-closed
 // answer holds even for a path that forgot to ask.
 func installEgressPolicy() {
+	// One build of the grant, not two. The client is what every byte crosses,
+	// and it is the SDK's rather than policy.Client() so that a clone sending a
+	// token is marked as carrying a credential: go-git sets Authorization for
+	// BasicAuth, and an operator rule naming `credentials` has to decide this
+	// request the way it decides the built-in http task's. Nothing here needs
+	// the policy object itself, and building it a second time would give this
+	// process two rate-limit buckets for one deployment's policy - the bound is
+	// per process, and two of them is not the number the operator wrote.
 	governed, err := sdk.HTTPClientWithBounds(maxResponseBytes, requestTimeout)
 	if err != nil {
 		egressRefusal = err
@@ -62,20 +69,7 @@ func installEgressPolicy() {
 		return
 	}
 
-	// The client is what every byte crosses, and it is the SDK's rather than
-	// policy.Client() so that a clone sending a token is marked as carrying a
-	// credential: go-git sets Authorization for BasicAuth, and an operator rule
-	// naming `credentials` has to decide this request the way it decides the
-	// built-in http task's. The policy itself is kept for the task boundary's
-	// own check, from the same grant and the same bounds.
-	policy, err := sdk.EgressPolicyWithBounds(maxResponseBytes, requestTimeout)
-	if err != nil {
-		egressRefusal = err
-		client.InstallProtocol("https", githttp.NewClient(&http.Client{Transport: refusingTransport{err}}))
-		return
-	}
-
-	egressPolicy = policy
+	egressClient = governed
 	client.InstallProtocol("https", githttp.NewClient(governed))
 }
 
@@ -86,7 +80,7 @@ func installEgressPolicy() {
 // reads as a network failure a retry might fix, when in fact nothing about
 // this worker will change until it is relaunched with a grant.
 func requireEgressPolicy() error {
-	if egressPolicy != nil {
+	if egressClient != nil {
 		return nil
 	}
 

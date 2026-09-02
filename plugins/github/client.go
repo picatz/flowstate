@@ -27,7 +27,7 @@ import (
 // authorize their private API network through --egress-policy, and a deny rule
 // they wrote did not reach a github.* task at all. What stays this plugin's own
 // are the two transport bounds: a paginated API response is not the shape
-// max_response_bytes is sized for - see [sdk.EgressPolicyWithBounds].
+// max_response_bytes is sized for - see [sdk.HTTPClientWithBounds].
 //
 // It is taken once, at process start, the same reasoning
 // flowstate-plugin-vcs's installEgressPolicy gives for doing the same. Nil

@@ -90,11 +90,17 @@ func postgresRefusal() error {
 //
 // A denial is a decision: this destination is not permitted, no retry changes
 // that, and the message names no host because the DSN is the caller's secret
-// material. Anything else is not a decision at all — a rule interrupted by a
-// cancelled or expired context reports that it could not be evaluated, not that
-// the policy refused — so it is returned as itself, and the caller's retry
-// classification sees the context error rather than a permanent denial the
-// operator's policy never made.
+// material. Anything else is not a decision at all, and is returned as itself so
+// the caller's retry classification sees what actually happened rather than a
+// permanent denial the operator's policy never made.
+//
+// The case that matters is a rule interrupted before it decided, which netpolicy
+// returns as [netpolicy.UndecidedError] (#1379). It deliberately does not wrap
+// [netpolicy.ErrDenied] — "no decision" and "denied" are different facts — so it
+// needs no arm of its own here: matching only the denial is what keeps it out,
+// and an arm returning it unchanged would restate the default. That is worth
+// stating rather than leaving to be inferred, because the shape of this function
+// is the whole of the distinction.
 func classifyEgressCheck(err error) error {
 	var denied *netpolicy.DenyError
 	if errors.As(err, &denied) {

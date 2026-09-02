@@ -11,15 +11,14 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// egressPolicy is the one netpolicy.Policy this process builds, installed as
-// go-git's http(s) transport at startup (see main.go). Every byte this
-// plugin ever reads from a remote crosses it, which is what makes
-// maxResponseBytes an enforced bound rather than a comment: netpolicy caps a
-// response body in the RoundTripper itself, on every response regardless of
+// egressClient is the one client this process builds from the deployment's
+// grant, installed as go-git's http(s) transport at startup (see main.go).
+// Every byte this plugin ever reads from a remote crosses it, which is what
+// makes maxResponseBytes an enforced bound rather than a comment: netpolicy caps
+// a response body in the RoundTripper itself, on every response regardless of
 // status code, which is the layer CLAUDE.md's own lesson about connect-go's
 // non-200 unmarshaler names as the only place a cap cannot be bypassed by an
 // error path the caller forgot to check.
@@ -34,10 +33,10 @@ import (
 // wrote a deny rule in --egress-policy governed the built-in http task and not
 // a single vcs.* clone. What stays this plugin's own are the two transport
 // bounds below: a packfile is not the shape of response an operator sizes
-// max_response_bytes for - see [sdk.EgressPolicyWithBounds].
+// max_response_bytes for - see [sdk.HTTPClientWithBounds].
 //
 // Nil means the grant could not be used, and [egressRefusal] says why.
-var egressPolicy *netpolicy.Policy
+var egressClient *http.Client
 
 // egressRefusal is why there is no policy, kept so the task boundary can refuse
 // with the SDK's message - which names the environment variable and the worker
@@ -65,6 +64,14 @@ var egressRefusal error
 // [refusingTransport] takes it instead, so the fail-closed answer holds even on
 // a path that forgot to ask.
 func installEgressPolicy() {
+	// One build of the grant, not two. The client is what every byte crosses,
+	// and it is the SDK's rather than policy.Client() so that a clone sending a
+	// token is marked as carrying a credential: go-git sets Authorization for
+	// BasicAuth, and an operator rule naming `credentials` has to decide this
+	// request the way it decides the built-in http task's. Nothing here needs
+	// the policy object itself, and building it a second time would give this
+	// process two rate-limit buckets for one deployment's policy - the bound is
+	// per process, and two of them is not the number the operator wrote.
 	governed, err := sdk.HTTPClientWithBounds(maxResponseBytes, requestTimeout)
 	if err != nil {
 		egressRefusal = err
@@ -72,20 +79,7 @@ func installEgressPolicy() {
 		return
 	}
 
-	// The client is what every byte crosses, and it is the SDK's rather than
-	// policy.Client() so that a clone sending a token is marked as carrying a
-	// credential: go-git sets Authorization for BasicAuth, and an operator rule
-	// naming `credentials` has to decide this request the way it decides the
-	// built-in http task's. The policy itself is kept for the task boundary's
-	// own check, from the same grant and the same bounds.
-	policy, err := sdk.EgressPolicyWithBounds(maxResponseBytes, requestTimeout)
-	if err != nil {
-		egressRefusal = err
-		client.InstallProtocol("https", githttp.NewClient(&http.Client{Transport: refusingTransport{err}}))
-		return
-	}
-
-	egressPolicy = policy
+	egressClient = governed
 	client.InstallProtocol("https", githttp.NewClient(governed))
 }
 
@@ -96,7 +90,7 @@ func installEgressPolicy() {
 // network failure a retry might fix, when nothing about this worker will change
 // until it is relaunched with a grant.
 func requireEgressPolicy() error {
-	if egressPolicy != nil {
+	if egressClient != nil {
 		return nil
 	}
 

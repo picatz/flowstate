@@ -133,8 +133,30 @@ func EgressPolicyIsDeploymentDefault() (bool, error) {
 //
 // It fails closed exactly as [EgressPolicy] does, and builds a policy per call
 // (compiling the grant's rules again), so a plugin calls it once at startup and
-// keeps what it gets. [netpolicy.Policy.Client] is the governed client for it.
+// keeps what it gets. [HTTPClientWithBounds] is the client to take from it.
+//
+// Both bounds must be positive. A non-positive one is netpolicy's spelling for
+// "unbounded", so accepting it would let this function remove a bound the grant
+// carries rather than replace it, which is the one thing neither this nor a
+// policy file may do.
 func EgressPolicyWithBounds(maxResponseBytes int64, timeout time.Duration) (*netpolicy.Policy, error) {
+	// Positive, for the reason a policy file's own max_response_bytes and
+	// timeout must be: netpolicy reads a non-positive bound as no bound, so
+	// passing zero here would hand back a policy that reads a response of any
+	// size or waits forever — a bound removed rather than replaced. An operator
+	// cannot write that in a policy file ([netpolicy.Config.Options] refuses
+	// it), and this is the same surface reached from Go.
+	if maxResponseBytes <= 0 {
+		return nil, fmt.Errorf(
+			"sdk: maxResponseBytes must be positive, got %d; the body cap cannot be removed, only raised",
+			maxResponseBytes)
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf(
+			"sdk: timeout must be positive, got %s; the request bound cannot be removed, only raised",
+			timeout)
+	}
+
 	captureEgressGrant()
 	if grant.err != nil {
 		return nil, grant.err

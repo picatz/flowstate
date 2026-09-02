@@ -77,12 +77,12 @@ func TestTheDeploymentDefaultIsRefusedForPostgres(t *testing.T) {
 // policy never made from being reported as one.
 //
 // A rule that cannot be evaluated because the context is gone reports exactly
-// that — netpolicy returns the context error rather than a denial (#1394 gives
-// it a type that unwraps to the same error). Reporting it as PermissionDenied
-// told the caller two false things at once: that this destination is refused,
-// and that no retry will help. The rule here fails to evaluate on purpose
-// (int(host) is not a number), which is what makes the cancelled context the
-// thing the error reports.
+// that: netpolicy returns a [netpolicy.UndecidedError], which unwraps to the
+// context error and deliberately does not wrap [netpolicy.ErrDenied]. Reporting
+// it as PermissionDenied told the caller two false things at once — that this
+// destination is refused, and that no retry will help. The rule here fails to
+// evaluate on purpose (int(host) is not a number), which is what makes the
+// cancelled context the thing the error reports.
 func TestAnInterruptedPolicyCheckIsNotADenial(t *testing.T) {
 	policy, err := netpolicy.New(
 		netpolicy.WithSchemes("postgres"),
@@ -103,6 +103,10 @@ func TestAnInterruptedPolicyCheckIsNotADenial(t *testing.T) {
 	}
 	if errors.Is(checkErr, netpolicy.ErrDenied) {
 		t.Fatalf("netpolicy reported an interrupted evaluation as a denial: %v", checkErr)
+	}
+	var undecided *netpolicy.UndecidedError
+	if !errors.As(checkErr, &undecided) {
+		t.Fatalf("an interrupted evaluation is not reported as undecided, so this task cannot tell it from a decision: %v", checkErr)
 	}
 
 	got := classifyEgressCheck(checkErr)
