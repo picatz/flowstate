@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -521,7 +522,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
-	case "secret-task", "secret-task-error":
+	case "secret-task", "secret-task-error", "secret-task-log":
 		// Declares one input, "message", as accepting a host secret reference —
 		// the manifest field TestResolvePluginSecretInputs* and
 		// TestPluginTaskResolvesAndScrubsHostSecret exist to exercise.
@@ -750,6 +751,17 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 		// task's own scrubber protects against a reflecting server.
 		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backend said: %s", received))
+
+	case "secret-task-log":
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		fmt.Fprintln(os.Stderr, received)
+		fmt.Fprintln(os.Stderr, base64.StdEncoding.EncodeToString([]byte(received)))
+		fmt.Fprintf(os.Stderr, "{\"token\":%q}\n", received)
+		go func() {
+			time.Sleep(25 * time.Millisecond)
+			fmt.Fprintf(os.Stderr, "late: %s\n", received)
+		}()
+		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
 	}
 
 	// Echo back what came in, plus what the request carried about the workload,

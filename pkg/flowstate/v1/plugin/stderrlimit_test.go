@@ -111,7 +111,7 @@ func TestStderrRelayFuncNegativeDisablesTheBound(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{MaxStderrLinesPerMinute: -1, Logger: testLogger(t)}
-	relay, _ := stderrRelayFunc(cfg, cfg.logger())
+	relay, _ := stderrRelayFunc(cfg, cfg.logger(), newStderrSecretScrubber(nil))
 
 	for range 10_000 {
 		relay("line", false)

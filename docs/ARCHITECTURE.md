@@ -584,7 +584,10 @@ plugin process receives a value over the socket, never a reference and never
 provider access, and every resolved value is registered with the activity's
 scrubber so an echo cannot reach a step output or a task error. An input a
 `TaskManifest` did not name is refused rather than resolved, fail-closed in both
-directions. A manifest may additionally put an input in
+directions. The host also retains at most 256 values delivered to each plugin
+process for five minutes and applies the same encoded-form scrubbing to relayed
+stderr, health text, and manifest text before logging them; a `scrubbed=true`
+attribute marks a redacted record. A manifest may additionally put an input in
 `required_secret_inputs`; it must also be in `secret_inputs`, and the compiler, the
 control plane admitting a specification, and the host then refuse a literal before
 it can enter durable history or cross the plugin socket. That controls where

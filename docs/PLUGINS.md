@@ -777,8 +777,13 @@ constructors rather than as a bare error (`sdk/errors.go:22-30`):
 > [!WARNING]
 > An error from a plugin is surfaced to users and written to workflow history,
 > which is durable and broadly readable. Never interpolate a secret, a token, or
-> a credential-bearing backend message into one. The same applies to what a
-> `Health` check returns, which the engine logs (`sdk/sdk.go:979-989`).
+> a credential-bearing backend message into one. The same applies to stderr and
+> what a `Health` check returns, which the engine logs (`sdk/sdk.go:979-989`). As
+> accidental containment, the host scrubs known resolved values and their common
+> encodings from plugin logs, health text, and manifest text. It retains at most
+> 256 delivered values per plugin process for five minutes and marks a changed
+> log record with `scrubbed=true`; do not rely on this against deliberate
+> transformation or disclosure.
 
 ## Writing one in another language
 

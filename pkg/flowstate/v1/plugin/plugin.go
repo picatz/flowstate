@@ -516,7 +516,7 @@ func (p *Plugin) describe(ctx context.Context, inst *instance) (*pluginv1.Plugin
 	}
 
 	manifest := resp.Msg.GetManifest()
-	if err := p.checkManifest(manifest); err != nil {
+	if err := p.checkManifest(inst, manifest); err != nil {
 		return nil, pluginError(p.name, p.path, err)
 	}
 
@@ -525,7 +525,7 @@ func (p *Plugin) describe(ctx context.Context, inst *instance) (*pluginv1.Plugin
 
 // checkManifest applies every rule a manifest has to satisfy before the host
 // will use anything the plugin offers.
-func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
+func (p *Plugin) checkManifest(inst *instance, manifest *pluginv1.PluginManifest) error {
 	// The schema's own rules first, so that a field this code goes on to read is
 	// known to be within its declared bounds.
 	if err := flowstatev1.Validate(manifest); err != nil {
@@ -537,8 +537,9 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 		// everything by the binary's name regardless, so a plugin cannot claim
 		// another's identity by describing itself as it. It is still worth
 		// saying, because the mismatch will confuse whoever reads the logs.
+		manifestName, scrubbed := inst.stderrSecrets.scrub(truncate(manifest.GetName(), 64))
 		p.log.Warn("plugin manifest name does not match its binary",
-			"manifest_name", truncate(manifest.GetName(), 64), "binary_name", p.name)
+			"manifest_name", manifestName, "binary_name", p.name, "scrubbed", scrubbed)
 	}
 
 	// A capability the host does not know is ignored rather than refused, which
@@ -678,14 +679,17 @@ func (p *Plugin) supervise() {
 				// Restarting it would replace a process that is answering
 				// correctly with an identical one that will answer the same
 				// way, so this is reported and left alone.
+				message, scrubbed := inst.stderrSecrets.scrub(health.Message)
 				p.log.Warn("plugin reports it cannot serve; its backend is the thing to look at, not the plugin",
-					"message", health.Message)
+					"message", message, "scrubbed", scrubbed)
 			case HealthUnreachable:
 				consecutiveUnreachable++
+				errText, scrubbed := inst.stderrSecrets.scrub(health.Err.Error())
 				p.log.Warn("plugin did not answer a health check",
 					"consecutive", consecutiveUnreachable,
 					"threshold", p.cfg.HealthFailureThreshold,
-					"error", health.Err)
+					"error", errText,
+					"scrubbed", scrubbed)
 
 				if consecutiveUnreachable >= p.cfg.HealthFailureThreshold {
 					consecutiveUnreachable = 0

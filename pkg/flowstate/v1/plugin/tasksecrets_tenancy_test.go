@@ -115,7 +115,7 @@ func resolveAs(t *testing.T, store *secrets.Store, namespace string) (string, er
 
 	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), tenantRuntime(t, store, namespace))
 
-	resolved, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"message"}, []string{"message"}, tokenRef)
+	resolved, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"message"}, []string{"message"}, tokenRef, nil)
 	if err != nil {
 		return "", err
 	}
