@@ -391,10 +391,12 @@ go-git
 the same marked default its built-in HTTP task uses. This is actual enforcement
 in vetted first-party dial paths, but it remains voluntary plugin behavior, not
 plugin-process confinement. A third-party plugin can ignore the SDK and open its
-own socket. The first-party Codex plugin is also a subprocess exception: when an
-operator permits network access or `danger-full-access`, the spawned Codex CLI
-does not carry or enforce Flowstate's destination grant
-(`plugins/codex/process.go:104-130`, `plugins/codex/policy.go:178-187`). A
+own socket. The first-party Codex plugin is also a subprocess exception: the
+spawned Codex CLI does not carry or enforce Flowstate's destination grant, so its
+own control-plane traffic bypasses that grant in every sandbox mode
+(`plugins/codex/process.go:104-130`). Codex's separate sandbox policy controls
+whether agent-started commands also get network access; an operator may permit
+that access or `danger-full-access` (`plugins/codex/policy.go:178-187`). A
 deployment that must constrain either process uses its operating-system or
 substrate boundary rather than treating policy vocabulary as a sandbox. With an
 HTTP proxy configured the dialer never sees the target, so the HTTP check weakens
