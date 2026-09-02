@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -87,9 +88,21 @@ func (s *stderrSecretScrubber) scrub(text string) (string, bool) {
 	s.prune(now)
 	original := text
 	for _, entry := range s.entries {
-		text = entry.scrubber.Scrub(text)
+		text = scrubOutsideRedactions(entry.scrubber, text)
 	}
 	return text, text != original
+}
+
+// scrubOutsideRedactions prevents one retained scrubber from treating the
+// placeholder produced by another as fresh input. This matters for short
+// secrets such as "E": repeatedly scrubbing the E in "[REDACTED]" would grow
+// one bounded input line exponentially.
+func scrubOutsideRedactions(scrubber *secrets.Scrubber, text string) string {
+	parts := strings.Split(text, secrets.Redacted)
+	for i := range parts {
+		parts[i] = scrubber.Scrub(parts[i])
+	}
+	return strings.Join(parts, secrets.Redacted)
 }
 
 func (s *stderrSecretScrubber) prune(now time.Time) {

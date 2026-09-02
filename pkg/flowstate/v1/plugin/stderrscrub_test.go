@@ -82,3 +82,16 @@ func TestStderrRelayScrubsEncodingsAndMarksTheRecord(t *testing.T) {
 	assert.Contains(t, output, secrets.Redacted)
 	assert.Contains(t, output, "scrubbed=true")
 }
+
+func TestStderrSecretScrubberDoesNotRescrubItsPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newStderrSecretScrubber(nil)
+	for range 30 {
+		scrubber.add(secrets.NewSecret(&flowstatev1.SecretRef{Scheme: "test", Name: "short"}, "E"))
+	}
+
+	got, changed := scrubber.scrub("E")
+	assert.True(t, changed)
+	assert.Equal(t, secrets.Redacted, got)
+}

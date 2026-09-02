@@ -781,9 +781,10 @@ constructors rather than as a bare error (`sdk/errors.go:22-30`):
 > what a `Health` check returns, which the engine logs (`sdk/sdk.go:979-989`). As
 > accidental containment, the host scrubs known resolved values and their common
 > encodings from plugin logs, health text, and manifest text. It retains at most
-> 256 delivered values per plugin process for five minutes and marks a changed
-> log record with `scrubbed=true`; do not rely on this against deliberate
-> transformation or disclosure.
+> 256 delivered values per plugin process while their calls are in flight and
+> for five minutes after return, and marks a changed log record with
+> `scrubbed=true`; do not rely on this against deliberate transformation or
+> disclosure.
 
 ## Writing one in another language
 

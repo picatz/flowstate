@@ -537,9 +537,9 @@ func (p *Plugin) checkManifest(inst *instance, manifest *pluginv1.PluginManifest
 		// everything by the binary's name regardless, so a plugin cannot claim
 		// another's identity by describing itself as it. It is still worth
 		// saying, because the mismatch will confuse whoever reads the logs.
-		manifestName, scrubbed := inst.stderrSecrets.scrub(truncate(manifest.GetName(), 64))
+		manifestName, scrubbed := inst.stderrSecrets.scrub(manifest.GetName())
 		p.log.Warn("plugin manifest name does not match its binary",
-			"manifest_name", manifestName, "binary_name", p.name, "scrubbed", scrubbed)
+			"manifest_name", truncate(manifestName, 64), "binary_name", p.name, "scrubbed", scrubbed)
 	}
 
 	// A capability the host does not know is ignored rather than refused, which
@@ -688,7 +688,7 @@ func (p *Plugin) supervise() {
 				p.log.Warn("plugin did not answer a health check",
 					"consecutive", consecutiveUnreachable,
 					"threshold", p.cfg.HealthFailureThreshold,
-					"error", errText,
+					"error", errors.New(errText),
 					"scrubbed", scrubbed)
 
 				if consecutiveUnreachable >= p.cfg.HealthFailureThreshold {
