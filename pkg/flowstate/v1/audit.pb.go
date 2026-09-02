@@ -486,6 +486,13 @@ type AuditRecord struct {
 	// a control-plane decision, and the worker's other three seams, which are
 	// reached once per attempt by construction and have no attempt of their own
 	// to name.
+	//
+	// Bounded on the way in, the way rule's bytes are: the seam clamps to
+	// flowstatev1.MaxDispatchAttempt rather than letting an int that does not
+	// fit a uint32 arrive as some other number. The bound is deliberately not a
+	// validation rule — a record that cannot be built is an action that does not
+	// happen, and an implausible retry policy is a configuration to fix rather
+	// than a dispatch to refuse.
 	Attempt uint32 `protobuf:"varint,14,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	// The operator-chosen trusted-issuer entry that admitted the caller.
 	// Unlike identity.issuer, which names who signed the credential, this names

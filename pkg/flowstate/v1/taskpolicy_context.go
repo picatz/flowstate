@@ -68,7 +68,33 @@ type dispatchAttemptContextKey struct{}
 // the way [ObserveTaskAttempt]'s own attempt does — from the substrate, into
 // the shared seam, as data.
 func NewContextWithDispatchAttempt(ctx context.Context, attempt int) context.Context {
-	return context.WithValue(ctx, dispatchAttemptContextKey{}, attempt)
+	return context.WithValue(ctx, dispatchAttemptContextKey{}, boundedDispatchAttempt(attempt))
+}
+
+// MaxDispatchAttempt is the largest attempt number a record carries.
+//
+// The number reaches the record as a uint32, and an int that does not fit one
+// would arrive as something else entirely rather than as an obviously wrong
+// number — the truncation is the problem, not the size. Clamped rather than
+// refused, for the reason [audit.MaxRuleBytes] is: the seam's job is to record
+// the decision, and a retry policy with more attempts than this is a
+// configuration to fix, not a reason to fail the dispatch or lose the record.
+//
+// The ceiling is far above any retry policy anyone should write and far below
+// where the value stops being readable.
+const MaxDispatchAttempt = 1_000_000
+
+// boundedDispatchAttempt renders an attempt as the record can carry it: at
+// least the first, at most [MaxDispatchAttempt].
+func boundedDispatchAttempt(attempt int) int {
+	if attempt < 1 {
+		return 1
+	}
+	if attempt > MaxDispatchAttempt {
+		return MaxDispatchAttempt
+	}
+
+	return attempt
 }
 
 // dispatchAttemptIn reports which attempt at this dispatch ctx describes,
@@ -78,8 +104,8 @@ func NewContextWithDispatchAttempt(ctx context.Context, attempt int) context.Con
 // about it: an unset context is a first attempt, which is what a caller that
 // does not retry has, and what every direct caller of [CheckTaskPolicy] means.
 func dispatchAttemptIn(ctx context.Context) int {
-	if attempt, ok := ctx.Value(dispatchAttemptContextKey{}).(int); ok && attempt > 0 {
-		return attempt
+	if attempt, ok := ctx.Value(dispatchAttemptContextKey{}).(int); ok {
+		return boundedDispatchAttempt(attempt)
 	}
 
 	return 1
@@ -128,19 +154,18 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // classification egress and secret denials already carry, which is what
 // makes [ClassifyError] mark it non-retryable rather than falling through to
 // the [ErrorKindInternal] default an unclassified error would get. A
-// denial retried is a denial repeated for no reason: the policy's answer
-// does not change between attempts of the same dispatch.
-//
-// Called above wherever a driver retries a failed attempt —
-// [runStepWithPolicy] for the local driver, each activity entry point for the
-// durable one (`engine/activities.go`) — never inside a retry loop itself.
+// denial retried is a denial repeated for no reason: nothing a retry does
+// changes the rule that refused it, and the operator who would change it is
+// not in the loop.
 //
 // Called once per dispatch attempt on both drivers: inside the durable
 // driver's activity, which Temporal re-invokes to retry, and inside
 // [runStepWithPolicy]'s retry loop locally. A retried task is dispatched
 // again, so it is decided again and recorded again;
 // [NewContextWithDispatchAttempt] is how each driver says which attempt this
-// is, and the record carries it.
+// is, and the record carries it. The answer can differ between attempts — an
+// operator tightening a policy mid-run is exactly that — which is why the
+// check runs per attempt rather than once above the retries.
 //
 // local is [Scope.GetLocal] — true for any local-driver entry point's own
 // rehearsal (`flow run local`, `flow test`, `flow task run`, ...), never

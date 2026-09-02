@@ -107,13 +107,14 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 // dispatch it is running under.
 //
 // Temporal retries an activity by invoking it again, so this check — which
-// lives inside the activity — runs once per attempt while the local driver's
-// runs once per dispatch. The policy should be consulted every time; the
-// *record* should not be written every time, or one retried dispatch produces
-// a different trail on each driver (Codex, picatz/flowstate#1394). The
-// substrate is asked rather than a counter threaded through, the way
-// [observeTask] asks it for the span's attempt, and guarded the same way,
-// because activity.GetInfo panics outside an activity context.
+// lives inside the activity — runs once per attempt, as the local driver's
+// now does inside its own retry loop. Each attempt is a dispatch that was
+// decided, and each decision is recorded against the attempt it belongs to,
+// so the record needs to know which one this is (Codex,
+// picatz/flowstate#1394). The substrate is asked rather than a counter
+// threaded through, the way [observeTask] asks it for the span's attempt, and
+// guarded the same way, because activity.GetInfo panics outside an activity
+// context.
 func dispatchAttempt(ctx context.Context) context.Context {
 	if !activity.IsActivity(ctx) {
 		return ctx
