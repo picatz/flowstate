@@ -1329,7 +1329,11 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		if s.Sender != nil {
 			subject = s.Sender.Subject
 		}
-		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload, sender: scriptedSender(s.Sender), senderSubject: subject})
+		jobs = append(jobs, job{
+			name: s.Name, at: at, payload: s.Payload,
+			sender:        scriptedSender(s.Sender, s.DeliveryID),
+			senderSubject: subject,
+		})
 	}
 
 	done := make(chan struct{}, len(jobs))
@@ -1412,12 +1416,19 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 // delivery, and no server did. A rehearsal that filled it in with the case's
 // own epoch was reporting an acceptance that never happened, which is the same
 // mistake in a second field.
-func scriptedSender(s *ScriptedIdentity) *v1.SignalSender {
-	if s == nil {
-		return v1.LocalSignalSender()
+//
+// deliveryID is the case's optional `delivery_id:` ([SignalScript.DeliveryID]),
+// set on whichever sender is built: a redelivery is a fact about the delivery,
+// not about who is standing in for whom, so a case may rehearse one with a
+// `sender:` or without.
+func scriptedSender(s *ScriptedIdentity, deliveryID string) *v1.SignalSender {
+	sender := v1.LocalSignalSender()
+	if s != nil {
+		sender = v1.RehearsalSignalSender(scriptedIdentity(s))
 	}
+	sender.DeliveryId = deliveryID
 
-	return v1.RehearsalSignalSender(scriptedIdentity(s))
+	return sender
 }
 
 // scriptedIdentity renders a [ScriptedIdentity] as the [v1.WorkloadIdentity] a

@@ -830,6 +830,27 @@ type SignalScript struct {
 	// exists precisely so a malformed identity is not rendered as a gate
 	// nobody answered.
 	Sender *ScriptedIdentity `yaml:"sender"`
+
+	// DeliveryID names the webhook delivery this signal stands in for, so a
+	// case can rehearse a *redelivery* — the ordinary webhook case, and the one
+	// a gate must not answer twice.
+	//
+	// It is [v1.SignalSender.delivery_id], carried into the delivery exactly as
+	// the receiver carries the digest it computes, and read by the same
+	// [v1.ConsumeDeliveryID] both drivers dedupe with. Two scripted signals
+	// sharing one value are one delivery arriving twice: the first reaches
+	// whichever gate is waiting, the second is dropped, and a later
+	// `wait_for_signal:` — the next turn of a `loop:` — is not answered by it.
+	//
+	// Empty is what every case that is not about a webhook writes, and it
+	// deduplicates nothing: a signal with no delivery id is a `flow signal`,
+	// and two of those are two answers.
+	//
+	// It is a plain string here rather than a digest computed from something,
+	// because a case is rehearsing what a delivery *is*, not how the receiver
+	// names it — the digest arithmetic is [v1.WebhookDeliveryID]'s and is
+	// exercised where deliveries are actually replayed (`trigger:`).
+	DeliveryID string `yaml:"delivery_id"`
 }
 
 // ScriptedIdentity is an identity a case names, either the sender of a

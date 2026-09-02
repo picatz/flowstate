@@ -84,6 +84,32 @@ func approver() *v1.WorkloadIdentity {
 	}
 }
 
+// webhookTrigger is the identity a delivery to one webhook attests as, built
+// through [v1.WebhookTriggerPrincipal] rather than spelled out — the receiver
+// mints it with that function and the validator composes the same value to
+// decide whether a gate could admit it, so a case writing the string by hand
+// would stop testing the thing that has to agree.
+//
+// The namespace is empty, which is a single-tenant deployment's own tenant and
+// the value every rule in this table is silent about.
+func webhookTrigger(workflow, trigger string) *v1.WorkloadIdentity {
+	return v1.WebhookTriggerPrincipal("", workflow, trigger)
+}
+
+// bridgedGate is the policy `examples/webhook-approval-bridge` declares: one
+// rule naming one webhook, which is the whole of what closes the signal zero
+// case on a public route.
+//
+// No `distinct_from_starter:`, and its absence is the record's own line rather
+// than an omission: an HMAC scheme attests a key holder, so that clause would
+// separate triggers rather than the two humans it reads as promising.
+func bridgedGate() *v1.SignalPolicy {
+	return &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
+		Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+			v1.WebhookTriggerSubject("webhook-approval-bridge", "slack-approval")),
+	}}}
+}
+
 // policedGate is the policy that example declares: one rule, a subject and a
 // claim ANDed, plus the separation of duties a rule alone cannot express.
 func policedGate(distinctFromStarter bool) *v1.SignalPolicy {
@@ -185,6 +211,50 @@ func RehearsalSignalCases() []RehearsalSignalCase {
 			Sender:   &v1.WorkloadIdentity{Subject: "anyone@example.com", Namespace: "release-managers"},
 			Admitted: true,
 			Why:      "a rule constrains only the fields it sets, so a namespace rule matches on namespace alone",
+		},
+		{
+			Name:       "the webhook trigger a bridged gate's rule names",
+			SignalName: "stage-approved",
+			Policy:     bridgedGate(),
+			Starter:    starter,
+			Sender:     webhookTrigger("webhook-approval-bridge", "slack-approval"),
+			Admitted:   true,
+			Why: "a `signal:` on a webhook trigger answers a gate as the trigger itself, and the " +
+				"rule names that principal; a driver that refuses it cannot bridge a delivery at " +
+				"all, only refuse one",
+		},
+		{
+			Name:       "another trigger on the same workflow",
+			SignalName: "stage-approved",
+			Policy:     bridgedGate(),
+			Starter:    starter,
+			Sender:     webhookTrigger("webhook-approval-bridge", "pagerduty-ack"),
+			Why: "a webhook principal is qualified by *which* webhook, so one deployment's second " +
+				"integration does not inherit the first's gate; this is the case a subject of " +
+				"`flowstate://webhook` alone would wrongly admit",
+		},
+		{
+			Name:       "the same trigger name on another workflow",
+			SignalName: "stage-approved",
+			Policy:     bridgedGate(),
+			Starter:    starter,
+			Sender:     webhookTrigger("some-other-workflow", "slack-approval"),
+			Why: "the workflow is half of the subject, and a delivery is addressed " +
+				"`/webhooks/<workflow>/<trigger>`; two files whose triggers are both called " +
+				"`slack-approval` are two principals",
+		},
+		{
+			Name:       "a person carrying the webhook subject as their own",
+			SignalName: "stage-approved",
+			Policy:     bridgedGate(),
+			Starter:    starter,
+			Sender: &v1.WorkloadIdentity{
+				Issuer:  "https://issuer.example.com",
+				Subject: "webhook-approval-bridge/slack-approval",
+			},
+			Why: "an issuer is half of every rule, and `flowstate://webhook` is a scheme no " +
+				"identity provider can mint; a caller whose IdP hands out the trigger's subject " +
+				"still is not the trigger",
 		},
 		{
 			Name:       "a sender in another namespace",
