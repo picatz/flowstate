@@ -36,6 +36,17 @@ go build -o /path/to/plugins/flowstate-plugin-sql ./plugins/sql
 | `sql.query` | reads | yes (a `SELECT` has no side effect to repeat) | always |
 | `sql.exec` | writes | only if the statements and their params are (see "Transactions," below) | always |
 
+### Execution-mode posture
+
+`sql.exec` deliberately writes in local rehearsals. A rehearsal against a
+development database is useful only when it exercises the same transaction and
+backend semantics as durable execution; it is not a dry run. Execution mode is
+therefore not treated as database authorization. Task policy, secret policy,
+and egress policy separately decide whether the task, DSN, and destination are
+available. `TestSQLExecCommitsEveryStatementTogether` performs a
+credential-free SQLite mutation with no production caller and verifies the
+committed state, preserving that contract.
+
 ## Parameterized only, structurally
 
 `query:` (and each statement's own `sql:` under `sql.exec`) takes SQL text.

@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -329,9 +333,307 @@ func validateDeclaredOutputs(wf *v1.Workflow, scope refScope, index int) Diagnos
 		// expression itself compiles and type-checks as a bool predicate, the
 		// same load-time half [validateInputConstraintShape] runs for an input.
 		if err := v1.CheckOutputConstraintShape(declaration); err != nil {
-			ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
+			ds = append(ds, Diagnostic{Field: outputConstraintShapeField(declaration, field, err), Message: err.Error()})
+		}
+
+		if d := checkOutputValueType(wf, declaration, field); d != nil {
+			ds = append(ds, *d)
 		}
 	}
 
 	return ds
+}
+
+// outputConstraintShapeField decides which part of a declaration a
+// [v1.CheckOutputConstraintShape] error is about, the way
+// [inputConstraintShapeField] does for its own half and for the same reason: a
+// `values:` list beside a type that is not enum has a line of its own, and
+// sending the reader to the declaration as a whole would point past it.
+//
+// Only that one case, because it is the only one with a more specific home.
+// An enum with no `values:` at all has no line to point at, and a `must:` that
+// will not compile is reported against the declaration for the reason the
+// input side reports it there.
+func outputConstraintShapeField(declaration *v1.OutputDeclaration, field string, err error) string {
+	var shapeErr *v1.EnumValuesShapeError
+	if errors.As(err, &shapeErr) {
+		return field + "." + shapeErr.Field
+	}
+	if len(declaration.GetValues()) > 0 && declaration.GetType() != v1.InputDeclaration_TYPE_ENUM {
+		return field + ".values"
+	}
+
+	return field
+}
+
+// checkOutputValueType reports a declared output type that contradicts what is
+// statically knowable about the expression under `value:`, and nothing at all
+// where nothing is knowable.
+//
+// The knowable set is deliberately small and each member of it is exact:
+//
+//   - A literal, or an all-constant mapping or list, whose type is the value
+//     itself. Judged by [v1.CheckOutputValue] — the same function the run
+//     reaches through [v1.EvalRunOutputs], so a file `flow validate` passed
+//     cannot fail this check at completion instead.
+//   - A bare `${inputs.<name>}` naming an input this workflow declares, whose
+//     type is that declaration's. This is the shape most typed outputs have —
+//     an argument handed back to a caller who no longer holds it — and it is
+//     the one reference the file answers for on its own.
+//   - A closed expression the profile's own checker can pin down without
+//     knowing anything the file does not hold: `${1 + 2}`, `${"a" + "b"}`.
+//     The identical machinery [checkCallArgumentType] uses on a `with:`
+//     argument, reached the same way.
+//
+// Everything else — an expression over a step's outputs, a var, a loop's
+// results — types as `dyn`, which is read as "not knowable" rather than as a
+// mismatch. That is not a shortfall this slice could close by trying harder:
+// `checkExpressionTypes` declares every referenced name `dyn` on purpose (see
+// celcheck.go), and a checker guessing at a step's output type would report
+// mismatches against workflows that are correct.
+func checkOutputValueType(wf *v1.Workflow, declaration *v1.OutputDeclaration, field string) *Diagnostic {
+	declared := declaration.GetType()
+	if declared == v1.InputDeclaration_TYPE_UNSPECIFIED {
+		return nil
+	}
+
+	value := declaration.GetValue()
+	switch value.GetKind().(type) {
+	case *v1.Value_Expr:
+		known, inferred, ok := staticExpressionType(wf, value.GetExpr())
+		if !ok {
+			return nil
+		}
+		if known == declared {
+			if keyType, decided := containerKeyMismatch(declared, inferred); decided {
+				// The one mismatch matching kinds cannot see: a map keyed by
+				// anything is a map, and a list holding one is still a list,
+				// while both declared types promise the plain value a caller
+				// reads (see [v1.CheckOutputValue] on the projection this keeps
+				// honest). Reported here only where the checker decided the key
+				// type — `${{}}` types as `map(dyn, dyn)` and a mixed-key
+				// literal as `map(dyn, …)`, and which keys either holds is a
+				// fact about the value, left to completion (#1404).
+				//
+				// The sentence says "is typed as" rather than "always produces"
+				// because this arm is a type check and the two are not the same
+				// claim. `${false ? {1: "a"} : {}}` types as `map(int, string)`
+				// — cel-go joins the branches — and evaluates to `{}`, which
+				// [v1.LiteralToGo] converts happily. So the type-level rule here
+				// and the value-level rule at completion agree on every
+				// non-empty value and part company on an empty map an int-typed
+				// expression produced, which this refuses by its type. That is
+				// the same judgement every other arm of this function makes, and
+				// the author's fix is the same one: write a struct-typed
+				// expression. Deciding it by walking the AST for non-empty map
+				// literals would buy a contrived case with a second walk.
+				return &Diagnostic{
+					Field: field, Value: declaration.GetName(),
+					Code: v1.DiagnosticCodeTypeMismatch,
+					Message: fmt.Sprintf(
+						"output %q is declared %s, but this expression is typed as %s with %s keys; %s",
+						declaration.GetName(), v1.DeclaredTypeName(declared),
+						containerHolds(declared), v1.DeclaredTypeName(keyType),
+						containerKeyRule(declared)),
+				}
+			}
+
+			return nil
+		}
+		if v1.StringShaped(known) && v1.StringShaped(declared) {
+			// One of the two is an enum, and an enum value travels as a string
+			// (see [v1.StringShaped]) — so the shapes agree and only membership
+			// could still be wrong. That is a value-level question nothing here
+			// can answer, and [v1.CheckOutputValue] answers it at completion,
+			// against the value the run actually produced.
+			return nil
+		}
+
+		return &Diagnostic{
+			Field: field, Value: declaration.GetName(),
+			Code: v1.DiagnosticCodeTypeMismatch,
+			Message: fmt.Sprintf(
+				"output %q is declared %s, but this expression always produces %s",
+				declaration.GetName(), v1.DeclaredTypeName(declared), v1.DeclaredTypeName(known)),
+		}
+
+	default:
+		// A literal or a structure, exact either way.
+		if err := v1.CheckOutputValue(declaration, value); err != nil {
+			return &Diagnostic{
+				Field: field, Value: declaration.GetName(),
+				Code: v1.DiagnosticCodeTypeMismatch, Message: err.Error(),
+			}
+		}
+
+		return nil
+	}
+}
+
+// staticExpressionType reports the declared type an output expression is known
+// to produce, and false where it is not knowable.
+//
+// The CEL type it was derived from travels beside it, nil where there is none:
+// a declared type is coarser than the type the checker inferred — every map is
+// `struct` — so a caller asking a question the coarse name cannot answer, such
+// as whether a struct's keys are strings, needs the type the answer came from.
+//
+// The input-reference arm comes first because the checker cannot reach it: an
+// environment that declares every referenced name `dyn` types `inputs.release`
+// as `dyn` however precisely the file declared `release`. Widening that
+// environment is #177's road rather than this one's, so the one reference whose
+// type the file already states is answered here directly — and it is the arm
+// with no CEL type to carry, because the answer came from the declaration
+// rather than from the checker.
+func staticExpressionType(wf *v1.Workflow, parsed *expr.ParsedExpr) (v1.InputDeclaration_Type, *cel.Type, bool) {
+	if parsed == nil {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, false
+	}
+
+	if t, ok := declaredInputRefType(wf, parsed.GetExpr()); ok {
+		return t, nil, true
+	}
+
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()))
+	if err != nil {
+		// A defect in this build rather than in the file; the same answer
+		// [checkCallArgumentType] gives for the identical call.
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, false
+	}
+
+	checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+	if issues != nil && issues.Err() != nil {
+		// Does not type-check on its own terms, which [checkExpressionTypes]
+		// already reports; a second sentence here would say the same thing in
+		// a different voice.
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, false
+	}
+
+	inferred := checked.OutputType()
+	t, ok := declaredTypeOfCEL(inferred)
+
+	return t, inferred, ok
+}
+
+// containerKeyMismatch reports the key type that makes inferred a value a
+// declared container may not hold, and false for every other declared type.
+//
+// The declared-type guard lives here rather than at the call site so the two
+// halves of one question — "is this a container?" and "are its map keys
+// strings?" — read as one. `struct` and `list` both ask it, because the
+// projection converts a whole output and gives up on all of it: a map with an
+// int key defeats the array a `list` promised from inside an element exactly as
+// it defeats a `struct` from the top. The scalar types do not ask, and an
+// untyped output promises nothing about its projection at all.
+func containerKeyMismatch(declared v1.InputDeclaration_Type, inferred *cel.Type) (v1.InputDeclaration_Type, bool) {
+	if declared != v1.InputDeclaration_TYPE_STRUCT && declared != v1.InputDeclaration_TYPE_LIST {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+
+	return nonStringMapKeyType(inferred)
+}
+
+// containerHolds names what the refused expression produced, and
+// containerKeyRule the promise it broke.
+//
+// Two clauses rather than two whole sentences, so the shared middle — the key
+// type, named the same way at both checks — stays one string a reader can match
+// across `flow validate` and a run's failure.
+func containerHolds(declared v1.InputDeclaration_Type) string {
+	if declared == v1.InputDeclaration_TYPE_LIST {
+		return "a list holding a map"
+	}
+
+	return "a map"
+}
+
+func containerKeyRule(declared v1.InputDeclaration_Type) string {
+	if declared == v1.InputDeclaration_TYPE_LIST {
+		return "a list reads back as a plain array, whose maps have string keys"
+	}
+
+	return "a struct is a map with string keys"
+}
+
+// nonStringMapKeyType reports the key type of the first map inside t that a
+// plain object cannot hold, and false when every map key t describes is a
+// string or was not decided.
+//
+// Recursive through a map's value type and a list's element type, mirroring
+// [v1.LiteralToGo]'s own recursion over the value — the conversion a declared
+// `struct` or `list` promises will succeed — so the static half judges the same
+// shape the completion half does rather than the outer container alone.
+//
+// Keys only. The completion check also refuses a container holding a kind with
+// no plain value at all (a type, an enum, a packed message), and that is not one
+// more arm of this switch: those have no key to name and the sentence about them
+// is a different sentence. They stay a completion-time judgement, which costs an
+// author nothing here — no Flowfile can write one.
+//
+// `dyn` is silence rather than a refusal, and that is the whole reason this
+// returns a decision instead of a type: `${{}}` types as `map(dyn, dyn)` because
+// there is no entry to infer a key from, and a mixed-key literal as
+// `map(dyn, …)`. Which keys either actually holds is a fact about the value, and
+// [v1.CheckOutputValue] decides it at completion against the map the run
+// produced.
+func nonStringMapKeyType(t *cel.Type) (v1.InputDeclaration_Type, bool) {
+	if t == nil {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+
+	switch t.Kind() {
+	case types.MapKind:
+		parameters := t.Parameters()
+		if len(parameters) != 2 {
+			return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+		}
+		if key := parameters[0]; key.Kind() != types.StringKind && key.Kind() != types.DynKind {
+			return declaredTypeOfCEL(key)
+		}
+
+		return nonStringMapKeyType(parameters[1])
+
+	case types.ListKind:
+		parameters := t.Parameters()
+		if len(parameters) != 1 {
+			return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+		}
+
+		return nonStringMapKeyType(parameters[0])
+
+	default:
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+}
+
+// declaredInputRefType reports the type wf declares for a bare
+// `${inputs.<name>}`, and false for anything else — including an input the
+// workflow does not declare (reported as an unresolved reference, not as a
+// type mismatch) and one whose own `type:` is missing.
+//
+// Bare specifically: a selection *through* the reference (`inputs.config.host`)
+// reaches inside a value whose shape this schema does not describe, so its type
+// is not knowable and saying so is the honest answer.
+func declaredInputRefType(wf *v1.Workflow, e *expr.Expr) (v1.InputDeclaration_Type, bool) {
+	sel, ok := e.GetExprKind().(*expr.Expr_SelectExpr)
+	if !ok || sel.SelectExpr.GetTestOnly() {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+	ident, ok := sel.SelectExpr.GetOperand().GetExprKind().(*expr.Expr_IdentExpr)
+	if !ok || ident.IdentExpr.GetName() != v1.InputsRoot {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+	}
+
+	for _, input := range wf.GetDeclaredInputs() {
+		if input.GetName() != sel.SelectExpr.GetField() {
+			continue
+		}
+		if input.GetType() == v1.InputDeclaration_TYPE_UNSPECIFIED {
+			return v1.InputDeclaration_TYPE_UNSPECIFIED, false
+		}
+
+		return input.GetType(), true
+	}
+
+	return v1.InputDeclaration_TYPE_UNSPECIFIED, false
 }

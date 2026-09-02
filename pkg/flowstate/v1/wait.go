@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -673,12 +674,32 @@ func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, la
 }
 
 // truncateForError bounds expression output on its way into a message.
+//
+// The bound is the point of it: every caller renders a value some other party
+// chose the size of — an expression's result here, a task's own answer in
+// [checkEnumMembership] and [CheckOutputConstraint] — into text that becomes a
+// run's failure, and a failure the durable driver cannot persist while the
+// local driver returns it is invariant 3 broken by a diagnostic.
+//
+// Cut at a rune boundary rather than a byte offset, for the reason
+// `flowtest.truncateRuneSafe` and `server.boundedFailure` both give: a byte cut
+// through a multi-byte UTF-8 sequence produces invalid UTF-8, which a proto3
+// string field will not hold and protojson refuses to encode at all — so one
+// overlong value would fail the whole response's marshalling rather than
+// shorten its own sentence. Task output is exactly where a multi-byte sequence
+// straddling the cut is likely rather than hypothetical.
 func truncateForError(s string) string {
 	const max = 64
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "..."
+
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+
+	return s[:cut] + "..."
 }
 
 // SignalNames returns every signal a workload can wait for, in the order they

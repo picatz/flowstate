@@ -62,7 +62,11 @@ crash from taking down the worker but is not filesystem or network confinement.
 Finally, `slack.post` positively requires the host-attested production execution
 mode. Rehearsal and unknown/older modes are refused before input decoding or
 network access, so `flow run local` cannot send a real message while pretending
-to be a safe preview.
+to be a safe preview. That mode check is an additional side-effect posture, not
+authorization: task policy, secret release, and egress policy must still permit
+the task, credential, and destination. `TestSlackPostOnlyAcceptsAnEstablishedProductionMode`
+proves production is the only accepted value and that rehearsal, unspecified,
+unknown future values, and a missing caller all fail closed without credentials.
 
 ## Build and use
 

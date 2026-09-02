@@ -57,9 +57,8 @@ type postResponse struct {
 
 func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	caller, ok := sdk.CallerFromContext(ctx)
-	if !ok || caller.Mode() != flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION {
-		return nil, sdk.PermissionDenied(
-			"slack.post performs an external write and requires a production execution identity; local rehearsals and unknown execution modes are refused")
+	if err := requireProductionMode(caller, ok); err != nil {
+		return nil, err
 	}
 	if egressPolicy == nil {
 		return nil, sdk.PermissionDenied(
@@ -83,6 +82,18 @@ func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, err
 	}
 	return sdk.EncodeOutputs(&slackv1.PostOutputs{Channel: response.Channel, Ts: response.TS})
+}
+
+// requireProductionMode is slack.post's side-effect posture, not an
+// authorization decision. Task policy, secret release, and egress policy grant
+// the authorities the call spends; the host-attested mode only keeps a local
+// rehearsal from being mistaken for a notification preview.
+func requireProductionMode(caller sdk.Caller, ok bool) error {
+	if !ok || caller.Mode() != flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION {
+		return sdk.PermissionDenied(
+			"slack.post performs an external write and requires a production execution identity; local rehearsals and unknown execution modes are refused")
+	}
+	return nil
 }
 
 func tokenFromValue(v *flowstatev1.Value) (string, error) {

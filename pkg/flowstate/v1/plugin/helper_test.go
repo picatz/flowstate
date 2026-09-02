@@ -85,6 +85,9 @@ func runFakePlugin() int {
 	if mode == "egress-identity" {
 		return runEgressIdentityPlugin()
 	}
+	if mode == "egress-resolver" {
+		return runEgressResolverPlugin()
+	}
 
 	// The progress-relay conformance fixture is likewise a real SDK plugin
 	// rather than a hand-rolled handler, for the identical reason: it exists

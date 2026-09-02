@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -335,6 +336,12 @@ type Config struct {
 	// a message naming the bound, because past it the failure is exec(2)
 	// refusing the whole launch with an errno that names nothing.
 	//
+	// It must also build. [NewHost] parses it and compiles its rules, and
+	// refuses a grant that does not, because launching under a policy that
+	// cannot govern anything would still forward what the policy asks for —
+	// under `proxy_from_environment`, the worker's proxy URL and whatever
+	// userinfo it carries.
+	//
 	// A plugin reaches it through
 	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy],
 	// which fails closed when it is absent. Handing it over is not confinement —
@@ -565,6 +572,42 @@ func (c Config) validate() error {
 			"plugin: EgressPolicy is %d bytes, over the %d-byte limit; it is passed to every plugin as one environment string, and a longer one fails exec with an error naming nothing",
 			len(c.EgressPolicy), MaxEgressPolicyBytes,
 		)
+	}
+
+	// And it has to build, not merely parse. The two are different questions: a
+	// document with a well-formed `deny:` list whose CEL does not compile parses
+	// fine and produces no policy at all.
+	//
+	// Refusing here is what makes the launch fail closed. Parsing alone is
+	// enough to read `proxy_from_environment` out of a grant, so a policy that
+	// parsed and could not build would still have sent the worker's proxy
+	// variables — the operator's own proxy URL, userinfo included — into every
+	// plugin launched under it. The plugin refuses the same bytes when it builds
+	// them, but by then the credential has already crossed. A grant that cannot
+	// govern anything must not be a grant that hands anything over (AGENTS.md's
+	// sixth invariant).
+	//
+	// The same two calls the SDK makes and applyEgressPolicy makes, so all three
+	// accept exactly the same set of policies. An empty document builds to the
+	// default posture and is accepted, which is what keeps presence rather than
+	// length the rule.
+	//
+	// Nil is skipped rather than built. netpolicy.ParseConfig(nil) succeeds and
+	// yields that same default posture, so building unconditionally would turn
+	// "nothing was configured" into "a policy" — the one distinction the whole
+	// grant rests on.
+	//
+	// Building here costs no I/O: config-to-policy compiles CEL and clones a
+	// transport, and touches nothing outside the process. Doing it in a
+	// constructor is CPU an operator pays once at startup.
+	if c.EgressPolicy != nil {
+		parsed, err := netpolicy.ParseConfig(c.EgressPolicy)
+		if err != nil {
+			return fmt.Errorf("plugin: parsing EgressPolicy: %w", err)
+		}
+		if _, err := parsed.Policy(); err != nil {
+			return fmt.Errorf("plugin: building EgressPolicy: %w", err)
+		}
 	}
 
 	return nil

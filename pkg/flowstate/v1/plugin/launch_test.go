@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -547,11 +548,19 @@ func TestAnOversizedEgressPolicyIsRefusedByConfig(t *testing.T) {
 
 	// Exactly at the bound is accepted. Without this half, a check that refused
 	// everything would pass the half below.
-	cfg.EgressPolicy = make([]byte, MaxEgressPolicyBytes)
+	//
+	// A comment padded to the bound rather than a run of zero bytes: validate
+	// builds the grant now, so the at-bound case has to be a document that
+	// builds, or it would be refused for its content and pass this test for the
+	// wrong reason.
+	cfg.EgressPolicy = append([]byte("# "), bytes.Repeat([]byte("x"), MaxEgressPolicyBytes-2)...)
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("a policy exactly at the %d-byte bound was refused: %v", MaxEgressPolicyBytes, err)
 	}
 
+	// Over the bound is refused for its size, before anything reads it. The
+	// bytes are deliberately not a policy: the bound is the first check, so it
+	// answers before the content ever matters.
 	cfg.EgressPolicy = make([]byte, MaxEgressPolicyBytes+1)
 	err := cfg.validate()
 	if err == nil {
@@ -722,4 +731,186 @@ func envValue(env []string, want string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// TestAnOperatorNamedProxyOverridesBothSpellings is the half of the override
+// rule that a per-name skip got wrong.
+//
+// HTTP_PROXY and http_proxy are two spellings of one variable, and Go's
+// ProxyFromEnvironment takes the uppercase when it sees both. Skipping only the
+// spelling the operator wrote therefore forwarded the worker's ambient
+// HTTP_PROXY beside an operator's `http_proxy` override — and then preferred it.
+// The override an operator was told they had made lost to exactly the value it
+// was written to replace, with nothing anywhere reporting a conflict.
+//
+// Both directions, because a fix that special-cased one spelling would pass the
+// other half of this table while leaving the same hole open in the mirror.
+func TestAnOperatorNamedProxyOverridesBothSpellings(t *testing.T) {
+	for _, test := range []struct {
+		name string
+
+		// configured is the operator's entry in Config.Env.
+		configured string
+
+		// ambient is the pair of worker variables neither of which may cross.
+		ambient [2]string
+	}{
+		{
+			name:       "a lowercase override suppresses the uppercase ambient value",
+			configured: "http_proxy=http://plugin-proxy.invalid:8080",
+			ambient:    [2]string{"HTTP_PROXY", "http_proxy"},
+		},
+		{
+			name:       "an uppercase override suppresses the lowercase ambient value",
+			configured: "HTTP_PROXY=http://plugin-proxy.invalid:8080",
+			ambient:    [2]string{"HTTP_PROXY", "http_proxy"},
+		},
+		{
+			name:       "the same rule holds for NO_PROXY",
+			configured: "no_proxy=plugin.internal.invalid",
+			ambient:    [2]string{"NO_PROXY", "no_proxy"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// The worker has both spellings set, which is what makes the
+			// preference order observable at all.
+			for _, name := range test.ambient {
+				t.Setenv(name, "http://worker-proxy.invalid:3128")
+			}
+
+			cfg := testConfig(t, t.TempDir()).withDefaults()
+			cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n")
+			cfg.Env = []string{test.configured}
+
+			env := pluginEnv(cfg, "/tmp/s")
+
+			configuredName, configuredValue, _ := strings.Cut(test.configured, "=")
+			for _, name := range test.ambient {
+				value, found := envValue(env, name)
+				if name == configuredName {
+					if !found || value != configuredValue {
+						t.Errorf("%s = %q (found %v), want the operator's own entry %q",
+							name, value, found, configuredValue)
+					}
+					continue
+				}
+				if found {
+					t.Errorf("%s = %q reached a plugin beside the operator's %s override\n"+
+						"  the two are one variable, and ProxyFromEnvironment prefers the uppercase,\n"+
+						"  so the override loses to the value it was written to replace",
+						name, value, configuredName)
+				}
+			}
+
+			// A variable the operator said nothing about is unaffected, or the
+			// rule above would read as "naming any proxy turns the grant off".
+			t.Setenv("HTTPS_PROXY", "http://worker-proxy.invalid:3129")
+			if value, found := envValue(pluginEnv(cfg, "/tmp/s"), "HTTPS_PROXY"); !found ||
+				value != "http://worker-proxy.invalid:3129" {
+				t.Errorf("HTTPS_PROXY = %q (found %v), want the worker's own value", value, found)
+			}
+		})
+	}
+}
+
+// TestAnUnbuildableEgressGrantIsRefusedBeforeAnythingLaunches is the fail-closed
+// direction for a grant that is well-formed YAML and no policy at all.
+//
+// Parsing and building are different questions. A `deny:` list whose CEL does
+// not compile parses fine, and parsing is all it took to read
+// `proxy_from_environment` — so a worker whose policy could not build still
+// forwarded its own HTTP_PROXY, userinfo and all, to every plugin it launched.
+// The plugin refused the same bytes a moment later when it built them, which is
+// the wrong moment: the credential had already crossed. A grant that cannot
+// govern anything must not be a grant that hands anything over.
+//
+// The proxy variables are set on this process throughout, so a regression is
+// visible as the credential travelling rather than only as a missing error.
+func TestAnUnbuildableEgressGrantIsRefusedBeforeAnythingLaunches(t *testing.T) {
+	// Not t.Parallel(): t.Setenv.
+	t.Setenv("HTTP_PROXY", "http://operator:s3cret@proxy.invalid:3128")
+
+	// Well-formed YAML, a policy that cannot be built: the rule is a string, the
+	// list is a list, and the CEL inside it does not compile.
+	grant := []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n" +
+		"  deny: ['not a cel expression']\n")
+
+	cfg := testConfig(t, pluginDir(t, "greet"))
+	cfg.EgressPolicy = grant
+
+	// Nothing is launched, because nothing gets that far.
+	host, err := NewHost(cfg)
+	if err == nil {
+		t.Fatal("NewHost accepted a grant that cannot build")
+	}
+	if host != nil {
+		t.Error("NewHost returned a host alongside its refusal")
+	}
+	if !strings.Contains(err.Error(), "EgressPolicy") {
+		t.Errorf("the refusal does not name the field: %v", err)
+	}
+
+	// And the credential never reaches a launch environment, which is the half
+	// that would still have been wrong had the refusal come later.
+	if value, found := envValue(pluginEnv(cfg.withDefaults(), "/tmp/s"), "HTTP_PROXY"); found {
+		t.Errorf("HTTP_PROXY = %q was granted under a policy that cannot build; "+
+			"a grant that governs nothing must not hand the operator's proxy credential over", value)
+	}
+}
+
+// TestABuildableEgressGrantIsAccepted is the falsifier: a check that refused
+// every grant would pass the test above.
+//
+// The empty document is here on purpose. It builds to the default posture, so
+// accepting it is what keeps presence rather than length the rule that decides
+// whether a grant was configured.
+func TestABuildableEgressGrantIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		grant []byte
+	}{
+		{name: "an ordinary policy", grant: []byte("egress:\n  schemes: [https]\n")},
+		{
+			// Nil is not a document and must not be built into one.
+			// netpolicy.ParseConfig(nil) succeeds and yields the default
+			// posture, so a validate that built unconditionally would turn
+			// "nothing was configured" into "a policy" — and every plugin would
+			// then be granted a policy the operator never wrote.
+			name:  "no grant at all",
+			grant: nil,
+		},
+		{name: "an explicitly empty document", grant: []byte{}},
+		{
+			name:  "a policy whose CEL compiles",
+			grant: []byte("egress:\n  schemes: [https]\n  deny: ['host == \"blocked.invalid\"']\n"),
+		},
+		{
+			name:  "a policy exactly at the byte bound",
+			grant: append([]byte("# "), bytes.Repeat([]byte("x"), MaxEgressPolicyBytes-2)...),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := testConfig(t, t.TempDir())
+			cfg.EgressPolicy = test.grant
+
+			if err := cfg.validate(); err != nil {
+				t.Fatalf("a grant that builds was refused: %v", err)
+			}
+
+			// Accepting nil must not have made it a grant: the launch
+			// environment still carries none, which is the distinction
+			// presence-not-length rests on.
+			granted := grantsIn(t, pluginEnv(cfg.withDefaults(), "/tmp/s"))
+			if test.grant == nil && len(granted) != 0 {
+				t.Errorf("no configured policy produced a grant anyway: %q", granted)
+			}
+			if test.grant != nil && len(granted) != 1 {
+				t.Errorf("a configured policy produced %d grants, want exactly one", len(granted))
+			}
+		})
+	}
 }

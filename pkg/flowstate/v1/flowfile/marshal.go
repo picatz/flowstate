@@ -1458,6 +1458,23 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 		}
 
 		entry := yaml.MapSlice{{Key: "value", Value: value}}
+
+		// Only when declared, unlike an input's `type:`, which is always
+		// written because it is always required. An output that declares none
+		// must round-trip back to a block with no `type:` line — every
+		// declaration written before the field existed is one — so the absent
+		// case is silence rather than a spelling for "unspecified".
+		if declaration.GetType() != v1.InputDeclaration_TYPE_UNSPECIFIED {
+			entry = append(entry, yaml.MapItem{Key: "type", Value: v1.DeclaredTypeName(declaration.GetType())})
+		}
+		if len(declaration.GetValues()) > 0 {
+			values := make([]any, 0, len(declaration.GetValues()))
+			for _, v := range declaration.GetValues() {
+				values = append(values, textToYAML(v))
+			}
+			entry = append(entry, yaml.MapItem{Key: "values", Value: values})
+		}
+
 		if declaration.Description != nil {
 			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(declaration.GetDescription())})
 		}

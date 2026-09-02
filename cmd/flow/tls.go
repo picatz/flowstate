@@ -10,10 +10,11 @@ import (
 )
 
 // Explicit TLS for the public listener: a certificate and key an operator
-// names, loaded once at start-up. No ACME here — that is a later slice
-// (picatz/flowstate#549) — and no implicit fallback to plaintext: a
-// certificate this process cannot load is a start-up failure, never a
-// silently downgraded connection, per CLAUDE.md's "fail closed".
+// names, loaded once at start-up. ACME lives beside this in acme.go (the
+// slice picatz/flowstate#549 asked for), and neither path has an implicit
+// fallback to plaintext: a certificate this process cannot load is a start-up
+// failure, never a silently downgraded connection, per CLAUDE.md's "fail
+// closed".
 //
 // # Why the refusal lives beside the loader
 //

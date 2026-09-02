@@ -625,17 +625,17 @@ jobs:
   # Advisory for the 48h window CLAUDE.md gives every newly added check, the same
   # window staticcheck, the fuzz smoke job and federation each had: a check
   # nobody has run against this tree can go red on code nobody touched, and a red
-  # build people learn to ignore is worse than no build. Drop `continue-on-error`
-  # on 2026-08-12 and let it be required. A failure after that is a styled
-  # surface that changed shape: read the diff, and if the new shape is the
-  # intended one, re-record with `make appearance-update` and commit the goldens
-  # in the same change that moved the surface.
+  # build people learn to ignore is worse than no build. That window lapsed on
+  # 2026-08-12 and `continue-on-error` came off on 2026-08-31 (#1319), so a
+  # failure here now fails `verdict`. A failure is a styled surface that changed
+  # shape: read the diff, and if the new shape is the intended one, re-record
+  # with `make appearance-update` and commit the goldens in the same change that
+  # moved the surface.
   appearance:
     needs: plan
     if: needs.plan.outputs.appearance == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     steps:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -701,10 +701,10 @@ jobs:
   # the plan never heard of is a failure too. The last two are the drift cases,
   # and tools/gate/ci_test.go catches them before a push rather than after.
   #
-  # One honest limitation, stated rather than left to be discovered: while
-  # `appearance` carries `continue-on-error: true`, its `needs` result is
-  # `success` even when it fails, so this job cannot distinguish those. That is
-  # what advisory means, and it is the only job here it applies to.
+  # No job here is advisory any more: `appearance` was the last to carry
+  # `continue-on-error: true`, under which its `needs` result read `success`
+  # even when it failed, and that came off on 2026-08-31 (#1319). Every result
+  # this job reads is now the job's own.
   verdict:
     needs: [plan, test, proto, vulncheck, staticcheck, fuzz-smoke, appearance]
     if: always()

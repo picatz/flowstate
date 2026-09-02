@@ -400,6 +400,9 @@ cannot park a production run forever, and a policy for who may attach — and it
 is [#928](https://github.com/picatz/flowstate/issues/928)'s slice 2. Today the
 debugger is a local-driver instrument, which is where authoring happens.
 
-DAP, so that an editor's own debug UI drives this, is the front after MCP.
+DAP landed: `flow dap` serves the same session to an editor's own debug UI over
+stdio, with function breakpoints on step ids — see
+[EDITORS.md](EDITORS.md#stepping-a-run-flow-dap). The VS Code extension does not
+yet contribute a debug type for it (#585).
 
 [`DefaultCostLimit`]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#DefaultCostLimit

@@ -690,42 +690,117 @@ func pluginEnv(cfg Config, socketPath string) []string {
 // So the proxy inputs are granted, like the policy itself, and tied to the same
 // switch: when the policy proxies, the worker's own values cross verbatim; when
 // it does not, none of them do. An operator who wants a plugin to reach a
-// different proxy names it in [Config.Env], and that entry wins — see the skip
-// below.
+// different proxy names it in [Config.Env], and that entry wins — in either
+// spelling, for the whole variable; see the skip below.
 //
 // The flag is read out of the grant rather than carried beside it, so there is
-// one source of truth for what this deployment's policy says. A grant that does
-// not parse grants no proxy: the plugin's own [netpolicy.ParseConfig] will refuse
-// the same bytes, so it has nothing to proxy for.
+// one source of truth for what this deployment's policy says. Deriving it once
+// into a [Config] field would be cheaper and worse: a Config whose EgressPolicy
+// was set after the derivation would carry a flag that no longer described its
+// own bytes, which is the failure a derived copy always has.
+//
+// It is read out of a policy that *builds*, not one that merely parses, and the
+// difference is the whole of this function's safety. A `deny:` list whose CEL
+// does not compile parses fine and produces no policy at all, so a parse-only
+// read forwarded the operator's proxy URL — userinfo and all — under a grant
+// that could govern nothing. [Config.validate] refuses such a grant at
+// [NewHost], which turns this into a startup error an operator can read; the
+// same check is here because this must not depend on having been called through
+// NewHost to be safe. Two answers to one question, and both of them no.
+//
+// Building per launch rather than once: the alternative is caching a compiled
+// policy on Config, which is the derived copy above by another name. Launches
+// are a handful at worker startup, and the bytes are bounded by
+// [MaxEgressPolicyBytes].
 func proxyGrant(cfg Config) []string {
 	if cfg.EgressPolicy == nil {
 		return nil
 	}
 
-	policy, err := netpolicy.ParseConfig(cfg.EgressPolicy)
-	if err != nil || !policy.Egress.ProxyFromEnvironment {
+	parsed, err := netpolicy.ParseConfig(cfg.EgressPolicy)
+	if err != nil || !parsed.Egress.ProxyFromEnvironment {
+		return nil
+	}
+	if _, err := parsed.Policy(); err != nil {
 		return nil
 	}
 
+	// Each variable is read at a call site naming its own constant rather than
+	// through a range over a list of names. Ranging reads the same six variables
+	// and is shorter, but it hides which ones from the environment-documentation
+	// drift test (cmd/flow/internal/docsgen), whose resolver follows a literal or
+	// a constant and nothing else — and a read it cannot follow is a hole in
+	// exactly the shape that test defends.
 	var granted []string
-	for _, name := range protocol.ProxyEnv() {
-		value, ok := os.LookupEnv(name)
-		if !ok {
-			continue
-		}
-
+	for _, variable := range []proxyVariable{
+		{
+			upper: protocol.HTTPProxyEnv, lower: protocol.HTTPProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyLowerEnv)),
+		},
+		{
+			upper: protocol.HTTPSProxyEnv, lower: protocol.HTTPSProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyLowerEnv)),
+		},
+		{
+			upper: protocol.NoProxyEnv, lower: protocol.NoProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.NoProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.NoProxyLowerEnv)),
+		},
+	} {
 		// An operator naming this variable in Config.Env is more specific than
 		// the worker's ambient value, and duplicate keys in one environment
 		// block are read differently by different runtimes. Skip rather than
 		// emit both.
-		if slices.ContainsFunc(cfg.Env, func(entry string) bool { return isEnvNamed(entry, name) }) {
+		//
+		// Per pair, not per name. HTTP_PROXY and http_proxy are two spellings of
+		// one variable, and ProxyFromEnvironment takes the uppercase when both
+		// are set — so forwarding the ambient HTTP_PROXY beside an operator's
+		// `http_proxy` override would leave the override outvoted by exactly the
+		// value it was written to replace, with nothing anywhere to say so.
+		// Either spelling being configured settles the variable, and neither
+		// ambient spelling crosses.
+		if configuredInEnv(cfg.Env, variable.upper, variable.lower) {
 			continue
 		}
 
-		granted = append(granted, name+"="+value)
+		if variable.upperValue.set {
+			granted = append(granted, variable.upper+"="+variable.upperValue.value)
+		}
+		if variable.lowerValue.set {
+			granted = append(granted, variable.lower+"="+variable.lowerValue.value)
+		}
 	}
 
 	return granted
+}
+
+// proxyVariable is one proxy setting in the two spellings
+// [net/http.ProxyFromEnvironment] accepts, with what the worker holds for each.
+type proxyVariable struct {
+	upper, lower           string
+	upperValue, lowerValue proxyValue
+}
+
+// proxyValue is one environment read: the value, and whether it was set at all.
+type proxyValue struct {
+	value string
+	set   bool
+}
+
+// proxyValueOf adapts [os.LookupEnv]'s two results, so a read can stay one
+// expression naming its constant.
+func proxyValueOf(value string, set bool) proxyValue {
+	return proxyValue{value: value, set: set}
+}
+
+// configuredInEnv reports whether an operator named either spelling of one proxy
+// variable in [Config.Env].
+func configuredInEnv(env []string, upper, lower string) bool {
+	return slices.ContainsFunc(env, func(entry string) bool {
+		return isEnvNamed(entry, upper) || isEnvNamed(entry, lower)
+	})
 }
 
 // isEnvNamed reports whether a KEY=VALUE entry has the given key.

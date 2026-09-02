@@ -77,6 +77,18 @@ directory this plugin creates per call, holding nothing but
 destroyed when the run ends. codex never sees the worker user's own
 `~/.codex/config.toml` or `auth.json` - see `ephemeral.go` and `process.go`.
 
+## Execution-mode posture
+
+Writable `codex.exec` runs deliberately keep their filesystem side effects in
+a local rehearsal. The host-attested execution mode is not filesystem or
+network authorization: the operator's sandbox ceiling decides whether a task
+may select a mutating mode; the working-context root and separate network grant
+further constrain `WORKSPACE_WRITE`. `DANGER_FULL_ACCESS` deliberately carries
+the worker user's wider authority and is named accordingly. A rehearsal is not
+a dry run once the operator admits either mode. The fake-Codex subprocess tests
+make real temporary-workspace edits without credentials or a production caller,
+including `TestCodexExecResetWorkingContextEnablesARetriedPatch`.
+
 ## Examples, kept honest
 
 The file below is pasted in whole, not summarized, and

@@ -589,6 +589,24 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 	for _, test := range conformance.InputOutputCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				// An output that cannot satisfy its own declaration fails the
+				// run, so a case about that has no outputs to compare — only
+				// the sentence, which must be the same one the durable driver
+				// gives.
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+				if test.ExpectedErrorOmits != "" {
+					require.NotContains(t, err.Error(), test.ExpectedErrorOmits,
+						"the failure text carries something this case says it must not")
+				}
+				if test.ExpectedErrorMaxBytes > 0 {
+					require.Less(t, len(err.Error()), test.ExpectedErrorMaxBytes,
+						"the failure text is larger than this case's bound")
+				}
+
+				return
+			}
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 		})
@@ -775,6 +793,28 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			require.Error(t, err, "the submission was accepted")
 			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
+// TestRunWorkflowOutputValueRefused is the local driver's half of the submit
+// boundary for a declared output whose value is already known to be wrong.
+//
+// Run through [v1.RunWithInputs] rather than [v1.BindRunInputs] directly, which
+// is what makes it a claim about the driver rather than about the checker: the
+// workflow carries a step, so a refusal that did not happen at submit would run
+// it. See [conformance.OutputValueRefusalCases] for why a literal is answerable
+// here at all when a computed output is not.
+func TestRunWorkflowOutputValueRefused(t *testing.T) {
+	for _, test := range conformance.OutputValueRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+			if test.Omits != "" {
+				require.NotContains(t, err.Error(), test.Omits,
+					"the refusal carries something this case says it must not")
+			}
 		})
 	}
 }

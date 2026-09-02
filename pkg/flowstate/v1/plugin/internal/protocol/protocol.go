@@ -170,8 +170,8 @@ const (
 // environment it did not build (sdk.EgressPolicy).
 const MaxEgressPolicyBytes = 64 << 10
 
-// ProxyEnv returns the environment variable names [net/http.ProxyFromEnvironment]
-// reads, in both the uppercase and lowercase spellings it accepts.
+// The proxy variables a launched plugin is granted when the deployment's policy
+// proxies, in the two spellings [net/http.ProxyFromEnvironment] accepts.
 //
 // These are granted, not protocol. Nothing in this package sets or reads them;
 // they are ordinary variables that every HTTP stack already understands, and the
@@ -186,21 +186,35 @@ const MaxEgressPolicyBytes = 64 << 10
 // difference in routing, it is the plugin going around the control — silently,
 // and only for plugins.
 //
+// Each variable has two spellings and they are one variable: ProxyFromEnvironment
+// takes the uppercase when it sees both, so a host granting one spelling while an
+// operator configured the other would leave the operator's choice outvoted by the
+// value it was written to replace. They are granted or withheld together; see the
+// host's proxyGrant.
+//
 // They are deliberately not in [MagicCookieEnv]'s company in the host's
 // isProtocolEnv list: an operator who names a proxy in Config.Env is being more
 // specific than the worker's own environment, and that entry wins rather than
-// being dropped.
+// being dropped — per pair, so naming either spelling settles the variable.
 //
 // REQUEST_METHOD is not here. ProxyFromEnvironment also consults it — a
 // non-empty value means the process is a CGI script, and HTTP_PROXY is then
 // ignored as untrusted — and forwarding it would let the worker's environment
 // turn a plugin's proxy off in a way no operator wrote down.
-func ProxyEnv() []string {
-	return []string{
-		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-		"http_proxy", "https_proxy", "no_proxy",
-	}
-}
+//
+// Each is a named constant rather than an element of a list the host ranges
+// over, so that every os.LookupEnv naming one resolves to a literal. The
+// environment-documentation drift test (cmd/flow/internal/docsgen) reads call
+// sites, and a read whose name it cannot follow is a hole in exactly the shape
+// that test defends.
+const (
+	HTTPProxyEnv       = "HTTP_PROXY"
+	HTTPProxyLowerEnv  = "http_proxy"
+	HTTPSProxyEnv      = "HTTPS_PROXY"
+	HTTPSProxyLowerEnv = "https_proxy"
+	NoProxyEnv         = "NO_PROXY"
+	NoProxyLowerEnv    = "no_proxy"
+)
 
 // MagicCookieValue is the value [MagicCookieEnv] must hold.
 //

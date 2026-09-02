@@ -1097,6 +1097,15 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[plugin
 			"this plugin does not resolve %q", truncate(ref.GetScheme(), 32)))
 	}
 
+	// The same install the task handlers make, for the same reason: a
+	// ResolveFunc that reaches a network backend does it through the SDK's
+	// governed client, and an `identity.*` rule in the deployment's policy is
+	// evaluated against whatever netpolicy finds on the request's context. The
+	// wire carries the identity here (the host sets it in
+	// plugin/secrets.go's Resolve), so dropping it made a resolver the one
+	// entry point where a tenant rule silently did not apply.
+	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
+
 	resp, err := s.resolve(ctx, SecretRequest{
 		Scheme:    ref.GetScheme(),
 		Name:      ref.GetName(),
