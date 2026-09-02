@@ -267,20 +267,21 @@ Must-land is marked; cut from the bottom, never from must-land.
     awareness; the B1-style opener for everything in P3. — PR #1392,
     **merged**; the container-key hole its review found (#1404) is closed by
     #1409, **merged**, with the literal walk bounded at `MaxStructureDepth`.
-11. **The webhook→signal bridge** *(flagship; #96 is the design record, and
-    its thread now carries the promotion proposal)* — a verified delivery
-    answering a declared `wait_for_signal:`/`wait_for_signals:` gate: reuses
-    the existing verification schemes and `signals:` authorization, needs a
-    sender-identity shape and idempotency across redelivery, conformance
-    cases with both drivers as callers, and the `flowstate-security-review`
-    pass before merge. **Promoted** (recorded on #96); built as PR #1412,
-    which at the time of writing is in its last review round: the security
-    pass found and the branch closed a cross-workflow gate answer (a
-    trigger's key holder could answer an unpoliced gate in another workflow
-    of the tenant) and header-addressed correlation under schemes that do
-    not sign headers, and both drivers consume one `ConsumeDeliveryID`. If
-    it is not green by the morning it waits, unmerged — a half-bridge at a
-    trust boundary is worse than none.
+11. **The webhook→signal bridge** *(flagship; #96 is the design record, and its
+    thread now carries the promotion proposal)* — a verified delivery answering
+    a declared `wait_for_signal:`/`wait_for_signals:` gate: reuses the existing
+    verification schemes and `signals:` authorization, needs a sender-identity
+    shape and idempotency across redelivery, conformance cases with both
+    drivers as callers, and the `flowstate-security-review` pass before merge.
+    **Promoted** (recorded on #96); built as PR #1412, **merged** (02:42 UTC on
+    the 2nd): the security pass found and the branch closed a cross-workflow
+    gate answer (a trigger's key holder could answer an unpoliced gate in
+    another workflow of the tenant) and header-addressed correlation under
+    schemes that do not sign headers; its last round replaced that check's
+    deny-list with an allow-list (`event` accepted only as the operand of
+    `.body`) after both reviewers showed the root could be aliased past it, and
+    stopped redeliveries filling the local driver's queue. Both drivers consume
+    one `ConsumeDeliveryID`; `accepts:` on the bridge stays deferred on #96.
 12. **Factory catch-up** — #1386 (the ledger cadence decision), #1307's
     `tools/fleet` reachability, and the docs/CI.md workflow-inventory fix if
     not already inside (7).
@@ -340,7 +341,8 @@ still live) and the Jul-31 design wave (#95–#108) for supersession
 ### Day two (2026-09-02), from the night's state
 
 Landed on day one: #1387, #1402, #1391, #1389, #1372, #1281, #1401, #1392,
-#1410, #1409, #1390, #1394, #1411, #1413; #1412 in its last round. In order:
+#1410, #1409, #1390, #1394, #1411, #1413, and #1412 at 02:42 UTC on the 2nd. In
+order:
 
 1. **Owner, five minutes:** the merge-queue ruleset flip (#489 is decided;
    the CI half shipped in #688). Then the #1216 rehearsal can run against a

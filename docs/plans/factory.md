@@ -188,3 +188,16 @@ names each head when it exists. Receiver-cost close: bot findings acted on
 across the night, twenty-two; refuted with evidence, one; owner turns needed,
 one — "wrap up for the night" — and that one arrived with every PR but the
 last already merged.
+
+#1412 merged at 02:42 UTC, the last of the night, after one more round on its
+final head: Codex found the header-reach check's aliasing escape by the
+comprehension spelling, the security pass found seven more spellings the same
+way, and one push replaced the deny-list with an allow-list and stopped
+redeliveries filling the local queue. Rule: a syntactic deny-list over an
+expression tree is refuted by aliasing the root — a comprehension variable, a
+ternary, a list or map literal, `has()` — and both reviewers passed it once
+because they probed the deny-list's own arms rather than the root; provenance
+is proved with an allow-list (`event` accepted only as the operand of `.body`),
+which needs no alias tracking because an alias must mention the root somewhere
+the rule refuses. Receiver-cost close, corrected for that round: bot findings
+acted on, twenty-four; refuted with evidence, one; owner turns needed, one.
