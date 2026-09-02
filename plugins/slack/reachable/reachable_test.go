@@ -3,7 +3,6 @@
 package reachable
 
 import (
-	"encoding/base64"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -19,7 +18,6 @@ import (
 const (
 	slackModule = "github.com/picatz/flowstate/plugins/slack"
 	examplePath = "../../../examples/plugins/slack/approval.yaml"
-	policyEnv   = "FLOWSTATE_SLACK_EGRESS_POLICY_B64"
 )
 
 func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
@@ -46,7 +44,9 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 		SearchPath: []string{dir}, DisableHealthChecks: true,
 		HandshakeTimeout: 10 * time.Second, DescribeTimeout: 10 * time.Second,
 		CallTimeout: 10 * time.Second, ShutdownGrace: 5 * time.Second,
-		Env: []string{policyEnv + "=" + base64.StdEncoding.EncodeToString([]byte("egress:\n  schemes: [https]\n"))},
+		// The field, not a hand-composed Env entry: the host owns encoding the
+		// grant, and this is the launch path a worker actually takes.
+		EgressPolicy: []byte("egress:\n  schemes: [https]\n"),
 	})
 	if err := host.Register(flowstatev1.DefaultRegistry(), nil); err != nil {
 		t.Fatalf("registering plugin: %v", err)

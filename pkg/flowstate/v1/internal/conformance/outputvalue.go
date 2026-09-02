@@ -2,6 +2,7 @@ package conformance
 
 import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // A declared output whose value is already known is checked at the submit
@@ -96,5 +97,116 @@ func OutputValueRefusalCases() []Refusal {
 				`, which is not one of the values token declares: "stable", "beta"`,
 			Omits: sensitiveAnswer,
 		},
+		{
+			// #1404. The kind half of the type check passes — a map keyed by
+			// anything is a map — and the declaration is still broken: `struct`
+			// is the promise that this output reads back as a plain object, and
+			// a non-string key is one nothing outside this schema can spell.
+			// Answerable at submit for the same reason the two above are: the
+			// literal is written down, so no run can change what it holds.
+			Name: "a literal struct output keyed by an int is refused at submit",
+			Workflow: declares("outputs-literal-struct-int-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					literalOutput("detail", intKeyedMap(), v1.InputDeclaration_TYPE_STRUCT),
+				},
+				says("a", "hello"),
+			),
+			Contains: `output "detail" is declared struct but computed a map with int keys; ` +
+				`a struct is a map with string keys`,
+		},
+		{
+			// The other declared container, refused at the same boundary by the
+			// same check. Its own case rather than a variation, because the
+			// sentence a `list` earns names a different promise — the plain
+			// array, not the plain object — and a fix that closed only the outer
+			// map would pass this one.
+			Name: "a literal list output holding an int-keyed map is refused at submit",
+			Workflow: declares("outputs-literal-list-int-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					literalOutput("items", v1.NewLiteralList(intKeyedMap().GetLiteral()),
+						v1.InputDeclaration_TYPE_LIST),
+				},
+				says("a", "hello"),
+			),
+			Contains: `output "items" is declared list but holds a map with int keys; ` +
+				`a list reads back as a plain array, whose maps have string keys`,
+		},
+		{
+			// The bound on the walk itself, at the boundary that reaches it
+			// first. [v1.CheckOutputValue] converts a declared container with
+			// [v1.LiteralToGo], which recurses, and [v1.BindRunInputs] runs
+			// ahead of [v1.CheckSubmissionSize] — so on the local driver an
+			// in-process caller reaches this recursion with a literal nobody
+			// weighed. Deep enough, and an unbounded walk exhausts the goroutine
+			// stack: a crash of the embedding process, which is not an outcome a
+			// caller can recover from or a server can report (invariant 5).
+			//
+			// The refusal names the bound rather than the depth, because the
+			// walk stops at the bound instead of measuring how much further the
+			// value goes.
+			//
+			// Only the refused side is a shared case. Its partner one level
+			// shallower — admitted, and converted again at completion — is
+			// `TestAContainerOutputIsBoundedByWalkDepth` in the v1 package,
+			// because an accepted deep value has to be *compared*, and
+			// `protocmp.Transform` under `cmp.Diff` costs roughly 15x per four
+			// levels of message nesting: 4s at depth 16, 80s at depth 20, and
+			// unrunnable at this bound. That is a property of the comparison in
+			// both drivers' runners, not of the value, so the boundary is
+			// asserted where it can be asserted directly and the both-drivers
+			// claim stays on the refusal, which is the observable behavior.
+			Name: "a literal struct output nested past the walk's bound is refused at submit",
+			Workflow: declares("outputs-literal-struct-too-deep",
+				nil,
+				[]*v1.OutputDeclaration{
+					literalOutput("detail", NestedMapLiteral(v1.MaxStructureDepth+1),
+						v1.InputDeclaration_TYPE_STRUCT),
+				},
+				says("a", "hello"),
+			),
+			Contains: `output "detail" is declared struct but nests deeper than the 32 levels ` +
+				`this server can walk`,
+		},
 	}
+}
+
+// NestedMapLiteral is a literal whose maps nest depth levels above a string.
+//
+// Exported because the two halves of the depth boundary are asserted in
+// different places — the refusal here, across both drivers, and the accepted
+// value in the v1 package's own test — and a boundary asserted against two
+// differently built values would not be a boundary. One entry per level, so
+// depth is the only thing it varies.
+func NestedMapLiteral(depth int) *v1.Value {
+	literal := &expr.Value{Kind: &expr.Value_StringValue{StringValue: "leaf"}}
+	for range depth {
+		literal = &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{
+			Entries: []*expr.MapValue_Entry{{
+				Key:   &expr.Value{Kind: &expr.Value_StringValue{StringValue: "k"}},
+				Value: literal,
+			}},
+		}}}
+	}
+
+	return &v1.Value{Kind: &v1.Value_Literal{Literal: literal}}
+}
+
+// intKeyedMap is `{1: "value"}` as a literal, which no Flowfile can write.
+//
+// A mapping under `value:` compiles to a structure whose keys are the document's
+// own — YAML keys are strings — so this shape reaches a declared output only
+// from an expression the run evaluates or from a specification built as a
+// message. Both are refused by [v1.CheckOutputValue]; this is the second, which
+// is the one a submit boundary answers.
+func intKeyedMap() *v1.Value {
+	return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
+		Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{
+			Entries: []*expr.MapValue_Entry{{
+				Key:   &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 1}},
+				Value: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "value"}},
+			}},
+		}},
+	}}}
 }

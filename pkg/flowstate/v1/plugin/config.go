@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -187,6 +188,19 @@ const (
 	stderrRateWindow = time.Minute
 )
 
+// MaxEgressPolicyBytes bounds [Config.EgressPolicy]: 64 KiB of raw policy,
+// before the base64 encoding that puts it in the launch environment.
+//
+// Exported for the same reason the Default constants above are, and for one
+// more: the CLI reading an operator's --egress-policy file bounds it with this
+// (cmd/flow/egress.go), so a file that would fail here is refused where the
+// operator can see which file it was, and the two cannot come to mean two
+// different sizes. The reasoning behind the number — MAX_ARG_STRLEN, and why a
+// policy is configuration rather than a data transport — is on
+// protocol.MaxEgressPolicyBytes, which is where the launch environment's own
+// bounds live.
+const MaxEgressPolicyBytes = protocol.MaxEgressPolicyBytes
+
 // Config describes which plugins a deployment will run and how far it will let
 // them go.
 //
@@ -285,6 +299,47 @@ type Config struct {
 	// with. Anything a plugin needs — a vault address, a region, a path to a
 	// credential file — belongs here, named by the operator.
 	Env []string
+
+	// EgressPolicy is the deployment's egress policy, as the operator wrote it
+	// and the worker already parsed it for the built-in http task.
+	//
+	// Nil is no grant; non-nil is a grant, including an empty one. That
+	// distinction is the whole of it, and length is not: an operator who points
+	// --egress-policy at an empty document has configured a policy — the one an
+	// empty document builds, which is exactly what the built-in http task then
+	// runs under — and a plugin denying where the built-in task allows is the
+	// same deployment answering one question two ways. So a configured policy is
+	// forwarded whether or not it has bytes in it, and only an unset field means
+	// nothing was granted.
+	//
+	// Every launched plugin receives it, base64-encoded, under
+	// $FLOWSTATE_EGRESS_POLICY_B64 — not by name, and not as an entry an operator
+	// composes in Env, which would make the grant a per-deployment decision
+	// repeated per plugin. It is a field rather than a convention so that a host
+	// embedded in someone else's program has to pass the deployment's policy
+	// deliberately, and so that the one place it is encoded is here.
+	//
+	// It is a snapshot taken at launch, not a subscription: a plugin holds the
+	// bytes its own launch carried, so a policy file edited afterwards governs
+	// the plugins the worker starts next, not the ones already running.
+	//
+	// At most [MaxEgressPolicyBytes]; a larger one is refused by [NewHost] with
+	// a message naming the bound, because past it the failure is exec(2)
+	// refusing the whole launch with an errno that names nothing.
+	//
+	// It must also build. [NewHost] parses it and compiles its rules, and
+	// refuses a grant that does not, because launching under a policy that
+	// cannot govern anything would still forward what the policy asks for —
+	// under `proxy_from_environment`, the worker's proxy URL and whatever
+	// userinfo it carries.
+	//
+	// A plugin reaches it through
+	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy],
+	// which fails closed when it is absent. Handing it over is not confinement —
+	// nothing stops a process from opening its own socket — it is what makes the
+	// governed path the one a plugin has no reason to leave. Confining a plugin
+	// that wants out is the deployment's job (see THREAT_MODEL.md).
+	EgressPolicy []byte
 
 	// Logger receives host events and plugin stderr. Nil discards them, which
 	// silences the one diagnostic channel a plugin has; prefer passing one.
@@ -440,6 +495,7 @@ func (c Config) withDefaults() Config {
 	c.PinnedDigests = maps.Clone(c.PinnedDigests)
 	c.PermittedSchemes = slices.Clone(c.PermittedSchemes)
 	c.Env = slices.Clone(c.Env)
+	c.EgressPolicy = slices.Clone(c.EgressPolicy)
 
 	return c
 }
@@ -494,6 +550,54 @@ func (c Config) validate() error {
 	for _, entry := range c.Env {
 		if !isEnvEntry(entry) {
 			return fmt.Errorf("plugin: Env entry %q is not of the form KEY=VALUE", truncate(entry, 64))
+		}
+	}
+
+	// Refused here rather than discovered at exec. The grant becomes one
+	// environment string, and an over-long environment string is not a policy
+	// problem the operating system can describe: exec fails for every plugin at
+	// once, with an errno that names neither the variable nor the file it came
+	// from. Naming the bound and the size makes it a configuration error.
+	if len(c.EgressPolicy) > MaxEgressPolicyBytes {
+		return fmt.Errorf(
+			"plugin: EgressPolicy is %d bytes, over the %d-byte limit; it is passed to every plugin as one environment string, and a longer one fails exec with an error naming nothing",
+			len(c.EgressPolicy), MaxEgressPolicyBytes,
+		)
+	}
+
+	// And it has to build, not merely parse. The two are different questions: a
+	// document with a well-formed `deny:` list whose CEL does not compile parses
+	// fine and produces no policy at all.
+	//
+	// Refusing here is what makes the launch fail closed. Parsing alone is
+	// enough to read `proxy_from_environment` out of a grant, so a policy that
+	// parsed and could not build would still have sent the worker's proxy
+	// variables — the operator's own proxy URL, userinfo included — into every
+	// plugin launched under it. The plugin refuses the same bytes when it builds
+	// them, but by then the credential has already crossed. A grant that cannot
+	// govern anything must not be a grant that hands anything over (AGENTS.md's
+	// sixth invariant).
+	//
+	// The same two calls the SDK makes and applyEgressPolicy makes, so all three
+	// accept exactly the same set of policies. An empty document builds to the
+	// default posture and is accepted, which is what keeps presence rather than
+	// length the rule.
+	//
+	// Nil is skipped rather than built. netpolicy.ParseConfig(nil) succeeds and
+	// yields that same default posture, so building unconditionally would turn
+	// "nothing was configured" into "a policy" — the one distinction the whole
+	// grant rests on.
+	//
+	// Building here costs no I/O: config-to-policy compiles CEL and clones a
+	// transport, and touches nothing outside the process. Doing it in a
+	// constructor is CPU an operator pays once at startup.
+	if c.EgressPolicy != nil {
+		parsed, err := netpolicy.ParseConfig(c.EgressPolicy)
+		if err != nil {
+			return fmt.Errorf("plugin: parsing EgressPolicy: %w", err)
+		}
+		if _, err := parsed.Policy(); err != nil {
+			return fmt.Errorf("plugin: building EgressPolicy: %w", err)
 		}
 	}
 

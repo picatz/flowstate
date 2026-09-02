@@ -395,6 +395,114 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedErrorOmits:    sensitiveAnswer,
 		},
 		{
+			// #1404, the positive direction first: a `type: struct` output is
+			// the map a caller reads as a plain object, and both an ordinary one
+			// and an empty one are that. Here because the refusal below is only
+			// worth having if the shape it guards still passes — a key check
+			// written as "every map is suspect" would take the empty map with
+			// it, and an empty answer is a legal answer.
+			Name: "a struct output round-trips as the map it computed",
+			Workflow: declares("outputs-struct-string-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("detail", `{"host": "a"}`, v1.InputDeclaration_TYPE_STRUCT),
+					typedOutput("nothing", `{}`, v1.InputDeclaration_TYPE_STRUCT),
+				},
+				says("a", "hello"),
+			),
+			// One entry rather than several, for a reason unrelated to the
+			// claim: an [expr.MapValue]'s entries are a repeated field and CEL
+			// gives a map literal's entry order no meaning, so a multi-key
+			// computed map is not a value a proto diff can assert on.
+			ExpectedOutputs: answers(
+				held("a"),
+				map[string]*v1.Value{
+					"detail":  v1.NewLiteralMap(map[string]any{"host": "a"}),
+					"nothing": v1.NewLiteralMap(map[string]any{}),
+				},
+			),
+		},
+		{
+			// The refusal, at completion because that is the first moment the
+			// key exists: the expression is closed, so what it produces is a
+			// fact about this file, and the kind check alone accepts it because
+			// a map keyed by anything is a map. Left accepted, the run reported
+			// success and the answer reached a caller in the schema's own tagged
+			// encoding instead of the object `type: struct` promised — a
+			// declaration broken by the thing that read it rather than by the
+			// run, which is why the check belongs at the seam both drivers share
+			// rather than in the renderer that noticed.
+			Name:          "a struct output keyed by an int fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-struct-int-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("detail", `{1: "value"}`, v1.InputDeclaration_TYPE_STRUCT),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "detail" is declared struct but computed a map with int keys; ` +
+				`a struct is a map with string keys`,
+		},
+		{
+			// The same promise one level down. The projection converts the whole
+			// value, so a nested non-string key defeats it exactly as an outer
+			// one does — and this is the arm a check on the outer map's keys
+			// alone would pass, which is what makes it worth its own case.
+			Name:          "a struct output holding a map keyed by a bool fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-struct-nested-bool-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("detail", `{"inner": {true: "value"}}`, v1.InputDeclaration_TYPE_STRUCT),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "detail" is declared struct but computed a map with bool keys; ` +
+				`a struct is a map with string keys`,
+		},
+		{
+			// `list` makes the same promise `struct` does — the projection
+			// converts a whole output and gives up on all of it — so a map keyed
+			// by an int inside an element defeats the plain array exactly as an
+			// outer key defeats an object. One rule, two declared containers,
+			// which is why both are decided by the one check rather than by a
+			// second one written for lists later.
+			Name:          "a list output holding a map keyed by an int fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-list-int-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("items", `[{1: "value"}]`, v1.InputDeclaration_TYPE_LIST),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "items" is declared list but holds a map with int keys; ` +
+				`a list reads back as a plain array, whose maps have string keys`,
+		},
+		{
+			// The positive direction for the other container, for the reason the
+			// struct one above has it: a rule that refused every list of maps
+			// would take the ordinary shape with it, and an empty list is a legal
+			// answer.
+			Name: "a list output round-trips as the array it computed",
+			Workflow: declares("outputs-list-string-keys",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("items", `[{"host": "a"}]`, v1.InputDeclaration_TYPE_LIST),
+					typedOutput("nothing", `[]`, v1.InputDeclaration_TYPE_LIST),
+				},
+				says("a", "hello"),
+			),
+			ExpectedOutputs: answers(
+				held("a"),
+				map[string]*v1.Value{
+					"items":   v1.NewLiteralList(map[string]any{"host": "a"}),
+					"nothing": v1.NewLiteralList(),
+				},
+			),
+		},
+		{
 			// The bound half of the same sentence, and a both-drivers case for
 			// the reason the withholding ones are: an output's value is sized by
 			// whoever produced it, up to [v1.MaxTaskOutputBytes], and the

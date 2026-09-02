@@ -680,8 +680,107 @@ func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
 		return err
 	}
 
+	if err := checkContainerValue(decl.GetName(), t, lit); err != nil {
+		return err
+	}
+
 	return checkEnumMembership("output", decl.GetName(), t, decl.GetValues(),
 		outputValueRendering(decl), lit)
+}
+
+// checkContainerValue refuses a `struct` or `list` output holding something the
+// plain value its declared type promises cannot carry, at any depth.
+//
+// The kind check above cannot see either of these: a map keyed by anything is a
+// map, and a list holding anything is a list. What a declared container promises
+// is the plain value a caller reads — `cmd/flow`'s run document converts an
+// output with [LiteralToGo] and keeps the schema's tagged encoding for anything
+// that will not convert — and a non-string map key is exactly what does not.
+// Before this, such a run reported success and answered
+// `{"literal":{"mapValue":…}}` under a declaration promising an object (#1404).
+//
+// Both container types, one rule, because the fallback is per-output and
+// all-or-nothing: a non-string key one element down a `list` defeats the array
+// it promised precisely as an outer one defeats a `struct`. The scalar types ask
+// nothing of this — a string is a string at every depth there is.
+//
+// [LiteralToGo]'s own walk is the judgement rather than a second one over the
+// same union, and deliberately so: the rule about what a plain value can hold is
+// the projection's rule, and two of them answering differently is the defect
+// this closes.
+//
+// # Why the conversion's own sentence is never printed
+//
+// [LiteralToGo] wraps as it descends — `key %q:`, `element %d:` — so its message
+// carries the map keys on the path to the offending value. That path is part of
+// the value, and this sentence is the run's failure text, persisted by both
+// drivers and readable for an output declared `sensitive:` (invariant 7). So the
+// refusal is composed here from the named fields the two errors carry, each of
+// which is a type or a schema kind rather than anything the run computed, and
+// the wrapped text is dropped.
+func checkContainerValue(name string, declared InputDeclaration_Type, lit *expr.Value) error {
+	if declared != InputDeclaration_TYPE_STRUCT && declared != InputDeclaration_TYPE_LIST {
+		return nil
+	}
+
+	_, err := LiteralToGo(lit)
+	if err == nil {
+		return nil
+	}
+
+	var keyErr *MapKeyTypeError
+	if errors.As(err, &keyErr) {
+		if declared == InputDeclaration_TYPE_LIST {
+			return fmt.Errorf("output %q is declared %s but holds a map with %s keys; "+
+				"a list reads back as a plain array, whose maps have string keys",
+				name, DeclaredTypeName(declared), keyErr.KeyType)
+		}
+
+		return fmt.Errorf("output %q is declared %s but computed a map with %s keys; "+
+			"a struct is a map with string keys",
+			name, DeclaredTypeName(declared), keyErr.KeyType)
+	}
+
+	var depthErr *LiteralDepthError
+	if errors.As(err, &depthErr) {
+		// The walk stopped at the bound rather than descending to find out how
+		// much further this goes, so the sentence names the bound and not a
+		// depth. Reached before anything runs, through [BindRunInputs] — which
+		// is the point: this walk is recursive and runs at a submit boundary an
+		// in-process caller reaches with a hand-built specification, ahead of
+		// [CheckSubmissionSize], so without the guard a deep enough literal
+		// crashed the embedding process instead of being refused (invariant 5).
+		return fmt.Errorf("output %q is declared %s but nests deeper than the %d levels this server "+
+			"can walk while converting it to the plain value that type promises; flatten it, or have "+
+			"a step read it from a reference instead of declaring it nested this deep",
+			name, DeclaredTypeName(declared), depthErr.Depth)
+	}
+
+	var kindErr *LiteralKindError
+	if errors.As(err, &kindErr) {
+		return fmt.Errorf("output %q is declared %s but holds a %s, which has no plain value to read back; "+
+			"%s", name, DeclaredTypeName(declared), kindErr.Kind, containerReadsBack(declared))
+	}
+
+	// A conversion failure this function has no named error for is a kind
+	// [LiteralToGo] gained without one, which is that function's contract to
+	// keep rather than a sentence to guess at here. Accepted, exactly as it was
+	// before any of the names existed, so a new arm there degrades to the old
+	// fallback instead of refusing runs with a message nobody wrote.
+	return nil
+}
+
+// containerReadsBack says what a declared container projects as, which is the
+// clause every refusal above ends on.
+//
+// One spelling of each, so the `struct` and `list` sentences cannot come to
+// describe the same promise in two different ways.
+func containerReadsBack(declared InputDeclaration_Type) string {
+	if declared == InputDeclaration_TYPE_LIST {
+		return "a list reads back as a plain array"
+	}
+
+	return "a struct reads back as a plain object"
 }
 
 // CheckInputConstraints applies a declaration's standard-rule constraints and

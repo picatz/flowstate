@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -628,6 +631,16 @@ func tokenPipe(token string) (*os.File, error) {
 // plugin needs is named by an operator in Config.Env, which makes the set of
 // things a plugin can read a reviewable list rather than an accident of how the
 // worker was started.
+//
+// The deployment's egress policy is the one thing every plugin gets without
+// being named: an environment built from nothing is also an environment with no
+// network policy in it, and a plugin cannot inherit what was never there. It is
+// the snapshot this launch carried, so a policy file edited afterwards reaches
+// the plugins started next rather than the ones already running. See
+// [Config.EgressPolicy].
+//
+// The proxy variables travel for the same reason and under the same condition:
+// see [proxyGrant].
 func pluginEnv(cfg Config, socketPath string) []string {
 	env := []string{
 		protocol.MagicCookieEnv + "=" + protocol.MagicCookieValue,
@@ -636,6 +649,18 @@ func pluginEnv(cfg Config, socketPath string) []string {
 		protocol.TokenFDEnv + "=" + strconv.Itoa(tokenFD),
 		protocol.HostFDEnv + "=" + strconv.Itoa(hostFD),
 	}
+
+	// Configured, not non-empty. An operator's empty policy document is a policy
+	// — the built-in http task runs under what it builds — so the grant is
+	// forwarded as the empty string rather than left out, and the plugin side
+	// reads presence with os.LookupEnv. Testing the length here instead is what
+	// made a zero-byte --egress-policy file deny in plugins while allowing in
+	// the built-in task: one deployment, one file, two answers.
+	if cfg.EgressPolicy != nil {
+		env = append(env, protocol.EgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(cfg.EgressPolicy))
+	}
+
+	env = append(env, proxyGrant(cfg)...)
 
 	// Operator-supplied entries come last, but cannot override the protocol's
 	// own: a Config.Env that redefined the socket path or a token descriptor
@@ -650,6 +675,139 @@ func pluginEnv(cfg Config, socketPath string) []string {
 	return env
 }
 
+// proxyGrant returns the proxy variables to grant this launch, which is none
+// unless the deployment's policy asked to proxy.
+//
+// A policy that says `proxy_from_environment: true` is an operator saying the
+// way out of this deployment is through a proxy. The built-in http task obeys it
+// because it runs in the worker, where those variables are; a plugin's
+// environment is built from nothing, so the identical policy inside a plugin
+// finds no proxy and dials straight out. That is not a routing difference — on a
+// deployment whose egress is *only* permitted through that proxy it is the
+// plugin leaving the path the operator controls, and it happens with no error on
+// either side.
+//
+// So the proxy inputs are granted, like the policy itself, and tied to the same
+// switch: when the policy proxies, the worker's own values cross verbatim; when
+// it does not, none of them do. An operator who wants a plugin to reach a
+// different proxy names it in [Config.Env], and that entry wins — in either
+// spelling, for the whole variable; see the skip below.
+//
+// The flag is read out of the grant rather than carried beside it, so there is
+// one source of truth for what this deployment's policy says. Deriving it once
+// into a [Config] field would be cheaper and worse: a Config whose EgressPolicy
+// was set after the derivation would carry a flag that no longer described its
+// own bytes, which is the failure a derived copy always has.
+//
+// It is read out of a policy that *builds*, not one that merely parses, and the
+// difference is the whole of this function's safety. A `deny:` list whose CEL
+// does not compile parses fine and produces no policy at all, so a parse-only
+// read forwarded the operator's proxy URL — userinfo and all — under a grant
+// that could govern nothing. [Config.validate] refuses such a grant at
+// [NewHost], which turns this into a startup error an operator can read; the
+// same check is here because this must not depend on having been called through
+// NewHost to be safe. Two answers to one question, and both of them no.
+//
+// Building per launch rather than once: the alternative is caching a compiled
+// policy on Config, which is the derived copy above by another name. Launches
+// are a handful at worker startup, and the bytes are bounded by
+// [MaxEgressPolicyBytes].
+func proxyGrant(cfg Config) []string {
+	if cfg.EgressPolicy == nil {
+		return nil
+	}
+
+	parsed, err := netpolicy.ParseConfig(cfg.EgressPolicy)
+	if err != nil || !parsed.Egress.ProxyFromEnvironment {
+		return nil
+	}
+	if _, err := parsed.Policy(); err != nil {
+		return nil
+	}
+
+	// Each variable is read at a call site naming its own constant rather than
+	// through a range over a list of names. Ranging reads the same six variables
+	// and is shorter, but it hides which ones from the environment-documentation
+	// drift test (cmd/flow/internal/docsgen), whose resolver follows a literal or
+	// a constant and nothing else — and a read it cannot follow is a hole in
+	// exactly the shape that test defends.
+	var granted []string
+	for _, variable := range []proxyVariable{
+		{
+			upper: protocol.HTTPProxyEnv, lower: protocol.HTTPProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyLowerEnv)),
+		},
+		{
+			upper: protocol.HTTPSProxyEnv, lower: protocol.HTTPSProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyLowerEnv)),
+		},
+		{
+			upper: protocol.NoProxyEnv, lower: protocol.NoProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.NoProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.NoProxyLowerEnv)),
+		},
+	} {
+		// An operator naming this variable in Config.Env is more specific than
+		// the worker's ambient value, and duplicate keys in one environment
+		// block are read differently by different runtimes. Skip rather than
+		// emit both.
+		//
+		// Per pair, not per name. HTTP_PROXY and http_proxy are two spellings of
+		// one variable, and ProxyFromEnvironment takes the uppercase when both
+		// are set — so forwarding the ambient HTTP_PROXY beside an operator's
+		// `http_proxy` override would leave the override outvoted by exactly the
+		// value it was written to replace, with nothing anywhere to say so.
+		// Either spelling being configured settles the variable, and neither
+		// ambient spelling crosses.
+		if configuredInEnv(cfg.Env, variable.upper, variable.lower) {
+			continue
+		}
+
+		if variable.upperValue.set {
+			granted = append(granted, variable.upper+"="+variable.upperValue.value)
+		}
+		if variable.lowerValue.set {
+			granted = append(granted, variable.lower+"="+variable.lowerValue.value)
+		}
+	}
+
+	return granted
+}
+
+// proxyVariable is one proxy setting in the two spellings
+// [net/http.ProxyFromEnvironment] accepts, with what the worker holds for each.
+type proxyVariable struct {
+	upper, lower           string
+	upperValue, lowerValue proxyValue
+}
+
+// proxyValue is one environment read: the value, and whether it was set at all.
+type proxyValue struct {
+	value string
+	set   bool
+}
+
+// proxyValueOf adapts [os.LookupEnv]'s two results, so a read can stay one
+// expression naming its constant.
+func proxyValueOf(value string, set bool) proxyValue {
+	return proxyValue{value: value, set: set}
+}
+
+// configuredInEnv reports whether an operator named either spelling of one proxy
+// variable in [Config.Env].
+func configuredInEnv(env []string, upper, lower string) bool {
+	return slices.ContainsFunc(env, func(entry string) bool {
+		return isEnvNamed(entry, upper) || isEnvNamed(entry, lower)
+	})
+}
+
+// isEnvNamed reports whether a KEY=VALUE entry has the given key.
+func isEnvNamed(entry, name string) bool {
+	return len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name
+}
+
 // isProtocolEnv reports whether an operator-supplied entry would collide with
 // one the protocol owns.
 //
@@ -657,6 +815,12 @@ func pluginEnv(cfg Config, socketPath string) []string {
 // is retired, not free: an operator entry spelling it would put something a
 // plugin might read as the per-launch secret into the environment block, which
 // is exactly the place this protocol stopped keeping secrets.
+//
+// The egress grant is in the list for a different reason than the rest: not to
+// keep the handshake working, but because a policy composed by hand in Env and a
+// policy in [Config.EgressPolicy] are two spellings of one fact, and a
+// deployment that set both would have no way to know which one governed. The
+// field is the spelling; an Env entry under that name is dropped.
 func isProtocolEnv(entry string) bool {
 	for _, name := range []string{
 		protocol.MagicCookieEnv,
@@ -665,8 +829,9 @@ func isProtocolEnv(entry string) bool {
 		protocol.TokenEnv,
 		protocol.TokenFDEnv,
 		protocol.HostFDEnv,
+		protocol.EgressPolicyEnv,
 	} {
-		if len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name {
+		if isEnvNamed(entry, name) {
 			return true
 		}
 	}

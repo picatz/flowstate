@@ -651,7 +651,7 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version4})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version5})
 	if !ok {
 		// Say what to do, not only what is wrong. This refusal is the whole
 		// point of the version bump: it is reached by whichever side is older,
@@ -662,7 +662,7 @@ func readEnvironment() (environment, error) {
 			"%w: the host offered %s and this plugin speaks %d; "+
 				"a host and its plugins must be upgraded together across this change, "+
 				"so upgrade whichever of the two is older",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version4,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version5,
 		)
 	}
 
@@ -675,6 +675,21 @@ func readEnvironment() (environment, error) {
 	if err != nil {
 		return environment{}, err
 	}
+
+	// The grant is captured here, with the rest of the launch environment, and
+	// deliberately not at the first call that wants it. [Run] reaches this
+	// before it builds a handler or serves anything, so no task function and no
+	// plugin-registered code has run yet — which closes the window where a
+	// plugin could write its own FLOWSTATE_EGRESS_POLICY_B64 and have the SDK
+	// hand back a client governed by a policy the operator never wrote.
+	//
+	// A failure is not returned. A malformed or oversized grant is a fact about
+	// the deployment that belongs to whoever asks for a policy, and it is
+	// reported there, naming the variable — refusing the whole launch here would
+	// stop a plugin that never touches the network over a grant it never uses.
+	// The error is latched by the capture, so the answer is the same whether it
+	// is asked for now or later.
+	captureEgressGrant()
 
 	return environment{
 		socketPath:      socketPath,
@@ -1081,6 +1096,15 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[plugin
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 			"this plugin does not resolve %q", truncate(ref.GetScheme(), 32)))
 	}
+
+	// The same install the task handlers make, for the same reason: a
+	// ResolveFunc that reaches a network backend does it through the SDK's
+	// governed client, and an `identity.*` rule in the deployment's policy is
+	// evaluated against whatever netpolicy finds on the request's context. The
+	// wire carries the identity here (the host sets it in
+	// plugin/secrets.go's Resolve), so dropping it made a resolver the one
+	// entry point where a tenant rule silently did not apply.
+	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
 
 	resp, err := s.resolve(ctx, SecretRequest{
 		Scheme:    ref.GetScheme(),
