@@ -739,6 +739,12 @@ admitted it), #1340 (`lint`, `schedule`, `dap` take no plugin flags), #135
 (semantic tokens as the cheap route), #1216 (a changelog mechanism is a
 seventh criterion), #1011/#548 (three CEL identity types to converge).
 
+**Filed during the PR's review, not by the passes:** #1528 — `deep.yml:180`
+tells every crasher issue the deep tier files that the run artifact is
+"visible to collaborators only", which is false on a public repository. Found
+while correcting D13, and separated from #965 because the misstatement is
+wrong today whichever home that decision picks.
+
 **Filed and then withdrawn, by this PR's own review:** #1475 (the gate
 already prints `appearance: NOT VERIFIED locally (… absent)` and counts it on
 the verdict line — `tools/gate/main.go:524-530`, `:1112`) and #1478
@@ -774,7 +780,7 @@ checked.
 | S | #1289/#1290 stdio resilience, one input convention | `cmd/flow/mcp.go`, `internal/mcp/` |
 | S | `--protected-resource-revision` | `cmd/flow/protectedresource.go` |
 | S | #1386/#1103/#1382 closes; #1307/#1311 AGENTS.md lines | `AGENTS.md`, skills |
-| S | `deep.yml`'s false "visible to collaborators only" line, ahead of #965 | `.github/workflows/deep.yml:180` |
+| S | #1528 `deep.yml`'s false "visible to collaborators only" line, ahead of #965 | `.github/workflows/deep.yml:180` |
 | S | Doc-truth pass (the `StepExecutor` wording, STYLE.md row, THREAT_MODEL cites, DSL.md fifteenth round). Not `AGENTS.md`: its invariants stand | `docs/ARCHITECTURE.md`, `docs/STYLE.md`, `THREAT_MODEL.md`, `docs/DSL.md` |
 | M | #1425 `MergedStepIDs` + conformance | `eval.go`, `engine/execute.go`, `flowfile/validate.go`, `conformance/` |
 | M | D6 `parallel:` atomic bound | `atomicblock.go`, both `runParallel`s, `conformance/` |
