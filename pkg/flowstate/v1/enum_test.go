@@ -250,7 +250,7 @@ func TestEnumValuesShapeAgreesWithValidate(t *testing.T) {
 			t.Parallel()
 
 			decl := enumDecl(test.values...)
-			shapeErr := v1.CheckInputConstraintShape(decl)
+			shapeErr := v1.CheckInputConstraintShape(v1.CurrentProfile, decl)
 
 			wf := constrainedWorkflow(decl)
 			validateErr := v1.Validate(wf)

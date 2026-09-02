@@ -77,7 +77,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 		// `vars.x` type as `dyn`), it is exactly as unchecked here as it
 		// always was, and [v1.BindRunInputs] still refuses a wrong type once
 		// the expression has a value to check at run time.
-		if diag := checkCallArgumentType(id, name, call.GetArguments()[name], declaration, callee.GetName()); diag != nil {
+		if diag := checkCallArgumentType(id, name, call.GetArguments()[name], declaration, callee); diag != nil {
 			ds = append(ds, *diag)
 		}
 	}
@@ -120,7 +120,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 // declaration is exactly as much a mistake as a literal's would be, and an
 // author benefits from being told now rather than only when that expression
 // is finally evaluated.
-func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1.InputDeclaration, calleeName string) *Diagnostic {
+func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1.InputDeclaration, callee *v1.Workflow) *Diagnostic {
 	switch value.GetKind().(type) {
 	case *v1.Value_Literal:
 		if err := v1.CheckInputValue(name, declaration, value); err != nil {
@@ -132,7 +132,7 @@ func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1
 		// standard-rule keys, `min_len:` and the rest) is a mistake at the
 		// call site, caught here rather than only at the run's own
 		// submit-equivalent inside BindRunInputs.
-		if err := v1.CheckInputConstraints(name, declaration, value); err != nil {
+		if err := v1.CheckInputConstraints(callee.GetProfile(), name, declaration, value); err != nil {
 			return &Diagnostic{Step: stepID, Field: "with." + name, Message: err.Error()}
 		}
 		return nil
@@ -184,7 +184,7 @@ func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1
 			Step: stepID, Field: "with." + name,
 			Message: fmt.Sprintf(
 				"with.%s is declared %s by workflow %q, but this expression always produces %s",
-				name, v1.DeclaredTypeName(declaration.GetType()), calleeName, v1.DeclaredTypeName(declaredType)),
+				name, v1.DeclaredTypeName(declaration.GetType()), callee.GetName(), v1.DeclaredTypeName(declaredType)),
 		}
 
 	default:

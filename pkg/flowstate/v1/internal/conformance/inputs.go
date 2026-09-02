@@ -620,6 +620,7 @@ type Refusal struct {
 // value a caller chose, which is what makes each of them a fail-closed rule rather
 // than a convenience.
 func InputRefusalCases() []Refusal {
+	mustAlwaysPass := "true"
 	takesRegion := func() *v1.Workflow {
 		return declares("inputs-checked",
 			[]*v1.InputDeclaration{
@@ -632,6 +633,24 @@ func InputRefusalCases() []Refusal {
 	}
 
 	return []Refusal{
+		{
+			// #1465: `must:` is part of the workflow's CEL dialect. Before it
+			// resolved the build's CurrentProfile, this hand-built spec passed
+			// submission even though the worker does not know the profile the
+			// declaration records. Both drivers must fail closed before the
+			// literal step can run.
+			Name: "a must constraint under an unknown recorded profile is refused",
+			Workflow: &v1.Workflow{
+				Name:    "inputs-unknown-must-profile",
+				Profile: "2099.9",
+				DeclaredInputs: []*v1.InputDeclaration{{
+					Name: "region", Type: v1.InputDeclaration_TYPE_STRING, Must: &mustAlwaysPass,
+				}},
+				Steps: []*v1.Node{says("a", "hello")},
+			},
+			Inputs:   map[string]*v1.Value{"region": v1.NewLiteral("eu-west-1")},
+			Contains: `unknown language profile "2099.9"`,
+		},
 		{
 			Name:     "an undeclared input is refused",
 			Workflow: takesRegion(),
