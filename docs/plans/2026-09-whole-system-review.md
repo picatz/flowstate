@@ -416,9 +416,14 @@ were reproduced at `40cc365` — ~70,000 history events against the 51,200 cap,
 the termination-that-skips-compensation ending `atomicblock.go` exists to
 prevent. #771 called a branch list "author-shaped"; `call:` expansion to
 100,000 nodes has made that premise weaker than when it was written. The
-bound is static, pre-dispatch, over the enclosing segment (nested `for_each`
-blocks inside a branch count toward one total), identical sentence on both
-drivers, ceiling-exact case in conformance. *Refused:* lowering the schema's
+bound is static, pre-dispatch, and over the enclosing segment rather than
+per node — which is the whole of it: a `for_each` nested inside a branch
+counts toward the same total, and so do two sibling `parallel:` blocks in one
+`switch:` arm, where checking each node alone would pass two 4,000-activity
+blocks that share one suspension-free segment and cross the cap after the
+first has already caused side effects (Codex, on #1479). So the check runs
+where an atomic scope is entered, not at each `runParallel`. Identical
+sentence on both drivers, ceiling-exact case in conformance. *Refused:* lowering the schema's
 per-list bound (crude, and it breaks files that would have fit).
 
 **D7. A whole-run timeout carries `ErrorKindRunTimeout` on both drivers.**
@@ -470,7 +475,16 @@ otherwise a protocol break — three of six versions were spent that way in
 **D11. The agentic loop advances by one input, not one platform.** (#1343,
 #200) `codex.exec` gains a `base_ref` that materializes the working context at
 a named sha through the git plugin's governed go-git fetch, turning
-`agentic-fix`'s `max_iterations: 1` into a real loop; the workspace substrate
+`agentic-fix`'s `max_iterations: 1` into a real loop. `base_ref` alone does
+not do it on a private repository, and the slice has to carry the rest:
+`codex.exec` declares `api_key` as its only secret input
+(`plugins/codex/main.go:33`, "nothing else here is a credential"), and the git
+plugin clones into `memory.NewStorage()` with a nil worktree
+(`clone.go:193`, `packbound.go:108`), so a separate process's clone
+materializes nothing for it and there is no credential to fetch a private sha
+with. So the input arrives with a repository-and-authentication shape of its
+own, or with a materialization task ahead of it — named as part of the slice
+rather than discovered during it (Codex, on #1479); the workspace substrate
 (#200) follows on evidence from that loop, not before it. The next plugin
 after the substrate gates (#1333, #1393) is the **MCP bridge** (#108) — an MCP
 server as a task provider is one plugin that makes every MCP server a
@@ -783,9 +797,10 @@ checked.
 | S | #1528 `deep.yml`'s false "visible to collaborators only" line, ahead of #965 | `.github/workflows/deep.yml:180` |
 | S | Doc-truth pass (the `StepExecutor` wording, STYLE.md row, THREAT_MODEL cites, DSL.md fifteenth round). Not `AGENTS.md`: its invariants stand | `docs/ARCHITECTURE.md`, `docs/STYLE.md`, `THREAT_MODEL.md`, `docs/DSL.md` |
 | M | #1425 `MergedStepIDs` + conformance | `eval.go`, `engine/execute.go`, `flowfile/validate.go`, `conformance/` |
-| M | D6 `parallel:` atomic bound | `atomicblock.go`, both `runParallel`s, `conformance/` |
+| M | D6 `parallel:` atomic bound, weighed where an atomic scope is entered rather than per node | `atomicblock.go`, `eval.go` + `engine/execute.go` at `enterAtomicBlock`, `conformance/` |
 | M | #1449 `NamespaceReachCases` + one rooted replay history | `conformance/`, `engine/testdata/replay/` |
-| M | #1294/#1295/#1443 `flow test` load-time refusals | `cmd/flow/test.go`, `flowtest/stub.go`, `run.go`, `file.go` |
+| M | #1294 `--plugin-catalog` on `flow test` (alone; see wave A) | `cmd/flow/test.go`, `flowtest/run.go` |
+| M | #1441 + #1443 + #1295 load-time name checks, **after** #1273's `TestSuite` swap | `flowtest/stub.go`, `file.go`, the `TestSuite` message |
 | M | #1288 opaque spec field | `cmd/flow/mcp.go`, `mcp_test.go` |
 | M | #1434+#1463 five roots in the LSP | `lsp/completion.go`, `lsp/hover.go`, `lsp/callinputs.go` |
 | M | #1430 `ValidateSpec` at submit | `pkg/flowstate/v1/`, `server/server.go`, `eval.go` |
