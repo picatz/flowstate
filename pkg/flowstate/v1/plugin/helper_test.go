@@ -523,7 +523,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
-	case "secret-task", "secret-task-error", "secret-task-log", "secret-task-health":
+	case "secret-task", "secret-task-error", "secret-task-log", "secret-task-health", "secret-task-health-error":
 		// Declares one input, "message", as accepting a host secret reference —
 		// the manifest field TestResolvePluginSecretInputs* and
 		// TestPluginTaskResolvesAndScrubsHostSecret exist to exercise.
@@ -589,6 +589,9 @@ func (s *fakePluginService) Health(context.Context, *connect.Request[pluginv1.He
 			Status:  pluginv1.HealthResponse_STATUS_NOT_SERVING,
 			Message: strings.Repeat("x", 1000) + message,
 		}), nil
+	case "secret-task-health-error":
+		message, _ := fakeHealthMessage.Load().(string)
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("backend reflected %s", message))
 	default:
 		return connect.NewResponse(&pluginv1.HealthResponse{
 			Status: pluginv1.HealthResponse_STATUS_SERVING,
@@ -772,7 +775,7 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 		}()
 		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
 
-	case "secret-task-health":
+	case "secret-task-health", "secret-task-health-error":
 		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
 		fakeHealthMessage.Store(received)
 		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil

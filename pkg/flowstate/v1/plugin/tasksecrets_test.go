@@ -367,6 +367,31 @@ func TestPluginHealthScrubsBeforeBoundingItsMessage(t *testing.T) {
 	assert.True(t, health.messageScrubbed)
 }
 
+func TestPluginHealthScrubsRPCErrorBeforeReturningIt(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-in-health-rpc-error"
+	host := openHost(t, testConfig(t, pluginDir(t, "secret-task-health-error")))
+	defs := host.TaskDefs()
+	require.Len(t, defs, 1)
+	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}},
+	}, nil)
+	require.NoError(t, err)
+
+	p, ok := host.Lookup("secret-task-health-error")
+	require.True(t, ok)
+	health := p.CheckHealth(t.Context())
+	require.Equal(t, HealthUnreachable, health.Status)
+	require.Error(t, health.Err)
+	assert.NotContains(t, health.Err.Error(), material)
+	assert.Contains(t, health.Err.Error(), secrets.Redacted)
+	assert.True(t, health.errorScrubbed)
+}
+
 // TestPluginTaskFn spells out the sorted-name message
 // [acceptedPluginSecretInputsHelp] renders, so a change to its wording is
 // caught here rather than only by a human reading a diagnostic in a terminal.

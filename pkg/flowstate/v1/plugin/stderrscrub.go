@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,11 @@ const (
 	// forms, are counted because one delivered value is the resource the plugin
 	// controls; each entry's Scrubber owns the fixed set of encodings.
 	maxStderrSecrets = 256
+
+	// maxStderrSecretBytes bounds raw retained material before Scrubber expands
+	// each value into its encoded forms. It admits the provider-wide 1 MiB
+	// maximum for several concurrent values without allowing count × maximum.
+	maxStderrSecretBytes = 8 << 20
 )
 
 // stderrSecretScrubber retains a bounded set of values delivered to one plugin
@@ -26,19 +32,23 @@ const (
 // inside secrets.Scrubber's closure, so formatting this registry cannot itself
 // disclose the values it protects.
 type stderrSecretScrubber struct {
-	mu        sync.Mutex
-	entries   []stderrSecretEntry
-	combined  *secrets.Scrubber
-	saturated bool
-	nextID    uint64
-	now       func() time.Time
+	mu            sync.Mutex
+	entries       []stderrSecretEntry
+	combined      *secrets.Scrubber
+	saturated     bool
+	retainedBytes int
+	multiline     int
+	nextID        uint64
+	now           func() time.Time
 }
 
 type stderrSecretEntry struct {
-	id       uint64
-	expires  time.Time
-	active   bool
-	scrubber *secrets.Scrubber
+	id        uint64
+	expires   time.Time
+	active    bool
+	bytes     int
+	multiline bool
+	scrubber  *secrets.Scrubber
 }
 
 func newStderrSecretScrubber(now func() time.Time) *stderrSecretScrubber {
@@ -50,6 +60,7 @@ func newStderrSecretScrubber(now func() time.Time) *stderrSecretScrubber {
 
 func (s *stderrSecretScrubber) add(secret secrets.Secret) func() {
 	now := s.now()
+	value := secret.Reveal()
 
 	s.mu.Lock()
 	if s.saturated {
@@ -59,7 +70,7 @@ func (s *stderrSecretScrubber) add(secret secrets.Secret) func() {
 	if s.prune(now) {
 		s.rebuild()
 	}
-	if len(s.entries) == maxStderrSecrets {
+	for len(s.entries) == maxStderrSecrets || s.retainedBytes+len(value) > maxStderrSecretBytes {
 		oldestInactive := slices.IndexFunc(s.entries, func(entry stderrSecretEntry) bool { return !entry.active })
 		if oldestInactive < 0 {
 			// Forgetting an in-flight value would allow its next log line out.
@@ -71,10 +82,14 @@ func (s *stderrSecretScrubber) add(secret secrets.Secret) func() {
 		}
 		clear(s.entries[oldestInactive : oldestInactive+1])
 		s.entries = slices.Delete(s.entries, oldestInactive, oldestInactive+1)
+		s.rebuild()
 	}
 	s.nextID++
 	id := s.nextID
-	s.entries = append(s.entries, stderrSecretEntry{id: id, active: true, scrubber: secrets.NewScrubber(secret)})
+	s.entries = append(s.entries, stderrSecretEntry{
+		id: id, active: true, bytes: len(value), multiline: strings.ContainsAny(value, "\r\n"),
+		scrubber: secrets.NewScrubber(secret),
+	})
 	s.rebuild()
 	s.mu.Unlock()
 
@@ -130,6 +145,18 @@ func (s *stderrSecretScrubber) hasEntries() bool {
 	return s.saturated || len(s.entries) > 0
 }
 
+func (s *stderrSecretScrubber) mustSuppressFramedLine(truncated bool) bool {
+	now := s.now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.prune(now) {
+		s.rebuild()
+	}
+	return s.saturated || s.multiline > 0 || (truncated && len(s.entries) > 0)
+}
+
 func (s *stderrSecretScrubber) prune(now time.Time) bool {
 	kept := s.entries[:0]
 	for _, entry := range s.entries {
@@ -146,8 +173,16 @@ func (s *stderrSecretScrubber) prune(now time.Time) bool {
 
 func (s *stderrSecretScrubber) rebuild() {
 	combined := secrets.NewScrubber()
+	retainedBytes := 0
+	multiline := 0
 	for _, entry := range s.entries {
 		combined.AddScrubber(entry.scrubber)
+		retainedBytes += entry.bytes
+		if entry.multiline {
+			multiline++
+		}
 	}
 	s.combined = combined
+	s.retainedBytes = retainedBytes
+	s.multiline = multiline
 }

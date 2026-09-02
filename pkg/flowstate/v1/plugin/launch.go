@@ -856,9 +856,10 @@ func isProtocolEnv(entry string) bool {
 func stderrRelayFunc(cfg Config, log *slog.Logger, scrubber *stderrSecretScrubber) (relay func(line string, truncated bool), flush func() string) {
 	logLine := func(line string, truncated bool) {
 		var scrubbed bool
-		if truncated && scrubber.hasEntries() {
-			// A prefix cannot be matched against a retained value that crosses
-			// the line bound. Suppress it rather than relay part of a secret.
+		if scrubber.mustSuppressFramedLine(truncated) {
+			// A prefix or one physical line cannot be matched against a retained
+			// value that crosses the framing boundary. Suppress it rather than
+			// relay part of a secret.
 			line, scrubbed = secrets.Redacted, true
 		} else {
 			line, scrubbed = scrubber.scrub(line)

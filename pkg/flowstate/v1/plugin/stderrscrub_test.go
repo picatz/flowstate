@@ -79,6 +79,22 @@ func TestStderrSecretScrubberFailsClosedWhenEveryBoundedEntryIsActive(t *testing
 	assert.Equal(t, secrets.Redacted, got)
 }
 
+func TestStderrSecretScrubberFailsClosedAtRawByteBound(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newStderrSecretScrubber(nil)
+	scrubber.add(secrets.NewSecret(
+		&flowstatev1.SecretRef{Scheme: "test", Name: "oversized"},
+		strings.Repeat("x", maxStderrSecretBytes+1),
+	))
+
+	assert.True(t, scrubber.saturated)
+	assert.Empty(t, scrubber.entries)
+	got, changed := scrubber.scrub("an unrelated diagnostic")
+	assert.True(t, changed)
+	assert.Equal(t, secrets.Redacted, got)
+}
+
 func TestStderrRelayScrubsEncodingsAndMarksTheRecord(t *testing.T) {
 	t.Parallel()
 
@@ -143,5 +159,23 @@ func TestStderrRelaySuppressesTruncatedLinesWhileSecretsAreRetained(t *testing.T
 	assert.NotContains(t, output, material[:12])
 	assert.Contains(t, output, secrets.Redacted)
 	assert.Contains(t, output, "truncated=true")
+	assert.Contains(t, output, "scrubbed=true")
+}
+
+func TestStderrRelaySuppressesFramedLinesForMultilineSecrets(t *testing.T) {
+	t.Parallel()
+
+	const material = "first private line\nsecond private line"
+	var logged capturedLogs
+	cfg := Config{MaxStderrLinesPerMinute: -1, Logger: newCapturingLogger(t, &logged)}
+	scrubber := newStderrSecretScrubber(nil)
+	scrubber.add(secrets.NewSecret(&flowstatev1.SecretRef{Scheme: "test", Name: "pem"}, material))
+	relay, _ := stderrRelayFunc(cfg, cfg.logger(), scrubber)
+
+	relay("first private line", false)
+
+	output := logged.String()
+	assert.NotContains(t, output, "first private line")
+	assert.Contains(t, output, secrets.Redacted)
 	assert.Contains(t, output, "scrubbed=true")
 }

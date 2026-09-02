@@ -18,6 +18,7 @@ import (
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // State is what a plugin is currently doing.
@@ -116,6 +117,7 @@ type Health struct {
 	Err error
 
 	messageScrubbed bool
+	errorScrubbed   bool
 }
 
 // stableRun is how long a plugin has to stay up before its restart budget is
@@ -389,10 +391,12 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	var health Health
 	switch {
 	case err != nil:
+		errText, scrubbed := inst.stderrSecrets.scrub(err.Error())
 		health = Health{
-			Status:    HealthUnreachable,
-			CheckedAt: time.Now(),
-			Err:       pluginError(p.name, p.path, err),
+			Status:        HealthUnreachable,
+			CheckedAt:     time.Now(),
+			Err:           pluginError(p.name, p.path, errors.New(errText)),
+			errorScrubbed: scrubbed,
 		}
 	case resp.Msg.GetStatus() == pluginv1.HealthResponse_STATUS_SERVING:
 		health = Health{Status: HealthServing, CheckedAt: time.Now()}
@@ -401,6 +405,9 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 		// including STATUS_UNSPECIFIED. A plugin that does not say it can serve
 		// has not said it can serve.
 		message, scrubbed := inst.stderrSecrets.scrub(resp.Msg.GetMessage())
+		if len(resp.Msg.GetMessage()) >= 1024 && inst.stderrSecrets.hasEntries() {
+			message, scrubbed = secrets.Redacted, true
+		}
 		health = Health{
 			Status:          HealthNotServing,
 			CheckedAt:       time.Now(),
@@ -690,6 +697,7 @@ func (p *Plugin) supervise() {
 			case HealthUnreachable:
 				consecutiveUnreachable++
 				errText, scrubbed := inst.stderrSecrets.scrub(health.Err.Error())
+				scrubbed = scrubbed || health.errorScrubbed
 				p.log.Warn("plugin did not answer a health check",
 					"consecutive", consecutiveUnreachable,
 					"threshold", p.cfg.HealthFailureThreshold,
