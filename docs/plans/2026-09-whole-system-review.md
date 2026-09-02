@@ -814,6 +814,8 @@ checked.
 | S | #1442 `[]byte` arm | `eval.go`, `sdk/sdk_test.go` |
 | S | #1358 eight pins | `celenv.go` |
 | S | #1285 delete `Value.Type` | `value.proto`, regenerate |
+| S | D7 `ErrorKindRunTimeout` on both drivers, one conformance case (#1310) | `eval.go`, `engine/`, `conformance/` |
+| S | D5's refusal row in the "Leaning into Temporal" table (#908) | `docs/ARCHITECTURE.md:288` |
 | S | #1327/#1326 pins completion + digests shown | `plugin/admission.go`, `cmd/flow/plugins.go` |
 | S | #1289/#1290 stdio resilience, one input convention | `cmd/flow/mcp.go`, `internal/mcp/` |
 | S | `--protected-resource-revision` | `cmd/flow/protectedresource.go` |
@@ -835,7 +837,8 @@ checked.
 | M | #1388 gate declines the wide leg; plugin-module scanning in `ciDecisions` | `tools/gate/main.go`, `ci.go`, `Makefile`, `ci.yml` |
 | M | SARIF/JUnit; workflow inventory; MCP prompts + resource + fix tool | `cmd/flow/`, `internal/mcp/` |
 | M | `codex.exec base_ref` **plus its repository/auth shape or a materialization task**, proved on `agentic-fix`'s private-repository path | `plugins/codex`, `plugins/git`, `examples/agentic-loop/` |
-| L | D1+D2 the type edition | `workflow.proto`, `flowfile/`, `eval.go`, `celenv.go`, `rundoc.go`, `docs/reference/values.md` |
+| S | #1465 `must:` under the workflow's profile, **before** `CurrentProfile` moves | `constraints.go:163`, an old-profile regression case |
+| L | D1+D2 the type edition — **additive**: the `Type` message takes a new field number, the enum keeps its own, nothing is reserved (durable history; see the retirement list) | `workflow.proto`, `flowfile/`, `eval.go`, `celenv.go`, `rundoc.go`, `docs/reference/values.md` |
 | L | #1437 the reference-model registry | `pkg/flowstate/v1/`, `flowfile/`, `lsp/`, `flowdebug/`, `flowtest/`, `cmd/flow/taskrun.go` |
 | L | #1440+#1456 one bridge + e2e plugin tests | `protoliterals.go`, `sdk/values.go`, `internal/pluginreachtest` |
 | L | #1393 `LaunchRequest`, protocol 7 | `plugin.proto`, `plugin/launch.go`, `sdk/` |
