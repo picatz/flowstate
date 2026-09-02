@@ -694,16 +694,34 @@ func pluginEnv(cfg Config, socketPath string) []string {
 // spelling, for the whole variable; see the skip below.
 //
 // The flag is read out of the grant rather than carried beside it, so there is
-// one source of truth for what this deployment's policy says. A grant that does
-// not parse grants no proxy: the plugin's own [netpolicy.ParseConfig] will refuse
-// the same bytes, so it has nothing to proxy for.
+// one source of truth for what this deployment's policy says. Deriving it once
+// into a [Config] field would be cheaper and worse: a Config whose EgressPolicy
+// was set after the derivation would carry a flag that no longer described its
+// own bytes, which is the failure a derived copy always has.
+//
+// It is read out of a policy that *builds*, not one that merely parses, and the
+// difference is the whole of this function's safety. A `deny:` list whose CEL
+// does not compile parses fine and produces no policy at all, so a parse-only
+// read forwarded the operator's proxy URL — userinfo and all — under a grant
+// that could govern nothing. [Config.validate] refuses such a grant at
+// [NewHost], which turns this into a startup error an operator can read; the
+// same check is here because this must not depend on having been called through
+// NewHost to be safe. Two answers to one question, and both of them no.
+//
+// Building per launch rather than once: the alternative is caching a compiled
+// policy on Config, which is the derived copy above by another name. Launches
+// are a handful at worker startup, and the bytes are bounded by
+// [MaxEgressPolicyBytes].
 func proxyGrant(cfg Config) []string {
 	if cfg.EgressPolicy == nil {
 		return nil
 	}
 
-	policy, err := netpolicy.ParseConfig(cfg.EgressPolicy)
-	if err != nil || !policy.Egress.ProxyFromEnvironment {
+	parsed, err := netpolicy.ParseConfig(cfg.EgressPolicy)
+	if err != nil || !parsed.Egress.ProxyFromEnvironment {
+		return nil
+	}
+	if _, err := parsed.Policy(); err != nil {
 		return nil
 	}
 

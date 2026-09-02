@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -547,11 +548,19 @@ func TestAnOversizedEgressPolicyIsRefusedByConfig(t *testing.T) {
 
 	// Exactly at the bound is accepted. Without this half, a check that refused
 	// everything would pass the half below.
-	cfg.EgressPolicy = make([]byte, MaxEgressPolicyBytes)
+	//
+	// A comment padded to the bound rather than a run of zero bytes: validate
+	// builds the grant now, so the at-bound case has to be a document that
+	// builds, or it would be refused for its content and pass this test for the
+	// wrong reason.
+	cfg.EgressPolicy = append([]byte("# "), bytes.Repeat([]byte("x"), MaxEgressPolicyBytes-2)...)
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("a policy exactly at the %d-byte bound was refused: %v", MaxEgressPolicyBytes, err)
 	}
 
+	// Over the bound is refused for its size, before anything reads it. The
+	// bytes are deliberately not a policy: the bound is the first check, so it
+	// answers before the content ever matters.
 	cfg.EgressPolicy = make([]byte, MaxEgressPolicyBytes+1)
 	err := cfg.validate()
 	if err == nil {
@@ -799,6 +808,108 @@ func TestAnOperatorNamedProxyOverridesBothSpellings(t *testing.T) {
 			if value, found := envValue(pluginEnv(cfg, "/tmp/s"), "HTTPS_PROXY"); !found ||
 				value != "http://worker-proxy.invalid:3129" {
 				t.Errorf("HTTPS_PROXY = %q (found %v), want the worker's own value", value, found)
+			}
+		})
+	}
+}
+
+// TestAnUnbuildableEgressGrantIsRefusedBeforeAnythingLaunches is the fail-closed
+// direction for a grant that is well-formed YAML and no policy at all.
+//
+// Parsing and building are different questions. A `deny:` list whose CEL does
+// not compile parses fine, and parsing is all it took to read
+// `proxy_from_environment` — so a worker whose policy could not build still
+// forwarded its own HTTP_PROXY, userinfo and all, to every plugin it launched.
+// The plugin refused the same bytes a moment later when it built them, which is
+// the wrong moment: the credential had already crossed. A grant that cannot
+// govern anything must not be a grant that hands anything over.
+//
+// The proxy variables are set on this process throughout, so a regression is
+// visible as the credential travelling rather than only as a missing error.
+func TestAnUnbuildableEgressGrantIsRefusedBeforeAnythingLaunches(t *testing.T) {
+	// Not t.Parallel(): t.Setenv.
+	t.Setenv("HTTP_PROXY", "http://operator:s3cret@proxy.invalid:3128")
+
+	// Well-formed YAML, a policy that cannot be built: the rule is a string, the
+	// list is a list, and the CEL inside it does not compile.
+	grant := []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n" +
+		"  deny: ['not a cel expression']\n")
+
+	cfg := testConfig(t, pluginDir(t, "greet"))
+	cfg.EgressPolicy = grant
+
+	// Nothing is launched, because nothing gets that far.
+	host, err := NewHost(cfg)
+	if err == nil {
+		t.Fatal("NewHost accepted a grant that cannot build")
+	}
+	if host != nil {
+		t.Error("NewHost returned a host alongside its refusal")
+	}
+	if !strings.Contains(err.Error(), "EgressPolicy") {
+		t.Errorf("the refusal does not name the field: %v", err)
+	}
+
+	// And the credential never reaches a launch environment, which is the half
+	// that would still have been wrong had the refusal come later.
+	if value, found := envValue(pluginEnv(cfg.withDefaults(), "/tmp/s"), "HTTP_PROXY"); found {
+		t.Errorf("HTTP_PROXY = %q was granted under a policy that cannot build; "+
+			"a grant that governs nothing must not hand the operator's proxy credential over", value)
+	}
+}
+
+// TestABuildableEgressGrantIsAccepted is the falsifier: a check that refused
+// every grant would pass the test above.
+//
+// The empty document is here on purpose. It builds to the default posture, so
+// accepting it is what keeps presence rather than length the rule that decides
+// whether a grant was configured.
+func TestABuildableEgressGrantIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		grant []byte
+	}{
+		{name: "an ordinary policy", grant: []byte("egress:\n  schemes: [https]\n")},
+		{
+			// Nil is not a document and must not be built into one.
+			// netpolicy.ParseConfig(nil) succeeds and yields the default
+			// posture, so a validate that built unconditionally would turn
+			// "nothing was configured" into "a policy" — and every plugin would
+			// then be granted a policy the operator never wrote.
+			name:  "no grant at all",
+			grant: nil,
+		},
+		{name: "an explicitly empty document", grant: []byte{}},
+		{
+			name:  "a policy whose CEL compiles",
+			grant: []byte("egress:\n  schemes: [https]\n  deny: ['host == \"blocked.invalid\"']\n"),
+		},
+		{
+			name:  "a policy exactly at the byte bound",
+			grant: append([]byte("# "), bytes.Repeat([]byte("x"), MaxEgressPolicyBytes-2)...),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := testConfig(t, t.TempDir())
+			cfg.EgressPolicy = test.grant
+
+			if err := cfg.validate(); err != nil {
+				t.Fatalf("a grant that builds was refused: %v", err)
+			}
+
+			// Accepting nil must not have made it a grant: the launch
+			// environment still carries none, which is the distinction
+			// presence-not-length rests on.
+			granted := grantsIn(t, pluginEnv(cfg.withDefaults(), "/tmp/s"))
+			if test.grant == nil && len(granted) != 0 {
+				t.Errorf("no configured policy produced a grant anyway: %q", granted)
+			}
+			if test.grant != nil && len(granted) != 1 {
+				t.Errorf("a configured policy produced %d grants, want exactly one", len(granted))
 			}
 		})
 	}

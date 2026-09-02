@@ -79,6 +79,14 @@ func runEgressGrantPlugin() int {
 // knows nothing about, using nothing but the SDK constructor, is governed by the
 // deployment's policy (#1332) — and the loopback case is what makes it a test of
 // *which* policy rather than of whether any arrived.
+//
+// A grant that cannot build is not among the cases, and that is a statement
+// rather than an omission: [Config.validate] refuses one at [NewHost], so no
+// plugin is launched under it and there is no task here to reach. What the SDK
+// does when it is handed such a grant anyway — surface the error at the ask
+// rather than refuse to serve — is still true and is proved where it can be, in
+// the sdk package, against an environment built by hand. See
+// TestAnUnbuildableEgressGrantIsRefusedBeforeAnythingLaunches for the host half.
 func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 	t.Parallel()
 
@@ -123,19 +131,6 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 		{
 			name:        "no policy is refused rather than defaulted",
 			grant:       nil,
-			wantRefusal: true,
-		},
-		{
-			// The plugin still launched, and its task still ran: reaching the
-			// task at all is the assertion. The SDK captures the grant while it
-			// reads the launch environment, and a grant that does not parse
-			// must not turn into a plugin the host refuses — a plugin that
-			// never touches the network has no use for it, and failing the
-			// launch would make a bad policy file break tasks that do not
-			// depend on one. The refusal belongs to whoever asks for a policy,
-			// which is where it arrives.
-			name:        "a malformed grant refuses at the ask, not at the launch",
-			grant:       []byte("egress:\n  schemes: [https\n"),
 			wantRefusal: true,
 		},
 	} {
