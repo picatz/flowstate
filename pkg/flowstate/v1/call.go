@@ -3,6 +3,8 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 )
@@ -55,7 +57,11 @@ func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scop
 
 	resolved := make(map[string]*Value, len(arguments))
 	ev := DefaultEvaluator()
-	for name, v := range arguments {
+	// Sorted because the first failure is observable and may enter durable
+	// state. A protobuf map has no order, so workflow-side map work must not let
+	// two runs of one specification report different failures.
+	for _, name := range slices.Sorted(maps.Keys(arguments)) {
+		v := arguments[name]
 		if _, isExpr := v.GetKind().(*Value_Expr); !isExpr {
 			resolved[name] = v
 			continue
