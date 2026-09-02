@@ -277,8 +277,9 @@ with `flow fix` carrying files across it and the compiled contract untouched.
 **D1. One type vocabulary: a house `flowstate.v1.Type` message, spelled in
 the Flowfile as a CEL type expression.** (#1452; amended 2026-09-02 on the
 owner's steer, from a bracket spelling) The message has six kinds — `scalar`
-(string, int, uint, double, bool, bytes, timestamp, duration, null), `list`
-of a `Type`, `map` with string keys and a value `Type`, `enum` as the
+(string, int, double, bool, bytes, timestamp, duration, null — not `uint`,
+which D2 decides is not a Flowfile type and which a plugin's unsigned
+descriptor field binds as a range-constrained `int`), `list` of a `Type`, `map` with string keys and a value `Type`, `enum` as the
 existing closed string set, `message` by full name reserved for #177, and
 `dyn`. The Flowfile spells it the way CEL already spells its own types:
 `type: list(string)`, `type: map(string, int)`, `type: timestamp`. cel-go's
@@ -480,9 +481,16 @@ the recommendation on the issue stands for the owner.
 **D13. The process controls stop being conventions.** The gate declines the
 wide leg by name under the no-scope fallback (#1388); `govulncheck` and
 `staticcheck` walk
-the plugin modules, added to `ciDecisions` so `verdict` sees them; fuzz
-crashers upload as private run artifacts and the deep tier stops filing
-reproducers in public issues (#965, #1187); #1386 closes on the ledger's own
+the plugin modules, added to `ciDecisions` so `verdict` sees them; the deep
+tier stops filing reproducers in public issues (#965, #1187) — but *not* into
+a run artifact, which is what this pass first wrote and what Codex refuted on
+#1479: this repository is public, so an `actions/upload-artifact` upload is
+downloadable by anyone with read access, which is everyone. `deep.yml:180`
+already tells readers the opposite ("visible to collaborators only"), a live
+misstatement in a security-relevant workflow that is fixable ahead of the home
+decision. What is actually private is a draft security advisory or
+access-controlled storage; #965 stays the owner's, and this narrows what it
+chooses between; #1386 closes on the ledger's own
 Wave 2 and 3 entries; #1103 closes as an index in favour of the
 `kind/decision` label. The two repository settings — the ruleset and private
 vulnerability reporting — stay the owner's, verified unapplied 2026-08-31, and
