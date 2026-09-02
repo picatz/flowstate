@@ -252,13 +252,17 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 func CheckDeclarationTypes(wf *Workflow) error {
 	return walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
 		for _, declaration := range current.GetDeclaredInputs() {
-			if declaration.GetValueType() != nil && declaration.GetType() == InputDeclaration_TYPE_UNSPECIFIED {
-				return fmt.Errorf("input %q uses value_type without a legacy type; structural declaration types are not executable yet", declaration.GetName())
+			if declaration.GetValueType() != nil {
+				if err := Validate(declaration); err != nil {
+					return fmt.Errorf("input %q has an invalid type declaration: %w", declaration.GetName(), err)
+				}
 			}
 		}
 		for _, declaration := range current.GetDeclaredOutputs() {
-			if declaration.GetValueType() != nil && declaration.GetType() == InputDeclaration_TYPE_UNSPECIFIED {
-				return fmt.Errorf("output %q uses value_type without a legacy type; structural declaration types are not executable yet", declaration.GetName())
+			if declaration.GetValueType() != nil {
+				if err := Validate(declaration); err != nil {
+					return fmt.Errorf("output %q has an invalid type declaration: %w", declaration.GetName(), err)
+				}
 			}
 		}
 		return nil

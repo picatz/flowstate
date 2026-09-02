@@ -47,10 +47,10 @@ func literalOutput(name string, value *v1.Value, t v1.InputDeclaration_Type, val
 func OutputValueRefusalCases() []Refusal {
 	return []Refusal{
 		{
-			// A structural declaration is schema-valid before the runtime knows
-			// how to enforce it. Refuse the whole workflow at submit rather than
-			// reading the legacy zero value as an untyped output and reporting an
-			// unchecked answer.
+			// A structural-only declaration is unsafe while old workers can still
+			// receive it. Refuse the whole workflow at submit rather than reading
+			// the legacy zero value as an untyped output and reporting an unchecked
+			// answer.
 			Name: "a structural-only output is refused until the runtime projects it",
 			Workflow: declares("outputs-structural-only",
 				nil,
@@ -63,7 +63,7 @@ func OutputValueRefusalCases() []Refusal {
 				}},
 				says("a", "hello"),
 			),
-			Contains: `output "answer" uses value_type without a legacy type`,
+			Contains: "value_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades",
 		},
 		{
 			// Search embedded callees at parent admission. Discovering this only
@@ -86,7 +86,23 @@ func OutputValueRefusalCases() []Refusal {
 					says("inside", "unreachable"),
 				), nil),
 			),
-			Contains: `step "callee" calls workflow "outputs-structural-only-callee": output "answer" uses value_type without a legacy type`,
+			Contains: "value_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades",
+		},
+		{
+			Name: "disagreeing legacy and structural output types are refused",
+			Workflow: declares("outputs-type-disagreement",
+				nil,
+				[]*v1.OutputDeclaration{{
+					Name:  "answer",
+					Value: v1.NewLiteral("ok"),
+					Type:  v1.InputDeclaration_TYPE_STRING,
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_INT,
+					}},
+				}},
+				says("a", "hello"),
+			),
+			Contains: "value_type and the legacy type must describe the same output type when both are set",
 		},
 		{
 			// The enum half. A literal string outside the declared set is a

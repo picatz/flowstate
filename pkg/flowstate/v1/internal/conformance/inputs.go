@@ -705,7 +705,7 @@ func InputRefusalCases() []Refusal {
 				nil,
 				says("a", "hello"),
 			),
-			Contains: `input "region" uses value_type without a legacy type`,
+			Contains: "the legacy type is required until structural-only declarations are safe across rolling upgrades",
 		},
 		{
 			// The same declaration nested in a callee must be found while the
@@ -727,7 +727,26 @@ func InputRefusalCases() []Refusal {
 					says("inside", "unreachable"),
 				), nil),
 			),
-			Contains: `step "callee" calls workflow "inputs-structural-only-callee": input "region" uses value_type without a legacy type`,
+			Contains: "the legacy type is required until structural-only declarations are safe across rolling upgrades",
+		},
+		{
+			// Programmatic local callers do not necessarily run schema validation
+			// before admission. The runtime must therefore enforce the same
+			// cross-field agreement rule as the server rather than silently using
+			// only the legacy half.
+			Name: "disagreeing legacy and structural input types are refused",
+			Workflow: declares("inputs-type-disagreement",
+				[]*v1.InputDeclaration{{
+					Name: "region",
+					Type: v1.InputDeclaration_TYPE_STRING,
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_INT,
+					}},
+				}},
+				nil,
+				says("a", "hello"),
+			),
+			Contains: "value_type and the legacy type must describe the same input type when both are set",
 		},
 		{
 			// A workflow declaring nothing at all, which is every workflow written
