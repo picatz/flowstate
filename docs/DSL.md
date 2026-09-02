@@ -152,6 +152,11 @@ headings below, not this list.*
   - [The hold is leased, and the lease is what makes this safe](#the-hold-is-leased-and-the-lease-is-what-makes-this-safe)
   - [One name the engine takes back](#one-name-the-engine-takes-back)
   - [What it does not do yet](#what-it-does-not-do-yet)
+- [The fifteenth round: the value model, audited](#the-fifteenth-round-the-value-model-audited)
+  - [What a value became at the edge](#what-a-value-became-at-the-edge)
+  - [What a proto field became](#what-a-proto-field-became)
+  - [What the vocabulary is](#what-the-vocabulary-is)
+  - [The order, and what it protects](#the-order-and-what-it-protects)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -5718,6 +5723,82 @@ the narrowing half yet.
 **It says nothing about local runs.** `flow run local --debug` holds the author's own
 process, which costs the author and nobody else, so it is unleased and needs no
 policy — the same trust model `flow test` already has.
+
+## The fifteenth round: the value model, audited
+
+The type system was declared "not a later phase" above, and the pieces that were
+designed hold: one evaluator, one profile pinned per run, a checker that declares every
+name `dyn` and judges what remains, one binder for run inputs on both drivers, descriptors
+as the one source for a task's shape. What this round records is an audit of the *joints*
+between those pieces, done the way the standing rule asks: by running one `value:` per
+kind through `flow run local -o json` on `main` at `faf09e8` and writing down what came
+out, not what the design said would. Every row below is a transcript; the issue each
+cites carries the reproduction.
+
+### What a value became at the edge
+
+| `value:` | validate | run document (`.runOutputs.v`) |
+| --- | --- | --- |
+| `${timestamp('2026-01-01T00:00:00Z')}` | ok | `{"literal": {"objectValue": {"@type": ".../google.protobuf.Timestamp", ...}}}` |
+| `${duration('90m')}` | ok | the same shape, `google.protobuf.Duration` |
+| `${optional.none()}` | ok | run fails: `converting result: optional.none() dereference` |
+| `${type(1)}` | ok | `{"literal": {"typeValue": "int"}}` |
+| `${b'abc'}` | ok | `"YWJj"` |
+| `${1 == 1.0}` | refused: no overload `(int, double)` | (never runs) |
+| `${dyn(2.0) == 2}` | ok | `true` |
+| `${json_parse('{"n": 2}').n + 1}` | ok | run fails: `no such overload` |
+| `${json_parse('{"id": 9007199254740993}').id}` | ok | `9007199254740992` |
+| `value: \|` then `${1 + 1}` | ok | `"2\n"` |
+
+The first four are one finding: CEL has kinds the boundary has no answer for, so a
+timestamp is right inside a run and unspellable at its edge, against the promise the run
+document's own help makes (#1436). The next four are a second: the checker refuses the
+mixed-numeric comparison the runtime performs behind `dyn`, every JSON number is a double,
+and an id above 2^53 is rounded before any expression sees it (#1432);
+`examples/deployment-reconciler` already carries the `type(x) == type(0) || type(x) ==
+type(0.0)` workaround. The last is a third: a block scalar's kept newline turns a
+whole-value fence into interpolation, and the three shipped files that use one all write
+`|-` (#1445).
+
+### What a proto field became
+
+Two functions convert a task's output message into step outputs and they are not the same
+function: the built-in bridge maps a `Timestamp` to `{seconds, nanos}`, errors on a
+top-level enum or `uint`, and writes a silent `null` for a nested `double`; the plugin
+SDK emits an enum as its number, a `uint` as a `uint`, and refuses any nested message
+(#1440). The refusal has a live casualty: `git.log`, `vcs.log` and `vcs.diff` declare
+`repeated Commit` and `repeated FileChange` outputs and fail on any non-empty result,
+which is the one result no test reaches (#1456). `NewValue([]byte)`, which `sdk.Literal`
+wraps, builds a list of small integers (#1442).
+
+### What the vocabulary is
+
+A type is spelled three ways: the `InputDeclaration.Type` enum, the `TaskField.type`
+string the catalog renders, and `*cel.Type` in the checker, joined by four hand-written
+switches. `list[string]` is sayable in the second, checkable in the third, and
+undeclarable in the first; `uint`, `timestamp` and `bytes` likewise. #1383, #637 and
+#177 each need that joint to widen a different way, so the vocabulary is decided before
+any of them (#1452). Two smaller coherence gaps fell out of reading it: a `switch:` over a
+`type: enum` input gets none of the domain diagnostics this document promised "when enum
+inputs land" (#1457), and a bare `inputs.<name>` read of an optional input with no
+default is a guaranteed `no such key` for any caller who omits it, which the compiler
+knows and does not say (#1458).
+
+### The order, and what it protects
+
+Bugs first, because each is small and lands alone: #1456, #1442, #1445, #1457. Then the
+decisions, in the order each fixes the vocabulary the next is spelled in: the numeric
+model (#1432), the boundary kinds (#1436), the one type message (#1452). Then the one
+bridge (#1440) and the checker (#1383) on top of them. The surfaces last: a generated
+`docs/reference/values.md` whose every cell is a conformance case rather than a sentence
+(#1453), a JSON Schema signature for a workflow so an agent does not learn the argument
+names from a refusal (#1455), and `json.decode` beside `json.encode` (#1454). #1459 is
+the index.
+
+What the order protects is the bet at the top of this document. None of the findings is
+a nondeterminism; every one of them is a value that meant one thing in an expression and
+another at a boundary, and the constitution's second principle, *a value is not an
+effect*, is only worth stating if a value is also the same value everywhere it goes.
 
 ## The standing rule
 
