@@ -415,6 +415,22 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	// with several waits blocked on it is a workflow with concurrent gates on
 	// the same signal — whichever of them this payload reaches, exactly one
 	// stops needing its deadline.
+	//
+	// Unless this payload answers nothing. A redelivery of something a gate
+	// already consumed is queued (the waiting loop is what drops it, at the one
+	// intake seam both drivers share) but it does *not* release a wait, so
+	// withdrawing a deadline here would retire a timer nothing is going to
+	// replace: under a [VirtualClock] the deadline is deregistered, the clock
+	// stops counting it, and the wait parks forever on a channel that will never
+	// fire — a `flow test` case hanging where it should have reported a timeout.
+	// The durable driver keeps its timer armed across a skipped duplicate (the
+	// timer is created once, outside the selector loop), so consulting the
+	// consumed set here is what keeps the two drivers' observable answer the
+	// same. Read-only: recording is the consuming wait's, not a delivery's.
+	if DeliveryWasConsumed(s.consumed, sender.GetDeliveryId()) {
+		return nil
+	}
+
 	for _, wait := range s.waits[name] {
 		if wait.withdrawDeadline() {
 			break

@@ -261,7 +261,7 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 		return nil, "", failures, nil
 	}
 
-	return bound, v1.WebhookDeliveryID(key), nil, nil
+	return bound, v1.WebhookDeliveryID(workflow.GetName(), trigger.GetName(), key), nil, nil
 }
 
 // caseVerifyKeys resolves the trigger's `verify:` keys against the case's own
