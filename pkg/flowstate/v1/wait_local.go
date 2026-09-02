@@ -451,13 +451,6 @@ func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
 // waiting under any more and moves time on it. That window is what #278's
 // first two attempts each left open somewhere else.
 func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *SignalSender) error {
-	if payload == nil {
-		// An empty payload rather than nil, so the waiting step's outputs exist
-		// and `${approval.timed_out}` resolves whether or not a sender sent
-		// anything.
-		payload = &Node_Outputs{NamedValues: map[string]*Value{}}
-	}
-
 	if policy, declared := s.policies[name]; declared {
 		if err := SignalPolicyCheck(policy, sender.GetIdentity(), s.starter, s.hasStarter); err != nil {
 			return fmt.Errorf("flowstate: signal %q refused: %w", name, err)

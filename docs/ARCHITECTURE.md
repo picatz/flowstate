@@ -782,12 +782,6 @@ that rule always had: an iterator is bare too, so it and the clock genuinely do 
 namespace, and a body saying `${now}` would mean the item everywhere except inside a
 wait. A collision is only unrepresentable between the two halves, not within one.
 
-One wrinkle lives in the schema rather than in either driver: `Node.Outputs.named_values`
-is required, so an empty map is not something a message can say. A signal that carries
-nothing therefore travels with its payload *absent*, and the server substitutes empty
-outputs on arrival. That is what keeps `${steps.approval.timed_out}` resolving on a gate
-somebody answered with nothing to add.
-
 Suspension interacts with waiting in one direction only, and the direction is not the
 obvious one. The step budget is checked *between* nodes, after a node has returned, so a
 wait cannot be suspended through — a timer needs nothing to survive Continue-As-New,
