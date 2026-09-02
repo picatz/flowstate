@@ -595,7 +595,11 @@ plugin-process audit dial-back in the same protocol bump as #1393 (#1399, L).
 ### Wave F — scale (weeks 4–6)
 
 D4: `call: execution: child` (L, `testsuite`-testable, no DSL beyond one
-key); then Update with update-with-start (L); D6's `parallel:` bound (M);
+key) — on *both* drivers, since invariant 3 makes a mode that only the
+Temporal driver honors a defect rather than a slice: `eval.go` runs the
+callee under the same result, cancellation and compensation semantics, and a
+shared conformance case set proves the two agree, without which
+`flow run local` would rehearse a mode it does not have (Codex, on #1479); then Update with update-with-start (L); D6's `parallel:` bound (M);
 D7's timeout kind (S); the structured compensation record on `RunState`,
 `Get` and the timeline (#1385, L); a read-only account of a finished durable
 run from history (new, M, the smallest durable-debugging slice and the
@@ -604,8 +608,11 @@ a two-configuration equivalence test (#1384, L).
 
 ### Wave G — the factory (this week, S items, one builder)
 
-D13 in full: #1388, plugin-module scanning in `ciDecisions`, #1187's artifact upload, #965's disposition once the owner
-picks the reproducer home, #1386 and #1103 closed, the AGENTS.md line routing
+D13 in full: #1388, plugin-module scanning in `ciDecisions`, #965's
+disposition once the owner picks the reproducer home — which #1187 now waits
+behind rather than leading, since D13 refuses the run-artifact route and the
+deep tier's existing upload plus its "visible to collaborators only" sentence
+are what that decision has to correct, #1386 and #1103 closed, the AGENTS.md line routing
 capacity questions to `tools/fleet` (#1307), #1311's toolchain sentence, the
 CDP wall-clock wait replaced with a poll (#1324), and one computed metric:
 bot findings accepted versus refuted per merged PR, read from the API into
@@ -730,7 +737,8 @@ checked.
 | S | #1327/#1326 pins completion + digests shown | `plugin/admission.go`, `cmd/flow/plugins.go` |
 | S | #1289/#1290 stdio resilience, one input convention | `cmd/flow/mcp.go`, `internal/mcp/` |
 | S | `--protected-resource-revision` | `cmd/flow/protectedresource.go` |
-| S | #1187 crasher artifact; #1386/#1103/#1382 closes; #1307/#1311 AGENTS.md lines | `ci.yml`, `AGENTS.md`, skills |
+| S | #1386/#1103/#1382 closes; #1307/#1311 AGENTS.md lines | `AGENTS.md`, skills |
+| S | `deep.yml`'s false "visible to collaborators only" line, ahead of #965 | `.github/workflows/deep.yml:180` |
 | S | Doc-truth pass (invariant 3 wording, STYLE.md row, THREAT_MODEL cites, DSL.md fifteenth round) | `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/STYLE.md`, `THREAT_MODEL.md`, `docs/DSL.md` |
 | M | #1425 `MergedStepIDs` + conformance | `eval.go`, `engine/execute.go`, `flowfile/validate.go`, `conformance/` |
 | M | D6 `parallel:` atomic bound | `atomicblock.go`, both `runParallel`s, `conformance/` |
@@ -750,7 +758,7 @@ checked.
 | L | #1437 the reference-model registry | `pkg/flowstate/v1/`, `flowfile/`, `lsp/`, `flowdebug/`, `flowtest/`, `cmd/flow/taskrun.go` |
 | L | #1440+#1456 one bridge + e2e plugin tests | `protoliterals.go`, `sdk/values.go`, `internal/pluginreachtest` |
 | L | #1393 `LaunchRequest`, protocol 7 | `plugin.proto`, `plugin/launch.go`, `sdk/` |
-| L | D4 `call: execution: child` | `workflow.proto`, `flowfile/`, `engine/execute.go:594`, `server/` |
+| L | D4 `call: execution: child`, both drivers | `workflow.proto`, `flowfile/`, `engine/execute.go:594`, `eval.go`, `server/`, a shared conformance case set |
 | L | #1385 compensation record | `run.proto`, `service.proto`, `engine/workflow.go`, `server/timeline.go` |
 | L | #1014 scope enforcement | `authorization.go`, `auth/challenge.go`, `server/`, `cmd/flow/mcpserve.go` |
 | L | #1435 rename/references; #1384 pushdown; #108 MCP bridge spike | `lsp/`, `flowfile/fix*`; `server/list.go`; a new plugin |
@@ -765,8 +773,12 @@ Short, because this pass decided everything else it could:
    + `merge_queue` (docs/CI.md has the parameters), and turn private
    vulnerability reporting on so SECURITY.md stops pointing at a button that
    does not exist.
-2. **Where fuzz reproducers go** (#965): a draft security advisory, a private
-   artifact, or the status quo. The code follows the choice in one PR.
+2. **Where fuzz reproducers go** (#965): a draft security advisory,
+   access-controlled storage outside Actions, or the status quo. A run
+   artifact is not on the list: this repository is public, so anyone with
+   read access can download one. The code follows the choice in one PR, and
+   `deep.yml:180`'s claim that the artifact is "visible to collaborators
+   only" is wrong today and can be corrected ahead of the choice.
 3. **The delegation proto shape** (#567 D2): the recommendation on the issue
    stands; it is the one nearly-irreversible move in the identity track.
 4. **The versioning scheme and the first tag** (#1216 criterion 1): what
