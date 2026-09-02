@@ -62,6 +62,19 @@ var egressRefusal error
 // governed by nothing - [refusingTransport] takes it instead, so the
 // fail-closed answer holds even on a path that forgot to ask.
 func installEgressPolicy() {
+	governed, err := sdk.HTTPClientWithBounds(maxResponseBytes, requestTimeout)
+	if err != nil {
+		egressRefusal = err
+		client.InstallProtocol("https", githttp.NewClient(&http.Client{Transport: refusingTransport{err}}))
+		return
+	}
+
+	// The client is what every byte crosses, and it is the SDK's rather than
+	// policy.Client() so that a clone sending a token is marked as carrying a
+	// credential: go-git sets Authorization for BasicAuth, and an operator rule
+	// naming `credentials` has to decide this request the way it decides the
+	// built-in http task's. The policy itself is kept for the task boundary's
+	// own check, from the same grant and the same bounds.
 	policy, err := sdk.EgressPolicyWithBounds(maxResponseBytes, requestTimeout)
 	if err != nil {
 		egressRefusal = err
@@ -70,7 +83,7 @@ func installEgressPolicy() {
 	}
 
 	egressPolicy = policy
-	client.InstallProtocol("https", githttp.NewClient(policy.Client()))
+	client.InstallProtocol("https", githttp.NewClient(governed))
 }
 
 // requireEgressPolicy is what every task calls before it reaches a remote.

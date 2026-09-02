@@ -30,9 +30,12 @@ func TestIssueCommentWritesWithoutAProductionCaller(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	old := egressPolicy
-	var err error
-	egressPolicy, err = netpolicy.New(
+	// The governed client this plugin would have taken from a grant permitting
+	// the fixture server, built here because a test binary is not launched by a
+	// worker. It is a client rather than a policy so that this test exercises
+	// the same object production does, credential marking included.
+	old := egressClientOnce
+	policy, err := netpolicy.New(
 		netpolicy.WithAllowLoopback(),
 		netpolicy.WithDenyRedirects(),
 		netpolicy.WithMaxResponseBytes(maxResponseBytes),
@@ -41,7 +44,8 @@ func TestIssueCommentWritesWithoutAProductionCaller(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building test egress policy: %v", err)
 	}
-	t.Cleanup(func() { egressPolicy = old })
+	egressClientOnce = policy.Client()
+	t.Cleanup(func() { egressClientOnce = old })
 	t.Setenv(envAPIBaseURL, server.URL)
 
 	outputs, err := issueComment(context.Background(), map[string]*flowstatev1.Value{

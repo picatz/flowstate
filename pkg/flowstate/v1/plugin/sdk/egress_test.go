@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -822,4 +823,62 @@ func TestAnUnusableGrantHasNoPostureEither(t *testing.T) {
 		assert.False(t, isDefault,
 			"a document that could not be parsed was believed about where it came from")
 	})
+}
+
+// TestABoundedClientKeepsTheGrantsRulesAndTheCredentialMark is the property the
+// plugins that clone depend on, and the one a plugin composing its own client
+// out of [EgressPolicyWithBounds] would silently lose.
+//
+// A git packfile is not the shape of response an operator sizes
+// `max_response_bytes` for, so those two bounds are the plugin's. Everything
+// that decides *where* a request may go stays the deployment's, and so does the
+// credential mark: a clone that sends a token must meet an operator's
+// `deny: ['credentials']` the same way an http task's request does. The three
+// assertions are the three ways this can go wrong — the bound not applied, a
+// rule dropped, the mark lost — and the last one is the one no compiler notices.
+func TestABoundedClientKeepsTheGrantsRulesAndTheCredentialMark(t *testing.T) {
+	resetGrant(t)
+
+	body := strings.Repeat("x", 4096)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv(EgressPolicyEnv, grantOf(
+		"egress:\n  schemes: [http, https]\n  allow_loopback: true\n  max_response_bytes: 16\n"+
+			"  deny: ['credentials && path == \"/secret\"']\n"))
+
+	// A bound this plugin states for its own transport, well above the 16 bytes
+	// the operator wrote: the response below is read whole, where the grant's
+	// own client would refuse it.
+	client, err := HTTPClientWithBounds(1<<20, 30*time.Second)
+	require.NoError(t, err)
+
+	response, err := client.Get(server.URL + "/pack")
+	require.NoError(t, err, "the plugin's own response bound did not replace the grant's")
+	read, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	require.NoError(t, err, "the response was cut off at a bound this plugin replaced")
+	assert.Len(t, read, len(body))
+
+	// The grant's rule is untouched by the bounds, and the credential that makes
+	// it fire is seen without the caller saying so.
+	credentialed, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/secret", nil)
+	require.NoError(t, err)
+	credentialed.Header.Set("Authorization", "Bearer the-secret")
+
+	denied, err := client.Do(credentialed)
+	if err == nil {
+		denied.Body.Close()
+		t.Fatal("a bounded client sent a credential to a destination the operator's rule denies")
+	}
+	assert.ErrorIs(t, err, netpolicy.ErrDenied,
+		"the request failed for some reason other than the policy: %v", err)
+
+	// The same path without the credential is permitted, which is what makes the
+	// denial above evidence about the mark rather than about the destination.
+	plain, err := client.Get(server.URL + "/secret")
+	require.NoError(t, err, "the bounded client refused an unauthenticated request the policy permits")
+	plain.Body.Close()
 }

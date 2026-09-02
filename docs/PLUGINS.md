@@ -685,15 +685,19 @@ if isDefault {
 ```
 
 **A protocol that is not an HTTP fetch may state its own bounds.**
-`sdk.EgressPolicyWithBounds(maxResponseBytes, timeout)` returns the granted policy
-with those two bounds in place of the grant's, for a transport whose responses are
-not the shape an operator sizes `max_response_bytes` for — a git packfile is the
-in-tree example, and the plugins that clone use it. It changes what is *bounded*
-and never what may be *reached*: schemes, address categories, networks, ports,
-rules, redirects and the TLS floor come from the grant untouched. The consequence
-worth knowing: an operator's `max_response_bytes` governs built-in HTTP and every
-plugin using `sdk.HTTPClient()`, not a bound a plugin states for its own
-transport.
+`sdk.HTTPClientWithBounds(maxResponseBytes, timeout)` is `sdk.HTTPClient()` for a
+transport whose responses are not the shape an operator sizes
+`max_response_bytes` for — a git packfile, a paginated API listing — and
+`sdk.EgressPolicyWithBounds` returns the same policy for a plugin that needs the
+policy itself. Both change what is *bounded* and never what may be *reached*:
+schemes, address categories, networks, ports, rules, redirects and the TLS floor
+come from the grant untouched, and the client marks credentials exactly as
+`sdk.HTTPClient()` does. Prefer the client: composing your own out of the policy
+loses the marking, and an operator's `deny: ['credentials && ...']` evaluating
+false for a clone that sends a token is a rule that did not fire rather than one
+that allowed. The consequence worth knowing: an operator's `max_response_bytes`
+governs built-in HTTP and every plugin using `sdk.HTTPClient()`, not a bound a
+plugin states for its own transport.
 
 **Absent means the variable is not set, not that it is empty.** An operator whose
 `--egress-policy` names an empty document has configured a policy — the one an

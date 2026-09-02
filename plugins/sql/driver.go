@@ -236,9 +236,13 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 // existed, and a second install here would be a second answer to a question with
 // one — the same fact written twice, which is how they come to disagree.
 //
-// Credentials stay here, deliberately: whether a request carries one is this
-// plugin's knowledge about this connection, not something the SDK can infer from
-// a task running.
+// Credentials stay here, deliberately, and this is the case sdk.WithCredentials
+// exists for: the credential is a password inside the DSN, on a PostgreSQL
+// connection that is not an HTTP request at all. The SDK's client marks an
+// Authorization, Proxy-Authorization or Cookie header before the policy sees it,
+// which covers every plugin that speaks HTTP and covers nothing here. So the
+// mark is this plugin's to make, and an operator rule naming `credentials` fires
+// for a database connection because this line says it should.
 func postgresPolicyContext(ctx context.Context) context.Context {
 	return netpolicy.ContextWithCredentials(ctx, true)
 }

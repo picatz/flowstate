@@ -10,7 +10,6 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
@@ -33,7 +32,7 @@ import (
 // It is taken once, at process start, the same reasoning
 // flowstate-plugin-vcs's installEgressPolicy gives for doing the same. Nil
 // means the grant could not be used, and [egressRefusal] says why.
-var egressPolicy *netpolicy.Policy
+var egressClientOnce *http.Client
 
 // egressRefusal is why there is no policy, kept so the task boundary can refuse
 // with the SDK's message - which names the environment variable and the worker
@@ -48,13 +47,19 @@ var egressRefusal error
 // plugin the host cannot even describe. Every path that would reach the network
 // goes through [egressClient], which refuses instead.
 func installEgressPolicy() {
-	policy, err := sdk.EgressPolicyWithBounds(maxResponseBytes, requestTimeout*time.Second)
+	// The SDK's client rather than policy.Client(): every request this plugin
+	// makes carries a credential in an Authorization header (an App JWT, or a
+	// token go-github attaches), and the SDK marks those before the policy is
+	// evaluated - so an operator rule naming `credentials` decides a github.*
+	// call the way it decides the built-in http task's. Composing a client out
+	// of the policy alone would lose exactly that half.
+	governed, err := sdk.HTTPClientWithBounds(maxResponseBytes, requestTimeout*time.Second)
 	if err != nil {
 		egressRefusal = err
 		return
 	}
 
-	egressPolicy = policy
+	egressClientOnce = governed
 }
 
 // egressClient returns the governed client every network call in this
@@ -66,11 +71,14 @@ func installEgressPolicy() {
 // second client to fall back to, and a nil policy here would panic rather than
 // silently reach GitHub, which is not a distinction worth relying on.
 func egressClient() (*http.Client, error) {
-	if egressPolicy == nil {
+	if egressClientOnce == nil {
 		return nil, sdk.PermissionDenied("this plugin was launched without a usable egress policy: %v", egressRefusal)
 	}
 
-	return egressPolicy.Client(), nil
+	// One client, shared: it is safe for concurrent use and its transport holds
+	// the connection pool, which is where keep-alive lives for a plugin making
+	// many API calls in one activity.
+	return egressClientOnce, nil
 }
 
 // effectiveAPIBase resolves the API base a call actually reaches, after

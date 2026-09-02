@@ -551,9 +551,11 @@ document, so "absent" means only that no worker launched this process and each
 plugin can take its own posture toward a policy nobody wrote. The SQL and git
 plugins read the same grant and apply it on their own connection paths — a
 resolved PostgreSQL socket target, a go-git transport — because those are not
-HTTP; a plugin whose protocol needs a different response or time bound states it
-with `sdk.EgressPolicyWithBounds`, which changes what is bounded and never what
-may be reached. What the grant buys is that the governed path is the convenient
+HTTP; a plugin whose protocol needs a different response or time bound takes
+`sdk.HTTPClientWithBounds`, which changes what is bounded and never what may be
+reached, and marks credentials exactly as `sdk.HTTPClient` does. A credential no
+header shows — a password inside a DSN — is the plugin's own to declare, which is
+what `sdk.WithCredentials` and the SQL plugin's dial path do. What the grant buys is that the governed path is the convenient
 one; arbitrary third-party plugin code that opens its own sockets still requires
 deployment/substrate confinement. The grant is therefore universal and
 enforcement is voluntary: every first-party plugin — `git`, `github`, `slack`,

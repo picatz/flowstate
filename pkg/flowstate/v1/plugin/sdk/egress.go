@@ -208,6 +208,32 @@ func HTTPClient() (*http.Client, error) {
 	return client, nil
 }
 
+// HTTPClientWithBounds returns an HTTP client governed by
+// [EgressPolicyWithBounds] — the deployment's policy, with this plugin's own
+// response-size and request-time bounds in place of the grant's.
+//
+// It is [HTTPClient] for a transport whose responses are not the shape an
+// operator sizes `max_response_bytes` for: a git packfile, a paginated API
+// listing. Everything else is the same client, including the credential marking,
+// which is the half a plugin composing its own client out of
+// [EgressPolicyWithBounds] would quietly lose — an operator's
+// `deny: ['credentials && ...']` evaluating false for a clone that sends a token
+// is a rule that did not fire rather than one that allowed.
+//
+// It builds a policy per call, as [EgressPolicyWithBounds] does, so a plugin
+// asks once at startup and keeps what it gets.
+func HTTPClientWithBounds(maxResponseBytes int64, timeout time.Duration) (*http.Client, error) {
+	policy, err := EgressPolicyWithBounds(maxResponseBytes, timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	client := policy.Client()
+	client.Transport = credentialMarkingTransport{next: client.Transport}
+
+	return client, nil
+}
+
 // WithCredentials marks every request made on the returned context as carrying a
 // credential, for a policy rule that names `credentials`.
 //
