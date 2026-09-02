@@ -328,7 +328,12 @@ spelling beside CEL's and Go's, and `[` is a YAML flow indicator, so
 is not. *Also refused:* keeping `list` and `struct` as bare spellings — R3
 says two spellings for one meaning, one dies; `flow fix` rewrites `list` →
 `list(dyn)` and `struct` → `map(string, dyn)` at the edition boundary, which
-loses nothing because today's `struct` is an open map with no fields. The
+loses nothing because today's `struct` is an open map with no fields. `float`
+dies the same way and for the same rule: CEL spells it `double`, so `flow fix`
+rewrites `float` → `double` and the legacy enum's `TYPE_FLOAT` maps to the
+scalar double when the old field is read — without both, the shipped
+`expense-approval` and `computed-outputs` files stop compiling at the boundary
+this edition promises to carry them across (Codex, on #1479). The
 enum field itself is *not* reserved at the edition boundary: the `Type`
 message takes a new field number and both are carried until a drain or a
 documented migration retires the old one, because `RunState.workflow` puts
@@ -493,6 +498,18 @@ first. `container.run` waits for the confine column it needs (#721). *Refused:*
 #1344's container-run-first order, on the isolation-model dependency it
 names itself.
 
+**D12 carries one constraint the enforcement point cannot be dispatched
+without.** A scope check installed at the shared action bindings has to be
+credential-sensitive: a bearer token that names no scope is denied, but a
+certificate-only or explicitly anonymous deployment has no scope claim to
+name and must not be denied by the same rule, and `MCPTokenVerifier` returns
+`TokenInfo.Scopes` nil deliberately — `mcpverifier.go:58` says why, that "no
+per-action enforcement point can truthfully name which scope this request
+requires". So the slice lands with the plumbing that distinguishes those
+callers and with negative tests for bearer, mTLS, anonymous and MCP, or it
+turns every RPC off for one deployment shape while leaving unscoped bearer
+tokens fully authorized in another (Codex, on #1479).
+
 **D12. Governance: the submit boundary runs the semantic checks; scopes are
 enforced where the bindings already are; the freshness document says what is
 enforced.** (#1430, #1014, #1380) A `ValidateSpec(*Workflow)` — the
@@ -634,7 +651,8 @@ total bridge).
 
 ### Wave E — governance as true as it reads (weeks 2–4, parallel)
 
-D12: `ValidateSpec` at submit (#1430, M); scope enforcement (#1014, M/L);
+D12: `ValidateSpec` at submit (#1430, M); scope enforcement (#1014, M/L)
+with the credential-sensitive plumbing above and its four negative tests;
 the freshness rewrite plus the revision flag (#1380, M + S); `inputs` in the
 task-policy activation (#1378, M); a `flow policy test` verb over the
 existing policy activations (new, M); the delegated exchange reaching
@@ -721,6 +739,9 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
   still changes in one edition; the wire does not.
 - **Retire** bare `type: list` and `type: struct`; `flow fix` writes
   `list(dyn)` and `map(string, dyn)`.
+- **Retire** `type: float` for CEL's `double`; `flow fix` rewrites it and
+  `TYPE_FLOAT` maps to the scalar double on the legacy field. Two shipped
+  examples use `float` today.
 - **Retire** `json_parse` for `json.parse` (#1454, R3); `flow fix` rewrites it.
 - **Delete** the four type switches, the eighteen reference-model lists, the
   two proto→outputs bridges (replaced by one), `sdk/values.go:274-423`, the
@@ -844,7 +865,7 @@ checked.
 | L | #1393 `LaunchRequest`, protocol 7 | `plugin.proto`, `plugin/launch.go`, `sdk/` |
 | L | D4 `call: execution: child`, both drivers | `workflow.proto`, `flowfile/`, `engine/execute.go:594`, `eval.go`, `server/`, a shared conformance case set |
 | L | #1385 compensation record | `run.proto`, `service.proto`, `engine/workflow.go`, `server/timeline.go` |
-| L | #1014 scope enforcement | `authorization.go`, `auth/challenge.go`, `server/`, `cmd/flow/mcpserve.go` |
+| L | #1014 scope enforcement, credential-sensitive, with bearer/mTLS/anonymous/MCP negative tests | `authorization.go`, `auth/challenge.go`, `auth/mcpverifier.go`, `server/`, `cmd/flow/mcpserve.go` |
 | L | #1435 rename/references; #1384 pushdown; #108 MCP bridge spike | `lsp/`, `flowfile/fix*`; `server/list.go`; a new plugin |
 
 ## What only the owner decides
