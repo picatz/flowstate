@@ -113,6 +113,36 @@ one CEL vocabulary); per-step inline policy in the file (#104's by-reference
 rule stands); reopening the held Flowfile egress declaration (DSL.md holds it;
 #1591 is the narrowing half #721 already says is safe).
 
+## The third pass: testing, analysis and debugging over the program
+
+The IR as the thing a test generates from, a mutant edits, an analyzer
+walks, and a history reproduces. Two facts from probes against the same
+binary: a `call:` step cannot be stubbed (`flow test` answers "runs no task
+... and so cannot be stubbed"), and a caller's coverage reads `1/1 steps
+reached` over a three-step callee. One fact from the tree: `flowtest`'s
+package doc scopes it to the local driver on purpose, while 37 engine test
+files run the durable interpreter in-process through the SDK's
+`TestWorkflowEnvironment` with no server.
+
+| Group | Issues |
+| --- | --- |
+| One contract for every check | #1597 (an `Analyzer` over the program, in-process and as a plugin capability) |
+| The author's own file, both drivers | #1598 (`flow test --driver durable`, sub-second, no server) |
+| Tests the contract writes | #1594 (`--fuzz` from the typed contract), #1600 (`--mutate`, one-field mutants of the message), #1599 (a `step:` stub on a `call:` answers at the callee's declared outputs) |
+| The run as evidence | #1595 (`flow test init --from-run`: a durable run as a fixture and the post-mortem debugger), #1596 (`flow diff` between runs, fixtures and seeds) |
+
+Recommended order inside the pass: #1598 first, because it is the cheapest
+and turns the product's central promise into a test an author runs; #1599
+with #1441's load-time universe; #1597 after #1583, since the graph is its
+first shared fact; #1594 and #1600 after #1295 and D1; #1595 after #1550's
+redaction decision; #1596 after #1439.
+
+Deliberately not filed on this pass: durable attach and a `flow debug replay`
+verb (#928 and #1111 hold both with the owner's ledger; #1595 is the
+post-mortem answer that needs neither); embedding the Temporal dev server
+(#377 decided the child process and named when to revisit); a run profile
+verb (#1485 surfaces measured CEL cost and #1585 the static sizes).
+
 ## Deliberately not filed
 
 - A WASM plugin ABI, remote plugin distribution and browser execution: #102,
@@ -131,6 +161,10 @@ rule stands); reopening the held Flowfile egress declaration (DSL.md holds it;
   `timeout 60`, outputs quoted in the issues.
 - Second pass: two more `flow compile` probes (one call site, four call sites
   to one callee), bounded the same way, numbers quoted in #1582 and #1562.
+- Third pass: two `flow test` probes (a `step:` stub naming a call step, and
+  `--coverage-required` on a caller), bounded the same way, output quoted in
+  #1599 and #1562; the 37-file count is `grep -rl TestWorkflowEnvironment
+  pkg/flowstate/v1/engine/*_test.go | wc -l` at the snapshot.
 - No `go test`, `tools/gate` or `make check` for the audit itself: nothing in
   the tree changed. This file was checked with
   `go test ./cmd/flow -run 'TestInternalDocumentsSayTheyAreInternal|TestDocsIndex'`.
