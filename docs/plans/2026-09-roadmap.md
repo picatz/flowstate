@@ -344,7 +344,9 @@ Landed on day one: #1387, #1402, #1391, #1389, #1372, #1281, #1401, #1392,
 
 1. **Owner, five minutes:** the merge-queue ruleset flip (#489 is decided;
    the CI half shipped in #688). Then the #1216 rehearsal can run against a
-   queue that exists, and the first release follows it.
+   queue that exists. Publishing stays interlocked as the section above and
+   docs/CI.md say: the release flip is a separate, deliberate owner decision
+   taken on the rehearsal's evidence, never a step that follows it.
 2. **#1393** — the schema-owned launch shape, now that two bumps (5, 6) have
    shown the environment contract moving twice in a day; one builder, the
    third bump is the last one the environment takes.
