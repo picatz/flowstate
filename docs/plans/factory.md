@@ -165,3 +165,25 @@ the default grant's marker where #1393 had hoped PR B could stay at 5 — the
 version-4 lesson applied before it bit. Receiver-cost update for the night:
 bot findings acted on, sixteen; refuted with evidence, one (a deployment's
 proxy credential is not a workload credential); owner turns needed, zero.
+Wrap-up, same wave, 01:50 UTC. Two more merges: #1411 (PR B, protocol 6,
+after a Codex P1 showed `flow mcp` granting plugins the permissive default
+while refusing egress itself — closed by building the task's policy and
+the plugins' grant from one document) and #1413 (this ledger's first
+half). #1412 is in its last round. Five rules from the last two hours, all
+from evidence. The container's `PATH` gofmt is the base image's older
+build while go.mod pins 1.27.0 through `GOTOOLCHAIN`; a bare `gofmt -l`
+flagged a file CI accepts, so "formatted" is spelled only by the
+Makefile's targets or `$(go env GOROOT)/bin/gofmt`. A change to a proto or
+DSL surface runs every package under `pkg/flowstate/v1/...` before its
+push — the LSP's completion keys and protodoc's presence pin are the two
+that caught #1412 in CI rather than locally. The "second surface" is a
+sibling class of its own: `flow mcp` was the one command installing a
+non-default policy without an operator file, and the grep for callers of
+`applyEgressPolicy` is what found it. An agent does not end its turn
+waiting on a monitor; a stopped agent cannot act on what the monitor
+reports, so it reads the result and pushes, or says it is still running.
+And the reviewer does not arm watches or sleep loops for a head that has
+not landed; the lead names each head when it exists. Receiver-cost close:
+bot findings acted on across the night, twenty-two; refuted with evidence,
+one; owner turns needed, one — "wrap up for the night" — and that one
+arrived with every PR but the last already merged.

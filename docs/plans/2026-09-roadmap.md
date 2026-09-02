@@ -245,11 +245,13 @@ Must-land is marked; cut from the bottom, never from must-land.
    2026-09-02 after three security passes: protocol v5, the SDK installing
    the attested identity and marking header-visible credentials (sticky
    across redirect hops), proxy inputs granted only under
-   `proxy_from_environment`, the grant built at `NewHost`. PR B is #1411:
-   the deployment default forwarded and marked `deployment_default: true`,
-   `git`/`vcs`/`github`/`slack`/`sql` on the SDK constructor, protocol v6
-   because a key a strict parser refuses is not additive — the second bump
-   #1393 anticipated. The schema-owned launch-input question is #1393.
+   `proxy_from_environment`, the grant built at `NewHost`. PR B, #1411,
+   **merged** 2026-09-02: the deployment default forwarded and marked
+   `deployment_default: true`, `git`/`vcs`/`github`/`slack`/`sql` on the SDK
+   constructor, `flow mcp`'s deny-all forwarded from the same document its
+   own task is built from, protocol v6 because a key a strict parser refuses
+   is not additive — the second bump #1393 anticipated. Closes
+   #1321/#1322/#1323; the schema-owned launch-input question is #1393.
 9. **Worker-side audit** (#1379) — wire the existing `audit.Recorder` through
    `runWorker` so task-policy, secret, egress and assumption decisions
    (allows included) leave the same trail server RPCs already do; #1018's
@@ -271,11 +273,14 @@ Must-land is marked; cut from the bottom, never from must-land.
     the existing verification schemes and `signals:` authorization, needs a
     sender-identity shape and idempotency across redelivery, conformance
     cases with both drivers as callers, and the `flowstate-security-review`
-    pass before merge. **Promoted** (recorded on #96); the build is in
-    progress on `claude/96-webhook-signal-bridge`, both-driver conformance
-    cases proved and the docs and examples underway at the time of writing.
-    If the week runs short, this slips whole rather than shipping
-    unverified — a half-bridge at a trust boundary is worse than none.
+    pass before merge. **Promoted** (recorded on #96); built as PR #1412,
+    which at the time of writing is in its last review round: the security
+    pass found and the branch closed a cross-workflow gate answer (a
+    trigger's key holder could answer an unpoliced gate in another workflow
+    of the tenant) and header-addressed correlation under schemes that do
+    not sign headers, and both drivers consume one `ConsumeDeliveryID`. If
+    it is not green by the morning it waits, unmerged — a half-bridge at a
+    trust boundary is worse than none.
 12. **Factory catch-up** — #1386 (the ledger cadence decision), #1307's
     `tools/fleet` reachability, and the docs/CI.md workflow-inventory fix if
     not already inside (7).
@@ -331,6 +336,30 @@ corrected in-thread (this review added the one stale line: `flow test`
 shipped, #155) — so the real re-triage residue is #134 (both debts appear
 still live) and the Jul-31 design wave (#95–#108) for supersession
 (#102 vs #715, #104 vs #548).
+
+### Day two (2026-09-02), from the night's state
+
+Landed on day one: #1387, #1402, #1391, #1389, #1372, #1281, #1401, #1392,
+#1410, #1409, #1390, #1394, #1411, #1413; #1412 in its last round. In order:
+
+1. **Owner, five minutes:** the merge-queue ruleset flip (#489 is decided;
+   the CI half shipped in #688). Then the #1216 rehearsal can run against a
+   queue that exists, and the first release follows it.
+2. **#1393** — the schema-owned launch shape, now that two bumps (5, 6) have
+   shown the environment contract moving twice in a day; one builder, the
+   third bump is the last one the environment takes.
+3. **#1397 + #1399** — the two audit gaps #1394 left on purpose: per-hop
+   egress records (with the `UndecidedError` doc nit noted there) and
+   plugin-process decisions reaching the worker's recorder, which needs a
+   host-facing RPC and so a design memo pair before a builder.
+4. **#965** (fix list item 5) and **#1307** — the two day-one items that did
+   not start.
+5. **Process, one commit:** the container's `PATH` gofmt is the base image's
+   build, not the pinned toolchain's (filed from the night); a setup hook or
+   the Makefile targets as the only spelling of "formatted".
+
+Not tomorrow: `accepts:` on the bridge (deferred on #96), manifest network
+intent (#239), and anything the owner has not seen land yet.
 
 ### Definition of done for the week
 
