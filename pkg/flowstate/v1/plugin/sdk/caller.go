@@ -48,8 +48,16 @@ func (c Caller) Mode() flowstatev1.WorkloadIdentityMode {
 // callerKey is the context key [CallerFromContext] reads.
 type callerKey struct{}
 
-// contextWithCaller returns a context carrying who invoked this task and which
-// tenant it belongs to, installed once per request before [Task.Fn] runs.
+// contextWithCaller returns a context carrying who invoked this call and which
+// tenant it belongs to.
+//
+// It is applied at every entry point plugin code runs under and carries an
+// identity: both task handlers, before [Task.Fn], and secret resolution, before
+// [ResolveFunc]. One seam rather than three, because the failure of missing one
+// is silent — the rule still evaluates, against an identity that is not there —
+// and a resolver is exactly as able to reach a network backend as a task is.
+// (Health carries no identity on the wire and invokes no tenant-scoped code, so
+// there is nothing to install.)
 //
 // It installs the same identity twice, in two spellings, because two different
 // readers need it and only one of them is this package's. [CallerFromContext]

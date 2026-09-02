@@ -15,6 +15,7 @@ import (
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // runEgressGrantPlugin is a real SDK plugin that reports what the grant it was
@@ -369,6 +370,127 @@ func TestTheProxyGrantReachesTheLaunchedPluginProcess(t *testing.T) {
 			got := outputs.GetNamedValues()["http_proxy"].GetLiteral().GetStringValue()
 			assert.Equal(t, test.wantProxy, got,
 				"the launched plugin's own HTTP_PROXY is not what this policy grants")
+		})
+	}
+}
+
+// runEgressResolverPlugin is a real SDK plugin whose *secret resolver* reaches
+// the network through the documented constructor.
+//
+// A resolver is as able to make an outbound request as a task is — that is what
+// a network-backed secret backend is — and it runs under a different handler,
+// which is exactly why the identity install had to stop being a property of the
+// task path.
+func runEgressResolverPlugin() int {
+	resolve := func(ctx context.Context, req sdk.SecretRequest) (sdk.SecretResponse, error) {
+		client, err := sdk.HTTPClient()
+		if err != nil {
+			return sdk.SecretResponse{}, sdk.Failed("egress: %v", err)
+		}
+
+		// The resolver's own context, unmodified.
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, os.Getenv("FLOWSTATE_TEST_BACKEND"), nil)
+		if err != nil {
+			return sdk.SecretResponse{}, sdk.Failed("request: %v", err)
+		}
+
+		response, err := client.Do(request)
+		if err != nil {
+			return sdk.SecretResponse{}, sdk.Failed("fetching the secret: %v", err)
+		}
+		defer response.Body.Close()
+
+		return sdk.SecretResponse{Value: []byte("resolved")}, nil
+	}
+
+	err := sdk.Run(context.Background(), sdk.Plugin{
+		Name:        "egress-resolver",
+		Version:     "0.0.1",
+		Description: "resolves a secret by fetching it through the SDK's governed client",
+		Secrets: &sdk.Secrets{
+			Schemes: []string{"egressresolver"},
+			Resolve: resolve,
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "egress-resolver fixture: %v\n", err)
+		return 1
+	}
+
+	return 0
+}
+
+// TestTheGrantsIdentityRulesGovernASecretResolversRequests is the same claim as
+// the task-path test, at the entry point that did not have it.
+//
+// The wire carries the identity to a resolver — the host sets it in
+// secrets.go's Resolve — and the SDK handed the resolver its untouched RPC
+// context, so netpolicy evaluated every `identity.*` rule against the zero
+// identity. A network-backed resolver invoked for team-b therefore passed
+// `deny: ['identity.namespace == "team-b"']`, fetching the tenant's secret from
+// a destination the operator's rule was written to keep it away from. Nothing
+// reported it, because the rule did evaluate — against a value that was not
+// there.
+//
+// Both directions, for the reason the task-path test has both: the denial alone
+// would pass on an install that always produced an empty identity.
+func TestTheGrantsIdentityRulesGovernASecretResolversRequests(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	grant := []byte("egress:\n  schemes: [http, https]\n  allow_loopback: true\n" +
+		"  deny: ['identity.namespace == \"team-b\"']\n")
+
+	for _, test := range []struct {
+		name       string
+		namespace  string
+		wantDenied bool
+	}{
+		{
+			name:       "the denied tenant's resolver is refused",
+			namespace:  "team-b",
+			wantDenied: true,
+		},
+		{
+			name:      "another tenant's resolver is permitted",
+			namespace: "team-a",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := testConfig(t, pluginDir(t, "egress-resolver"))
+			cfg.EgressPolicy = grant
+			cfg.Env = []string{"FLOWSTATE_TEST_BACKEND=" + server.URL}
+
+			host := openHost(t, cfg)
+			providers := host.SecretProviders()
+			require.Len(t, providers, 1)
+
+			ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
+				Subject:   "workflow/probe",
+				Issuer:    "https://issuer.invalid",
+				Namespace: test.namespace,
+			})
+
+			secret, err := providers[0].Resolve(ctx, secrets.Request{
+				Namespace: test.namespace,
+				Ref:       secrets.NewRef("egressresolver", "k"),
+			})
+
+			if test.wantDenied {
+				require.Error(t, err,
+					"the operator's tenant rule did not refuse a resolver acting for the tenant it names")
+				assert.Contains(t, err.Error(), "denied by egress policy")
+				return
+			}
+
+			require.NoError(t, err, "a permitted tenant's resolver was refused")
+			assert.True(t, secret.EqualString("resolved"))
 		})
 	}
 }
