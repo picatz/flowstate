@@ -70,6 +70,61 @@ func retriableTransportFailure(method string, err error) bool {
 	return false
 }
 
+// requestNeverLeft reports whether an error from [http.Client.Do] means this
+// request was refused before anything was sent, and so cannot have taken
+// effect.
+//
+// It is the other half of [retriableTransportFailure]'s question. That one asks
+// whether a *sent* request may be repeated; this one asks whether there was a
+// send at all, and a "no" makes the method irrelevant: a POST nobody made is
+// safe to make again. Kept as one predicate because the alternative is the
+// defect it was written for — a rate-limited POST classified permanently by one
+// branch (its audit record could not be written) and retryably by the next,
+// from the same error.
+//
+// The complete list of what refuses before the dial, from netpolicy's errors
+// and the order [netpolicy.Policy]'s round tripper applies its checks in:
+//
+//   - A per-host rate refusal on the request the workflow made. The bucket is
+//     consulted after every rule has admitted the request and before the dial,
+//     so nothing was sent. On a *redirect* hop the opposite holds — an earlier
+//     hop reached its peer — which is what AfterRedirect distinguishes, and
+//     which is why this is not simply "is it a rate limit".
+//   - An evaluation the caller's context interrupted, on the request itself
+//     rather than on a later hop: the rules never finished, so no dial
+//     followed. Same AfterRedirect reasoning.
+//   - A policy denial ([netpolicy.DenyError]) refusing the request the workflow
+//     made. A refused *redirect hop* is again the opposite: the origin was
+//     permitted and sent, so a denial arriving mid-chain is not evidence that
+//     nothing happened. The denial branch answers an ordinary refusal
+//     permanently either way, but a denial whose record could not be written
+//     is classified from this, and there the difference decides whether a POST
+//     that already reached its peer may be sent again.
+//   - A request that could not be built, a body that could not be encoded, or
+//     a reference that could not be resolved all return before Do is called,
+//     so they are not classified here at all.
+//   - [netpolicy.BodyTooLargeError] is the response side: the request was
+//     sent and the peer answered, so it is not this, and the read path below
+//     keeps its own unknown-outcome reasoning.
+func requestNeverLeft(err error) bool {
+	var limited *netpolicy.RateLimitedError
+	if errors.As(err, &limited) {
+		return !limited.AfterRedirect
+	}
+
+	var undecided *netpolicy.UndecidedError
+	if errors.As(err, &undecided) {
+		return !undecided.AfterRedirect
+	}
+
+	var denied *netpolicy.DenyError
+	if errors.As(err, &denied) {
+		return !denied.AfterRedirect
+	}
+
+	return false
+}
+
 // firstHeaderValues flattens response headers to one value per name, which is
 // the shape the schema declares and the shape a workflow author expects when
 // writing ${steps.<id>.headers['Content-Type']}.
@@ -214,7 +269,7 @@ func httpInputError(err error) error {
 	var resolution *secretResolutionError
 	if errors.As(err, &resolution) {
 		kind := ErrorKindPolicyDenied
-		if secrets.Retryable(err) {
+		if secrets.Retryable(err) || AuditRecorderUnavailable(err) {
 			kind = ErrorKindUpstream
 		}
 
@@ -385,6 +440,138 @@ func taskCarriesCredential(taskInputs *Task_HTTP_Inputs, headersSpec *Value) boo
 	return false
 }
 
+// egressEndpoint renders a request's destination as the audit trail's resource
+// key: scheme://host[:port], and no other part of the URL.
+//
+// url.URL.Host is host and port without userinfo, so what this cannot include
+// is exactly what an audit record must not carry: the path (a webhook URL
+// keeps its credential there), the query (written to access logs and forwarded
+// in a Referer), the fragment, and any password in the userinfo. That is the
+// same line netpolicy's own tracing comment draws for a span attribute, minus
+// the hostname — which stays, because an egress record that cannot say where a
+// request was going does not answer the question the trail exists for. See
+// AUDIT_RESOURCE_KIND_ENDPOINT.
+func egressEndpoint(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+
+	return u.Scheme + "://" + u.Host
+}
+
+// egressVerdict is an egress refusal in the terms the audit record uses.
+type egressVerdict struct {
+	// Code is the closed reason the record carries.
+	Code AuditDenyCode
+
+	// Rule is the operator's rule that matched, when one did.
+	Rule string
+
+	// Endpoint is the destination actually refused, which is not always the
+	// one the workflow addressed — a redirect hop is re-checked against the
+	// policy and refused on its own terms.
+	Endpoint string
+}
+
+// egressDenial reads an egress refusal as that vocabulary. endpoint is the
+// destination the request was built for, used when the refusal does not name a
+// URL of its own.
+//
+// The six netpolicy reasons that are not rule decisions — a scheme, a port, a
+// resolved address, a redirect, the control plane, an unusable request — share
+// one code, because the record already names the destination and what an
+// operator does about each of them is to change the same configuration. Only
+// [netpolicy.ReasonDenyRule] copies Detail, which for that reason is the rule's
+// own source and for the others is prose built from the request. A denial that
+// is not a [*netpolicy.DenyError] at all cannot be classified, and is recorded
+// as the generic policy refusal it is rather than as a category guessed at.
+func egressDenial(err error, endpoint string) egressVerdict {
+	denied, ok := errors.AsType[*netpolicy.DenyError](err)
+	if !ok {
+		if errors.Is(err, netpolicy.ErrDenied) {
+			return egressVerdict{Code: AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, Endpoint: endpoint}
+		}
+		return egressVerdict{Endpoint: endpoint}
+	}
+
+	verdict := egressVerdict{Endpoint: refusedEndpoint(denied, endpoint)}
+
+	switch denied.Reason {
+	case netpolicy.ReasonDenyRule:
+		verdict.Code, verdict.Rule = AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE, denied.Detail
+	case netpolicy.ReasonNoAllowRule:
+		verdict.Code = AuditDenyCode_AUDIT_DENY_CODE_NO_ALLOW_RULE
+	case netpolicy.ReasonRuleError:
+		verdict.Code = AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR
+	default:
+		verdict.Code = AuditDenyCode_AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED
+	}
+
+	return verdict
+}
+
+// unrecordedRequestKind classifies a required recorder's failure at the egress
+// seam, where — alone among the four — the record is written after the request
+// may already have left.
+//
+// The kind is what decides whether a driver retries, so the question is not
+// "what failed" but "could another attempt repeat an effect": [ErrorKind]'s own
+// default is permanent for exactly this reason, and a bare error would answer
+// [ErrorKindInternal], which is retryable. An unknown outcome is permanent
+// (retrying a POST whose response was lost is how one charge becomes two); an
+// outcome that could not have taken effect twice is [ErrorKindUpstream], so a
+// collector that comes back lets the step succeed on its next attempt.
+func unrecordedRequestKind(outcomeUnknown bool) ErrorKind {
+	if outcomeUnknown {
+		return ErrorKindUpstreamUnknown
+	}
+
+	return ErrorKindUpstream
+}
+
+// refusedEndpoint reads the destination out of a denial, so a redirect hop that
+// was refused is recorded as the hop rather than as the URL the workflow wrote.
+//
+// [netpolicy.DenyError.Hop] is the request the decision was about, and it is
+// the first source because it is the only one that always names a destination.
+// Target is a URL for the request-scoped refusals and something else — a
+// resolved address, a port, a scheme — for the rest: a hop refused at dial
+// time carries "10.0.0.1:9", which is not a destination and would leave the
+// record naming the origin, an endpoint this policy allowed and this worker
+// reached (Codex, picatz/flowstate#1394).
+//
+// Both are read through [egressEndpoint], so a record carries the scheme and
+// host and no other part of a URL. A target that does not spell a scheme and a
+// host is not treated as one: url.Parse would read "203.0.113.9:443" as a
+// scheme, and a record naming a destination that never existed is worse than
+// one naming the request's own.
+func refusedEndpoint(denied *netpolicy.DenyError, fallback string) string {
+	if endpoint := parsedEndpoint(denied.Hop); endpoint != "" {
+		return endpoint
+	}
+
+	if endpoint := parsedEndpoint(denied.Target); endpoint != "" {
+		return endpoint
+	}
+
+	return fallback
+}
+
+// parsedEndpoint renders a candidate URL as an audit record's endpoint, or
+// empty when it does not spell one.
+func parsedEndpoint(candidate string) string {
+	if !strings.Contains(candidate, "://") {
+		return ""
+	}
+
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+
+	return egressEndpoint(parsed)
+}
+
 // isLoopbackHost reports whether host names the local machine — literally
 // "localhost", or an address that parses and is its own loopback range.
 //
@@ -453,6 +640,25 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
 
+		// What every egress decision below is recorded about: this identity,
+		// this destination. Built once, from the request rather than from a
+		// denial, so an allow and a deny name the same endpoint the same way —
+		// and so that only the parts of the URL an audit record may carry are
+		// ever read out of it (see [egressEndpoint]).
+		//
+		// One record per request, not per hop. The policy re-checks every
+		// redirect, and a hop it refuses is recorded as that hop (see
+		// [refusedEndpoint]); a hop it permits is covered by the one allow this
+		// request already has, because the decision being recorded is whether
+		// this workload's request was let out and not how many times the
+		// transport asked.
+		egressSubject := EnforcementSubject{
+			Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS,
+			Identity:     scope.GetIdentity(),
+			ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_ENDPOINT,
+			ResourceKey:  egressEndpoint(httpReq.URL),
+		}
+
 		// Preflight the credentials-scoped egress rule before either secret path
 		// is read. policy.Client().Do below applies the same request-scoped
 		// rules when it actually dials, but that happens after ResolveSecret and
@@ -462,9 +668,28 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// (see the design comment on #963). Only worth the extra check when a
 		// credential is in play; an uncredentialed request gets the identical
 		// check for free when it is actually sent.
+		//
+		// A refusal here is the request's one egress decision, so it is the one
+		// recorded; the request is never sent, so nothing below can decide it a
+		// second time (picatz/flowstate#1379). A preflight that *passes*
+		// records nothing, because it is not yet the verdict — the dial below
+		// still applies the connection-scoped rules this call cannot reach.
 		if credentialed {
 			if err := policy.CheckURL(httpReq.Context(), httpReq.Method, httpReq.URL); err != nil {
-				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
+				// An evaluation the context interrupted decided nothing, so it
+				// is recorded as nothing and reported as itself rather than as
+				// a refusal — the distinction [netpolicy.UndecidedError]
+				// carries, applied here as well as at the transport below. No
+				// redirect is possible at this point: this is the request the
+				// workflow wrote, before anything has been sent.
+				if undecided, ok := errors.AsType[*netpolicy.UndecidedError](err); ok {
+					return nil, undecided
+				}
+
+				verdict := egressDenial(err, egressSubject.ResourceKey)
+				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
+				return nil, auditEnforcementDeny(ctx, egressSubject, verdict.Code,
+					NewTaskError("http", ErrorKindPolicyDenied, err))
 			}
 		}
 
@@ -551,8 +776,14 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			}
 			secret, err := ResolveSecret(ctx, ref)
 			if err != nil {
+				// A required recorder that could not write is the third answer
+				// this classification has to have. The seam refused *before*
+				// the store was asked, so nothing was read and another attempt
+				// is exactly what a caller's retry policy is for; without this
+				// a collector outage reached the author as a permanent policy
+				// denial (Codex, picatz/flowstate#1394).
 				kind := ErrorKindPolicyDenied
-				if secrets.Retryable(err) {
+				if secrets.Retryable(err) || AuditRecorderUnavailable(err) {
 					kind = ErrorKindUpstream
 				}
 				return nil, NewTaskError("http", kind, fmt.Errorf("resolving bearer reference %s: %w", secretRefText(ref), err))
@@ -566,8 +797,12 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 					fmt.Errorf("credential and an Authorization header cannot both be set"))
 			}
 			if err := AuthorizeCredential(ctx, httpReq, target); err != nil {
+				// Same third answer, at the seam that mints rather than reads:
+				// a credential whose record could not be written is discarded
+				// unused, so the request this step would have made has not
+				// happened and may be attempted again.
 				kind := ErrorKindPolicyDenied
-				if auth.Retryable(err) {
+				if auth.Retryable(err) || AuditRecorderUnavailable(err) {
 					kind = ErrorKindUpstream
 				}
 				return nil, NewTaskError("http", kind,
@@ -607,19 +842,97 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			var limited *netpolicy.RateLimitedError
 			rateLimited := errors.As(err, &limited)
 
+			// Whether this policy ever answered for this request, read off the
+			// same unscrubbed error and for the same reason. Only an
+			// evaluation the context interrupted *before any hop had left*
+			// means no decision was made: on a redirect hop the origin was
+			// permitted and sent, so the request the workflow made was
+			// decided, and its allow is the one record this seam owes
+			// (Codex, picatz/flowstate#1394).
+			var undecided *netpolicy.UndecidedError
+			policyUndecided := errors.As(err, &undecided) && !undecided.AfterRedirect
+
+			// Whether this request provably never left the worker, read off
+			// the same unscrubbed error and for the same reason. One answer,
+			// used by every classification below (see [requestNeverLeft]).
+			neverLeft := requestNeverLeft(err)
+
+			// The egress verdict, read off the same unscrubbed error and for
+			// the same reason: this is what the record's deny code, rule and
+			// refused destination are built from, and after the scrub they are
+			// unreachable.
+			verdict := egressDenial(err, egressSubject.ResourceKey)
+
 			err = scrubber.ScrubError(err)
+
+			// Whether repeating this request could repeat an effect the first
+			// attempt already had. Decided once, here, because every
+			// classification below turns on the same question, and answering it
+			// twice is how two answers drift apart.
+			//
+			// A request that never left cannot have taken effect, whatever its
+			// method: that is [requestNeverLeft], and it is asked here rather
+			// than at each use so a new "refused before the dial" error cannot
+			// be permanent in one branch and retryable in another (Codex,
+			// picatz/flowstate#1394).
+			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !neverLeft &&
+				!retriableTransportFailure(taskInputs.GetMethod(), err)
+
 			// A policy denial is deliberate and will happen again; a connection
 			// reset, DNS failure, or timeout may succeed later. Distinguishing
 			// them is what stops a denied request from being retried.
 			if errors.Is(err, netpolicy.ErrDenied) {
-				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
+				egressSubject.Rule, egressSubject.ResourceKey = verdict.Rule, verdict.Endpoint
+
+				// Late, because a refused redirect hop is decided after an
+				// earlier hop of this request already reached its peer, and can
+				// be decided while the caller's context is done.
+				refused := auditEnforcementDenyLate(ctx, egressSubject, verdict.Code,
+					NewTaskError("http", ErrorKindPolicyDenied, err))
+
+				// A required recorder that could not write replaces the
+				// refusal, and an unclassified error is [ErrorKindInternal],
+				// which is retryable. For a denial mid-chain that is a repeat
+				// of the original request, which already reached its peer, so
+				// the sink's failure is classified by the same question the
+				// allow path asks rather than left to the default.
+				if AuditRecorderUnavailable(refused) {
+					return nil, NewTaskError("http", unrecordedRequestKind(outcomeUnknown), refused)
+				}
+
+				return nil, refused
 			}
 
-			// Whether repeating this request could repeat an effect the first
-			// attempt already had. Decided once, here, because both
-			// classifications below turn on the same question, and answering it
-			// twice is how two answers drift apart.
-			outcomeUnknown := !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err)
+			// Not a denial, so the policy permitted this request: the transport
+			// evaluates every rule that decides before it spends a rate-limit
+			// token or dials, so a refusal from anything below is a refusal of
+			// a request the policy allowed. Recorded here rather than only on
+			// the success path, or a request the policy permitted and the
+			// network dropped would leave the trail saying nothing was decided.
+			//
+			// Withheld only when this policy never reached a verdict, which is
+			// narrower than "the context is done" and deliberately so. A
+			// cancelled context reaches this seam from three places — a rule
+			// interrupted mid-evaluation, a dial that never completed, a peer
+			// that stopped answering — and the policy said yes before the last
+			// two. Testing the context here withheld the allow for all three,
+			// so a request that was permitted, left this worker, and possibly
+			// reached its peer went unrecorded under --audit-required: exactly
+			// the request an operator most needs the trail to name (Codex,
+			// picatz/flowstate#1394). [netpolicy.UndecidedError] is what
+			// separates them, and the "not a decision" rule
+			// [taskPolicyRuleFailure] states for the dispatch seam still holds
+			// for the one case that is genuinely undecided.
+			if !policyUndecided {
+				if auditErr := auditEnforcementAllowLate(ctx, egressSubject); auditErr != nil {
+					// Classified rather than returned bare: an unclassified
+					// error is [ErrorKindInternal], which is retryable, and a
+					// required sink failing after the request left would then
+					// hand a repeat of a possibly-effective POST to the very
+					// safeguard the next few lines exist to be.
+					return nil, NewTaskError("http", unrecordedRequestKind(outcomeUnknown), auditErr)
+				}
+			}
 
 			// The policy's own per-host rate bound (#912 phase two). On the
 			// initial hop the request was never sent, so it is neither a denial
@@ -666,6 +979,25 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			return nil, NewTaskError("http", ErrorKindUpstream, err)
 		}
 		defer httpResp.Body.Close()
+
+		// The peer answered, so the policy permitted the request: the same
+		// verdict the error path above records, on the path where there was no
+		// error to read it from. A required recorder that cannot write fails
+		// the step here, after the request has already been sent — the cost
+		// the schema's "The worker's half" states for this seam, and the
+		// reason the deny direction is the one write-ahead protects.
+		//
+		// The failure is classified by the same question the body-read failure
+		// below asks, and in the same words: this request reached its peer, so
+		// for a non-idempotent method another attempt would perform the
+		// operation a second time.
+		if err := auditEnforcementAllowLate(ctx, egressSubject); err != nil {
+			repeatable := taskInputs.GetRetryOnUnknownOutcome() ||
+				idempotentMethods[strings.ToUpper(taskInputs.GetMethod())]
+			return nil, NewTaskError("http", unrecordedRequestKind(!repeatable), fmt.Errorf(
+				"%s %s reached its peer and the decision permitting it could not be recorded: %w",
+				taskInputs.GetMethod(), taskInputs.GetUrl(), err))
+		}
 
 		// The body is read before success is decided, because `expect` is an
 		// expression over the response and the interesting cases are about its

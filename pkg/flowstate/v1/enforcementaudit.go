@@ -1,0 +1,316 @@
+package flowstatev1
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"time"
+)
+
+// The worker's audit seams (picatz/flowstate#1379).
+//
+// The control plane writes down every authorization decision it makes
+// (pkg/flowstate/v1/server/audit.go). The worker is where the consequential
+// decisions are: whether a task may dispatch, whether a secret may be read,
+// whether a request may leave, whether a credential may be assumed. Until
+// this, none of them were recorded, so a trail could answer "why was this RPC
+// permitted" and could not answer "why did this dispatch, resolution or dial
+// happen".
+//
+// # Why the recorder arrives as an interface
+//
+// The natural spelling would be for each seam to hold an *audit.Recorder.
+// It cannot: [AuditRecord] is this package's generated type, so the audit
+// package imports this one, and the dependency can only run that way. So this
+// package declares the shape it needs and the audit package satisfies it —
+// [github.com/picatz/flowstate/pkg/flowstate/v1/audit.Recorder] has exactly
+// these two methods — and cmd/flow, which imports both, installs one into the
+// other.
+//
+// A nil auditor records nothing and errors on nothing. That is the local
+// rehearsal's answer as well as the library default: `flow run local`,
+// `flow test` and `flow task run` install none, deliberately, and the audit
+// package's doc argues the zero case where it already argues the others.
+//
+// # Allow and deny, with what decided
+//
+// Both directions are recorded. #353's principle 2 is that evidence carries
+// the rule and the evaluated facts, allow as well as deny, and a trail holding
+// only refusals answers "what was blocked" while leaving "what was permitted,
+// and by what" exactly where it started.
+//
+// The evaluated facts a rule read are in the record structurally: the attested
+// identity the rule matched against, and the resource it named. The rule
+// itself is in [EnforcementSubject.Rule] when one decided — see that field for
+// the one thing that must never be copied into it.
+
+// EnforcementSubject is what a worker-side enforcement decision was about, as
+// the seam making it already knows it.
+//
+// The decision itself is deliberately absent, the way the audit package's own
+// Subject leaves out the action it derives: a caller says what was decided
+// about, and the verb it calls says which way the decision went, so a seam
+// cannot record an allow carrying a denial's code.
+type EnforcementSubject struct {
+	// Point is the seam that decided. Required: a decision that cannot say
+	// which policy made it is not evidence of anything.
+	Point AuditEnforcementPoint
+
+	// Identity is the workload the policy was evaluated against, as this
+	// deployment attested it — the same [WorkloadIdentity] the rule read.
+	// Claims are removed before emission by the recorder, which is where that
+	// rule belongs; a claim's value is not needed to say who a decision was
+	// made about.
+	Identity *WorkloadIdentity
+
+	// ResourceKind and ResourceKey say what was addressed: the task
+	// dispatched, the secret referenced, the destination dialed, or the
+	// credential target asked for.
+	ResourceKind AuditResourceKind
+	ResourceKey  string
+
+	// Attempt is which attempt at this dispatch the decision was made for,
+	// counting from 1, and zero at a seam that has no attempts of its own.
+	//
+	// Only the task-dispatch seam sets it: it is the one both drivers reach
+	// again when a step is retried, so it is the one whose records need to say
+	// which dispatch attempt they belong to. See AuditRecord.attempt.
+	Attempt uint32
+
+	// Rule is the operator's own policy rule that decided, verbatim, when a
+	// single rule did. Empty otherwise — see the schema's own comment on
+	// AuditRecord.rule for when that is.
+	//
+	// Only a rule that *matched* may be copied here. A rule that failed to
+	// evaluate reports its failure as prose that quotes the CEL error, and a
+	// CEL error can quote the data the rule was reading; that denial carries
+	// AUDIT_DENY_CODE_RULE_ERROR and no rule text at all. Nothing else a
+	// policy's denial carries — a target, a detail, a message — is admitted
+	// here either.
+	Rule string
+}
+
+// EnforcementAuditor records one worker-side enforcement decision.
+//
+// [github.com/picatz/flowstate/pkg/flowstate/v1/audit.Recorder] implements it.
+// The error is non-nil only when a required recorder could not record, and a
+// seam must return it: that is the whole of "an action that cannot be recorded
+// does not happen".
+type EnforcementAuditor interface {
+	// EnforcementAllow records that a policy permitted the subject.
+	EnforcementAllow(ctx context.Context, subject EnforcementSubject) error
+
+	// EnforcementDeny records that a policy refused it, under a code from the
+	// schema's closed set.
+	EnforcementDeny(ctx context.Context, subject EnforcementSubject, code AuditDenyCode) error
+}
+
+// defaultEnforcementAuditor is the process-wide auditor, installed once by
+// `flow worker` before it polls. nil — the zero value — records nothing.
+//
+// A package-level global rather than only a context value, for the same reason
+// [defaultTaskPolicy] is one: the durable driver's activities run inside
+// Temporal's own machinery, which does not thread this process's context
+// values into an activity invocation. The context override below exists for
+// the same second reason it does there — a test that needs an auditor scoped
+// to one call rather than to the whole process.
+var defaultEnforcementAuditor atomic.Pointer[EnforcementAuditor]
+
+// SetDefaultEnforcementAuditor installs the process-wide auditor every
+// enforcement seam records to. Passing nil clears it, restoring the zero case:
+// nothing is recorded.
+//
+// Called once, before a worker polls — where `flow worker` already installs
+// the egress and task-shape policies whose decisions this records — so a
+// worker cannot record some dispatches and not others.
+func SetDefaultEnforcementAuditor(auditor EnforcementAuditor) {
+	if auditor == nil {
+		defaultEnforcementAuditor.Store(nil)
+		return
+	}
+	defaultEnforcementAuditor.Store(&auditor)
+}
+
+// DefaultEnforcementAuditor returns the process-wide auditor, or nil when none
+// is installed. Exported alongside [SetDefaultEnforcementAuditor] so a test can
+// save and restore it, exactly as [DefaultTaskPolicy] pairs with its setter.
+func DefaultEnforcementAuditor() EnforcementAuditor {
+	if auditor := defaultEnforcementAuditor.Load(); auditor != nil {
+		return *auditor
+	}
+	return nil
+}
+
+// enforcementAuditorContextKey is the unexported type the context-scoped
+// auditor is keyed under, so nothing outside this package can collide with it.
+type enforcementAuditorContextKey struct{}
+
+// NewContextWithEnforcementAuditor returns a context whose enforcement seams
+// record to auditor, ahead of the process-wide default. Mirrors
+// [NewContextWithTaskPolicy] for the identical reason.
+func NewContextWithEnforcementAuditor(ctx context.Context, auditor EnforcementAuditor) context.Context {
+	return context.WithValue(ctx, enforcementAuditorContextKey{}, auditor)
+}
+
+// EnforcementAuditorIn resolves the auditor governing ctx: the context-scoped
+// one if [NewContextWithEnforcementAuditor] set one, otherwise the
+// process-wide default. nil means nothing is recorded.
+func EnforcementAuditorIn(ctx context.Context) EnforcementAuditor {
+	if auditor, ok := ctx.Value(enforcementAuditorContextKey{}).(EnforcementAuditor); ok {
+		return auditor
+	}
+	return DefaultEnforcementAuditor()
+}
+
+// auditEnforcementAllow records a decision that permitted the subject, and
+// returns non-nil only when a required recorder could not record it.
+//
+// Every caller must return that error: a required sink whose failure is
+// swallowed is an advisory sink wearing the word "required", and the action
+// the record was about would then happen unrecorded.
+func auditEnforcementAllow(ctx context.Context, subject EnforcementSubject) error {
+	auditor := EnforcementAuditorIn(ctx)
+	if auditor == nil {
+		return nil
+	}
+
+	return recorderFailure(auditor.EnforcementAllow(ctx, subject))
+}
+
+// AuditRecorderError reports that a required audit recorder could not write the
+// record a seam was about to act on, so the seam refused to act.
+//
+// It exists because of what happens to an unmarked one. These seams answer a
+// caller that classifies their failures — a denial is permanent, an unreachable
+// dependency is worth retrying — and a bare recorder error matches neither
+// [secrets.Retryable] nor [auth.Retryable], so it fell through to the permanent
+// arm: a collector outage failed every secret-backed step for good, which is a
+// deployment-wide outage wearing a policy denial's clothes (Codex,
+// picatz/flowstate#1394).
+//
+// What the seams that record *before* they act may promise is exactly that
+// nothing happened, which is why this is safe to retry. The egress seam is the
+// stated exception — its record is written when the policy's transport answers,
+// after the request may already have left — and it classifies its own failure
+// through [unrecordedRequestKind] rather than through this, because there the
+// question is not "did anything happen" but "could a repeat repeat it".
+type AuditRecorderError struct {
+	// Err is the recorder's own failure: every required sink's error, as the
+	// recorder joined them.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *AuditRecorderError) Error() string {
+	return "the decision could not be written to a required audit sink: " + e.Err.Error()
+}
+
+// Unwrap returns the recorder's failure, so errors.Is against a sink's own
+// error answers for this exactly as it did for the bare value this replaced.
+func (e *AuditRecorderError) Unwrap() error { return e.Err }
+
+// AuditRecorderUnavailable reports whether err is a required recorder's own
+// failure, and so whether another attempt is worth making.
+//
+// Spelled and used the way [secrets.Retryable] and [auth.Retryable] are, beside
+// which every caller of it asks: one predicate at the source, rather than four
+// seams each carrying their own idea of what an audit failure looks like.
+func AuditRecorderUnavailable(err error) bool {
+	var recorder *AuditRecorderError
+
+	return errors.As(err, &recorder)
+}
+
+// recorderFailure marks a recorder's failure as such, and passes a successful
+// record (nil) through.
+func recorderFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &AuditRecorderError{Err: err}
+}
+
+// auditEnforcementDeny records a refusal and returns the refusal to hand back,
+// mirroring server/audit.go's auditDeny so the two halves of one trail behave
+// the same way.
+//
+// refusal is returned unchanged in the ordinary case, so a seam reads
+// `return auditEnforcementDeny(...)` and cannot answer a denied request with
+// success. A required recorder that could not record replaces it: the caller
+// is refused either way, and the operator's own failure is the more useful one
+// to surface.
+func auditEnforcementDeny(ctx context.Context, subject EnforcementSubject, code AuditDenyCode, refusal error) error {
+	auditor := EnforcementAuditorIn(ctx)
+	if auditor == nil {
+		return refusal
+	}
+
+	if err := auditor.EnforcementDeny(ctx, subject, code); err != nil {
+		return recorderFailure(err)
+	}
+
+	return refusal
+}
+
+// auditWriteGrace bounds a record written after the thing it records may
+// already have happened.
+//
+// Such a write no longer runs under the caller's deadline (see
+// [auditEnforcementAllowLate]), so it needs one of its own: a sink that has
+// stopped answering must cost this activity a few seconds, not hold its slot
+// until the worker is drained. Short for the same reason cmd/flow's
+// telemetryFlushTimeout is short — the point is to let a nearly-finished
+// export finish, not to guarantee delivery to a collector that is gone.
+const auditWriteGrace = 5 * time.Second
+
+// lateAuditContext returns the context a write-behind record is emitted under:
+// the caller's, minus its cancellation, plus a bound of our own.
+//
+// [context.WithoutCancel] rather than [context.Background] because the context
+// carries what the write needs — the auditor this seam resolves through, and
+// whatever a deployment put there for its sinks — and a fresh context would
+// lose all of it while fixing only the cancellation.
+func lateAuditContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), auditWriteGrace)
+}
+
+// auditEnforcementAllowLate records a decision whose subject may already have
+// happened, detached from the caller's cancellation.
+//
+// The egress seam is the one that needs this, and the reason is the write-ahead
+// exception the schema already states for it: the verdict is reached inside the
+// policy's transport, so the record is written after the request left. A
+// request cancelled after the policy allowed it returns from Do with its
+// context already done, and an emitter that honours the context it is handed —
+// [github.com/picatz/flowstate/pkg/flowstate/v1/audit.NewSyncProcessor] passes
+// it straight to the exporter — would then fail to export exactly the record
+// that matters most: the one naming a request that left and whose outcome
+// nobody knows (Codex, picatz/flowstate#1394).
+//
+// Detaching is safe here precisely because the write is late. Nothing is being
+// held back pending the record, so a cancelled caller waiting a moment longer
+// costs an already-failing step a bounded delay and buys the trail the line it
+// exists for.
+//
+// The seams that record *before* they act — task dispatch, secret access,
+// credential assumption — deliberately keep the live context. There, refusing
+// early is the whole point: a cancelled caller should stop, and a record that
+// outlived its request would be recording something that did not happen.
+func auditEnforcementAllowLate(ctx context.Context, subject EnforcementSubject) error {
+	ctx, cancel := lateAuditContext(ctx)
+	defer cancel()
+
+	return auditEnforcementAllow(ctx, subject)
+}
+
+// auditEnforcementDenyLate is [auditEnforcementDeny] for a refusal that may
+// arrive after an earlier hop of the same request already reached its peer —
+// a redirect the policy refused, which can be decided while the caller's
+// context is done. Same detachment, same bound, same reason.
+func auditEnforcementDenyLate(ctx context.Context, subject EnforcementSubject, code AuditDenyCode, refusal error) error {
+	ctx, cancel := lateAuditContext(ctx)
+	defer cancel()
+
+	return auditEnforcementDeny(ctx, subject, code, refusal)
+}

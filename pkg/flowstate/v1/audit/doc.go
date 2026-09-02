@@ -28,6 +28,38 @@
 // answered. [NewSyncProcessor] is the synchronous path required mode needs.
 // Batch remains fine for a deployment that has not asked for required.
 //
+// # Both halves of one trail
+//
+// [Recorder.Allow] and [Recorder.Deny] record the control plane's
+// authorization decisions about a caller. [Recorder.EnforcementAllow] and
+// [Recorder.EnforcementDeny] record the worker's decisions about a workload it
+// is already running — task-shape policy, secret access, egress, and
+// credential assumption (picatz/flowstate#1379). One recorder, one set of
+// sinks, one schema: an operator reading a line does not have to know which
+// half of the deployment wrote it. `flow server` and `flow worker` each build
+// one the same way, with the same --audit-required posture.
+//
+// The seams themselves are in the schema's own package, which cannot import
+// this one — see [flowstatev1.EnforcementAuditor], the interface this
+// [Recorder] satisfies.
+//
+// # The zero case, extended
+//
+// A nil *Recorder records nothing. That is the library default, and for the
+// worker seams it is also a deployment posture: a local rehearsal installs no
+// recorder at all.
+//
+// `flow run local` (and `flow test`, and `flow task run`) is exempt
+// deliberately, not by omission. A rehearsal has no deployment to audit: the
+// person running it is the person the policy is about, the decisions are made
+// on their own machine against a policy file they hold, and every refusal is
+// already reported to them in full — with more detail than a record carries,
+// since a rehearsal's denial explains itself. An audit trail exists so that
+// somebody who was not present can reconstruct what a deployment permitted,
+// and a rehearsal has no such reader. Writing records there would put a
+// stream of JSON on the terminal of every author running `flow run local`,
+// which is how a trail becomes something people configure away.
+//
 // # The record
 //
 // [flowstatev1.AuditRecord] and the reasoning behind every field of it live in

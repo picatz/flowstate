@@ -244,15 +244,26 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 	// front of it. When the grant model lands (#567 D1/D2) it can decide what
 	// a delegated credential is keyed by; until then it is keyed by nothing,
 	// which is the fail-closed answer.
+	// Every exit from here down is one the policy already permitted, so a
+	// failure below is [AssumptionFailedError] rather than a bare exchange
+	// error: the decision happened, and a caller recording decisions has to be
+	// able to tell it from the refusal it currently looks like. The wrapper
+	// unwraps to the failure itself, so [Retryable] and every errors.Is check
+	// against the exchange sentinels answer exactly as before.
 	if delegated, ok := exchanger.(delegatingExchanger); ok && delegated.isDelegated() {
-		return b.exchange(ctx, exchanger, requirement, identity, ref, subject, target)
+		credential, err := b.exchange(ctx, exchanger, requirement, identity, ref, subject, target)
+		if err != nil {
+			return Credential{}, assumptionFailed(target, err)
+		}
+
+		return credential, nil
 	}
 
 	credential, err := b.cache.get(ctx, credentialKey(target, subject, identity), func(ctx context.Context) (Credential, error) {
 		return b.exchange(ctx, exchanger, requirement, identity, ref, subject, target)
 	})
 	if err != nil {
-		return Credential{}, err
+		return Credential{}, assumptionFailed(target, err)
 	}
 
 	return credential, nil
@@ -326,5 +337,9 @@ func (b *Broker) Authorize(ctx context.Context, req *http.Request, identity Work
 	if err != nil {
 		return err
 	}
-	return credential.Apply(req)
+
+	// The credential exists, so the policy permitted it; a header that cannot
+	// be built from it is the same "decided, then failed" case the exchange
+	// paths above are, and is reported the same way.
+	return assumptionFailed(target, credential.Apply(req))
 }

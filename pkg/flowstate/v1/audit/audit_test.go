@@ -43,10 +43,24 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	// The pinned set. Adding a field to the schema fails this until somebody
 	// has decided, in writing, that the new field is one of the two kinds
 	// above.
+	// enforcement_point and rule are picatz/flowstate#1379's two additions, and
+	// both are the first kind: chosen by this deployment. The point is a closed
+	// enum. The rule is the operator's own configuration — the one string here
+	// that is neither an identity this deployment attested nor a name it
+	// resolved — admitted on the same terms issuer_name and role are, bounded
+	// on the way in, and never filled from a denial's prose. See the rule
+	// field's own comment in proto/flowstate/v1/audit.proto for what that
+	// excludes.
+	//
+	// attempt is the same first kind and the least interesting of them: an
+	// integer the substrate counts, from Temporal's activity info or a retry
+	// loop's own counter. A workload cannot choose it, and there is no string
+	// in it for anything to be smuggled through.
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
-		"mcp_tool", "issuer_name", "role",
+		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
+		"attempt",
 	}
 
 	got := make([]string, 0, fields.Len())
@@ -524,6 +538,130 @@ func TestTheResourceKeyIsBoundedOnARuneBoundary(t *testing.T) {
 	require.NoError(t, v1.Validate(sink.records[0]))
 }
 
+// TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline: the worker's
+// half of the trail (picatz/flowstate#1379) is written by the same recorder,
+// under the same bounds, the same clock and the same claim removal, and
+// validates against the same schema.
+//
+// The point of asserting all of it here rather than at the seams is that a
+// seam hands over a subject and the recorder decides everything else — so a
+// new seam cannot record an unbounded rule, a caller's clock, or an identity
+// with claims on it by writing its call site differently.
+func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 9, 1, 9, 30, 0, 0, time.UTC)
+
+	var sink recordingEmitter
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink),
+		audit.WithClock(func() time.Time { return at }))
+	require.NoError(t, err)
+
+	require.NoError(t, recorder.EnforcementAllow(t.Context(), v1.EnforcementSubject{
+		Point: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS,
+		Identity: &v1.WorkloadIdentity{
+			Subject:   "deploy-bot",
+			Namespace: "acme",
+			Claims:    map[string]string{"team": "payments"},
+		},
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SECRET,
+		ResourceKey:  strings.Repeat("é", audit.MaxResourceKeyBytes),
+		Rule:         strings.Repeat("é", audit.MaxRuleBytes),
+	}))
+
+	require.Len(t, sink.records, 1)
+	record := sink.records[0]
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
+	require.Equal(t, at, record.GetDecidedAt().AsTime())
+	require.Empty(t, record.GetIdentity().GetClaims())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+
+	require.LessOrEqual(t, len(record.GetResourceKey()), audit.MaxResourceKeyBytes)
+	require.True(t, isValidUTF8(record.GetResourceKey()), "the resource bound cut a rune in half")
+	require.LessOrEqual(t, len(record.GetRule()), audit.MaxRuleBytes)
+	require.True(t, isValidUTF8(record.GetRule()), "the rule bound cut a rune in half")
+
+	// The same number on both sides of the boundary: what the recorder emits
+	// is what the schema accepts.
+	require.NoError(t, v1.Validate(record))
+
+	// And the control-plane vocabulary stays out of it, which is what keeps a
+	// reader from mistaking an enforcement decision for a scope a caller could
+	// have been granted.
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, record.GetAction())
+	require.Empty(t, record.GetRpc())
+	require.Empty(t, record.GetMcpTool())
+}
+
+// TestTheSchemaHoldsTheTwoOperationVocabulariesApart: one record can be a
+// control-plane decision or an enforcement decision and never both, and never
+// neither.
+//
+// Asserted against protovalidate rather than against the Go constructors,
+// because the message rule is what a reader of the trail — or a second writer
+// of it — is actually held to. The pairing it enforces is the reason action
+// may be UNSPECIFIED at all: an enforcement point names the operation instead,
+// so a record with neither would be a decision about nothing, and a record
+// with both would claim a caller-facing scope for a decision no token could
+// have granted.
+func TestTheSchemaHoldsTheTwoOperationVocabulariesApart(t *testing.T) {
+	t.Parallel()
+
+	enforcement := &v1.AuditRecord{
+		Decision:         v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		EnforcementPoint: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
+		ResourceKind:     v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
+		ResourceKey:      "http",
+		DecidedAt:        timestamppb.Now(),
+	}
+	require.NoError(t, v1.Validate(enforcement))
+
+	controlPlane := &v1.AuditRecord{
+		Action:    v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		Decision:  v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		Rpc:       "Run",
+		DecidedAt: timestamppb.Now(),
+	}
+	require.NoError(t, v1.Validate(controlPlane))
+
+	both := proto.Clone(controlPlane).(*v1.AuditRecord)
+	both.EnforcementPoint = v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS
+	require.Error(t, v1.Validate(both), "a record named both an rpc and an enforcement point")
+
+	neither := &v1.AuditRecord{
+		Decision:  v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		DecidedAt: timestamppb.Now(),
+	}
+	require.Error(t, v1.Validate(neither), "a record named no operation at all")
+
+	scoped := proto.Clone(enforcement).(*v1.AuditRecord)
+	scoped.Action = v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN
+	require.Error(t, v1.Validate(scoped),
+		"an enforcement record carried an authorization action, which no caller could hold")
+
+	unnamed := proto.Clone(controlPlane).(*v1.AuditRecord)
+	unnamed.Action = v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED
+	require.Error(t, v1.Validate(unnamed), "an rpc decision recorded no action")
+}
+
+// TestAnEnforcementRecordWithNoPointIsRefused: the same failure an unbound RPC
+// is, at the seam that has no action to derive — a decision that cannot say
+// which policy made it is not evidence of anything, and it is refused whether
+// or not the deployment asked for required.
+func TestAnEnforcementRecordWithNoPointIsRefused(t *testing.T) {
+	t.Parallel()
+
+	var sink recordingEmitter
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink))
+	require.NoError(t, err)
+
+	require.Error(t, recorder.EnforcementAllow(t.Context(), v1.EnforcementSubject{
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
+		ResourceKey:  "log",
+	}))
+	require.Empty(t, sink.records)
+}
+
 // TestTheRecordCarriesTheServersClock: never the caller's, the rule
 // SignalSender.accepted_at already states.
 func TestTheRecordCarriesTheServersClock(t *testing.T) {
@@ -630,6 +768,80 @@ func TestTheSyncProcessorReportsAnExportFailureToTheEmitter(t *testing.T) {
 	require.Equal(t, "AUDIT_DECISION_DENY", attributes["flowstate.audit.decision"])
 	require.Equal(t, "AUDIT_DENY_CODE_TENANT_MISMATCH", attributes["flowstate.audit.deny_code"])
 	require.Equal(t, "AUTHORIZATION_ACTION_MCP_TEST", attributes["flowstate.audit.action"])
+}
+
+// TestTheOTelSinkCarriesTheEnforcementFields: one record shape, every sink.
+//
+// The emitter serialized only the control plane's fields, so a worker decision
+// reaching a collector showed an UNSPECIFIED action, no rpc, and nothing about
+// which seam decided or which rule did — while the stderr record beside it was
+// complete. DEPLOYMENT.md promises "the same record, in the same sinks", and
+// for the OTel sink that was not true (Codex, picatz/flowstate#1394).
+//
+// The absence half matters as much as the presence half: a consumer separating
+// the two halves of one trail should be able to select on the attribute
+// existing, which only works if a control-plane record does not carry it empty.
+//
+// Mutation-proved: dropping either attribute from the emitter fails this, and
+// emitting enforcement_point unconditionally fails the control-plane half.
+func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
+	t.Parallel()
+
+	exporter := &stubExporter{}
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(audit.NewSyncProcessor(exporter)))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(),
+		audit.WithEmitter(audit.NewLogEmitter(provider)), audit.Required())
+	require.NoError(t, err)
+
+	require.NoError(t, recorder.EnforcementDeny(t.Context(), v1.EnforcementSubject{
+		Point:        v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_EGRESS,
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_ENDPOINT,
+		ResourceKey:  "https://api.example",
+		Rule:         `host == "api.example"`,
+		Identity:     &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+	}, v1.AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE))
+
+	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{
+		RPC:          "Get",
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN,
+		ResourceKey:  "orders-1",
+	}))
+
+	require.Len(t, exporter.exported, 2)
+
+	enforcement := exportedAttributes(exporter.exported[0])
+	require.Equal(t, "AUDIT_ENFORCEMENT_POINT_EGRESS", enforcement["flowstate.audit.enforcement_point"],
+		"a collector cannot say which seam decided")
+	require.Equal(t, `host == "api.example"`, enforcement["flowstate.audit.rule"],
+		"the operator's own rule reaches the collector verbatim, as it reaches stderr")
+	require.Equal(t, "AUDIT_RESOURCE_KIND_ENDPOINT", enforcement["flowstate.audit.resource.kind"],
+		"the worker's resource kinds ride the attribute the control plane's already do")
+	require.Equal(t, "AUDIT_DENY_CODE_DENY_RULE", enforcement["flowstate.audit.deny_code"])
+	require.Equal(t, "deploy-bot", enforcement["flowstate.audit.identity.subject"])
+
+	controlPlane := exportedAttributes(exporter.exported[1])
+	require.NotContains(t, controlPlane, "flowstate.audit.enforcement_point",
+		"absent on a control-plane record, not present and empty: a query for the worker's "+
+			"decisions selects on the attribute existing")
+	require.NotContains(t, controlPlane, "flowstate.audit.rule",
+		"no rule decided this one")
+	require.Equal(t, "Get", controlPlane["flowstate.audit.rpc"])
+}
+
+// exportedAttributes flattens one exported record's attributes, the way the
+// assertions above and [TestTheSyncProcessorReportsAnExportFailureToTheEmitter]
+// both read them.
+func exportedAttributes(record sdklog.Record) map[string]string {
+	attributes := map[string]string{}
+	record.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attributes[string(kv.Key)] = kv.Value.AsString()
+
+		return true
+	})
+
+	return attributes
 }
 
 func isValidUTF8(s string) bool {
