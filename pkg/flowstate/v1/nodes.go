@@ -540,7 +540,11 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 	}
 
 	ev := DefaultEvaluator()
-	for name, v := range resolvable {
+	// Sorted because the first failure is observable and may enter durable
+	// state. A protobuf map has no order, so workflow-side map work must not let
+	// two runs of one specification report different failures.
+	for _, name := range slices.Sorted(maps.Keys(resolvable)) {
+		v := resolvable[name]
 		if _, isExpr := v.GetKind().(*Value_Expr); !isExpr {
 			inputs[name] = v
 			continue

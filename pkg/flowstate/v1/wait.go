@@ -459,7 +459,11 @@ func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_
 	}
 
 	bound := make(map[string]ref.Val, len(raw.GetNamedValues()))
-	for name, value := range raw.GetNamedValues() {
+	// Sorted because the first failure is observable and may enter durable
+	// state. A protobuf map has no order, so workflow-side map work must not let
+	// two runs of one specification report different failures.
+	for _, name := range slices.Sorted(maps.Keys(raw.GetNamedValues())) {
+		value := raw.GetNamedValues()[name]
 		converted, err := cel.ValueToRefValue(TypeAdapter, value.GetLiteral())
 		if err != nil {
 			return nil, fmt.Errorf("binding %q for outputs shaping: %w", name, err)
