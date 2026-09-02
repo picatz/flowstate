@@ -309,17 +309,21 @@ edition: v2026.3
 		},
 		{
 			// In the order a file is written: the grammar it is written in, then
-			// what the workflow is, then what it does.
-			name:  "top level document keys",
-			src:   `|`,
-			exact: []string{"edition", "name", "description", "vars", "steps"},
+			// what the workflow is, then its full schema-owned surface. This is
+			// positioned at the empty document root, the case #1315 reproduced
+			// through a real editor.
+			name: "top level document keys",
+			src:  `|`,
+			exact: []string{
+				"edition", "name", "labels", "description", "inputs", "outputs", "vars",
+				"steps", "triggers", "signals", "debug", "concurrency", "plugins",
+			},
 		},
 		{
-			// Every kind of work a step can be is offered. The document-shape half is
-			// written out on purpose: this is the assertion that would have caught
-			// waiting being missing from completion, and deriving it from the same
-			// place the code derives it from would make it agree with the code
-			// rather than with the language.
+			// Every kind of work and property a step can carry is offered. The
+			// grammar half is written out on purpose: this is the positioned
+			// regression that would have caught waits, async, and digest being
+			// missing from completion.
 			//
 			// The task half is derived, for the opposite reason. Since flattening, a
 			// task's name *is* a step key, and the registry is the only definition of
@@ -332,11 +336,10 @@ steps:
   - |
 edition: v2026.3
 `,
-			// The order is the order a step is written in, not the alphabet: the id
-			// that names it, the prose saying why it is there, then the work it does,
-			// then how that work runs. Tasks sit with the other kinds of work rather
-			// than after `continue_on_error`, and ahead of them because running a task
-			// is what most steps do.
+			// This is the empty key position of a newly inserted step, the other
+			// case #1315 reproduced. The grammar half comes from the parser; task
+			// names still come from the active registry. Sort slots place tasks
+			// after id and description, before the remaining grammar keys.
 			//
 			// Asserted exactly, and with the task half derived from the registry: the
 			// document-shape half written out is what caught `sleep` and `wait_until`
@@ -346,16 +349,19 @@ edition: v2026.3
 			exact: slices.Concat(
 				[]string{"id", "description"},
 				v1.TaskNames(),
-				[]string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch"},
-				[]string{"if", "vars", "timeout", "total_timeout", "retry", "continue_on_error", "undo", "with"},
+				[]string{
+					"if", "vars", "timeout", "total_timeout", "retry", "continue_on_error",
+					"undo", "async", "with", "digest", "for_each", "loop", "parallel",
+					"sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch",
+				},
 			),
 		},
 		{
 			// The regression for a Codex finding on #665: once a step has committed
 			// to a kind checkPolicyPlacement refuses timeout:/retry: on, completion
 			// must stop recommending either — selecting one used to produce the
-			// diagnostic that check writes immediately. Every other step key stays
-			// offered, because the refusal is specific to those two.
+			// diagnostic that check writes immediately. Kind-specific async and
+			// digest properties are withheld for the same reason.
 			name: "timeout and retry are withheld once a step has chosen a refused kind",
 			src: `name: c
 steps:
@@ -367,7 +373,7 @@ steps:
 edition: v2026.3
 `,
 			want:    []string{"id", "description", "if", "vars", "continue_on_error"},
-			notWant: []string{"timeout", "retry"},
+			notWant: []string{"timeout", "retry", "async", "digest"},
 		},
 		{
 			// Fresh evidence after the fixture above: scanOutline ends a step's
@@ -408,6 +414,89 @@ steps:
 edition: v2026.3
 `,
 			want: []string{"timeout", "retry"},
+		},
+		{
+			name: "a call offers its digest but not async",
+			src: `name: c
+steps:
+  - id: child
+    call: ./child.yaml
+    |
+edition: v2026.3
+`,
+			want:    []string{"digest"},
+			notWant: []string{"async", "timeout", "retry"},
+		},
+		{
+			name: "an ordinary task offers async but not digest",
+			src: `name: c
+steps:
+  - id: a
+    log:
+      message: hi
+    |
+edition: v2026.3
+`,
+			want:    []string{"async"},
+			notWant: []string{"digest"},
+		},
+		{
+			name: "a task inside a parallel branch does not offer async",
+			src: `name: c
+steps:
+  - id: branches
+    parallel:
+      - steps:
+          - id: inner
+            log:
+              message: hi
+            |
+edition: v2026.3
+`,
+			notWant: []string{"async", "digest"},
+		},
+		{
+			name: "an empty step inside a parallel branch does not offer async",
+			src: `name: c
+steps:
+  - id: branches
+    parallel:
+      - steps:
+          - |
+edition: v2026.3
+`,
+			notWant: []string{"async"},
+		},
+		{
+			name: "an empty step inside a for_each body does not offer async",
+			src: `name: c
+steps:
+  - id: each
+    for_each:
+      items: ${[1]}
+      steps:
+        - |
+edition: v2026.3
+`,
+			notWant: []string{"async"},
+		},
+		{
+			name: "a task inside a loop body still offers async",
+			src: `name: c
+steps:
+  - id: repeat
+    loop:
+      until: ${false}
+      max_iterations: 1
+      steps:
+        - id: inner
+          log:
+            message: hi
+          |
+edition: v2026.3
+`,
+			want:    []string{"async"},
+			notWant: []string{"digest"},
 		},
 		{
 			// The mapping form of a gate. The scalar form takes a name directly, so

@@ -29,45 +29,20 @@ import (
 // A fixture that asserts where the last step ends must write the marker above instead.
 const editionSuffix = "edition: v2026.3\n"
 
-// TestDSLKeysMatchTheDSL is the guard on the one list in this package that is not
-// derived from a central definition.
+// TestNestedDSLKeysMatchMarshaledShapes guards the nested shape tables that do
+// not have a parser-owned exported vocabulary.
 //
-// The document shape lives in unexported structs in the flowfile package, so
-// completion carries a copy of it — and that copy silently fell behind when the DSL
-// gained if, timeout, retry, and continue_on_error. This test derives the real key
-// set by asking flowfile to marshal a workflow with every field populated, so the
-// next addition fails here instead of quietly going unsupported.
+// Root and step completion no longer depend on this fixture. They read
+// [flowfile.DocumentKeys] and [flowfile.StepGrammarKeys] directly, and
+// TestCompletionVocabularyMatchesTheParser checks that every such name has prose.
+// That distinction is load-bearing: Marshal cannot render file-only `digest:`, and
+// an optional schema field left unset here once made the old guard blind in both
+// directions.
 //
-// "Every field populated" is the whole load-bearing part, and it is where this test
-// was weaker than it looked. The fixture held a single task step, so Marshal was
-// never asked to render a wait — and the three keys that spell one, which had been
-// shipped, reachable from a Flowfile, and exercised by examples in CI the whole
-// time, were absent from the rendered document this compares against. A guard that
-// derives the real key set from a fixture only knows the keys the fixture reaches.
-//
-// So the fixture is a workflow that uses every *kind* of step, not merely every
-// field of one kind.
-//
-// Flattening added the other direction. The table used to carry a `task` level
-// holding `name` and `inputs`, and a step key called `task`; the DSL stopped
-// emitting all three at once. Nothing here could have noticed, because every
-// assertion asked only whether an emitted key was known — a table entry for a key
-// the language no longer has is invisible to that question, and completion would
-// have gone on offering a word `flow validate` rejects. So the comparison runs both
-// ways now: every key the DSL emits is one the table knows, and every key the table
-// declares is one the DSL still emits.
-//
-// The step level also gained a second vocabulary, since a task's name is a step key
-// in its own right. That one is not written down here at all — it comes from the
-// registry, so a task registered tomorrow needs no change to this test — and it only
-// stays unambiguous while it cannot collide with a step property, which is the last
-// thing asserted.
-//
-// One key is outside what a round trip can see at all. `edition:` names a property
-// of a file rather than of a workflow, so Marshal has nothing to render it from; it
-// is added to the document below and proved against the compiler instead, which is
-// the same guarantee by a different route.
-func TestDSLKeysMatchTheDSL(t *testing.T) {
+// What remains fixture-derived is only the nested grammar (`retry:`, `for_each:`,
+// waits, switch arms). The workflow deliberately exercises every one of those
+// shapes, and both directions still run for that bounded set.
+func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 	t.Parallel()
 
 	// A workflow exercising every field and every step kind the DSL can express.
@@ -285,12 +260,27 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 		}
 	}
 
-	// The keys the shape table declares, at any level.
+	// The nested keys the prose table declares. Root and step names come from the
+	// parser directly and are checked separately below; including them here would
+	// put completion parity back behind this necessarily partial fixture.
 	shape := map[string]bool{}
-	for _, keys := range dslKeys {
+	for level, keys := range dslKeys {
+		if level == "" || level == "steps" {
+			continue
+		}
 		for _, k := range keys {
 			shape[k.name] = true
 		}
+	}
+
+	// Root and step grammar emitted by Marshal is accounted for by the parser's
+	// own vocabularies, not by the nested documentation table.
+	fromGrammar := map[string]bool{}
+	for _, name := range flowfile.DocumentKeys() {
+		fromGrammar[name] = true
+	}
+	for _, name := range flowfile.StepGrammarKeys() {
+		fromGrammar[name] = true
 	}
 
 	// The keys the registry accounts for. A step names its task directly, so a
@@ -345,7 +335,7 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 
 	var missing []string
 	for key := range emitted {
-		if !shape[key] && !fromRegistry[key] && !authored[key] {
+		if !shape[key] && !fromGrammar[key] && !fromRegistry[key] && !authored[key] {
 			missing = append(missing, key)
 		}
 	}
@@ -389,18 +379,34 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				"an author can write ever reaches them", level)
 	}
 
-	// A step key is either a property of the step or the name of a task, and every
-	// reader in the repo tells them apart by asking the registry. That only works
-	// while the two vocabularies are disjoint, which v1 enforces where the name is
-	// chosen: Register refuses a reserved one. This is the same rule checked from
-	// the other side — over the table completion actually offers — because a
-	// property added here and not there would reopen the ambiguity from an angle
-	// the registry cannot see.
-	for _, k := range dslKeys["steps"] {
-		assert.True(t, v1.IsReservedStepKey(k.name),
+}
+
+// TestCompletionVocabularyMatchesTheParser checks the hand-written prose against
+// the parser-owned candidate sets. Completion reads these same sets at run time,
+// so the test is not trying to discover grammar through a populated fixture: it
+// proves every grammar-owned candidate has real documentation and that no stale
+// root or step documentation remains.
+func TestCompletionVocabularyMatchesTheParser(t *testing.T) {
+	t.Parallel()
+
+	for level, names := range map[string][]string{
+		"":      flowfile.DocumentKeys(),
+		"steps": flowfile.StepGrammarKeys(),
+	} {
+		t.Run(level, func(t *testing.T) {
+			var documented []string
+			for _, key := range dslKeys[level] {
+				documented = append(documented, key.name)
+				assert.NotEmpty(t, key.docs, "%s.%s has no completion or hover documentation", level, key.name)
+			}
+			assert.ElementsMatch(t, names, documented)
+		})
+	}
+
+	for _, name := range flowfile.StepGrammarKeys() {
+		assert.True(t, v1.IsReservedStepKey(name),
 			"completion offers %[1]q as a step key, but v1 does not reserve it, so a task could "+
-				"be registered under that name and `%[1]s:` on a step would have two legitimate "+
-				"readings", k.name)
+				"be registered under that name and `%[1]s:` on a step would have two legitimate readings", name)
 	}
 }
 
@@ -1318,15 +1324,30 @@ func TestDurationsAreChecked(t *testing.T) {
 func TestHoverDocumentsEveryDSLKey(t *testing.T) {
 	t.Parallel()
 
-	// The edition is the one this build compiles rather than a literal, so the
-	// fixture stays a document `flow validate` accepts when a new one is added.
+	// The edition is the one this build compiles rather than a literal. Root
+	// blocks use their smallest meaningful forms rather than empty declarations,
+	// so hover is exercised on the same shapes the compiler accepts.
 	src := "edition: " + flowfile.CurrentEdition + "\n" + `name: all-keys
+labels: {}
 description: everything
+inputs: {}
+outputs: {}
+triggers:
+  manual:
+    require_reason: true
+signals: {}
+debug:
+  allow:
+    - subject: "https://issuer.example.com#sre@example.com"
+concurrency:
+  key: ${"all-keys"}
+plugins: {}
 vars:
   region: eu-west-1
 steps:
   - id: a
     description: Say hello, so the rest of the run has something to say it about.
+    async: true
     if: ${true}
     vars:
       greeting: hi
@@ -1392,6 +1413,7 @@ steps:
         ids: ${deliveries.map(d, d.payload.id)}
   - id: provision
     call: ./callee.yaml
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     with:
       tenant: acme
   - id: route
