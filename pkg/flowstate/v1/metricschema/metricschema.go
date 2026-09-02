@@ -474,6 +474,7 @@ const (
 	InstrumentPluginRestarts          = "flowstate.plugin.restarts"
 	InstrumentPluginLaunchFailures    = "flowstate.plugin.launch.failures"
 	InstrumentPluginProtocolErrors    = "flowstate.plugin.protocol.errors"
+	InstrumentPluginTaskPanics        = "flowstate.plugin.task.panics"
 )
 
 // Instrument is one instrument's declaration: what it is called, what its
@@ -573,6 +574,11 @@ var Instruments = []Instrument{
 		Name:        InstrumentPluginProtocolErrors,
 		Description: "plugin protocol errors",
 		Keys:        []string{PluginName},
+	},
+	{
+		Name:        InstrumentPluginTaskPanics,
+		Description: "plugin SDK task panics recovered before the transport boundary",
+		Keys:        []string{PluginName, TaskName},
 	},
 }
 
