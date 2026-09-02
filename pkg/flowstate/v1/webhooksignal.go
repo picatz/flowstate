@@ -86,6 +86,9 @@ func CheckWebhookSignalBridges(wf *Workflow) error {
 		if err := CheckWebhookSignalPolicy(wf, trigger.GetName(), trigger.GetSignal()); err != nil {
 			return err
 		}
+		if err := CheckWebhookSignalAddressing(trigger); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -101,15 +104,36 @@ func CheckWebhookSignalBridges(wf *Workflow) error {
 // cannot both be true. Whichever one a precedence rule picked would be the
 // other one silently doing nothing, which is the "accepted and ignored" shape
 // docs/STYLE.md's R6 refuses outright.
+//
+// # Presence, not length
+//
+// A non-nil `arguments` map with nothing in it is still the construct: the
+// specification carries both, and `arguments: {}` is what protojson produces
+// for a written-but-empty mapping and what a hand-built [RunRequest] can carry
+// directly. Judging by `len` accepted exactly that, which is the contradiction
+// this refuses arriving through the one door that does not go through a
+// Flowfile. The Flowfile layer asks the same question in its own terms — was
+// the `with:` key written — because a compiler drops an empty mapping before
+// this function could ever see it; see webhookTrigger in `flowfile`.
 func CheckWebhookSignalExclusive(trigger *WebhookTrigger) error {
-	if len(trigger.GetArguments()) == 0 {
+	if trigger.GetArguments() == nil {
 		return nil
 	}
 
+	return WebhookSignalExclusiveError(trigger.GetName())
+}
+
+// WebhookSignalExclusiveError is the one sentence both seams say it with.
+//
+// Exported because the compiler decides the same contradiction from a different
+// fact — a written key rather than a populated map — and two spellings of one
+// refusal is what makes a search for either of them miss half the files that
+// have it.
+func WebhookSignalExclusiveError(webhook string) error {
 	return fmt.Errorf("webhook %q declares both `with:` and `signal:`; the first binds a new run's "+
 		"`inputs:` and the second answers a run that is already waiting, so one delivery cannot do "+
 		"both. Keep `signal:` to answer a gate, or `with:` to start a run",
-		trigger.GetName())
+		webhook)
 }
 
 // CheckWebhookSignalName refuses a bridge to a name nothing in this file waits
@@ -243,6 +267,70 @@ func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigg
 		"webhook delivery: this trigger attests as %q and carries no claims. Add a rule naming it — "+
 		"`- subject: %q` — or answer a different signal",
 		webhook, name, qualified, qualified)
+}
+
+// CheckWebhookSignalAddressing refuses a bridge that decides *which run* from
+// bytes its own `verify:` does not sign.
+//
+// # The asymmetry this closes
+//
+// A signature attests the part of a delivery it covers and nothing else.
+// [WebhookSchemeHMACSHA256] covers the raw body; [WebhookSchemeStripe] covers
+// `<timestamp>.<body>`. Neither covers arbitrary request headers — see
+// [webhookSchemesSigningHeaders] — so anybody who has once seen a valid
+// delivery can replay its exact body and signature with a header rewritten: a
+// proxy log, a mirrored request, a captured retry.
+//
+// For a trigger that *starts* a run that is a bounded nuisance, because the two
+// things a header can move are the run's own id and its inputs, and both stay
+// inside what the key holder could have sent anyway. For a bridge it is not:
+// `correlate:` chooses which parked run is answered, and `idempotency_key:`
+// mints the delivery id the run's replay ring recognizes — so a header-derived
+// pair lets a replayer answer a *different* gate, as many times as they like,
+// with a body and a signature they never had to be able to produce.
+//
+// So a bridge addresses itself from signed bytes or it does not compile. Both
+// expressions are checked, because they are two halves of one address: the run
+// and the delivery's identity within it.
+//
+// The rule is read off the scheme table rather than written against scheme
+// names, so a scheme that does cover headers admits header-derived addressing
+// the day it lands, with nothing here to edit.
+func CheckWebhookSignalAddressing(trigger *WebhookTrigger) error {
+	if trigger.GetSignal() == nil {
+		return nil
+	}
+
+	var unsigned []string
+	for _, scheme := range slices.Sorted(maps.Keys(trigger.GetVerify())) {
+		if !WebhookSchemeSignsHeaders(scheme) {
+			unsigned = append(unsigned, scheme)
+		}
+	}
+	if len(unsigned) == 0 {
+		return nil
+	}
+
+	for _, addressed := range []struct {
+		field string
+		value *Value
+	}{
+		{field: "signal.correlate", value: trigger.GetSignal().GetCorrelate()},
+		{field: "idempotency_key", value: trigger.GetIdempotencyKey()},
+	} {
+		if !celExprReadsEventHeaders(addressed.value.GetExpr().GetExpr()) {
+			continue
+		}
+
+		return fmt.Errorf("webhook %q writes a `%s:` over `%s.%s`, and %s does not sign a delivery's "+
+			"headers — only its body. Anybody who has seen one valid delivery could replay that body "+
+			"and signature with a different header, and this expression decides which run the replay "+
+			"answers. Address the run from `%s.%s` instead",
+			trigger.GetName(), addressed.field, EventRoot, EventHeadersField,
+			strings.Join(unsigned, " and "), EventRoot, EventBodyField)
+	}
+
+	return nil
 }
 
 // BindWebhookTriggerSignal turns a verified delivery into the answer it

@@ -1731,6 +1731,35 @@ here. What a signature attests is possession of a key rather than a person, so
 a workflow that needs two distinct people either side of a gate cannot get them from a
 webhook today.
 
+**A bridge addresses itself from bytes its own `verify:` signs.** `hmac_sha256`
+signs the raw body; `stripe` signs `<timestamp>.<body>`. Neither covers arbitrary
+request headers, so anybody who has once seen a valid delivery can replay that exact
+body and signature with a header rewritten. On a trigger that *starts* a run that is
+bounded — the only things a header moves are the run's own id and its inputs, which
+the key holder could have sent anyway — but on a bridge it chooses somebody else's
+parked gate, and mints the delivery id the replay ring recognizes. So `correlate:`
+and, on a trigger carrying `signal:`, `idempotency_key:` are refused when they read
+`event.headers` under a scheme that does not sign headers:
+
+```
+webhook "slack-approval" writes a `signal.correlate:` over `event.headers`, and
+hmac_sha256 does not sign a delivery's headers — only its body
+```
+
+The rule reads a per-scheme table rather than scheme names, so a scheme that does
+cover headers admits header-derived addressing the day it lands. A trigger with no
+`signal:` keeps reading headers exactly as it always has —
+`examples/webhook-trigger` keys on Stripe's own signature header.
+
+**A bridge answers only its own workflow's gates.** An entity key is composed from
+the tenant and the key alone, so `order-123` names one run per tenant however many
+workflows use that key — and the policy a delivery is checked against is the *target
+run's*, whose zero case admits any sender. The receiver therefore refuses a delivery
+whose run records a different workflow than the one whose webhook was addressed: the
+file-level rule closes the zero case for the file that declares the bridge and can
+say nothing about anybody else's file. A run that records no workflow name at all —
+one started before a deployment wrote it down — is refused for the same reason.
+
 **`with:` is passed through, for now.** A `wait_for_signal:` declares no signature for
 what it accepts — it takes whatever shape arrives and shapes it with its own
 `outputs:` — so nothing checks these names against anything, in either direction. That

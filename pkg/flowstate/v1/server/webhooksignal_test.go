@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"connectrpc.com/connect"
 	"fmt"
 	"net/http"
 	"testing"
@@ -12,7 +13,6 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -93,32 +93,45 @@ func gateDelivery(event, entity, action string) string {
 	return fmt.Sprintf(`{"id":%q,"run":%q,"action":%q}`, event, entity, action)
 }
 
-// gateReceiver serves that workflow, over a real cluster.
-func gateReceiver(t *testing.T, temporal client.Client) *server.WebhookReceiver {
+// gateDeployment is one server serving that workflow's webhook, with the
+// receiver built from it.
+//
+// One server for both halves deliberately: a bridged delivery is checked
+// against the *run's* memo — which workflow it is, which tenant it belongs to —
+// and a run started through some other server would carry a memo this receiver
+// has no business trusting.
+func gateDeployment(t *testing.T, temporal client.Client, served ...*v1.Workflow) (*server.FlowstateServer, *server.WebhookReceiver) {
 	t.Helper()
 
-	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
-		"", []*v1.Workflow{bridgedGateWorkflow()}, keyStore(t, webhookSecret))
+	if len(served) == 0 {
+		served = []*v1.Workflow{bridgedGateWorkflow()}
+	}
+
+	s := mustNew(t, temporal)
+	receiver, err := s.NewWebhookReceiver(t.Context(), "", served, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
-	return receiver
+	return s, receiver
 }
 
-// startParkedRun starts the served workflow under an entity key and waits for
-// it to reach its gate, so a delivery has something to answer.
-func startParkedRun(t *testing.T, temporal client.Client, entity string) client.WorkflowRun {
+// startParkedRun starts wf under an entity key through the server's own `Run`,
+// and returns the run's address.
+//
+// Through the RPC rather than straight to Temporal, because the provenance the
+// bridge checks is written by the submission path: which tenant, and which
+// workflow. A run created behind the server's back carries none of it and is
+// unanswerable by a bridge, which is the fail-closed behaviour rather than a
+// gap in the test.
+func startParkedRun(t *testing.T, s *server.FlowstateServer, wf *v1.Workflow, entity string) (workflowID, runID string) {
 	t.Helper()
 
-	id, err := v1.EntityWorkflowID("", entity)
+	resp, err := s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  wf,
+		EntityKey: &entity,
+	}))
 	require.NoError(t, err)
 
-	run, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
-		ID:        id,
-		TaskQueue: engine.RunTaskQueueName,
-	}, engine.Run, &v1.RunState{Workflow: bridgedGateWorkflow()})
-	require.NoError(t, err)
-
-	return run
+	return resp.Msg.GetWorkflowId(), resp.Msg.GetRunId()
 }
 
 // TestABridgedDeliveryAnswersAParkedGate is the slice, end to end: a signed
@@ -129,8 +142,8 @@ func TestABridgedDeliveryAnswersAParkedGate(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver := gateReceiver(t, temporal)
-	run := startParkedRun(t, temporal, "order-4471")
+	deployment, receiver := gateDeployment(t, temporal)
+	workflowID, runID := startParkedRun(t, deployment, bridgedGateWorkflow(), "order-4471")
 
 	body := gateDelivery("evt_click", "order-4471", "approve")
 	resp := deliver(t, receiver, "/webhooks/gate-webhook/slack-approval", body, signed)
@@ -145,7 +158,7 @@ func TestABridgedDeliveryAnswersAParkedGate(t *testing.T) {
 		"the raw idempotency key was handed back to the sender")
 
 	var out v1.Workflow_StepOutputs
-	require.NoError(t, run.Get(t.Context(), &out))
+	require.NoError(t, temporal.GetWorkflow(t.Context(), workflowID, runID).Get(t.Context(), &out))
 	assert.Equal(t, "approved",
 		out.GetStepValues()["gate"].GetNamedValues()["decision"].GetLiteral().GetStringValue(),
 		"the gate did not resolve with what the delivery carried")
@@ -160,8 +173,8 @@ func TestABridgedRedeliveryAnswersOneGate(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver := gateReceiver(t, temporal)
-	run := startParkedRun(t, temporal, "order-4472")
+	deployment, receiver := gateDeployment(t, temporal)
+	workflowID, runID := startParkedRun(t, deployment, bridgedGateWorkflow(), "order-4472")
 
 	body := gateDelivery("evt_retried", "order-4472", "approve")
 
@@ -178,7 +191,7 @@ func TestABridgedRedeliveryAnswersOneGate(t *testing.T) {
 		"one event produced two delivery ids")
 
 	var out v1.Workflow_StepOutputs
-	require.NoError(t, run.Get(t.Context(), &out))
+	require.NoError(t, temporal.GetWorkflow(t.Context(), workflowID, runID).Get(t.Context(), &out))
 	assert.Equal(t, "approved",
 		out.GetStepValues()["gate"].GetNamedValues()["decision"].GetLiteral().GetStringValue())
 
@@ -201,7 +214,7 @@ func TestABridgedDeliveryToNoRunIsRefused(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver := gateReceiver(t, temporal)
+	_, receiver := gateDeployment(t, temporal)
 
 	body := gateDelivery("evt_lost", "order-nobody-started", "approve")
 	resp := deliver(t, receiver, "/webhooks/gate-webhook/slack-approval", body, signed)
@@ -214,6 +227,75 @@ func TestABridgedDeliveryToNoRunIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	_, err = temporal.DescribeWorkflowExecution(t.Context(), id, "")
 	assert.Error(t, err, "a delivery that answered no gate started a run instead")
+}
+
+// unpolicedNeighbour is the other workflow in the scenario: entity-addressed,
+// parked at a gate of the same name, and declaring no `signals:` policy for it
+// — the ordinary zero case, which is what every workflow written before
+// `signals:` existed looks like.
+//
+// It declares no webhook of its own. Nothing about it opts into being
+// answerable from outside; that is the point.
+func unpolicedNeighbour() *v1.Workflow {
+	return &v1.Workflow{
+		Name:    "neighbour-workflow",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "gate",
+			Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Timeout: durationpb.New(2 * time.Second),
+				Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+					Name: "stage-approved",
+					Outputs: map[string]*v1.Value{
+						// Written to survive a gate nobody answers, which is
+						// what this workflow must end up doing.
+						"decision": v1.NewExpr(`payload.?approved.orValue(false) ? "approved" : "held"`),
+					},
+				}},
+			}},
+		}},
+	}
+}
+
+// TestABridgeCannotAnswerAnotherWorkflowsGate is the security review's HIGH
+// finding, and the scenario it names.
+//
+// An entity key is composed from the namespace and the key alone —
+// `EntityWorkflowID` has no workflow component — so `order-4480` in one tenant
+// is one address whatever workflow claims it. Tenancy therefore does not
+// separate two workflows in one tenant, and the policy the delivery is checked
+// against is the *target run's*, whose zero case admits any sender. So the
+// holder of one workflow's signing key could answer a gate belonging to a
+// workflow that never declared a webhook at all: `flow validate` closes the
+// zero case for the file that declares the bridge and can say nothing about
+// somebody else's file.
+//
+// The receiver closes the rest by refusing a run whose recorded workflow is not
+// the one whose webhook was addressed.
+func TestABridgeCannotAnswerAnotherWorkflowsGate(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	// One deployment serving the bridge, and the neighbour parked in the same
+	// tenant under the entity key the delivery will name.
+	deployment, receiver := gateDeployment(t, temporal)
+	workflowID, runID := startParkedRun(t, deployment, unpolicedNeighbour(), "order-4480")
+
+	body := gateDelivery("evt_cross", "order-4480", "approve")
+	resp := deliver(t, receiver, "/webhooks/gate-webhook/slack-approval", body, signed)
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
+		"a delivery reached a gate belonging to a workflow that declares no webhook")
+
+	// And the gate was never told anything: the neighbour lapses at its own
+	// timeout, which is what a run nobody answered does.
+	var out v1.Workflow_StepOutputs
+	require.NoError(t, temporal.GetWorkflow(t.Context(), workflowID, runID).Get(t.Context(), &out))
+	assert.Equal(t, "held",
+		out.GetStepValues()["gate"].GetNamedValues()["decision"].GetLiteral().GetStringValue(),
+		"the neighbour's gate was answered by another workflow's webhook")
 }
 
 // TestAnUnverifiableBridgedDeliveryIsRefusedLikeAnyOther holds the bridge to

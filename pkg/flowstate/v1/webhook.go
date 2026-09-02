@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/operators"
 	"github.com/google/cel-go/common/types/ref"
 	"google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -108,6 +109,38 @@ const (
 	// construction wrong is how signature checks come to pass on forged bodies.
 	WebhookSchemeStripe = "stripe"
 )
+
+// webhookSchemesSigningHeaders records, per scheme, whether its signature
+// covers arbitrary request headers.
+//
+// A table rather than a condition written where it is needed, because "what
+// does this scheme actually attest" is a fact about the scheme and belongs
+// beside its name: a scheme added later answers this question once, here, and
+// every rule that depends on the answer follows without being edited.
+//
+// Both entries are false today, and neither is an oversight.
+// [WebhookSchemeHMACSHA256] signs the raw body and nothing else.
+// [WebhookSchemeStripe] signs `<timestamp>.<body>` — the timestamp is a
+// component of the signature header itself, checked against
+// [WebhookReplayWindow], and no other header is covered. So a holder of one
+// valid delivery can replay its exact body and signature with any other header
+// rewritten, which is what [CheckWebhookSignalAddressing] refuses to let a
+// bridge address a run from.
+var webhookSchemesSigningHeaders = map[string]bool{
+	WebhookSchemeHMACSHA256: false,
+	WebhookSchemeStripe:     false,
+}
+
+// WebhookSchemeSignsHeaders reports whether a scheme's signature covers the
+// delivery's headers, so a caller can refuse to trust one it does not.
+//
+// An unknown scheme answers false, which is the fail-closed direction: a
+// scheme this build cannot check is already refused by
+// [CheckWebhookVerifyScheme], and a rule reading this must not become
+// permissive by meeting a name it does not recognize.
+func WebhookSchemeSignsHeaders(scheme string) bool {
+	return webhookSchemesSigningHeaders[scheme]
+}
 
 // webhookVerificationSchemes is the set above, in the order a diagnostic lists
 // them: the generic one first, because it is the one an unfamiliar provider is
@@ -325,6 +358,87 @@ func celExprReferencesIdentifier(expression *expr.Expr, name string) bool {
 // 32, the same bound and the same argument as [maxActivationDepth]. A real
 // idempotency key is a header lookup or a field selection, nowhere near it.
 const maxIdentifierWalkDepth = 32
+
+// celExprReadsEventHeaders reports whether an expression reaches
+// `event.headers`, by either spelling: the ordinary selection, and the index
+// form `event["headers"]` that means the same thing.
+//
+// Deliberately narrower than "mentions `event`". A bridge addressing a run from
+// `event.body` is reading bytes the signature covers; the question here is only
+// whether it reads the part nothing signed. The residual is an expression that
+// launders the whole delivery through something this walk cannot follow — a
+// macro over `event` itself — which reads as no header reference and is
+// accepted; the same class of gap [CheckWebhookIdempotencyKey] documents about
+// its own question, and for the same reason: a check that refused every mention
+// of `event` would refuse every correct file.
+func celExprReadsEventHeaders(expression *expr.Expr) bool {
+	return celExprReadsEventHeadersAt(expression, maxIdentifierWalkDepth)
+}
+
+func celExprReadsEventHeadersAt(expression *expr.Expr, depth int) bool {
+	if expression == nil || depth <= 0 {
+		// Fail closed: an expression this walk gave up reading is treated as
+		// reaching the headers, which refuses it. The alternative accepts an
+		// address derived from bytes nothing signed on the strength of a walk
+		// that stopped early.
+		return expression != nil
+	}
+	depth--
+
+	switch kind := expression.GetExprKind().(type) {
+	case *expr.Expr_SelectExpr:
+		if kind.SelectExpr.GetField() == EventHeadersField &&
+			kind.SelectExpr.GetOperand().GetIdentExpr().GetName() == EventRoot {
+			return true
+		}
+
+		return celExprReadsEventHeadersAt(kind.SelectExpr.GetOperand(), depth)
+	case *expr.Expr_CallExpr:
+		call := kind.CallExpr
+
+		// `event["headers"]` is an index call over the delivery root, which is
+		// the same read written another way.
+		if call.GetFunction() == operators.Index && len(call.GetArgs()) == 2 &&
+			call.GetArgs()[0].GetIdentExpr().GetName() == EventRoot &&
+			call.GetArgs()[1].GetConstExpr().GetStringValue() == EventHeadersField {
+			return true
+		}
+
+		if celExprReadsEventHeadersAt(call.GetTarget(), depth) {
+			return true
+		}
+		for _, argument := range call.GetArgs() {
+			if celExprReadsEventHeadersAt(argument, depth) {
+				return true
+			}
+		}
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			if celExprReadsEventHeadersAt(element, depth) {
+				return true
+			}
+		}
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			if celExprReadsEventHeadersAt(entry.GetMapKey(), depth) ||
+				celExprReadsEventHeadersAt(entry.GetValue(), depth) {
+				return true
+			}
+		}
+	case *expr.Expr_ComprehensionExpr:
+		comprehension := kind.ComprehensionExpr
+		for _, part := range []*expr.Expr{
+			comprehension.GetIterRange(), comprehension.GetAccuInit(),
+			comprehension.GetLoopCondition(), comprehension.GetLoopStep(), comprehension.GetResult(),
+		} {
+			if celExprReadsEventHeadersAt(part, depth) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
 
 // celExprReferencesFreeIdentifier is [celExprReferencesIdentifier]'s walk.
 //
@@ -703,8 +817,29 @@ func eventRefValue(event *Value) ref.Val {
 // rehearsal asserting on `${trigger.delivery_id}` would assert against something
 // production never answers with — one meaning, one definition, which is the rule
 // CLAUDE.md states for every value both drivers read.
-func WebhookDeliveryID(key string) string {
-	digest := sha256.Sum256([]byte(key))
+//
+// # The source is inside the digest, and it has to be
+//
+// An `idempotency_key:` names a delivery *within the source that issued it*:
+// `event.body.order_id` is a promise Stripe makes about Stripe's redeliveries
+// and says nothing about what some other integration calls its orders. So the
+// workflow and the trigger are hashed with it, exactly as [webhookWorkflowID]
+// hashes them for the same reason on the start path.
+//
+// Without that, two bridges on one workflow whose keys legitimately coincide —
+// the same order id answering two different gates — produce one digest, and
+// [RunState.consumed_delivery_ids] is a set *per run* across every source, so
+// the second genuine delivery is dropped as a redelivery of the first. The
+// dedupe would then be silently refusing approvals nobody duplicated, which is
+// the failure a per-run set has to be scoped to avoid.
+//
+// The namespace is deliberately not in it. The set that reads this lives on a
+// run, a run belongs to exactly one tenant, and a delivery reaches it only
+// after `authorizeRunDecision` has said so — so a tenant cannot be the thing
+// two colliding keys differ by, and adding it would put a value in the digest
+// that no reader of the digest can vary.
+func WebhookDeliveryID(workflow, trigger, key string) string {
+	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s", WebhookTriggerSubject(workflow, trigger), key))
 
 	return hex.EncodeToString(digest[:16])
 }

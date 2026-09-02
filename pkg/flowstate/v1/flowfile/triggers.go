@@ -531,10 +531,12 @@ func (c *compiler) webhookTrigger(fields *fieldSet, path string, r ref) *v1.Webh
 		c.report(spanOfNode(nameField.key), webhookRef, "%s", v1.CheckWebhookIdempotencyKey(name, nil).Error())
 	}
 
-	if f, found := fields.get("with"); found {
+	withField, wroteWith := fields.get("with")
+	if wroteWith {
 		withPath := fieldPath(path, "with")
-		c.pos.record(withPath, spanOfNode(c.resolveQuiet(f.value)))
-		webhook.Arguments = c.triggerArguments(f.value, withPath, ref{path: withPath, label: fmt.Sprintf("webhook %q with", name)})
+		c.pos.record(withPath, spanOfNode(c.resolveQuiet(withField.value)))
+		webhook.Arguments = c.triggerArguments(withField.value, withPath,
+			ref{path: withPath, label: fmt.Sprintf("webhook %q with", name)})
 	}
 
 	if f, found := fields.get("signal"); found {
@@ -544,13 +546,23 @@ func (c *compiler) webhookTrigger(fields *fieldSet, path string, r ref) *v1.Webh
 			ref{path: signalPath, label: fmt.Sprintf("webhook %q signal", name)})
 
 		// The contradiction, reported here rather than only by the validator
-		// because this is where both spans exist: the entry wrote two keys, and
-		// an author looking at the file wants the one that is refused
-		// underlined. Fail closed either way — [v1.CheckWebhookSignalExclusive]
-		// answers for a specification that never was a Flowfile.
-		if webhook.GetArguments() != nil {
-			c.report(spanOfNode(nameField.key), webhookRef, "%s",
-				v1.CheckWebhookSignalExclusive(webhook).Error())
+		// because this is where the span is: the entry wrote two keys, and the
+		// one an author has to delete is the one that gets underlined.
+		//
+		// Decided by whether `with:` was *written*, not by what it compiled to.
+		// [compiler.triggerArguments] returns nil for a mapping with no entries,
+		// so `with: {}` beside `signal:` compiled to a specification carrying
+		// only one of the two and was accepted — a file stating the
+		// contradiction outright, and the reading that made the check pass on
+		// it was "did anything survive compilation", which is not the question.
+		// Fail closed at the other seam too: [v1.CheckWebhookSignalExclusive]
+		// answers for a specification that never was a Flowfile, from the fact
+		// available there.
+		if wroteWith {
+			withPath := fieldPath(path, "with")
+			c.report(spanOfNode(withField.key),
+				ref{path: withPath, label: fmt.Sprintf("webhook %q with", name)},
+				"%s", v1.WebhookSignalExclusiveError(name))
 		}
 	}
 
@@ -1609,6 +1621,19 @@ func validateWebhookSignal(wf *v1.Workflow, at string, webhook *v1.WebhookTrigge
 		// misspelling, and the author would have to fix the first to discover
 		// that the second was never real.
 		ds = append(ds, Diagnostic{Field: fieldPath(signalPath, "name"), Message: err.Error()})
+	}
+
+	// Which bytes the address is derived from, reported against the expression
+	// that derives it — `correlate:` where that is the offender, and the
+	// trigger's own `idempotency_key:` where that is. Positioned rather than
+	// folded into one sentence against the entry, because the fix is an edit to
+	// one specific expression.
+	if err := v1.CheckWebhookSignalAddressing(webhook); err != nil {
+		field := fieldPath(signalPath, "correlate")
+		if strings.Contains(err.Error(), "`idempotency_key:`") {
+			field = fieldPath(at, "idempotency_key")
+		}
+		ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
 	}
 
 	if err := v1.CheckWebhookSignalCorrelate(name, signal); err != nil {

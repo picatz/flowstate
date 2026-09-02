@@ -215,10 +215,24 @@ namespace) and is checked by `authorizeSignal`/`SignalPolicyCheck` — the funct
 `flow signal` is checked by, unchanged — while the run it reaches is composed by
 `EntityWorkflowID` from the receiver's own namespace and the entity key
 `correlate:` evaluates to, never from a workflow id in the payload. The signal
-zero case is closed for this route in the specification rather than at delivery: a
-`signal:` whose name has no `signals:` rule that could admit its trigger is refused
-when the file compiles and again when the receiver registers it, so a key holder
-cannot reach an unpoliced gate. A delivery the run has already consumed is dropped
+zero case is closed for this route in two places, because the file can only close
+half of it: a `signal:` whose name has no `signals:` rule that could admit its
+trigger is refused when the file compiles and again when the receiver registers it,
+and the receiver refuses a delivery whose addressed run records a *different*
+workflow than the one whose webhook was addressed. That second half is not optional
+— an entity key carries no workflow component, so tenancy alone lets `order-123`
+name a run of any workflow in the tenant, and the policy consulted is the target
+run's, whose own zero case admits anyone. It also bounds the 404/403 split: the
+existence oracle it forms covers the runs of the one workflow the sender already
+holds a key for, rather than the tenant's whole entity-key space. A run recording no
+workflow name is refused rather than guessed at.
+
+Neither scheme signs arbitrary request headers, so a bridge may not address itself
+from them: `correlate:` and `idempotency_key:` reading `event.headers` are refused
+when the file compiles, under a per-scheme table of what each signature covers. The
+replay this closes needs no key at all — one observed delivery, its body and
+signature reused with a rewritten header, would otherwise pick a different gate and
+mint a delivery id the run's ring has never seen. A delivery the run has already consumed is dropped
 by the engine at intake, on both drivers, against a bounded add-only set of
 delivery-id digests carried in `RunState`; the receiver keeps no ledger.
 

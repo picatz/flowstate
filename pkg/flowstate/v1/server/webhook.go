@@ -824,7 +824,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 		return AcceptedDelivery{}, err
 	}
 
-	deliveryID := v1.WebhookDeliveryID(key)
+	deliveryID := v1.WebhookDeliveryID(route.workflow.GetName(), route.trigger.GetName(), key)
 	memo[triggerMemoKey] = "webhook:" + route.trigger.GetName()
 	memo[deliveryMemoKey] = deliveryID
 	options.Memo = memo
@@ -919,7 +919,10 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 		return AcceptedDelivery{}, err
 	}
 
-	deliveryID := v1.WebhookDeliveryID(key)
+	// Scoped to this source, which is what makes the run's per-run consumed set
+	// safe: two bridges whose `idempotency_key:` expressions legitimately agree
+	// on a value are two deliveries, not one. See [v1.WebhookDeliveryID].
+	deliveryID := v1.WebhookDeliveryID(route.workflow.GetName(), route.trigger.GetName(), key)
 	name := route.trigger.GetSignal().GetName()
 
 	// The same principal [WebhookReceiver.start] mints, established by this
@@ -964,6 +967,31 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 
 		return AcceptedDelivery{}, r.audited(r.server.auditDeny(ctx, "WebhookSignal",
 			v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, refusal), refusal)
+	}
+
+	// And the workflow, which tenancy alone does not answer. An entity key is
+	// composed from the namespace and the key only — `EntityWorkflowID` has no
+	// workflow component — so `order-123` in one tenant is one address however
+	// many workflows use that key, and without this a trigger declared on
+	// workflow A would reach a gate belonging to workflow B: as
+	// `flowstate://webhook#A/slack`, against B's own `signals:`, whose zero
+	// case admits any sender. [v1.CheckWebhookSignalPolicy] closes that zero
+	// case for the file that declares the bridge and can say nothing about
+	// another file, so the receiver is where the rest of it closes.
+	//
+	// It is also what keeps the refusal below from being an oracle. Answering
+	// 404 for "no such run" and 403 for "that run refuses you" distinguishes
+	// them over whatever the sender can address — and this narrows that set
+	// from the tenant's whole entity-key space to the runs of the one workflow
+	// whose webhook they already hold a key for, which is a set they can
+	// enumerate anyway.
+	//
+	// Fail closed on a run that records no name: a run started before the
+	// deployment wrote this memo key cannot prove which workflow it is, and a
+	// bridge does not get to answer a gate on an unproven one.
+	if named := r.server.workflowNameOf(resp.GetWorkflowExecutionInfo()); named != route.workflow.GetName() {
+		return AcceptedDelivery{}, fmt.Errorf("%w: entity key %q names a run this webhook's workflow does "+
+			"not own", errDeliveryUnaddressed, entityKey)
 	}
 
 	// What the server attests about this delivery, built here for the reason
