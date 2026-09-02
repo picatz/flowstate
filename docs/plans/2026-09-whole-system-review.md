@@ -581,9 +581,18 @@ test.
 
 ### Wave B — the type system, as one edition (weeks 2–3)
 
-D1 and D2 as one coherent change: `flowstate.v1.Type`, the CEL type-expression
-spelling and its type environment, one decoder, profile `2026.2`, edition `v2026.4`, `flow fix` across
-the boundary, the generated `values.md` (#1453) whose every cell is a
+**#1465 lands first in this wave, before `CurrentProfile` moves.**
+`mustBaseEnv` resolves `ProfileLibraries(CurrentProfile)`
+(`constraints.go:163`), so the moment this wave introduces a second profile,
+every workflow pinned to `2026.1` has its `must:` constraints checked under
+`2026.2` at submission and at call boundaries — the meaning of an already
+valid specification changing under it, which is the one thing an edition
+mechanism exists to prevent. The fix plus an old-profile regression case is
+the wave's first commit, not one of its projections (Codex, on #1479).
+
+Then D1 and D2 as one coherent change: `flowstate.v1.Type`, the CEL
+type-expression spelling and its type environment, one decoder, profile
+`2026.2`, edition `v2026.4`, `flow fix` across the boundary, the generated `values.md` (#1453) whose every cell is a
 conformance case, and then the projections that were waiting — `env.Check`
 with declared types (#1383, the slot-type half first), the workflow signature
 as JSON Schema on `flow describe` and an MCP tool (#1455), `flow breaking`
@@ -616,7 +625,11 @@ broken tasks (#1440 + #1456 together, L); the host output check and the
 manifest cross-check (M, security-adjacent, the `flowstate-security-review`
 pass); `plugintoolkit` extraction and the `requestTimeout` unit fix (#1333,
 M); the `LaunchRequest` message (#1393, L, protocol 7); `Register` soundness
-(#1431, S). Then D11's `base_ref` (M) and the #108 bridge spike (L, after the
+(#1431, S). Then D11's `base_ref` — with the repository-and-authentication
+shape it needs, or a materialization task ahead of it, since `codex.exec`
+holds only `api_key` and the git plugin's clone is bare and in memory; the
+private-repository path of `agentic-fix` is the acceptance case (M) — and the
+#108 bridge spike (L, after the
 total bridge).
 
 ### Wave E — governance as true as it reads (weeks 2–4, parallel)
@@ -821,7 +834,7 @@ checked.
 | M | #1333 `plugintoolkit` | `plugins/*`, a new shared package |
 | M | #1388 gate declines the wide leg; plugin-module scanning in `ciDecisions` | `tools/gate/main.go`, `ci.go`, `Makefile`, `ci.yml` |
 | M | SARIF/JUnit; workflow inventory; MCP prompts + resource + fix tool | `cmd/flow/`, `internal/mcp/` |
-| M | `codex.exec base_ref` | `plugins/codex`, `plugins/git` |
+| M | `codex.exec base_ref` **plus its repository/auth shape or a materialization task**, proved on `agentic-fix`'s private-repository path | `plugins/codex`, `plugins/git`, `examples/agentic-loop/` |
 | L | D1+D2 the type edition | `workflow.proto`, `flowfile/`, `eval.go`, `celenv.go`, `rundoc.go`, `docs/reference/values.md` |
 | L | #1437 the reference-model registry | `pkg/flowstate/v1/`, `flowfile/`, `lsp/`, `flowdebug/`, `flowtest/`, `cmd/flow/taskrun.go` |
 | L | #1440+#1456 one bridge + e2e plugin tests | `protoliterals.go`, `sdk/values.go`, `internal/pluginreachtest` |
