@@ -376,24 +376,30 @@ worker can serve two tenants with different reach
 (`pkg/flowstate/v1/eval_task_http_run.go:316`, `docs/DEPLOYMENT.md:153-166`).
 
 **Limits.** HTTP enforcement lives *inside* the Go `http` task
-(`pkg/flowstate/v1/eval_task_http_def.go:30`, `:66`). The first-party SQL plugin
-now composes the same deployment policy onto pgx's real TCP dial path: every host
-and address is checked before connection, checked DNS answers are pinned, and the
+(`pkg/flowstate/v1/eval_task_http_run.go:595`, `:833`). The first-party SQL plugin
+composes the deployment's grant onto pgx's real TCP dial path: every host and
+address is checked before connection, checked DNS answers are pinned, and the
 actual address is categorically rechecked immediately before each dial. PostgreSQL
-is denied when policy is absent; SQLite is denied because its authority is the
-worker filesystem rather than a socket. The first-party Slack plugin receives the
-same immutable snapshot and applies it on its HTTP client's dial path
-(`plugins/slack/egress.go`). The `git`, `vcs` and `github` plugins do not read the
-operator's file at all — each builds its own default `netpolicy` (`plugins/git/clone.go`,
-`plugins/vcs/clone.go`, `plugins/github/client.go`) — so `--egress-policy` governs
-two of the six in-tree plugins today; #1332 decides the general grant before
-#1321–#1323 close the other three. This remains voluntary enforcement in
-vetted code, not plugin-process confinement. The moment a task is a container or
-arbitrary plugin opening its own sockets, in-process enforcement is theater and
-the worker's operating-system/substrate boundary must govern it. With an HTTP proxy
-configured the dialer never sees the target, so the HTTP check weakens to a
-pre-resolution one (`pkg/flowstate/v1/netpolicy/netpolicy.go:33-37`), which is why
-proxies are off unless named.
+is denied when the grant is absent or is the deployment default; SQLite is denied
+because its authority is the worker filesystem rather than a socket. The other
+four first-party plugins whose Go implementations open network connections also
+enforce the grant on those actual paths: Slack and GitHub through the SDK-governed
+HTTP transport, and git and vcs through the governed transport installed into
+go-git
+(`plugins/slack/post.go`, `plugins/github/client.go`, `plugins/git/clone.go`,
+`plugins/vcs/clone.go`). A worker with no operator policy grants these processes
+the same marked default its built-in HTTP task uses. This is actual enforcement
+in vetted first-party dial paths, but it remains voluntary plugin behavior, not
+plugin-process confinement. A third-party plugin can ignore the SDK and open its
+own socket. The first-party Codex plugin is also a subprocess exception: when an
+operator permits network access or `danger-full-access`, the spawned Codex CLI
+does not carry or enforce Flowstate's destination grant
+(`plugins/codex/process.go:104-130`, `plugins/codex/policy.go:178-187`). A
+deployment that must constrain either process uses its operating-system or
+substrate boundary rather than treating policy vocabulary as a sandbox. With an
+HTTP proxy configured the dialer never sees the target, so the HTTP check weakens
+to a pre-resolution one (`pkg/flowstate/v1/netpolicy/netpolicy.go:33-37`), which
+is why proxies are off unless named.
 
 **Planned.** Boundary enforcement compiling the same policy file to a network
 namespace plus enforcing proxy, with a tier that cannot enforce refusing to

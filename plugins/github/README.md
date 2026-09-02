@@ -279,11 +279,11 @@ separate `go.mod` and `replace` directive in this plugin achieve.
 `github.issue_comment` deliberately remains reachable in a local rehearsal. It
 is a real comment, not a preview: the required target inputs keep the example
 from running accidentally, while task policy, credential release, and egress
-controls independently constrain an actual call. Deployment-owned egress
-composition remains #1323; execution mode does not fill that gap. Changing this
-established behavior to a production-only gate would be a compatibility change,
-so it is not inferred from the newer Slack task's different notification
-contract.
+controls independently constrain an actual call. Deployment-owned egress is
+enforced through the SDK-governed HTTP transport in both modes; execution mode
+neither grants nor widens it. Changing this established behavior to a
+production-only gate would be a compatibility change, so it is not inferred from
+the newer Slack task's different notification contract.
 `TestIssueCommentWritesWithoutAProductionCaller` sends one comment to a local fake
 API with an inert token and no production caller, proving the posture without a
 real credential or GitHub mutation.
