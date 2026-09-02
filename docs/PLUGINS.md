@@ -664,6 +664,13 @@ unless the worker opted in, public HTTP and HTTPS permitted. The document says s
 about itself (`deployment_default: true`), and `sdk.EgressPolicyIsDeploymentDefault()`
 reports it, so absent now means only that no worker launched this process.
 
+That marker is part of protocol version 6, and it needed a version of its own
+rather than arriving quietly: `netpolicy.ParseConfig` is strict, so a plugin
+built against version 5 refuses the whole document over the unknown key. A host
+and its plugins are refused at the handshake when they disagree about this,
+which is the failure to prefer over a plugin reporting an operator's policy as
+malformed.
+
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,
 `vcs`, `github` and `slack` do, so a worker nobody configured reaches public hosts

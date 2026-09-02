@@ -15,7 +15,7 @@
 // plugin that finds any of it missing must refuse to serve:
 //
 //	FLOWSTATE_PLUGIN_MAGIC_COOKIE      must equal MagicCookieValue
-//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "5"
+//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "6"
 //	FLOWSTATE_PLUGIN_SOCKET            absolute path the plugin must listen on
 //	FLOWSTATE_PLUGIN_TOKEN_FD          fd carrying the per-launch secret
 //	FLOWSTATE_PLUGIN_HOST_FD           fd that closes when the host exits
@@ -343,9 +343,9 @@ const Version3 = 3
 // Retired rather than deleted, for the reason [Version1] is.
 const Version4 = 4
 
-// Version5 is the current version of the plugin protocol: the same services and
+// Version5 was the fifth version of the plugin protocol: the same services and
 // routes as [Version4], with the deployment's egress policy carried in the
-// launch environment under [EgressPolicyEnv] (#1332).
+// launch environment under [EgressPolicyEnv] (#1332). It is no longer served.
 //
 // The grant was very nearly folded into version 4, on the reasoning that both
 // changes are launch-environment changes landing in the same release. That was
@@ -364,11 +364,46 @@ const Version4 = 4
 // control that is not there. Moving the number makes that pairing refuse at the
 // handshake, naming both numbers, from whichever side is older.
 //
-// The grant's *contents* are a separate question from its presence. A later
-// change to what the policy snapshot carries — marking the deployment default,
-// which #1332's decision leaves to PR B — decides its own version question on
-// its own terms; nothing here settles it in advance.
+// The grant's *contents* are a separate question from its presence, left open
+// here for whatever changed them. [Version6] is that change, and it answers the
+// question the same way: the contents moved in a way version 5 cannot read.
+//
+// Retired rather than deleted, for the reason [Version1] is.
 const Version5 = 5
+
+// Version6 is the current version of the plugin protocol: the same services and
+// routes as [Version5], with the egress grant always present under `flow` and
+// carrying `deployment_default` when the worker forwarded its own default policy
+// rather than one an operator wrote (#1332).
+//
+// The number moves because the marker is not additive, which is the condition
+// under which #1393's design record let this change stay at 5. `deployment_default`
+// is a key in the policy document, and `netpolicy.ParseConfig` is strict: an
+// unknown key is an error, deliberately, so that a misspelled rule cannot
+// silently drop a restriction. A version 5 plugin therefore does not ignore the
+// new key — it refuses the whole document. Under a worker upgraded ahead of its
+// plugins, an existing version 5 `sql` or `slack` binary fails in its own
+// startup with a policy parse error while the handshake reported both sides
+// compatible: the quiet failure every retired version's doc describes, arriving
+// as a configuration error the operator did not make.
+//
+// The alternative encoding is worse, and rejecting it is why the number is the
+// answer rather than a different spelling. Putting the marker beside the
+// document — a second variable, an unmarked policy — leaves a version 5 plugin
+// parsing the deployment default as though an operator had written it, so `sql`
+// would connect to a database on a worker whose operator authorized no
+// destination. That is a posture *widening* on exactly the binaries this
+// repository cannot see, which is the one direction a compatibility story must
+// never take. A refusal at the handshake, naming both numbers, from whichever
+// side is older, is the failure to prefer.
+//
+// What version 6 asserts, then, is two things a version 5 pairing cannot
+// satisfy: that the grant is present on every launch a Flowstate worker makes,
+// so an absent variable means only that no worker launched the process; and that
+// the document may carry `deployment_default`, so a plugin can decide what to do
+// under a policy nobody wrote. See
+// [github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy.Config.DeploymentDefault].
+const Version6 = 6
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -461,20 +496,21 @@ const NetworkUnix = "unix"
 // highest preference last is not implied — [Negotiate] picks the highest common
 // version.
 //
-// [Version1] through [Version4] are absent because they are not served. A plugin
+// [Version1] through [Version5] are absent because they are not served. A plugin
 // built against any of them finds no version in common and refuses at startup
 // with a message naming both sides, which is the failure this list exists to
 // produce: one clear refusal before anything runs, rather than a request to a
 // route nobody answers, a manifest nobody can reconstruct, a token nobody
-// delivered, or a network reached under no policy at all.
+// delivered, a network reached under no policy at all, or a policy document a
+// strict parser refuses one key of.
 //
 // A retired version is left out rather than offered alongside the current one
 // deliberately. Offering it would let a plugin negotiate successfully and fail
 // later — at descriptor linking for version 2, at reading a secret that is not
 // where it looked for version 3, at reaching the network ungoverned for version
-// 4 — which is precisely the failure each bump exists to prevent. A version that
-// cannot work must not be offered.
-func HostVersions() []int { return []int{Version5} }
+// 4, at parsing the grant for version 5 — which is precisely the failure each
+// bump exists to prevent. A version that cannot work must not be offered.
+func HostVersions() []int { return []int{Version6} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {
