@@ -205,9 +205,9 @@ Must-land is marked; cut from the bottom, never from must-land.
 
 1. **#1352** — secret material bypassing RPC admission into durable history.
    Invariant 7 is the invariant; this lands before anything else. *(must)* —
-   PR #1391.
+   PR #1391, **merged**.
 2. **#1336** — plugin handshake token readable in `/proc/<pid>/environ` for
-   the process lifetime. *(must)* — PR #1389 (protocol v4).
+   the process lifetime. *(must)* — PR #1389 (protocol v4), **merged**.
 3. **#1306** — let a worktree agent hand the gate its merge-base; the gate is
    the thing 29 merges/day stand on. *(must)* — **merged**, PR #1387; the
    no-scope fallback's other half is #1388.
@@ -241,29 +241,41 @@ Must-land is marked; cut from the bottom, never from must-land.
    immutable, explicit grant rather than per-plugin env constants), then
    execute #1321/#1322/#1323 so `github`/`vcs`/`git` obey the operator's
    `--egress-policy` exactly as `sql`/`slack` do. *(must)* — decision recorded
-   on #1332 (with the default-grant amendment); PR A is #1390; the
-   schema-owned launch-input question it surfaced is #1393.
+   on #1332 (with the default-grant amendment). PR A, #1390, **merged**
+   2026-09-02 after three security passes: protocol v5, the SDK installing
+   the attested identity and marking header-visible credentials (sticky
+   across redirect hops), proxy inputs granted only under
+   `proxy_from_environment`, the grant built at `NewHost`. PR B is #1411:
+   the deployment default forwarded and marked `deployment_default: true`,
+   `git`/`vcs`/`github`/`slack`/`sql` on the SDK constructor, protocol v6
+   because a key a strict parser refuses is not additive — the second bump
+   #1393 anticipated. The schema-owned launch-input question is #1393.
 9. **Worker-side audit** (#1379) — wire the existing `audit.Recorder` through
    `runWorker` so task-policy, secret, egress and assumption decisions
    (allows included) leave the same trail server RPCs already do; #1018's
    decided contract at the second of its two homes, #353's principle 2 made
-   true past the RPC boundary. — PR #1394; its review left two gaps
-   deliberately outside it: #1397 (a permitted redirect chain leaves one
-   record, not one per hop) and #1399 (a plugin enforcing the same policy in
-   its own process leaves none).
+   true past the RPC boundary. — PR #1394, **merged** 2026-09-02: one record
+   per dispatch attempt on both drivers, an interrupted evaluation or an
+   unresolved dial recorded as no decision, `THREAT_MODEL.md` gap 7 rewritten
+   inside it. Its review left two gaps deliberately outside it: #1397 (a
+   permitted redirect chain leaves one record, not one per hop) and #1399 (a
+   plugin enforcing the same policy in its own process leaves none).
 10. **Typed outputs, schema first** (#1377) — `type:` on output declarations
     (mirroring `inputs:`), compile + validate + both drivers + `flow breaking`
-    awareness; the B1-style opener for everything in P3. — PR #1392.
+    awareness; the B1-style opener for everything in P3. — PR #1392,
+    **merged**; the container-key hole its review found (#1404) is closed by
+    #1409, **merged**, with the literal walk bounded at `MaxStructureDepth`.
 11. **The webhook→signal bridge** *(flagship; #96 is the design record, and
     its thread now carries the promotion proposal)* — a verified delivery
     answering a declared `wait_for_signal:`/`wait_for_signals:` gate: reuses
     the existing verification schemes and `signals:` authorization, needs a
     sender-identity shape and idempotency across redelivery, conformance
     cases with both drivers as callers, and the `flowstate-security-review`
-    pass before merge. **Promoted** (recorded on #96): dispatched as soon as
-    the perimeter PRs of the wave are merged. If the week runs
-    short, this slips whole rather than shipping unverified — a half-bridge
-    at a trust boundary is worse than none.
+    pass before merge. **Promoted** (recorded on #96); the build is in
+    progress on `claude/96-webhook-signal-bridge`, both-driver conformance
+    cases proved and the docs and examples underway at the time of writing.
+    If the week runs short, this slips whole rather than shipping
+    unverified — a half-bridge at a trust boundary is worse than none.
 12. **Factory catch-up** — #1386 (the ledger cadence decision), #1307's
     `tools/fleet` reachability, and the docs/CI.md workflow-inventory fix if
     not already inside (7).
@@ -286,10 +298,12 @@ observability through `Get`/timeline), #1386 (the factory ledger cadence).
 measured friction rather than from the census): #1388 (the gate's no-scope
 fallback), #1393 (launch inputs as a schema-owned shape; #1398 was a
 duplicate filed after a context reset and is closed into it), #1395 (the
-signal-carry-bound test trips the deadlock detector on a loaded runner),
-#1396 (a sensitive output's out-of-set value echoed unredacted; being fixed
-inside #1392 after Codex raised it there too), #1397 (per-hop egress
-records), #1399 (plugin-process enforcement decisions unrecorded).
+signal-carry-bound test trips the deadlock detector on a loaded runner;
+fixed by #1410 at the production worker's own budget), #1396 (a sensitive
+output's out-of-set value echoed unredacted; fixed inside #1392), #1397
+(per-hop egress records), #1399 (plugin-process enforcement decisions
+unrecorded), #1404 (a `struct` output keyed by non-strings passed validation
+and reached callers in tagged JSON; fixed by #1409).
 
 **Found already claimed — advance, never re-file:** the webhook→signal
 bridge is #96 (promotion proposed in its thread); scope enforcement is
