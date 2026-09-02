@@ -13,7 +13,7 @@ func TestHandshakeRoundTrip(t *testing.T) {
 
 	want := Handshake{
 		HandshakeVersion: HandshakeVersion,
-		ProtocolVersion:  Version4,
+		ProtocolVersion:  Version5,
 		Network:          NetworkUnix,
 		Address:          "/var/folders/abc/fsplug123/s",
 	}

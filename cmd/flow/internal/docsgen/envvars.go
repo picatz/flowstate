@@ -138,8 +138,50 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_EGRESS_POLICY",
 			value:   "unset",
-			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP and first-party SQL PostgreSQL connections. When set it replaces the built-in policy entirely rather than merging with it.",
+			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP and granted to every plugin the worker launches. Enforcement inside a plugin is that plugin's own code, not something the worker can impose on a separate process: `sql` (PostgreSQL connections) and `slack` apply the grant today, while `git`, `github` and `vcs` still reach the network under their own default policy and do not read it — tracked in #1332. When set it replaces the built-in policy entirely rather than merging with it.",
 			read:    "cmd/flow/egress.go",
+		},
+		{
+			name:    "FLOWSTATE_EGRESS_POLICY_B64",
+			value:   "unset",
+			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed, at most 64 KiB before encoding. It is a per-launch snapshot, so a policy file edited afterwards reaches the plugins the worker starts next rather than the ones already running. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one. Set-but-empty is a grant whose policy document is empty, which is what an empty `--egress-policy` file configures; only an unset variable means nothing was granted. Receiving the grant is not enforcing it: `sql` and `slack` read it, `git`, `github` and `vcs` do not yet (#1332).",
+			read:    "pkg/flowstate/v1/plugin/sdk/egress.go",
+		},
+		{
+			name:    "HTTP_PROXY",
+			value:   "unset",
+			purpose: "The worker's own proxy for plain HTTP, read by Go's `http.ProxyFromEnvironment` and honoured by the built-in `http` task when the egress policy sets `proxy_from_environment`. Under that policy the worker also grants it to every plugin it launches, verbatim, because a plugin's environment is built from nothing and would otherwise dial past the proxy the operator requires; under any other policy it is not forwarded. `http_proxy` is the same variable and Go prefers this spelling when both are set, so naming either one in the plugin host's `Env` replaces both.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "http_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `HTTP_PROXY`, and the same variable: Go's `http.ProxyFromEnvironment` reads both and prefers the uppercase. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "HTTPS_PROXY",
+			value:   "unset",
+			purpose: "The worker's own proxy for HTTPS, read by Go's `http.ProxyFromEnvironment`. Granted to launched plugins exactly as `HTTP_PROXY` is, and only when the egress policy sets `proxy_from_environment`.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "https_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `HTTPS_PROXY`, and the same variable. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "NO_PROXY",
+			value:   "unset",
+			purpose: "Hosts the worker reaches directly rather than through a proxy, read by Go's `http.ProxyFromEnvironment`. Granted to launched plugins alongside the proxy variables, and only when the egress policy sets `proxy_from_environment` — without it a plugin would proxy destinations the worker itself does not.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "no_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `NO_PROXY`, and the same variable. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
 		},
 		{
 			name:    "FLOWSTATE_TASK_POLICY",
@@ -339,18 +381,6 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			purpose: "The value of an `env:` secret. Read only for a name the allowlist carries, and only inside the activity that applies it: the reference is what travels, never the value.",
 			read:    "pkg/flowstate/v1/secrets/env.go",
 			family:  true,
-		},
-		{
-			name:    "FLOWSTATE_SQL_EGRESS_POLICY_B64",
-			value:   "unset",
-			purpose: "Internal grant from the plugin host to the first-party SQL plugin: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; PostgreSQL execution is denied when the grant is absent.",
-			read:    "cmd/flow/plugins.go",
-		},
-		{
-			name:    "FLOWSTATE_SLACK_EGRESS_POLICY_B64",
-			value:   "unset",
-			purpose: "Internal grant from the plugin host to the first-party Slack plugin: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; outbound Slack writes are denied when the grant is absent.",
-			read:    "cmd/flow/plugins.go",
 		},
 		{
 			name:    "FLOWSTATE_SYMBOLS",

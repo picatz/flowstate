@@ -53,7 +53,7 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 			wantErr: ErrProtocolVersion,
 			// Both halves: a refusal that names only this side leaves the
 			// operator to work out which of the two builds is the old one.
-			wantMsg: fmt.Sprintf("the host offered 99 and this plugin speaks %d", protocol.Version4),
+			wantMsg: fmt.Sprintf("the host offered 99 and this plugin speaks %d", protocol.Version5),
 		},
 		{
 			name: "no socket to serve on",
@@ -392,8 +392,8 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 	if handshake.Address != socket {
 		t.Errorf("announced address = %q, want %q", handshake.Address, socket)
 	}
-	if handshake.ProtocolVersion != protocol.Version4 {
-		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version4)
+	if handshake.ProtocolVersion != protocol.Version5 {
+		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version5)
 	}
 }
 
@@ -444,6 +444,17 @@ func startTestPlugin(t *testing.T, token string) string {
 func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) string {
 	t.Helper()
 
+	return startTestPluginRunning(t, token, stdout,
+		func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			return &flowstatev1.Node_Outputs{}, nil
+		})
+}
+
+// startTestPluginRunning is the same harness with the task's body supplied, for
+// a test whose claim is about what the SDK did before that body could run.
+func startTestPluginRunning(t *testing.T, token string, stdout *syncBuffer, fn TaskFunc) string {
+	t.Helper()
+
 	// A short directory: a Unix socket address holds about a hundred bytes, and
 	// the temporary directory is most of that on macOS.
 	dir, err := os.MkdirTemp("", "sdkt")
@@ -485,9 +496,7 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 				Name:   "testplug_noop",
 				Input:  &flowstatev1.Task_Log_Inputs{},
 				Output: &flowstatev1.Task_Log_Outputs{},
-				Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
-					return &flowstatev1.Node_Outputs{}, nil
-				},
+				Fn:     fn,
 			}},
 		})
 	}()
