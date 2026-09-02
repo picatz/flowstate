@@ -809,6 +809,99 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 	}, nil
 }
 
+// MapKeyTypeError is what [LiteralToGo] refuses a map key with: a Go
+// map[string]any holds string keys and nothing else, so a value keyed by
+// anything CEL also allows — an int, an unsigned int, a bool — has no plain
+// spelling at all.
+//
+// A named type rather than a bare sentence because two places now read the same
+// judgement. The projection in `cmd/flow` keeps the schema's tagged encoding for
+// a value that will not convert, and [CheckOutputValue] refuses a `type: struct`
+// output that would reach that fallback — a declaration promising a plain
+// object, kept by the rule the projection itself applies rather than by a second
+// rule beside it that could come to disagree (#1404).
+type MapKeyTypeError struct {
+	// KeyType names the refused key's type the way a declaration spells one.
+	//
+	// The name only, never the key: a refusal composed from this is the failure
+	// text of a run whose output may be declared `sensitive:`, and a key is part
+	// of that value (invariant 7).
+	KeyType string
+}
+
+func (e *MapKeyTypeError) Error() string {
+	return fmt.Sprintf(
+		"map key of type %s cannot be converted to a Go map key: only string keys are supported",
+		e.KeyType)
+}
+
+// LiteralKindError is what [LiteralToGo] refuses a literal with when the union
+// holds a kind no plain Go value can spell at all — a type, an enum, or a
+// packed message, none of which a Flowfile can write and each of which a
+// hand-built specification or a future profile could still carry here.
+//
+// Named for the same reason [MapKeyTypeError] is: [CheckOutputValue] refuses a
+// declared container that would otherwise reach the projection's fallback, and
+// the rule about what will not convert has to be the projection's own rather
+// than a second one beside it.
+type LiteralKindError struct {
+	// Kind is the Go type of the schema's oneof arm, and only that.
+	//
+	// Not the value: this travels into the failure text of a run whose output
+	// may be declared `sensitive:`, and every part of a value is part of the
+	// value (invariant 7). A kind is a fact about the schema instead.
+	Kind string
+}
+
+func (e *LiteralKindError) Error() string {
+	return fmt.Sprintf("a %s cannot be converted to a Go value", e.Kind)
+}
+
+// LiteralDepthError is what [LiteralToGo] refuses a literal with when its lists
+// and maps nest past [MaxStructureDepth].
+//
+// Depth is the resource this walk spends, and the walk is recursive, so a value
+// nested deeply enough exhausts a goroutine's stack — a crash of the whole
+// process, which no caller can recover from, in place of an answer. The bound is
+// [MaxStructureDepth] rather than a number of this file's own, per the
+// one-constant rule [maxConstraintValueDepth] states at length: this descends an
+// `expr.Value`'s lists and maps, which is the identical resource
+// [walkConstraintValue] and [CheckStructureDepth] already bound at 32 wherever a
+// value can arrive. Every value this system already accepts is inside it, so the
+// guard refuses nothing that used to convert.
+//
+// It terminates a cyclic literal too, without a visited set. A cycle is only
+// constructible in process — a protobuf message decoded from the wire is a tree
+// — so an embedder that has already broken that contract gets a refusal at depth
+// rather than an unbounded descent.
+type LiteralDepthError struct {
+	// Depth is the bound, not how deep the value went: the walk stops at the
+	// bound, so how much further the value nests is exactly what it did not
+	// measure.
+	Depth int
+}
+
+func (e *LiteralDepthError) Error() string {
+	return fmt.Sprintf("nests deeper than the %d levels this conversion can walk", e.Depth)
+}
+
+// mapKeyTypeName names a map key's type in the vocabulary a declaration is
+// written in.
+//
+// [DeclaredTypeName] over [inputTypeOf] answers for CEL's own key set — a CEL
+// map key is a string, an int, an unsigned int, or a bool — which is what lets a
+// refusal about one read in the same words a declared type does. The schema's
+// literal union is wider than that set, so a hand-built specification can carry
+// a key [inputTypeOf] has no declared type for; [literalKindName] names those,
+// and the sentence stays a sentence rather than naming "no type".
+func mapKeyTypeName(key *expr.Value) string {
+	if t, ok := inputTypeOf(key); ok {
+		return DeclaredTypeName(t)
+	}
+
+	return literalKindName(key)
+}
+
 // LiteralToGo converts a resolved CEL literal into a plain Go value,
 // recursively for a list or a map. It is the reverse of what [NewValue]
 // performs when a Go value becomes a literal.
@@ -816,7 +909,27 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 // This is the one spelling of that conversion: flowtest and embed both call
 // it rather than each keeping their own copy of the switch, so a step's
 // recorded value reads back the same way no matter which package reads it.
+//
+// Bounded by [MaxStructureDepth], which is why the recursion is a separate
+// function carrying a depth: the guard belongs to the walk rather than to any
+// one caller, so every one of them — the run document's projection, flowtest,
+// flowdebug, embed, and [CheckOutputValue] — is answered rather than crashed by
+// a value nested past what a recursive walk can afford. See [LiteralDepthError].
 func LiteralToGo(v *expr.Value) (any, error) {
+	return literalToGo(v, 0)
+}
+
+// literalToGo is [LiteralToGo]'s recursion, counting how far it has descended.
+//
+// depth increments on the way into a list element and into a map entry, which is
+// the accounting [walkConstraintValue] uses over the same value — so a literal
+// one walk accepts is one the other accepts, rather than two walks agreeing on a
+// constant and disagreeing about what it counts.
+func literalToGo(v *expr.Value, depth int) (any, error) {
+	if depth > MaxStructureDepth {
+		return nil, &LiteralDepthError{Depth: MaxStructureDepth}
+	}
+
 	switch kind := v.GetKind().(type) {
 	case nil, *expr.Value_NullValue:
 		return nil, nil
@@ -835,7 +948,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 	case *expr.Value_ListValue:
 		list := make([]any, 0, len(kind.ListValue.GetValues()))
 		for i, element := range kind.ListValue.GetValues() {
-			native, err := LiteralToGo(element)
+			native, err := literalToGo(element, depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("element %d: %w", i, err)
 			}
@@ -852,10 +965,10 @@ func LiteralToGo(v *expr.Value) (any, error) {
 			// this target cannot represent rather than corrupt the result.
 			key, ok := entry.GetKey().GetKind().(*expr.Value_StringValue)
 			if !ok {
-				return nil, fmt.Errorf("map key of type %T cannot be converted to a Go map key: only string keys are supported", entry.GetKey().GetKind())
+				return nil, &MapKeyTypeError{KeyType: mapKeyTypeName(entry.GetKey())}
 			}
 			name := key.StringValue
-			native, err := LiteralToGo(entry.GetValue())
+			native, err := literalToGo(entry.GetValue(), depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("key %q: %w", name, err)
 			}
@@ -863,7 +976,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 		}
 		return object, nil
 	default:
-		return nil, fmt.Errorf("a %T cannot be converted to a Go value", kind)
+		return nil, &LiteralKindError{Kind: fmt.Sprintf("%T", kind)}
 	}
 }
 
