@@ -402,7 +402,16 @@ here against what #133's third comment says, and the correction matters:
 `GetChildWorkflowExecution().Get()` resolves when the child has *started*, so
 a parent that waited on it would return with the child still running, and
 `REQUEST_CANCEL` would then cancel the very work `undo:` is ordered around
-(Codex, on #1479). Update, with
+(Codex, on #1479). A fifth requirement joins the four: a callee
+that contains `wait_for_signal` needs an address. `FlowstateServer.Signal`
+delivers to the workflow id the caller names (`lifecycle.go:596`), and
+Temporal does not forward a parent's signal to a child, so copying the
+signal-policy memo authorizes delivery without providing a route. The
+divergence is worse than a hang, because invariant 3 fails in the direction
+that hides it: the local driver keeps answering a suite's scripted signals
+while the durable run waits forever. So the slice defines the addressing — a
+stable child address, or the parent relaying — and the shared conformance set
+carries a child callee that blocks on a signal (Codex, on #1479). Update, with
 update-with-start in the same decision, follows — it is an absence a signal
 plus a poll routes around, where the inline call is a ceiling nothing routes
 around. *Refused:* Nexus ahead of either (design note only), and a literal
@@ -722,7 +731,12 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
 
 - **Delete** `Value.Type` (#1285): zero readers, and the live vocabulary now
   has two consumers of the other enum.
-- **Retire** `InputDeclaration.Type`'s enum behind the `Type` message —
+- **Retire** the declaration enum behind the `Type` message — on
+  **both** fields that use it, `InputDeclaration.type = 2` and
+  `OutputDeclaration.type = 6` (`workflow.proto:1165`), since they share one
+  vocabulary and both travel inside `RunState.workflow`. Migrating only the
+  input side leaves outputs unable to say `list(string)`, which is the typed
+  signature the edition exists to deliver —
   *additively*, and this is the one place the delete-rather-than-deprecate
   posture does not apply. `RunState.workflow` is a whole `Workflow`
   (`run.proto`), so every declaration is serialized into durable Temporal
@@ -758,7 +772,12 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
   | `TYPE_ENUM` | `enum` + sibling `values:` | 3 | unchanged |
 
   Three rewrites, four unchanged, 121 declarations in `examples/`, and the
-  legacy field keeps reading all seven for as long as any history holds one.
+  legacy fields keep reading all seven for as long as any history holds one.
+  The eighth case belongs to outputs only: `TYPE_UNSPECIFIED` is a real value
+  on `OutputDeclaration.type`, meaning no declared output type, where on an
+  input it cannot occur — so the new field is absent rather than carrying a
+  zero kind, and the reader maps absence to absence rather than to `dyn`
+  (Codex, on #1479).
 - **Retire** `json_parse` for `json.parse` (#1454, R3); `flow fix` rewrites it.
 - **Delete** the four type switches, the eighteen reference-model lists, the
   two proto→outputs bridges (replaced by one), `sdk/values.go:274-423`, the
@@ -874,13 +893,13 @@ checked.
 | M | #1333 `plugintoolkit` | `plugins/*`, a new shared package |
 | M | #1388 gate declines the wide leg; plugin-module scanning in `ciDecisions` | `tools/gate/main.go`, `ci.go`, `Makefile`, `ci.yml` |
 | M | SARIF/JUnit; workflow inventory; MCP prompts + resource + fix tool | `cmd/flow/`, `internal/mcp/` |
-| M | `codex.exec base_ref` **plus its repository/auth shape or a materialization task**, proved on `agentic-fix`'s private-repository path | `plugins/codex`, `plugins/git`, `examples/agentic-loop/` |
+| M | `codex.exec base_ref` **plus its repository/auth shape or a materialization task**, proved on `agentic-fix`'s private-repository path | `plugins/codex`, `plugins/git`, `examples/plugins/agentic-fix/` |
 | S | #1465 `must:` under the workflow's profile, **before** `CurrentProfile` moves | `constraints.go:163`, an old-profile regression case |
 | L | D1+D2 the type edition — **additive**: the `Type` message takes a new field number, the enum keeps its own, nothing is reserved (durable history; see the retirement list) | `workflow.proto`, `flowfile/`, `eval.go`, `celenv.go`, `rundoc.go`, `docs/reference/values.md` |
 | L | #1437 the reference-model registry | `pkg/flowstate/v1/`, `flowfile/`, `lsp/`, `flowdebug/`, `flowtest/`, `cmd/flow/taskrun.go` |
 | L | #1440+#1456 one bridge + e2e plugin tests | `protoliterals.go`, `sdk/values.go`, `internal/pluginreachtest` |
 | L | #1393 `LaunchRequest`, protocol 7 | `plugin.proto`, `plugin/launch.go`, `sdk/` |
-| L | D4 `call: execution: child`, both drivers | `workflow.proto`, `flowfile/`, `engine/execute.go:594`, `eval.go`, `server/`, a shared conformance case set |
+| L | D4 `call: execution: child`, both drivers, **including how a signal reaches a child callee** | `workflow.proto`, `flowfile/`, `engine/execute.go:594`, `eval.go`, `server/lifecycle.go`, a shared conformance case set with a signal-blocked callee |
 | L | #1385 compensation record | `run.proto`, `service.proto`, `engine/workflow.go`, `server/timeline.go` |
 | L | #1014 scope enforcement, credential-sensitive, with bearer/mTLS/anonymous/MCP negative tests | `authorization.go`, `auth/challenge.go`, `auth/mcpverifier.go`, `server/`, `cmd/flow/mcpserve.go` |
 | L | #1435 rename/references; #1384 pushdown; #108 MCP bridge spike | `lsp/`, `flowfile/fix*`; `server/list.go`; a new plugin |
