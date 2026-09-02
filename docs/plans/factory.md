@@ -201,3 +201,21 @@ is proved with an allow-list (`event` accepted only as the operand of `.body`),
 which needs no alias tracking because an alias must mention the root somewhere
 the rule refuses. Receiver-cost close, corrected for that round: bot findings
 acted on, twenty-four; refuted with evidence, one; owner turns needed, one.
+
+## Wave 3 (2026-09-02): the reference-model audit
+
+Source: `2026-09-reference-model.md`; the umbrella #1421 and its 23
+sub-issues (the numbers are not contiguous; the exact list is the table in
+that file).
+
+Dispatched: seven auditors at read-only, five deep and two mechanical, one
+lead verifying every citation before filing. Nothing landed in code by
+design; the deliverable was the slate. Friction, measured: the harness
+refuses a subagent's report `Write`, so four reports arrived as final
+messages (brief rule: ask for text, not a path); two agents put probe tests
+in the tracked tree and cleaned up on request (brief rule: name the
+scratch directory and forbid tracked-tree probes explicitly); one owner
+redirect mid-flight widened scope and cost two more agents rather than a
+re-brief. Receiver-cost: zero clarification turns; owner edits to our
+artifacts: none yet; findings accepted vs noise: to be measured as the
+issues are triaged.
