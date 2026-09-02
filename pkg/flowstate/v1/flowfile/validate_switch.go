@@ -42,7 +42,7 @@ import (
 // in order, in the run's own scope, so an `undo:` there means exactly what it
 // would mean on the same step written under an `if:` at this position — both
 // drivers run the body the same way.
-func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if sw.GetValue() == nil {
@@ -271,7 +271,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 				})
 			}
 		}
-		ds = append(ds, validateNested(body, enclosing, index, wf, depth, placement)...)
+		ds = append(ds, validateNested(body, enclosing, index, wf, profile, depth, placement)...)
 		for _, node := range body {
 			seenIDs[node.GetId()] = true
 		}

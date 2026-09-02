@@ -70,7 +70,7 @@ func rootHolds(root string) string {
 }
 
 // validateDeclaredInputs reports what is wrong with the `inputs:` block as a whole.
-func validateDeclaredInputs(wf *v1.Workflow) Diagnostics {
+func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 	var ds Diagnostics
 
 	seen := make(map[string]int, len(wf.GetDeclaredInputs()))
@@ -119,9 +119,9 @@ func validateDeclaredInputs(wf *v1.Workflow) Diagnostics {
 			seen[name] = i
 		}
 
-		ds = append(ds, validateInputDefault(wf.GetProfile(), declaration, field)...)
-		ds = append(ds, validateInputConstraintShape(wf.GetProfile(), declaration, field)...)
-		ds = append(ds, validateInputExample(wf.GetProfile(), declaration, field)...)
+		ds = append(ds, validateInputDefault(profile, declaration, field)...)
+		ds = append(ds, validateInputConstraintShape(profile, declaration, field)...)
+		ds = append(ds, validateInputExample(profile, declaration, field)...)
 	}
 
 	return ds
@@ -269,7 +269,7 @@ func validateInputDefault(profile string, declaration *v1.InputDeclaration, fiel
 // vars, and the run's inputs. Nothing bare is in it — a loop's binding exists only
 // inside its body, and `now` only inside a wait's own expressions — so a reference to one is
 // reported like any other unknown name.
-func validateDeclaredOutputs(wf *v1.Workflow, scope refScope, index int) Diagnostics {
+func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, index int) Diagnostics {
 	var ds Diagnostics
 
 	seen := make(map[string]int, len(wf.GetDeclaredOutputs()))
@@ -332,7 +332,7 @@ func validateDeclaredOutputs(wf *v1.Workflow, scope refScope, index int) Diagnos
 		// which does not exist yet — so what is checkable now is only that the
 		// expression itself compiles and type-checks as a bool predicate, the
 		// same load-time half [validateInputConstraintShape] runs for an input.
-		if err := v1.CheckOutputConstraintShape(wf.GetProfile(), declaration); err != nil {
+		if err := v1.CheckOutputConstraintShape(profile, declaration); err != nil {
 			ds = append(ds, Diagnostic{Field: outputConstraintShapeField(declaration, field, err), Message: err.Error()})
 		}
 

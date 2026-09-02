@@ -260,7 +260,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		}}
 	}
 
-	return validateAtDepth(wf, 0, v1.UndoScopeTopLevel)
+	return validateAtDepth(wf, wf.GetProfile(), 0, v1.UndoScopeTopLevel)
 }
 
 // validateAtDepth is the whole of what [Validate] checks for one workflow, at
@@ -276,7 +276,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 // inside a `for_each` body or a `parallel` branch — a call is transparent to
 // whatever restriction already applies there, not an escape from it. See
 // [validateCallAtDepth], which does the composing.
-func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if wf.GetName() == "" {
@@ -363,7 +363,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 		}
 	}
 
-	ds = append(ds, validateDeclaredInputs(wf)...)
+	ds = append(ds, validateDeclaredInputs(wf, profile)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
 	ds = append(ds, validateDebug(wf)...)
@@ -431,17 +431,17 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 			// block it sits in.
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, inner, i, wf, depth)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, i, wf, profile, depth)...)
 				// A loop's body outputs do not escape it — only its own `results`
 				// output does — so body step ids must not become referenceable.
 
 			case *v1.Node_Loop:
-				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, i, wf, depth, placement)...)
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, i, wf, profile, depth, placement)...)
 				// A loop's body outputs do not escape it either — only its own
 				// `results` (and `state`) outputs do.
 
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, depth)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, profile, depth)...)
 				// Branch outputs are merged into the enclosing scope once the
 				// block completes, so a later step may reference them by id —
 				// recordStepInScope below adds them.
@@ -450,13 +450,13 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
 
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1, placement)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, profile, depth+1, placement)...)
 
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, i, wf)...)
 
 			case *v1.Node_Switch:
-				ds = append(ds, validateSwitch(id, kind.Switch, inner, i, wf, depth, placement)...)
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, i, wf, profile, depth, placement)...)
 				// Exactly one body runs and its outputs merge into the enclosing
 				// scope, the way a parallel branch's do, so a later step may
 				// reference a case-body step by id — and simply not resolve at
@@ -483,7 +483,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	// Last, against the scope the walk ends with, because that is when a run
 	// evaluates them: every top-level step has finished, so a reference to the final
 	// step is correct here and would be a forward reference anywhere else.
-	ds = append(ds, validateDeclaredOutputs(wf, scope, len(wf.GetSteps()))...)
+	ds = append(ds, validateDeclaredOutputs(wf, profile, scope, len(wf.GetSteps()))...)
 
 	return ds
 }
@@ -901,7 +901,7 @@ func (s refScope) withLocal(name string) refScope {
 // The body is checked with the enclosing steps visible, because a body step may
 // legitimately reference a step defined before the loop, plus the iterator, which
 // exists only inside the body.
-func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
+func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int) Diagnostics {
 	var ds Diagnostics
 
 	if loop.GetItems() == nil {
@@ -980,7 +980,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	// one line is the whole of what rooting deletes: with the two apart, an
 	// iterator sharing a step's name is no longer ambiguous, so the rule that used
 	// to forbid it has nothing left to prevent.
-	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, depth, v1.UndoScopeConcurrent)...)
+	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, profile, depth, v1.UndoScopeConcurrent)...)
 }
 
 // validateNamedLoop checks a `loop:` node: its required body and stop condition,
@@ -997,7 +997,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 // a `for_each` body — so a body that claimed [v1.UndoScopeLoop] unconditionally
 // would validate a compensation the engine refuses, which is invariant 3's exact
 // shape pointed at the validator.
-func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if len(loop.GetBody()) == 0 {
@@ -1109,7 +1109,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	if hasState {
 		bodyScope = enclosing.withLocal(state)
 	}
-	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth, placement.IntoLoop())...)
+	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, profile, depth, placement.IntoLoop())...)
 }
 
 // bodyHasNestedLoop reports whether a loop body directly or transitively contains
@@ -1225,7 +1225,7 @@ func validateLoopStateName(stepID, state string, enclosing refScope) Diagnostics
 }
 
 // validateParallel checks a parallel node and its branches.
-func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
+func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int) Diagnostics {
 	var ds Diagnostics
 
 	if len(parallel.GetBranches()) == 0 {
@@ -1254,7 +1254,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 		// Each branch sees only what existed before the block, never a sibling's
 		// steps, which is what validation must model to catch a cross-branch
 		// reference.
-		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, depth, v1.UndoScopeConcurrent)...)
+		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, profile, depth, v1.UndoScopeConcurrent)...)
 		for _, node := range branch.GetSteps() {
 			seen[node.GetId()] = true
 		}
@@ -1269,7 +1269,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 // `loop:` body passes whatever [v1.UndoScope.IntoLoop] composes from the scope
 // the loop step itself sits in. A callee reached through a `call:` does not come
 // through here at all; see [validateCallAtDepth].
-func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	scope := enclosing.clone()
@@ -1329,19 +1329,19 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		if task == nil {
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf, depth)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf, profile, depth)...)
 			case *v1.Node_Loop:
-				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, index, wf, depth, placement)...)
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, index, wf, profile, depth, placement)...)
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf, depth)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf, profile, depth)...)
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, index, wf)...)
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1, placement)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, profile, depth+1, placement)...)
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, index, wf)...)
 			case *v1.Node_Switch:
-				ds = append(ds, validateSwitch(id, kind.Switch, inner, index, wf, depth, placement)...)
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, index, wf, profile, depth, placement)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,

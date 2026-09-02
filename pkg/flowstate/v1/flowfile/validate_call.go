@@ -33,7 +33,7 @@ import (
 // placement since #253, so there is nothing there left to launder. Both execution drivers compose the identical way (see
 // [v1.UndoScope.IntoCall]), which is what keeps `flow validate` from accepting
 // a shape either engine refuses, or refusing one either engine would allow.
-func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if err := v1.CheckCallDepth(depth); err != nil {
@@ -44,6 +44,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 	if callee == nil {
 		return append(ds, Diagnostic{Step: id, Field: "call", Message: "call has no workflow"})
 	}
+	calleeProfile := v1.CalleeProfile(profile, callee)
 
 	// Arguments are resolved in the *caller's* scope — that is the whole of
 	// [v1.CallScope]'s isolation guarantee — so they are checked against it
@@ -77,7 +78,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 		// `vars.x` type as `dyn`), it is exactly as unchecked here as it
 		// always was, and [v1.BindRunInputs] still refuses a wrong type once
 		// the expression has a value to check at run time.
-		if diag := checkCallArgumentType(id, name, call.GetArguments()[name], declaration, callee); diag != nil {
+		if diag := checkCallArgumentType(id, name, call.GetArguments()[name], declaration, callee, calleeProfile); diag != nil {
 			ds = append(ds, *diag)
 		}
 	}
@@ -97,7 +98,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 	// The callee's own steps, vars, and outputs, validated on its own terms and
 	// in its own — isolated — scope: not the scope above, which is the caller's
 	// and exactly what [v1.CallScope] refuses a callee.
-	for _, d := range validateAtDepth(callee, depth, placement.IntoCall()) {
+	for _, d := range validateAtDepth(callee, calleeProfile, depth, placement.IntoCall()) {
 		d.Step = id
 		d.Message = fmt.Sprintf("workflow %q: %s", callee.GetName(), d.Message)
 		ds = append(ds, d)
@@ -120,7 +121,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 // declaration is exactly as much a mistake as a literal's would be, and an
 // author benefits from being told now rather than only when that expression
 // is finally evaluated.
-func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1.InputDeclaration, callee *v1.Workflow) *Diagnostic {
+func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1.InputDeclaration, callee *v1.Workflow, profile string) *Diagnostic {
 	switch value.GetKind().(type) {
 	case *v1.Value_Literal:
 		if err := v1.CheckInputValue(name, declaration, value); err != nil {
@@ -132,7 +133,7 @@ func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1
 		// standard-rule keys, `min_len:` and the rest) is a mistake at the
 		// call site, caught here rather than only at the run's own
 		// submit-equivalent inside BindRunInputs.
-		if err := v1.CheckInputConstraints(callee.GetProfile(), name, declaration, value); err != nil {
+		if err := v1.CheckInputConstraints(profile, name, declaration, value); err != nil {
 			return &Diagnostic{Step: stepID, Field: "with." + name, Message: err.Error()}
 		}
 		return nil
