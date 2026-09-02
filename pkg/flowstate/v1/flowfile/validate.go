@@ -484,6 +484,9 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	// evaluates them: every top-level step has finished, so a reference to the final
 	// step is correct here and would be a forward reference anywhere else.
 	ds = append(ds, validateDeclaredOutputs(wf, scope, len(wf.GetSteps()))...)
+	if err := v1.CheckWorkflowAtomicBlockActivities(wf); err != nil {
+		ds = append(ds, Diagnostic{Message: err.Error()})
+	}
 
 	return ds
 }
@@ -2297,10 +2300,9 @@ func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnosti
 	// Whether it will *fit* is a different question from whether it is well
 	// formed, and an author should meet it here rather than at submit.
 	//
-	// It has no position, because there is nothing to point at: no single line is
-	// at fault, the document is. A diagnostic with no line is unusual enough in
-	// this package to be worth saying out loud — everything else here names a
-	// token, and the exception is deliberate rather than an omission.
+	// These have no position because they describe a whole-document property.
+	// The atomic-bound sentence still names the enclosing step, but no single
+	// child line is the reason its aggregate crosses the ceiling.
 	if err := v1.CheckSpecSize(wf); err != nil {
 		ds = append(ds, Diagnostic{Message: err.Error()})
 	}

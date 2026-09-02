@@ -1,8 +1,6 @@
 package conformance
 
-import (
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-)
+import v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 
 // PartialTranscriptCase is a workflow that fails, paired with the record its
 // driver must hand back alongside the failure ([v1.PartialTranscript]).
@@ -36,7 +34,7 @@ type PartialTranscriptCase struct {
 // #453). The record itself was never missing, both drivers accumulate it as they
 // walk, only unreturned.
 //
-// The three shapes here are the three questions a transcript can get wrong:
+// The shapes here are the questions a transcript can get wrong:
 //
 //   - what ran before the failure, and the failing step itself. The step that
 //     ended the run is recorded through [v1.FailedStepOutputs], the same shape a
@@ -55,10 +53,12 @@ type PartialTranscriptCase struct {
 //     covered by [LoopExhaustionTranscriptCases]: every iteration an exhausted
 //     loop recorded ran to completion, so its entry carries them.)
 //
-// The failure in each is a step's own `vars:` indexing past the end of a list:
-// it compiles, it fails when evaluated, it carries no TaskError, and it needs no
-// server, so the recorded sentence is the same one [ToleratedStepFailureCases]
-// already pins for the tolerated version of the identical failure.
+// Most failures below are a step's own `vars:` indexing past the end of a list:
+// they compile, fail when evaluated, carry no TaskError, and need no server, so
+// their recorded sentence is the same one [ToleratedStepFailureCases] already
+// pins for the tolerated version of the identical failure. The final case is a
+// pre-dispatch atomic-bound refusal, so it additionally proves that failures
+// before a selected switch body starts preserve the same account.
 func PartialTranscriptCases() []PartialTranscriptCase {
 	const oops = "['a'][5]"
 	const recorded = `var "bad": evaluate expression: index out of bounds: 5`
@@ -70,7 +70,6 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 			"bad": v1.NewExpr(oops),
 		})
 	}
-
 	return []PartialTranscriptCase{
 		{
 			Name: "the steps before an untolerated failure are recorded, and so is the step that failed",
@@ -180,6 +179,17 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 				// And the switch's own entry: the position the failure passed out
 				// through, *plus* the arm it had already selected.
 				"route": switchFailure(`step "inside_boom": `+recorded, "boom", "boom"),
+			}},
+		},
+		{
+			// The static pre-dispatch check is still a failure of the selected
+			// switch body. It must preserve the selection exactly like a task
+			// failure in that body; otherwise coverage reports the chosen arm as
+			// unreached solely because the bound correctly prevented dispatch.
+			Name:     "an oversized switch body keeps the arm selected before its refusal",
+			Workflow: siblingParallelForEachBlocks(),
+			Expected: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"choose": switchFailure(v1.AtomicBlockBodyActivitiesError(v1.MaxAtomicBlockActivities).Error(), "selected", "selected"),
 			}},
 		},
 	}
