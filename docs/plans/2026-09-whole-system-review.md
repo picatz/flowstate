@@ -277,7 +277,8 @@ with `flow fix` carrying files across it and the compiled contract untouched.
 **D1. One type vocabulary: a house `flowstate.v1.Type` message, spelled in
 the Flowfile as a CEL type expression.** (#1452; amended 2026-09-02 on the
 owner's steer, from a bracket spelling) The message has six kinds — `scalar`
-(string, int, double, bool, bytes, timestamp, duration, null — not `uint`,
+(string, int, double, bool, bytes, timestamp, duration, `null_type` — not
+`uint`,
 which D2 decides is not a Flowfile type and which a plugin's unsigned
 descriptor field binds as a range-constrained `int`), `list` of a `Type`, `map` with string keys and a value `Type`, `enum` as the
 existing closed string set, `message` by full name reserved for #177, and
@@ -298,8 +299,16 @@ evaluate with two function declarations and no parser change, and `list(1)`
 and `foo` are check errors with a column — the diagnostic the LSP wants,
 from the parser it already has. The wire is the message, so the CLI, server,
 LSP and MCP never parse a string; the house printer prints the CEL spelling,
-and one property test holds print-then-parse to the identity and the printed
-form equal to cel-go's own for every kind cel-go names briefly. *The rule
+and one property test holds print-then-parse to the identity. Equality with
+cel-go's own `Type.String()` is asserted per kind rather than blanket,
+because two spellings are deliberate translations and the test should say so:
+the null type is `null_type`, cel-go's name and the one `celcheck.go:462,490`
+already parses out of checker errors, because bare `null` is the null
+*literal* and could never be a type identifier (Codex, on #1479); and
+`timestamp`/`duration` are the house's brief names for types cel-go prints as
+`google.protobuf.Timestamp` and `google.protobuf.Duration`, declared as
+identifiers in the type environment because the standard environment gives
+those words to conversion functions. *The rule
 that keeps it honest:* a type value never enters a run environment. CEL
 erases parameters at run time — `type(xs)` on a list of strings is
 `list(dyn)` — so `type(inputs.tags) == list(string)` would be false and read
@@ -319,8 +328,12 @@ spelling beside CEL's and Go's, and `[` is a YAML flow indicator, so
 is not. *Also refused:* keeping `list` and `struct` as bare spellings — R3
 says two spellings for one meaning, one dies; `flow fix` rewrites `list` →
 `list(dyn)` and `struct` → `map(string, dyn)` at the edition boundary, which
-loses nothing because today's `struct` is an open map with no fields, and
-`InputDeclaration.Type`'s enum is read for one edition and then reserved.
+loses nothing because today's `struct` is an open map with no fields. The
+enum field itself is *not* reserved at the edition boundary: the `Type`
+message takes a new field number and both are carried until a drain or a
+documented migration retires the old one, because `RunState.workflow` puts
+every declaration into durable history — see the retirement list for the
+whole argument.
 *One YAML corner:* inside a flow mapping the comma in `map(string, int)`
 splits the value into two keys, which the decoder refuses as the unknown key
 `int)`; #1466 gains the rule that names the quoted form and `flow fix`
@@ -417,9 +430,14 @@ it does know: it stopped it. One conformance case pins the kind.
 else.** (#1447) No alias syntax; the module story is paths, a lockfile
 carrying the transitive digest set (#1448), a shared types document expanded
 at compile (#637's reference form is `./path.yaml#Name`), and a **bundle**
-for byte surfaces — `ValidateRequest`/`Compile` already take `files[]`; the
-resolver contract (#1376) is that a bundle names a root and resolves relative
-paths inside it, and a monorepo `lib/` above the calling file is reached only
+for byte surfaces. That bundle is a prerequisite, not an existing capability:
+`ValidateRequest` takes `files[]` but processes them as independent files
+rather than a root and its dependencies, and `CompileRequest` takes exactly
+one required `file` (`service.proto:1280-1285`), so a composed workflow is
+unresolvable over Compile and its MCP projection today. The additive
+root-and-bundle request shape plus resolver wiring lands before or with the
+callee work (Codex, on #1479). The resolver contract (#1376) is that a bundle
+names a root and resolves relative paths inside it, and a monorepo `lib/` above the calling file is reached only
 by a person-passed flag, never repository content. R1 decides it: an alias
 buys nothing at the call site a path does not, for a reader or a generator.
 *Reopens if:* a remote module registry resolves names to bytes, which is
@@ -519,8 +537,11 @@ test.
 5. **#1442** the `[]byte` arm and a round-trip table. *S*
 6. **#1358** pin the eight libraries. *S*
 7. **#1294** `--plugin-catalog` on `flow test`, refusing a stub or step naming
-   a task nothing knows; **#1295** and **#1443** the other two load-time name
-   checks. *M*
+   a task nothing knows. *M* — alone in this wave: D9 sequences the three
+   load-time name checks (**#1441**, **#1443**, **#1295**) onto the `TestSuite`
+   message after #1273, so scheduling them here would build them against the
+   interim structs D9 rejects. They move to the wave that lands #1273's swap,
+   as one set of three (Codex, on #1479).
 8. **#1288** an opaque spec field in the three tools' schemas, with a
    byte-bound test. *M*
 9. **#1434 + #1463** the five roots from `v1`'s constants in completion and
