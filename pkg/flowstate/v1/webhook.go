@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/operators"
 	"github.com/google/cel-go/common/types/ref"
 	"google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -108,6 +109,38 @@ const (
 	// construction wrong is how signature checks come to pass on forged bodies.
 	WebhookSchemeStripe = "stripe"
 )
+
+// webhookSchemesSigningHeaders records, per scheme, whether its signature
+// covers arbitrary request headers.
+//
+// A table rather than a condition written where it is needed, because "what
+// does this scheme actually attest" is a fact about the scheme and belongs
+// beside its name: a scheme added later answers this question once, here, and
+// every rule that depends on the answer follows without being edited.
+//
+// Both entries are false today, and neither is an oversight.
+// [WebhookSchemeHMACSHA256] signs the raw body and nothing else.
+// [WebhookSchemeStripe] signs `<timestamp>.<body>` — the timestamp is a
+// component of the signature header itself, checked against
+// [WebhookReplayWindow], and no other header is covered. So a holder of one
+// valid delivery can replay its exact body and signature with any other header
+// rewritten, which is what [CheckWebhookSignalAddressing] refuses to let a
+// bridge address a run from.
+var webhookSchemesSigningHeaders = map[string]bool{
+	WebhookSchemeHMACSHA256: false,
+	WebhookSchemeStripe:     false,
+}
+
+// WebhookSchemeSignsHeaders reports whether a scheme's signature covers the
+// delivery's headers, so a caller can refuse to trust one it does not.
+//
+// An unknown scheme answers false, which is the fail-closed direction: a
+// scheme this build cannot check is already refused by
+// [CheckWebhookVerifyScheme], and a rule reading this must not become
+// permissive by meeting a name it does not recognize.
+func WebhookSchemeSignsHeaders(scheme string) bool {
+	return webhookSchemesSigningHeaders[scheme]
+}
 
 // webhookVerificationSchemes is the set above, in the order a diagnostic lists
 // them: the generic one first, because it is the one an unfamiliar provider is
@@ -325,6 +358,198 @@ func celExprReferencesIdentifier(expression *expr.Expr, name string) bool {
 // 32, the same bound and the same argument as [maxActivationDepth]. A real
 // idempotency key is a header lookup or a field selection, nowhere near it.
 const maxIdentifierWalkDepth = 32
+
+// unprovenEventUse reports the first occurrence of `event` in an expression
+// whose provenance cannot be *proved* to be the delivery's signed body,
+// describing it in the words a diagnostic will use.
+//
+// # An allow-list, because a deny-list here is unbounded
+//
+// This used to search for `event.headers` and refuse what it found. That reads
+// naturally and is wrong in the direction that matters: it proves nothing about
+// the expressions it accepts. `${[event].map(e, e.headers["x-order"])[0]}`
+// reaches a header through a comprehension variable, so no node in it is a
+// `headers` selection whose operand is the `event` identifier, and it sailed
+// past — deriving a bridge's `correlate:` from bytes nothing signed, which is
+// exactly the replay [CheckWebhookSignalAddressing] exists to close. Ternaries,
+// `has()`, a map literal and function composition all offer the same laundering,
+// and a deny-list has to enumerate them; the attacker only has to find one.
+//
+// So the question is inverted. Every occurrence of `event` must be the operand
+// of a `body` access — `event.body`, `event.body.x`, `event.body["k"]`, and the
+// `event["body"]` spelling of the same — and anything else is refused, named for
+// what it is. That is provenance proved rather than searched for: an alias
+// cannot be created without the aliased value first appearing somewhere this
+// walk refuses, so aliasing needs no tracking of its own.
+//
+// The cost is real and is the right cost: an expression that hands the whole
+// delivery to something — `${string(event)}`, `${[event][0].body.id}` — is
+// refused even where it happens to be harmless. It is refused with a sentence
+// that says what to write instead, and only on a bridge under a scheme that
+// does not sign headers; every other trigger is untouched.
+//
+// shadowed carries [celExprReferencesFreeIdentifier]'s own rule: a comprehension
+// that binds `event` makes occurrences inside it refer to that local, which is
+// not the delivery and is nothing this rule is about.
+func unprovenEventUse(expression *expr.Expr) (string, bool) {
+	return unprovenEventUseAt(expression, false, maxIdentifierWalkDepth)
+}
+
+// eventIdent reports whether an expression is exactly the delivery root.
+func eventIdent(expression *expr.Expr, shadowed bool) bool {
+	return !shadowed && expression.GetIdentExpr().GetName() == EventRoot
+}
+
+func unprovenEventUseAt(expression *expr.Expr, shadowed bool, depth int) (string, bool) {
+	if expression == nil {
+		return "", false
+	}
+	if depth <= 0 {
+		// Fail closed, for [CheckWebhookIdempotencyKey]'s reason: an expression
+		// this walk gave up reading is one whose provenance it did not prove.
+		return "an expression nested too deeply to read", true
+	}
+	depth--
+
+	switch kind := expression.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		if eventIdent(expression, shadowed) {
+			return "a bare `" + EventRoot + "`", true
+		}
+
+	case *expr.Expr_SelectExpr:
+		selection := kind.SelectExpr
+		if eventIdent(selection.GetOperand(), shadowed) {
+			if selection.GetField() == EventBodyField {
+				// The proven form. Nothing below it can be an unproven use of
+				// the root, because the root is this node's own operand.
+				return "", false
+			}
+
+			return "`" + EventRoot + "." + selection.GetField() + "`", true
+		}
+
+		return unprovenEventUseAt(selection.GetOperand(), shadowed, depth)
+
+	case *expr.Expr_CallExpr:
+		call := kind.CallExpr
+
+		if call.GetFunction() == operators.Index && len(call.GetArgs()) == 2 &&
+			eventIdent(call.GetArgs()[0], shadowed) {
+			if call.GetArgs()[1].GetConstExpr().GetStringValue() == EventBodyField {
+				return "", false
+			}
+
+			return "an indexed `" + EventRoot + "[…]` that is not `" +
+				EventRoot + "." + EventBodyField + "`", true
+		}
+
+		if eventIdent(call.GetTarget(), shadowed) {
+			return "`" + EventRoot + "` as the target of " + describeCall(call), true
+		}
+		if use, found := unprovenEventUseAt(call.GetTarget(), shadowed, depth); found {
+			return use, true
+		}
+		for _, argument := range call.GetArgs() {
+			if eventIdent(argument, shadowed) {
+				return "`" + EventRoot + "` passed to " + describeCall(call), true
+			}
+			if use, found := unprovenEventUseAt(argument, shadowed, depth); found {
+				return use, true
+			}
+		}
+
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			if eventIdent(element, shadowed) {
+				return "`" + EventRoot + "` inside a list", true
+			}
+			if use, found := unprovenEventUseAt(element, shadowed, depth); found {
+				return use, true
+			}
+		}
+
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			for _, part := range []*expr.Expr{entry.GetMapKey(), entry.GetValue()} {
+				if eventIdent(part, shadowed) {
+					return "`" + EventRoot + "` inside a map", true
+				}
+				if use, found := unprovenEventUseAt(part, shadowed, depth); found {
+					return use, true
+				}
+			}
+		}
+
+	case *expr.Expr_ComprehensionExpr:
+		comprehension := kind.ComprehensionExpr
+
+		// iter_range and accu_init run in the *outer* scope: the comprehension's
+		// own variables are not bound yet. A range of `[event]` or of `event`
+		// itself is the aliasing this rule exists to refuse, and it is refused
+		// here rather than wherever the alias is later read.
+		if eventIdent(comprehension.GetIterRange(), shadowed) {
+			return "`" + EventRoot + "` as a comprehension's range", true
+		}
+		for _, part := range []*expr.Expr{comprehension.GetIterRange(), comprehension.GetAccuInit()} {
+			if use, found := unprovenEventUseAt(part, shadowed, depth); found {
+				return use, true
+			}
+		}
+
+		// Inside the loop, the comprehension's own bindings shadow the root.
+		loop := shadowed
+		for _, bound := range []string{
+			comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar(),
+		} {
+			if bound == EventRoot && bound != "" {
+				loop = true
+			}
+		}
+		for _, part := range []*expr.Expr{comprehension.GetLoopCondition(), comprehension.GetLoopStep()} {
+			if use, found := unprovenEventUseAt(part, loop, depth); found {
+				return use, true
+			}
+		}
+
+		// The result's scope is the accumulator's, not the loop's — the same
+		// distinction [celExprReferencesFreeIdentifier] draws.
+		result := shadowed
+		if comprehension.GetAccuVar() == EventRoot {
+			result = true
+		}
+
+		return unprovenEventUseAt(comprehension.GetResult(), result, depth)
+	}
+
+	return "", false
+}
+
+// describeCall names a call in a diagnostic, by function where CEL gives it a
+// name a person would recognize and generically where it does not.
+//
+// CEL spells its operators as functions with placeholder names — a ternary is
+// `_?_:_`, an index `_[_]`, membership `@in` — and quoting those back at an
+// author names nothing they wrote. Only a plain identifier is quoted; every
+// other shape is "an operator", which is true of all of them and is what the
+// author is looking at.
+func describeCall(call *expr.Expr_Call) string {
+	name := call.GetFunction()
+	if name == "" {
+		return "a function"
+	}
+
+	for i, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c == '_' && i > 0, c >= '0' && c <= '9' && i > 0:
+		default:
+			return "an operator"
+		}
+	}
+
+	return "`" + name + "(...)`"
+}
 
 // celExprReferencesFreeIdentifier is [celExprReferencesIdentifier]'s walk.
 //
@@ -703,8 +928,29 @@ func eventRefValue(event *Value) ref.Val {
 // rehearsal asserting on `${trigger.delivery_id}` would assert against something
 // production never answers with — one meaning, one definition, which is the rule
 // CLAUDE.md states for every value both drivers read.
-func WebhookDeliveryID(key string) string {
-	digest := sha256.Sum256([]byte(key))
+//
+// # The source is inside the digest, and it has to be
+//
+// An `idempotency_key:` names a delivery *within the source that issued it*:
+// `event.body.order_id` is a promise Stripe makes about Stripe's redeliveries
+// and says nothing about what some other integration calls its orders. So the
+// workflow and the trigger are hashed with it, exactly as [webhookWorkflowID]
+// hashes them for the same reason on the start path.
+//
+// Without that, two bridges on one workflow whose keys legitimately coincide —
+// the same order id answering two different gates — produce one digest, and
+// [RunState.consumed_delivery_ids] is a set *per run* across every source, so
+// the second genuine delivery is dropped as a redelivery of the first. The
+// dedupe would then be silently refusing approvals nobody duplicated, which is
+// the failure a per-run set has to be scoped to avoid.
+//
+// The namespace is deliberately not in it. The set that reads this lives on a
+// run, a run belongs to exactly one tenant, and a delivery reaches it only
+// after `authorizeRunDecision` has said so — so a tenant cannot be the thing
+// two colliding keys differ by, and adding it would put a value in the digest
+// that no reader of the digest can vary.
+func WebhookDeliveryID(workflow, trigger, key string) string {
+	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s", WebhookTriggerSubject(workflow, trigger), key))
 
 	return hex.EncodeToString(digest[:16])
 }

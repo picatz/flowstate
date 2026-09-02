@@ -599,7 +599,24 @@ type SignalSender struct {
 	// ever means "the local driver," never "nothing was attested"; the broader
 	// reading exists solely in the rendered output, precisely so a workflow
 	// author can trust `!sender.local` as "the server accepted this."
-	Local         bool `protobuf:"varint,3,opt,name=local,proto3" json:"local,omitempty"`
+	Local bool `protobuf:"varint,3,opt,name=local,proto3" json:"local,omitempty"`
+	// DeliveryID names the webhook delivery this signal came from, empty for
+	// every sender that is not one.
+	//
+	// The digest `WebhookDeliveryID` computes over the trigger's evaluated
+	// `idempotency_key:`, never the key itself: the usual key is a signature
+	// header, and this value is written into durable run state where invariant 7
+	// says credential-shaped material may not go. A digest is fixed-length,
+	// alphabet-safe, and says nothing about the key it names.
+	//
+	// It is here rather than in [WorkloadIdentity.claims] because it is not a
+	// claim about a principal — every delivery from one trigger attests the same
+	// principal and carries a different one of these. What it is for is the
+	// engine's own dedupe: a run records the ids it has consumed
+	// ([RunState.consumed_delivery_ids]) so that a redelivery after the gate has
+	// already been answered is dropped rather than taken by the next
+	// `wait_for_signal:` a `loop:` comes back around to.
+	DeliveryId    string `protobuf:"bytes,4,opt,name=delivery_id,json=deliveryId,proto3" json:"delivery_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -655,6 +672,13 @@ func (x *SignalSender) GetLocal() bool {
 	return false
 }
 
+func (x *SignalSender) GetDeliveryId() string {
+	if x != nil {
+		return x.DeliveryId
+	}
+	return ""
+}
+
 var File_flowstate_v1_signal_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_signal_proto_rawDesc = "" +
@@ -687,12 +711,14 @@ const file_flowstate_v1_signal_proto_rawDesc = "" +
 	"\x06prompt\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x06prompt\x1aO\n" +
 	"\fOutputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\x9d\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xc7\x01\n" +
 	"\fSignalSender\x12:\n" +
 	"\bidentity\x18\x01 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\x12;\n" +
 	"\vaccepted_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"acceptedAt\x12\x14\n" +
-	"\x05local\x18\x03 \x01(\bR\x05localB\xaa\x01\n" +
+	"\x05local\x18\x03 \x01(\bR\x05local\x12(\n" +
+	"\vdelivery_id\x18\x04 \x01(\tB\a\xbaH\x04r\x02\x18@R\n" +
+	"deliveryIdB\xaa\x01\n" +
 	"\x10com.flowstate.v1B\vSignalProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (

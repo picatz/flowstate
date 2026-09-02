@@ -332,6 +332,15 @@ func workflowUsingEveryValuePosition() *Workflow {
 				IdempotencyKey: NewExpr("event.id"),
 				Arguments:      map[string]*Value{"order": NewExpr("event.body.order")},
 				Verify:         map[string]*Value{"stripe": NewLiteral("secret")},
+
+				// Beside `arguments`, which no real file writes — a trigger
+				// either starts a run or answers a gate, and the compiler
+				// refuses both. This document is the enumeration, not a file.
+				Signal: &WebhookTrigger_Signal{
+					Name:      "approved",
+					Correlate: NewExpr("event.body.order"),
+					Arguments: map[string]*Value{"ok": NewExpr("event.body.ok")},
+				},
 			}},
 		},
 	}

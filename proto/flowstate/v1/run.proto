@@ -789,6 +789,36 @@ message RunState {
   // boundary and cannot be reconstructed by workflow code. Absent on older runs
   // reads as empty, which safely omits the name.
   string metric_workflow_name = 13;
+
+  // ConsumedDeliveryIDs are the webhook delivery ids
+  // ([SignalSender.delivery_id]) this run has already taken at a gate.
+  //
+  // # Why the run carries this rather than the receiver
+  //
+  // Webhook redelivery is the normal case, and "the gate already resumed" is
+  // not enough on its own: a `loop:` around a `wait_for_signal:` reaches the
+  // same name again, and a replay arriving then would answer the *next*
+  // iteration with an approval somebody gave once. The fact that settles it is
+  // "this run consumed that delivery", which only the run knows and only the
+  // run keeps across a Continue-As-New, so it is kept here rather than in a
+  // receiver's memory — a receiver's table is per-process, per-tenant and
+  // lost on restart, which is an optimization pretending to be a guarantee.
+  //
+  // # Add-only, and bounded as a ring
+  //
+  // Ids are appended as gates consume them and never rewritten, so a segment
+  // written by an older engine reads back as a run that has consumed nothing —
+  // correct for a run that predates the field, and no compatibility arm
+  // needed. Past [MaxPendingSignals] the oldest is evicted, which is the one
+  // place this differs from `pending_signals`: a pending delivery is a promise
+  // already made to a sender and may never be dropped, while this set is
+  // *derived* — evicting its oldest entry narrows the window a replay could
+  // still be caught in, and unsays nothing. `CheckRunStateSize` weighs it at
+  // every suspension along with everything else the run carries.
+  repeated string consumed_delivery_ids = 14 [(buf.validate.field).repeated = {
+    max_items: 128
+    items: {string: {max_len: 64}}
+  }];
 }
 
 // TimelineEntry is one thing a run did, read back from its own durable history.

@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -74,7 +75,15 @@ const manualDenied = "denied"
 // In the order [webhookTriggerToYAML] writes them, which is the order the entry
 // reads in: which source this is, how a delivery from it is proved genuine, what
 // names one delivery, and what it binds.
-var webhookKeys = []string{"webhook", "verify", "idempotency_key", "with"}
+var webhookKeys = []string{"webhook", "verify", "idempotency_key", "with", "signal"}
+
+// webhookSignalKeys are what a webhook's `signal:` block says: which gate this
+// delivery answers, which run it answers, and what it carries.
+//
+// In the order [webhookTriggerToYAML] writes them, which is the order they are
+// read in — the name of the question, then the run being answered, then the
+// answer itself.
+var webhookSignalKeys = []string{"name", "correlate", "with"}
 
 // scheduleItemKeys are what one `- schedule:` entry of the list spelling says: the
 // cadence mapping, under its own key, and nothing else.
@@ -523,13 +532,82 @@ func (c *compiler) webhookTrigger(fields *fieldSet, path string, r ref) *v1.Webh
 		c.report(spanOfNode(nameField.key), webhookRef, "%s", v1.CheckWebhookIdempotencyKey(name, nil).Error())
 	}
 
-	if f, found := fields.get("with"); found {
+	withField, wroteWith := fields.get("with")
+	if wroteWith {
 		withPath := fieldPath(path, "with")
-		c.pos.record(withPath, spanOfNode(c.resolveQuiet(f.value)))
-		webhook.Arguments = c.triggerArguments(f.value, withPath, ref{path: withPath, label: fmt.Sprintf("webhook %q with", name)})
+		c.pos.record(withPath, spanOfNode(c.resolveQuiet(withField.value)))
+		webhook.Arguments = c.triggerArguments(withField.value, withPath,
+			ref{path: withPath, label: fmt.Sprintf("webhook %q with", name)})
+	}
+
+	if f, found := fields.get("signal"); found {
+		signalPath := fieldPath(path, "signal")
+		c.pos.record(signalPath, spanOfNode(c.resolveQuiet(f.value)))
+		webhook.Signal = c.webhookSignal(f.value, name, signalPath,
+			ref{path: signalPath, label: fmt.Sprintf("webhook %q signal", name)})
+
+		// The contradiction, reported here rather than only by the validator
+		// because this is where the span is: the entry wrote two keys, and the
+		// one an author has to delete is the one that gets underlined.
+		//
+		// Decided by whether `with:` was *written*, not by what it compiled to.
+		// [compiler.triggerArguments] returns nil for a mapping with no entries,
+		// so `with: {}` beside `signal:` compiled to a specification carrying
+		// only one of the two and was accepted — a file stating the
+		// contradiction outright, and the reading that made the check pass on
+		// it was "did anything survive compilation", which is not the question.
+		// Fail closed at the other seam too: [v1.CheckWebhookSignalExclusive]
+		// answers for a specification that never was a Flowfile, from the fact
+		// available there.
+		if wroteWith {
+			withPath := fieldPath(path, "with")
+			c.report(spanOfNode(withField.key),
+				ref{path: withPath, label: fmt.Sprintf("webhook %q with", name)},
+				"%s", v1.WebhookSignalExclusiveError(name))
+		}
 	}
 
 	return webhook
+}
+
+// webhookSignal compiles a webhook's `signal:` block — the delivery that
+// answers a gate rather than starting a run.
+//
+// `correlate:` is fenced like every other position that holds one expression
+// over `event` ([webhookTrigger]'s own `idempotency_key:`), and `with:` is the
+// same call-site mapping a trigger's arguments are, compiled by the same
+// function down to the refusal of a `${secret(...)}`: a signal payload is
+// carried into durable run state exactly as a bound input is, so a reference
+// here would be resolved into history for the identical reason.
+func (c *compiler) webhookSignal(n ast.Node, webhook, path string, r ref) *v1.WebhookTrigger_Signal {
+	fields, ok := c.fields(n, path, r, webhookSignalKeys)
+	if !ok {
+		return nil
+	}
+
+	signal := &v1.WebhookTrigger_Signal{}
+
+	if f, found := fields.get("name"); found {
+		namePath := fieldPath(path, "name")
+		if name, ok := c.text(f.value, namePath, ref{path: namePath, label: "signal name"}); ok {
+			signal.Name = name
+		}
+	}
+
+	if f, found := fields.get("correlate"); found {
+		correlatePath := fieldPath(path, "correlate")
+		signal.Correlate = c.exprValue(f.value, correlatePath,
+			ref{path: correlatePath, label: fmt.Sprintf("webhook %q signal correlate", webhook)})
+	}
+
+	if f, found := fields.get("with"); found {
+		withPath := fieldPath(path, "with")
+		c.pos.record(withPath, spanOfNode(c.resolveQuiet(f.value)))
+		signal.Arguments = c.triggerArguments(f.value, withPath,
+			ref{path: withPath, label: fmt.Sprintf("webhook %q signal with", webhook)})
+	}
+
+	return signal
 }
 
 // webhookVerify compiles a `verify:` block: one signing scheme per entry, each
@@ -1106,6 +1184,32 @@ func webhookTriggerToYAML(webhook *v1.WebhookTrigger) (yaml.MapSlice, error) {
 		doc = append(doc, yaml.MapItem{Key: "with", Value: written})
 	}
 
+	if signal := webhook.GetSignal(); signal != nil {
+		written := yaml.MapSlice{}
+		if name := signal.GetName(); name != "" {
+			written = append(written, yaml.MapItem{Key: "name", Value: name})
+		}
+		if correlate := signal.GetCorrelate(); correlate != nil {
+			value, err := exprValueToYAML(correlate)
+			if err != nil {
+				return nil, fmt.Errorf("triggers webhook %q signal correlate: %w", webhook.GetName(), err)
+			}
+			written = append(written, yaml.MapItem{Key: "correlate", Value: value})
+		}
+		if arguments := signal.GetArguments(); len(arguments) > 0 {
+			payload := yaml.MapSlice{}
+			for _, name := range slices.Sorted(maps.Keys(arguments)) {
+				value, err := inputValueToYAML(arguments[name])
+				if err != nil {
+					return nil, fmt.Errorf("triggers webhook %q signal with %q: %w", webhook.GetName(), name, err)
+				}
+				payload = append(payload, yaml.MapItem{Key: name, Value: value})
+			}
+			written = append(written, yaml.MapItem{Key: "with", Value: payload})
+		}
+		doc = append(doc, yaml.MapItem{Key: "signal", Value: written})
+	}
+
 	return doc, nil
 }
 
@@ -1416,6 +1520,19 @@ func validateWebhookTriggers(wf *v1.Workflow) Diagnostics {
 				fieldPath(at, "idempotency_key"), name, "idempotency_key", webhook.GetIdempotencyKey())...)
 		}
 
+		ds = append(ds, validateWebhookSignal(wf, at, webhook)...)
+
+		if webhook.GetSignal() != nil {
+			// A bridge answers a run that already exists, so the workflow's
+			// `inputs:` are not this call site's to bind: they were bound by
+			// whoever started the run. Both directions of the signature check
+			// below are about a *start*, and running them here would report a
+			// required input unbound by a delivery that never starts anything —
+			// the diagnostic being wrong in the direction that makes an author
+			// add a binding the receiver would then refuse.
+			continue
+		}
+
 		// An argument for a name the workflow does not declare, which is almost
 		// always a rename in one place and not the other. Read as "extra data
 		// nobody minds" it would go unnoticed until whoever reads the workflow
@@ -1462,6 +1579,88 @@ func validateWebhookTriggers(wf *v1.Workflow) Diagnostics {
 					name, d.GetName(), v1.EventRoot),
 			})
 		}
+	}
+
+	return ds
+}
+
+// validateWebhookSignal reports what is wrong with one webhook's `signal:`
+// block — the delivery that answers a gate instead of starting a run.
+//
+// Positioned per rule rather than reported as one sentence against the entry,
+// which is the split [v1.CheckWebhookTrigger] already makes for `verify:` and
+// `idempotency_key:` and for the same reason: an author fixing "no
+// `wait_for_signal:` waits for that" edits a different line from the one they
+// edit to add a `signals:` rule, and a diagnostic that named only the entry
+// would make them find out which.
+//
+// Every diagnostic here carries the zero-value code, `general`, exactly as the
+// `verify:` and `idempotency_key:` diagnostics above do. None of these is a
+// class an agent is expected to branch on: the message names the fix, and
+// docs/reference/diagnostics.md is explicit that a code is earned rather than
+// invented to look complete.
+func validateWebhookSignal(wf *v1.Workflow, at string, webhook *v1.WebhookTrigger) Diagnostics {
+	signal := webhook.GetSignal()
+	if signal == nil {
+		return nil
+	}
+
+	name := webhook.GetName()
+	signalPath := fieldPath(at, "signal")
+
+	var ds Diagnostics
+
+	if err := v1.CheckWebhookSignalExclusive(webhook); err != nil {
+		ds = append(ds, Diagnostic{Field: signalPath, Message: err.Error()})
+	}
+
+	if err := v1.CheckWebhookSignalName(wf, name, signal); err != nil {
+		ds = append(ds, Diagnostic{Field: fieldPath(signalPath, "name"), Message: err.Error()})
+	} else if err := v1.CheckWebhookSignalPolicy(wf, name, signal); err != nil {
+		// Only once the name is one this file actually waits for. A policy
+		// complaint about a misspelled name is a second sentence about the
+		// misspelling, and the author would have to fix the first to discover
+		// that the second was never real.
+		ds = append(ds, Diagnostic{Field: fieldPath(signalPath, "name"), Message: err.Error()})
+	}
+
+	// Which bytes the address is derived from, reported against the expression
+	// that derives it — `correlate:` where that is the offender, and the
+	// trigger's own `idempotency_key:` where that is. Positioned rather than
+	// folded into one sentence against the entry, because the fix is an edit to
+	// one specific expression.
+	//
+	// The position comes off the refusal itself ([v1.WebhookAddressingError]),
+	// not off its wording. Reading it out of the sentence worked and would have
+	// gone on working right up until somebody reworded the sentence, at which
+	// point the squiggle moves to the wrong line and every test still passes.
+	if err := v1.CheckWebhookSignalAddressing(webhook); err != nil {
+		field := fieldPath(signalPath, "correlate")
+
+		var addressing *v1.WebhookAddressingError
+		if errors.As(err, &addressing) && addressing.Field == v1.WebhookAddressingIdempotencyKey {
+			field = fieldPath(at, "idempotency_key")
+		}
+
+		ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
+	}
+
+	if err := v1.CheckWebhookSignalCorrelate(name, signal); err != nil {
+		ds = append(ds, Diagnostic{Field: fieldPath(signalPath, "correlate"), Message: err.Error()})
+	} else {
+		ds = append(ds, validateTriggerExpr(
+			fieldPath(signalPath, "correlate"), name, "signal.correlate", signal.GetCorrelate())...)
+	}
+
+	// The payload's own expressions, checked exactly as a start's `with:` is —
+	// against `event` and nothing else. What is deliberately *not* checked is
+	// the names: a `wait_for_signal:` declares no signature for what it accepts
+	// (that is the deferred `accepts:`), so there is nothing to check them
+	// against and inventing a rule here would be checking against nothing.
+	for _, argument := range slices.Sorted(maps.Keys(signal.GetArguments())) {
+		ds = append(ds, validateTriggerExpr(
+			fieldPath(fieldPath(signalPath, "with"), argument),
+			name, "signal.with."+argument, signal.GetArguments()[argument])...)
 	}
 
 	return ds

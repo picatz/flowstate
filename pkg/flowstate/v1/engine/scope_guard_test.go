@@ -119,6 +119,11 @@ var exemptScopeConstruction = map[string]string{
 	"pkg/flowstate/v1/webhook.go#BindWebhookTriggerInputs": "a trigger is evaluated before there is a run to have an " +
 		"identity — the scope holds `event` and nothing else, deliberately, and the site says so.",
 
+	"pkg/flowstate/v1/webhooksignal.go#BindWebhookTriggerSignal": "the bridge's half of the same evaluation, and the " +
+		"same reason: the receiver evaluates `correlate:` and the payload against `event` alone, in the server " +
+		"process, before it has resolved which run the delivery even answers — so there is no run identity to " +
+		"carry, and the scope is never an activity argument.",
+
 	"pkg/flowstate/v1/flowtest/run.go#runCase": "the transcript's redaction set (#929) is built from the case's bound " +
 		"inputs through the same sensitiveNativeValues the stub diagnostics use, which reads a scope's inputs and " +
 		"nothing else; the scope exists for that one in-process read and is never an activity argument — `flow test` " +

@@ -221,9 +221,26 @@ func (e *executor) noteTolerated(id string) {
 	}
 }
 
-// signalCarry holds the run's early-arriving signals.
+// signalCarry holds the run's early-arriving signals, and the delivery ids it
+// has already consumed at a gate.
+//
+// Both travel together because both are per-*run* facts that survive
+// Continue-As-New in [v1.RunState], and both are shared by pointer with every
+// nested executor for the same reason: a delivery consumed by a wait inside a
+// loop body must be consumed for the whole run, or one delivery satisfies
+// several waits.
 type signalCarry struct {
 	pending []*v1.PendingSignal
+
+	// consumed is [v1.RunState.consumed_delivery_ids] — the webhook delivery
+	// ids this run has taken at a gate, add-only and ring-bounded by
+	// [v1.ConsumeDeliveryID].
+	//
+	// Read and written only through that function and
+	// [v1.DeliveryWasConsumed], which is what keeps this workflow-side code
+	// deterministic: set membership over a slice already in the run's state,
+	// with no clock, no I/O and nothing a replay could answer differently.
+	consumed []string
 }
 
 // runNodes executes a list of nodes in order at one nesting level.

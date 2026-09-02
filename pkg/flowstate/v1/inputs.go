@@ -127,6 +127,17 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		return nil, err
 	}
 
+	// And the bridge's own rules, which are the same argument one boundary
+	// further in. `signal:` is answerable from a public route by whoever holds
+	// one signing key, and the rule that keeps that from reaching an unpoliced
+	// gate — an explicit `signals:` entry that can admit the trigger — is a
+	// property of the specification, not of the file it was written in. Left to
+	// `flow validate` alone, a hand-built `RunRequest` would register a bridge
+	// the compiler refuses.
+	if err := CheckWebhookSignalBridges(wf); err != nil {
+		return nil, err
+	}
+
 	// And the fourth, for the fourth time the same reason applies. A `manual:`
 	// block that both refuses manual starts and narrows them satisfies the
 	// schema perfectly — protovalidate has nothing to say about two booleans

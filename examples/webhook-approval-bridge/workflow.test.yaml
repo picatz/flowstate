@@ -1,0 +1,143 @@
+# What a click can and cannot do to this run, rehearsed with no network and no
+# receiver.
+#
+# A scripted `signals:` entry stands in for a delivery the way `flow test` has
+# always let one stand in for `flow signal`: the `sender:` is checked against
+# this workflow's own `signals:` policy through the same `v1.SignalPolicyCheck`
+# the server calls, so a rule that admits the webhook here admits it in
+# production and one that refuses it refuses it here.
+#
+# `delivery_id:` is the part this file is really about. It is what the receiver
+# derives from `idempotency_key:` and carries on every delivery, and two entries
+# sharing one value are one click arriving twice — which is not a corner case,
+# it is what at-least-once delivery means. The pair of cases below is the whole
+# claim: two clicks approve two stages, and one click delivered twice approves
+# one.
+#
+# The sender every admitted case names is the trigger, not a person. That is
+# what a signature attests, and writing it out here is a reminder that
+# `distinct_from_starter:` on this route would separate webhooks rather than
+# humans.
+vars:
+  bridge: flowstate://webhook
+  trigger: webhook-approval-bridge/slack-approval
+
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+
+  # The click Slack would have signed. Overridden by the two cases that are
+  # about somebody else sending it.
+  sender:
+    issuer: "${vars.bridge}"
+    subject: "${vars.trigger}"
+tests:
+  - name: a verified click approves one stage
+    workflow: ./workflow.yaml
+    signals:
+      - name: stage-approved
+        delivery_id: click-a
+        payload:
+          approved: true
+          # More stages follow, so the rollout goes back round and waits for the
+          # next click — which is the turn a replay would otherwise answer.
+          final: false
+    expect:
+      ran: [rollout, report]
+      outputs:
+        # One stage approved, and a second asked and unanswered — the loop stops
+        # on the gate nobody clicked, which is what `until:` says.
+        stages_approved: 1
+        stages_attempted: 2
+
+  - name: two distinct clicks approve two stages
+    workflow: ./workflow.yaml
+    signals:
+      - name: stage-approved
+        delivery_id: click-a
+        payload:
+          approved: true
+          final: false
+      - name: stage-approved
+        delivery_id: click-b
+        payload:
+          approved: true
+    expect:
+      ran: [rollout, report]
+      outputs:
+        # The positive control for the case below: the dedupe is about the
+        # delivery id and nothing else, so two real clicks are two approvals and
+        # a driver that simply refused the second would pass that case and fail
+        # this one.
+        stages_approved: 2
+        stages_attempted: 2
+
+  - name: one click delivered twice approves one stage
+    workflow: ./workflow.yaml
+    signals:
+      - name: stage-approved
+        delivery_id: click-a
+        payload:
+          approved: true
+          final: false
+      # Byte for byte the first delivery again, which is what a provider retry
+      # is. Without the run's consumed-delivery set this would answer the second
+      # stage — a rollout approved by nobody, from a click somebody made once.
+      - name: stage-approved
+        delivery_id: click-a
+        payload:
+          approved: true
+          final: false
+    expect:
+      ran: [rollout, report]
+      outputs:
+        stages_approved: 1
+        stages_attempted: 2
+
+  - name: a click from a sender the policy does not name is refused
+    workflow: ./workflow.yaml
+    signals:
+      - name: stage-approved
+        delivery_id: click-c
+        payload:
+          approved: true
+        sender:
+          # A real person, authenticated by a real identity provider, who this
+          # gate's `allow:` does not name. Refused before the delivery is
+          # queued, so the gate lapses exactly as it does when nobody answers —
+          # which is what production does too: the workflow is never told
+          # anything was sent.
+          issuer: https://issuer.example.com
+          subject: sre-lead@example.com
+    expect:
+      ran: [rollout, report]
+      outputs:
+        stages_approved: 0
+        stages_attempted: 1
+
+  - name: a click standing in for nobody is refused
+    workflow: ./workflow.yaml
+    signals:
+      - name: stage-approved
+        delivery_id: click-d
+        payload:
+          approved: true
+        # Explicitly nobody, opting out of the inherited default: the zero case
+        # this file's `signals:` block exists to close. A policy that names a
+        # subject can never match an unattested delivery.
+        sender: {}
+    expect:
+      ran: [rollout, report]
+      outputs:
+        stages_approved: 0
+        stages_attempted: 1
+
+  - name: nobody clicks, and the first stage lapses at its own timeout
+    workflow: ./workflow.yaml
+    expect:
+      ran: [rollout, report]
+      outputs:
+        stages_approved: 0
+        stages_attempted: 1

@@ -632,6 +632,12 @@ func readsSteps(slot v1.ValueSlot) bool {
 		v1.SlotWebhookIdempotencyKey,
 		v1.SlotWebhookArgument,
 		v1.SlotWebhookVerify,
+		// A bridge's own two positions, for the identical reason: they are
+		// evaluated by the receiver against the delivery, before this run's
+		// steps are anything to it — and for `signal.correlate:` before there
+		// is even a run of this file's own to have steps.
+		v1.SlotWebhookSignalCorrelate,
+		v1.SlotWebhookSignalArgument,
 		v1.SlotInputDefault,
 		v1.SlotInputExample:
 		return false

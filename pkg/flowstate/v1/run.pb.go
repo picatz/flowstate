@@ -1494,8 +1494,34 @@ type RunState struct {
 	// boundary and cannot be reconstructed by workflow code. Absent on older runs
 	// reads as empty, which safely omits the name.
 	MetricWorkflowName string `protobuf:"bytes,13,opt,name=metric_workflow_name,json=metricWorkflowName,proto3" json:"metric_workflow_name,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// ConsumedDeliveryIDs are the webhook delivery ids
+	// ([SignalSender.delivery_id]) this run has already taken at a gate.
+	//
+	// # Why the run carries this rather than the receiver
+	//
+	// Webhook redelivery is the normal case, and "the gate already resumed" is
+	// not enough on its own: a `loop:` around a `wait_for_signal:` reaches the
+	// same name again, and a replay arriving then would answer the *next*
+	// iteration with an approval somebody gave once. The fact that settles it is
+	// "this run consumed that delivery", which only the run knows and only the
+	// run keeps across a Continue-As-New, so it is kept here rather than in a
+	// receiver's memory — a receiver's table is per-process, per-tenant and
+	// lost on restart, which is an optimization pretending to be a guarantee.
+	//
+	// # Add-only, and bounded as a ring
+	//
+	// Ids are appended as gates consume them and never rewritten, so a segment
+	// written by an older engine reads back as a run that has consumed nothing —
+	// correct for a run that predates the field, and no compatibility arm
+	// needed. Past [MaxPendingSignals] the oldest is evicted, which is the one
+	// place this differs from `pending_signals`: a pending delivery is a promise
+	// already made to a sender and may never be dropped, while this set is
+	// *derived* — evicting its oldest entry narrows the window a replay could
+	// still be caught in, and unsays nothing. `CheckRunStateSize` weighs it at
+	// every suspension along with everything else the run carries.
+	ConsumedDeliveryIds []string `protobuf:"bytes,14,rep,name=consumed_delivery_ids,json=consumedDeliveryIds,proto3" json:"consumed_delivery_ids,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *RunState) Reset() {
@@ -1617,6 +1643,13 @@ func (x *RunState) GetMetricWorkflowName() string {
 		return x.MetricWorkflowName
 	}
 	return ""
+}
+
+func (x *RunState) GetConsumedDeliveryIds() []string {
+	if x != nil {
+		return x.ConsumedDeliveryIds
+	}
+	return nil
 }
 
 // TimelineEntry is one thing a run did, read back from its own durable history.
@@ -1871,7 +1904,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"loop_state\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\tloopState\x1aP\n" +
 	"\rCallVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\x88\a\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xcd\a\n" +
 	"\bRunState\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bworkflow\x12\x1b\n" +
@@ -1888,7 +1921,8 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"runOutputs\x12<\n" +
 	"\fpending_undo\x18\v \x03(\v2\x19.flowstate.v1.PendingUndoR\vpendingUndo\x126\n" +
 	"\atrigger\x18\f \x01(\v2\x1c.flowstate.v1.TriggerContextR\atrigger\x120\n" +
-	"\x14metric_workflow_name\x18\r \x01(\tR\x12metricWorkflowName\x1aL\n" +
+	"\x14metric_workflow_name\x18\r \x01(\tR\x12metricWorkflowName\x12C\n" +
+	"\x15consumed_delivery_ids\x18\x0e \x03(\tB\x0f\xbaH\f\x92\x01\t\x10\x80\x01\"\x04r\x02\x18@R\x13consumedDeliveryIds\x1aL\n" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aN\n" +

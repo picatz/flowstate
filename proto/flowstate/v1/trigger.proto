@@ -328,6 +328,111 @@ message WebhookTrigger {
       }
     }
   ];
+
+  // Signal turns this source into an answer to a gate this workflow already
+  // waits at, rather than a start: a verified delivery is carried to the named
+  // `wait_for_signal:` of a run that already exists.
+  //
+  // Mutually exclusive with [arguments], and refused together with it rather
+  // than resolved by precedence. The two say incompatible things about what a
+  // delivery *is* — one binds a run's `inputs:` as it starts, the other
+  // answers a run that is already parked — and one delivery cannot be both.
+  // See [WebhookTrigger.Signal].
+  Signal signal = 5 [(google.api.field_behavior) = OPTIONAL];
+
+  // Signal is a delivery answering a declared gate instead of starting a run.
+  //
+  // # It reuses `signals:`, and is not a second authorization
+  //
+  // A delivery proves possession of the trigger's signing key, not a person,
+  // so it acts as the trigger: the receiver already mints that principal for a
+  // run start (issuer `flowstate://webhook`, subject `<workflow>/<trigger>`,
+  // the receiver's own namespace), and the bridge carries the same principal
+  // to the same [SignalPolicy] rules through the same authorization path
+  // `flow signal` takes. No rule kind, no principal kind and no second policy
+  // spelling: a `signals:` entry admits or refuses a delivery exactly as it
+  // admits or refuses a person.
+  //
+  // What that principal cannot say is *who clicked*. `hmac_sha256` and
+  // `stripe` attest a key holder, so `distinct_from_starter:` separates
+  // triggers rather than humans on this path, and a workflow that needs two
+  // distinct people either side of a gate cannot get them from a webhook
+  // today.
+  //
+  // # The zero case is closed here, and only here
+  //
+  // A signal name with no `signals:` entry admits any sender — the deliberate
+  // zero case, argued at [SignalPolicyAllows], and tolerable for `flow signal`
+  // behind the server's own authentication. It is not tolerable for a key
+  // holder on a public route, so a `signal:` naming a name with no policy that
+  // could admit this trigger's principal is refused when the file compiles.
+  // That refusal is a property of the *file*, so `flow validate` says it with
+  // a line and a column rather than a receiver discovering it at three in the
+  // morning.
+  message Signal {
+    // Name is the signal delivered, and it must be one a `wait_for_signal:` or
+    // `wait_for_signals:` in this same workflow declares.
+    //
+    // Not a free-form routing key: a name nothing waits for is a delivery the
+    // run carries forever without ever consuming, which is the same thing
+    // `SignalWithStart` refuses out loud for the same reason.
+    string name = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED,
+      (buf.validate.field).string = {
+        min_len: 1
+        max_len: 128
+        pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+      }
+    ];
+
+    // Correlate is the expression, over `event`, that says which run this
+    // delivery answers. It yields the run's *entity key* — the stable business
+    // key [RunRequest.entity_key] and [SignalWithStartRequest.entity_key]
+    // already address a run by — and the receiver composes the workflow id
+    // from it exactly as those do.
+    //
+    // An entity key rather than a workflow id, and that is the load-bearing
+    // choice. A payload is sender-shaped, neither verification scheme signs
+    // headers, and a workflow id lifted out of one would let a key holder name
+    // any run in the tenant, including runs their own trigger has nothing to
+    // do with. An entity key is composed with the *receiver's* namespace by
+    // `EntityWorkflowID`, under a grammar (lowercase letters, digits, dashes)
+    // that cannot reach a run addressed any other way: a webhook-started run's
+    // own id is `flowstate-webhook-<digest>`, a namespace this expression has
+    // no spelling for.
+    //
+    // Required: there is no default correlation, because "whichever run is
+    // current" is not a thing a delivery may mean.
+    Value correlate = 2 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED
+    ];
+
+    // Arguments are what the delivery carries into the gate, one expression
+    // per name, over `event` — spelled `with:` in a Flowfile.
+    //
+    // Named `arguments` rather than `payload` for [WebhookTrigger.arguments]'
+    // reason, and spelled `with:` for the same one: this is a *call site*, and
+    // when a wait later declares what it accepts, the call-site spelling is
+    // already the one triggers use. Nothing checks these names against a
+    // signature today, because a wait has none — a `wait_for_signal:` accepts
+    // whatever shape arrives and shapes it with its own `outputs:`. That is a
+    // gap this spelling is chosen to close add-only later, not a claim the
+    // shape is checked now.
+    map<string, Value> arguments = 3 [
+      (google.api.field_behavior) = OPTIONAL,
+      (buf.validate.field).map = {
+        max_pairs: 64
+        keys: {
+          string: {
+            min_len: 1
+            max_len: 64
+          }
+        }
+      }
+    ];
+  }
 }
 
 // ScheduleTrigger says when a workload should run.
