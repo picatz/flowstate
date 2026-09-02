@@ -219,3 +219,32 @@ redirect mid-flight widened scope and cost two more agents rather than a
 re-brief. Receiver-cost: zero clarification turns; owner edits to our
 artifacts: none yet; findings accepted vs noise: to be measured as the
 issues are triaged.
+
+## Wave 4 (2026-09-02): the whole-system review
+
+Source: `2026-09-whole-system-review.md`; the fifteen issues it filed and the
+thirteen decisions it recorded on existing issues.
+
+Dispatched: six evidence agents at the Opus tier, one per dimension
+(language, runtime, identity, developer surfaces, plugins, process), one
+lead. Read-only by design; ~1.6M subagent tokens, ~650 tool calls, twelve
+minutes each in parallel. No second wave: the lead took the decisions
+against the reports rather than convening debate pairs, on the owner's
+budget instruction that morning.
+
+Friction, measured: the GitHub search API rate-limited after nine
+dup-check queries in one batch (REST reads and writes were unaffected), so
+the last five candidates were dup-checked against the open titles already
+in the lead's context — rule: dup-check in batches of no more than eight
+searches, and hold the open-title list from the first listing. One report
+called a decided question (#923) unanswered because the answer lived four
+comments down; rule: a decision comment opens with the word *Decided* so a
+grep finds it, and a brief that asks "is X decided" names the comment
+anchor when the lead knows it. Two reports independently found the same
+unfiled gap (#1430's second-frontend framing), which is the signal the
+brief was well cut.
+
+Receiver-cost: zero clarification turns; owner turns, two, both about
+budget and neither about content; owner edits to our artifacts, none yet;
+findings accepted vs noise: to be measured as the fifteen filings are
+triaged.
