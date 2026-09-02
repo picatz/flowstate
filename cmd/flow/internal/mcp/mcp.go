@@ -997,8 +997,10 @@ const RunLocalToolDescription = "Execute a Flowfile immediately, in this process
 	"the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: " +
 	"conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in " +
 	"production, and the answer is the same document flowstate_get returns for a durable run.\n\n" +
-	"Fail-closed by default: network egress from `http:` steps is denied and no secret scheme is " +
-	"registered unless the operator started this server with the flags that permit them " +
+	"Fail-closed by default: network egress is denied — from `http:` steps and from plugin tasks " +
+	"alike, since this server grants its plugins the same denying policy it enforces on itself — and " +
+	"no secret scheme is registered unless the operator started this server with the flags that " +
+	"permit them " +
 	"(--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments " +
 	"can widen that, so a denied request means the server was not configured for it, not that the " +
 	"workflow is wrong.\n\n" +

@@ -188,7 +188,7 @@ It answers with no run id. The cluster takes the action after answering, so what
 
 Execute a Flowfile immediately, in this process, with no server and no Temporal, the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in production, and the answer is the same document flowstate_get returns for a durable run.
 
-Fail-closed by default: network egress from `http:` steps is denied and no secret scheme is registered unless the operator started this server with the flags that permit them (--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments can widen that, so a denied request means the server was not configured for it, not that the workflow is wrong.
+Fail-closed by default: network egress is denied — from `http:` steps and from plugin tasks alike, since this server grants its plugins the same denying policy it enforces on itself — and no secret scheme is registered unless the operator started this server with the flags that permit them (--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments can widen that, so a denied request means the server was not configured for it, not that the workflow is wrong.
 
 What it does not prove: durability. A local run has no run id, nothing can watch it, it does not survive this process, Continue-As-New compaction never happens, and parallel steps are rehearsed rather than genuinely distributed. Submit the compiled specification with flowstate_run when the rehearsal is right.
 

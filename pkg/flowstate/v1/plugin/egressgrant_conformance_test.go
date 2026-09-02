@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"testing"
@@ -25,6 +26,11 @@ import (
 // Named here rather than inline so the plugin fixture and the expectations
 // computed for it are reading one list; a category checked on one side and not
 // the other is a posture nobody compared.
+// publicProbeURL is the destination a plugin under a permissive grant may reach
+// and a plugin under a denying one may not. A URL rather than an address,
+// because a CEL rule is evaluated against a request.
+var publicProbeURL = &url.URL{Scheme: "https", Host: "example.com", Path: "/"}
+
 var probeAddresses = map[string]netip.AddrPort{
 	"loopback": netip.MustParseAddrPort("127.0.0.1:443"),
 	"private":  netip.MustParseAddrPort("10.0.0.1:443"),
@@ -40,7 +46,7 @@ var probeAddresses = map[string]netip.AddrPort{
 // receives the deployment's policy through [sdk.EgressPolicy], and a fake that
 // read the environment itself would prove the environment and not the SDK.
 func runEgressGrantPlugin() int {
-	report := func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+	report := func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 		outputs := map[string]*flowstatev1.Value{}
 
 		policy, err := sdk.EgressPolicy()
@@ -67,6 +73,16 @@ func runEgressGrantPlugin() int {
 			} else {
 				outputs[name] = flowstatev1.NewLiteral("")
 			}
+		}
+
+		// A whole request, not only an address: a CEL rule in the grant is
+		// evaluated against request attributes, so a policy denying every
+		// destination says nothing different about an address in isolation.
+		// This is the check a plugin's own client makes before it dials.
+		if err := policy.CheckURL(ctx, http.MethodGet, publicProbeURL); err != nil {
+			outputs["public_url"] = flowstatev1.NewLiteral(err.Error())
+		} else {
+			outputs["public_url"] = flowstatev1.NewLiteral("")
 		}
 
 		// Read straight out of this process's own environment, which is what
@@ -130,9 +146,18 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 		wantLoopbackDenied bool
 
 		// wantDeploymentDefault expects the plugin to report the grant as the
-		// worker's own default, and its posture to match that default's on
-		// every address in probeAddresses.
+		// worker's own default rather than a policy an operator wrote.
 		wantDeploymentDefault bool
+
+		// wantPublicDenied expects the plugin to refuse an ordinary public
+		// destination, which only a grant whose rules deny one does.
+		wantPublicDenied bool
+
+		// wantDefaultPosture compares the plugin's per-address answers against
+		// the worker's own default policy. Separate from wantDeploymentDefault
+		// because a marked grant is not always that default: `flow mcp` marks
+		// one that denies everything.
+		wantDefaultPosture bool
 	}{
 		{
 			name:               "the operator's policy governs the plugin",
@@ -167,7 +192,26 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 			name:                  "a worker with no operator policy grants its own default",
 			grant:                 flowstatev1.DefaultEgressPolicyDocument(),
 			wantDeploymentDefault: true,
+			wantDefaultPosture:    true,
 			wantLoopbackDenied:    flowstatev1.DefaultEgressPolicy().CheckAddr(probeAddresses["loopback"]) != nil,
+		},
+		{
+			// `flow mcp` with no --egress-policy: it denies everything for its
+			// own built-in http task, because its caller is a model rather than
+			// the person who wrote the workflow, and it grants that same policy
+			// to every plugin it launches. Marked, because no operator wrote it
+			// - so `sql` refuses on the marker, and everything else is refused
+			// by the rule, on its own connection path.
+			//
+			// The bytes are cmd/flow's; what this case proves is the receiving
+			// half, that a plugin under such a grant refuses a destination the
+			// command refuses itself. TestTheMCPPostureReachesLaunchedPluginsToo
+			// pins that these are the bytes `flow mcp` actually forwards.
+			name:                  "a grant that denies everything reaches the plugin as such",
+			grant:                 []byte("deployment_default: true\negress:\n  deny:\n    - \"true\"\n"),
+			wantDeploymentDefault: true,
+			wantPublicDenied:      true,
+			wantLoopbackDenied:    true,
 		},
 		{
 			name:        "no policy is refused rather than defaulted",
@@ -206,7 +250,16 @@ func TestTheEgressGrantReachesThePluginProcess(t *testing.T) {
 				outputs.GetNamedValues()["deployment_default"].GetLiteral().GetStringValue(),
 				"the plugin cannot tell whether an operator decided this policy, so it cannot take a posture toward the default")
 
-			if !test.wantDeploymentDefault {
+			publicURL := outputs.GetNamedValues()["public_url"].GetLiteral().GetStringValue()
+			if test.wantPublicDenied {
+				assert.NotEmpty(t, publicURL,
+					"the plugin may reach a public destination its grant denies")
+			} else {
+				assert.Empty(t, publicURL,
+					"the plugin refused a public destination its grant permits: %s", publicURL)
+			}
+
+			if !test.wantDefaultPosture {
 				return
 			}
 

@@ -106,6 +106,23 @@ func egressPolicySnapshot(cmd *cobra.Command) []byte {
 	return slices.Clone(data)
 }
 
+// setEgressPolicySnapshot records the document every plugin this command
+// launches will be granted.
+//
+// One writer, because the grant and the policy registered over the built-in http
+// task are the same deployment's answer, and a command that set one without the
+// other governs its own task and its plugins differently. That is exactly what
+// `flow mcp` did before it called this: it registered a deny-everything policy
+// for the built-in task and left the snapshot unset, so plugins were granted the
+// ordinary default and a model could drive a git or github task to a public host
+// the same process refused to fetch.
+//
+// A nil document means no policy was configured, which [egressPolicySnapshot]
+// answers with the deployment default.
+func setEgressPolicySnapshot(cmd *cobra.Command, document []byte) {
+	cmd.SetContext(context.WithValue(commandContext(cmd), egressPolicySnapshotKey{}, document))
+}
+
 func commandContext(cmd *cobra.Command) context.Context {
 	if ctx := cmd.Context(); ctx != nil {
 		return ctx
@@ -146,7 +163,7 @@ func addEgressPolicyFlag(cmd *cobra.Command) {
 // fail-open this flag exists to prevent. The file's path is on every error;
 // [netpolicy.New] already names the rule and the compile problem.
 func applyEgressPolicy(cmd *cobra.Command) error {
-	cmd.SetContext(context.WithValue(commandContext(cmd), egressPolicySnapshotKey{}, []byte(nil)))
+	setEgressPolicySnapshot(cmd, nil)
 	path, _ := cmd.Flags().GetString("egress-policy")
 	if path == "" {
 		return nil
@@ -201,7 +218,7 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 	if snapshot == nil {
 		snapshot = []byte{}
 	}
-	cmd.SetContext(context.WithValue(cmd.Context(), egressPolicySnapshotKey{}, snapshot))
+	setEgressPolicySnapshot(cmd, snapshot)
 
 	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for egress policy %s: %w", path, err)

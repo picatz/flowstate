@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -243,4 +245,121 @@ func TestTheEgressPolicyFlagSaysWhichPluginsEnforceTheGrantAndWhereItStops(t *te
 	require.NotContains(t, usage, "do not read it yet")
 	require.NotContains(t, usage, "#1332",
 		"the help still points at the migration issue as though it were pending")
+}
+
+// TestTheMCPPostureReachesLaunchedPluginsToo is the hole the deployment-default
+// fallback opened, closed at the one place the grant is chosen.
+//
+// `flow mcp` with no --egress-policy deliberately denies everything for the
+// built-in http task: its caller is a model composing a workflow, not the person
+// who wrote it. That posture is only a posture if it reaches the plugins that
+// command launches — and once every first-party plugin obeys the grant (#1332),
+// granting them the ordinary deployment default would have meant a model that
+// cannot make this process fetch a URL could still ask a `git`, `github` or
+// `vcs` task to reach one.
+//
+// The assertions are about the *document* rather than about a rule, because what
+// went wrong was two policies where there should be one: the grant is compared
+// against what this command registers for its own http task, and against the
+// deployment default it must not be.
+func TestTheMCPPostureReachesLaunchedPluginsToo(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "mcp-grant"}
+	addEgressPolicyFlag(cmd)
+	addPluginFlags(cmd)
+	require.NoError(t, applyMCPEgressPolicy(cmd))
+
+	flags, err := pluginFlagsOf(cmd)
+	require.NoError(t, err)
+
+	_, document, err := mcpEgressPolicy()
+	require.NoError(t, err)
+	require.Equal(t, document, flags.egressPolicy,
+		"the plugins this command launches are not granted the policy it enforces on itself")
+	require.NotEqual(t, v1.DefaultEgressPolicyDocument(), flags.egressPolicy,
+		"flow mcp granted its plugins the ordinary deployment default, which permits the public internet")
+
+	// The grant denies what the built-in task denies, on the plugin's side of
+	// the process boundary. Computed by building the granted document, which is
+	// what a plugin's sdk.EgressPolicy does with it.
+	cfg, err := netpolicy.ParseConfig(flags.egressPolicy)
+	require.NoError(t, err)
+	require.True(t, cfg.DeploymentDefault,
+		"the grant does not say no operator wrote it, so sql would treat it as an authorized destination")
+
+	granted, err := cfg.Policy()
+	require.NoError(t, err)
+	require.Error(t, granted.CheckURL(t.Context(), http.MethodGet, mustParseURL(t, "https://example.com/")),
+		"a plugin under flow mcp's grant may reach a public destination this command refuses to fetch itself")
+}
+
+// mustParseURL is the two lines the check above would otherwise inline.
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+
+	parsed, err := url.Parse(raw)
+	require.NoError(t, err)
+	return parsed
+}
+
+// TestTheMCPTaskAndItsGrantAreBuiltFromOneDocument is the structural half of the
+// fix, and the one that keeps it fixed.
+//
+// The bug was two constructions of one posture: a policy built from options for
+// the built-in http task, and nothing at all for the grant, so the two could —
+// and did — say different things. Asserting only that both deny today would not
+// notice the next edit to one of them, because two independently built
+// deny-everything policies behave identically. What has to hold is that they
+// come from the same bytes, so a change to those bytes moves both.
+//
+// So the comparison is between the policy `flow mcp` registers and a policy
+// built the way a *plugin* builds one — parse the granted document, build it —
+// across the categories a policy can disagree about. A second construction that
+// drifted in any of them fails here.
+func TestTheMCPTaskAndItsGrantAreBuiltFromOneDocument(t *testing.T) {
+	t.Parallel()
+
+	registered, document, err := mcpEgressPolicy()
+	require.NoError(t, err)
+
+	// What sdk.EgressPolicy does with the bytes it was granted.
+	cfg, err := netpolicy.ParseConfig(document)
+	require.NoError(t, err)
+	granted, err := cfg.Policy()
+	require.NoError(t, err)
+
+	for name, probe := range map[string]string{
+		"a public host":      "https://example.com/",
+		"a loopback host":    "http://127.0.0.1:8080/",
+		"a private host":     "https://10.0.0.1/",
+		"a metadata address": "http://169.254.169.254/latest/meta-data/",
+	} {
+		target := mustParseURL(t, probe)
+		registeredErr := registered.CheckURL(t.Context(), http.MethodGet, target)
+		grantedErr := granted.CheckURL(t.Context(), http.MethodGet, target)
+
+		require.Equalf(t, registeredErr == nil, grantedErr == nil,
+			"the policy this command enforces and the one it grants its plugins disagree about %s; "+
+				"they are supposed to be the same document", name)
+	}
+
+	// The bounds, which a deny rule cannot mask. Every destination check above
+	// is answered "denied" by the rule regardless of what else the two policies
+	// carry, so two separately built policies pass that comparison while
+	// disagreeing about everything a rule does not decide. These are the fields
+	// that catch the drift: a second construction that set a different response
+	// cap, request timeout or TLS floor — or that was built from a document the
+	// other side never saw — differs here.
+	require.Equal(t, registered.MaxResponseBytes(), granted.MaxResponseBytes(),
+		"the enforced policy and the granted one cap responses differently, so they are not one document")
+	require.Equal(t, registered.Timeout(), granted.Timeout(),
+		"the enforced policy and the granted one bound requests differently, so they are not one document")
+	require.Equal(t, registered.MinTLSVersion(), granted.MinTLSVersion(),
+		"the enforced policy and the granted one have different TLS floors, so they are not one document")
+
+	// And the posture itself, so the parity above cannot be satisfied by two
+	// policies that permit everything.
+	require.Error(t, registered.CheckURL(t.Context(), http.MethodGet, mustParseURL(t, "https://example.com/")),
+		"flow mcp's own http task may reach a public destination")
 }
