@@ -71,7 +71,12 @@ func AuthorizeCredential(ctx context.Context, req *http.Request, target string) 
 
 	err := runtime.Broker.Authorize(ctx, req, runtime.Identity, runtime.Step, target)
 	if err == nil {
-		return auditEnforcementAllow(ctx, subject)
+		// Late, because by here the assertion has been minted and an identity
+		// provider has completed an exchange: this record is behind its effect,
+		// exactly as the egress seam's is, and a request cancelled in the
+		// moment between the exchange and this write would otherwise take the
+		// record with it (see [auditEnforcementAllowLate]).
+		return auditEnforcementAllowLate(ctx, subject)
 	}
 
 	if _, ok := errors.AsType[*auth.AssumptionFailedError](err); ok {
@@ -81,10 +86,17 @@ func AuthorizeCredential(ctx context.Context, req *http.Request, target string) 
 		// is handed back unchanged for the caller to classify — the same
 		// separation [netpolicy.UndecidedError] draws at the egress seam.
 		//
+		// Late for a sharper reason than the arm above: cancellation is one of
+		// the ways minting and exchange fail, so the context this seam was
+		// handed is routinely already done by the time the record is written —
+		// and a sink that honours it would refuse exactly the record of a
+		// permission an identity provider may already have acted on (Codex,
+		// picatz/flowstate#1394).
+		//
 		// A required recorder that cannot write refuses here as everywhere
 		// else: this attempt failed either way, and the credential was never
 		// applied.
-		if recordErr := auditEnforcementAllow(ctx, subject); recordErr != nil {
+		if recordErr := auditEnforcementAllowLate(ctx, subject); recordErr != nil {
 			return recordErr
 		}
 

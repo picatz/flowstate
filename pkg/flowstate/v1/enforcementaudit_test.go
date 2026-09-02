@@ -922,6 +922,24 @@ func (unavailableExchanger) Exchange(context.Context, auth.Assertion) (auth.Cred
 	return auth.Credential{}, fmt.Errorf("%w: the token endpoint returned 503", auth.ErrExchangeUnavailable)
 }
 
+// hangingExchanger is the relying party that never answers: the exchange is
+// still in flight when the caller's context ends, which is how cancellation
+// reaches this seam *after* the policy has already permitted the target.
+type hangingExchanger struct {
+	stubExchanger
+
+	reached chan struct{}
+	once    sync.Once
+}
+
+func (e *hangingExchanger) Exchange(ctx context.Context, _ auth.Assertion) (auth.Credential, error) {
+	e.once.Do(func() { close(e.reached) })
+	<-ctx.Done()
+
+	return auth.Credential{}, fmt.Errorf("%w: the token endpoint never answered: %w",
+		auth.ErrExchangeUnavailable, ctx.Err())
+}
+
 func assumeBroker(t *testing.T, token string, opts ...auth.BrokerOption) *auth.Broker {
 	t.Helper()
 
@@ -1056,6 +1074,58 @@ func TestAPermittedAssumptionIsRecordedEvenWhenTheExchangeFails(t *testing.T) {
 
 	require.Empty(t, sink.all(),
 		"a request whose context was already done recorded an assumption decision nobody made")
+}
+
+// TestACancelledAssumptionsRecordStillReachesASinkThatHonoursItsContext: the
+// assumption seam's record is written after its effect too, so it needs the
+// same detachment the egress seam's does (Codex, picatz/flowstate#1394).
+//
+// Cancellation is one of the ordinary ways minting and exchange fail, which
+// means the context this seam was handed is routinely already done by the time
+// it writes — and the record it is writing is that a policy permitted a target
+// an identity provider may already have acted on. A sink that honours its
+// context, as an exporter does, would refuse exactly that record.
+//
+// Mutation-proved: writing this allow on the request's own context leaves the
+// sink empty and the step reporting a recorder failure.
+func TestACancelledAssumptionsRecordStillReachesASinkThatHonoursItsContext(t *testing.T) {
+	t.Parallel()
+
+	exchanger := &hangingExchanger{reached: make(chan struct{})}
+
+	runtime := secretRuntime(t, "unused", auth.SecretAccessPolicy{Allow: []string{"true"}})
+	runtime.Broker = brokerFor(t, exchanger,
+		auth.WithAssumeAllowRules(`target == "partner-api"`))
+
+	sink := &contextHonouringSink{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink), audit.Required())
+	require.NoError(t, err)
+
+	ctx := v1.NewContextWithEnforcementAuditor(t.Context(), recorder)
+	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	go func() {
+		<-exchanger.reached
+		cancel()
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example", nil)
+	require.NoError(t, err)
+
+	err = v1.AuthorizeCredential(ctx, req, "partner-api")
+	require.Error(t, err, "the exchange was cancelled")
+	require.False(t, v1.AuditRecorderUnavailable(err),
+		"the sink was writable; only the exchange was cancelled, and the record must not have been refused with it")
+	require.Empty(t, req.Header.Get("Authorization"))
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, records[0].GetDecision())
+	require.Equal(t, v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION,
+		records[0].GetEnforcementPoint())
+	require.Equal(t, "partner-api", records[0].GetResourceKey())
 }
 
 // TestAWorkerWithNoAuthorityRecordsWhatItRefused: a worker that was given no
