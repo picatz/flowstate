@@ -5758,7 +5758,11 @@ and an id above 2^53 is rounded before any expression sees it (#1432);
 `examples/deployment-reconciler` already carries the `type(x) == type(0) || type(x) ==
 type(0.0)` workaround. The last is a third: a block scalar's kept newline turns a
 whole-value fence into interpolation, and the three shipped files that use one all write
-`|-` (#1445).
+`|-` (#1445). One level below, the plain scalars themselves are typed by a mix of two
+YAML editions: `0777` compiles to `511` and `1_000` to `1000` (YAML 1.1), `yes` and
+`2026-01-01` to strings (1.2), `1e3` to the string `"1e3"` (neither), and `.inf` is refused;
+the strict profile above deliberately stopped short of this, and #546 closed asking for a
+real defect before a scalar seam was opened, which the first two rows are (#1462).
 
 ### What a proto field became
 
@@ -5782,7 +5786,10 @@ any of them (#1452). Two smaller coherence gaps fell out of reading it: a `switc
 `type: enum` input gets none of the domain diagnostics this document promised "when enum
 inputs land" (#1457), and a bare `inputs.<name>` read of an optional input with no
 default is a guaranteed `no such key` for any caller who omits it, which the compiler
-knows and does not say (#1458).
+knows and does not say (#1458). And the declaration's own `description:` and `example:`,
+which the schema says exist "for an editor's hover", reach an editor only across a
+`call:` boundary: hover on `${inputs.<name>}` in the file that declares it is empty,
+because the reference reader knows one root, `steps` (#1463).
 
 ### The order, and what it protects
 
