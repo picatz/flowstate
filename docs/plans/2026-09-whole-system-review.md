@@ -802,7 +802,7 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
 - **Retire** the environment-variable launch channel behind `LaunchRequest`.
 - **Rewrite** `AUTHORIZATION_FRESHNESS.md` to the enforced subset; move the
   rest to VISION under its own rule.
-- **Close** #1382 (landed), #1386 (the ledger is alive), #1103 (the label is
+- **Closed** #1382 (landed), #1386 (the ledger is alive), #1103 (the label is
   the index), and re-title #580 to its residue.
 - **Fix in place**, not delete: the `flow fix` refusal that sends a `v2026.1`
   typo to "a newer flow", the `run local` directory refusal written in bounds
@@ -872,7 +872,8 @@ checked.
 (D8), #923 (D9, a pointer to the existing answer), #1456 + #1440 + #1393 +
 #1431 (D10), #1343 + #1344 (D11), #1430 + #1014 + #1380 (D12).
 
-**To close:** #1382, #1386, #1103, and the two withdrawn above; #580 re-titled to defect 5 and the
+**Closed by this pass** (done, not pending): #1382, #1386, #1103, and the two
+withdrawn above. Still to do: #580 re-titled to defect 5 and the
 `--secret-*-namespace` asymmetry.
 
 ## PR candidates, by size
@@ -891,7 +892,7 @@ checked.
 | S | #1327/#1326 pins completion + digests shown | `plugin/admission.go`, `cmd/flow/plugins.go` |
 | S | #1289/#1290 stdio resilience, one input convention | `cmd/flow/mcp.go`, `cmd/flow/internal/mcp/` |
 | S | `--protected-resource-revision` | `cmd/flow/protectedresource.go` |
-| S | #1386/#1103/#1382 closes; #1307/#1311 AGENTS.md lines | `AGENTS.md`, skills |
+| S | #1307/#1311 AGENTS.md lines (the #1386/#1103/#1382 closes are already done) | `AGENTS.md`, skills |
 | S | #1528 `deep.yml`'s false "visible to collaborators only" line, ahead of #965 | `.github/workflows/deep.yml:180` |
 | S | Doc-truth pass (the `StepExecutor` wording, STYLE.md row, THREAT_MODEL cites, DSL.md fifteenth round). Not `AGENTS.md`: its invariants stand | `docs/ARCHITECTURE.md`, `docs/STYLE.md`, `THREAT_MODEL.md`, `docs/DSL.md` |
 | M | #1425 `MergedStepIDs` + conformance | `eval.go`, `engine/execute.go`, `flowfile/validate.go`, `conformance/` |
