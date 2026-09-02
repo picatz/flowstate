@@ -102,7 +102,7 @@ func TestABridgeAddressedFromUnsignedHeadersIsRefusedInTheFile(t *testing.T) {
 
 	var found *flowfile.Diagnostic
 	for i, d := range ds {
-		if strings.Contains(d.Message, "does not sign a delivery's headers") {
+		if strings.Contains(d.Message, "cannot prove reads only signed bytes") {
 			found = &ds[i]
 
 			break
@@ -151,7 +151,7 @@ func TestTheAddressingRefusalUnderlinesTheExpressionItIsAbout(t *testing.T) {
 
 			var found *flowfile.Diagnostic
 			for i, d := range ds {
-				if strings.Contains(d.Message, "does not sign a delivery's headers") {
+				if strings.Contains(d.Message, "cannot prove reads only signed bytes") {
 					found = &ds[i]
 
 					break

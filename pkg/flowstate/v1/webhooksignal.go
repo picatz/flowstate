@@ -301,15 +301,25 @@ type WebhookAddressingError struct {
 	// named in the sentence so an author knows what would have to change for
 	// the expression to be admissible.
 	Schemes []string
+
+	// Construct names what the expression did with `event` that this rule could
+	// not prove came from the signed body — "a bare `event`", "`event.headers`",
+	// "`event` as a comprehension's range". An author has to be told which
+	// construct to rewrite, because "address it from the body" is not actionable
+	// against an expression that already mentions the body somewhere.
+	Construct string
 }
 
 func (e *WebhookAddressingError) Error() string {
-	return fmt.Sprintf("webhook %q writes a `%s:` over `%s.%s`, and %s does not sign a delivery's "+
-		"headers — only its body. Anybody who has seen one valid delivery could replay that body "+
-		"and signature with a different header, and this expression decides which run the replay "+
-		"answers. Address the run from `%s.%s` instead",
-		e.Webhook, e.Field, EventRoot, EventHeadersField,
-		strings.Join(e.Schemes, " and "), EventRoot, EventBodyField)
+	return fmt.Sprintf("webhook %q writes a `%s:` this deployment cannot prove reads only signed "+
+		"bytes: it uses %s, and %s signs a delivery's body and not its headers. Anybody who has "+
+		"seen one valid delivery could replay that body and signature with a header rewritten, and "+
+		"this expression decides which run the replay answers — so every `%s` in it has to be a "+
+		"`%s.%s` read (`%s.%s.order_id`, `%s.%s[\"order\"]`), which is what makes the value it "+
+		"produces attested",
+		e.Webhook, e.Field, e.Construct, strings.Join(e.Schemes, " and "),
+		EventRoot, EventRoot, EventBodyField,
+		EventRoot, EventBodyField, EventRoot, EventBodyField)
 }
 
 // CheckWebhookSignalAddressing refuses a bridge that decides *which run* from
@@ -336,6 +346,18 @@ func (e *WebhookAddressingError) Error() string {
 // expressions are checked, because they are two halves of one address: the run
 // and the delivery's identity within it.
 //
+// # Provenance is proved, not searched for
+//
+// The check is an allow-list ([unprovenEventUse]): every occurrence of `event`
+// must be the operand of a `body` read. It is not a search for `event.headers`,
+// which is what it was and which proved nothing about the expressions it
+// accepted — `${[event].map(e, e.headers["x-order"])[0]}` reaches a header
+// with no `headers` selection over the `event` identifier anywhere in it, and
+// passed. Ternaries, `has()`, map literals and function composition all launder
+// the root the same way; a deny-list has to enumerate them and an attacker has
+// to find one. Requiring the proof instead makes aliasing unexpressible, since
+// an alias must first mention the root somewhere this refuses.
+//
 // The rule is read off the scheme table rather than written against scheme
 // names, so a scheme that does cover headers admits header-derived addressing
 // the day it lands, with nothing here to edit.
@@ -361,14 +383,16 @@ func CheckWebhookSignalAddressing(trigger *WebhookTrigger) error {
 		{field: WebhookAddressingCorrelate, value: trigger.GetSignal().GetCorrelate()},
 		{field: WebhookAddressingIdempotencyKey, value: trigger.GetIdempotencyKey()},
 	} {
-		if !celExprReadsEventHeaders(addressed.value.GetExpr().GetExpr()) {
+		construct, unproven := unprovenEventUse(addressed.value.GetExpr().GetExpr())
+		if !unproven {
 			continue
 		}
 
 		return &WebhookAddressingError{
-			Field:   addressed.field,
-			Webhook: trigger.GetName(),
-			Schemes: unsigned,
+			Field:     addressed.field,
+			Webhook:   trigger.GetName(),
+			Schemes:   unsigned,
+			Construct: construct,
 		}
 	}
 

@@ -471,7 +471,26 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 
 	// Asked before the enqueue, because the enqueue is what makes this delivery
 	// one of the copies the question is about.
-	admissible := s.willAdmitLocked(sender.GetDeliveryId())
+	//
+	// A delivery no wait will ever take does not enter the queue at all. It
+	// used to, and be dropped later by whichever wait read it, which is correct
+	// about the gate and wrong about the *capacity*: the queue holds
+	// [localSignalQueueDepth] entries, so a sender repeating one delivery fills
+	// it with copies that answer nothing, and the next genuine signal is
+	// refused for want of room while its gate times out. The durable driver has
+	// no such bound — Temporal takes the traffic and the workflow discards
+	// duplicates as it reads — so keeping this one occupied by known
+	// redeliveries is a divergence a flood of retries turns into a lost
+	// approval.
+	//
+	// Acknowledged rather than refused, which is the other half of matching the
+	// durable driver: a sender that retries is told the same thing either way,
+	// and nothing about a redelivery is the sender's mistake. The waiting
+	// loop's own consult stays where it is — it is what *records* consumption,
+	// and it is the seam both drivers share.
+	if !s.willAdmitLocked(sender.GetDeliveryId()) {
+		return nil
+	}
 
 	select {
 	case s.queueLocked(name) <- delivery:
@@ -487,32 +506,22 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	// the same signal — whichever of them this payload reaches, exactly one
 	// stops needing its deadline.
 	//
-	// Unless this payload answers nothing. A delivery no wait will take — a
-	// replay of one already consumed, or a second copy queued behind its own
-	// original — is queued all the same (the waiting loop is what drops it, at
-	// the one intake seam both drivers share) but it releases nobody, so
-	// withdrawing a deadline for it retires a timer nothing replaces: under a
-	// [VirtualClock] the deadline is deregistered, the clock stops counting it,
-	// and the wait it belonged to parks forever on a channel that will never
-	// fire. The durable driver keeps that wait's timer armed across a skipped
-	// duplicate — its timer is created once, outside the selector loop — so
-	// asking [LocalSignals.willAdmitLocked] here is what keeps the two drivers'
-	// observable answer the same.
+	// Reaching here means a wait will take this delivery — the inadmissible
+	// ones returned above — so exactly one deadline is withdrawn, and it is
+	// withdrawn *here* rather than where the wait admits it.
 	//
-	// # Why the question is asked here and not where the wait admits it
+	// # Why the withdrawal is at the enqueue
 	//
-	// Because the withdrawal has to happen under this lock, before the payload
-	// is visible to anyone. Between a payload becoming visible and the woken
-	// wait being scheduled, that wait is runnable and cannot say so, and any
-	// other participant's clock call in that window — a scripted sender merely
+	// Because it has to happen under this lock, before the payload is visible
+	// to anyone. Between a payload becoming visible and the woken wait being
+	// scheduled, that wait is runnable and cannot say so, and any other
+	// participant's clock call in that window — a scripted sender merely
 	// leaving is enough — finds a deadline nobody is waiting under any more and
-	// advances time to it. That is #278, and
-	// `flowtest`'s TestAnsweredGateDoesNotDragTheClockToItsUnusedDeadline fails
-	// within milliseconds if this moves to the admitting wait. So the enqueue
-	// decides, and the only thing that had to change is the question it asks.
-	if !admissible {
-		return nil
-	}
+	// advances time to it. That is #278, and `flowtest`'s
+	// TestAnsweredGateDoesNotDragTheClockToItsUnusedDeadline fails within
+	// milliseconds if this moves to the admitting wait. So the enqueue decides;
+	// what had to change was the question it asks, which is now "will a wait
+	// take this" rather than "has this been taken".
 
 	for _, wait := range s.waits[name] {
 		if wait.withdrawDeadline() {

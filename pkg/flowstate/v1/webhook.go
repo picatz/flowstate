@@ -359,85 +359,196 @@ func celExprReferencesIdentifier(expression *expr.Expr, name string) bool {
 // idempotency key is a header lookup or a field selection, nowhere near it.
 const maxIdentifierWalkDepth = 32
 
-// celExprReadsEventHeaders reports whether an expression reaches
-// `event.headers`, by either spelling: the ordinary selection, and the index
-// form `event["headers"]` that means the same thing.
+// unprovenEventUse reports the first occurrence of `event` in an expression
+// whose provenance cannot be *proved* to be the delivery's signed body,
+// describing it in the words a diagnostic will use.
 //
-// Deliberately narrower than "mentions `event`". A bridge addressing a run from
-// `event.body` is reading bytes the signature covers; the question here is only
-// whether it reads the part nothing signed. The residual is an expression that
-// launders the whole delivery through something this walk cannot follow — a
-// macro over `event` itself — which reads as no header reference and is
-// accepted; the same class of gap [CheckWebhookIdempotencyKey] documents about
-// its own question, and for the same reason: a check that refused every mention
-// of `event` would refuse every correct file.
-func celExprReadsEventHeaders(expression *expr.Expr) bool {
-	return celExprReadsEventHeadersAt(expression, maxIdentifierWalkDepth)
+// # An allow-list, because a deny-list here is unbounded
+//
+// This used to search for `event.headers` and refuse what it found. That reads
+// naturally and is wrong in the direction that matters: it proves nothing about
+// the expressions it accepts. `${[event].map(e, e.headers["x-order"])[0]}`
+// reaches a header through a comprehension variable, so no node in it is a
+// `headers` selection whose operand is the `event` identifier, and it sailed
+// past — deriving a bridge's `correlate:` from bytes nothing signed, which is
+// exactly the replay [CheckWebhookSignalAddressing] exists to close. Ternaries,
+// `has()`, a map literal and function composition all offer the same laundering,
+// and a deny-list has to enumerate them; the attacker only has to find one.
+//
+// So the question is inverted. Every occurrence of `event` must be the operand
+// of a `body` access — `event.body`, `event.body.x`, `event.body["k"]`, and the
+// `event["body"]` spelling of the same — and anything else is refused, named for
+// what it is. That is provenance proved rather than searched for: an alias
+// cannot be created without the aliased value first appearing somewhere this
+// walk refuses, so aliasing needs no tracking of its own.
+//
+// The cost is real and is the right cost: an expression that hands the whole
+// delivery to something — `${string(event)}`, `${[event][0].body.id}` — is
+// refused even where it happens to be harmless. It is refused with a sentence
+// that says what to write instead, and only on a bridge under a scheme that
+// does not sign headers; every other trigger is untouched.
+//
+// shadowed carries [celExprReferencesFreeIdentifier]'s own rule: a comprehension
+// that binds `event` makes occurrences inside it refer to that local, which is
+// not the delivery and is nothing this rule is about.
+func unprovenEventUse(expression *expr.Expr) (string, bool) {
+	return unprovenEventUseAt(expression, false, maxIdentifierWalkDepth)
 }
 
-func celExprReadsEventHeadersAt(expression *expr.Expr, depth int) bool {
-	if expression == nil || depth <= 0 {
-		// Fail closed: an expression this walk gave up reading is treated as
-		// reaching the headers, which refuses it. The alternative accepts an
-		// address derived from bytes nothing signed on the strength of a walk
-		// that stopped early.
-		return expression != nil
+// eventIdent reports whether an expression is exactly the delivery root.
+func eventIdent(expression *expr.Expr, shadowed bool) bool {
+	return !shadowed && expression.GetIdentExpr().GetName() == EventRoot
+}
+
+func unprovenEventUseAt(expression *expr.Expr, shadowed bool, depth int) (string, bool) {
+	if expression == nil {
+		return "", false
+	}
+	if depth <= 0 {
+		// Fail closed, for [CheckWebhookIdempotencyKey]'s reason: an expression
+		// this walk gave up reading is one whose provenance it did not prove.
+		return "an expression nested too deeply to read", true
 	}
 	depth--
 
 	switch kind := expression.GetExprKind().(type) {
-	case *expr.Expr_SelectExpr:
-		if kind.SelectExpr.GetField() == EventHeadersField &&
-			kind.SelectExpr.GetOperand().GetIdentExpr().GetName() == EventRoot {
-			return true
+	case *expr.Expr_IdentExpr:
+		if eventIdent(expression, shadowed) {
+			return "a bare `" + EventRoot + "`", true
 		}
 
-		return celExprReadsEventHeadersAt(kind.SelectExpr.GetOperand(), depth)
+	case *expr.Expr_SelectExpr:
+		selection := kind.SelectExpr
+		if eventIdent(selection.GetOperand(), shadowed) {
+			if selection.GetField() == EventBodyField {
+				// The proven form. Nothing below it can be an unproven use of
+				// the root, because the root is this node's own operand.
+				return "", false
+			}
+
+			return "`" + EventRoot + "." + selection.GetField() + "`", true
+		}
+
+		return unprovenEventUseAt(selection.GetOperand(), shadowed, depth)
+
 	case *expr.Expr_CallExpr:
 		call := kind.CallExpr
 
-		// `event["headers"]` is an index call over the delivery root, which is
-		// the same read written another way.
 		if call.GetFunction() == operators.Index && len(call.GetArgs()) == 2 &&
-			call.GetArgs()[0].GetIdentExpr().GetName() == EventRoot &&
-			call.GetArgs()[1].GetConstExpr().GetStringValue() == EventHeadersField {
-			return true
+			eventIdent(call.GetArgs()[0], shadowed) {
+			if call.GetArgs()[1].GetConstExpr().GetStringValue() == EventBodyField {
+				return "", false
+			}
+
+			return "an indexed `" + EventRoot + "[…]` that is not `" +
+				EventRoot + "." + EventBodyField + "`", true
 		}
 
-		if celExprReadsEventHeadersAt(call.GetTarget(), depth) {
-			return true
+		if eventIdent(call.GetTarget(), shadowed) {
+			return "`" + EventRoot + "` as the target of " + describeCall(call), true
+		}
+		if use, found := unprovenEventUseAt(call.GetTarget(), shadowed, depth); found {
+			return use, true
 		}
 		for _, argument := range call.GetArgs() {
-			if celExprReadsEventHeadersAt(argument, depth) {
-				return true
+			if eventIdent(argument, shadowed) {
+				return "`" + EventRoot + "` passed to " + describeCall(call), true
+			}
+			if use, found := unprovenEventUseAt(argument, shadowed, depth); found {
+				return use, true
 			}
 		}
+
 	case *expr.Expr_ListExpr:
 		for _, element := range kind.ListExpr.GetElements() {
-			if celExprReadsEventHeadersAt(element, depth) {
-				return true
+			if eventIdent(element, shadowed) {
+				return "`" + EventRoot + "` inside a list", true
+			}
+			if use, found := unprovenEventUseAt(element, shadowed, depth); found {
+				return use, true
 			}
 		}
+
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			if celExprReadsEventHeadersAt(entry.GetMapKey(), depth) ||
-				celExprReadsEventHeadersAt(entry.GetValue(), depth) {
-				return true
+			for _, part := range []*expr.Expr{entry.GetMapKey(), entry.GetValue()} {
+				if eventIdent(part, shadowed) {
+					return "`" + EventRoot + "` inside a map", true
+				}
+				if use, found := unprovenEventUseAt(part, shadowed, depth); found {
+					return use, true
+				}
 			}
 		}
+
 	case *expr.Expr_ComprehensionExpr:
 		comprehension := kind.ComprehensionExpr
-		for _, part := range []*expr.Expr{
-			comprehension.GetIterRange(), comprehension.GetAccuInit(),
-			comprehension.GetLoopCondition(), comprehension.GetLoopStep(), comprehension.GetResult(),
-		} {
-			if celExprReadsEventHeadersAt(part, depth) {
-				return true
+
+		// iter_range and accu_init run in the *outer* scope: the comprehension's
+		// own variables are not bound yet. A range of `[event]` or of `event`
+		// itself is the aliasing this rule exists to refuse, and it is refused
+		// here rather than wherever the alias is later read.
+		if eventIdent(comprehension.GetIterRange(), shadowed) {
+			return "`" + EventRoot + "` as a comprehension's range", true
+		}
+		for _, part := range []*expr.Expr{comprehension.GetIterRange(), comprehension.GetAccuInit()} {
+			if use, found := unprovenEventUseAt(part, shadowed, depth); found {
+				return use, true
 			}
+		}
+
+		// Inside the loop, the comprehension's own bindings shadow the root.
+		loop := shadowed
+		for _, bound := range []string{
+			comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar(),
+		} {
+			if bound == EventRoot && bound != "" {
+				loop = true
+			}
+		}
+		for _, part := range []*expr.Expr{comprehension.GetLoopCondition(), comprehension.GetLoopStep()} {
+			if use, found := unprovenEventUseAt(part, loop, depth); found {
+				return use, true
+			}
+		}
+
+		// The result's scope is the accumulator's, not the loop's — the same
+		// distinction [celExprReferencesFreeIdentifier] draws.
+		result := shadowed
+		if comprehension.GetAccuVar() == EventRoot {
+			result = true
+		}
+
+		return unprovenEventUseAt(comprehension.GetResult(), result, depth)
+	}
+
+	return "", false
+}
+
+// describeCall names a call in a diagnostic, by function where CEL gives it a
+// name a person would recognize and generically where it does not.
+//
+// CEL spells its operators as functions with placeholder names — a ternary is
+// `_?_:_`, an index `_[_]`, membership `@in` — and quoting those back at an
+// author names nothing they wrote. Only a plain identifier is quoted; every
+// other shape is "an operator", which is true of all of them and is what the
+// author is looking at.
+func describeCall(call *expr.Expr_Call) string {
+	name := call.GetFunction()
+	if name == "" {
+		return "a function"
+	}
+
+	for i, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c == '_' && i > 0, c >= '0' && c <= '9' && i > 0:
+		default:
+			return "an operator"
 		}
 	}
 
-	return false
+	return "`" + name + "(...)`"
 }
 
 // celExprReferencesFreeIdentifier is [celExprReferencesIdentifier]'s walk.

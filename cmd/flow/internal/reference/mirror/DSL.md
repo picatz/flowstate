@@ -1731,25 +1731,39 @@ here. What a signature attests is possession of a key rather than a person, so
 a workflow that needs two distinct people either side of a gate cannot get them from a
 webhook today.
 
-**A bridge addresses itself from bytes its own `verify:` signs.** `hmac_sha256`
-signs the raw body; `stripe` signs `<timestamp>.<body>`. Neither covers arbitrary
-request headers, so anybody who has once seen a valid delivery can replay that exact
-body and signature with a header rewritten. On a trigger that *starts* a run that is
-bounded — the only things a header moves are the run's own id and its inputs, which
-the key holder could have sent anyway — but on a bridge it chooses somebody else's
-parked gate, and mints the delivery id the replay ring recognizes. So `correlate:`
-and, on a trigger carrying `signal:`, `idempotency_key:` are refused when they read
-`event.headers` under a scheme that does not sign headers:
+**A bridge addresses itself from bytes its own `verify:` signs, and has to prove
+it.** `hmac_sha256` signs the raw body; `stripe` signs `<timestamp>.<body>`. Neither
+covers arbitrary request headers, so anybody who has once seen a valid delivery can
+replay that exact body and signature with a header rewritten. On a trigger that
+*starts* a run that is bounded — the only things a header moves are the run's own id
+and its inputs, which the key holder could have sent anyway — but on a bridge it
+chooses somebody else's parked gate, and mints the delivery id the replay ring
+recognizes.
+
+So under such a scheme, every `event` in `correlate:` and in the trigger's
+`idempotency_key:` must be a `body` read — `${event.body.order_id}`,
+`${event.body["order"]["id"]}`, `${event["body"].order}` — and anything else is
+refused where it is written:
 
 ```
-webhook "slack-approval" writes a `signal.correlate:` over `event.headers`, and
-hmac_sha256 does not sign a delivery's headers — only its body
+webhook "slack-approval" writes a `signal.correlate:` this deployment cannot prove
+reads only signed bytes: it uses `event.headers`, and hmac_sha256 signs a delivery's
+body and not its headers
 ```
 
-The rule reads a per-scheme table rather than scheme names, so a scheme that does
-cover headers admits header-derived addressing the day it lands. A trigger with no
-`signal:` keeps reading headers exactly as it always has —
-`examples/webhook-trigger` keys on Stripe's own signature header.
+**It is an allow-list on purpose.** A rule that hunted for `event.headers` instead
+would prove nothing about what it accepted: `${[event].map(e, e.headers["x"])[0]}`
+reaches a header with no `headers` selection over `event` anywhere in it, and so do
+the ternary, map-literal and list-index spellings of the same aliasing. Requiring the
+proof makes the whole class unexpressible, because an alias has to mention the root
+somewhere first. The cost is that `${[event][0].body.id}` is refused too, even though
+it happens to be harmless — the root left the rule's sight, and what came back cannot
+be shown to be what went in.
+
+The scheme half reads a per-scheme table rather than scheme names, so a scheme that
+does cover headers admits header-derived addressing the day it lands. A trigger with
+no `signal:` is untouched — `examples/webhook-trigger` keys on Stripe's own signature
+header, and still may.
 
 **A bridge answers only its own workflow's gates.** An entity key is composed from
 the tenant and the key alone, so `order-123` names one run per tenant however many

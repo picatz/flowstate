@@ -105,64 +105,184 @@ func TestASpecCarryingBothConstructsIsRefused(t *testing.T) {
 	}
 }
 
-// TestABridgeCannotAddressARunFromUnsignedHeaders is the security review's
-// MEDIUM finding.
+// TestABridgeProvesItsAddressCameFromSignedBytes is the security review's
+// MEDIUM finding and the P1 that followed it.
 //
 // `hmac_sha256` signs the body; `stripe` signs `<timestamp>.<body>`. Neither
 // covers arbitrary request headers, so anybody who has once seen a valid
-// delivery — a proxy log, mirrored traffic — can replay that exact body and
-// signature with a header rewritten. For a bridge that is not cosmetic: a
-// header-derived `correlate:` picks which parked run is answered, and a
-// header-derived `idempotency_key:` mints a delivery id the replay ring has
-// never seen, so the same approval can be replayed onto a different gate
-// indefinitely.
-func TestABridgeCannotAddressARunFromUnsignedHeaders(t *testing.T) {
+// delivery can replay that exact body and signature with a header rewritten.
+// On a bridge that is not cosmetic: a header-derived `correlate:` picks which
+// parked run is answered, and a header-derived `idempotency_key:` mints a
+// delivery id the replay ring has never seen.
+//
+// The rule was first written as a search for `event.headers`, and the aliasing
+// case below is why that was wrong rather than merely incomplete: it reaches a
+// header with no `headers` selection over the `event` identifier anywhere in
+// the expression, so the search proved nothing about what it accepted. The rule
+// is now an allow-list — every `event` must be a `body` read — which is why the
+// refused table has entries that touch no header at all.
+func TestABridgeProvesItsAddressCameFromSignedBytes(t *testing.T) {
 	t.Parallel()
 
 	body := v1.NewExpr(`event.body.order`)
+	key := v1.NewExpr(`event.body.trigger_id`)
 
 	for _, test := range []struct {
 		name       string
 		scheme     string
 		correlate  *v1.Value
 		idempotent *v1.Value
-		refused    string
+		construct  string
 	}{
 		{
 			name:       "a body-derived address is what a signature covers",
 			scheme:     v1.WebhookSchemeHMACSHA256,
 			correlate:  body,
-			idempotent: v1.NewExpr(`event.body.trigger_id`),
+			idempotent: key,
+		},
+		{
+			name:       "a deeper body path is still a body read",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`event.body.order.id`),
+			idempotent: key,
+		},
+		{
+			name:       "the index spelling of a body read is accepted",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`event.body["order"]["id"]`),
+			idempotent: key,
+		},
+		{
+			name:       "the index spelling of the root is accepted when it names the body",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`event["body"].order`),
+			idempotent: key,
+		},
+		{
+			name:       "a body read inside an expression is accepted",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`event.body.retry ? event.body.original : event.body.id`),
+			idempotent: key,
 		},
 		{
 			name:       "a header-derived correlation is refused",
 			scheme:     v1.WebhookSchemeHMACSHA256,
 			correlate:  v1.NewExpr(`event.headers["x-order"]`),
-			idempotent: v1.NewExpr(`event.body.trigger_id`),
-			refused:    "`signal.correlate:` over `event.headers`",
+			idempotent: key,
+			construct:  "`event.headers`",
 		},
 		{
 			name:       "a header-derived delivery id is refused too",
 			scheme:     v1.WebhookSchemeHMACSHA256,
 			correlate:  body,
 			idempotent: v1.NewExpr(`event.headers["x-request-id"]`),
-			refused:    "`idempotency_key:` over `event.headers`",
+			construct:  "`event.headers`",
 		},
 		{
-			name:       "the index spelling of the same read is refused",
+			name:       "the index spelling of a header read is refused",
 			scheme:     v1.WebhookSchemeHMACSHA256,
 			correlate:  v1.NewExpr(`event["headers"]["x-order"]`),
-			idempotent: v1.NewExpr(`event.body.trigger_id`),
-			refused:    "`signal.correlate:` over `event.headers`",
+			idempotent: key,
+			construct:  "an indexed `event[…]`",
+		},
+		// The aliasing class, which is the whole reason this rule is an
+		// allow-list. Every entry below reaches an unsigned header — or could
+		// — without any node in it being a `headers` selection over the
+		// `event` identifier, so the deny-list this replaced found nothing to
+		// refuse and accepted all of them. They are listed one spelling per
+		// case rather than folded together because the point is that the rule
+		// does not depend on which spelling somebody picks: it refuses the
+		// *root* escaping, and the escape is what every one of these has in
+		// common.
+		{
+			// Codex's spelling: aliased through a comprehension variable.
+			name:       "a header reached through a comprehension alias is refused",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`[event].map(e, e.headers["x-order"])[0]`),
+			idempotent: key,
+			construct:  "`event` inside a list",
 		},
 		{
-			name:      "stripe is decided the same way, since it signs no other header",
-			scheme:    v1.WebhookSchemeStripe,
-			correlate: v1.NewExpr(`event.headers["stripe-signature"]`),
-			// The signed timestamp is a component of the signature header, not
-			// a header an expression may read as though it were attested.
-			idempotent: v1.NewExpr(`event.body.trigger_id`),
-			refused:    "stripe does not sign a delivery's headers",
+			// Aliased through a ternary, which needs no comprehension at all.
+			name:       "a header reached through a conditional is refused",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`(true ? event : event).headers["x-order"]`),
+			idempotent: key,
+			construct:  "`event` passed to an operator",
+		},
+		{
+			// Aliased through a map literal.
+			name:       "a header reached through a map literal is refused",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`{"e": event}["e"].headers["x-order"]`),
+			idempotent: key,
+			construct:  "`event` inside a map",
+		},
+		{
+			// Aliased through a list, read back by index.
+			name:       "a header reached through a list index is refused",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`[event][0].headers["x-order"]`),
+			idempotent: key,
+			construct:  "`event` inside a list",
+		},
+		{
+			// A presence test is a selection under another name, and the rule
+			// reads it as one.
+			name:       "a presence test over a header is refused",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`has(event.headers) ? "a" : "b"`),
+			idempotent: key,
+			construct:  "`event.headers`",
+		},
+		{
+			name:       "the delivery root as a comprehension's range is refused",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`event.map(k, k)[0]`),
+			idempotent: key,
+			construct:  "`event` as a comprehension's range",
+		},
+		{
+			name:       "the delivery root passed to a function is refused",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`string(event)`),
+			idempotent: key,
+			construct:  "`event` passed to `string(...)`",
+		},
+		{
+			// Refused even though this one reaches the body in the end: the
+			// root left the rule's sight, and what comes back cannot be proved
+			// to be what went in. That is the cost of proving provenance rather
+			// than searching for its absence, and it is the right one.
+			name:       "the delivery root inside a list is refused even reading the body",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`[event][0].body.order`),
+			idempotent: key,
+			construct:  "`event` inside a list",
+		},
+		{
+			name:       "the delivery root inside a map is refused even reading the body",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  v1.NewExpr(`{"d": event}["d"].body.order`),
+			idempotent: key,
+			construct:  "`event` inside a map",
+		},
+		{
+			// The other half of the aliasing class, on the other expression:
+			// an `idempotency_key:` on a bridge mints the delivery id the
+			// replay ring recognizes, so it is addressed by the same rule.
+			name:       "an aliased delivery id is refused too",
+			scheme:     v1.WebhookSchemeHMACSHA256,
+			correlate:  body,
+			idempotent: v1.NewExpr(`[event].map(e, e.headers["x-request-id"])[0]`),
+			construct:  "`event` inside a list",
+		},
+		{
+			name:       "stripe is decided the same way, since it signs no other header",
+			scheme:     v1.WebhookSchemeStripe,
+			correlate:  v1.NewExpr(`event.headers["stripe-signature"]`),
+			idempotent: key,
+			construct:  "`event.headers`",
 		},
 		{
 			name:       "stripe over the body is accepted",
@@ -185,15 +305,17 @@ func TestABridgeCannotAddressARunFromUnsignedHeaders(t *testing.T) {
 			trigger.GetSignal().Correlate = test.correlate
 
 			err := v1.CheckWebhookSignalBridges(wf)
-			if test.refused == "" {
+			if test.construct == "" {
 				require.NoError(t, err)
 
 				return
 			}
 
 			require.Error(t, err)
-			require.Containsf(t, err.Error(), test.refused,
-				"the refusal has to name which expression and which scheme; got %q", err.Error())
+			require.Containsf(t, err.Error(), test.construct,
+				"the refusal has to name the construct an author must rewrite; got %q", err.Error())
+			require.Containsf(t, err.Error(), test.scheme,
+				"the refusal has to name the scheme whose signature does not cover this")
 		})
 	}
 }

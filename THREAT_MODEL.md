@@ -228,11 +228,17 @@ holds a key for, rather than the tenant's whole entity-key space. A run recordin
 workflow name is refused rather than guessed at.
 
 Neither scheme signs arbitrary request headers, so a bridge may not address itself
-from them: `correlate:` and `idempotency_key:` reading `event.headers` are refused
-when the file compiles, under a per-scheme table of what each signature covers. The
-replay this closes needs no key at all — one observed delivery, its body and
-signature reused with a rewritten header, would otherwise pick a different gate and
-mint a delivery id the run's ring has never seen. A delivery the run has already consumed is dropped
+from them. The rule is an allow-list rather than a search: under such a scheme every
+occurrence of `event` in `correlate:` and `idempotency_key:` must be a `body` read,
+so a bare root, a root inside a list or map literal, a root passed to a function or
+used as a comprehension's range are all refused when the file compiles. Searching for
+`event.headers` instead proved nothing about what it accepted — a comprehension, a
+ternary, a map literal or a list index each alias the root and reach a header with no
+`headers` selection over `event` anywhere in the expression — and requiring the proof
+makes that whole class unexpressible without tracking aliases. The replay this closes
+needs no key at all: one observed delivery, its body and signature reused with a
+rewritten header, would otherwise pick a different gate and mint a delivery id the
+run's ring has never seen. A delivery the run has already consumed is dropped
 by the engine at intake, on both drivers, against a bounded add-only set of
 delivery-id digests carried in `RunState`; the receiver keeps no ledger.
 

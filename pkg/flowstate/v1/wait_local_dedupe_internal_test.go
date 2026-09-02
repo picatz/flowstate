@@ -183,3 +183,71 @@ func TestTwoParallelWaitsKeepTheDeadlineOfWhicheverDropsTheReplay(t *testing.T) 
 	require.Equal(t, 1, clock.Pending(),
 		"the gate that dropped the replay must still have something to time it out")
 }
+
+// TestAFloodOfRedeliveriesDoesNotFillTheQueue is the capacity half of the same
+// defect, and the one that costs an approval rather than a hang.
+//
+// A local queue holds [localSignalQueueDepth] entries. A redelivery used to be
+// enqueued and dropped later by whichever wait read it — correct about the gate
+// and wrong about the room it took: a sender repeating one delivery fills the
+// queue with copies that answer nothing, and the *next genuine* signal is
+// refused for want of space while its own gate times out. The durable driver
+// has no such bound. Temporal takes the traffic and the workflow discards
+// duplicates as it reads, so it reaches the fresh delivery; keeping the local
+// queue occupied by known redeliveries is a divergence a retry storm turns into
+// a lost approval.
+//
+// The redeliveries are still *acknowledged*, which is the other half of
+// matching the durable driver: a sender retrying is told the same thing either
+// way, and nothing about a redelivery is the sender's mistake.
+func TestAFloodOfRedeliveriesDoesNotFillTheQueue(t *testing.T) {
+	t.Parallel()
+
+	const name = "stage-approved"
+
+	signals := NewLocalSignals()
+
+	sent := func(id string) *SignalSender {
+		sender := LocalSignalSender()
+		sender.DeliveryId = id
+
+		return sender
+	}
+	approval := func() *Node_Outputs {
+		return &Node_Outputs{NamedValues: map[string]*Value{"approved": NewLiteral(true)}}
+	}
+
+	// The genuine click, taken by a gate — which is what records it.
+	require.NoError(t, signals.DeliverFrom(name, approval(), sent("click-a")))
+	taken, ok := signals.tryReceiveSignal(name)
+	require.True(t, ok)
+	require.NotNil(t, taken)
+
+	// The storm: a full queue's worth of the same delivery, and one more.
+	for i := range localSignalQueueDepth + 1 {
+		require.NoErrorf(t, signals.DeliverFrom(name, approval(), sent("click-a")),
+			"redelivery %d was refused; a sender retrying is told the same thing either way, "+
+				"exactly as the durable driver tells it", i)
+	}
+
+	// None of them reached a queue, so none of them is counted as in flight:
+	// [LocalSignals.queued] answers "will a wait take this", and a delivery
+	// that was never enqueued has no copy for a later one to queue behind.
+	require.Emptyf(t, signals.queued,
+		"a redelivery dropped at the door was still counted as queued, so the count no longer "+
+			"means what willAdmitLocked reads it as: %v", signals.queued)
+
+	// And the room is still there for the delivery that matters.
+	require.NoError(t, signals.DeliverFrom(name, approval(), sent("click-b")))
+
+	fresh, ok := signals.tryReceiveSignal(name)
+	require.True(t, ok,
+		"a fresh delivery could not reach the gate: the queue was full of redeliveries that "+
+			"answer nothing, and its gate would have timed out with an approval in hand")
+	require.Equal(t, "click-b", fresh.GetSender().GetDeliveryId())
+
+	// Nothing else is left behind it.
+	_, ok = signals.tryReceiveSignal(name)
+	require.False(t, ok, "a redelivery survived in the queue")
+	require.Empty(t, signals.queued, "the fresh delivery was not accounted for when it was taken")
+}
