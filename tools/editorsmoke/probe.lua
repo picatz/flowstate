@@ -287,8 +287,8 @@ do
     ))
     check('offers the tasks the registry knows', labels['log'] == true and labels['http'] == true)
     check(
-      'offers the keys the grammar knows, including call and async properties',
-      labels['id'] == true and labels['if'] == true and labels['async'] == true and labels['digest'] == true
+      'offers only the grammar properties legal on this task step',
+      labels['id'] == true and labels['if'] == true and labels['async'] == true and labels['digest'] ~= true
     )
   end
 end
