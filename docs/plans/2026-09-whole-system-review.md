@@ -411,7 +411,34 @@ divergence is worse than a hang, because invariant 3 fails in the direction
 that hides it: the local driver keeps answering a suite's scripted signals
 while the durable run waits forever. So the slice defines the addressing — a
 stable child address, or the parent relaying — and the shared conformance set
-carries a child callee that blocks on a signal (Codex, on #1479). Update, with
+carries a child callee that blocks on a signal (Codex, on #1479).
+
+Two more the child boundary breaks, both found the same way and both failing
+silently on the driver that matters:
+
+- **Compensation has to cross the boundary.** Inline works because the
+  durable executor shares `e.undo` *by pointer* with the executor a call
+  descends into, so a callee's `undo:` lands on the run's own log and a later
+  parent failure unwinds it in reverse order (`docs/DSL.md:3403-3420`). A
+  child is a separate execution: it closes when it completes, and its
+  compensations close with it, so a parent step failing afterwards cannot
+  unwind work the callee already did. The slice defines how those entries
+  reach the parent's structurally ordered log — transferred at completion, or
+  executed by a protocol the parent drives — and the conformance set carries
+  a downstream parent failure unwinding a *completed* child. Without it a
+  local implementation keeps sharing the pointer and passes while the durable
+  one loses the rollback.
+- **The child gets the whole resolved memo set, not three of it.** A normal
+  run carries `flowstate.debugPolicy` and `flowstate.signalProtocolVersion`
+  alongside the signal policy, starter and tenant (`server/server.go:928`).
+  Omit the protocol marker and `usesCurrentSignalProtocol` reads the child as
+  legacy, which routes `flowstate_debug` down the reserved-signal path where,
+  with no declared policy to find, it is allowed without ever reaching
+  `DebugPolicyCheck` (`server/lifecycle.go:258-295`). That is a debugger
+  attaching to a child run on authority nobody granted — invariant 6, failing
+  open — so the requirement is the complete resolved set with a negative
+  debug-authorization test, not an enumeration somebody extends later
+  (Codex, on #1479). Update, with
 update-with-start in the same decision, follows — it is an absence a signal
 plus a poll routes around, where the inline call is a ceiling nothing routes
 around. *Refused:* Nexus ahead of either (design note only), and a literal
@@ -786,7 +813,11 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
   therefore replaced by a cross-field rule in the same change: a declaration
   is valid with the new `Type`, or with a nonzero legacy enum, and a
   declaration carrying both that disagree is refused rather than silently
-  preferring one (Codex, on #1479).
+  preferring one. The same rule covers `OutputDeclaration.type = 6`, where a
+  hand-built `Workflow` could otherwise submit an old and a new output type
+  that disagree and leave legacy and migrated readers enforcing different
+  contracts — with legacy `TYPE_UNSPECIFIED` read as absence there, per the
+  asymmetry below, rather than as a conflicting value (Codex, on #1479).
 
   The eighth case belongs to outputs only: `TYPE_UNSPECIFIED` is a real value
   on `OutputDeclaration.type`, meaning no declared output type, where on an
@@ -915,7 +946,7 @@ withdrawn above. Still to do: #580 re-titled to defect 5 and the
 | L | #1437 the reference-model registry | `pkg/flowstate/v1/`, `flowfile/`, `lsp/`, `flowdebug/`, `flowtest/`, `cmd/flow/taskrun.go` |
 | L | #1440+#1456 one bridge + e2e plugin tests | `protoliterals.go`, `sdk/values.go`, `internal/pluginreachtest` |
 | L | #1393 `LaunchRequest` + #1399 audit dial-back, one protocol 7 bump | `plugin.proto`, `plugin/launch.go`, `sdk/`, the audit RPC |
-| L | D4 `call: execution: child`, both drivers, **including how a signal reaches a child callee** | `workflow.proto`, `flowfile/`, `engine/execute.go:594`, `eval.go`, `server/lifecycle.go`, a shared conformance case set with a signal-blocked callee |
+| L | D4 `call: execution: child`, both drivers, **plus the three things the child boundary breaks**: signal addressing, compensation transfer, the complete memo set | `workflow.proto`, `flowfile/`, `engine/execute.go:594`, `eval.go`, `server/lifecycle.go`, `server/server.go:928`, a conformance set with a signal-blocked callee and a downstream unwind of a completed child |
 | L | #1385 compensation record | `run.proto`, `service.proto`, `engine/workflow.go`, `server/timeline.go` |
 | L | #1014 scope enforcement, credential-sensitive, with bearer/mTLS/anonymous/MCP negative tests | `authorization.go`, `auth/challenge.go`, `auth/mcpverifier.go`, `server/`, `cmd/flow/mcpserve.go` |
 | L | #1435 rename/references; #1384 pushdown; #108 MCP bridge spike | `lsp/`, `flowfile/fix*`; `server/list.go`; a new plugin |
