@@ -1917,7 +1917,7 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 	// [OriginalProfile] instead — a different vocabulary from the one its
 	// steps, scoped moments later through the same [CalleeProfile] call
 	// inside [CallScope], actually run under.
-	vars, err := EvalVars(ctx, CalleeProfile(scope, callee), callee.GetVars())
+	vars, err := EvalVars(ctx, CalleeProfile(scope.GetProfile(), callee), callee.GetVars())
 	if err != nil {
 		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
 	}

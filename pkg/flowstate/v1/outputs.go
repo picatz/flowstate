@@ -73,7 +73,7 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 			if err := CheckOutputValue(declaration, value); err != nil {
 				return nil, err
 			}
-			if err := CheckOutputConstraint(declaration, value); err != nil {
+			if err := CheckOutputConstraint(scope.GetProfile(), declaration, value); err != nil {
 				return nil, err
 			}
 
@@ -101,7 +101,7 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 			return nil, err
 		}
 
-		if err := CheckOutputConstraint(declaration, computed); err != nil {
+		if err := CheckOutputConstraint(scope.GetProfile(), declaration, computed); err != nil {
 			// A workflow claiming a `must:` on its own answer has that answer
 			// checked before it is reported — the same rule a submitted input
 			// gets, pointed the other way: a run that cannot produce a value

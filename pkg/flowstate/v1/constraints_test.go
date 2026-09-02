@@ -190,7 +190,7 @@ func TestCheckInputExampleCatchesAConstraintViolation(t *testing.T) {
 		Example: v1.NewLiteral("mars-east-1"),
 	}
 
-	err := v1.CheckInputExample(decl)
+	err := v1.CheckInputExample(v1.CurrentProfile, decl)
 	require.Error(t, err, "an example violating its own must: was accepted")
 	assert.Contains(t, err.Error(), "example:")
 	assert.Contains(t, err.Error(), "must satisfy")
@@ -208,7 +208,7 @@ func TestCheckInputExampleAcceptsAConformingExample(t *testing.T) {
 		Example: v1.NewLiteral("us-east-1"),
 	}
 
-	assert.NoError(t, v1.CheckInputExample(decl))
+	assert.NoError(t, v1.CheckInputExample(v1.CurrentProfile, decl))
 }
 
 // TestConstraintShapeRefusesAMismatchedKey is the load-time half of the
@@ -219,7 +219,7 @@ func TestConstraintShapeRefusesAMismatchedKey(t *testing.T) {
 
 	decl := &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, MinLen: u64Ptr(1)}
 
-	err := v1.CheckInputConstraintShape(decl)
+	err := v1.CheckInputConstraintShape(v1.CurrentProfile, decl)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "replicas")
 	assert.Contains(t, err.Error(), "string input")
@@ -239,7 +239,7 @@ func TestConstraintShapeRefusesMinItemsAboveTheCap(t *testing.T) {
 
 	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(10_001)}
 
-	err := v1.CheckInputConstraintShape(decl)
+	err := v1.CheckInputConstraintShape(v1.CurrentProfile, decl)
 	require.Error(t, err, "an unsatisfiable min_items above the server-wide element cap was accepted")
 	assert.Contains(t, err.Error(), "records")
 	assert.Contains(t, err.Error(), "10001")
@@ -255,7 +255,7 @@ func TestConstraintShapeAcceptsAMinItemsAtTheCap(t *testing.T) {
 
 	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(10_000)}
 
-	assert.NoError(t, v1.CheckInputConstraintShape(decl), "min_items exactly at the server-wide cap was refused")
+	assert.NoError(t, v1.CheckInputConstraintShape(v1.CurrentProfile, decl), "min_items exactly at the server-wide cap was refused")
 }
 
 // TestConstraintShapeAcceptsASaneMinItems is the ordinary non-regression
@@ -265,7 +265,7 @@ func TestConstraintShapeAcceptsASaneMinItems(t *testing.T) {
 
 	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(3)}
 
-	assert.NoError(t, v1.CheckInputConstraintShape(decl), "a sane min_items was refused")
+	assert.NoError(t, v1.CheckInputConstraintShape(v1.CurrentProfile, decl), "a sane min_items was refused")
 }
 
 // TestCheckInputDefaultRefusesAnOversizedLiteral is Codex's second finding on
@@ -283,7 +283,7 @@ func TestCheckInputDefaultRefusesAnOversizedLiteral(t *testing.T) {
 		Default: v1.NewLiteralList(manyItems(10_001)...),
 	}
 
-	err := v1.CheckInputDefault(decl)
+	err := v1.CheckInputDefault(v1.CurrentProfile, decl)
 	require.Error(t, err, "a literal default over the element bound was accepted at author time")
 	assert.Contains(t, err.Error(), "records")
 	assert.Contains(t, err.Error(), "list elements")
@@ -299,7 +299,7 @@ func TestCheckInputDefaultAcceptsASaneLiteral(t *testing.T) {
 		Default: v1.NewLiteralList("a", "b", "c"),
 	}
 
-	assert.NoError(t, v1.CheckInputDefault(decl), "a sane literal default was refused")
+	assert.NoError(t, v1.CheckInputDefault(v1.CurrentProfile, decl), "a sane literal default was refused")
 }
 
 // TestBindRunInputsRefusesABadDeclarationBeforeAnyValue proves the shape check
@@ -322,7 +322,7 @@ func TestBindRunInputsRefusesABadDeclarationBeforeAnyValue(t *testing.T) {
 func TestMustRefusesNow(t *testing.T) {
 	t.Parallel()
 
-	_, err := v1.CompileMustExpression(`this == now`, v1.InputDeclaration_TYPE_STRING)
+	_, err := v1.CompileMustExpression(v1.CurrentProfile, `this == now`, v1.InputDeclaration_TYPE_STRING)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "now")
 	assert.Contains(t, err.Error(), "wait_until")
@@ -333,7 +333,7 @@ func TestMustRefusesNow(t *testing.T) {
 func TestMustRefusesAnUnknownName(t *testing.T) {
 	t.Parallel()
 
-	_, err := v1.CompileMustExpression(`this == steps.web.result`, v1.InputDeclaration_TYPE_STRING)
+	_, err := v1.CompileMustExpression(v1.CurrentProfile, `this == steps.web.result`, v1.InputDeclaration_TYPE_STRING)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "steps")
 }
@@ -344,7 +344,7 @@ func TestMustRefusesAnUnknownName(t *testing.T) {
 func TestMustRefusesANonBoolExpression(t *testing.T) {
 	t.Parallel()
 
-	_, err := v1.CompileMustExpression(`this + 1`, v1.InputDeclaration_TYPE_INT)
+	_, err := v1.CompileMustExpression(v1.CurrentProfile, `this + 1`, v1.InputDeclaration_TYPE_INT)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bool")
 }
@@ -372,7 +372,7 @@ func TestMustHasTheProfileLibraries(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := v1.CompileMustExpression(c.expr, c.typ)
+			_, err := v1.CompileMustExpression(v1.CurrentProfile, c.expr, c.typ)
 			require.NoError(t, err, "expression should compile now that must: shares the profile's libraries")
 		})
 	}
@@ -448,7 +448,7 @@ func TestMustStillRefusesEveryNondeterministicCaseItRefusedBefore(t *testing.T) 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := v1.CompileMustExpression(c.expr, c.typ)
+			_, err := v1.CompileMustExpression(v1.CurrentProfile, c.expr, c.typ)
 			require.Error(t, err, "must: should still refuse this the way it did before must: gained the profile's libraries")
 			assert.Contains(t, err.Error(), c.want)
 		})
@@ -509,7 +509,7 @@ func TestMustIsCostBounded(t *testing.T) {
 func TestOutputMustCatchesAViolatingAnswer(t *testing.T) {
 	t.Parallel()
 
-	err := v1.CheckOutputConstraint(
+	err := v1.CheckOutputConstraint(v1.CurrentProfile,
 		&v1.OutputDeclaration{Name: "tracking", Must: strPtr(`this.matches("^TRK-")`)},
 		v1.NewLiteral("not-a-tracking-id"),
 	)
@@ -522,7 +522,7 @@ func TestOutputMustCatchesAViolatingAnswer(t *testing.T) {
 func TestOutputMustAcceptsAConformingAnswer(t *testing.T) {
 	t.Parallel()
 
-	err := v1.CheckOutputConstraint(
+	err := v1.CheckOutputConstraint(v1.CurrentProfile,
 		&v1.OutputDeclaration{Name: "tracking", Must: strPtr(`this.matches("^TRK-")`)},
 		v1.NewLiteral("TRK-12345"),
 	)
@@ -606,13 +606,13 @@ func TestCheckOutputValue(t *testing.T) {
 func TestCheckOutputConstraintShapeRefusesAMalformedEnum(t *testing.T) {
 	t.Parallel()
 
-	err := v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+	err := v1.CheckOutputConstraintShape(v1.CurrentProfile, &v1.OutputDeclaration{
 		Name: "status", Type: v1.InputDeclaration_TYPE_STRING, Values: []string{"ok"},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "declares values but is declared string")
 
-	err = v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+	err = v1.CheckOutputConstraintShape(v1.CurrentProfile, &v1.OutputDeclaration{
 		Name: "status", Type: v1.InputDeclaration_TYPE_ENUM,
 	})
 	require.Error(t, err)
@@ -621,7 +621,7 @@ func TestCheckOutputConstraintShapeRefusesAMalformedEnum(t *testing.T) {
 	// The per-member rules are the input ones reached rather than restated, so
 	// what has to be checked is that the sentence they come back in names the
 	// half of the contract the author is looking at.
-	err = v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+	err = v1.CheckOutputConstraintShape(v1.CurrentProfile, &v1.OutputDeclaration{
 		Name: "status", Type: v1.InputDeclaration_TYPE_ENUM, Values: []string{"ok", "ok"},
 	})
 	require.Error(t, err)
@@ -633,7 +633,7 @@ func TestCheckOutputConstraintShapeRefusesAMalformedEnum(t *testing.T) {
 		"a per-member violation must carry its own field path, so a diagnostic can point at the member")
 	assert.Equal(t, "values", shapeErr.Field)
 
-	assert.NoError(t, v1.CheckOutputConstraintShape(&v1.OutputDeclaration{
+	assert.NoError(t, v1.CheckOutputConstraintShape(v1.CurrentProfile, &v1.OutputDeclaration{
 		Name: "status", Type: v1.InputDeclaration_TYPE_ENUM, Values: []string{"ok"},
 	}))
 }
@@ -810,7 +810,7 @@ func TestCheckOutputConstraintRefusesAnOversizedNestedList(t *testing.T) {
 	decl := &v1.OutputDeclaration{Name: "result", Must: strPtr(`this.items.all(x, x >= 0)`)}
 	value := v1.NewLiteralMap(map[string]any{"items": manyItems(10_001)})
 
-	err := v1.CheckOutputConstraint(decl, value)
+	err := v1.CheckOutputConstraint(v1.CurrentProfile, decl, value)
 	require.Error(t, err, "an output whose nested list exceeds the element bound reached the evaluator")
 	assert.Contains(t, err.Error(), "result")
 	assert.Contains(t, err.Error(), "list elements")
@@ -824,7 +824,7 @@ func TestCheckOutputConstraintAcceptsAConformingNestedStruct(t *testing.T) {
 	decl := &v1.OutputDeclaration{Name: "result", Must: strPtr(`true`)}
 	value := v1.NewLiteralMap(map[string]any{"child": nestedStruct(10, manyItems(9_000))})
 
-	assert.NoError(t, v1.CheckOutputConstraint(decl, value))
+	assert.NoError(t, v1.CheckOutputConstraint(v1.CurrentProfile, decl, value))
 }
 
 // unconstrainedListInput declares a list-typed input carrying no `must:` and

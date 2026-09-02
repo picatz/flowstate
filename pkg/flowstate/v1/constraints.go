@@ -79,31 +79,17 @@ func constraintCELType(t InputDeclaration_Type) *cel.Type {
 	}
 }
 
-// mustEnvs caches the CEL environment built for each declared type's `must:`
-// expressions, keyed by [InputDeclaration_Type]. Building an environment
+// mustEnvs caches the CEL environment built for each profile and declared
+// type's `must:` expressions. Building an environment
 // parses and type-checks every declaration in it, per [celenv.go]'s own
 // reasoning for caching — small here because there are only the six declared
 // types plus the output case, but the same reason applies.
-var mustEnvs sync.Map // map[InputDeclaration_Type]*mustEnvResult
+var mustEnvs sync.Map // map[mustEnvKey]*mustEnvResult
 
-// outputMustEnv is the one environment every OutputDeclaration.must compiles
-// against: `this` typed dyn.
-//
-// Dyn even now that an output may declare a `type:`, and deliberately: the
-// type is optional and always will be (see [OutputDeclaration.type]), so
-// binding `this` to it would make the same `must:` compile against a
-// different `this` depending on whether a neighbouring key is present, and
-// an author who adds a type to a working declaration would be shown an
-// error in an expression they did not touch. What the declared type buys is
-// checked separately and unconditionally by [CheckOutputValue], which runs
-// before the `must:` does; tightening this binding is its own question,
-// beside the `must:` scope one [OutputDeclaration.must] records.
-//
-// Built from the current profile's own library set — see [mustEnvFor]'s doc
-// for why that set, and not a hand-copied one, is what belongs here.
-var outputMustEnv = sync.OnceValues(func() (*cel.Env, error) {
-	return mustBaseEnv(cel.Variable("this", cel.DynType))
-})
+type mustEnvKey struct {
+	profile string
+	t       InputDeclaration_Type
+}
 
 type mustEnvResult struct {
 	env *cel.Env
@@ -159,12 +145,7 @@ type mustEnvResult struct {
 // does not belong in [extensionLibraries] at all — that map's own doc already
 // says so — so there is no library this function could pull in that would
 // weaken that guarantee.
-func mustBaseEnv(extra ...cel.EnvOption) (*cel.Env, error) {
-	libs, err := ProfileLibraries(CurrentProfile)
-	if err != nil {
-		return nil, fmt.Errorf("resolve profile libraries: %w", err)
-	}
-
+func mustBaseEnv(libs []string, extra ...cel.EnvOption) (*cel.Env, error) {
 	// DefaultEvaluator().Env is the identical cached construction every other
 	// expression position in a workflow resolves through
 	// ([Evaluator.EvalParsedBase], [Evaluator.ProfileEnv]) — reusing it rather
@@ -183,17 +164,27 @@ func mustBaseEnv(extra ...cel.EnvOption) (*cel.Env, error) {
 	return env, nil
 }
 
-// mustEnvFor returns the cached environment for t's `must:` expressions,
-// building it on first use.
-func mustEnvFor(t InputDeclaration_Type) (*cel.Env, error) {
-	if cached, ok := mustEnvs.Load(t); ok {
+// mustEnvFor returns the cached environment for profile and t's `must:`
+// expressions, building it on first use. TYPE_UNSPECIFIED binds `this` as dyn
+// for output constraints.
+func mustEnvFor(profile string, t InputDeclaration_Type) (*cel.Env, error) {
+	profile = canonicalProfile(profile)
+	key := mustEnvKey{profile: profile, t: t}
+	if cached, ok := mustEnvs.Load(key); ok {
 		res := cached.(*mustEnvResult)
 		return res.env, res.err
 	}
 
-	env, err := mustBaseEnv(cel.Variable("this", constraintCELType(t)))
+	libs, err := ProfileLibraries(profile)
+	if err != nil {
+		// Refuse before the caller-controlled profile becomes a cache key. The
+		// successful key space is bounded by the profiles this build knows.
+		return nil, fmt.Errorf("resolve profile libraries: %w", err)
+	}
+
+	env, err := mustBaseEnv(libs, cel.Variable("this", constraintCELType(t)))
 	res := &mustEnvResult{env: env, err: err}
-	actual, _ := mustEnvs.LoadOrStore(t, res)
+	actual, _ := mustEnvs.LoadOrStore(key, res)
 	stored := actual.(*mustEnvResult)
 	return stored.env, stored.err
 }
@@ -207,8 +198,8 @@ func mustEnvFor(t InputDeclaration_Type) (*cel.Env, error) {
 // fail-closed rule applied to the language itself: a bad constraint is a
 // defect in the specification, caught when it loads rather than when a run
 // happens to exercise it.
-func CompileMustExpression(mustExpr string, t InputDeclaration_Type) (*cel.Ast, error) {
-	env, err := mustEnvFor(t)
+func CompileMustExpression(profile, mustExpr string, t InputDeclaration_Type) (*cel.Ast, error) {
+	env, err := mustEnvFor(profile, t)
 	if err != nil {
 		return nil, fmt.Errorf("build constraint environment: %w", err)
 	}
@@ -217,10 +208,10 @@ func CompileMustExpression(mustExpr string, t InputDeclaration_Type) (*cel.Ast, 
 }
 
 // CompileOutputMustExpression is [CompileMustExpression] for an output's
-// `must:`, whose `this` is dyn because [OutputDeclaration] carries no
-// declared type.
-func CompileOutputMustExpression(mustExpr string) (*cel.Ast, error) {
-	env, err := outputMustEnv()
+// `must:`. Its `this` stays dyn because an output's declared type is optional;
+// [CheckOutputValue] enforces that separate promise when one is present.
+func CompileOutputMustExpression(profile, mustExpr string) (*cel.Ast, error) {
+	env, err := mustEnvFor(profile, InputDeclaration_TYPE_UNSPECIFIED)
 	if err != nil {
 		return nil, fmt.Errorf("build constraint environment: %w", err)
 	}
@@ -360,7 +351,7 @@ func collectFreeIdentifiers(e *expr.Expr, bound map[string]struct{}, free map[st
 // broken declaration is refused at submit even for a specification that never
 // passed through `flow validate` — and `flow validate` runs the identical
 // check early enough to report it as a diagnostic with a position.
-func CheckInputConstraintShape(decl *InputDeclaration) error {
+func CheckInputConstraintShape(profile string, decl *InputDeclaration) error {
 	name := decl.GetName()
 	t := decl.GetType()
 
@@ -411,7 +402,7 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 	}
 
 	if decl.Must != nil {
-		if _, err := CompileMustExpression(decl.GetMust(), t); err != nil {
+		if _, err := CompileMustExpression(profile, decl.GetMust(), t); err != nil {
 			return fmt.Errorf("input %q %w", name, err)
 		}
 	}
@@ -602,7 +593,7 @@ func enumValueIndex(field string) int {
 // [checkEnumValuesShape] derives its own bound from the schema, so the two
 // declarations cannot come to disagree about how many members an enum may have
 // or how long one may be.
-func CheckOutputConstraintShape(decl *OutputDeclaration) error {
+func CheckOutputConstraintShape(profile string, decl *OutputDeclaration) error {
 	name := decl.GetName()
 	t := decl.GetType()
 
@@ -625,7 +616,7 @@ func CheckOutputConstraintShape(decl *OutputDeclaration) error {
 	if decl.Must == nil {
 		return nil
 	}
-	if _, err := CompileOutputMustExpression(decl.GetMust()); err != nil {
+	if _, err := CompileOutputMustExpression(profile, decl.GetMust()); err != nil {
 		return fmt.Errorf("output %q %w", name, err)
 	}
 	return nil
@@ -793,7 +784,7 @@ func containerReadsBack(declared InputDeclaration_Type) string {
 // Nil for a value with no literal — an expression, refused earlier by
 // [CheckInputValue] itself — so this never runs against something it cannot
 // evaluate a rule over.
-func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) error {
+func CheckInputConstraints(profile, name string, decl *InputDeclaration, value *Value) error {
 	lit := value.GetLiteral()
 	if lit == nil {
 		return nil
@@ -829,7 +820,7 @@ func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) er
 		return nil
 	}
 
-	ast, err := CompileMustExpression(decl.GetMust(), decl.GetType())
+	ast, err := CompileMustExpression(profile, decl.GetMust(), decl.GetType())
 	if err != nil {
 		// CheckInputConstraintShape already refuses a declaration whose must:
 		// does not compile, so a caller reaching this without having run it —
@@ -838,7 +829,7 @@ func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) er
 		return fmt.Errorf("input %q %w", name, err)
 	}
 
-	satisfied, err := evalMust(context.Background(), decl.GetType(), ast, lit)
+	satisfied, err := evalMust(context.Background(), profile, decl.GetType(), ast, lit)
 	if err != nil {
 		return fmt.Errorf("input %q: evaluating `must: %s`: %w", name, decl.GetMust(), err)
 	}
@@ -853,7 +844,7 @@ func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) er
 // CheckOutputConstraint is [CheckInputConstraints] for an output: it applies
 // only `must:`, checked once the output's own expression has produced value,
 // so a workflow cannot report an answer that violates its own declaration.
-func CheckOutputConstraint(decl *OutputDeclaration, value *Value) error {
+func CheckOutputConstraint(profile string, decl *OutputDeclaration, value *Value) error {
 	if decl.Must == nil {
 		return nil
 	}
@@ -871,12 +862,12 @@ func CheckOutputConstraint(decl *OutputDeclaration, value *Value) error {
 		return err
 	}
 
-	ast, err := CompileOutputMustExpression(decl.GetMust())
+	ast, err := CompileOutputMustExpression(profile, decl.GetMust())
 	if err != nil {
 		return fmt.Errorf("output %q %w", decl.GetName(), err)
 	}
 
-	env, err := outputMustEnv()
+	env, err := mustEnvFor(profile, InputDeclaration_TYPE_UNSPECIFIED)
 	if err != nil {
 		return fmt.Errorf("output %q: %w", decl.GetName(), err)
 	}
@@ -915,8 +906,8 @@ func CheckOutputConstraint(decl *OutputDeclaration, value *Value) error {
 // evalMust evaluates a compiled must: ast against one value, through
 // [Evaluator.Eval] so the cost bound and cancellation this file's own doc
 // comment promises actually apply.
-func evalMust(ctx context.Context, t InputDeclaration_Type, ast *cel.Ast, lit *expr.Value) (bool, error) {
-	env, err := mustEnvFor(t)
+func evalMust(ctx context.Context, profile string, t InputDeclaration_Type, ast *cel.Ast, lit *expr.Value) (bool, error) {
+	env, err := mustEnvFor(profile, t)
 	if err != nil {
 		return false, err
 	}

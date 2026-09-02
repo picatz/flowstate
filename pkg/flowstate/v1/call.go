@@ -84,19 +84,19 @@ func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scop
 // CalleeProfile returns the profile a callee's own expressions are evaluated
 // under: the callee's, where it declares one, and the caller's otherwise.
 //
-// Exported and called from three places that all have to agree — [CallScope],
-// which stamps it on the callee's scope, and the vars evaluation each driver
-// does before that scope exists to evaluate the callee's own `vars:` against.
+// Exported so [CallScope] and the vars evaluation each driver does before that
+// scope exists resolve the same name. CallScope also uses the result while
+// binding the callee's declarations, before the scope exists.
 // A callee's `vars:` and its steps are one file evaluated under one dialect;
 // computing the profile twice, by two routes, is exactly the shape CLAUDE.md's
 // retry-attempts lesson warns about — a value with one meaning, written down
 // twice, disagreeing with itself the moment a callee that names no profile of
 // its own is called by two callers compiled against different ones.
-func CalleeProfile(caller *Scope, callee *Workflow) string {
+func CalleeProfile(callerProfile string, callee *Workflow) string {
 	if profile := callee.GetProfile(); profile != "" {
 		return profile
 	}
-	return caller.GetProfile()
+	return callerProfile
 }
 
 // CallScope returns the scope a called workflow's steps run in.
@@ -126,7 +126,8 @@ func CalleeProfile(caller *Scope, callee *Workflow) string {
 // nil is correct for a callee that declares no `vars:`, and CallScope does not
 // tell the two cases apart because there is nothing to bind either way.
 func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Value) (*Scope, error) {
-	bound, err := BindRunInputs(callee, arguments)
+	profile := CalleeProfile(caller.GetProfile(), callee)
+	bound, err := bindRunInputs(callee, profile, arguments)
 	if err != nil {
 		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
 	}
@@ -134,8 +135,6 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 	// Built from the callee's own profile where it declares one, and the caller's
 	// otherwise. A workflow that names its dialect means it, and a file that does
 	// not is being run as part of the file that called it.
-	profile := CalleeProfile(caller, callee)
-
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Inputs = bound
 	scope.AmbientVars = vars

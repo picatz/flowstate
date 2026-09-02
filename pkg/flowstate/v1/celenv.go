@@ -707,12 +707,7 @@ var profiles = map[string][]string{
 // worker does not know is refused here, before anything guesses at what its
 // expressions mean.
 func ProfileLibraries(profile string) ([]string, error) {
-	if profile == "" {
-		// A spec compiled before this field existed, which can only have come from
-		// a build whose one vocabulary was the original — so that is what it gets,
-		// permanently, rather than whatever this build happens to call current.
-		profile = OriginalProfile
-	}
+	profile = canonicalProfile(profile)
 
 	libs, ok := profiles[profile]
 	if !ok {
@@ -722,6 +717,16 @@ func ProfileLibraries(profile string) ([]string, error) {
 			profile, strings.Join(profileNames(), ", "))
 	}
 	return slices.Clone(libs), nil
+}
+
+// canonicalProfile maps a spec written before profiles existed to the original
+// vocabulary it was compiled against. Keeping that normalization here gives
+// profile-keyed caches the same identity [ProfileLibraries] resolves.
+func canonicalProfile(profile string) string {
+	if profile == "" {
+		return OriginalProfile
+	}
+	return profile
 }
 
 // profileNames returns the known profile names, sorted, for diagnostics.

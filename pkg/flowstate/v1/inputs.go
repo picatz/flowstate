@@ -69,8 +69,15 @@ import (
 // output is still judged at completion, against the value it actually
 // produced, because that is the first moment there is one.
 func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value, error) {
+	return bindRunInputs(wf, wf.GetProfile(), submitted)
+}
+
+// bindRunInputs is BindRunInputs with the effective profile supplied by the
+// execution context. A top-level workflow records its own profile; an old
+// unprofiled callee inherits its caller's through [CalleeProfile].
+func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (map[string]*Value, error) {
 	for _, declaration := range wf.GetDeclaredOutputs() {
-		if err := CheckOutputConstraintShape(declaration); err != nil {
+		if err := CheckOutputConstraintShape(profile, declaration); err != nil {
 			return nil, err
 		}
 		// Statically knowable only: nil for an expression, so this refuses the
@@ -179,7 +186,7 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// fail-closed rule is enforced for one. `flow validate` runs the
 		// identical check earlier still, against a position, for a file that
 		// went through the compiler.
-		if err := CheckInputConstraintShape(declaration); err != nil {
+		if err := CheckInputConstraintShape(profile, declaration); err != nil {
 			return nil, err
 		}
 
@@ -216,7 +223,7 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// the identical function. See [checkInputListElementBound] and
 		// [maxListElements] for the resource, the reused walker, and why the
 		// limit is what it is.
-		if err := CheckInputConstraints(name, declaration, value); err != nil {
+		if err := CheckInputConstraints(profile, name, declaration, value); err != nil {
 			return nil, err
 		}
 
@@ -233,7 +240,7 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 // check runs again at submit through [BindRunInputs], because a specification can
 // be built by something that never was a Flowfile — an author gets the diagnostic,
 // and a caller gets the refusal.
-func CheckInputDefault(declaration *InputDeclaration) error {
+func CheckInputDefault(profile string, declaration *InputDeclaration) error {
 	if declaration.GetDefault() == nil {
 		return nil
 	}
@@ -242,7 +249,7 @@ func CheckInputDefault(declaration *InputDeclaration) error {
 		return err
 	}
 
-	return CheckInputConstraints(declaration.GetName(), declaration, declaration.GetDefault())
+	return CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetDefault())
 }
 
 // CheckInputExample reports whether a declaration's example is a literal of
@@ -254,7 +261,7 @@ func CheckInputDefault(declaration *InputDeclaration) error {
 // it — is a defect in the file rather than something a reader discovers by
 // noticing it lied. Never bound to a run: [BindRunInputs] never reads this
 // field, which is the whole difference between an example and a default.
-func CheckInputExample(declaration *InputDeclaration) error {
+func CheckInputExample(profile string, declaration *InputDeclaration) error {
 	if declaration.GetExample() == nil {
 		return nil
 	}
@@ -263,7 +270,7 @@ func CheckInputExample(declaration *InputDeclaration) error {
 		return fmt.Errorf("example: %w", err)
 	}
 
-	if err := CheckInputConstraints(declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetExample()); err != nil {
 		return fmt.Errorf("example: %w", err)
 	}
 
