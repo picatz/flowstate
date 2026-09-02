@@ -125,6 +125,26 @@ var (
 	switchDefaultKeys = []string{"steps"}
 )
 
+// DocumentKeys returns the keys accepted at the root of a Flowfile, in the
+// order diagnostics and canonical completion present them.
+//
+// This is the parser's vocabulary rather than a second editor-side list: adding
+// a root key here changes what the compiler accepts and what every completion
+// client offers together. The returned slice is a copy and may be modified by
+// the caller.
+func DocumentKeys() []string { return slices.Clone(workflowKeys) }
+
+// StepGrammarKeys returns the non-task keys accepted on a step, in the order
+// diagnostics and canonical completion present them.
+//
+// Task names are deliberately absent. They come from the registry selected by
+// the caller, while these properties and built-in node kinds are grammar owned
+// by this package. The returned slice is a copy and may be modified by the
+// caller.
+func StepGrammarKeys() []string {
+	return slices.Concat(slices.Clone(stepPropertyKeys), slices.Clone(nodeKindKeys))
+}
+
 // A step names the work it does directly — `http:` with the request under it —
 // so the keys a step accepts are not a constant. They are the properties, plus
 // the non-task kinds, plus every task the registry has.

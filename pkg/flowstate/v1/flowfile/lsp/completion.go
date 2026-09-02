@@ -61,16 +61,10 @@ var oneStepKind = "A step does exactly one of " + flowfile.StepKindList() + "."
 // who compares the two (#385).
 var editionList = flowfile.KnownEditionsList()
 
-// dslKeys are the keys the Flowfile document shape defines, as opposed to those a
-// task's schema defines.
-//
-// This is the only list in the package not derived from a central definition,
-// because the document shape lives in unexported structs in the flowfile package.
-// It is also the only list that has already drifted: the DSL gained `if`,
-// `timeout`, `retry`, and `continue_on_error` after this package was first written,
-// and nothing failed to tell us. TestDSLKeysMatchTheDSL closes that gap by deriving
-// the real key set from flowfile.Marshal, and the report accompanying this package
-// proposes exporting the shape so the table can go away entirely.
+// dslKeys documents the keys the Flowfile document shape defines, as opposed to
+// those a task's schema defines. It does not decide which root or step keys exist:
+// [flowfile.DocumentKeys] and [flowfile.StepGrammarKeys] do that from the parser's
+// own vocabulary, and [dslCandidates] joins those names to the prose here.
 //
 // # The prose stays hand-written, and that is a decision rather than an omission
 //
@@ -92,14 +86,12 @@ var editionList = flowfile.KnownEditionsList()
 // today and lose nothing. Deriving them all could not, and the machinery to tell
 // those two cases apart is larger than the table.
 //
-// What is worth deriving is the key *set* rather than the sentences, and
-// TestDSLKeysMatchTheDSL does that — with one bound worth knowing. It compares
-// against a document rendered by flowfile.Marshal from a hand-built workflow, so it
-// sees a key only if the fixture populates the field behind it. A field added
-// without touching that fixture is invisible to both directions of the comparison;
-// the test says so itself, having once been green while the three keys that spell a
-// wait were missing. TestHoverDocumentsEveryDSLKey covers the other way, an entry
-// nothing shows.
+// What is worth deriving is the key *set* rather than the sentences. Root and step
+// completion now read that set directly from the parser, so an optional field does
+// not disappear merely because a drift fixture left it unset. Schema-descriptor
+// tests in the flowfile package hold those parser vocabularies to Workflow, Node,
+// StepPolicy, Wait, and Call. TestHoverDocumentsEveryDSLKey covers the other way,
+// an entry nothing shows.
 var dslKeys = map[string][]dslKey{
 	"": {
 		{name: "edition", detail: "version", docs: "Required. Names the grammar this file is written in, as a v-prefixed date: `" + flowfile.CurrentEdition + "`.\n\n" +
@@ -109,13 +101,21 @@ var dslKeys = map[string][]dslKey{
 			"`flow fix` writes it, below any header comment, so no one has to type it.\n\n" +
 			"It is not a compatibility switch. A build compiles one grammar (this one knows " + editionList + "), and declaring anything else is refused, not translated."},
 		{name: "name", detail: "string", docs: "What this workflow is called."},
+		{name: "labels", detail: "map", docs: "Metadata labels attached to the workflow, as string keys and string values. Labels describe and select a workflow; expressions cannot read them."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
+		{name: "inputs", detail: "map", docs: "Declares the values a caller must or may bind when starting this workflow. Each name has a type and may add a default, constraints, an example, and sensitivity."},
+		{name: "outputs", detail: "map", docs: "Declares the named values this workflow returns after its steps finish. Each entry has a required `value:` expression and may declare its type, constraints, description, and sensitivity."},
 		{name: "vars", detail: "map", docs: "Names values once, for the whole file. Every step reads them as `${" + v1.VarsRoot + ".<name>}`.\n\n" +
 			"Rooted rather than bare because a var is *ambient*: it is in scope everywhere rather than bound where you read it, the same distinction that makes a step's outputs `" + v1.StepsRoot + ".<id>.<output>` and a loop's binding bare.\n\n" +
 			"Evaluated once, before the first step runs. A var may therefore use literals, operators and the profile's functions, and may not read a step, another var, or anything else that does not exist yet. " +
 			"The `${...}` fence is still required for an expression: without it the value is the text as written, which is what lets a var hold the literal string `steps.greet.result`.\n\n" +
 			"A `${secret(...)}` reference may not be stored here: a var is evaluated by the workflow and its value is written to durable history. Write the reference on the task input that consumes the secret instead."},
 		{name: "steps", detail: "list", docs: "The steps to run, in order. Each step may reference the outputs of the steps before it."},
+		{name: "triggers", detail: "map", docs: "Declares how runs may start from schedules, webhooks, or manual submission, including any trigger-specific policy."},
+		{name: "signals", detail: "map", docs: "Declares the named signals this workflow accepts and the authorization policy for each."},
+		{name: "debug", detail: "map", docs: "Controls who may open and operate a debug session for this workflow."},
+		{name: "concurrency", detail: "map", docs: "Controls how runs of this workflow share a concurrency key and what happens when another run already holds it."},
+		{name: "plugins", detail: "map", docs: "Declares the plugins this workflow requires and the minimum semantic version accepted for each."},
 	},
 	"steps": {
 		{name: "id", detail: "string", docs: "How later steps reference this one, as `${" + v1.StepsRoot + ".<id>.<output>}`. Must be a valid CEL identifier and unique in the workflow."},
@@ -189,9 +189,11 @@ var dslKeys = map[string][]dslKey{
 			"Its inputs are resolved the moment the step succeeds, in that step's scope with its own outputs added, so `${" + v1.StepsRoot + ".<this step>.<output>}` is the reference to use, and it is the one place a step may name itself. " +
 			"A run that failed and compensated still reports FAILED; what it undid is in the failure.\n\n" +
 			"Top-level task steps only in this version. Inside a `for_each` body or a `parallel:` branch it is refused, because the order work registers in there is not the same under `flow run local` as it is durably."},
+		{name: "async", detail: "bool", docs: "Allows this task step to start without waiting for it at the next written step. A reference to its outputs joins it, and the end of the enclosing step list joins every async step still outstanding. Only supported on task steps at a sequential placement."},
 		{name: "with", detail: "map", docs: "Arguments binding the callee's declared `inputs:`, resolved in *this* file's scope, the same scope a task's inputs are resolved in. " +
 			"Only meaningful beside `call:`. Checked against what the callee declares when this file is compiled: a missing required input or an argument it does not declare is refused here, not at run time.\n\n" +
 			"A secret reference may not be bound through `with:`. Pass it to the task that needs it inside the callee instead."},
+		{name: "digest", detail: "string", docs: "Pins a `call:` to the SHA-256 digest of the callee file that was reviewed, written as `sha256:` followed by 64 hexadecimal characters. Compilation refuses the call if the file's current bytes no longer match."},
 	},
 	"wait_for_signal": {
 		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},
@@ -1235,12 +1237,32 @@ func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) [
 }
 
 // dslCandidates offers the document's own keys at one level of nesting.
+//
+// The root and step name sets come from the parser itself. dslKeys supplies only
+// their human-facing detail and documentation; nested shapes continue to use the
+// small table directly because they are outside the parity bug this boundary
+// fixes.
 func dslCandidates(level, prefix string, replace lsp.Range) []lsp.CompletionItem {
+	keys := dslKeys[level]
+	var names []string
+	switch level {
+	case "":
+		names = flowfile.DocumentKeys()
+	case "steps":
+		names = flowfile.StepGrammarKeys()
+	default:
+		for _, k := range keys {
+			names = append(names, k.name)
+		}
+	}
+
 	var items []lsp.CompletionItem
-	for i, k := range dslKeys[level] {
-		if !strings.HasPrefix(k.name, prefix) {
+	for i, name := range names {
+		if !strings.HasPrefix(name, prefix) {
 			continue
 		}
+		k, _ := lookupDSLKey(level, name)
+		k.name = name
 		items = append(items, lsp.CompletionItem{
 			Label:         k.name,
 			Kind:          lsp.CIKKeyword,
