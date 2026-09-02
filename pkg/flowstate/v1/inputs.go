@@ -76,7 +76,7 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 // execution context. A top-level workflow records its own profile; an old
 // unprofiled callee inherits its caller's through [CalleeProfile].
 func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (map[string]*Value, error) {
-	if err := checkExecutableDeclarationTypes(wf); err != nil {
+	if err := CheckDeclarationTypes(wf); err != nil {
 		return nil, err
 	}
 
@@ -237,8 +237,11 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 	return bound, nil
 }
 
-// checkExecutableDeclarationTypes is the temporary seam between the additive
-// structural schema and the edition that teaches runtime checks to consume it.
+// CheckDeclarationTypes reports whether every declaration in a workflow and its
+// embedded callees can be enforced by this runtime.
+//
+// It is currently the temporary seam between the additive structural schema and
+// the edition that teaches runtime checks to consume it.
 // Programmatic submissions can carry a schema-valid structural-only declaration
 // before the compiler writes one, so refuse it rather than interpreting the
 // legacy zero value as unspecified and silently skipping enforcement.
@@ -246,7 +249,7 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 // Every embedded callee is checked before the root workflow starts. Waiting to
 // bind a callee's arguments inside CallScope would let earlier parent steps make
 // requests before discovering that the callee's contract cannot be enforced.
-func checkExecutableDeclarationTypes(wf *Workflow) error {
+func CheckDeclarationTypes(wf *Workflow) error {
 	return walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
 		for _, declaration := range current.GetDeclaredInputs() {
 			if declaration.GetValueType() != nil && declaration.GetType() == InputDeclaration_TYPE_UNSPECIFIED {

@@ -1639,6 +1639,9 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	if err := v1.CheckStructureDepth(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	if err := v1.CheckDeclarationTypes(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	if err := s.pinPlugins(wf); err != nil {
 		return err
