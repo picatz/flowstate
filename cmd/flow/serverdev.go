@@ -629,10 +629,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		serverOpts = append(serverOpts, server.WithSearchAttributesRegistered())
 	}
 
-	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{
-		Interceptors:             temporalWorkerInterceptors(),
-		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
-	})
+	w := worker.New(temporal, engine.RunTaskQueueName, devWorkerOptions())
 	engine.Register(w, runtime)
 
 	// Before the listener below exists, and that order is load-bearing rather
@@ -731,6 +728,27 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	flushAudit()
 
 	return nil
+}
+
+// devWorkerOptions configures this stack's embedded worker.
+//
+// WorkerStopTimeout is the one that is easy to leave out and expensive to:
+// the SDK's zero value does not mean "wait forever", it means the drain races
+// a timer that has already fired, so Stop returns without waiting for the
+// activities still running (see [v1.DefaultWorkerStopTimeout], which says the
+// same thing for `flow worker`). This command stops its worker before it shuts
+// down the audit sinks precisely so a draining activity's last records reach a
+// live one — and with no stop timeout there is no drain for that ordering to
+// protect (Codex, picatz/flowstate#1394).
+//
+// The constant rather than a flag: this stack is a laptop's, and the flag
+// `flow worker` carries exists for deployments whose own grace period differs.
+func devWorkerOptions() worker.Options {
+	return worker.Options{
+		Interceptors:             temporalWorkerInterceptors(),
+		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
+		WorkerStopTimeout:        v1.DefaultWorkerStopTimeout,
+	}
 }
 
 // devUIPort renders the UI port the way [testsuite.DevServerOptions] wants it,

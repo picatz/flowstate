@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The worker's end of the audit wiring (picatz/flowstate#1379).
@@ -90,6 +92,32 @@ func TestServerDevStopsItsWorkerBeforeShuttingDownTheAuditSinks(t *testing.T) {
 	require.NotEqual(t, -1, flush, "runServerDev no longer flushes the audit trail at all")
 	require.Less(t, stop, flush,
 		"the embedded worker must stop, and drain, while its audit sinks are still open")
+}
+
+// TestTheDevWorkerIsGivenTimeToDrain is the other half of the ordering above,
+// and the half that makes it worth anything (Codex, picatz/flowstate#1394).
+//
+// Stopping the worker before the audit sinks close only helps if Stop waits.
+// The SDK's zero WorkerStopTimeout does not mean "wait forever": the drain
+// races a timer that has already expired, so Stop returns with activities
+// still running — see [v1.DefaultWorkerStopTimeout], which says the same thing
+// about `flow worker`. Left unset here, the stop would return immediately, the
+// sinks would close, and a draining activity's records would meet a shut-down
+// processor exactly as before.
+//
+// This asserts the option this command builds, not the SDK's behaviour under
+// it: that Stop drains for up to the timeout is Temporal's contract, and
+// proving it here would need a live worker and a Temporal server.
+func TestTheDevWorkerIsGivenTimeToDrain(t *testing.T) {
+	t.Parallel()
+
+	options := devWorkerOptions()
+
+	require.Equal(t, v1.DefaultWorkerStopTimeout, options.WorkerStopTimeout,
+		"the dev stack's worker returns from Stop without draining, so stopping it before "+
+			"flushAudit protects nothing")
+	require.Equal(t, v1.WorkerDeadlockDetectionTimeout, options.DeadlockDetectionTimeout,
+		"the budget this stack already had")
 }
 
 // immediateCallOrderIn returns the names of the functions called in the named
