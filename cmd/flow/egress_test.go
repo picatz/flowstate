@@ -114,3 +114,46 @@ func TestLoopbackDenialUnderAnExplicitPolicyStaysSilent(t *testing.T) {
 	require.NotContains(t, stderr, "FLOWSTATE_ALLOW_LOOPBACK_EGRESS")
 	require.NotContains(t, stderr, "NEXT")
 }
+
+// TestTheEgressPolicyFlagDoesNotPromiseEnforcementItDoesNotHave pins the words,
+// because the words are the security claim.
+//
+// A worker cannot enforce a policy inside a plugin: a plugin is a separate
+// process, and the operating system opens whatever socket it asks for. What the
+// worker does is *grant* the policy, and whether a deny rule stops a request is
+// the receiving plugin's own code. `git`, `github` and `vcs` build their own
+// default policy with netpolicy.New and never read the grant, so while the help
+// said this flag governs "every plugin the worker launches", an operator who
+// wrote a deny rule and ran a `github.*` task reached the destination anyway —
+// a false promise at an egress trust boundary rather than a wording nit.
+//
+// Held here because nothing else would notice: the sentence is generated into
+// docs/reference/cli.md, where this one string is repeated for every command
+// that takes the flag, and it will read as true again the moment someone
+// shortens it. The negative assertion is the load-bearing half — a test that
+// only checked for "granted" would pass on help text that also still claimed to
+// govern every plugin.
+func TestTheEgressPolicyFlagDoesNotPromiseEnforcementItDoesNotHave(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "probe"}
+	addEgressPolicyFlag(cmd)
+
+	usage := cmd.Flags().Lookup("egress-policy").Usage
+
+	// Granted, not governed, where plugins are concerned.
+	require.Contains(t, usage, "granted to every plugin the worker launches")
+	require.NotContains(t, usage, "governing built-in HTTP and every plugin",
+		"the flag help claims to govern every plugin again; a grant is not enforcement, and git/github/vcs do not read it")
+
+	// The claim it does keep: the built-in task is what this flag actually
+	// enforces over.
+	require.Contains(t, usage, "governing built-in HTTP")
+
+	// And the operator is told which plugins enforce it, by name, plus where the
+	// rest are tracked — so the gap is actionable rather than merely hedged.
+	for _, named := range []string{"sql", "slack", "git", "github", "vcs", "#1332"} {
+		require.Containsf(t, usage, named,
+			"the flag help does not name %q, so an operator cannot tell which plugins the policy actually stops", named)
+	}
+}

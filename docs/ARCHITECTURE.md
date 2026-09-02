@@ -539,9 +539,22 @@ error from an editor to production.
 What a vetted first-party plugin cannot do is treat a manifest declaration as
 authority. It resolves secrets only for schemes the deployment permitted and
 receives the tenant a workload belongs to rather than choosing one. Network policy
-must be enforced on the plugin's real connection path: the SQL plugin applies the
-operator's existing egress policy to every resolved PostgreSQL socket target, while
-arbitrary third-party plugin code still requires deployment/substrate confinement.
+must be enforced on the plugin's real connection path, and the mechanism is a
+launch-time grant rather than an intention: the worker hands every plugin the
+deployment's egress policy in its environment (`plugin.Config.EgressPolicy`), and
+the SDK's `EgressPolicy`/`HTTPClient` build the governed client from it — checked
+in the dialer, re-checked on redirects, refusing rather than defaulting when the
+grant is absent — so a plugin built on that constructor is governed with no
+plugin-specific wiring. The SQL plugin reads the same grant and applies it to every
+resolved PostgreSQL socket target, because its connection path is not HTTP. What
+the grant buys is that the governed path is the convenient one; arbitrary
+third-party plugin code that opens its own sockets still requires
+deployment/substrate confinement. The grant is therefore universal and
+enforcement is not: `sql` and `slack` consume it today, while the in-tree `git`,
+`github` and `vcs` plugins still build their own default policy and are migrated
+onto the constructor in #1332's next slice. A deployment that must stop those
+tasks reaching a destination confines them rather than relying on the policy
+file.
 A plugin is an extension of the engine's capability, not an exemption from its
 rules.
 

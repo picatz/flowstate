@@ -79,6 +79,15 @@ func runFakePlugin() int {
 	if mode == "caller-mode" {
 		return runCallerModePlugin()
 	}
+	if mode == "egress-grant" {
+		return runEgressGrantPlugin()
+	}
+	if mode == "egress-identity" {
+		return runEgressIdentityPlugin()
+	}
+	if mode == "egress-resolver" {
+		return runEgressResolverPlugin()
+	}
 
 	// The progress-relay conformance fixture is likewise a real SDK plugin
 	// rather than a hand-rolled handler, for the identical reason: it exists
@@ -128,13 +137,27 @@ func runFakePlugin() int {
 		time.Sleep(10 * time.Second)
 		return 0
 
+	case "previous-version":
+		// A plugin built against the version before this one, announcing what
+		// its SDK would announce. Everything else about the line is correct, so
+		// the only thing the host can refuse it for is the version — which is
+		// the point: this is the binary a staggered upgrade actually produces,
+		// not a fixture with a number nobody ever shipped. Version 4 in
+		// particular did ship, on main, before the egress grant existed, which
+		// is the pairing this refusal has to cover.
+		fmt.Printf("%s|%d|%d|unix|%s\n",
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4,
+			os.Getenv(protocol.SocketEnv))
+		time.Sleep(10 * time.Second)
+		return 0
+
 	case "bad-address":
 		// The address is what this fixture gets wrong, so everything else about the
 		// line has to be right — including the protocol version. Announcing a
 		// retired one makes the host refuse on the version and never reach the
 		// address, which passes the test for the wrong reason.
 		fmt.Printf("%s|%d|%d|unix|/tmp/somewhere-else.sock\n",
-			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4)
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version5)
 		time.Sleep(10 * time.Second)
 		return 0
 
@@ -276,7 +299,7 @@ func fakeListen() (net.Listener, error) {
 // fakeAnnounce prints the handshake line.
 func fakeAnnounce() {
 	fmt.Printf("%s|%d|%d|%s|%s\n",
-		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version4,
+		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version5,
 		protocol.NetworkUnix, os.Getenv(protocol.SocketEnv))
 }
 

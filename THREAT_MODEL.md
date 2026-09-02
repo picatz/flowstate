@@ -101,7 +101,12 @@ not contained and is not claimed to be: separate processes buy protection agains
 crash or a runtime bug, not against code doing deliberately what its author wrote
 (`docs/ARCHITECTURE.md:470-481`, `docs/DEPLOYMENT.md:35-51`). It reaches every
 tenant that worker serves. It does not inherit the worker's environment: plugin
-environments are built from nothing (`pkg/flowstate/v1/plugin/launch.go:500`).
+environments are built from nothing, plus the deployment's egress policy and —
+only when that policy sets `proxy_from_environment` — the worker's own
+HTTP_PROXY, HTTPS_PROXY and NO_PROXY, which a plugin then reaches the network
+through. A proxy URL may carry userinfo, so under that policy a plugin is handed
+the deployment's proxy credential along with the routing it is for
+(`pkg/flowstate/v1/plugin/launch.go:644`).
 
 **A caller with a stolen token.** Acts fully as that principal until the token
 expires. Bounded by audience (`pkg/flowstate/v1/auth/policy.go:88`), by optional
@@ -276,8 +281,10 @@ relative search path, or one writable by any user other than its owner (group
 or world), is refused, with
 `--allow-insecure-plugin-dir` as the named escape hatch
 (`pkg/flowstate/v1/plugin/doc.go:50-52`, `docs/DEPLOYMENT.md:508-515`). Plugin
-environments are built from nothing rather than inherited
-(`pkg/flowstate/v1/plugin/launch.go:500`). Secret inputs a plugin task consumes are
+environments are built from nothing rather than inherited, save for the egress
+grant and, under a policy that sets `proxy_from_environment`, the worker's proxy
+variables — whose URLs may carry userinfo
+(`pkg/flowstate/v1/plugin/launch.go:644`). Secret inputs a plugin task consumes are
 resolved host-side, before `Execute`, and only for inputs the `TaskManifest` named;
 an unnamed input is refused (`docs/ARCHITECTURE.md:432-448`). Responses from a
 plugin are byte-bounded at the RoundTripper, below the RPC library, so no error path
@@ -631,9 +638,18 @@ is already in `pkg/flowstate/v1/auth/` has landed.
    (`docs/ARCHITECTURE.md:470-481`).
 6. Task-shape policy's zero case permits everything
    (`pkg/flowstate/v1/taskpolicy.go:133-146`).
-7. The server records allows and denials (`audit.Recorder.Allow`); the worker records
-   nothing, so a transcript still cannot answer "why was this dispatch, resolution or
-   dial permitted" (#1379; #353 principle 2, workstream D).
+7. The worker records its own decisions — task dispatch, secret access, the built-in
+   `http` task's egress, credential assumption — through the same recorder
+   `flow server` uses, and `--audit-required` refuses an action whose record cannot
+   be written at every seam that decides before it acts. The egress and assumption
+   records are written after the effect they permit, which the schema states and the
+   seams classify rather than hide (#1379; #353 principle 2, workstream D). Three
+   things the gap still holds. A first-party plugin enforces the same
+   `--egress-policy` in its own process, and nothing running there can reach this
+   worker's recorder, so the traffic is governed and only the record is missing
+   (#1399). A permitted redirect hop gets no record of its own; the allow names the
+   destination the workload addressed (#1397). And `flow run local` installs no
+   recorder at all, deliberately (`pkg/flowstate/v1/audit`'s package doc).
 8. The stdio agent surface authenticates the process, not the request (#350, #337).
 9. No token revocation, inbound or outbound, within a credential's lifetime.
 10. Windows is an authoring platform, not a worker platform; plugins are AF_UNIX only

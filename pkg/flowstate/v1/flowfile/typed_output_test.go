@@ -188,6 +188,42 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
 `,
 			contains: `output "release" is declared string, but this expression always produces int`,
 		},
+		{
+			// #1404. A struct is the map a caller reads as a plain object, so a
+			// map the checker already types with an int key is a declaration the
+			// file contradicts — and the one mismatch the outer kind alone could
+			// not see, because a map with any key at all is a map.
+			name: "a map whose keys are not strings where a struct was declared",
+			declaration: `  release:
+    value: '${{1: "value"}}'
+    type: struct
+`,
+			contains: `output "release" is declared struct, but this expression is typed as a map with int keys; a struct is a map with string keys`,
+		},
+		{
+			// The same promise one level down, which is the direction a check on
+			// the outer key type only would miss: the projection converts the
+			// whole value, so a nested non-string key defeats it exactly as an
+			// outer one does.
+			name: "a nested map whose keys are not strings where a struct was declared",
+			declaration: `  release:
+    value: '${{"a": {true: "b"}}}'
+    type: struct
+`,
+			contains: `output "release" is declared struct, but this expression is typed as a map with bool keys; a struct is a map with string keys`,
+		},
+		{
+			// The other declared container, on the identical rule: the
+			// projection converts a whole output and gives up on all of it, so
+			// an int key one element down defeats the plain array `list`
+			// promised exactly as an outer one defeats a struct.
+			name: "a list of maps whose keys are not strings where a list was declared",
+			declaration: `  release:
+    value: '${[{1: "value"}]}'
+    type: list
+`,
+			contains: `output "release" is declared list, but this expression is typed as a list holding a map with int keys; a list reads back as a plain array, whose maps have string keys`,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -238,4 +274,52 @@ outputs:
 	require.NoError(t, err)
 	assert.Empty(t, flowfile.Validate(wf),
 		"a type nothing in the document decides must not be reported as a mismatch")
+}
+
+// TestTypedOutputAcceptsAContainerWhoseKeysCouldBeStrings is the direction the
+// #1404 refusal above would break if it were written as "not a string key":
+// a struct or list output is the ordinary shape, and the checker types several
+// common ones with a key it cannot decide.
+//
+// `${{}}` types as `map(dyn, dyn)` because there is no entry to infer a key
+// from, `${[]}` as `list(dyn)`, and a mixed-key literal as `map(dyn, …)` — in
+// each, which keys the value actually holds is a fact about the value rather
+// than about the file, so the honest answer here is silence and
+// [v1.CheckOutputValue] decides it at completion against what the run produced.
+// The string-keyed arms are the shape every declared container in `examples/`
+// has, and must stay silent for the ordinary reason.
+func TestTypedOutputAcceptsAContainerWhoseKeysCouldBeStrings(t *testing.T) {
+	t.Parallel()
+
+	for _, declaration := range []string{
+		`  release:
+    value: '${{"host": "a"}}'
+    type: struct
+`,
+		`  release:
+    value: '${{}}'
+    type: struct
+`,
+		`  release:
+    value: '${{1: "a", "b": "c"}}'
+    type: struct
+`,
+		`  release:
+    value: '${[{"host": "a"}]}'
+    type: list
+`,
+		`  release:
+    value: '${[]}'
+    type: list
+`,
+	} {
+		t.Run(declaration, func(t *testing.T) {
+			t.Parallel()
+
+			wf, _, err := flowfile.Parse([]byte(typedOutputSource(declaration)))
+			require.NoError(t, err)
+			assert.Empty(t, flowfile.Validate(wf),
+				"a key type the document does not decide must not be reported as a mismatch")
+		})
+	}
 }

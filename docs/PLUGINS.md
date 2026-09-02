@@ -23,6 +23,7 @@ outside this repository against `c4ead7c`; the `file:line` references are agains
 - [Chapter two: the schema is the contract](#chapter-two-the-schema-is-the-contract)
 - [Five places the contract is implicit](#five-places-the-contract-is-implicit)
 - [The rest of the manifest](#the-rest-of-the-manifest)
+- [Reaching the network](#reaching-the-network)
 - [Classifying failures](#classifying-failures)
 - [Writing one in another language](#writing-one-in-another-language)
 - [Known limitations](#known-limitations)
@@ -412,8 +413,8 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:222` for the current
-  version). Nothing equivalent covers the Go types you compile against.
+  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:361` for the current
+  version, 5, which the egress grant moved it to). Nothing equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
 pins `github.com/picatz/flowstate v0.0.0-00010101000000-000000000000` behind a
@@ -489,7 +490,7 @@ handshake line starts with "debug: starting", want "FLOWSTATE-PLUGIN" — is thi
 a Flowstate plugin?
 ```
 
-That message is as good as it can be (`internal/protocol/protocol.go:257`), and
+That message is as good as it can be (`internal/protocol/protocol.go:522`), and
 it still names your first debug line as a protocol failure. Log through
 `sdk.WithLogger` or to stderr; after `sdk.Main` is serving, `fmt.Println` is
 harmless, since stdout has been redirected — but Go code writing to file
@@ -584,6 +585,123 @@ rehearsal marker or from the durable driver itself, never from claims or task
 input. A future remote-plugin transport must authenticate the host and preserve
 that property; otherwise it must deliver `UNSPECIFIED`, not forward a mode
 supplied by a workflow or remote caller.
+
+## Reaching the network
+
+Your plugin process starts with an environment built from nothing — not a copy of
+the worker's, which is where the worker's own credentials live. One thing is in
+it that you did not ask for: the deployment's egress policy, the same bytes the
+operator wrote in `--egress-policy` and the same ones governing the built-in
+`http` task, base64-encoded under `FLOWSTATE_EGRESS_POLICY_B64`.
+
+It is a snapshot taken at your launch, not a subscription. You hold the bytes
+your own launch carried, so an operator who edits the policy file afterwards
+governs the plugins the worker starts next — the running ones keep what they were
+given until the worker relaunches them. The SDK captures it once, while `sdk.Run`
+is reading the launch environment and before any of your task code has run, and
+answers from that capture forever after; a plugin that serves by hand without
+`Run` captures at its first `EgressPolicy` or `HTTPClient` call instead. A grant a
+process could re-read is a grant that process can rewrite, and self-granting must
+not be one line of a plugin's own code. What stays outside that line is code that
+runs before `Run` — package initialization, or a `main` that does work first —
+which is your own program deciding what its process starts with, and no more than
+opening a raw socket already gives it.
+
+Ask the SDK for a client rather than building one:
+
+```go
+client, err := sdk.HTTPClient()
+if err != nil {
+	return nil, sdk.Failed("egress: %v", err)
+}
+
+response, err := client.Do(request)
+```
+
+**Credentials.** An operator's rule may name `credentials` — as in
+`deny: ['credentials && !(host in ["partner.example"])']`, which says a secret
+leaves only towards one place. The client marks a request automatically when it
+carries an `Authorization`, `Proxy-Authorization` or `Cookie` header, and the
+mark then covers the whole redirect chain rather than the one hop that showed it,
+so a credentialed exchange bounced to another host is refused there too.
+
+That header set is the header-visible half of what the built-in `http` task
+counts. The task decides from its own inputs, and two of those have no header
+form the SDK could see — `credential:`, and a secret reference nested in a JSON
+or form body — so a plugin carrying the equivalent has to say so itself. That is
+what `sdk.WithCredentials` is for: when your credential is somewhere the SDK
+cannot see — a token in a query string, a signature in a custom header, a
+credential in the body — say so:
+
+```go
+response, err := client.Do(request.WithContext(sdk.WithCredentials(ctx)))
+```
+
+Call it whenever the request carries a secret the header set above would miss; a
+rule written to keep credentials off an unapproved host is silently weaker for
+every request that does not. It only ever marks — there is no way to tell the
+policy a request is *not* credentialed.
+
+That client checks the destination before the request goes out, again in the
+dialer for every address it actually connects to, and again on every redirect
+hop — so a hostname that resolves to something the policy denies is refused where
+the connection is made, not only where the URL was read. Bodies are capped and
+the request is bounded, per the operator's policy. `sdk.EgressPolicy()` returns
+the `*netpolicy.Policy` itself, for a plugin speaking something other than HTTP
+that has to apply it on its own dial path (`plugins/sql` does this for
+PostgreSQL).
+
+**When the grant is absent, both refuse.** No policy is an error naming
+`FLOWSTATE_EGRESS_POLICY_B64`, never an empty policy that permits everything:
+having been told nothing about what you may reach is not permission to reach
+anything, and a plugin cannot tell "the operator allowed it all" from "nobody
+told me". A plugin run outside a worker — directly, from a shell — sees the same
+refusal, which is the correct answer rather than a bug.
+
+**Absent means the variable is not set, not that it is empty.** An operator whose
+`--egress-policy` names an empty document has configured a policy — the one an
+empty document builds, which is exactly what the built-in `http` task then runs
+under — so the host sets the grant to the empty string and `sdk.EgressPolicy()`
+parses it. A plugin reading presence with `os.Getenv` instead of `os.LookupEnv`
+collapses the two and denies where the same deployment's built-in task allows.
+
+**A proxy policy brings its proxy with it.** When the deployment's policy sets
+`proxy_from_environment: true`, your launch environment also carries the worker's
+own `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` (and their lowercase spellings),
+copied verbatim — so `sdk.HTTPClient()` routes exactly where the built-in `http`
+task does. They are granted, not inherited: nothing else from the worker's
+environment crosses, and when the policy does not proxy, none of them do either.
+Without that grant a plugin's `http.ProxyFromEnvironment` would find nothing and
+dial straight out, which on a deployment whose egress is only permitted through
+a proxy is the plugin going around the control rather than taking a different
+route. An operator who wants a plugin to use a different proxy names it in the
+host's `Env`, and that entry wins over the worker's.
+
+The policy is at most **64 KiB** before encoding (`plugin.MaxEgressPolicyBytes`).
+It travels as one environment string through `exec`, which Linux bounds at 128
+KiB, and a policy over the limit is refused by `flow` when it reads the file and
+by the plugin host when it accepts a `Config` — in both cases naming the bound,
+rather than failing every plugin launch on the worker with an `exec` errno that
+names nothing.
+
+Nothing here confines you. A separate process can open whatever socket the
+operating system will give it, and a plugin that builds its own
+`http.Client` is not stopped by this SDK or by the worker; it has simply left the
+path the deployment governs, which is a thing a deployment is entitled to notice
+and a reviewer of a first-party plugin is entitled to reject. Real confinement of
+a plugin that wants out is the deployment's job — a container, a network
+namespace, a firewall — and [THREAT_MODEL.md](../THREAT_MODEL.md) says where that
+line is.
+
+**Which first-party plugins enforce the grant today.** The host grants it to
+every plugin it launches, and that is all a host can do; enforcement is each
+plugin's own code. `sql` and `slack` read the grant and apply it on their real
+connection paths. `git`, `github` and `vcs` do not read it yet — they build their
+own default policy with `netpolicy.New`, so a deny rule an operator writes does
+not reach a `git.*`, `github.*` or `vcs.*` task in this build. Migrating them
+onto `sdk.EgressPolicy` is tracked in #1332. An operator relying on
+`--egress-policy` to stop those tasks needs deployment-level confinement until
+that lands.
 
 ## Classifying failures
 

@@ -36,12 +36,20 @@ const (
 	attrResourceKind = "flowstate.audit.resource.kind"
 	attrResourceKey  = "flowstate.audit.resource.key"
 	attrDenyCode     = "flowstate.audit.deny_code"
-	attrSubject      = "flowstate.audit.identity.subject"
-	attrIssuer       = "flowstate.audit.identity.issuer"
-	attrNamespace    = "flowstate.audit.identity.namespace"
-	attrDeployment   = "flowstate.audit.identity.deployment"
-	attrIssuerName   = "flowstate.audit.identity.issuer_name"
-	attrRole         = "flowstate.audit.identity.role"
+
+	// The worker's half (picatz/flowstate#1379). Spelled flat, like deny_code
+	// and unlike the dotted identity keys, because they are fields of the
+	// record rather than of something inside it.
+	attrEnforcementPoint = "flowstate.audit.enforcement_point"
+	attrRule             = "flowstate.audit.rule"
+	attrAttempt          = "flowstate.audit.attempt"
+
+	attrSubject    = "flowstate.audit.identity.subject"
+	attrIssuer     = "flowstate.audit.identity.issuer"
+	attrNamespace  = "flowstate.audit.identity.namespace"
+	attrDeployment = "flowstate.audit.identity.deployment"
+	attrIssuerName = "flowstate.audit.identity.issuer_name"
+	attrRole       = "flowstate.audit.identity.role"
 )
 
 // NewLogEmitter sends records through an audit-owned LoggerProvider.
@@ -99,6 +107,31 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	if record.GetMcpTool() != "" {
 		attrs = append(attrs, attribute.String(attrMCPTool, record.GetMcpTool()))
 	}
+	// Present exactly on an enforcement record, which is how a consumer tells
+	// the two halves of one trail apart: absent rather than UNSPECIFIED,
+	// because a query for the worker's decisions should select on the
+	// attribute existing rather than on a sentinel value. The schema's own
+	// message rule holds the same line from the other side — an enforcement
+	// point and an action are never both set.
+	if record.GetEnforcementPoint() != v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED {
+		attrs = append(attrs, attribute.String(attrEnforcementPoint, record.GetEnforcementPoint().String()))
+	}
+
+	// Present only on a record about a dispatch attempt, for the reason the
+	// enforcement point is: a consumer separating one attempt's decision from
+	// another's should select on the attribute existing rather than on a zero.
+	if record.GetAttempt() != 0 {
+		attrs = append(attrs, attribute.Int64(attrAttempt, int64(record.GetAttempt())))
+	}
+
+	// Verbatim, because it is the operator's own rule and the seam that set it
+	// already bounded it and held it to "only a rule that matched" — see
+	// AuditRecord.rule for what that excludes. Truncating or normalizing here
+	// would make a collector's copy of a decision disagree with stderr's.
+	if record.GetRule() != "" {
+		attrs = append(attrs, attribute.String(attrRule, record.GetRule()))
+	}
+
 	if record.GetIssuerName() != "" {
 		attrs = append(attrs, attribute.String(attrIssuerName, record.GetIssuerName()))
 	}
