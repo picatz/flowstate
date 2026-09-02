@@ -784,6 +784,59 @@ func TestARedirectRefusedForItsOwnSakeIsNotRetried(t *testing.T) {
 	require.False(t, v1.ClassifyError(err).Retryable())
 }
 
+// TestAResolutionFailureRecordsNoEgressDecision: the address policy and the
+// connection-scoped rules decide about an address, and a name that does not
+// resolve never produces one — the dialer's control hook is never called, so
+// this policy reached no verdict about where the request was going.
+//
+// Recorded as an allow, that is a sentence the trail cannot support: the
+// deployment's address policy might well have refused whatever the name
+// resolved to. Under --audit-required it is worse than wrong, because an
+// ordinary DNS failure then becomes an audit-sink failure too (Codex,
+// picatz/flowstate#1394).
+//
+// The second half pins the boundary: once the hook has answered, a connection
+// the peer refuses is a request this policy permitted, and its allow is
+// recorded. "No verdict" and "a verdict the network then defeated" are the two
+// sides, and only the first is silent.
+//
+// Mutation-proved: dropping the Undecided wrap in netpolicy's dial path
+// records an allow for the unresolvable host.
+func TestAResolutionFailureRecordsNoEgressDecision(t *testing.T) {
+	t.Parallel()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	require.NoError(t, err)
+
+	ctx, sink := auditing(t)
+
+	// .invalid is reserved by RFC 2606 precisely so it cannot resolve.
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url": v1.NewValue("http://this-name-cannot-exist.invalid/never"),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	var dns *net.DNSError
+	require.ErrorAs(t, err, &dns,
+		"the step still reports the resolver's own failure, unwrapped")
+
+	require.Empty(t, sink.all(),
+		"a name that never resolved gave this policy no address to decide about")
+
+	// And the other side of the line: the hook answered, the peer refused.
+	ctx, sink = auditing(t)
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url": v1.NewValue("http://127.0.0.1:9/refused-by-the-peer"),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+
+	record := sink.only(t)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision(),
+		"loopback is permitted by this policy, so the request was permitted and only the connection failed")
+	require.Equal(t, "http://127.0.0.1:9", record.GetResourceKey())
+}
+
 // TestAHopRefusedAtDialTimeIsRecordedAsTheHop: the destination a dial-time
 // refusal names.
 //

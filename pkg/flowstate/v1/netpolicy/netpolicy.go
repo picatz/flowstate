@@ -184,6 +184,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -296,7 +297,7 @@ func (p *Policy) newClient() *http.Client {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = p.cfg.proxy
-	transport.DialContext = dialer.DialContext
+	transport.DialContext = p.dialWithVerdict(dialer)
 	transport.TLSHandshakeTimeout = p.cfg.tlsHandshakeTimeout
 	transport.ResponseHeaderTimeout = p.cfg.responseHeaderTimeout
 	transport.ExpectContinueTimeout = 1 * time.Second
@@ -336,6 +337,56 @@ func (p *Policy) newClient() *http.Client {
 		Transport:     &tracingRoundTripper{next: &roundTripper{policy: p, next: transport}},
 		CheckRedirect: p.checkRedirect,
 		Timeout:       p.cfg.timeout,
+	}
+}
+
+// dialAnswered records whether [Policy.controlDial] ran for one dial.
+//
+// It is a pointer in the context rather than a return value because the hook
+// is called by [net.Dialer], which reports only whether the dial succeeded —
+// and the distinction this exists for is invisible from that: a dial can fail
+// before the hook is reached at all.
+type dialAnswered struct{ answered atomic.Bool }
+
+// dialAnsweredKey is the context key for it. Unexported empty struct, so
+// nothing outside this package can collide with it or forge one.
+type dialAnsweredKey struct{}
+
+// dialWithVerdict wraps the dialer so a failure that happened before this
+// policy could decide anything is reported as one.
+//
+// [net.Dialer] resolves the name and then calls ControlContext once per
+// resolved address, so a name that does not resolve never reaches
+// [Policy.controlDial]: the address policy is never shown an address, the
+// connection-scoped rules are never evaluated, and this policy has no verdict
+// about where the request was going. The error that comes back is an ordinary
+// dial failure, indistinguishable — to a caller — from a connection the peer
+// refused after the policy permitted it.
+//
+// A caller recording decisions (picatz/flowstate#1379) needs those apart:
+// recording an allow for a name that never resolved claims a permission the
+// address policy might well have refused, and under a required recorder it
+// turns a DNS failure into an audit failure too (Codex,
+// picatz/flowstate#1394). So a failure with the hook unanswered comes back as
+// [*UndecidedError] — which unwraps to the resolver's own error, so every
+// errors.Is and errors.As against it answers exactly as before — and a failure
+// after the hook allowed stays the plain transport error it is, because the
+// policy did decide.
+func (p *Policy) dialWithVerdict(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		answered := &dialAnswered{}
+
+		conn, err := dialer.DialContext(context.WithValue(ctx, dialAnsweredKey{}, answered), network, address)
+		if err == nil || answered.answered.Load() {
+			return conn, err
+		}
+
+		// Nothing was presented to the policy. Marked as a hop the way the
+		// rule path is, since an origin that already reached its peer is a
+		// fact about the chain rather than about this dial.
+		a, _ := attrsFromContext(ctx)
+
+		return nil, &UndecidedError{Target: address, Err: err, AfterRedirect: a.afterRedirect}
 	}
 }
 
@@ -645,6 +696,13 @@ func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string,
 // resolved and the socket created, but before the connection is made, for every
 // address the dialer tries. Returning an error prevents the connection.
 func (p *Policy) controlDial(ctx context.Context, network, address string, _ syscall.RawConn) error {
+	// This policy is about to answer for this dial, allow or deny, which is
+	// what [Policy.dialWithVerdict] needs to know: everything below is a
+	// verdict, and a dial that never got here has none.
+	if answered, ok := ctx.Value(dialAnsweredKey{}).(*dialAnswered); ok {
+		answered.answered.Store(true)
+	}
+
 	a, hasAttrs := attrsFromContext(ctx)
 
 	// Every denial here is about the hop those attributes describe, and the
@@ -743,10 +801,24 @@ func (p *Policy) checkResolvedAddr(ctx context.Context, addrPort netip.AddrPort)
 // added later carry it without remembering to.
 func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
 	err := p.refuseRedirect(req, via)
+	if err == nil || req.URL == nil {
+		return err
+	}
+
+	hop, afterRedirect := req.URL.Redacted(), req.Response != nil
 
 	var denied *DenyError
-	if errors.As(err, &denied) && req.URL != nil {
-		denied.Hop, denied.AfterRedirect = req.URL.Redacted(), req.Response != nil
+	if errors.As(err, &denied) {
+		denied.Hop, denied.AfterRedirect = hop, afterRedirect
+	}
+
+	// Both kinds, because both can come back from here: [Policy.checkRequest]
+	// answers an interrupted rule evaluation with an [*UndecidedError], and a
+	// caller that reads only the denial would take that one for a request that
+	// never left. [Policy.checkRequestHop] marks both for the same reason.
+	var undecided *UndecidedError
+	if errors.As(err, &undecided) {
+		undecided.AfterRedirect = afterRedirect
 	}
 
 	return err
