@@ -718,6 +718,42 @@ func TestADeniedRedirectHopThatCouldNotBeRecordedIsNotRetried(t *testing.T) {
 		"nothing left this worker, so there is nothing a repeat could repeat")
 }
 
+// TestARedirectRefusedForItsOwnSakeIsNotRetried: the redirect hook's own
+// refusals — redirects disabled, the hop bound reached, an https downgrade —
+// are refusals of a hop, which means the origin already reached its peer.
+//
+// They build their own denial and so carried neither the hop nor the chain,
+// which made requestNeverLeft answer "nothing left" for a POST that had: under
+// a required recorder, a sink failure while recording the refusal then
+// classified retryable and either driver could send the original again
+// (Codex, picatz/flowstate#1394).
+//
+// Mutation-proved: removing the marking in checkRedirect makes this retryable.
+func TestARedirectRefusedForItsOwnSakeIsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithDenyRedirects())
+	require.NoError(t, err)
+
+	ctx, sink := auditing(t, audit.Required())
+	sink.fail = errors.New("the collector is down")
+
+	_, err = v1.HTTPTaskDef(policy).Fn(ctx, map[string]*v1.Value{
+		"url":    v1.NewValue(origin.URL + "/start"),
+		"method": v1.NewValue(http.MethodPost),
+	}, &v1.Scope{Identity: testIdentity()})
+	require.Error(t, err)
+	require.True(t, v1.AuditRecorderUnavailable(err))
+	require.Equal(t, v1.ErrorKindUpstreamUnknown, v1.ClassifyError(err),
+		"the POST reached its peer before the redirect was refused, so a repeat repeats it")
+	require.False(t, v1.ClassifyError(err).Retryable())
+}
+
 // TestAHopRefusedAtDialTimeIsRecordedAsTheHop: the destination a dial-time
 // refusal names.
 //

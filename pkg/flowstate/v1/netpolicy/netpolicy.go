@@ -730,7 +730,31 @@ func (p *Policy) checkResolvedAddr(ctx context.Context, addrPort netip.AddrPort)
 // re-applies the request-scoped policy to the hop about to be made, so a public
 // host cannot redirect a workflow into an internal one. The address checks are
 // applied to the new hop as well, when it is dialed.
+//
+// Every refusal it makes is marked here, on the way out. net/http calls this
+// only after a response, so a hop it refuses always follows a request that
+// already reached its peer — and a caller that must not replay a
+// non-idempotent original request reads exactly that from
+// [DenyError.AfterRedirect]. Three of the refusals below build their own
+// DenyError and reached [Policy.checkRequestHop]'s marking not at all, so a
+// redirect refused for its own sake — redirects disabled, the hop bound, an
+// https downgrade — looked like a request that never left
+// (Codex, picatz/flowstate#1394). Marking once here is what makes a refusal
+// added later carry it without remembering to.
 func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
+	err := p.refuseRedirect(req, via)
+
+	var denied *DenyError
+	if errors.As(err, &denied) && req.URL != nil {
+		denied.Hop, denied.AfterRedirect = req.URL.Redacted(), req.Response != nil
+	}
+
+	return err
+}
+
+// refuseRedirect is [Policy.checkRedirect]'s decision, split from the marking
+// above so that every way a hop can be refused passes one seam.
+func (p *Policy) refuseRedirect(req *http.Request, via []*http.Request) error {
 	target := req.URL.Redacted()
 
 	if p.cfg.denyRedirects {

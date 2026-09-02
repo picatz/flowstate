@@ -359,6 +359,83 @@ func Test_Policy_checkRequestHop_marksAnInterruptedRedirectHop(t *testing.T) {
 		"the mark does not cost the context checks every caller makes of it")
 }
 
+// Test_Policy_checkRedirect_marksEveryRefusalAsPostOrigin: the redirect hook is
+// only ever called after a response, so every hop it refuses follows a request
+// that already reached its peer — and a caller deciding whether a
+// non-idempotent original may be replayed reads exactly that from the denial.
+//
+// Three of the hook's refusals build their own DenyError and never reached
+// [Policy.checkRequestHop]'s marking, so a redirect refused for its own sake
+// looked like a request that never left (Codex, picatz/flowstate#1394). Each
+// is driven here, because "the one that was missed" is the case a single-path
+// test cannot cover.
+func Test_Policy_checkRedirect_marksEveryRefusalAsPostOrigin(t *testing.T) {
+	origin, err := http.NewRequest(http.MethodPost, "https://origin.example/start", nil)
+	require.NoError(t, err)
+
+	// What net/http hands the hook: the next request, carrying the response
+	// that redirected it.
+	hop := func(t *testing.T, url string) *http.Request {
+		t.Helper()
+
+		req, err := http.NewRequest(http.MethodPost, url, nil)
+		require.NoError(t, err)
+		req.Response = &http.Response{StatusCode: http.StatusFound}
+
+		return req
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		hop  string
+		via  []*http.Request
+		want string
+	}{
+		{
+			name: "redirects are refused outright",
+			opts: []Option{WithDenyRedirects()},
+			hop:  "https://elsewhere.example/next",
+			via:  []*http.Request{origin},
+			want: "https://elsewhere.example/next",
+		},
+		{
+			name: "the hop bound is reached",
+			opts: []Option{WithMaxRedirects(1)},
+			hop:  "https://elsewhere.example/third",
+			via:  []*http.Request{origin, origin},
+			want: "https://elsewhere.example/third",
+		},
+		{
+			name: "the hop downgrades https to http",
+			hop:  "http://elsewhere.example/cleartext",
+			via:  []*http.Request{origin},
+			want: "http://elsewhere.example/cleartext",
+		},
+		{
+			name: "the hop is refused by a rule",
+			opts: []Option{WithDenyRules(`host == "elsewhere.example"`)},
+			hop:  "https://elsewhere.example/next",
+			via:  []*http.Request{origin},
+			want: "https://elsewhere.example/next",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, err := New(tc.opts...)
+			require.NoError(t, err)
+
+			err = policy.checkRedirect(hop(t, tc.hop), tc.via)
+
+			var denied *DenyError
+			require.ErrorAs(t, err, &denied)
+			require.True(t, denied.AfterRedirect,
+				"a hop this hook refuses always follows a request that reached its peer")
+			require.Equal(t, tc.want, denied.Hop,
+				"the refusal names the hop it was about")
+		})
+	}
+}
+
 // Test_Policy_controlDial_marksAnInterruptedRedirectHop: the dialer is the
 // second place an evaluation can be interrupted, and it is the one every
 // redirect hop passes through — connection rules disable keep-alives, so each
