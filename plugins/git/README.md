@@ -50,11 +50,12 @@ go build -o /path/to/plugins/flowstate-plugin-git ./plugins/git
 as in durable execution. Rehearsal mode is a host-attested operational fact, not
 authorization: task policy admits the task, secret policy releases the token,
 and the plugin's network guard constrains the destination. Deployment-owned
-egress composition remains #1321; execution mode does not fill that gap. A local
-run with the authorities available today is not a dry run. This preserves the
-local driver's purpose and the established write example; use a disposable
-repository when rehearsing. The credential-free local repository mutations in
-`commit_push_test.go` hold that behavior to the real go-git write path.
+egress is enforced through the SDK-governed go-git transport in both modes;
+execution mode neither grants nor widens it. A local run with the authorities
+available today is not a dry run. This preserves the local driver's purpose and
+the established write example; use a disposable repository when rehearsing. The
+credential-free local repository mutations in `commit_push_test.go` hold that
+behavior to the real go-git write path.
 
 `git.commit_push` is the centerpiece: one activity does materialize -> apply
 -> commit -> push. See "Design decisions" below for why it is idempotent
