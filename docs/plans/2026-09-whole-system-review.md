@@ -740,8 +740,25 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
 - **Retire** bare `type: list` and `type: struct`; `flow fix` writes
   `list(dyn)` and `map(string, dyn)`.
 - **Retire** `type: float` for CEL's `double`; `flow fix` rewrites it and
-  `TYPE_FLOAT` maps to the scalar double on the legacy field. Two shipped
-  examples use `float` today.
+  `TYPE_FLOAT` maps to the scalar double on the legacy field.
+
+  The whole migration, stated as a total mapping rather than as rewrites
+  found one at a time — `InputDeclaration.Type` has exactly seven values and
+  every one is accounted for, which is the property that makes `flow fix`
+  provably complete and stops the next reader finding an eighth case:
+
+  | Legacy enum | Edition spelling | Files today | `flow fix` |
+  | --- | --- | --- | --- |
+  | `TYPE_STRING` | `string` | 83 | unchanged |
+  | `TYPE_INT` | `int` | 22 | unchanged |
+  | `TYPE_BOOL` | `bool` | 4 | unchanged |
+  | `TYPE_FLOAT` | `double` | 2 | rewrite |
+  | `TYPE_LIST` | `list(dyn)` | 5 | rewrite |
+  | `TYPE_STRUCT` | `map(string, dyn)` | 2 | rewrite |
+  | `TYPE_ENUM` | `enum` + sibling `values:` | 3 | unchanged |
+
+  Three rewrites, four unchanged, 121 declarations in `examples/`, and the
+  legacy field keeps reading all seven for as long as any history holds one.
 - **Retire** `json_parse` for `json.parse` (#1454, R3); `flow fix` rewrites it.
 - **Delete** the four type switches, the eighteen reference-model lists, the
   two proto→outputs bridges (replaced by one), `sdk/values.go:274-423`, the
