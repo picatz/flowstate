@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
@@ -120,7 +122,21 @@ func dispatchAttempt(ctx context.Context) context.Context {
 		return ctx
 	}
 
-	return v1.NewContextWithDispatchAttempt(ctx, int(activity.GetInfo(ctx).Attempt))
+	info := activity.GetInfo(ctx)
+	ctx = v1.NewContextWithDispatchID(ctx, durableDispatchID(info))
+
+	return v1.NewContextWithDispatchAttempt(ctx, int(info.Attempt))
+}
+
+// durableDispatchID returns a stable, globally useful identity for one
+// activity across its Temporal retries. ActivityID alone is unique only inside
+// one workflow execution and commonly repeats as a small sequence number, so
+// hash all three durable coordinates. The opaque fixed-width form also keeps a
+// caller-chosen workflow id out of the audit record and under its size bound.
+func durableDispatchID(info activity.Info) string {
+	sum := sha256.Sum256([]byte(info.WorkflowExecution.ID + "\x00" + info.WorkflowExecution.RunID + "\x00" + info.ActivityID))
+
+	return hex.EncodeToString(sum[:])
 }
 
 // Task is a Temporal activity that executes a single task.

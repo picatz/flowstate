@@ -256,10 +256,11 @@ Must-land is marked; cut from the bottom, never from must-land.
    `runWorker` so task-policy, secret, egress and assumption decisions
    (allows included) leave the same trail server RPCs already do; #1018's
    decided contract at the second of its two homes, #353's principle 2 made
-   true past the RPC boundary. — PR #1394, **merged** 2026-09-02: one record
-   per dispatch attempt on both drivers, an interrupted evaluation or an
-   unresolved dial recorded as no decision, `THREAT_MODEL.md` gap 7 rewritten
-   inside it. Its review left two gaps deliberately outside it: #1397 (a
+   true past the RPC boundary. — PR #1394, **merged** 2026-09-02: one fresh
+   decision per execution attempt on both drivers, grouped under one stable
+   logical `dispatch_id`; an interrupted evaluation or unresolved dial is no
+   decision. `THREAT_MODEL.md` gap 7 was rewritten inside it. Its review left
+   two gaps deliberately outside it: #1397 (a
    permitted redirect chain leaves one record, not one per hop) and #1399 (a
    plugin enforcing the same policy in its own process leaves none).
 10. **Typed outputs, schema first** (#1377) — `type:` on output declarations

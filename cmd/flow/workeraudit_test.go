@@ -94,6 +94,23 @@ func TestServerDevStopsItsWorkerBeforeShuttingDownTheAuditSinks(t *testing.T) {
 		"the embedded worker must stop, and drain, while its audit sinks are still open")
 }
 
+// TestWorkerStopsBeforeShuttingDownTheAuditSinks holds the same ordering for
+// the deployment worker. This path already stopped explicitly before flushing;
+// pin it so a future cleanup cannot leave Stop to main's post-command flush.
+func TestWorkerStopsBeforeShuttingDownTheAuditSinks(t *testing.T) {
+	t.Parallel()
+
+	calls := immediateCallOrderIn(t, "runWorker")
+
+	stop := lastIndexOfCall(calls, "Stop")
+	flush := indexOfCall(calls, "flushAudit")
+
+	require.NotEqual(t, -1, stop, "runWorker never stops and drains its worker")
+	require.NotEqual(t, -1, flush, "runWorker no longer flushes the audit trail")
+	require.Less(t, stop, flush,
+		"the worker must stop, and drain, while its audit sinks are still open")
+}
+
 // TestTheDevWorkerIsGivenTimeToDrain is the other half of the ordering above,
 // and the half that makes it worth anything (Codex, picatz/flowstate#1394).
 //
@@ -182,6 +199,19 @@ func immediateCallOrderIn(t *testing.T, function string) []string {
 func indexOfCall(calls []string, name string) int {
 	for i, call := range calls {
 		if call == name {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// lastIndexOfCall returns where name is last called, or -1. runWorker has an
+// earlier Stop on a startup-error path; shutdown ordering is proved by its
+// final Stop, immediately before the sinks flush.
+func lastIndexOfCall(calls []string, name string) int {
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i] == name {
 			return i
 		}
 	}
