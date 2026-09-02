@@ -581,3 +581,112 @@ func TestACredentialTheSDKCannotSeeIsMarkedByTheCaller(t *testing.T) {
 	assert.ErrorIs(t, err, netpolicy.ErrDenied,
 		"the marked request failed for some reason other than the credentials rule: %v", err)
 }
+
+// TestTheCredentialMarkSurvivesARedirectToAnotherHost is the hop the per-hop
+// reading let through.
+//
+// A rule like `deny: ['credentials && host != "…"']` is about where a
+// credentialed exchange may go, and the second hop is the interesting one: a
+// request carrying a secret being bounced somewhere else is the shape it exists
+// to catch. Two things conspire to hide that hop. Go rebuilds each redirect from
+// the *initial* request's context, so the mark this transport put on its clone
+// is gone; and a redirect to another host strips Authorization, so the header is
+// gone too. The second hop then arrived looking like an ordinary unauthenticated
+// request and the rule did not fire — while the built-in http task, which marks
+// the whole chain from its own inputs, refused it.
+//
+// 127.0.0.1 and localhost are two hostnames for one interface, which is what
+// makes this a cross-host redirect (Go strips the header) that a loopback policy
+// still permits to connect — so the only thing left to decide the second hop is
+// whether the mark carried.
+func TestTheCredentialMarkSurvivesARedirectToAnotherHost(t *testing.T) {
+	resetGrant(t)
+
+	var secondHopReached atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/second", func(w http.ResponseWriter, _ *http.Request) {
+		secondHopReached.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	require.NoError(t, err)
+
+	mux.HandleFunc("/first", func(w http.ResponseWriter, r *http.Request) {
+		// The header did reach the first hop, or this test would prove nothing
+		// about a *credentialed* exchange.
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "http://localhost:"+port+"/second", http.StatusFound)
+	})
+
+	// The first hop's host is permitted to carry credentials; nothing else is.
+	t.Setenv(EgressPolicyEnv, grantOf(
+		"egress:\n  schemes: [http, https]\n  allow_loopback: true\n"+
+			"  deny: ['credentials && host != \"127.0.0.1\"']\n"))
+
+	client, err := HTTPClient()
+	require.NoError(t, err)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		"http://127.0.0.1:"+port+"/first", nil)
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer the-secret")
+
+	response, err := client.Do(request)
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("the redirect out of the permitted host was followed by a credentialed exchange")
+	}
+
+	assert.ErrorIs(t, err, netpolicy.ErrDenied,
+		"the redirect failed for some reason other than the credentials rule: %v", err)
+	assert.Zero(t, secondHopReached.Load(),
+		"the second hop was reached; the mark did not survive the redirect")
+}
+
+// TestAnUncredentialedRedirectIsStillPermitted is the falsifier for the test
+// above: without it, a transport that marked every request would pass.
+func TestAnUncredentialedRedirectIsStillPermitted(t *testing.T) {
+	resetGrant(t)
+
+	var secondHopReached atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/second", func(w http.ResponseWriter, _ *http.Request) {
+		secondHopReached.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	require.NoError(t, err)
+
+	mux.HandleFunc("/first", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://localhost:"+port+"/second", http.StatusFound)
+	})
+
+	t.Setenv(EgressPolicyEnv, grantOf(
+		"egress:\n  schemes: [http, https]\n  allow_loopback: true\n"+
+			"  deny: ['credentials && host != \"127.0.0.1\"']\n"))
+
+	client, err := HTTPClient()
+	require.NoError(t, err)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		"http://127.0.0.1:"+port+"/first", nil)
+	require.NoError(t, err)
+
+	response, err := client.Do(request)
+	require.NoError(t, err, "an exchange carrying no credential was refused by a credentials rule")
+	response.Body.Close()
+
+	assert.Equal(t, int64(1), secondHopReached.Load(),
+		"the uncredentialed redirect did not reach its second hop")
+}

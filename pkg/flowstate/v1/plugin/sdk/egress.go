@@ -136,7 +136,24 @@ func HTTPClient() (*http.Client, error) {
 // because "this is not a credential" is not a claim the SDK should let a caller
 // make to the operator's policy on its own say-so.
 func WithCredentials(ctx context.Context) context.Context {
+	// Two keys for one fact. netpolicy's is what its rules read; this package's
+	// is what [carriesCredential] reads back off the previous hop of a redirect
+	// chain, because netpolicy's is deliberately not readable from outside that
+	// package. They are set together and never apart.
+	ctx = context.WithValue(ctx, credentialsKey{}, true)
+
 	return netpolicy.ContextWithCredentials(ctx, true)
+}
+
+// credentialsKey carries this package's own copy of the mark, for reading it
+// back at the next hop of a redirect.
+type credentialsKey struct{}
+
+// markedForCredentials reports whether [WithCredentials] marked this context.
+func markedForCredentials(ctx context.Context) bool {
+	marked, _ := ctx.Value(credentialsKey{}).(bool)
+
+	return marked
 }
 
 // credentialHeaders are the request headers whose presence means a credential is
@@ -199,14 +216,39 @@ func (t credentialMarkingTransport) RoundTrip(req *http.Request) (*http.Response
 	return next.RoundTrip(req.Clone(WithCredentials(req.Context())))
 }
 
-// carriesCredential reports whether the request shows a credential the SDK can
-// recognize without being told.
+// carriesCredential reports whether this request is part of a credentialed
+// exchange — either because it shows a credential now, or because the hop that
+// produced it did.
+//
+// The second half is what makes the mark cover a redirect chain rather than one
+// hop. Go rebuilds each hop from the *initial* request's context
+// (net/http/client.go:683, `ctx: ireq.ctx`), so a value this transport put on a
+// clone is gone by the next hop; and on a redirect to another host it strips
+// Authorization (`shouldCopyHeaderOnRedirect`), so the header is gone too. A
+// per-hop reading therefore let the second hop of a credentialed exchange
+// through a rule the first hop was refused by — and that second hop is exactly
+// the interesting one, since a request carrying a secret being bounced somewhere
+// else is the shape the rule exists to catch. The built-in http task marks the
+// whole chain from the task's own inputs (eval_task_http_run.go:447), so a
+// per-hop plugin also broke the parity that makes `credentials` mean one thing.
+//
+// The chain's memory is req.Response.Request: Go sets Response on each
+// redirected hop to the previous response (client.go:679), and the transport
+// sets that response's Request to the request it was handed
+// (net/http/transport.go:640,736) — the marked clone this transport sent, whose
+// context netpolicy's own clone preserves. So the mark is inherited rather than
+// re-derived, and nothing needs to re-inspect headers that are no longer there.
 func carriesCredential(req *http.Request) bool {
 	for _, name := range credentialHeaders {
 		if req.Header.Get(name) != "" {
 			return true
 		}
 	}
+
+	if req.Response != nil && req.Response.Request != nil {
+		return markedForCredentials(req.Response.Request.Context())
+	}
+
 	return false
 }
 

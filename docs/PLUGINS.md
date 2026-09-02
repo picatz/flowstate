@@ -413,7 +413,7 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:307` for the current
+  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:361` for the current
   version, 5, which the egress grant moved it to). Nothing equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
@@ -490,7 +490,7 @@ handshake line starts with "debug: starting", want "FLOWSTATE-PLUGIN" — is thi
 a Flowstate plugin?
 ```
 
-That message is as good as it can be (`internal/protocol/protocol.go:468`), and
+That message is as good as it can be (`internal/protocol/protocol.go:522`), and
 it still names your first debug line as a protocol failure. Log through
 `sdk.WithLogger` or to stderr; after `sdk.Main` is serving, `fmt.Println` is
 harmless, since stdout has been redirected — but Go code writing to file
@@ -621,11 +621,17 @@ response, err := client.Do(request)
 **Credentials.** An operator's rule may name `credentials` — as in
 `deny: ['credentials && !(host in ["partner.example"])']`, which says a secret
 leaves only towards one place. The client marks a request automatically when it
-carries an `Authorization`, `Proxy-Authorization` or `Cookie` header, which is
-the same set the built-in `http` task counts, so one rule means one thing across
-both. Nothing else in a request is recognizable as a secret, so when your
-credential is somewhere the SDK cannot see — a token in a query string, a
-signature in a custom header, a credential in the body — say so:
+carries an `Authorization`, `Proxy-Authorization` or `Cookie` header, and the
+mark then covers the whole redirect chain rather than the one hop that showed it,
+so a credentialed exchange bounced to another host is refused there too.
+
+That header set is the header-visible half of what the built-in `http` task
+counts. The task decides from its own inputs, and two of those have no header
+form the SDK could see — `credential:`, and a secret reference nested in a JSON
+or form body — so a plugin carrying the equivalent has to say so itself. That is
+what `sdk.WithCredentials` is for: when your credential is somewhere the SDK
+cannot see — a token in a query string, a signature in a custom header, a
+credential in the body — say so:
 
 ```go
 response, err := client.Do(request.WithContext(sdk.WithCredentials(ctx)))
