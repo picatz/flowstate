@@ -254,11 +254,11 @@ how the ledger stopped for ~900 PRs without anything noticing.
 | **Identity** | RFC-precise, fail-closed, one identity vocabulary | enforce the scopes it publishes; reach the delegation it built |
 | **Secrets** | reference until the activity, closure-held, structurally redacted audit | nothing; hold the line |
 | **Plugins** | process boundary, host-resolved secrets, pins, grant | one total proto→outputs bridge, outputs verified against the manifest, `flow test` sees plugins |
-| **CLI** | a written contract, held (exit codes, streams, `-o json`) | a directory form for `run local`, a workflow inventory, SARIF/JUnit |
+| **CLI** | a written contract, held (exit codes, streams, `-o json`) | `run local`'s directory refusal in the language's own voice (#1473, still a refusal), a workflow inventory, SARIF/JUnit |
 | **LSP** | derived task shape, diagnostics with edits, test-file support | the five roots from `v1`'s constants; then semantic tokens |
 | **MCP** | descriptor-derived roster, six server-less tools, resources | a 20 KB `tools/list`, prompts, a signature tool, a fix tool |
 | **flow test** | fixtures, tables, coverage, seeds, virtual time | load-time refusal of every name it can already check |
-| **Debugger / DAP** | scope, inspect, conditional breakpoints, replay | a read-only account of a finished durable run |
+| **Debugger / DAP** | scope, inspect, conditional breakpoints, replay | the compensation record on the timeline `GetTimeline` already serves (#1385); the durable account itself exists |
 | **Docs** | generated references pinned, a tested index | `flow docs` renders what the binary carries; a `values.md`; a `scope.md` |
 | **Process** | one gate, three tiers, drift-tested skills | the ruleset; reproducers off the public repo; scan the plugin modules |
 
@@ -554,8 +554,9 @@ test.
    a task nothing knows. *M* — alone in this wave: D9 sequences the three
    load-time name checks (**#1441**, **#1443**, **#1295**) onto the `TestSuite`
    message after #1273, so scheduling them here would build them against the
-   interim structs D9 rejects. They move to the wave that lands #1273's swap,
-   as one set of three (Codex, on #1479).
+   interim structs D9 rejects. No wave here schedules #1273 — the owner
+   sequenced it on 2026-08-30 — so the three wait behind it in "Not now",
+   as one set (Codex, on #1479).
 8. **#1288** an opaque spec field in the three tools' schemas, with a
    byte-bound test. *M*
 9. **#1434 + #1463** the five roots from `v1`'s constants in completion and
@@ -662,7 +663,17 @@ Nexus in either direction (D4 sequences it behind child mode and Update);
 round); WASM (#242, refused for now on its own record); remote plugin
 distribution and signing (#1325 decides whether there is anything to sign);
 the entity loop beyond design (#105); the model-provider family (#192)
-ahead of the MCP bridge; a `flow` context/profile mechanism (#371, wanted,
+ahead of the MCP bridge; #1273's `TestSuite` message swap, which the owner
+sequenced on 2026-08-30 and which no wave here schedules — so D9's three
+load-time name checks (#1441, #1443, #1295) wait behind it rather than
+landing in a wave, and this program touches `flow test` only through #1294;
+D8's module story beyond the decision — the lockfile (#1448) and the additive
+root-and-bundle request shape — which is a prerequisite for byte-surface
+composition and is sized past this program, so the decision stands as a
+constraint on whoever picks it up rather than as scheduled work; the
+workspace substrate (#200), which D11 deliberately puts behind evidence from
+the `base_ref` loop, so it is deferred by design rather than omitted; a
+`flow` context/profile mechanism (#371, wanted,
 but every fleet ergonomic and none of the correctness items waits on it);
 splitting `pkg/flowstate/v1` (the safe seam is horizontal — `eval.go`,
 `celenv.go`, `protoliterals.go` as a `celcore` the root re-exports — and the
@@ -800,7 +811,7 @@ checked.
 | M | D6 `parallel:` atomic bound, weighed where an atomic scope is entered rather than per node | `atomicblock.go`, `eval.go` + `engine/execute.go` at `enterAtomicBlock`, `conformance/` |
 | M | #1449 `NamespaceReachCases` + one rooted replay history | `conformance/`, `engine/testdata/replay/` |
 | M | #1294 `--plugin-catalog` on `flow test` (alone; see wave A) | `cmd/flow/test.go`, `flowtest/run.go` |
-| M | #1441 + #1443 + #1295 load-time name checks, **after** #1273's `TestSuite` swap | `flowtest/stub.go`, `file.go`, the `TestSuite` message |
+| M | #1441 + #1443 + #1295 load-time name checks — not in this program: blocked on #1273's `TestSuite` swap, see "Not now" | `flowtest/stub.go`, `file.go`, the `TestSuite` message |
 | M | #1288 opaque spec field | `cmd/flow/mcp.go`, `mcp_test.go` |
 | M | #1434+#1463 five roots in the LSP | `lsp/completion.go`, `lsp/hover.go`, `lsp/callinputs.go` |
 | M | #1430 `ValidateSpec` at submit | `pkg/flowstate/v1/`, `server/server.go`, `eval.go` |
