@@ -177,7 +177,7 @@ jobs:
               echo
               echo "Produced by workflow run: ${RUN_URL} (the input is also attached there as the \`fuzz-crashers\` artifact)."
               echo
-              echo "The bytes themselves are deliberately not inlined here: this repository is public, and SECURITY.md asks for crash inputs to be reported privately — which applies no less to a report this workflow writes about itself. The artifact above, visible to collaborators only, is where they travel."
+              echo "The bytes themselves are deliberately not inlined here: this repository is public, and SECURITY.md asks for crash inputs to be reported privately — which applies no less to a report this workflow writes about itself. The artifact above is an interim store and is readable by anyone who can read this public repository."
               echo
               echo "Reproduce: download the artifact, restore the entry to \`${entry}\`, then:"
               echo
