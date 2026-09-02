@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
+	"github.com/goccy/go-yaml"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
@@ -407,16 +408,62 @@ func applyMCPEgressPolicy(cmd *cobra.Command) error {
 		return applyEgressPolicy(cmd)
 	}
 
-	policy, err := netpolicy.New(netpolicy.WithDenyRules("true"))
+	policy, document, err := mcpEgressPolicy()
 	if err != nil {
-		return fmt.Errorf("building the deny-by-default egress policy for flowstate_run_local: %w", err)
+		return err
 	}
 
 	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for flowstate_run_local: %w", err)
 	}
 
+	// The same posture, on the other side of the process boundary. Registering
+	// the policy and leaving this unset is what made a model unable to fetch a
+	// URL from this process while still able to ask a `git`, `github` or `vcs`
+	// task to reach one: those plugins obey the grant now (#1332), and the
+	// grant they were getting was the ordinary deployment default.
+	setEgressPolicySnapshot(cmd, document)
+
 	return nil
+}
+
+// mcpEgressPolicy builds this command's own policy and writes it down, from one
+// config, so the policy it enforces on its built-in http task and the grant it
+// hands every plugin it launches cannot become two different postures.
+//
+// One value, marshalled once, both results derived from those bytes. The
+// alternative — build the policy from options here and write a document beside
+// it — is the shape the bug had: two constructions of one posture, which drift,
+// and nothing about them being adjacent in a file prevents that.
+//
+// The document is marked `deployment_default: true`, and the mark is honest: no
+// operator wrote this policy, this command chose it, which is exactly what
+// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicyIsDeploymentDefault]
+// reports. It changes no plugin's reach here — the document permits nothing, and
+// `sql` refuses under the default in any case — so what it buys is that the
+// SDK's answer is true rather than convenient. A plugin is stopped here by what
+// the rules say; the marker only says who decided.
+func mcpEgressPolicy() (*netpolicy.Policy, []byte, error) {
+	document, err := yaml.Marshal(netpolicy.Config{
+		DeploymentDefault: true,
+		Egress:            netpolicy.EgressConfig{Deny: []string{"true"}},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("writing the deny-by-default egress policy for flowstate_run_local: %w", err)
+	}
+
+	// Parsed back rather than built from the value above, so the policy comes
+	// from the bytes the plugins get rather than from a sibling of them.
+	cfg, err := netpolicy.ParseConfig(document)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing the deny-by-default egress policy for flowstate_run_local: %w", err)
+	}
+	policy, err := cfg.Policy()
+	if err != nil {
+		return nil, nil, fmt.Errorf("building the deny-by-default egress policy for flowstate_run_local: %w", err)
+	}
+
+	return policy, document, nil
 }
 
 // runLocalToolHandler executes one submitted workflow.

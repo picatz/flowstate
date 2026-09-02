@@ -24,6 +24,27 @@ import (
 // none of them can remove a bound: the file is the loosening surface, and a bound
 // an operator wants gone should be raised, not deleted.
 type Config struct {
+	// DeploymentDefault marks a document a worker wrote from its own built-in
+	// default rather than one an operator wrote.
+	//
+	// A worker with no --egress-policy still hands every plugin it launches a
+	// policy — the one its own built-in http task runs under — because "nobody
+	// granted anything" and "the deployment's default" are different facts, and
+	// a plugin that cannot tell them apart either refuses work every default
+	// worker has always done or treats a policy nobody wrote as one somebody
+	// did. The marker is what lets a plugin take a posture toward the default:
+	// git, vcs, github and slack accept it, while sql refuses to reach a
+	// database under it and names --egress-policy in the refusal (#1332).
+	//
+	// It rides inside the document rather than beside it so the bytes carry
+	// their own provenance — one field on plugin.Config, one environment
+	// variable, and no second value that has to agree with the first.
+	//
+	// It says nothing about what may be reached, so [Config.Options] and
+	// [Config.Policy] ignore it, and `flow` refuses an operator file that sets
+	// it: the worker is the only writer this key has.
+	DeploymentDefault bool `json:"deployment_default,omitempty" yaml:"deployment_default,omitempty"`
+
 	Egress EgressConfig `json:"egress" yaml:"egress"`
 }
 

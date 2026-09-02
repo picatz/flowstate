@@ -56,9 +56,9 @@ func TestProtocolVersionNamesItsRoutes(t *testing.T) {
 		}
 	}
 
-	// Version 5 is what that package is worth today. Asserted so the constant
+	// Version 6 is what that package is worth today. Asserted so the constant
 	// cannot be renumbered back to something already spent.
-	if got, want := protocol.HostVersions(), []int{protocol.Version5}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := protocol.HostVersions(), []int{protocol.Version6}; len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("HostVersions() = %v, want %v", got, want)
 	}
 }
@@ -79,6 +79,7 @@ func TestRetiredProtocolVersionIsNotOffered(t *testing.T) {
 		protocol.Version2: "its descriptor exchange assumes flowstate/v1/flowstate.proto, which the twelve-file split replaced",
 		protocol.Version3: "it reads the per-launch token from FLOWSTATE_PLUGIN_TOKEN, which the host no longer sets",
 		protocol.Version4: "it predates FLOWSTATE_EGRESS_POLICY_B64, so a plugin speaking it reaches the network under no policy at all",
+		protocol.Version5: "its netpolicy refuses the deployment_default key the grant now carries, so the whole policy document fails to parse in the plugin",
 	}
 
 	for _, v := range protocol.HostVersions() {
@@ -104,6 +105,11 @@ func TestRetiredProtocolVersionIsNotOffered(t *testing.T) {
 		{protocol.Version3, protocol.Version4},
 		{protocol.Version3, protocol.Version5},
 		{protocol.Version4, protocol.Version5},
+		{protocol.Version1, protocol.Version6},
+		{protocol.Version2, protocol.Version6},
+		{protocol.Version3, protocol.Version6},
+		{protocol.Version4, protocol.Version6},
+		{protocol.Version5, protocol.Version6},
 	} {
 		if pair[0] == pair[1] {
 			t.Errorf("two protocol versions are both %d; a retired version number must not be reused", pair[0])
@@ -121,7 +127,7 @@ func TestNegotiationRefusesARetiredPluginClearly(t *testing.T) {
 	t.Parallel()
 
 	// What a plugin built before each retirement speaks.
-	for _, old := range []int{protocol.Version1, protocol.Version2, protocol.Version3, protocol.Version4} {
+	for _, old := range []int{protocol.Version1, protocol.Version2, protocol.Version3, protocol.Version4, protocol.Version5} {
 		if _, ok := protocol.Negotiate([]int{old}, protocol.HostVersions()); ok {
 			t.Fatalf("a plugin speaking only retired version %d negotiated successfully; "+
 				"it would then be sent requests it cannot answer", old)
@@ -134,14 +140,14 @@ func TestNegotiationRefusesARetiredPluginClearly(t *testing.T) {
 	if !ok {
 		t.Fatal("a current plugin failed to negotiate with the host")
 	}
-	if got != protocol.Version5 {
-		t.Errorf("negotiated version = %d, want %d", got, protocol.Version5)
+	if got != protocol.Version6 {
+		t.Errorf("negotiated version = %d, want %d", got, protocol.Version6)
 	}
 
 	// The refusal an operator reads names both sides. Checked because the value of
 	// failing here rather than on `Describe` is entirely in what it says.
 	rendered := protocol.FormatVersions(protocol.HostVersions())
-	if !strings.Contains(rendered, strconv.Itoa(protocol.Version5)) {
+	if !strings.Contains(rendered, strconv.Itoa(protocol.Version6)) {
 		t.Errorf("FormatVersions(%v) = %q, which does not name the version the host speaks",
 			protocol.HostVersions(), rendered)
 	}
@@ -259,18 +265,19 @@ func TestTheTokenDescriptorIsRefusedAtTheHandshakeInBothDirections(t *testing.T)
 // TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake is what makes the
 // launch environment safe to extend.
 //
-// Version 5 carries what version 4 did not: the deployment's egress policy in
-// [protocol.EgressPolicyEnv] (#1332). It is not on the wire, so it is invisible
-// to a route-shaped compatibility argument — and the failure is the quiet one,
-// pointed at an authorization boundary: a version 4 binary launched by a version
-// 5 host reaches the network as though the deployment had configured no policy
-// at all, and a version 5 binary under a version 4 host finds no grant where it
-// expects one. Both are closed the same way, by the version refusing to
-// negotiate, which is why the grant needs no compatibility mechanism of its own.
+// Version 6 carries what version 5 did not: a grant that is always present under
+// `flow` and may say `deployment_default` (#1332). It is not on the wire, so it
+// is invisible to a route-shaped compatibility argument — and the failure is the
+// quiet one, arriving as somebody else's configuration error: a version 5 binary
+// launched by a version 6 host reads a policy document whose new key its own
+// strict `netpolicy.ParseConfig` refuses, so it fails in its own startup with a
+// parse error while the handshake reported both sides compatible. Closed the
+// same way every launch-environment change before it was, by the version
+// refusing to negotiate.
 //
-// The fixture announces [protocol.Version4] rather than an invented number, and
-// that matters here more than usual: version 4 is not hypothetical. It shipped
-// on main in #1389, before the grant existed, so binaries speaking it are the
+// The fixture announces [protocol.Version5] rather than an invented number, and
+// that matters here more than usual: version 5 is not hypothetical. It shipped
+// on main in #1390, before the marker existed, so binaries speaking it are the
 // ones a staggered upgrade actually produces. The refusal has to name both
 // sides: "version mismatch" with no numbers leaves an operator unable to tell
 // which half is old.
@@ -311,8 +318,8 @@ func TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake(t *testing.T) 
 	}
 
 	for _, want := range []string{
-		strconv.Itoa(protocol.Version4),
 		strconv.Itoa(protocol.Version5),
+		strconv.Itoa(protocol.Version6),
 	} {
 		if !strings.Contains(openErr.Error(), want) {
 			t.Errorf("Open error = %q, want it to name version %s; a refusal naming one side does not say which build is old",
@@ -352,8 +359,13 @@ func TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake(t *testing.T) 
 func TestTheEgressGrantIsRefusedAtTheHandshakeInBothDirections(t *testing.T) {
 	t.Parallel()
 
+	// Both sides are named rather than read from HostVersions, because the
+	// transition under test is 4 to 5 and the current version has moved past it
+	// (version 6 carries the deployment-default marker). A test that tracked
+	// HostVersions would keep passing while quietly checking a later bump than
+	// the one it documents.
 	ungranted := []int{protocol.Version4}
-	granted := protocol.HostVersions()
+	granted := []int{protocol.Version5}
 
 	// Old plugin, new host. Without this the plugin serves, and every task it
 	// runs reaches the network under no policy on a worker that configured one.
@@ -376,5 +388,58 @@ func TestTheEgressGrantIsRefusedAtTheHandshakeInBothDirections(t *testing.T) {
 	// a protocol that refuses everything.
 	if _, ok := protocol.Negotiate(granted, granted); !ok {
 		t.Fatal("two builds carrying the egress grant failed to negotiate with each other")
+	}
+}
+
+// TestTheDeploymentDefaultMarkerIsRefusedAtTheHandshakeInBothDirections is the
+// reason version 6 exists, in the same bidirectional shape versions 3, 4 and 5
+// have above.
+//
+// Marking the grant looks additive, and that is the trap. `deployment_default`
+// is a key in the policy document, and netpolicy's parser is strict on purpose —
+// an unknown key is an error so a misspelled rule cannot silently drop a
+// restriction — so a version 5 plugin does not ignore the new key, it refuses
+// the whole document. Under a worker upgraded ahead of its plugins, an existing
+// version 5 `sql` or `slack` binary fails in its own startup with a policy parse
+// error, while the handshake told the operator both sides were compatible.
+//
+// The alternative encoding is what makes the number rather than a different
+// spelling the answer: a marker beside the document would leave that same
+// version 5 plugin parsing the deployment default as though an operator had
+// written it, so `sql` would open a database connection on a worker that
+// authorized no destination — a posture widening on binaries this repository
+// cannot see. A refusal at the handshake is the failure to prefer.
+//
+// The reverse direction is the one no diagnostic in this build can reach: it
+// fails inside a host that already shipped, and the only thing that makes it
+// legible there is a version number that host already knows how to refuse.
+func TestTheDeploymentDefaultMarkerIsRefusedAtTheHandshakeInBothDirections(t *testing.T) {
+	t.Parallel()
+
+	unmarked := []int{protocol.Version5}
+	marked := []int{protocol.Version6}
+
+	// Old plugin, new host. Without this the plugin loads and then refuses its
+	// own launch over a policy document it cannot parse, which reads as a broken
+	// policy file rather than as two builds that cannot work together.
+	if _, ok := protocol.Negotiate(marked, unmarked); ok {
+		t.Error("a plugin predating the deployment-default marker negotiated with a host that sends one\n" +
+			"  it would fail parsing the grant, reporting an operator's policy as malformed\n" +
+			"  rather than refusing over two version numbers")
+	}
+
+	// New plugin, old host: the mirror. A host built before the marker offers
+	// only 5; a plugin built after it speaks only 6, so the plugin refuses at
+	// startup naming both numbers, using the old host's already-shipped
+	// negotiation.
+	if _, ok := protocol.Negotiate(unmarked, marked); ok {
+		t.Error("a plugin expecting a marked grant negotiated with a host that never sends one\n" +
+			"  it would read the deployment default as an operator's policy rather than refusing over two version numbers")
+	}
+
+	// And matched builds still negotiate, or both checks above are satisfied by
+	// a protocol that refuses everything.
+	if _, ok := protocol.Negotiate(marked, marked); !ok {
+		t.Fatal("two builds carrying the marked grant failed to negotiate with each other")
 	}
 }

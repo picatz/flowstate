@@ -39,6 +39,10 @@ type remoteRef struct {
 // rather than sending an empty username, the same fail-safe direction
 // cloneBounded takes.
 func listRemoteRefs(ctx context.Context, u *url.URL, token func() string, username string) ([]remoteRef, error) {
+	if err := requireEgressPolicy(); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 

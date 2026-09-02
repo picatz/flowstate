@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
@@ -11,10 +9,7 @@ import (
 )
 
 func main() {
-	if err := installEgressPolicy(); err != nil {
-		fmt.Fprintf(os.Stderr, "git: %v\n", err)
-		os.Exit(1)
-	}
+	installEgressPolicy()
 
 	sdk.Main(sdk.Plugin{
 		Name:        "git",
@@ -72,9 +67,11 @@ func main() {
 // checkHealth reports whether this plugin can serve - see plugins/vcs's
 // identical function for why there is no long-lived backend connection to
 // check beyond the egress policy having installed successfully.
+//
+// The deployment's grant is that policy now, so an unhealthy answer here is a
+// worker whose grant this plugin could not use, and it says which. Describe and
+// the catalog still work in that state, deliberately: knowing what a plugin
+// offers is not the same as being able to reach a remote.
 func checkHealth(_ context.Context) error {
-	if egressPolicy == nil {
-		return fmt.Errorf("egress policy was never installed")
-	}
-	return nil
+	return requireEgressPolicy()
 }

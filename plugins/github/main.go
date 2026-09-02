@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
@@ -11,10 +9,7 @@ import (
 )
 
 func main() {
-	if err := installEgressPolicy(); err != nil {
-		fmt.Fprintf(os.Stderr, "github: %v\n", err)
-		os.Exit(1)
-	}
+	installEgressPolicy()
 
 	sdk.Main(sdk.Plugin{
 		Name:        "github",
@@ -92,8 +87,8 @@ func main() {
 // exactly the kind of misconfiguration worth surfacing as "not serving"
 // rather than as a mysterious failure on the first task call.
 func checkHealth(_ context.Context) error {
-	if egressPolicy == nil {
-		return fmt.Errorf("egress policy was never installed")
+	if _, err := egressClient(); err != nil {
+		return err
 	}
 	if _, err := loadAuthConfig(); err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -689,4 +690,232 @@ func TestAnUncredentialedRedirectIsStillPermitted(t *testing.T) {
 
 	assert.Equal(t, int64(1), secondHopReached.Load(),
 		"the uncredentialed redirect did not reach its second hop")
+}
+
+// TestThePostureTowardTheDefaultIsThePluginsToTake is point 7 of #1332: the SDK
+// reports whether an operator decided this policy or the worker forwarded its
+// own default, and each plugin decides what that means for its own work.
+//
+// Both directions are load-bearing, and they fail in opposite ways. A default
+// read as an operator's policy lets `sql` open a database on a worker whose
+// operator never authorized a destination; an operator's policy read as the
+// default makes `sql` refuse the very file that was written to permit it.
+func TestThePostureTowardTheDefaultIsThePluginsToTake(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		grant string
+		want  bool
+	}{
+		{
+			name:  "the worker's own default says so",
+			grant: grantOf("deployment_default: true\negress: {}\n"),
+			want:  true,
+		},
+		{
+			// The same posture as the default, written by an operator. What
+			// separates them is who decided, which is exactly what a policy
+			// compared by its rules could not tell apart.
+			name:  "an operator's policy does not",
+			grant: grantOf("egress: {}\n"),
+		},
+		{
+			name:  "nor does an operator's policy that says something",
+			grant: grantOf("egress:\n  schemes: [https]\n  allow_loopback: true\n"),
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resetGrant(t)
+			t.Setenv(EgressPolicyEnv, testCase.grant)
+
+			isDefault, err := EgressPolicyIsDeploymentDefault()
+			require.NoError(t, err)
+			assert.Equal(t, testCase.want, isDefault,
+				"the plugin cannot tell who decided this policy, so it cannot take a posture toward the default")
+
+			policy, err := EgressPolicy()
+			require.NoError(t, err, "the marker cost the plugin the policy itself")
+			assert.NotNil(t, policy)
+		})
+	}
+}
+
+// TestADefaultWorkersGrantIsThatWorkersOwnPosture is the shared proof every
+// plugin migrated onto this constructor inherits (point 3 of #1332's decision),
+// for the launch that is now the common one: a worker started with no
+// --egress-policy.
+//
+// The claim is parity, not resemblance — what the plugin enforces is the policy
+// the worker's own built-in http task is enforcing — so every expectation is
+// computed from [flowstatev1.DefaultEgressPolicy] rather than written down. A
+// test naming the categories itself would agree with this file forever and stop
+// agreeing with the worker the moment the default moved.
+//
+// The public address is checked but not dialed: a unit test that reached the
+// internet to prove a policy permits it would be proving the internet. What is
+// dialed is the denied one, where the listener is the falsifier — it is running,
+// it is reachable, and a policy consulted only where convenient would leave an
+// accept behind.
+func TestADefaultWorkersGrantIsThatWorkersOwnPosture(t *testing.T) {
+	resetGrant(t)
+	t.Setenv(EgressPolicyEnv, base64.StdEncoding.EncodeToString(flowstatev1.DefaultEgressPolicyDocument()))
+
+	granted, err := EgressPolicy()
+	require.NoError(t, err, "the grant a default worker makes was refused")
+
+	isDefault, err := EgressPolicyIsDeploymentDefault()
+	require.NoError(t, err)
+	assert.True(t, isDefault, "the plugin cannot tell that no operator decided this policy")
+
+	host := flowstatev1.DefaultEgressPolicy()
+	for name, addr := range map[string]netip.AddrPort{
+		"public":   netip.MustParseAddrPort("93.184.216.34:443"),
+		"loopback": loopback(t),
+		"private":  netip.MustParseAddrPort("10.0.0.1:443"),
+		"metadata": netip.MustParseAddrPort("169.254.169.254:80"),
+	} {
+		assert.Equalf(t, host.CheckAddr(addr) == nil, granted.CheckAddr(addr) == nil,
+			"the plugin's answer for a %s address differs from the worker's own http task", name)
+	}
+
+	denied, accepts := countingListener(t)
+
+	client, err := HTTPClient()
+	require.NoError(t, err)
+
+	response, err := client.Get("http://" + denied + "/")
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("the default grant let a plugin reach a loopback address the worker's own task cannot")
+	}
+	assert.ErrorIs(t, err, netpolicy.ErrDenied,
+		"the request failed for some reason other than the policy: %v", err)
+	assert.Zero(t, accepts.Load(),
+		"the denied destination was dialed; the default grant is not being applied on the connection path")
+}
+
+// TestAnUnusableGrantHasNoPostureEither keeps the new accessor on the same
+// fail-closed footing as [EgressPolicy].
+//
+// A boolean has a tempting third answer — false — for a grant that never
+// arrived, and false here reads as "an operator wrote this", which is the one
+// thing an absent or unreadable grant is not. Both callers of this in-tree
+// (`sql` refusing, `git`/`vcs`/`github` accepting) branch on it, so a false
+// standing in for an error would hand `sql` a policy it does not have and hand
+// the others nothing to refuse with.
+func TestAnUnusableGrantHasNoPostureEither(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		resetGrant(t)
+		noGrant(t)
+
+		isDefault, err := EgressPolicyIsDeploymentDefault()
+		require.Error(t, err, "an absent grant answered the posture question instead of refusing")
+		assert.False(t, isDefault)
+		assert.Contains(t, err.Error(), EgressPolicyEnv,
+			"the refusal does not name the grant, so an operator cannot act on it")
+	})
+
+	t.Run("malformed", func(t *testing.T) {
+		resetGrant(t)
+		t.Setenv(EgressPolicyEnv, grantOf("deployment_default: true\negress:\n  schemes: [https\n"))
+
+		isDefault, err := EgressPolicyIsDeploymentDefault()
+		require.Error(t, err, "a grant that does not parse answered the posture question instead of refusing")
+		assert.False(t, isDefault,
+			"a document that could not be parsed was believed about where it came from")
+	})
+}
+
+// TestABoundedClientKeepsTheGrantsRulesAndTheCredentialMark is the property the
+// plugins that clone depend on, and the one a plugin composing its own client
+// out of [EgressPolicyWithBounds] would silently lose.
+//
+// A git packfile is not the shape of response an operator sizes
+// `max_response_bytes` for, so those two bounds are the plugin's. Everything
+// that decides *where* a request may go stays the deployment's, and so does the
+// credential mark: a clone that sends a token must meet an operator's
+// `deny: ['credentials']` the same way an http task's request does. The three
+// assertions are the three ways this can go wrong — the bound not applied, a
+// rule dropped, the mark lost — and the last one is the one no compiler notices.
+func TestABoundedClientKeepsTheGrantsRulesAndTheCredentialMark(t *testing.T) {
+	resetGrant(t)
+
+	body := strings.Repeat("x", 4096)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv(EgressPolicyEnv, grantOf(
+		"egress:\n  schemes: [http, https]\n  allow_loopback: true\n  max_response_bytes: 16\n"+
+			"  deny: ['credentials && path == \"/secret\"']\n"))
+
+	// A bound this plugin states for its own transport, well above the 16 bytes
+	// the operator wrote: the response below is read whole, where the grant's
+	// own client would refuse it.
+	client, err := HTTPClientWithBounds(1<<20, 30*time.Second)
+	require.NoError(t, err)
+
+	response, err := client.Get(server.URL + "/pack")
+	require.NoError(t, err, "the plugin's own response bound did not replace the grant's")
+	read, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	require.NoError(t, err, "the response was cut off at a bound this plugin replaced")
+	assert.Len(t, read, len(body))
+
+	// The grant's rule is untouched by the bounds, and the credential that makes
+	// it fire is seen without the caller saying so.
+	credentialed, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/secret", nil)
+	require.NoError(t, err)
+	credentialed.Header.Set("Authorization", "Bearer the-secret")
+
+	denied, err := client.Do(credentialed)
+	if err == nil {
+		denied.Body.Close()
+		t.Fatal("a bounded client sent a credential to a destination the operator's rule denies")
+	}
+	assert.ErrorIs(t, err, netpolicy.ErrDenied,
+		"the request failed for some reason other than the policy: %v", err)
+
+	// The same path without the credential is permitted, which is what makes the
+	// denial above evidence about the mark rather than about the destination.
+	plain, err := client.Get(server.URL + "/secret")
+	require.NoError(t, err, "the bounded client refused an unauthenticated request the policy permits")
+	plain.Body.Close()
+}
+
+// TestABoundMustBeRaisedRatherThanRemoved is the direction an exported
+// constructor has to hold that its callers happen not to exercise.
+//
+// netpolicy spells "unbounded" as a non-positive bound, so a plugin passing zero
+// here — from a constant it forgot to set, or an int64 that came from somewhere
+// — would get back a policy that reads a response of any size or waits forever,
+// with the grant's own bound silently removed rather than replaced. A policy
+// file cannot ask for that ([netpolicy.Config.Options] refuses it in the same
+// words), and this is the same surface reached from Go.
+func TestABoundMustBeRaisedRatherThanRemoved(t *testing.T) {
+	resetGrant(t)
+	t.Setenv(EgressPolicyEnv, grantOf("egress:\n  schemes: [https]\n"))
+
+	for _, testCase := range []struct {
+		name             string
+		maxResponseBytes int64
+		timeout          time.Duration
+		wantIn           string
+	}{
+		{name: "no response bound", maxResponseBytes: 0, timeout: time.Second, wantIn: "maxResponseBytes must be positive"},
+		{name: "a negative response bound", maxResponseBytes: -1, timeout: time.Second, wantIn: "maxResponseBytes must be positive"},
+		{name: "no timeout", maxResponseBytes: 1 << 20, timeout: 0, wantIn: "timeout must be positive"},
+		{name: "a negative timeout", maxResponseBytes: 1 << 20, timeout: -time.Second, wantIn: "timeout must be positive"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			policy, err := EgressPolicyWithBounds(testCase.maxResponseBytes, testCase.timeout)
+			require.Error(t, err, "a bound this removes was accepted")
+			assert.Nil(t, policy)
+			assert.Contains(t, err.Error(), testCase.wantIn)
+
+			client, err := HTTPClientWithBounds(testCase.maxResponseBytes, testCase.timeout)
+			require.Error(t, err, "the client constructor accepted what the policy constructor refused")
+			assert.Nil(t, client, "an unbounded client escaped a refused bound")
+		})
+	}
 }

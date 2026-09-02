@@ -91,15 +91,21 @@
 // numbers of two inherited file descriptors — one carrying a per-launch secret
 // generated from crypto/rand, one that closes when the host exits.
 //
-// That environment also carries the deployment's egress policy, base64-encoded,
-// whenever the deployment configured one — the grant every plugin receives, the
-// same bytes the built-in http task runs under, bounded at 64 KiB before
-// encoding. Set-but-empty is a policy whose document is empty; unset is no
-// grant, and the reader must fail closed on it rather than treat it as
-// permission. It is what protocol version 5 adds to the launch environment, so a
-// plugin that predates it is refused at the handshake rather than launched
-// ungoverned — version 4 shipped before the grant existed, which is why the
-// grant could not be folded into it. See [Config.EgressPolicy] and the sdk
+// That environment also carries the deployment's egress policy, base64-encoded —
+// the grant every plugin receives, the same bytes the built-in http task runs
+// under, bounded at 64 KiB before encoding. A worker with no operator policy
+// grants its own default instead of nothing, written as a document marked
+// `deployment_default: true`, so set-but-empty is a policy whose document is
+// empty and unset means only that no worker launched the process; the reader
+// fails closed on unset rather than treating it as permission.
+//
+// The grant is what protocol version 5 added to the launch environment and the
+// marker is what version 6 added to the grant, so a plugin that predates either
+// is refused at the handshake rather than launched under a contract it does not
+// implement. The marker needed its own number because netpolicy's parser is
+// strict: a version 5 plugin refuses the whole document over the unknown key,
+// which would arrive as an operator's policy being malformed rather than as two
+// builds that cannot work together. See [Config.EgressPolicy] and the sdk
 // package's EgressPolicy.
 //
 // When that policy sets `proxy_from_environment`, the launch environment also

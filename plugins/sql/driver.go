@@ -50,8 +50,7 @@ func openDB(ctx context.Context, engine sqlv1.Engine, dsn string, scrubber *secr
 
 	case sqlv1.Engine_ENGINE_POSTGRES:
 		if egressPolicy == nil {
-			return nil, sdk.PermissionDenied(
-				"postgres requires an operator egress policy passed with --egress-policy; the SQL plugin denies network access when it is absent")
+			return nil, sdk.PermissionDenied("%v", postgresRefusal())
 		}
 		cfg, err := pgx.ParseConfigWithOptions(dsn, pgx.ParseConfigOptions{
 			ConnStringAllowedKeys: []string{
@@ -132,7 +131,7 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 		// the eventual TCP connection would be refused.
 		target := &url.URL{Scheme: "postgres", Host: net.JoinHostPort(ep.host, strconv.Itoa(int(ep.port)))}
 		if err := egressPolicy.CheckURL(policyCtx, http.MethodConnect, target); err != nil {
-			return sdk.PermissionDenied("postgres destination is denied by deployment egress policy")
+			return classifyEgressCheck(err)
 		}
 		if _, ok := resolved[ep.host]; ok {
 			continue
@@ -161,7 +160,7 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 					continue
 				}
 				if err := egressPolicy.CheckConnection(policyCtx, "postgres", ep.host, netip.AddrPortFrom(ip, candidate.port)); err != nil {
-					return sdk.PermissionDenied("postgres destination is denied by deployment egress policy")
+					return classifyEgressCheck(err)
 				}
 			}
 		}
@@ -226,15 +225,25 @@ func governPostgresConfig(ctx context.Context, cfg *pgx.ConnConfig, scrubber *se
 	return nil
 }
 
+// postgresPolicyContext adds what this plugin knows about the connection it is
+// about to make, to the context every policy check below reads.
+//
+// Only the credential mark. The calling workload's identity is already on the
+// task context: the SDK installs it where netpolicy looks when [sdk.Run]
+// delivers the call, so `identity.*` rules in an operator's policy evaluate
+// against the real caller for every plugin rather than only for the ones that
+// remembered to bridge it by hand. This plugin bridged it by hand until that
+// existed, and a second install here would be a second answer to a question with
+// one — the same fact written twice, which is how they come to disagree.
+//
+// Credentials stay here, deliberately, and this is the case sdk.WithCredentials
+// exists for: the credential is a password inside the DSN, on a PostgreSQL
+// connection that is not an HTTP request at all. The SDK's client marks an
+// Authorization, Proxy-Authorization or Cookie header before the policy sees it,
+// which covers every plugin that speaks HTTP and covers nothing here. So the
+// mark is this plugin's to make, and an operator rule naming `credentials` fires
+// for a database connection because this line says it should.
 func postgresPolicyContext(ctx context.Context) context.Context {
-	caller, _ := sdk.CallerFromContext(ctx)
-	identity := caller.Identity
-	ctx = netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
-		Subject:   identity.GetSubject(),
-		Issuer:    identity.GetIssuer(),
-		Namespace: identity.GetNamespace(),
-		Claims:    identity.GetClaims(),
-	})
 	return netpolicy.ContextWithCredentials(ctx, true)
 }
 

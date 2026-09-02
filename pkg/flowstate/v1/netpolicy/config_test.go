@@ -2,6 +2,7 @@ package netpolicy
 
 import (
 	"crypto/tls"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -291,5 +292,49 @@ func TestParseConfigRefusesANullAllowlist(t *testing.T) {
 		if !strings.Contains(err.Error(), strings.TrimSuffix(name, "_json")) {
 			t.Fatalf("%s: the error does not name the null field: %v", name, err)
 		}
+	}
+}
+
+// TestDeploymentDefaultIsCarriedAndChangesNothingAboutTheRules pins both halves
+// of the marker a worker signs its own default policy with (#1332): a plugin
+// reading the document learns where it came from, and a document that says so
+// still describes exactly the policy it would describe without the key.
+//
+// The second half is what keeps the marker from becoming a rule. It is
+// provenance, and provenance that quietly permitted or denied anything would be
+// a permission written in a field nobody reads as one.
+func TestDeploymentDefaultIsCarriedAndChangesNothingAboutTheRules(t *testing.T) {
+	t.Parallel()
+
+	marked, err := ParseConfig([]byte("deployment_default: true\negress:\n  allow_loopback: true\n"))
+	if err != nil {
+		t.Fatalf("parsing a marked document: %v", err)
+	}
+	if !marked.DeploymentDefault {
+		t.Fatal("deployment_default did not survive the parse, so a plugin cannot tell the worker's own default from an operator's file")
+	}
+
+	plain, err := ParseConfig([]byte("egress:\n  allow_loopback: true\n"))
+	if err != nil {
+		t.Fatalf("parsing an unmarked document: %v", err)
+	}
+	if plain.DeploymentDefault {
+		t.Fatal("an unmarked document claimed to be the deployment default")
+	}
+
+	if !reflect.DeepEqual(marked.Egress, plain.Egress) {
+		t.Fatal("the marker changed the egress section it is supposed to say nothing about")
+	}
+
+	markedOpts, err := marked.Options()
+	if err != nil {
+		t.Fatalf("options from a marked document: %v", err)
+	}
+	plainOpts, err := plain.Options()
+	if err != nil {
+		t.Fatalf("options from an unmarked document: %v", err)
+	}
+	if len(markedOpts) != len(plainOpts) {
+		t.Fatalf("the marker produced %d options where the same policy without it produces %d", len(markedOpts), len(plainOpts))
 	}
 }
