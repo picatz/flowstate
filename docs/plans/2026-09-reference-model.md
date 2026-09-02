@@ -61,7 +61,7 @@ Grouped as #1421 groups them. The numbers are real.
 | Group | Issues |
 | --- | --- |
 | Silent wrong answers on both drivers | #1422 `trigger.*` empty in a callee; #1425 nested block in a parallel branch (validator vs both drivers); #1426 map order picks the reported failure in workflow code |
-| Names that mean two things, names nothing checks | #1427 identifier grammar at three of seven declaration positions; #1428 `error`/`item`/wait shaping names/`event` bare in an author namespace; #1429 `sender.identity` vs `run.identity`, `trigger.principal`; #1431 `Register` name grammar and uniqueness |
+| Names that mean two things, names nothing checks | #1427 identifier grammar at three of seven declaration positions; #1428 `error`/`item`/wait shaping names/`event` bare in an author namespace; #1429 `sender.identity` vs `run.identity`, `trigger.principal`; #1431 `Registry.Register` name grammar and uniqueness |
 | Trust boundary | #1430 submit runs protovalidate only; per-selector precedence |
 | Diagnostics and editor | #1433 `unresolved-reference` cannot say where a name lives; #1434 LSP: no `call:` outputs, two of five roots; #1435 rename/references |
 | One mechanism, eighteen copies | #1437 derive from one table; #1438 scope reference, CLI verb, MCP tool; #1439 one step-address grammar; #1449 conformance set over every root and position |

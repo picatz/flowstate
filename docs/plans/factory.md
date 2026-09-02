@@ -204,8 +204,9 @@ acted on, twenty-four; refuted with evidence, one; owner turns needed, one.
 
 ## Wave 3 (2026-09-02): the reference-model audit
 
-Source: `2026-09-reference-model.md`, issues #1421–#1451 (23 filed under
-one umbrella).
+Source: `2026-09-reference-model.md`; the umbrella #1421 and its 23
+sub-issues (the numbers are not contiguous; the exact list is the table in
+that file).
 
 Dispatched: seven auditors at read-only, five deep and two mechanical, one
 lead verifying every citation before filing. Nothing landed in code by
