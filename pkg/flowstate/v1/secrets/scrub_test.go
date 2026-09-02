@@ -167,6 +167,17 @@ func Test_Scrubber_AddScrubberComposesOneMatchingPass(t *testing.T) {
 	require.Equal(t, Redacted+" "+Redacted, combined.Scrub("E prefix"+Redacted+"suffix"))
 }
 
+func Test_Scrubber_ScrubFailsClosedAtComparisonBound(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber()
+	for i := range 16 {
+		scrubber.AddValue(strings.Repeat("A", 1023) + string(rune('a'+i)))
+	}
+
+	require.Equal(t, Redacted, scrubber.Scrub(strings.Repeat("A", 64<<10)))
+}
+
 func Test_Scrubber_Contains(t *testing.T) {
 	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "needle-value"))
 

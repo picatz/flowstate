@@ -15,6 +15,8 @@ import (
 	"sync"
 )
 
+const maxScrubCompareBytes = 8 << 20
+
 // Scrubber removes known secret values from text on its way out of an activity.
 //
 // [Secret] stops a value leaking through anything that formats the secret itself.
@@ -217,7 +219,10 @@ func (s *Scrubber) Scrub(text string) string {
 
 // ScrubWith replaces every registered value in text with replacement. It is
 // useful when a caller must distinguish newly redacted spans while composing
-// several bounded scrubbers; most callers should use [Scrubber.Scrub].
+// several bounded scrubbers; most callers should use [Scrubber.Scrub]. If
+// matching would exceed its comparison budget, it returns [Redacted] for the
+// whole text rather than risk spending unbounded work on attacker-controlled
+// common prefixes.
 func (s *Scrubber) ScrubWith(text, replacement string) string {
 	if text == "" {
 		return text
@@ -232,9 +237,17 @@ func (s *Scrubber) ScrubWith(text, replacement string) string {
 	state := s.state()
 
 	var out strings.Builder
+	compareBytes := 0
 	for i := 0; i < len(text); {
 		matched := ""
 		for _, needle := range state.byFirst[text[i]] {
+			// Charge the full candidate length before comparing. This is a
+			// conservative bound — HasPrefix may reject sooner — but prevents
+			// many long values with a shared prefix from multiplying work.
+			if len(needle) > maxScrubCompareBytes-compareBytes {
+				return Redacted
+			}
+			compareBytes += len(needle)
 			if strings.HasPrefix(text[i:], needle) {
 				matched = needle
 				break
