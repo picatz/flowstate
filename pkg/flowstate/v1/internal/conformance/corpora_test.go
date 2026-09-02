@@ -60,6 +60,7 @@ func corpusSizes() map[string]int {
 		"CleartextCredentialCases":        len(CleartextCredentialCases(standIn)),
 		"ContainmentProhibitedValues":     len(ContainmentProhibitedValues()),
 		"ControlFlowCases":                len(ControlFlowCases(standIn)),
+		"EmptySignalPayloadCases":         len(EmptySignalPayloadCases()),
 		"EgressIdentityCases":             len(EgressIdentityCases()),
 		"DebuggerCases":                   len(DebuggerCases()),
 		"ErrorKindCases":                  len(ErrorKindCases(standIn)),

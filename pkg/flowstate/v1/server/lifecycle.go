@@ -632,14 +632,7 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 		return nil, s.auditDeny(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
 	}
 
-	// An absent payload is an empty one rather than nil, so a waiting step's
-	// outputs exist and `${approval.timed_out}` resolves whether or not the
-	// sender sent anything. A step whose outputs are missing entirely would fail
-	// a later reference with an unresolved reference instead.
 	payload := req.Msg.GetPayload()
-	if payload == nil {
-		payload = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}}
-	}
 
 	// identityFor reads the authenticated caller from ctx — the same call and
 	// the same source a run's own identity comes from at Run — so a signal's
@@ -719,14 +712,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	// An absent payload is an empty one rather than nil, exactly as
-	// [FlowstateServer.Signal] treats it — a waiting step's outputs exist either
-	// way, so `${mutation.timed_out}` resolves whether or not the sender sent
-	// anything.
 	payload := req.Msg.GetPayload()
-	if payload == nil {
-		payload = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}}
-	}
 
 	// identityFor already ran above; the sender attestation is built from that
 	// same value, exactly as [FlowstateServer.Signal] builds one from
