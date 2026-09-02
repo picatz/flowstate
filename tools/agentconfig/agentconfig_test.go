@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -164,6 +165,72 @@ func TestAmpSettingsUsePortableSkillsWithoutRepositoryPermissionPrompts(t *testi
 	}
 	if len(settings.Permissions) != 0 {
 		t.Fatalf("Flowstate must not add repository-specific Amp approval prompts; got %d permission rules", len(settings.Permissions))
+	}
+}
+
+func TestClaudeSessionUsesThePinnedGoToolchain(t *testing.T) {
+	root := repoRoot(t)
+	data := read(t, filepath.Join(root, ".claude", "settings.json"))
+	var settings struct {
+		Hooks struct {
+			SessionStart []struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"SessionStart"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("parse .claude/settings.json: %v", err)
+	}
+	const hookCommand = `bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-env.sh"`
+	if len(settings.Hooks.SessionStart) != 1 || len(settings.Hooks.SessionStart[0].Hooks) != 1 ||
+		settings.Hooks.SessionStart[0].Hooks[0].Command != hookCommand {
+		t.Fatalf("Claude SessionStart must run %q", hookCommand)
+	}
+
+	temp := t.TempDir()
+	baseBin := filepath.Join(temp, "base-go", "bin")
+	if err := os.MkdirAll(baseBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	goBinary, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goEnv := exec.Command(goBinary, "env", "GOROOT")
+	output, err := goEnv.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve pinned GOROOT: %v\n%s", err, output)
+	}
+	want := filepath.Join(strings.TrimSpace(string(output)), "bin", "gofmt")
+	if err := os.Symlink(goBinary, filepath.Join(baseBin, "go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/bin/false", filepath.Join(baseBin, "gofmt")); err != nil {
+		t.Fatal(err)
+	}
+	basePath := baseBin + ":/usr/bin:/bin"
+	envFile := filepath.Join(temp, "claude-env")
+	hook := exec.Command("bash", filepath.Join(root, ".claude", "hooks", "session-env.sh"))
+	hook.Env = append(os.Environ(),
+		"CLAUDE_PROJECT_DIR="+root,
+		"CLAUDE_ENV_FILE="+envFile,
+		"PATH="+basePath,
+	)
+	if output, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("run Claude SessionStart hook: %v\n%s", err, output)
+	}
+
+	check := exec.Command("bash", "-c", `source "$1"; command -v gofmt`, "bash", envFile)
+	check.Env = append(os.Environ(), "PATH="+basePath)
+	output, err = check.CombinedOutput()
+	if err != nil {
+		t.Fatalf("source Claude session environment: %v\n%s", err, output)
+	}
+	got := strings.TrimSpace(string(output))
+	if got != want {
+		t.Fatalf("Claude session gofmt = %q, want pinned toolchain formatter %q", got, want)
 	}
 }
 
