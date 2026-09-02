@@ -42,6 +42,7 @@ const (
 	// record rather than of something inside it.
 	attrEnforcementPoint = "flowstate.audit.enforcement_point"
 	attrRule             = "flowstate.audit.rule"
+	attrAttempt          = "flowstate.audit.attempt"
 
 	attrSubject    = "flowstate.audit.identity.subject"
 	attrIssuer     = "flowstate.audit.identity.issuer"
@@ -114,6 +115,13 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	// point and an action are never both set.
 	if record.GetEnforcementPoint() != v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED {
 		attrs = append(attrs, attribute.String(attrEnforcementPoint, record.GetEnforcementPoint().String()))
+	}
+
+	// Present only on a record about a dispatch attempt, for the reason the
+	// enforcement point is: a consumer separating one attempt's decision from
+	// another's should select on the attribute existing rather than on a zero.
+	if record.GetAttempt() != 0 {
+		attrs = append(attrs, attribute.Int64(attrAttempt, int64(record.GetAttempt())))
 	}
 
 	// Verbatim, because it is the operator's own rule and the seam that set it

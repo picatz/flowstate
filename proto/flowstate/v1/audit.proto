@@ -253,6 +253,25 @@ message AuditRecord {
   // is what makes an allow legible without one.
   string rule = 13 [(buf.validate.field).string.max_bytes = 256];
 
+  // Which attempt at one dispatch this decision was made for, counting from 1.
+  //
+  // A retried task is dispatched again, and each dispatch is decided again:
+  // both drivers consult the task-shape policy per attempt, so each attempt
+  // has a decision of its own and the trail says which one it belongs to.
+  // Recording only the first would be a guess that the first was recorded —
+  // and under a required recorder a first attempt whose record could not be
+  // written is exactly the attempt that gets retried, which would leave the
+  // work that then ran with no record at all
+  // (Codex, picatz/flowstate#1394).
+  //
+  // The number is the substrate's own: Temporal's activity attempt durably,
+  // the retry loop's counter locally, so the two agree without either one
+  // inventing it. Zero on every record that is not about a dispatch attempt —
+  // a control-plane decision, and the worker's other three seams, which are
+  // reached once per attempt by construction and have no attempt of their own
+  // to name.
+  uint32 attempt = 14;
+
   // The operator-chosen trusted-issuer entry that admitted the caller.
   // Unlike identity.issuer, which names who signed the credential, this names
   // the exact policy row that accepted it. It is bounded before emission; it

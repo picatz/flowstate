@@ -2345,54 +2345,6 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		return nil, err
 	}
 
-	// The deployment's task-shape policy (#187), consulted once for the whole
-	// dispatch — above the retry loop below, not inside it, because a
-	// dispatch's task name and identity do not change between retries of the
-	// same step, and a denial must produce none of a retry's side effects
-	// either. Placed after inputs resolve and before any attempt runs: inputs
-	// resolution never touches a secret reference (see [ResolveTaskInputs]
-	// and eval.go's own note on [Value_SecretRef]), so a denied dispatch here
-	// has still resolved no credential — the deployment-side echo of
-	// invariant 7 the design record for #187 states. The durable driver
-	// checks at the identical position, once per activity entry
-	// (`engine/activities.go`), which is what keeps the two drivers agreeing
-	// about which dispatches are denied.
-	// scope.GetLocal() is true for a rehearsal run through any local-driver
-	// entry point; it changes nothing about the decision above, only
-	// whether a resulting denial's message says so — see [CheckTaskPolicy]'s
-	// own doc.
-	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity(), scope.GetLocal()); err != nil {
-		// A denied dispatch still gets its span, because durably it has one: the
-		// check runs *inside* the activity there (`engine.checkTaskDispatchPolicy`
-		// takes the span it writes the failure onto), so a policy that refuses a
-		// task produces one `flowstate.task/<name>` span with an error status
-		// under the durable driver. A local run that recorded nothing here would
-		// disagree about the trace precisely where an operator most wants to look
-		// — the netpolicy round tripper makes the same argument one package over
-		// for a refused request. The span covers no work, and there is none: the
-		// dispatch was refused before an attempt ran.
-		// Observed rather than merely spanned, for the same reason: durably
-		// this dispatch produces a task span *and* — since the denial is
-		// counted by the shared [CheckTaskPolicy] above — a denial. The
-		// execution instruments have to see the refused dispatch on both
-		// drivers too, or a local run's error rate would omit exactly the
-		// failures an operator most wants counted.
-		//
-		// Attempt 1, and not because there is nothing better to say: a policy
-		// refusal happens above the retry loop, so this dispatch had exactly
-		// one attempt and it was refused. The durable driver reports the same
-		// number here for the same reason — its check runs inside the activity,
-		// where `activity.GetInfo` reads 1 on a first dispatch — so the two
-		// agree without either one guessing.
-		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
-			func(_ context.Context, span trace.Span) (*Node_Outputs, error) {
-				span.SetAttributes(attribute.Int(SpanAttributeAttempt, 1))
-				return nil, err
-			})
-
-		return nil, err
-	}
-
 	// The same number the durable driver uses, from the same constant. This was
 	// `1` here and five there, so a step with no `retry:` behaved differently in
 	// the place that exists to rehearse the other.
@@ -2422,6 +2374,56 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	}
 
 	for attempt := 1; ; attempt++ {
+		// The deployment's task-shape policy (#187), consulted for this
+		// attempt — inside the loop, where the durable driver's own check also
+		// sits: its check is in the activity, and Temporal retries by invoking
+		// the activity again, so it decides per attempt. Checking once here and
+		// retrying beneath it made the same run answer differently on the two
+		// drivers, both about a policy tightened mid-run and about how many
+		// decisions the trail holds (Codex, picatz/flowstate#1394).
+		//
+		// Placed after inputs resolve and before any attempt runs: inputs
+		// resolution never touches a secret reference (see [ResolveTaskInputs]
+		// and eval.go's own note on [Value_SecretRef]), so a denied dispatch
+		// here has still resolved no credential — the deployment-side echo of
+		// invariant 7 the design record for #187 states. A denial returns
+		// without running or retrying anything, so it still produces none of a
+		// retry's side effects.
+		//
+		// scope.GetLocal() is true for a rehearsal run through any local-driver
+		// entry point; it changes nothing about the decision, only whether a
+		// resulting denial's message says so — see [CheckTaskPolicy]'s own doc.
+		if err := CheckTaskPolicy(NewContextWithDispatchAttempt(ctx, attempt),
+			resolved.GetName(), scope.GetIdentity(), scope.GetLocal()); err != nil {
+			// A denied dispatch still gets its span, because durably it has
+			// one: the check runs *inside* the activity there
+			// (`engine.checkTaskDispatchPolicy` takes the span it writes the
+			// failure onto), so a policy that refuses a task produces one
+			// `flowstate.task/<name>` span with an error status under the
+			// durable driver. A local run that recorded nothing here would
+			// disagree about the trace precisely where an operator most wants
+			// to look — the netpolicy round tripper makes the same argument one
+			// package over for a refused request. The span covers no work, and
+			// there is none: the dispatch was refused before the attempt ran.
+			//
+			// Observed rather than merely spanned, for the same reason:
+			// durably this dispatch produces a task span *and* — since the
+			// denial is counted by the shared [CheckTaskPolicy] above — a
+			// denial. The execution instruments have to see the refused
+			// dispatch on both drivers too, or a local run's error rate would
+			// omit exactly the failures an operator most wants counted.
+			//
+			// The span carries this attempt's number, which is the one the
+			// durable driver's `activity.GetInfo` reports for the same refusal.
+			_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
+				func(_ context.Context, span trace.Span) (*Node_Outputs, error) {
+					span.SetAttributes(attribute.Int(SpanAttributeAttempt, attempt))
+					return nil, err
+				})
+
+			return nil, err
+		}
+
 		var out *Node_Outputs
 		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID, attempt)
 		if err == nil {

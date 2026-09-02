@@ -469,6 +469,24 @@ type AuditRecord struct {
 	// the record — the attested identity, and the resource the rule read — which
 	// is what makes an allow legible without one.
 	Rule string `protobuf:"bytes,13,opt,name=rule,proto3" json:"rule,omitempty"`
+	// Which attempt at one dispatch this decision was made for, counting from 1.
+	//
+	// A retried task is dispatched again, and each dispatch is decided again:
+	// both drivers consult the task-shape policy per attempt, so each attempt
+	// has a decision of its own and the trail says which one it belongs to.
+	// Recording only the first would be a guess that the first was recorded —
+	// and under a required recorder a first attempt whose record could not be
+	// written is exactly the attempt that gets retried, which would leave the
+	// work that then ran with no record at all
+	// (Codex, picatz/flowstate#1394).
+	//
+	// The number is the substrate's own: Temporal's activity attempt durably,
+	// the retry loop's counter locally, so the two agree without either one
+	// inventing it. Zero on every record that is not about a dispatch attempt —
+	// a control-plane decision, and the worker's other three seams, which are
+	// reached once per attempt by construction and have no attempt of their own
+	// to name.
+	Attempt uint32 `protobuf:"varint,14,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	// The operator-chosen trusted-issuer entry that admitted the caller.
 	// Unlike identity.issuer, which names who signed the credential, this names
 	// the exact policy row that accepted it. It is bounded before emission; it
@@ -589,6 +607,13 @@ func (x *AuditRecord) GetRule() string {
 	return ""
 }
 
+func (x *AuditRecord) GetAttempt() uint32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
 func (x *AuditRecord) GetIssuerName() string {
 	if x != nil {
 		return x.IssuerName
@@ -607,7 +632,7 @@ var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb5\v\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcf\v\n" +
 	"\vAuditRecord\x12C\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
@@ -623,7 +648,8 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\bmcp_tool\x18\t \x01(\tB\xa0\x01\xbaH\x9c\x01\xba\x01\x98\x01\n" +
 	"\x15audit_record.mcp_tool\x128mcp_tool must be empty or a bounded registered tool name\x1aEthis == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))R\amcpTool\x12Z\n" +
 	"\x11enforcement_point\x18\f \x01(\x0e2#.flowstate.v1.AuditEnforcementPointB\b\xbaH\x05\x82\x01\x02\x10\x01R\x10enforcementPoint\x12\x1c\n" +
-	"\x04rule\x18\r \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04rule\x12)\n" +
+	"\x04rule\x18\r \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04rule\x12\x18\n" +
+	"\aattempt\x18\x0e \x01(\rR\aattempt\x12)\n" +
 	"\vissuer_name\x18\n" +
 	" \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\n" +
 	"issuerName\x12\x1c\n" +

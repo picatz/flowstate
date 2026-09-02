@@ -69,6 +69,14 @@ type EnforcementSubject struct {
 	ResourceKind AuditResourceKind
 	ResourceKey  string
 
+	// Attempt is which attempt at this dispatch the decision was made for,
+	// counting from 1, and zero at a seam that has no attempts of its own.
+	//
+	// Only the task-dispatch seam sets it: it is the one both drivers reach
+	// again when a step is retried, so it is the one whose records need to say
+	// which dispatch attempt they belong to. See AuditRecord.attempt.
+	Attempt uint32
+
 	// Rule is the operator's own policy rule that decided, verbatim, when a
 	// single rule did. Empty otherwise — see the schema's own comment on
 	// AuditRecord.rule for when that is.

@@ -147,19 +147,18 @@ func TestTaskDispatchRecordsBothDirectionsAndTheRuleThatDecided(t *testing.T) {
 	require.Equal(t, "http", denied.GetResourceKey())
 }
 
-// TestARetriedDispatchIsRecordedOnceLocal is one of the two driver callers
-// [conformance.AssertOneDispatchAllowPerDispatch] asks for: the local driver
-// consults the task-shape policy above its retry loop, so a step attempted
-// twice is one dispatch and one record.
+// TestEachDispatchAttemptIsRecordedLocal is one of the two driver callers
+// [conformance.AssertADecisionPerDispatchAttempt] asks for: the local driver
+// consults the task-shape policy inside its retry loop, so a step attempted
+// twice is decided twice and recorded twice, each record naming its attempt.
 //
-// engine.TestARetriedDispatchIsRecordedOnceDurable is the other, over
-// Temporal's own retry — the driver where the check runs inside the activity
-// and the count was wrong (Codex, picatz/flowstate#1394).
+// engine.TestEachDispatchAttemptIsRecordedDurable is the other, over Temporal's
+// own retry (Codex, picatz/flowstate#1394).
 //
 // Registered on a private registry rather than the process-global one, the way
 // TestTotalTimeoutEndsTheStepLocal does, so this test needs no coordination
 // with anything else registering tasks.
-func TestARetriedDispatchIsRecordedOnceLocal(t *testing.T) {
+func TestEachDispatchAttemptIsRecordedLocal(t *testing.T) {
 	t.Parallel()
 
 	var attempts atomic.Int32
@@ -173,7 +172,38 @@ func TestARetriedDispatchIsRecordedOnceLocal(t *testing.T) {
 	_, err := v1.Run(ctx, conformance.DispatchAuditWorkflow())
 	require.NoError(t, err, "the fixture succeeds on its second attempt")
 
-	conformance.AssertOneDispatchAllowPerDispatch(t, "the local driver", sink.all(), attempts.Load())
+	conformance.AssertADecisionPerDispatchAttempt(t, "the local driver", sink.all(), attempts.Load())
+}
+
+// TestADenialOnALaterAttemptIsRecordedLocal is the negative direction, shared
+// now that both drivers consult the policy per attempt: an operator who
+// tightens a policy while a step is retrying has the next attempt refused, and
+// the refusal recorded against the attempt it happened on.
+//
+// Not parallel: the fixture installs the process-wide task policy, which is
+// what an operator's change actually is and what both drivers read.
+func TestADenialOnALaterAttemptIsRecordedLocal(t *testing.T) {
+	var attempts atomic.Int32
+
+	denying, err := v1.TaskPolicyConfig{Deny: []string{conformance.DispatchAuditDenyRule}}.Policy()
+	require.NoError(t, err)
+	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(
+		conformance.DispatchAuditTighteningTaskDef(&attempts, denying)))
+
+	ctx, sink := auditing(t)
+	ctx = v1.NewContextWithRegistry(ctx, registry)
+
+	_, err = v1.Run(ctx, conformance.DispatchAuditWorkflow())
+	require.Error(t, err, "the second attempt meets the tightened policy")
+
+	conformance.AssertDispatchAttemptsRecorded(t, "the local driver", sink.all(),
+		[]v1.AuditDecision{
+			v1.AuditDecision_AUDIT_DECISION_ALLOW,
+			v1.AuditDecision_AUDIT_DECISION_DENY,
+		})
 }
 
 // TestADispatchNoAllowRuleMatchedIsRecordedAsSuchAndNamesNoRule: an allowlist

@@ -51,10 +51,16 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	// on the way in, and never filled from a denial's prose. See the rule
 	// field's own comment in proto/flowstate/v1/audit.proto for what that
 	// excludes.
+	//
+	// attempt is the same first kind and the least interesting of them: an
+	// integer the substrate counts, from Temporal's activity info or a retry
+	// loop's own counter. A workload cannot choose it, and there is no string
+	// in it for anything to be smuggled through.
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
 		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
+		"attempt",
 	}
 
 	got := make([]string, 0, fields.Len())

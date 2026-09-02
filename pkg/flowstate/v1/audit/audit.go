@@ -281,6 +281,7 @@ func (r *Recorder) recordEnforcement(ctx context.Context, subject v1.Enforcement
 		DecidedAt:        timestamppb.New(r.now()),
 		DenyCode:         code,
 		Rule:             boundString(subject.Rule, MaxRuleBytes),
+		Attempt:          subject.Attempt,
 	}
 
 	return r.emit(ctx, record, decision, subject.Point.String())
