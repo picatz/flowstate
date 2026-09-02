@@ -456,6 +456,31 @@ edition: v2026.3
 			notWant: []string{"async", "digest"},
 		},
 		{
+			name: "an empty step inside a parallel branch does not offer async",
+			src: `name: c
+steps:
+  - id: branches
+    parallel:
+      - steps:
+          - |
+edition: v2026.3
+`,
+			notWant: []string{"async"},
+		},
+		{
+			name: "an empty step inside a for_each body does not offer async",
+			src: `name: c
+steps:
+  - id: each
+    for_each:
+      items: ${[1]}
+      steps:
+        - |
+edition: v2026.3
+`,
+			notWant: []string{"async"},
+		},
+		{
 			name: "a task inside a loop body still offers async",
 			src: `name: c
 steps:

@@ -1217,11 +1217,11 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks 
 // recommending any of them is completeAt actively suggesting syntax its own
 // diagnostic then refuses. current is nil (no kind chosen yet, or not inside
 // a step at all) and current.kindKey == "" (a task, or a kind not decided
-// yet) both still offer the full menu: both are exactly the cases where
+// yet) both still offer the policy menu: both are exactly the cases where
 // all three are legal or might become so. `digest:` is meaningful only beside
 // `call:`, and `async:` only on task steps outside a for_each body or parallel
-// branch. Both stay available on an empty step because the author can still
-// choose the kind that makes them legal.
+// branch. Placement is already known for an empty nested step, so async stays
+// hidden there before the author chooses its task.
 func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) []lsp.CompletionItem {
 	if current == nil {
 		return dslCandidates("steps", prefix, replace)
@@ -1239,7 +1239,7 @@ func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) [
 		if current.kindKey != "" && item.Label == "async" {
 			continue
 		}
-		if current.taskName != "" && current.concurrent && item.Label == "async" {
+		if current.concurrent && item.Label == "async" {
 			continue
 		}
 		items = append(items, item)
