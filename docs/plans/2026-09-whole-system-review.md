@@ -248,7 +248,7 @@ how the ledger stopped for ~900 PRs without anything noticing.
 
 | Surface | Strong | The one change |
 | --- | --- | --- |
-| **DSL / IR** | constitution, one fence, editions with a rewriter, typed inputs and outputs | one `Type` message with a type-expression spelling (`list[string]`, `map[string, int]`, `timestamp`), and one numeric model, as one edition |
+| **DSL / IR** | constitution, one fence, editions with a rewriter, typed inputs and outputs | one `Type` message with a CEL type-expression spelling (`list(string)`, `map(string, int)`, `timestamp`), and one numeric model, as one edition |
 | **CEL** | one evaluator, one profile per run, cost-bounded | pin the remaining eight libraries; `must:` reads the run's profile |
 | **Runtime** | shared rules, structural two-sided conformance, bounds on every path but one | weigh `parallel:` blocks before dispatch; then `call: execution: child` |
 | **Server** | 17 RPCs, holds no run state, refuses indistinguishably | run the semantic checks on a submitted `Workflow` |
@@ -275,30 +275,62 @@ record, never from this file. The project is super-alpha and the owner has
 said so twice this week: where a break buys coherence, the break is taken,
 with `flow fix` carrying files across it and the compiled contract untouched.
 
-**D1. One type vocabulary: a house `flowstate.v1.Type` message, with a
-type-expression spelling in the Flowfile.** (#1452) The message has six
-kinds — `scalar` (string, int, uint, double, bool, bytes, timestamp,
-duration, null), `list` of a `Type`, `map` with string keys and a value
-`Type`, `enum` as the existing closed string set, `message` by full name
-reserved for #177, and `dyn`. The Flowfile spells it as a type expression
-parsed only in the compiler: `type: list[string]`, `type: map[string, int]`,
-`type: timestamp`; the wire is the message, so the CLI, server, LSP and MCP
-never parse a string. One derivation per source (a declaration, a
-descriptor, a checked expression) and one projection per consumer (the
-checker, `must:`, the catalog rendering, JSON Schema, `flow breaking`); the
-four switches are deleted, not joined by a fifth. *Refused:*
-`google.api.expr.v1alpha1.Type`, which the IR's `ParsedExpr` already
-imports and which cel-go converts natively — it carries seven kinds the DSL
-must refuse (function, type param, wrapper, abstract, error, type, any) and
-lacks the one it needs (a closed string set), so adopting it is a
-subset-with-refusals, a second vocabulary in disguise; and adding values to
-the enum, which can never say `list[string]`. *Also refused:* keeping `list`
-and `struct` as bare spellings — R3 says two spellings for one meaning, one
-dies; `flow fix` rewrites `list` → `list[dyn]` and `struct` → `map[string, dyn]`
-at the edition boundary, and `InputDeclaration.Type`'s enum is read for one
-edition and then reserved. *Reopens if:* cel-go publishes a stable type proto
-with an enum kind, or #177 lands descriptors-in-spec and the `message` arm
-turns out to want the whole descriptor rather than a name.
+**D1. One type vocabulary: a house `flowstate.v1.Type` message, spelled in
+the Flowfile as a CEL type expression.** (#1452; amended 2026-09-02 on the
+owner's steer, from a bracket spelling) The message has six kinds — `scalar`
+(string, int, uint, double, bool, bytes, timestamp, duration, null), `list`
+of a `Type`, `map` with string keys and a value `Type`, `enum` as the
+existing closed string set, `message` by full name reserved for #177, and
+`dyn`. The Flowfile spells it the way CEL already spells its own types:
+`type: list(string)`, `type: map(string, int)`, `type: timestamp`. cel-go's
+`Type.String()` prints exactly that form in every checker error an author
+already reads, so any other spelling is R3's two-for-one-meaning. A type
+expression is parsed by the one CEL parser and checked and evaluated in a
+*type environment* distinct from every run environment: there `list` and
+`map` are functions from types to types (the precedent is CEL's own `type`,
+an identifier and a function at once); `timestamp`, `duration` and `dyn` are
+declared identifiers, since the standard environment names them only as
+functions; `enum` is a bare identifier whose closed set stays in the sibling
+`values:`, where per-value documentation lives; and the result is a `Type`
+message at compile time. Verified on stock cel-go v0.31 in this session:
+`list(string)`, `map(string, list(int))` and `list(list(bytes))` compile and
+evaluate with two function declarations and no parser change, and `list(1)`
+and `foo` are check errors with a column — the diagnostic the LSP wants,
+from the parser it already has. The wire is the message, so the CLI, server,
+LSP and MCP never parse a string; the house printer prints the CEL spelling,
+and one property test holds print-then-parse to the identity and the printed
+form equal to cel-go's own for every kind cel-go names briefly. *The rule
+that keeps it honest:* a type value never enters a run environment. CEL
+erases parameters at run time — `type(xs)` on a list of strings is
+`list(dyn)` — so `type(inputs.tags) == list(string)` would be false and read
+as a bug; `list(…)` and `map(…)` are declared in the type environment and
+nowhere else. One derivation per source (a declaration, a descriptor, a
+checked expression) and one projection per consumer (the checker, `must:`,
+the catalog rendering, JSON Schema, `flow breaking`); the four switches are
+deleted, not joined by a fifth. *Refused:* `google.api.expr.v1alpha1.Type`,
+which the IR's `ParsedExpr` already imports and which cel-go converts
+natively — it carries seven kinds the DSL must refuse (function, type param,
+wrapper, abstract, error, type, any) and lacks the one it needs (a closed
+string set), so adopting it is a subset-with-refusals, a second vocabulary
+in disguise; adding values to the enum, which can never say `list(string)`;
+and the bracket spelling `list[string]` this decision first chose — a third
+spelling beside CEL's and Go's, and `[` is a YAML flow indicator, so
+`{ type: list[string] }` is a parse error where `{ type: list(string) }`
+is not. *Also refused:* keeping `list` and `struct` as bare spellings — R3
+says two spellings for one meaning, one dies; `flow fix` rewrites `list` →
+`list(dyn)` and `struct` → `map(string, dyn)` at the edition boundary, which
+loses nothing because today's `struct` is an open map with no fields, and
+`InputDeclaration.Type`'s enum is read for one edition and then reserved.
+*One YAML corner:* inside a flow mapping the comma in `map(string, int)`
+splits the value into two keys, which the decoder refuses as the unknown key
+`int)`; #1466 gains the rule that names the quoted form and `flow fix`
+writes it. All 441 type declarations in `examples/` are block style.
+*Points forward:* in this spelling a closed record is sayable only by name,
+`list(Customer)`, which is how CEL names a message type — that is #177's
+`types:` block, recorded there, and explicitly not this edition. *Reopens
+if:* cel-go publishes a stable type proto with an enum kind, or #177 lands
+descriptors-in-spec and the `message` arm turns out to want the whole
+descriptor rather than a name.
 
 **D2. One numeric model, decided by the declaration and one decoder.**
 (#1432, #1436, #1462) An integral JSON number decodes to `int` and a
@@ -496,8 +528,8 @@ test.
 
 ### Wave B — the type system, as one edition (weeks 2–3)
 
-D1 and D2 as one coherent change: `flowstate.v1.Type`, the type-expression
-grammar, one decoder, profile `2026.2`, edition `v2026.4`, `flow fix` across
+D1 and D2 as one coherent change: `flowstate.v1.Type`, the CEL type-expression
+spelling and its type environment, one decoder, profile `2026.2`, edition `v2026.4`, `flow fix` across
 the boundary, the generated `values.md` (#1453) whose every cell is a
 conformance case, and then the projections that were waiting — `env.Check`
 with declared types (#1383, the slot-type half first), the workflow signature
@@ -591,7 +623,7 @@ and the tree has been good at that (`cel:`, `echo:`, `printf:`, `pattern:`,
 - **Retire** `InputDeclaration.Type`'s enum behind the `Type` message after
   one edition; reserve the numbers.
 - **Retire** bare `type: list` and `type: struct`; `flow fix` writes
-  `list[dyn]` and `map[string, dyn]`.
+  `list(dyn)` and `map(string, dyn)`.
 - **Retire** `json_parse` for `json.parse` (#1454, R3); `flow fix` rewrites it.
 - **Delete** the four type switches, the eighteen reference-model lists, the
   two proto→outputs bridges (replaced by one), `sdk/values.go:274-423`, the
@@ -727,7 +759,8 @@ is recorded on its issue; the owner reopens by commenting.
   kept readable for one edition, and every `examples/` file carried by
   `flow fix` in the same PR that changes the grammar. The risk is
   overreach — the numeric model and the boundary kinds are enough; message
-  types (#177) are explicitly not this edition.
+  types and the `types:` block the CEL spelling points at (#177) are
+  explicitly not this edition.
 - **Trust-boundary work under velocity.** The submit checks, the scope
   enforcement, the manifest cross-check and the host output check each take
   the `flowstate-security-review` pass and land with the negative-direction

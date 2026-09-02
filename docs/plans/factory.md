@@ -244,7 +244,15 @@ anchor when the lead knows it. Two reports independently found the same
 unfiled gap (#1430's second-frontend framing), which is the signal the
 brief was well cut.
 
-Receiver-cost: zero clarification turns; owner turns, two, both about
-budget and neither about content; owner edits to our artifacts, none yet;
-findings accepted vs noise: to be measured as the fifteen filings are
-triaged.
+Owner steer, one: D1 chose `list[string]`; the owner asked whether a type
+should be spelled as a CEL expression. A twenty-line probe against stock
+cel-go settled it in one turn — `list(string)` is what cel-go already
+prints, and `list`/`map` as type-level functions need no parser change —
+and D1 was amended on the PR with the evidence. Rule: before deciding a
+spelling, print what the toolchain already prints for the same thing; the
+lead applied R3 to the DSL and not to its own choice.
+
+Receiver-cost: zero clarification turns; owner turns, three, two about
+budget and one the steer above; owner edits to our artifacts, none —
+the steer arrived as a question and the lead carried it; findings
+accepted vs noise: to be measured as the fifteen filings are triaged.
