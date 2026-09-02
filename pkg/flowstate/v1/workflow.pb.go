@@ -122,30 +122,15 @@ func (Concurrency_OnConflict) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{1, 0}
 }
 
-// Type is the shape a value must have to be accepted.
+// Type is the legacy declaration vocabulary. Edition-aware specifications use
+// [InputDeclaration.value_type], whose structural [flowstate.v1.Type] can say
+// what a list contains and what values a map holds.
 //
-// An enum rather than a type *expression* like [TaskField.type], and the
-// difference between those two fields is the difference between what they are
-// for. A TaskField is documentation: it is rendered for a person or an agent
-// reading the catalog, and `list[string]` is the right answer there because it
-// is what an author would say. This one is *enforced*, at submit, against a
-// value some caller chose, so it has to be a closed set the schema can
-// constrain and every consumer can switch on. Spelling it as a string would put
-// a parser for the same small type language into the CLI, the server, the
-// language server and the compiler, which is the "one value written down four
-// times" failure this repository keeps finding in other clothes.
-//
-// These are the six of [Value.Type] that describe *data*, with the same names
-// and the same numbers. The two left out are TYPE_EXPR and TYPE_ERROR, and they
-// are precisely the two that are not data: an expression is something a run
-// evaluates, and a caller does not get to send one. Sharing numbers does not
-// make the enums interchangeable: the sets differ, so a conversion between
-// them is a switch somebody wrote and somebody reviewed, never a cast.
-//
-// A parameterized type (a list *of* what) is not expressible here yet, on
-// purpose. An element type that nothing checks is decoration, which is the rule
-// that put this whole surface in Phase 2 with its checker; and an added enum
-// value or an added field is free later, where a wrong one is not.
+// This enum and its field number remain because a complete Workflow is stored
+// in durable run history. Removing either would make a new worker unable to
+// recover the declaration from an in-flight run. Readers therefore accept
+// both representations, and the message rules reject a declaration that sets
+// both to different meanings.
 type InputDeclaration_Type int32
 
 const (
@@ -1020,12 +1005,12 @@ func (x *ResolvedPlugin) GetClaimsSchemaVersion() uint32 {
 // # What the schema checks, and what the compiler checks
 //
 // The schema checks what a single declaration can be wrong about on its own: the
-// name is a CEL identifier of bounded length, the type is a defined value other
-// than unspecified, the description fits. Everything that is a fact about a *set*
-// of declarations, or about a name CEL's lexer will not accept, is the
-// compiler's: protovalidate rules are per-field and RE2 has no negative
-// lookahead, so a rule spelled here that cannot hold is worse than no rule, per
-// this file's own history with nineteen of them.
+// name is a CEL identifier of bounded length, one type representation is present,
+// dual type representations agree, and the description fits. Everything that is
+// a fact about a *set* of declarations, or about a name CEL's lexer will not
+// accept, is the compiler's: protovalidate rules are per-field and RE2 has no
+// negative lookahead, so a rule spelled here that cannot hold is worse than no
+// rule, per this file's own history with nineteen of them.
 //
 // Deferred to the compiler, deliberately and in one list so nobody has to
 // rediscover it:
@@ -1061,10 +1046,9 @@ type InputDeclaration struct {
 	// called `steps` is `inputs.steps`, which cannot collide with anything, which is
 	// the entire reason ambient namespaces get a root.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Type is what a submitted value must be, checked at submit rather than where
-	// the value is first read. A run that is going to be refused for a bad argument
-	// should be refused while the caller is still there to be told, not three steps
-	// in with two requests already sent.
+	// Type is the legacy shape of a submitted value. It remains readable for
+	// durable histories; edition-aware writers use value_type. The message-level
+	// rules require one representation and make dual representations agree.
 	Type InputDeclaration_Type `protobuf:"varint,2,opt,name=type,proto3,enum=flowstate.v1.InputDeclaration_Type" json:"type,omitempty"`
 	// Required reports that a run cannot start without this input.
 	//
@@ -1225,7 +1209,13 @@ type InputDeclaration struct {
 	// declared choices are rendered into the "not one of" message a bad
 	// submission gets back, so an unbounded set is an unbounded response the
 	// caller controls the shape of.
-	Values        []string `protobuf:"bytes,17,rep,name=values,proto3" json:"values,omitempty"`
+	Values []string `protobuf:"bytes,17,rep,name=values,proto3" json:"values,omitempty"`
+	// ValueType is the structural type used by edition-aware writers. The legacy
+	// enum above remains readable because declarations are serialized in durable
+	// run history. Neither field is individually required: the message rules
+	// require one representation and reject dual representations that do not
+	// agree.
+	ValueType     *Type `protobuf:"bytes,18,opt,name=value_type,json=valueType,proto3" json:"value_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1351,6 +1341,13 @@ func (x *InputDeclaration) GetValues() []string {
 	return nil
 }
 
+func (x *InputDeclaration) GetValueType() *Type {
+	if x != nil {
+		return x.ValueType
+	}
+	return nil
+}
+
 // OutputDeclaration is one value a finished run reports: a name, and the
 // expression that produces it.
 //
@@ -1394,17 +1391,9 @@ type OutputDeclaration struct {
 	// doc comment for the honesty this comes with; nothing about the two differs
 	// beyond which side of a run they describe.
 	Sensitive bool `protobuf:"varint,5,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
-	// Type is the shape this output's value has, so that a workflow's result is
-	// declared in the same place and in the same vocabulary its arguments are.
-	//
-	// [InputDeclaration.Type] itself rather than a second enum beside it. The
-	// vocabulary is one vocabulary — the six data types plus `enum` — and a
-	// parallel copy of it would be the "one value written down twice" failure the
-	// input enum's own comment already argues against, one message down. That the
-	// enum is nested in [InputDeclaration] is where it was first needed, not a
-	// claim about what it describes; every helper that reads one
-	// ([DeclaredTypeName], [ParseDeclaredType], [StringShaped], [CheckInputValue]'s
-	// literal half) therefore reads this too, unchanged.
+	// Type is the legacy shape of this output's value. It remains readable for
+	// durable histories; edition-aware writers use value_type. When both are
+	// present, the message-level rule requires them to agree.
 	//
 	// Optional, and permanently so, which is the difference from
 	// [InputDeclaration.type]. An input's type is required because a value arrives
@@ -1442,7 +1431,12 @@ type OutputDeclaration struct {
 	// and belong to the compiler for a Flowfile and to
 	// [CheckOutputConstraintShape] for a hand-built specification — the same
 	// split the input field's own comment draws.
-	Values        []string `protobuf:"bytes,7,rep,name=values,proto3" json:"values,omitempty"`
+	Values []string `protobuf:"bytes,7,rep,name=values,proto3" json:"values,omitempty"`
+	// ValueType is the structural type used by edition-aware writers when an
+	// output declares one. Absence still means that the output has no declared
+	// type. The legacy enum remains readable for durable histories, and the
+	// message rule rejects two set representations that disagree.
+	ValueType     *Type `protobuf:"bytes,8,opt,name=value_type,json=valueType,proto3" json:"value_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1522,6 +1516,13 @@ func (x *OutputDeclaration) GetType() InputDeclaration_Type {
 func (x *OutputDeclaration) GetValues() []string {
 	if x != nil {
 		return x.Values
+	}
+	return nil
+}
+
+func (x *OutputDeclaration) GetValueType() *Type {
+	if x != nil {
+		return x.ValueType
 	}
 	return nil
 }
@@ -3460,7 +3461,7 @@ var File_flowstate_v1_workflow_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xf8\f\n" +
+	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x17flowstate/v1/type.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xf8\f\n" +
 	"\bWorkflow\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12;\n" +
@@ -3518,11 +3519,10 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x12task_schema_digest\x18\x04 \x01(\tR\x10taskSchemaDigest\x12/\n" +
 	"\x13distribution_digest\x18\x05 \x01(\tR\x12distributionDigest\x12#\n" +
 	"\rclaims_digest\x18\x06 \x01(\tR\fclaimsDigest\x122\n" +
-	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\xc6\x06\n" +
+	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\xba\f\n" +
 	"\x10InputDeclaration\x12?\n" +
-	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
-	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01\x82\x01\x04\x10\x01 \x00R\x04type\x12\x1a\n" +
+	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12A\n" +
+	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12-\n" +
 	"\adefault\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\adefault\x12/\n" +
 	"\vdescription\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12-\n" +
@@ -3534,7 +3534,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\tmin_items\x18\r \x01(\x04H\x03R\bminItems\x88\x01\x01\x12 \n" +
 	"\tmax_items\x18\x0e \x01(\x04H\x04R\bmaxItems\x88\x01\x01\x12\x17\n" +
 	"\x04must\x18\x10 \x01(\tH\x05R\x04must\x88\x01\x01\x12+\n" +
-	"\x06values\x18\x11 \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\"\x95\x01\n" +
+	"\x06values\x18\x11 \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
+	"\n" +
+	"value_type\x18\x12 \x01(\v2\x12.flowstate.v1.TypeR\tvalueType\"\x95\x01\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vTYPE_STRING\x10\x01\x12\f\n" +
@@ -3544,7 +3546,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\tTYPE_BOOL\x10\x04\x12\x0f\n" +
 	"\vTYPE_STRUCT\x10\x05\x12\r\n" +
 	"\tTYPE_LIST\x10\x06\x12\r\n" +
-	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\bB\x0e\n" +
+	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\b:\xc7\x05\xbaH\xc3\x05\x1a\x8a\x01\n" +
+	"\x1einput_declaration.type_present\x12@either value_type or the legacy type must declare the input type\x1a&has(this.value_type) || this.type != 0\x1a\xb3\x04\n" +
+	"\x1dinput_declaration.type_agrees\x12Rvalue_type and the legacy type must describe the same input type when both are set\x1a\xbd\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
 	"\f_descriptionB\n" +
 	"\n" +
 	"\b_min_lenB\n" +
@@ -3554,7 +3558,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xfc\x02\n" +
+	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xee\a\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
@@ -3563,7 +3567,10 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01\x12\x1c\n" +
 	"\tsensitive\x18\x05 \x01(\bR\tsensitive\x12A\n" +
 	"\x04type\x18\x06 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12+\n" +
-	"\x06values\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06valuesB\x0e\n" +
+	"\x06values\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
+	"\n" +
+	"value_type\x18\b \x01(\v2\x12.flowstate.v1.TypeR\tvalueType:\xbc\x04\xbaH\xb8\x04\x1a\xb5\x04\n" +
+	"\x1eoutput_declaration.type_agrees\x12Svalue_type and the legacy type must describe the same output type when both are set\x1a\xbd\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
 	"\f_descriptionB\a\n" +
 	"\x05_must\"\xae\x01\n" +
 	"\n" +
@@ -3722,10 +3729,11 @@ var file_flowstate_v1_workflow_proto_goTypes = []any{
 	(*Triggers)(nil),                 // 33: flowstate.v1.Triggers
 	(*SignalPolicy)(nil),             // 34: flowstate.v1.SignalPolicy
 	(*Value)(nil),                    // 35: flowstate.v1.Value
-	(*Task)(nil),                     // 36: flowstate.v1.Task
-	(*durationpb.Duration)(nil),      // 37: google.protobuf.Duration
-	(*Signal)(nil),                   // 38: flowstate.v1.Signal
-	(*SignalBatch)(nil),              // 39: flowstate.v1.SignalBatch
+	(*Type)(nil),                     // 36: flowstate.v1.Type
+	(*Task)(nil),                     // 37: flowstate.v1.Task
+	(*durationpb.Duration)(nil),      // 38: google.protobuf.Duration
+	(*Signal)(nil),                   // 39: flowstate.v1.Signal
+	(*SignalBatch)(nil),              // 40: flowstate.v1.SignalBatch
 }
 var file_flowstate_v1_workflow_proto_depIdxs = []int32{
 	9,  // 0: flowstate.v1.Workflow.steps:type_name -> flowstate.v1.Node
@@ -3745,65 +3753,67 @@ var file_flowstate_v1_workflow_proto_depIdxs = []int32{
 	1,  // 14: flowstate.v1.InputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
 	35, // 15: flowstate.v1.InputDeclaration.default:type_name -> flowstate.v1.Value
 	35, // 16: flowstate.v1.InputDeclaration.example:type_name -> flowstate.v1.Value
-	35, // 17: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
-	1,  // 18: flowstate.v1.OutputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
-	25, // 19: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
-	36, // 20: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
-	12, // 21: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
-	13, // 22: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
-	11, // 23: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
-	16, // 24: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
-	14, // 25: flowstate.v1.Node.loop:type_name -> flowstate.v1.Loop
-	35, // 26: flowstate.v1.Node.value:type_name -> flowstate.v1.Value
-	15, // 27: flowstate.v1.Node.switch:type_name -> flowstate.v1.Switch
-	35, // 28: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
-	17, // 29: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
-	27, // 30: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
-	10, // 31: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
-	36, // 32: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
-	37, // 33: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
-	35, // 34: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
-	38, // 35: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
-	35, // 36: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
-	39, // 37: flowstate.v1.Wait.signal_batch:type_name -> flowstate.v1.SignalBatch
-	37, // 38: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
-	35, // 39: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
-	35, // 40: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
-	9,  // 41: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
-	29, // 42: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
-	9,  // 43: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
-	35, // 44: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
-	35, // 45: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
-	35, // 46: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
-	35, // 47: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
-	30, // 48: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
-	31, // 49: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
-	2,  // 50: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
-	32, // 51: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
-	37, // 52: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
-	18, // 53: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
-	37, // 54: flowstate.v1.StepPolicy.total_timeout:type_name -> google.protobuf.Duration
-	37, // 55: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	37, // 56: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
-	24, // 57: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	8,  // 58: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
-	35, // 59: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
-	34, // 60: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
-	26, // 61: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	35, // 62: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
-	28, // 63: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	35, // 64: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 65: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	9,  // 66: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
-	35, // 67: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
-	9,  // 68: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
-	9,  // 69: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
-	35, // 70: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	71, // [71:71] is the sub-list for method output_type
-	71, // [71:71] is the sub-list for method input_type
-	71, // [71:71] is the sub-list for extension type_name
-	71, // [71:71] is the sub-list for extension extendee
-	0,  // [0:71] is the sub-list for field type_name
+	36, // 17: flowstate.v1.InputDeclaration.value_type:type_name -> flowstate.v1.Type
+	35, // 18: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
+	1,  // 19: flowstate.v1.OutputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
+	36, // 20: flowstate.v1.OutputDeclaration.value_type:type_name -> flowstate.v1.Type
+	25, // 21: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
+	37, // 22: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
+	12, // 23: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
+	13, // 24: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
+	11, // 25: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
+	16, // 26: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
+	14, // 27: flowstate.v1.Node.loop:type_name -> flowstate.v1.Loop
+	35, // 28: flowstate.v1.Node.value:type_name -> flowstate.v1.Value
+	15, // 29: flowstate.v1.Node.switch:type_name -> flowstate.v1.Switch
+	35, // 30: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
+	17, // 31: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
+	27, // 32: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
+	10, // 33: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
+	37, // 34: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
+	38, // 35: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
+	35, // 36: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
+	39, // 37: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
+	35, // 38: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
+	40, // 39: flowstate.v1.Wait.signal_batch:type_name -> flowstate.v1.SignalBatch
+	38, // 40: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
+	35, // 41: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
+	35, // 42: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
+	9,  // 43: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
+	29, // 44: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
+	9,  // 45: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
+	35, // 46: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
+	35, // 47: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
+	35, // 48: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
+	35, // 49: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
+	30, // 50: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
+	31, // 51: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
+	2,  // 52: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
+	32, // 53: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
+	38, // 54: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
+	18, // 55: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
+	38, // 56: flowstate.v1.StepPolicy.total_timeout:type_name -> google.protobuf.Duration
+	38, // 57: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	38, // 58: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
+	24, // 59: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	8,  // 60: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
+	35, // 61: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
+	34, // 62: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
+	26, // 63: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	35, // 64: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
+	28, // 65: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	35, // 66: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
+	35, // 67: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	9,  // 68: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
+	35, // 69: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
+	9,  // 70: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
+	9,  // 71: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
+	35, // 72: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	73, // [73:73] is the sub-list for method output_type
+	73, // [73:73] is the sub-list for method input_type
+	73, // [73:73] is the sub-list for extension type_name
+	73, // [73:73] is the sub-list for extension extendee
+	0,  // [0:73] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_workflow_proto_init() }
@@ -3814,6 +3824,7 @@ func file_flowstate_v1_workflow_proto_init() {
 	file_flowstate_v1_signal_proto_init()
 	file_flowstate_v1_task_proto_init()
 	file_flowstate_v1_trigger_proto_init()
+	file_flowstate_v1_type_proto_init()
 	file_flowstate_v1_value_proto_init()
 	file_flowstate_v1_workflow_proto_msgTypes[0].OneofWrappers = []any{}
 	file_flowstate_v1_workflow_proto_msgTypes[4].OneofWrappers = []any{}

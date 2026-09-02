@@ -116,6 +116,14 @@ var workflowFieldExclusions = map[string]string{
 	"resolved_task_capabilities": "set by the control plane at submit, never written by an author",
 }
 
+// declarationFieldExclusions are compiled encodings whose author-facing
+// spelling is already covered by the legacy `type:` field. The structural field
+// becomes that spelling's sole encoding when the type edition lands; the schema
+// slice intentionally does not change any example before then.
+var declarationFieldExclusions = map[string]string{
+	"value_type": "the additive compiled encoding of `type:`, not a second Flowfile construct",
+}
+
 // messageWritableSpec pairs a message full-name with how its writable fields are
 // labelled and which to skip, so both the demonstrated-walk and the required-set
 // derivation read one source.
@@ -174,8 +182,8 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		// The author-facing messages the graph walk found sitting outside the
 		// hand-kept list — the finding that motivated deriving the message set
 		// rather than listing it.
-		{&v1.InputDeclaration{}, "input", nil},
-		{&v1.OutputDeclaration{}, "output", nil},
+		{&v1.InputDeclaration{}, "input", declarationFieldExclusions},
+		{&v1.OutputDeclaration{}, "output", declarationFieldExclusions},
 		{&v1.Triggers{}, "triggers", nil},
 		{&v1.WebhookTrigger{}, "webhook", nil},
 		{&v1.WebhookTrigger_Signal{}, "webhook_signal", nil},
@@ -225,6 +233,8 @@ var messagesOutsideTheCharter = map[protoreflect.FullName]string{
 	"flowstate.v1.Value.Structure.Map":  "part of the value encoding",
 	"flowstate.v1.Value.Structure.List": "part of the value encoding",
 	"flowstate.v1.Value.Error":          "how a failed evaluation is carried, produced by the engine rather than typed by an author",
+	"flowstate.v1.Type":                 "the compiled structural encoding of a declaration's `type:` expression, not a separate author-facing message",
+	"flowstate.v1.Type.Map":             "the map arm of the structural type encoding",
 
 	// A secret is written as a secret() call inside an expression, so what an
 	// example demonstrates is the call, not this message's fields.
