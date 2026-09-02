@@ -52,8 +52,6 @@ func TestUnresolvedThreadsDeniesOnUnresolvedThread(t *testing.T) {
 			}
 		}
 	}`)
-	defer srv.Close()
-
 	threads, err := unresolvedThreads(context.Background(), srv.Client(), srv.URL, "tok", "picatz", "flowstate", 488)
 	if err != nil {
 		t.Fatalf("unresolvedThreads: %v", err)
@@ -98,8 +96,6 @@ func TestUnresolvedThreadsAllowsWhenAllResolved(t *testing.T) {
 			}
 		}
 	}`)
-	defer srv.Close()
-
 	threads, err := unresolvedThreads(context.Background(), srv.Client(), srv.URL, "tok", "picatz", "flowstate", 500)
 	if err != nil {
 		t.Fatalf("unresolvedThreads: %v", err)
@@ -136,8 +132,6 @@ func TestUnresolvedThreadsSurfacesGraphQLErrors(t *testing.T) {
 	t.Parallel()
 
 	srv := reviewThreadsServerStatus(t, http.StatusOK, `{"errors": [{"message": "Bad credentials"}]}`)
-	defer srv.Close()
-
 	_, err := unresolvedThreads(context.Background(), srv.Client(), srv.URL, "bad-tok", "picatz", "flowstate", 502)
 	if err == nil {
 		t.Fatal("unresolvedThreads did not error on a GraphQL errors payload")
@@ -162,8 +156,6 @@ func TestUnresolvedThreadsWalksToExhaustion(t *testing.T) {
 	}, false, "")
 
 	srv := sequencedServer(t, []string{page1, page2, page3})
-	defer srv.Close()
-
 	threads, err := unresolvedThreads(context.Background(), srv.Client(), srv.URL, "tok", "picatz", "flowstate", 509)
 	if err != nil {
 		t.Fatalf("unresolvedThreads: %v", err)
@@ -183,15 +175,15 @@ func TestUnresolvedThreadsIncompleteAtBoundIsAnError(t *testing.T) {
 	t.Parallel()
 
 	requests := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		body := reviewThreadsPageBody(t, resolvedNodes(reviewThreadsPageSize), true, "always-more")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(body))
 	}))
-	defer srv.Close()
+	client := srv.Client()
 
-	threads, err := unresolvedThreads(context.Background(), srv.Client(), srv.URL, "tok", "picatz", "flowstate", 510)
+	threads, err := unresolvedThreads(context.Background(), client, srv.URL, "tok", "picatz", "flowstate", 510)
 	if err == nil {
 		t.Fatalf("unresolvedThreads did not error on a walk that never terminates (threads=%v)", threads)
 	}
@@ -272,7 +264,7 @@ func reviewThreadsPageBody(t *testing.T, nodes []threadNode, hasNextPage bool, e
 func sequencedServer(t *testing.T, responses []string) *httptest.Server {
 	t.Helper()
 	i := 0
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
 			t.Errorf("request carried no Authorization header")
 		}
@@ -284,6 +276,8 @@ func sequencedServer(t *testing.T, responses []string) *httptest.Server {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(body))
 	}))
+	server.Client() // Initialize URL before returning it to callers.
+	return server
 }
 
 func reviewThreadsServer(t *testing.T, body string) *httptest.Server {
@@ -293,7 +287,7 @@ func reviewThreadsServer(t *testing.T, body string) *httptest.Server {
 
 func reviewThreadsServerStatus(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
 			t.Errorf("request carried no Authorization header")
 		}
@@ -310,6 +304,8 @@ func reviewThreadsServerStatus(t *testing.T, status int, body string) *httptest.
 		w.WriteHeader(status)
 		w.Write([]byte(body))
 	}))
+	server.Client() // Initialize URL before returning it to callers.
+	return server
 }
 
 // TestMCPMergeTarget pins the exact-identification path: owner, repo and

@@ -273,10 +273,10 @@ func TestProtectedResourceEscapedPathIsActuallyReachable(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.Handle(pr.Path(), pr.Handler())
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
+	server := httptest.NewTestServer(t, mux)
+	client := server.Client()
 
-	resp, err := server.Client().Get(server.URL + pr.Path())
+	resp, err := client.Get(server.URL + pr.Path())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -409,10 +409,10 @@ func TestProtectedResourceRefusesUnspellableScopes(t *testing.T) {
 func protectedResourceDocument(t *testing.T, pr *auth.ProtectedResource) map[string]any {
 	t.Helper()
 
-	server := httptest.NewServer(pr.Handler())
-	t.Cleanup(server.Close)
+	server := httptest.NewTestServer(t, pr.Handler())
+	client := server.Client()
 
-	resp, err := server.Client().Get(server.URL)
+	resp, err := client.Get(server.URL)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -437,12 +437,10 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 	}, trustingPolicy("https://trusted.example.com"))
 	require.NoError(t, err)
 
-	server := httptest.NewServer(pr.Handler())
-	t.Cleanup(server.Close)
+	server := httptest.NewTestServer(t, pr.Handler())
 	client := server.Client()
-	// httptest.Server.Close closes idle connections on http.DefaultTransport.
-	// This test runs in parallel with other test servers, so its probes must
-	// use the transport owned by this server rather than that shared global.
+	// This parallel test's probes use the transport owned by this server rather
+	// than the shared global transport.
 	require.NotNil(t, client.Transport,
 		"a nil client transport would fall back to the shared http.DefaultTransport")
 	require.NotSame(t, http.DefaultTransport, client.Transport,
