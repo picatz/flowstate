@@ -129,10 +129,13 @@ func TestAnExampleOnlyChangeReachesTheTestJob(t *testing.T) {
 // that runs `make test-plugins`, the sole thing in this workflow that
 // builds, vets or tests a plugin module. Skipping it here is the gate
 // failing open on exactly the PRs whose whole point is to change a plugin.
+//
+// Since #1474, vulncheck and staticcheck also scan plugin modules, so a
+// plugin-only diff now triggers those jobs too.
 func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 	ds := decide(t, []string{"plugins/openai/main.go"}, nil, "pull_request")
-	mustRun(t, ds, "test")
-	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
+	mustRun(t, ds, "test", "vulncheck", "staticcheck")
+	mustSkip(t, ds, "proto", "fuzz-smoke", "appearance")
 }
 
 // TestReadmeOrArchitectureOnlyStillReachesTheTestJob is the regression for a

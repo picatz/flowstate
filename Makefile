@@ -96,6 +96,8 @@ check:
 	git diff --exit-code
 	GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 	GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+	$(MAKE) vulncheck-plugins
+	$(MAKE) staticcheck-plugins
 
 # The bounded fuzz smokes CI's fuzz-smoke job runs — and it runs *this target*
 # rather than its own copy of them, so the local gate cannot pass a commit the
@@ -146,6 +148,25 @@ test-plugins:
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
 		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
+	done
+
+# The plugin modules carry the dependencies with the largest attack surface in
+# the tree (go-git, pgx, modernc.org/sqlite, go-github, the OpenAI client).
+# test-plugins builds, vets and tests them; these two targets add the scans
+# that `check` runs for the root module so no plugin dependency escapes
+# reachability analysis or static analysis.
+vulncheck-plugins:
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> govulncheck $$module"; \
+		( cd "$$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./... ) || exit 1; \
+	done
+
+staticcheck-plugins:
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> staticcheck $$module"; \
+		( cd "$$module" && GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./... ) || exit 1; \
 	done
 
 # Build the first-party plugins into an isolated directory, compare their

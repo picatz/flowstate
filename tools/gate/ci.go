@@ -130,9 +130,10 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 			Run: p.proto,
 			Why: pick(p.proto, p.reasons["proto"]+" changed", "no changes under proto/ or to buf config")},
 
-		// govulncheck and staticcheck both analyse ./..., so a diff that
-		// moves no Go package cannot move what either reports about this
-		// tree. What *can* move govulncheck's answer without a diff is the
+		// govulncheck and staticcheck both analyse ./... from the root
+		// *and* walk each plugin module, so a diff that moves no Go
+		// package and no plugin module cannot move what either reports.
+		// What *can* move govulncheck's answer without a diff is the
 		// advisory database, which it fetches when it runs — and that is
 		// exactly why this skip is safe here and nowhere else: every push
 		// to main and every merge group runs the full set (see force),
@@ -141,14 +142,14 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 		// waiting for someone to touch a .go file; it just stops being
 		// reported against the pull request that renamed a heading.
 		{Job: "vulncheck", Output: "vulncheck",
-			Run: goAffected,
-			Why: pick(goAffected, fmt.Sprintf("%d affected package(s)", len(affected)),
-				"no Go package is affected; main, the merge queue and the weekly deep tier still scan against a freshly fetched advisory database")},
+			Run: goAffected || len(p.plugins) > 0,
+			Why: pick(goAffected || len(p.plugins) > 0, vulncheckWhy(affected, p),
+				"no Go package is affected and no plugin module changed; main, the merge queue and the weekly deep tier still scan against a freshly fetched advisory database")},
 
 		{Job: "staticcheck", Output: "staticcheck",
-			Run: goAffected,
-			Why: pick(goAffected, fmt.Sprintf("%d affected package(s)", len(affected)),
-				"no Go package is affected")},
+			Run: goAffected || len(p.plugins) > 0,
+			Why: pick(goAffected || len(p.plugins) > 0, staticcheckWhy(affected, p),
+				"no Go package is affected and no plugin module changed")},
 
 		// A target's behaviour is its package's behaviour, so the
 		// affected set decides this the same way it decides the ordering
@@ -209,6 +210,21 @@ func appearanceWhy(p plan, affected []string) string {
 		return "cmd/flow is affected, so the binary whose output the goldens record may print differently"
 	}
 	return ""
+}
+
+func vulncheckWhy(affected []string, p plan) string {
+	switch {
+	case len(affected) > 0 && len(p.plugins) > 0:
+		return fmt.Sprintf("%d affected package(s) and %s changed", len(affected), strings.Join(p.plugins, ", "))
+	case len(affected) > 0:
+		return fmt.Sprintf("%d affected package(s)", len(affected))
+	default:
+		return strings.Join(p.plugins, ", ") + " changed"
+	}
+}
+
+func staticcheckWhy(affected []string, p plan) string {
+	return vulncheckWhy(affected, p)
 }
 
 func pick(cond bool, yes, no string) string {
