@@ -482,7 +482,7 @@ func (r *Registry) validateDef(def TaskDef) error {
 	}
 	if !taskNameRe.MatchString(def.Name) {
 		return fmt.Errorf("task %q does not match the task-name grammar "+
-			"(built-in: ^[a-z][a-z0-9_]*$, plugin: ^[a-z0-9][a-z0-9-]*.[a-z][a-z0-9_]*$)",
+			`(built-in: ^[a-z][a-z0-9_]*$, plugin: ^[a-z0-9][a-z0-9-]*\.[a-z][a-z0-9_]*$)`,
 			def.Name)
 	}
 	if def.Fn == nil {

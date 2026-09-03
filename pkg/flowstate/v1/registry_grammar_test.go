@@ -30,8 +30,11 @@ func TestRegisterRefusesIllegalNames(t *testing.T) {
 	}{
 		{"UPPER", "uppercase"},
 		{"has-hyphen", "hyphen in bare name"},
+		{"-x", "leading hyphen"},
 		{"has space", "space"},
 		{"123start", "digit-leading bare name"},
+		{"1two", "digit-leading bare name (issue reproducer)"},
+		{"a.b.c", "too many dot-separated segments"},
 	} {
 		t.Run(bad.reason, func(t *testing.T) {
 			err := registry.Register(v1.TaskDef{Name: bad.name, Fn: grammarNoop})

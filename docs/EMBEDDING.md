@@ -122,6 +122,14 @@ which is what makes it safe for two goroutines to call `RunLocal` with two
 different `Tasks` sets, against two different workflows, at the same time,
 and never see each other's tasks (issue #195's lesson).
 
+When an embedder *means* to overwrite an existing task — installing a custom
+`http` task with a different egress policy, or swapping a task in a
+conformance test — it calls `Registry.Replace` instead of `Register`.
+`Replace` validates the definition the same way `Register` does (grammar,
+non-nil function, input coherence) but writes unconditionally. The
+distinction is the audit trail: a `Register` call that silently succeeds
+always added something new; a `Replace` call always overwrote on purpose.
+
 One consequence is a real, deliberate divergence: a workflow value built
 directly in Go — skipping `Compile` and `flowfile.Validate` entirely — runs
 an `opts.Tasks` task even when that same set was never installed and so

@@ -475,10 +475,10 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 // that, and a deployment following it would have got a worker that discovered its
 // plugins, launched them, health-checked them, and answered `unknown task`.
 //
-// Registering into the process-global default is a one-way door — there is no
-// Unregister — so a process opens one host and keeps it until it exits. That is
-// what a worker does; it is not what a long-lived process reopening a host would
-// want, and such a process does not exist yet.
+// Registering into the process-global default is a one-way door — the registry
+// has Replace but not Unregister — so a process opens one host and keeps it
+// until it exits. That is what a worker does; it is not what a long-lived
+// process reopening a host would want, and such a process does not exist yet.
 func (h *Host) Register(tasks *flowstatev1.Registry, providers *secrets.Registry) error {
 	if tasks != nil {
 		for _, def := range h.TaskDefs() {
