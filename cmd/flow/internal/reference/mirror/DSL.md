@@ -1154,7 +1154,7 @@ holds that claim rather than assuming it.
 change — deciding them later is the Terraform `optional()` mistake this document
 already refused once.
 
-- **Workflow-level `vars:`** — literals, operators and the profile's functions, referenced
+- **Workflow-level `vars:`** — literals, operators, and the profile's functions, referenced
   rooted: `${vars.region}`. Rooted because ambient, per principle 5.
 - **Step-level `vars:`** — private bindings, referenced bare within the step:
   `${modified}`. Bare because author-chosen and lexically local, the same standing

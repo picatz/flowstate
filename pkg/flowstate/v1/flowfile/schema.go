@@ -754,10 +754,10 @@ const (
 	// nowBinding is the clock, bound bare and only inside a wait.
 	nowBinding = "now"
 
-	// eventBinding is the delivery, bound bare and only inside a trigger. Not
-	// reserved as a step id: inside a trigger there is no step scope for a step
-	// of this name to be shadowed *by*, so nothing an author writes can become
-	// ambiguous.
+	// eventBinding is the delivery, bound bare and only inside a trigger. It is
+	// not reserved as a step id: inside a trigger there is no step scope for a
+	// step of this name to be shadowed by, so nothing an author writes can
+	// become ambiguous.
 	eventBinding = v1.EventRoot
 
 	// loopUntilKey and loopUpdateKey are the two loop expressions that see the
