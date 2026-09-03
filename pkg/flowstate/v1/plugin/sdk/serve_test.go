@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -12,14 +13,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -355,6 +361,110 @@ func TestServeAuthenticatesTheHostOnExecuteStream(t *testing.T) {
 	}
 }
 
+// TestServeRecoversTaskPanicsPerCall covers both RPC shapes at the SDK's real
+// HTTP boundary. Each panic is an explicit unknown outcome rather than a lost
+// connection, the same process serves the next call, and diagnostics stay in
+// the logger and meter rather than crossing in the error response.
+func TestServeRecoversTaskPanicsPerCall(t *testing.T) {
+	const (
+		token       = "the-per-launch-token"
+		panicSecret = "panic-value-only-for-the-plugin-log"
+	)
+
+	var calls atomic.Int32
+	var logs syncBuffer
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(t.Context()) })
+
+	socket := startTestPluginRunning(t, token, &syncBuffer{},
+		func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			if calls.Add(1)%2 == 1 {
+				panic(panicSecret)
+			}
+			return &flowstatev1.Node_Outputs{}, nil
+		},
+		WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
+		WithMeterProvider(provider),
+	)
+
+	client := pluginv1connect.NewTaskServiceClient(unixClient(socket), "http://plugin.invalid")
+	newUnaryRequest := func() *connect.Request[pluginv1.ExecuteRequest] {
+		req := connect.NewRequest(&pluginv1.ExecuteRequest{Task: &flowstatev1.Task{Name: "testplug_noop"}})
+		req.Header().Set(protocol.TokenHeader, token)
+		return req
+	}
+	newStreamRequest := func() *connect.Request[pluginv1.ExecuteStreamRequest] {
+		req := connect.NewRequest(&pluginv1.ExecuteStreamRequest{Task: &flowstatev1.Task{Name: "testplug_noop"}})
+		req.Header().Set(protocol.TokenHeader, token)
+		return req
+	}
+
+	_, unaryErr := client.Execute(t.Context(), newUnaryRequest())
+	requireUnknownOutcomeWithoutPanicValue(t, unaryErr, panicSecret)
+	_, err := client.Execute(t.Context(), newUnaryRequest())
+	require.NoError(t, err, "the unary call after the panic did not reach the same serving process")
+
+	stream, err := client.ExecuteStream(t.Context(), newStreamRequest())
+	require.NoError(t, err)
+	require.False(t, stream.Receive(), "a panicking stream sent a terminal response")
+	requireUnknownOutcomeWithoutPanicValue(t, stream.Err(), panicSecret)
+	require.NoError(t, stream.Close())
+
+	stream, err = client.ExecuteStream(t.Context(), newStreamRequest())
+	require.NoError(t, err)
+	require.True(t, stream.Receive(), "the streaming call after the panic did not receive a response")
+	require.NotNil(t, stream.Msg().GetResponse())
+	require.False(t, stream.Receive())
+	require.NoError(t, stream.Err())
+	require.NoError(t, stream.Close())
+
+	require.Eventually(t, func() bool {
+		return strings.Count(logs.String(), "plugin task panicked; outcome unknown") == 2
+	}, time.Second, time.Millisecond, "the asynchronous panic reports did not reach the SDK logger")
+	logText := logs.String()
+	require.Equal(t, 2, strings.Count(logText, "plugin task panicked; outcome unknown"))
+	require.Equal(t, 2, strings.Count(logText, "panic="+panicSecret))
+	require.Contains(t, logText, metricschema.PluginName+"=testplug")
+	require.Contains(t, logText, metricschema.TaskName+"=testplug_noop")
+	require.NotContains(t, logText, "http: panic serving")
+
+	var collected metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &collected))
+	for _, scope := range collected.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			if metric.Name != metricschema.InstrumentPluginTaskPanics {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			require.Len(t, sum.DataPoints, 1)
+			require.Equal(t, int64(2), sum.DataPoints[0].Value)
+			attrs := sum.DataPoints[0].Attributes
+			pluginName, ok := attrs.Value(metricschema.PluginName)
+			require.True(t, ok)
+			require.Equal(t, "testplug", pluginName.AsString())
+			taskName, ok := attrs.Value(metricschema.TaskName)
+			require.True(t, ok)
+			require.Equal(t, "testplug_noop", taskName.AsString())
+			return
+		}
+	}
+	t.Fatal("the SDK did not record the recovered task panics")
+}
+
+func requireUnknownOutcomeWithoutPanicValue(t *testing.T, err error, panicValue string) {
+	t.Helper()
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	response := responseDetail(t, connectErr)
+	require.True(t, response.GetUnknownOutcome())
+	require.False(t, response.GetRetryable())
+	require.NotContains(t, connectErr.Error(), panicValue)
+}
+
 // TestServeAnnouncesOnceThenLeavesStdoutAlone checks the promise that makes the
 // handshake reliable: one line on stdout, and nothing after it.
 func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
@@ -452,7 +562,7 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 
 // startTestPluginRunning is the same harness with the task's body supplied, for
 // a test whose claim is about what the SDK did before that body could run.
-func startTestPluginRunning(t *testing.T, token string, stdout *syncBuffer, fn TaskFunc) string {
+func startTestPluginRunning(t *testing.T, token string, stdout *syncBuffer, fn TaskFunc, opts ...Option) string {
 	t.Helper()
 
 	// A short directory: a Unix socket address holds about a hundred bytes, and
@@ -498,7 +608,7 @@ func startTestPluginRunning(t *testing.T, token string, stdout *syncBuffer, fn T
 				Output: &flowstatev1.Task_Log_Outputs{},
 				Fn:     fn,
 			}},
-		})
+		}, opts...)
 	}()
 
 	t.Cleanup(func() {

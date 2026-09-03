@@ -235,7 +235,15 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 	// cannot see a registry installed on the workflow's.
 	require.NoError(t, v1.DefaultRegistry().Register(conformance.ErrorKindTimeoutTaskDef()))
 
-	for _, tc := range conformance.ErrorKindCases(baseURL) {
+	cases := conformance.ErrorKindCases(baseURL)
+	for _, tc := range cases {
+		if tc.TaskDef != nil {
+			require.NoError(t, v1.DefaultRegistry().Register(*tc.TaskDef))
+			t.Cleanup(func() { v1.DefaultRegistry().Unregister(tc.TaskDef.Name) })
+		}
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
@@ -257,6 +265,10 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 			kind, ok := v1.ParseErrorKind(app.Type())
 			require.True(t, ok, "the application error's Type %q must be a recognized ErrorKind", app.Type())
 			require.Equal(t, tc.ExpectedKind, kind)
+			if tc.Attempts != nil {
+				require.Equal(t, tc.ExpectedAttempts, tc.Attempts(),
+					"the driver's retry behavior disagrees with this error kind's permanence")
+			}
 		})
 	}
 }

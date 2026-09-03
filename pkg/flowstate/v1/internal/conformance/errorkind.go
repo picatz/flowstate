@@ -2,7 +2,9 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -28,14 +30,34 @@ type ErrorKindCase struct {
 	Workflow *v1.Workflow
 	// ExpectedKind is the classification both drivers must agree on.
 	ExpectedKind v1.ErrorKind
+	// TaskDef is a fixture this case needs registered. Nil means it uses a
+	// task already present in the build or the shared timeout fixture.
+	TaskDef *v1.TaskDef
+	// Attempts reads how often TaskDef ran when retry behavior is part of the
+	// case. ExpectedAttempts is the count both drivers must agree on.
+	Attempts         func() int32
+	ExpectedAttempts int32
 }
 
 // ErrorKindCases returns workflows engineered to fail with a known,
-// deterministic [v1.ErrorKind] — no retries, no network flakiness, nothing
-// that depends on timing — so the assertion is about classification and
-// nothing else. The httpBaseURL should come from [NewHTTPServer], which also
-// registers the loopback-permitting http task both cases below need.
+// deterministic [v1.ErrorKind]. Most isolate classification; a case that also
+// supplies Attempts deliberately offers retries so both drivers must prove a
+// permanent kind stops after one execution. The httpBaseURL should come from
+// [NewHTTPServer], which also registers the loopback-permitting http task the
+// HTTP case below needs.
 func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
+	const unknownOutcomeTaskName = "test.error_kind_upstream_unknown"
+
+	var unknownOutcomeAttempts atomic.Int32
+	unknownOutcomeTask := v1.TaskDef{
+		Name: unknownOutcomeTaskName,
+		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+			unknownOutcomeAttempts.Add(1)
+			return nil, v1.NewTaskError(unknownOutcomeTaskName, v1.ErrorKindUpstreamUnknown,
+				errors.New("the task may have completed before its response was lost"))
+		},
+	}
+
 	return []ErrorKindCase{
 		{
 			// Permanent because the specification names a task no worker
@@ -70,6 +92,30 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 				}},
 			},
 			ExpectedKind: v1.ErrorKindInvalidInput,
+		},
+		{
+			// The verdict the plugin host builds for sdk.OutcomeUnknown and
+			// therefore for a recovered SDK task panic. Three attempts are
+			// available, but an outcome that may already have committed is
+			// permanent: retrying could duplicate its side effects.
+			Name: "an unknown upstream outcome is permanent",
+			Workflow: &v1.Workflow{
+				Name: "error-kind-upstream-unknown",
+				Steps: []*v1.Node{{
+					Id:   "uncertain",
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: unknownOutcomeTask.Name}},
+					Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{
+						MaxAttempts:        3,
+						InitialInterval:    durationpb.New(time.Millisecond),
+						BackoffCoefficient: 1,
+						MaxInterval:        durationpb.New(time.Millisecond),
+					}},
+				}},
+			},
+			ExpectedKind:     v1.ErrorKindUpstreamUnknown,
+			TaskDef:          &unknownOutcomeTask,
+			Attempts:         unknownOutcomeAttempts.Load,
+			ExpectedAttempts: 1,
 		},
 		{
 			// The failure that belongs to no task, and the one this set was

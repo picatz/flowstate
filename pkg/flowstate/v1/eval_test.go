@@ -214,11 +214,22 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 	}
 	require.NoError(t, registry.Register(conformance.ErrorKindTimeoutTaskDef()))
 
-	for _, tc := range conformance.ErrorKindCases(baseURL) {
+	cases := conformance.ErrorKindCases(baseURL)
+	for _, tc := range cases {
+		if tc.TaskDef != nil {
+			require.NoError(t, registry.Register(*tc.TaskDef))
+		}
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			_, err := v1.Run(v1.NewContextWithRegistry(t.Context(), registry), tc.Workflow)
 			require.Error(t, err, "the case must fail the run outright")
 			require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
+			if tc.Attempts != nil {
+				require.Equal(t, tc.ExpectedAttempts, tc.Attempts(),
+					"the driver's retry behavior disagrees with this error kind's permanence")
+			}
 		})
 	}
 }

@@ -75,6 +75,9 @@ func runFakePlugin() int {
 	if mode == "errors" {
 		return runErrorsPlugin()
 	}
+	if mode == "panic" {
+		return runPanicPlugin()
+	}
 	if mode == "deadline" {
 		return runDeadlinePlugin()
 	}

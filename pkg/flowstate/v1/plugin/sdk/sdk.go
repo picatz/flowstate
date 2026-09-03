@@ -72,6 +72,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"sync"
@@ -81,6 +82,7 @@ import (
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
@@ -89,7 +91,9 @@ import (
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // ErrNotLaunchedByHost reports that the process was not started by a Flowstate
@@ -343,7 +347,10 @@ type Task struct {
 
 // TaskFunc executes one task, given its resolved inputs and the scope its own
 // expressions are evaluated against. It has the same shape as the engine's own
-// task functions.
+// task functions. If it panics, the SDK recovers that call, logs the panic and
+// stack through the plugin logger, and returns a permanent unknown-outcome
+// failure: the function may have applied side effects before panicking, so the
+// host must not retry it automatically.
 type TaskFunc func(ctx context.Context, inputs map[string]*flowstatev1.Value, scope *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error)
 
 // HealthFunc reports whether the plugin can serve. Returning an error is
@@ -972,7 +979,7 @@ func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, 
 			byName[task.Name] = task
 		}
 
-		path, handler := pluginv1connect.NewTaskServiceHandler(&taskService{tasks: byName}, opts...)
+		path, handler := pluginv1connect.NewTaskServiceHandler(&taskService{plugin: p.Name, tasks: byName}, opts...)
 		mux.Handle(path, handler)
 	}
 
@@ -1132,7 +1139,132 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[plugin
 type taskService struct {
 	pluginv1connect.UnimplementedTaskServiceHandler
 
-	tasks map[string]Task
+	plugin          string
+	tasks           map[string]Task
+	panicReportOnce sync.Once
+	panicReports    chan taskPanicReport
+}
+
+const maxPendingTaskPanicReports = 16
+
+type taskPanicReport struct {
+	ctx          context.Context
+	task         string
+	value        any
+	stack        []byte
+	secretValues []string
+}
+
+// call runs plugin-authored task code behind the SDK's per-call panic boundary.
+// A panic can happen after an external side effect, so reporting it as an
+// ordinary transport failure would let the host retry work whose outcome is
+// unknown. Keep the process serving, but fail this call permanently with the
+// same explicit verdict a plugin author would return through [OutcomeUnknown].
+func (s *taskService) call(
+	ctx context.Context,
+	task Task,
+	inputs map[string]*flowstatev1.Value,
+	scope *flowstatev1.Scope,
+) (outputs *flowstatev1.Node_Outputs, err error) {
+	secretValues := taskSecretValues(task, inputs)
+	completed := false
+	defer func() {
+		if !completed {
+			value := recover()
+			outputs = nil
+			err = OutcomeUnknown("task %q panicked; outcome unknown", task.Name)
+			s.queuePanicReport(ctx, task.Name, secretValues, value, debug.Stack())
+		}
+	}()
+
+	outputs, err = task.Fn(ctx, inputs, scope)
+	completed = true
+	return outputs, err
+}
+
+func taskSecretValues(task Task, inputs map[string]*flowstatev1.Value) []string {
+	values := make([]string, 0, len(task.SecretInputs))
+	for _, name := range task.SecretInputs {
+		if value := inputs[name].GetLiteral().GetStringValue(); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// queuePanicReport keeps telemetry outside the response path. A custom logger,
+// panic formatter, or meter provider can block forever; none may delay the
+// permanent verdict and turn it back into a retryable host timeout. One lazily
+// started worker and a bounded queue contain that failure to this process.
+func (s *taskService) queuePanicReport(ctx context.Context, task string, secretValues []string, value any, stack []byte) {
+	s.panicReportOnce.Do(func() {
+		s.panicReports = make(chan taskPanicReport, maxPendingTaskPanicReports)
+		go s.reportPanics()
+	})
+
+	report := taskPanicReport{
+		ctx:          context.WithoutCancel(ctx),
+		task:         task,
+		value:        value,
+		stack:        stack,
+		secretValues: secretValues,
+	}
+	select {
+	case s.panicReports <- report:
+	default:
+		// Telemetry is best-effort. Never block an unknown-outcome response
+		// behind a saturated or stuck diagnostic sink.
+	}
+}
+
+func (s *taskService) reportPanics() {
+	for report := range s.panicReports {
+		s.reportPanic(report)
+	}
+}
+
+func (s *taskService) reportPanic(report taskPanicReport) {
+	defer func() { _ = recover() }()
+
+	meter := Meter(report.ctx)
+	if meter != nil {
+		if counter, err := meter.Int64Counter(metricschema.InstrumentPluginTaskPanics); err == nil {
+			counter.Add(report.ctx, 1, metricschema.WithAttributes(
+				attribute.String(metricschema.PluginName, s.plugin),
+				attribute.String(metricschema.TaskName, report.task),
+			))
+		}
+	}
+
+	panicValue := printablePanicValue(report.value)
+	scrubber := secrets.NewScrubber()
+	for _, value := range report.secretValues {
+		scrubber.AddValue(value)
+	}
+	panicValue = scrubber.Scrub(panicValue)
+
+	Logger(report.ctx).ErrorContext(report.ctx, "plugin task panicked; outcome unknown",
+		metricschema.PluginName, s.plugin,
+		metricschema.TaskName, report.task,
+		"panic", panicValue,
+		"stack", string(report.stack),
+	)
+}
+
+// printablePanicValue treats a panic's words as input-derived diagnostic text:
+// useful in a scrubbed plugin log, never copied into the RPC error. This runs
+// only on the bounded reporting worker, so a plugin-defined String or Error
+// method cannot delay the unknown-outcome response.
+func printablePanicValue(value any) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = fmt.Sprintf("<%T could not be formatted>", value)
+		}
+	}()
+	if b, ok := value.([]byte); ok {
+		return string(b)
+	}
+	return fmt.Sprint(value)
 }
 
 // Execute runs a task.
@@ -1148,7 +1280,7 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 	// found, carrying an empty namespace.
 	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
 
-	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
+	outputs, err := s.call(ctx, task, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
 	if err != nil {
 		return nil, taskConnectError(ctx, err)
 	}
@@ -1222,7 +1354,7 @@ func (s *taskService) ExecuteStream(
 		})
 	})
 
-	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
+	outputs, err := s.call(ctx, task, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
 	if err != nil {
 		return taskConnectError(ctx, err)
 	}
