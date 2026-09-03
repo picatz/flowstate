@@ -32,17 +32,18 @@ hides. That would end the run FAILED with nobody asked, so the loop step carries
 `continue_on_error:`, which turns exhaustion into the path where `handoff`
 happens. The human is a step, not a bolt-on.
 
-**The budget is one, and that is the tooling's limit rather than a taste.** A
-second attempt cannot work today: `codex.exec` computes its `patch` by diffing
-`working_context` against the state it observed before the turn, and it fails
-closed when that workspace starts dirty. Attempt one's edits are still sitting in
-the workspace — nothing reverts them, and `git.commit_push` operates on its own
-in-memory clone rather than on that directory — so attempt two would receive an
-empty patch and be refused for having nothing to commit. There is no input that
-resets a working context, so the loop is kept (it is the shape that generalizes,
-and with a budget of one it is still what turns "did not fix it" into a handoff)
-and the number is the one thing that changes when that gap closes. See *What is
-still missing*.
+**The budget is one, and that is the tooling's limit rather than a taste.**
+`codex.exec` computes its `patch` by diffing `working_context` against the state
+it observed before the turn, and it fails closed when that workspace starts
+dirty. #967 added `reset_working_context`, which discards a previous turn's own
+edits before the next turn's baseline is read — so a second attempt can start
+from a clean tree. What it cannot do is check the tree out at a *different*
+commit: this loop's `base` advances to each successful push's sha, and nothing
+here brings `working_context` forward to match, so a second attempt would compute
+its patch against the wrong tree. The loop is kept (it is the shape that
+generalizes, and with a budget of one it is still what turns "did not fix it"
+into a handoff) and the number is the one thing that changes when that gap
+closes. See *What is still missing*.
 
 **The patch is a value.** `codex.exec` edits a workspace and emits a `patch` — a
 unified diff of what it changed; `git.commit_push` applies that `patch`. Neither
@@ -97,9 +98,10 @@ own report. Everything except the four effects runs for real — the loop, the
 carried state, the budget, the `if:`, the gate and its 24-hour deadline, which
 passes in microseconds on the virtual clock.
 
-No case scripts a second attempt, deliberately: the installed plugin could not
-produce one, and a stub that pretended otherwise would be asserting behavior the
-real task cannot deliver.
+No case scripts a second attempt, deliberately: the workspace-at-a-commit gap
+means a second attempt would compute its patch against the wrong tree, and a
+stub that pretended otherwise would be asserting behavior the real task cannot
+deliver.
 
 For real, this file needs both plugins built and a worker told where they are,
 the two secrets, a CI endpoint that answers `passed`, and two pieces of setup the
