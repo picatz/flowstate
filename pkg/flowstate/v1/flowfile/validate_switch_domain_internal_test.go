@@ -231,8 +231,9 @@ func TestWebhookRoutingDomainStaysOpen(t *testing.T) {
 
 	_, known := switchDomain(sw.GetValue(), domainScope(wf), wf)
 	assert.False(t, known,
-		"examples/webhook-routing dispatches on a workflow input, an open set no validator\n"+
-			"  on this machine can enumerate; it must stay open until enum-typed inputs land")
+		"examples/webhook-routing dispatches on a provider-owned workflow input without\n"+
+			"  enum values, so the domain is open — only enum-typed inputs with declared\n"+
+			"  values produce a closed domain")
 }
 
 // The negative direction, which is the one that actually guards the inference:
