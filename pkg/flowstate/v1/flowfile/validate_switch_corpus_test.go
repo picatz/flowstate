@@ -250,7 +250,7 @@ func TestSwitchDomainCorpusPin(t *testing.T) {
 			continue
 		}
 
-		domain, known := switchDomain(cs.sw.GetValue(), domainScope(cs.wf))
+		domain, known := switchDomain(cs.sw.GetValue(), domainScope(cs.wf), cs.wf)
 
 		if entry.known {
 			require.NotEmpty(t, entry.domain, "table entry %q claims a closed domain with no values listed", key)

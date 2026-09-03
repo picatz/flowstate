@@ -62,7 +62,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 		})
 	}
 
-	domain, domainKnown := switchDomain(sw.GetValue(), enclosing)
+	domain, domainKnown := switchDomain(sw.GetValue(), enclosing, wf)
 
 	// The case literals: computed values refused, duplicates found after
 	// flattening `case: [a, b]` lists, and — where the domain is knowable —
@@ -416,16 +416,21 @@ func resolveStepOutputExpr(e *expr.Expr, enclosing refScope) (*expr.Expr, bool) 
 // chain, `examples/optional-dispatch`'s named `outcome`, or a discriminant an
 // author decomposed into a chain of `value:` steps to hold nesting depth down
 // per the style charter, without losing the domain the decomposition read
-// from. Enum-typed workflow inputs extend this tier when they land. A `must:`
+// from. Enum-typed workflow inputs extend this tier: `${inputs.<name>}` where
+// the declaration is `type: enum` with `values:` yields the declared set. A `must:`
 // constraint is deliberately *not* mined for a domain: a constraint
 // expression is not a type. A `value:` step holding a literal rather than an
 // expression is deliberately refused too — a switch over a constant is
 // degenerate, and inventing a singleton domain would fire the exhaustiveness
 // checks on a file whose real mistake is the dispatch itself.
-func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
+func switchDomain(value *v1.Value, enclosing refScope, wf *v1.Workflow) ([]string, bool) {
 	parsed := value.GetExpr()
 	if parsed == nil {
 		return nil, false
+	}
+
+	if domain, ok := resolveInputEnumDomain(parsed.GetExpr(), wf); ok {
+		return domain, true
 	}
 
 	written, ok := resolveStepOutputExpr(parsed.GetExpr(), enclosing)
@@ -451,6 +456,27 @@ func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
 		return nil, false
 	}
 	return domain, true
+}
+
+// resolveInputEnumDomain reports the declared enum values when e is
+// `inputs.<name>` and the workflow declares that input as TYPE_ENUM with
+// a non-empty values list. A must: constraint is deliberately not mined:
+// a constraint expression is not a type.
+func resolveInputEnumDomain(e *expr.Expr, wf *v1.Workflow) ([]string, bool) {
+	sel := e.GetSelectExpr()
+	if sel == nil || sel.GetTestOnly() {
+		return nil, false
+	}
+	if sel.GetOperand().GetIdentExpr().GetName() != v1.InputsRoot {
+		return nil, false
+	}
+	name := sel.GetField()
+	for _, decl := range wf.GetDeclaredInputs() {
+		if decl.GetName() == name && decl.GetType() == v1.InputDeclaration_TYPE_ENUM && len(decl.GetValues()) > 0 {
+			return decl.GetValues(), true
+		}
+	}
+	return nil, false
 }
 
 // totalStringLeaves walks a shaping expression and collects the string
