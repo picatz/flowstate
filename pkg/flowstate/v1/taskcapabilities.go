@@ -15,12 +15,12 @@ const CurrentTaskCapabilitySchemaVersion uint32 = 1
 // reach, including compensations, nested control flow, and inlined callees.
 //
 // [WalkWorkflow] is the one enumeration of a workflow's node positions and
-// walkPluginWorkflows supplies its bounded callee edge. Keeping the two pieces
+// walkEmbeddedWorkflows supplies its bounded callee edge. Keeping the two pieces
 // together here makes task availability one requirement walk rather than a list
 // maintained separately by the compiler, local evaluator, and durable engine.
 func RequiredTaskNames(wf *Workflow) ([]string, error) {
 	required := map[string]struct{}{}
-	err := walkPluginWorkflows(wf, 0, func(current *Workflow) error {
+	err := walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
 		WalkWorkflow(current, Walk{Node: func(node *Node) {
 			if task := node.GetTask(); task != nil {
 				required[task.GetName()] = struct{}{}

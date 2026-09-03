@@ -6,6 +6,7 @@ import "buf/validate/validate.proto";
 import "flowstate/v1/signal.proto";
 import "flowstate/v1/task.proto";
 import "flowstate/v1/trigger.proto";
+import "flowstate/v1/type.proto";
 import "flowstate/v1/value.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/duration.proto";
@@ -723,12 +724,13 @@ message ResolvedPlugin {
 // # What the schema checks, and what the compiler checks
 //
 // The schema checks what a single declaration can be wrong about on its own: the
-// name is a CEL identifier of bounded length, the type is a defined value other
-// than unspecified, the description fits. Everything that is a fact about a *set*
-// of declarations, or about a name CEL's lexer will not accept, is the
-// compiler's: protovalidate rules are per-field and RE2 has no negative
-// lookahead, so a rule spelled here that cannot hold is worse than no rule, per
-// this file's own history with nineteen of them.
+// name is a CEL identifier of bounded length, the legacy type projection is
+// present during the additive rollout, dual type representations agree, and the
+// description fits. Everything that is a fact about a *set* of declarations, or
+// about a name CEL's lexer will not accept, is the compiler's: protovalidate
+// rules are per-field and RE2 has no negative lookahead, so a rule spelled here
+// that cannot hold is worse than no rule, per this file's own history with
+// nineteen of them.
 //
 // Deferred to the compiler, deliberately and in one list so nobody has to
 // rediscover it:
@@ -747,30 +749,26 @@ message ResolvedPlugin {
 //   - Whether a submitted value matches the declared type, which is the check
 //     at submit. See [RunRequest.inputs].
 message InputDeclaration {
-  // Type is the shape a value must have to be accepted.
+  option (buf.validate.message).cel = {
+    id: "input_declaration.type_present"
+    message: "the legacy type is required until structural-only declarations are safe across rolling upgrades"
+    expression: "this.type != 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "input_declaration.type_agrees"
+    message: "value_type and the legacy type must describe the same input type when both are set"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)"
+  };
+
+  // Type is the legacy declaration vocabulary. Edition-aware specifications use
+  // [InputDeclaration.value_type], whose structural [flowstate.v1.Type] can say
+  // what a list contains and what values a map holds.
   //
-  // An enum rather than a type *expression* like [TaskField.type], and the
-  // difference between those two fields is the difference between what they are
-  // for. A TaskField is documentation: it is rendered for a person or an agent
-  // reading the catalog, and `list[string]` is the right answer there because it
-  // is what an author would say. This one is *enforced*, at submit, against a
-  // value some caller chose, so it has to be a closed set the schema can
-  // constrain and every consumer can switch on. Spelling it as a string would put
-  // a parser for the same small type language into the CLI, the server, the
-  // language server and the compiler, which is the "one value written down four
-  // times" failure this repository keeps finding in other clothes.
-  //
-  // These are the six of [Value.Type] that describe *data*, with the same names
-  // and the same numbers. The two left out are TYPE_EXPR and TYPE_ERROR, and they
-  // are precisely the two that are not data: an expression is something a run
-  // evaluates, and a caller does not get to send one. Sharing numbers does not
-  // make the enums interchangeable: the sets differ, so a conversion between
-  // them is a switch somebody wrote and somebody reviewed, never a cast.
-  //
-  // A parameterized type (a list *of* what) is not expressible here yet, on
-  // purpose. An element type that nothing checks is decoration, which is the rule
-  // that put this whole surface in Phase 2 with its checker; and an added enum
-  // value or an added field is free later, where a wrong one is not.
+  // This enum and its field number remain because a complete Workflow is stored
+  // in durable run history. Removing either would make a new worker unable to
+  // recover the declaration from an in-flight run. Readers therefore accept
+  // both representations, and the message rules reject a declaration that sets
+  // both to different meanings.
   enum Type {
     TYPE_UNSPECIFIED = 0;
     TYPE_STRING = 1;
@@ -811,18 +809,10 @@ message InputDeclaration {
     }
   ];
 
-  // Type is what a submitted value must be, checked at submit rather than where
-  // the value is first read. A run that is going to be refused for a bad argument
-  // should be refused while the caller is still there to be told, not three steps
-  // in with two requests already sent.
-  Type type = 2 [
-    (buf.validate.field).required = true,
-    (google.api.field_behavior) = REQUIRED,
-    (buf.validate.field).enum = {
-      defined_only: true
-      not_in: [0]
-    }
-  ];
+  // Type is the legacy shape of a submitted value. It remains readable for
+  // durable histories; edition-aware writers use value_type. The message-level
+  // rules require one representation and make dual representations agree.
+  Type type = 2 [(buf.validate.field).enum = {defined_only: true}];
 
   // Required reports that a run cannot start without this input.
   //
@@ -1066,6 +1056,14 @@ message InputDeclaration {
       }
     }
   ];
+
+  // ValueType is the structural type used by edition-aware writers. During the
+  // additive rollout, a writer that sets it must also project the same meaning
+  // into the legacy enum: an older worker ignores this unknown field, so a
+  // structural-only declaration is unsafe until the edition/profile boundary
+  // guarantees that old readers refuse it. The message rules require that
+  // projection and reject dual representations that do not agree.
+  .flowstate.v1.Type value_type = 18;
 }
 
 // OutputDeclaration is one value a finished run reports: a name, and the
@@ -1086,6 +1084,17 @@ message InputDeclaration {
 // than about a single field, which is what puts them out of protovalidate's
 // reach here and into [CheckOutputConstraintShape].
 message OutputDeclaration {
+  option (buf.validate.message).cel = {
+    id: "output_declaration.legacy_type_present_with_value_type"
+    message: "value_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades"
+    expression: "!has(this.value_type) || this.type != 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "output_declaration.type_agrees"
+    message: "value_type and the legacy type must describe the same output type when both are set"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)"
+  };
+
   // Name is what the value is called in the run's result.
   //
   // Same pattern as an input's, and for a weaker reason: nothing selects an
@@ -1126,17 +1135,9 @@ message OutputDeclaration {
   // beyond which side of a run they describe.
   bool sensitive = 5;
 
-  // Type is the shape this output's value has, so that a workflow's result is
-  // declared in the same place and in the same vocabulary its arguments are.
-  //
-  // [InputDeclaration.Type] itself rather than a second enum beside it. The
-  // vocabulary is one vocabulary — the six data types plus `enum` — and a
-  // parallel copy of it would be the "one value written down twice" failure the
-  // input enum's own comment already argues against, one message down. That the
-  // enum is nested in [InputDeclaration] is where it was first needed, not a
-  // claim about what it describes; every helper that reads one
-  // ([DeclaredTypeName], [ParseDeclaredType], [StringShaped], [CheckInputValue]'s
-  // literal half) therefore reads this too, unchanged.
+  // Type is the legacy shape of this output's value. It remains readable for
+  // durable histories; edition-aware writers use value_type. When both are
+  // present, the message-level rule requires them to agree.
   //
   // Optional, and permanently so, which is the difference from
   // [InputDeclaration.type]. An input's type is required because a value arrives
@@ -1187,6 +1188,14 @@ message OutputDeclaration {
       }
     }
   ];
+
+  // ValueType is the structural type used by edition-aware writers when an
+  // output declares one. Absence still means that the output has no declared
+  // type. During the additive rollout, a writer that sets this field must also
+  // project the same meaning into the legacy enum so an older worker cannot
+  // silently treat the output as untyped. The message rules require that
+  // projection and reject dual representations that disagree.
+  Type value_type = 8;
 }
 
 // RunOutputs is what one run computed for its declared outputs.

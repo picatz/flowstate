@@ -690,6 +690,65 @@ func InputRefusalCases() []Refusal {
 			Contains: `input "region" is a secret reference`,
 		},
 		{
+			// The structural schema lands before its runtime projection. Even an
+			// optional input nobody supplied must refuse the workflow at submit;
+			// otherwise the same contract starts or fails based only on whether a
+			// caller happened to provide a value.
+			Name: "a structural-only input is refused until the runtime projects it",
+			Workflow: declares("inputs-structural-only",
+				[]*v1.InputDeclaration{{
+					Name: "region",
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_STRING,
+					}},
+				}},
+				nil,
+				says("a", "hello"),
+			),
+			Contains: "the legacy type is required until structural-only declarations are safe across rolling upgrades",
+		},
+		{
+			// The same declaration nested in a callee must be found while the
+			// parent is admitted, not when execution reaches the call after an
+			// earlier parent step has already made a request.
+			Name: "a callee structural-only input is refused before its caller starts",
+			Workflow: declares("calls-structural-only-input",
+				nil,
+				nil,
+				says("before-call", "side effect"),
+				callNode("callee", declares("inputs-structural-only-callee",
+					[]*v1.InputDeclaration{{
+						Name: "region",
+						ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+							Scalar: v1.Type_SCALAR_STRING,
+						}},
+					}},
+					nil,
+					says("inside", "unreachable"),
+				), nil),
+			),
+			Contains: "the legacy type is required until structural-only declarations are safe across rolling upgrades",
+		},
+		{
+			// Programmatic local callers do not necessarily run schema validation
+			// before admission. The runtime must therefore enforce the same
+			// cross-field agreement rule as the server rather than silently using
+			// only the legacy half.
+			Name: "disagreeing legacy and structural input types are refused",
+			Workflow: declares("inputs-type-disagreement",
+				[]*v1.InputDeclaration{{
+					Name: "region",
+					Type: v1.InputDeclaration_TYPE_STRING,
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_INT,
+					}},
+				}},
+				nil,
+				says("a", "hello"),
+			),
+			Contains: "value_type and the legacy type must describe the same input type when both are set",
+		},
+		{
 			// A workflow declaring nothing at all, which is every workflow written
 			// before this feature existed: it takes no arguments, and a caller sending
 			// one is refused rather than having it silently ignored.

@@ -76,6 +76,10 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 // execution context. A top-level workflow records its own profile; an old
 // unprofiled callee inherits its caller's through [CalleeProfile].
 func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (map[string]*Value, error) {
+	if err := CheckDeclarationTypes(wf); err != nil {
+		return nil, err
+	}
+
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		if err := CheckOutputConstraintShape(profile, declaration); err != nil {
 			return nil, err
@@ -231,6 +235,77 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 	}
 
 	return bound, nil
+}
+
+// CheckDeclarationTypes reports whether every declaration in a workflow and its
+// embedded callees can be enforced by this runtime.
+//
+// It is currently the runtime half of the additive structural rollout. The
+// schema requires a legacy projection while old readers can still receive a
+// specification, but hand-built local messages do not necessarily pass through
+// schema validation. Refuse one here rather than interpreting the legacy zero
+// value as unspecified and silently skipping enforcement.
+//
+// Every embedded callee is checked before the root workflow starts. Waiting to
+// bind a callee's arguments inside CallScope would let earlier parent steps make
+// requests before discovering that the callee's contract cannot be enforced.
+func CheckDeclarationTypes(wf *Workflow) error {
+	return walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+		for _, declaration := range current.GetDeclaredInputs() {
+			if vt := declaration.GetValueType(); vt != nil {
+				if err := checkTypeDepth(vt, MaxStructureDepth); err != nil {
+					return fmt.Errorf("input %q: %w", declaration.GetName(), err)
+				}
+				if err := Validate(declaration); err != nil {
+					return fmt.Errorf("input %q has an invalid type declaration: %w", declaration.GetName(), err)
+				}
+			}
+		}
+		for _, declaration := range current.GetDeclaredOutputs() {
+			if vt := declaration.GetValueType(); vt != nil {
+				if err := checkTypeDepth(vt, MaxStructureDepth); err != nil {
+					return fmt.Errorf("output %q: %w", declaration.GetName(), err)
+				}
+				if err := Validate(declaration); err != nil {
+					return fmt.Errorf("output %q has an invalid type declaration: %w", declaration.GetName(), err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// checkTypeDepth iteratively verifies that t does not nest deeper than
+// maxDepth levels through its list and map recursive arms, and that no
+// pointer cycle exists in the Go object graph.
+func checkTypeDepth(t *Type, maxDepth int) error {
+	type entry struct {
+		t     *Type
+		depth int
+	}
+	visited := make(map[*Type]bool)
+	stack := []entry{{t: t, depth: 0}}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if e.t == nil {
+			continue
+		}
+		if visited[e.t] {
+			return fmt.Errorf("type declaration contains a cycle")
+		}
+		visited[e.t] = true
+		if e.depth > maxDepth {
+			return fmt.Errorf("type declaration nests more than %d levels deep", maxDepth)
+		}
+		switch kind := e.t.GetKind().(type) {
+		case *Type_List:
+			stack = append(stack, entry{t: kind.List, depth: e.depth + 1})
+		case *Type_Map_:
+			stack = append(stack, entry{t: kind.Map.GetValue(), depth: e.depth + 1})
+		}
+	}
+	return nil
 }
 
 // CheckInputDefault reports whether a declaration's default is a value of the type

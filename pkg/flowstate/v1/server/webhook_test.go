@@ -541,9 +541,19 @@ func TestAReceiverRefusesAWorkflowItCannotServe(t *testing.T) {
 	noTriggers := orderWebhookWorkflow()
 	noTriggers.Triggers = nil
 
+	structuralOnly := orderWebhookWorkflow()
+	structuralOnly.DeclaredOutputs = []*v1.OutputDeclaration{{
+		Name:  "answer",
+		Value: v1.NewLiteral("ok"),
+		ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+			Scalar: v1.Type_SCALAR_STRING,
+		}},
+	}}
+
 	for name, workflows := range map[string][]*v1.Workflow{
 		"a scheme this build cannot verify": {unknownScheme},
 		"a workflow declaring no webhooks":  {noTriggers},
+		"a structural-only declaration":     {structuralOnly},
 		"two workflows under one name":      {orderWebhookWorkflow(), orderWebhookWorkflow()},
 	} {
 		t.Run(name, func(t *testing.T) {

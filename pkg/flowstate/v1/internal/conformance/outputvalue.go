@@ -47,6 +47,64 @@ func literalOutput(name string, value *v1.Value, t v1.InputDeclaration_Type, val
 func OutputValueRefusalCases() []Refusal {
 	return []Refusal{
 		{
+			// A structural-only declaration is unsafe while old workers can still
+			// receive it. Refuse the whole workflow at submit rather than reading
+			// the legacy zero value as an untyped output and reporting an unchecked
+			// answer.
+			Name: "a structural-only output is refused until the runtime projects it",
+			Workflow: declares("outputs-structural-only",
+				nil,
+				[]*v1.OutputDeclaration{{
+					Name:  "answer",
+					Value: v1.NewLiteral("ok"),
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_STRING,
+					}},
+				}},
+				says("a", "hello"),
+			),
+			Contains: "value_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades",
+		},
+		{
+			// Search embedded callees at parent admission. Discovering this only
+			// when CallScope binds the callee would permit the preceding parent
+			// step to run before the unsupported declaration is refused.
+			Name: "a callee structural-only output is refused before its caller starts",
+			Workflow: declares("calls-structural-only-output",
+				nil,
+				nil,
+				says("before-call", "side effect"),
+				callNode("callee", declares("outputs-structural-only-callee",
+					nil,
+					[]*v1.OutputDeclaration{{
+						Name:  "answer",
+						Value: v1.NewLiteral("ok"),
+						ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+							Scalar: v1.Type_SCALAR_STRING,
+						}},
+					}},
+					says("inside", "unreachable"),
+				), nil),
+			),
+			Contains: "value_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades",
+		},
+		{
+			Name: "disagreeing legacy and structural output types are refused",
+			Workflow: declares("outputs-type-disagreement",
+				nil,
+				[]*v1.OutputDeclaration{{
+					Name:  "answer",
+					Value: v1.NewLiteral("ok"),
+					Type:  v1.InputDeclaration_TYPE_STRING,
+					ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+						Scalar: v1.Type_SCALAR_INT,
+					}},
+				}},
+				says("a", "hello"),
+			),
+			Contains: "value_type and the legacy type must describe the same output type when both are set",
+		},
+		{
 			// The enum half. A literal string outside the declared set is a
 			// promise the specification breaks against itself, knowable without
 			// running anything.

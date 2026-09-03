@@ -52,7 +52,7 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // so only supplied inputs are examined, and only the ones the task named. The
 // walk is the one [RequiredTaskNames] performs, so a position that can reach a
 // task is a position this reaches: [WalkWorkflow] for nested control flow and
-// compensations, walkPluginWorkflows for the bounded callee edge. It is bounded
+// compensations, walkEmbeddedWorkflows for the bounded callee edge. It is bounded
 // the same way, and runs behind [CheckSpecSize] and [CheckStructureDepth].
 //
 // The refusal names the step and the input and never the value: the value is
@@ -64,7 +64,7 @@ func CheckRequiredSecretInputs(wf *Workflow, registry *Registry) error {
 	}
 
 	var refusal error
-	walkErr := walkPluginWorkflows(wf, 0, func(current *Workflow) error {
+	walkErr := walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
 		WalkWorkflow(current, Walk{Node: func(node *Node) {
 			if refusal != nil {
 				return
