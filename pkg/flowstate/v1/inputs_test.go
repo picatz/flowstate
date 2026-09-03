@@ -227,3 +227,83 @@ func TestStringShapedCoversEveryDeclaredType(t *testing.T) {
 			"this test's `want` table names %s, which the schema descriptor no longer declares", typ)
 	}
 }
+
+// TestCheckDeclarationTypesRefusesDeeplyNestedTypes pins the depth bound on
+// the recursive Type message. A programmatically built workflow can set
+// value_type to an arbitrarily deep list/map chain without passing through
+// schema validation; CheckDeclarationTypes must refuse it before protovalidate
+// recurses into it.
+func TestCheckDeclarationTypesRefusesDeeplyNestedTypes(t *testing.T) {
+	t.Parallel()
+
+	deepList := func(depth int) *v1.Type {
+		ty := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+		for range depth {
+			ty = &v1.Type{Kind: &v1.Type_List{List: ty}}
+		}
+		return ty
+	}
+
+	deepMap := func(depth int) *v1.Type {
+		ty := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+		for range depth {
+			ty = &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: ty}}}
+		}
+		return ty
+	}
+
+	step := &v1.Node{
+		Id:   "a",
+		Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hello")}}},
+	}
+
+	for _, test := range []struct {
+		name string
+		vt   *v1.Type
+	}{
+		{"list past the bound", deepList(v1.MaxStructureDepth + 1)},
+		{"map past the bound", deepMap(v1.MaxStructureDepth + 1)},
+		{"mixed list-map past the bound", func() *v1.Type {
+			ty := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+			for i := range v1.MaxStructureDepth + 1 {
+				if i%2 == 0 {
+					ty = &v1.Type{Kind: &v1.Type_List{List: ty}}
+				} else {
+					ty = &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: ty}}}
+				}
+			}
+			return ty
+		}()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wf := &v1.Workflow{
+				Name:    "type-depth",
+				Profile: v1.CurrentProfile,
+				DeclaredInputs: []*v1.InputDeclaration{{
+					Name:      "deep",
+					ValueType: test.vt,
+				}},
+				Steps: []*v1.Node{step},
+			}
+			err := v1.CheckDeclarationTypes(wf)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "nests more than")
+		})
+	}
+
+	// Cycle detection: a hand-built Go object graph with a pointer cycle.
+	cyclic := &v1.Type{}
+	cyclic.Kind = &v1.Type_List{List: cyclic}
+	wf := &v1.Workflow{
+		Name:    "type-depth-cycle",
+		Profile: v1.CurrentProfile,
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name:      "loop",
+			ValueType: cyclic,
+		}},
+		Steps: []*v1.Node{step},
+	}
+	err := v1.CheckDeclarationTypes(wf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cycle")
+}
