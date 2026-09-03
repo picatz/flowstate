@@ -122,8 +122,12 @@ go run ./tools/gate
 make check
 ```
 
-- Use `make fmt`, not a bare repository-wide `gofmt`; the Make target owns the
-  generated-code exclusions.
+- Use `make fmt`, not a bare `gofmt`. A `gofmt` resolved from `PATH` may be a
+  different binary from the one the pinned toolchain provides — Go's toolchain
+  resolution updates `go` but not a stale `/usr/local/go/bin/gofmt` — and the
+  two can disagree on formatting, producing false positives on a clean tree. The
+  Make target uses the pinned toolchain's binary and owns the generated-code
+  exclusions.
 - Bound standalone tests and fuzzers by time and memory. Do not leave background
   test binaries or servers behind; terminate the PID you started, never every
   matching process on the machine.
