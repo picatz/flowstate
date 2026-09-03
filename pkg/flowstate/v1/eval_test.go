@@ -589,7 +589,11 @@ func TestRunWorkflowParallelAtomicBlockBound(t *testing.T) {
 func TestRunWorkflowCall(t *testing.T) {
 	for _, test := range conformance.CallCases() {
 		t.Run(test.Name, func(t *testing.T) {
-			out, err := v1.Run(t.Context(), test.Workflow)
+			ctx := t.Context()
+			if test.Trigger != nil {
+				ctx = v1.NewContextWithTrigger(ctx, test.Trigger)
+			}
+			out, err := v1.Run(ctx, test.Workflow)
 			if test.ExpectFailure {
 				require.Error(t, err, "the call was expected to be refused")
 				return

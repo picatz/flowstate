@@ -156,6 +156,13 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 	// answers at.
 	scope.Address = caller.GetAddress()
 
+	// How the run started crosses for the same reason the identity and address
+	// do: it is a fact about the run, not a value the caller's scope resolved.
+	// A callee is still a step of the same run, and `${trigger.kind}` inside a
+	// called workflow must answer the same thing it would answer if the callee's
+	// steps were inlined. (#1422)
+	scope.Trigger = caller.GetTrigger()
+
 	return scope, nil
 }
 
