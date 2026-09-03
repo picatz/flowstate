@@ -96,10 +96,30 @@ func checkEdition(declared string) error {
 			"edition %q is older than this build compiles (%s); run `flow fix` to rewrite the file",
 			declared, editionName(CurrentEdition))
 	}
+	if near := nearestEdition(declared); near != "" {
+		return fmt.Errorf(
+			"edition %q is not one this build knows; did you mean %s? This build knows %s and compiles %s",
+			declared, editionName(near), editionList(knownEditions), editionName(CurrentEdition))
+	}
 	return fmt.Errorf(
 		"edition %q is not one this build knows; this build knows %s and compiles %s; "+
 			"a newer flow may have written this file, so upgrade rather than editing the edition",
 		declared, editionList(knownEditions), editionName(CurrentEdition))
+}
+
+// nearestEdition returns a known edition that differs only in the presence or
+// absence of a "v" prefix, or "" if no such near-miss exists.
+func nearestEdition(declared string) string {
+	var candidate string
+	if strings.HasPrefix(declared, "v") {
+		candidate = strings.TrimPrefix(declared, "v")
+	} else {
+		candidate = "v" + declared
+	}
+	if slices.Contains(knownEditions, candidate) {
+		return candidate
+	}
+	return ""
 }
 
 // editionName renders one edition as an author has to type it.

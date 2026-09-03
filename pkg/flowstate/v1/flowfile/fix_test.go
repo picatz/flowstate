@@ -747,6 +747,27 @@ steps:
 	assert.Equal(t, src, string(result.Source))
 }
 
+// TestFixSuggestsTheNearestEditionOnATypo pins the v-prefix near-miss path:
+// `v2026.1` is the first edition with a `v` prefix that does not belong, and the
+// refusal should suggest the correction rather than guessing "a newer flow".
+func TestFixSuggestsTheNearestEditionOnATypo(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: "v2026.1"
+name: t
+steps:
+  - id: a
+    log:
+      message: hi
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	require.Len(t, result.Refusals, 1)
+	assert.Contains(t, result.Refusals[0].Message, `did you mean "2026.1"`)
+	assert.False(t, result.Changed())
+}
+
 // TestFixDoesNotStampAnEditionOntoAFileWithoutOne pins the choice not to add one.
 //
 // A file with no `edition:` has not asked to be pinned, and absent already means
