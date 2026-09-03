@@ -63,8 +63,8 @@ func newTestCommand() *cobra.Command {
 			"the workflow does not have refuses the case before it runs, with a suggestion — a claim " +
 			"about a step that does not exist would otherwise pass vacuously forever. Three conditions " +
 			"are reported as warnings: a stub the case declared and the run never answered through, " +
-			"a task invoked with no stub declared for it, and an invocation no declared stub " +
-			"matched. Each is a fact about the case's own scaffolding, not a verdict, unless " +
+			"a task invoked with no stub declared for it, and an invocation that no declared stub " +
+			"answered. Each is a fact about the case's own scaffolding, not a verdict, unless " +
 			"`--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt from the " +
 			"idle-stub warning — a file-level catch-all is expected to sit idle in cases that " +
 			"never invoke its task.\n\n" +
@@ -130,7 +130,7 @@ flow test -o jsonl examples/`,
 	// that opted in.
 	cmd.Flags().Bool("fail-on-warning", false,
 		"fail when a case reports a warning — a stub declared and never answered through, "+
-			"a task invoked with no stub declared, or an invocation no declared stub matched — "+
+			"a task invoked with no stub declared, or an invocation that no declared stub answered — "+
 			"instead of only printing it")
 
 	// The `go test -run` precedent (#929 slice 1). The honesty line is the
