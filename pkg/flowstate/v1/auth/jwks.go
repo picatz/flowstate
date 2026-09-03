@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -276,6 +277,32 @@ func (ks *keySet) hasKeyIDLocked(keyID string) bool {
 	return false
 }
 
+// discoveryURLFor returns the OpenID Provider Metadata URL for issuer.
+func discoveryURLFor(issuer string) string {
+	return strings.TrimSuffix(issuer, "/") + discoveryPath
+}
+
+// issuerUnavailable classifies a JWKS or discovery-document fetch failure as
+// [ErrIssuerUnavailable]. When the failure was the identity egress policy
+// deliberately refusing the request — [netpolicy.ErrDenied] somewhere in
+// err's chain — it returns an [*IssuerBlockedError] instead, naming the URL,
+// the rule, and the policy's egress: section as the fix, so a diagnostic like
+// `flow auth check` can tell that apart from an issuer that never answered
+// (picatz/flowstate#1303).
+func issuerUnavailable(issuer, url string, err error) error {
+	var denied *netpolicy.DenyError
+	if errors.As(err, &denied) {
+		return &IssuerBlockedError{
+			Issuer: issuer,
+			URL:    url,
+			Reason: denied.Reason,
+			Detail: denied.Detail,
+			Err:    denied,
+		}
+	}
+	return fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, issuer, err)
+}
+
 // refreshLocked fetches the issuer's key set, discovering its URL first if
 // needed. The caller must hold ks.mu.
 //
@@ -301,7 +328,7 @@ func (ks *keySet) refreshLocked(ctx context.Context, now time.Time) error {
 
 	set, err := fetchJWKS(ctx, ks.client, jwksURL)
 	if err != nil {
-		ks.lastErr = fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, ks.issuer, err)
+		ks.lastErr = issuerUnavailable(ks.issuer, jwksURL, err)
 		return ks.lastErr
 	}
 
@@ -331,7 +358,7 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 
 	jwksURL, err := discoverJWKSURL(ctx, ks.client, ks.issuer)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrIssuerUnavailable, err)
+		return "", issuerUnavailable(ks.issuer, discoveryURLFor(ks.issuer), err)
 	}
 
 	ks.jwksURL = jwksURL
@@ -347,7 +374,7 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 // that can answer for the discovery URL could point verification at a key set it
 // controls.
 func discoverJWKSURL(ctx context.Context, client *http.Client, issuer string) (string, error) {
-	discoveryURL := strings.TrimSuffix(issuer, "/") + discoveryPath
+	discoveryURL := discoveryURLFor(issuer)
 
 	var document struct {
 		Issuer  string `json:"issuer"`

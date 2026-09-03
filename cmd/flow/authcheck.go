@@ -95,6 +95,15 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 			// policy rows the operator has to make disjoint.
 			return ambiguous
 		}
+		var blocked *auth.IssuerBlockedError
+		if errors.As(err, &blocked) {
+			// Also credential-free: it names the issuer's own URL and the
+			// egress rule that refused it, none of which comes from the token,
+			// so an operator can tell a policy denial from a down issuer
+			// instead of PublicReason's identical "temporarily unavailable"
+			// for both (picatz/flowstate#1303).
+			return blocked
+		}
 		// Other verifier errors can carry verified claim values or parser text.
 		// The public classification is the same redacted vocabulary exposed at
 		// the network boundary and is sufficient to fix the token class.

@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
@@ -155,6 +157,97 @@ func TestOIDCVerifierRefusesKeySetRedirectedToPlainHTTP(t *testing.T) {
 			require.ErrorIs(t, err, test.wantErr)
 		})
 	}
+}
+
+// TestOIDCVerifierNamesAnEgressPolicyDenialSeparatelyFromAnUnreachableIssuer
+// checks that a JWKS fetch the identity egress policy refuses is reported
+// differently from an issuer that genuinely never answers. Both used to wrap
+// [auth.ErrIssuerUnavailable] with the identical "temporarily unavailable"
+// message, which sent an operator chasing a network problem for what was
+// really the deployment's own trust-policy configuration
+// (picatz/flowstate#1303).
+func TestOIDCVerifierNamesAnEgressPolicyDenialSeparatelyFromAnUnreachableIssuer(t *testing.T) {
+	var (
+		key   = authtest.GenerateKey("primary", jwa.ES256)
+		clock = authtest.NewClock(referenceTime)
+	)
+
+	t.Run("blocked by the egress policy", func(t *testing.T) {
+		issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+
+		// No WithAllowLoopback: this is exactly what a trust policy with no
+		// egress: section (or one that never named loopback) produces, and the
+		// test issuer listens on loopback like a real deployment's would not.
+		restrictive, err := netpolicy.New()
+		require.NoError(t, err)
+
+		verifier, err := auth.NewOIDCVerifier(
+			auth.Policy{
+				Issuers: []auth.TrustedIssuer{{
+					Name:      "test",
+					Issuer:    issuer.URL(),
+					Audiences: []string{"flowstate"},
+				}},
+			},
+			auth.WithClock(clock.Now),
+			auth.WithEgressPolicy(restrictive),
+		)
+		require.NoError(t, err)
+
+		token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
+		_, err = verifier.Verify(t.Context(), token)
+		require.Error(t, err)
+
+		// It still classifies as issuer-unavailable, so any existing
+		// errors.Is(err, auth.ErrIssuerUnavailable) caller keeps working...
+		require.ErrorIs(t, err, auth.ErrIssuerUnavailable)
+		// ...but it is also, distinguishably, a policy denial.
+		require.ErrorIs(t, err, netpolicy.ErrDenied)
+
+		var blocked *auth.IssuerBlockedError
+		require.ErrorAs(t, err, &blocked)
+		require.Equal(t, issuer.URL(), blocked.Issuer)
+		require.Equal(t, netpolicy.ReasonAddress, blocked.Reason)
+		require.Contains(t, blocked.Detail, "loopback")
+
+		require.Contains(t, err.Error(), "blocked by the identity egress policy")
+		require.Contains(t, err.Error(), "egress:", "the message must point at the remedy")
+		require.NotContains(t, err.Error(), "temporarily unavailable",
+			"a deliberate policy denial must not read like a network failure")
+	})
+
+	t.Run("issuer genuinely unreachable", func(t *testing.T) {
+		issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+		token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
+
+		// Nothing listens here any more: the egress policy would allow the
+		// request, but there is no peer to answer it.
+		require.NoError(t, issuer.Close())
+
+		verifier := newVerifier(t,
+			auth.Policy{
+				Issuers: []auth.TrustedIssuer{{
+					Name:      "test",
+					Issuer:    issuer.URL(),
+					Audiences: []string{"flowstate"},
+				}},
+			},
+			auth.WithClock(clock.Now),
+		)
+
+		_, err := verifier.Verify(t.Context(), token)
+		require.Error(t, err)
+
+		require.ErrorIs(t, err, auth.ErrIssuerUnavailable)
+		require.False(t, errors.Is(err, netpolicy.ErrDenied), "a down issuer is not a policy denial")
+
+		var blocked *auth.IssuerBlockedError
+		require.False(t, errors.As(err, &blocked), "a down issuer must not produce a policy-denial error")
+
+		// The wording an operator and an unauthenticated caller both see is
+		// unchanged for this case.
+		require.Equal(t, "issuer keys are temporarily unavailable", auth.PublicReason(err))
+	})
 }
 
 // TestOIDCVerifierPrimeFailureDoesNotBlockRecovery checks that priming stays

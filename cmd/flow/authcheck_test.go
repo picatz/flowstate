@@ -168,6 +168,54 @@ func TestAuthCheckRedactsEveryCredentialDerivedRefusal(t *testing.T) {
 	}
 }
 
+// TestAuthCheckNamesAnEgressPolicyDenialSeparatelyFromAnUnreachableIssuer
+// covers picatz/flowstate#1303: a JWKS fetch the trust policy's egress rules
+// refuse must be reported as a policy decision, not as the same "temporarily
+// unavailable" wording a genuinely down issuer gets.
+func TestAuthCheckNamesAnEgressPolicyDenialSeparatelyFromAnUnreachableIssuer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("blocked by the egress policy", func(t *testing.T) {
+		t.Parallel()
+		issuer := authCheckIssuer(t)
+
+		// No egress: section at all, unlike writeAuthCheckPolicy's fixture: the
+		// default policy applies (https only, no loopback), and this issuer is
+		// a plain-http loopback server, exactly the shape #1303 reports.
+		data, err := json.Marshal(auth.Policy{
+			Issuers: []auth.TrustedIssuer{authCheckEntry("repository", issuer.URL())},
+		})
+		require.NoError(t, err)
+		policyPath := filepath.Join(t.TempDir(), "trust.json")
+		require.NoError(t, os.WriteFile(policyPath, data, 0o600))
+
+		token := issuer.MintToken(map[string]any{"repository": "acme/app"}, authtest.WithAudience("flowstate"))
+
+		res := runFlowStdin(t, token, "auth", "check", "--auth-policy", policyPath, "--token-file", "-")
+		assert.Equal(t, exitCodeFailure, res.ExitCode, res.Output())
+		assert.Contains(t, res.Stderr, "blocked by the identity egress policy")
+		assert.Contains(t, res.Stderr, "egress:", "the message must point at the remedy")
+		assert.NotContains(t, res.Stderr, "temporarily unavailable",
+			"a deliberate policy denial must not read like a network failure")
+		assert.NotContains(t, res.Output(), token)
+	})
+
+	t.Run("issuer genuinely unreachable", func(t *testing.T) {
+		t.Parallel()
+		issuer := authCheckIssuer(t)
+		token := issuer.MintToken(map[string]any{"repository": "acme/app"}, authtest.WithAudience("flowstate"))
+
+		// The egress policy allows this issuer; nothing listens there any more.
+		policy := writeAuthCheckPolicy(t, authCheckEntry("repository", issuer.URL()))
+		require.NoError(t, issuer.Close())
+
+		res := runFlowStdin(t, token, "auth", "check", "--auth-policy", policy, "--token-file", "-")
+		assert.Equal(t, exitCodeFailure, res.ExitCode, res.Output())
+		assert.Contains(t, res.Stderr, "issuer keys are temporarily unavailable")
+		assert.NotContains(t, res.Stderr, "egress policy")
+	})
+}
+
 func TestAuthCheckMalformedPolicyAndNoMatchFail(t *testing.T) {
 	t.Parallel()
 	t.Run("malformed policy", func(t *testing.T) {

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // Sentinel errors returned by this package. Callers distinguish failures with
@@ -336,6 +338,50 @@ func (e *ClaimMismatchError) Error() string {
 // [errors.Is].
 func (e *ClaimMismatchError) Unwrap() error {
 	return ErrClaimMismatch
+}
+
+// IssuerBlockedError reports that fetching an issuer's OpenID Connect
+// discovery document or JSON Web Key Set was refused by the identity egress
+// policy — a deliberate configuration decision — rather than the issuer
+// failing to answer. It wraps [ErrIssuerUnavailable], so an existing
+// errors.Is(err, ErrIssuerUnavailable) check still matches, but it names what
+// a genuinely unreachable issuer cannot: the URL the policy denied, the rule
+// responsible, and the trust policy's egress: section as the fix.
+//
+// Without this, a policy-blocked fetch and a down issuer were both reported
+// as "issuer keys are temporarily unavailable", which sent an operator
+// chasing a network problem that did not exist (picatz/flowstate#1303). See
+// [issuerUnavailable] in jwks.go for where this is built instead of the plain
+// wrap, and cmd/flow/authcheck.go for where `flow auth check` reports it in
+// full rather than through [PublicReason].
+type IssuerBlockedError struct {
+	// Issuer is the trust policy's issuer identifier the fetch was made for.
+	Issuer string
+
+	// URL is the discovery or key set URL the egress policy refused.
+	URL string
+
+	// Reason and Detail are the [netpolicy.DenyError]'s own classification of
+	// the rule that refused the request.
+	Reason netpolicy.Reason
+	Detail string
+
+	// Err is the [*netpolicy.DenyError] responsible.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *IssuerBlockedError) Error() string {
+	return fmt.Sprintf("%s: issuer %q keys are blocked by the identity egress policy: %s (%s: %s); "+
+		"configure the trust policy's egress: section to allow this fetch",
+		ErrIssuerUnavailable, e.Issuer, e.URL, e.Reason, e.Detail)
+}
+
+// Unwrap returns [ErrIssuerUnavailable] and the [*netpolicy.DenyError]
+// responsible, so both errors.Is(err, ErrIssuerUnavailable) and
+// errors.Is(err, netpolicy.ErrDenied) match.
+func (e *IssuerBlockedError) Unwrap() []error {
+	return []error{ErrIssuerUnavailable, e.Err}
 }
 
 // AmbiguousIssuerError reports a credential that more than one trust policy
