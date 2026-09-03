@@ -107,16 +107,6 @@ func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 				// [v1.CheckInputConstraints], which is a sharper answer than
 				// cel-go's and is already reported when the file loads.
 
-			case v1.SlotSignalSubject, v1.SlotDebugSubject:
-				// signals.go owns a computed `subject:`: it decides where the
-				// expression is routed and narrows what a rule shaped that way may
-				// match, and a second reporter here would say a weaker version of
-				// the same thing on the same line. The `debug:` stanza compiles
-				// through the same code to the same message, so it gets the same
-				// answer — one of these two positions reporting where the other
-				// stays silent would give an author different diagnostics for the
-				// same expression depending on which stanza they wrote it in.
-
 			case v1.SlotWebhookVerify:
 				// A `verify:` entry is a secret reference rather than an
 				// expression, and resolving one is not something a validator does.
@@ -126,11 +116,6 @@ func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 				// refuses a computed one with the sentence that says why cases are
 				// literals. Type-checking it too would report one mistake twice, in
 				// two voices.
-
-			case v1.SlotCallArgument:
-				// validate_call.go checks a `with:` argument against the callee's
-				// own declarations, which is the check that can be specific about
-				// it.
 
 			default:
 				ds = append(ds, typeErrors(site.Step, site.Field(), site.Value)...)
@@ -152,8 +137,8 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 	v1.WalkNodes(nodes, v1.Walk{
 		Value: func(site v1.ValueSite) {
 			switch site.Slot {
-			case v1.SlotSwitchCaseValue, v1.SlotCallArgument:
-				// See [checkExpressionTypes] for both.
+			case v1.SlotSwitchCaseValue:
+				// See [checkExpressionTypes].
 
 			default:
 				// Every input, including the ones a task evaluates itself. The
