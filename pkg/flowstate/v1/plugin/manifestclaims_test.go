@@ -27,24 +27,24 @@ func TestAPluginsSecretInputsReachTheTaskDef(t *testing.T) {
 		Summary:              "writes a commit to a branch",
 		InputMessage:         "flowstate.v1.Task.Log.Inputs",
 		OutputMessage:        "flowstate.v1.Task.Log.Outputs",
-		SecretInputs:         []string{"token"},
-		RequiredSecretInputs: []string{"token"},
+		SecretInputs:         []string{"message"},
+		RequiredSecretInputs: []string{"message"},
 		NeedsScope:           true,
 	}, Config{})
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"token"}, def.SecretInputs,
+	require.Equal(t, []string{"message"}, def.SecretInputs,
 		"the manifest declared secret_inputs and the task definition does not carry it")
-	require.Equal(t, []string{"token"}, def.RequiredSecretInputs,
+	require.Equal(t, []string{"message"}, def.RequiredSecretInputs,
 		"the manifest declared required_secret_inputs and the task definition does not carry it")
 	require.True(t, def.NeedsPrevOutputs,
 		"the manifest declared needs_scope and the task definition does not carry it")
 
 	described := flowstatev1.DescribeTask(def)
 
-	assert.Equal(t, []string{"token"}, described.GetSecretInputs(),
+	assert.Equal(t, []string{"message"}, described.GetSecretInputs(),
 		"a plugin's whole-value secret-accepting inputs are invisible in the task's description")
-	assert.Equal(t, []string{"token"}, described.GetRequiredSecretInputs(),
+	assert.Equal(t, []string{"message"}, described.GetRequiredSecretInputs(),
 		"a plugin's required whole-value secret inputs are invisible in the task's description")
 	assert.True(t, described.GetNeedsScope(),
 		"a plugin task that receives every prior step's outputs reports otherwise in its description")
@@ -77,7 +77,7 @@ func TestRequiredSecretInputsMustAlsoPermitHostResolution(t *testing.T) {
 		Name:                 "connect",
 		InputMessage:         "flowstate.v1.Task.Log.Inputs",
 		OutputMessage:        "flowstate.v1.Task.Log.Outputs",
-		RequiredSecretInputs: []string{"token"},
+		RequiredSecretInputs: []string{"message"},
 	}, Config{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires")
