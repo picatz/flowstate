@@ -189,8 +189,20 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 // two surfaces cannot answer the same question against two different
 // scopes; it is the site the #737 guard blesses (see
 // engine/scope_guard_test.go), and it is never an activity argument.
-func postRunScope(spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs) *v1.Scope {
-	return &v1.Scope{Profile: spec.GetProfile(), Outputs: outputs, Inputs: bound, Local: true}
+//
+// Trigger and Address cross for the same reason they cross in [v1.CallScope]:
+// they are facts about the run, not values the caller's scope resolved, and
+// a check asserting on `trigger.kind` or `run.*` must see the same values
+// the run's own expressions did. (#1444)
+func postRunScope(ctx context.Context, spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs) *v1.Scope {
+	return &v1.Scope{
+		Profile: spec.GetProfile(),
+		Outputs: outputs,
+		Inputs:  bound,
+		Local:   true,
+		Trigger: v1.TriggerFromContext(ctx),
+		Address: v1.NewLocalRunAddress(),
+	}
 }
 
 // postRunExtras is the other half of [postRunScope]: the bare bindings a
@@ -363,7 +375,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		return nil
 	}
 
-	scope := postRunScope(spec, bound, outputs)
+	scope := postRunScope(ctx, spec, bound, outputs)
 
 	// The `run` root, bound as a bare local. [v1.Scope.ActivationWith]'s
 	// extras shadow the activation's own rooted namespaces, so this map
