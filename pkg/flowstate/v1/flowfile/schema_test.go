@@ -338,7 +338,7 @@ steps:
 // the requirement on — and unregisters it when done, the same way
 // pkg/flowstate/v1/server's registerRequiredSecretTask does for the RPC path.
 func TestRequiredSecretInputRefusalCarriesTheSharedMessage(t *testing.T) {
-	const taskName = "test-required-secret-input-probe"
+	const taskName = "test_required_secret_input_probe"
 	require.NoError(t, v1.DefaultRegistry().Register(v1.TaskDef{
 		Name:                 taskName,
 		Inputs:               (&v1.Task_Log_Inputs{}).ProtoReflect().Descriptor(),

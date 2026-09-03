@@ -33,7 +33,7 @@ import (
 // sequentially, none opting into t.Parallel — is safe.
 func registerPluginIdentityTask(t *testing.T, needsScope bool) {
 	t.Helper()
-	require.NoError(t, v1.DefaultRegistry().Register(conformance.PluginIdentityTaskDef(needsScope)))
+	require.NoError(t, v1.DefaultRegistry().Replace(conformance.PluginIdentityTaskDef(needsScope)))
 }
 
 // runPluginIdentityDurable installs identity the way the durable driver

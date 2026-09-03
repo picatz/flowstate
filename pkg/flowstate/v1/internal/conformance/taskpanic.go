@@ -29,7 +29,7 @@ import (
 // *measurement* has to say the same thing either way.
 
 // PanicTaskName is the task both drivers register for this case.
-const PanicTaskName = "conformance-panicking-task"
+const PanicTaskName = "conformance_panicking_task"
 
 // TaskPanicSecret is the value the panicking task panics *with*.
 //

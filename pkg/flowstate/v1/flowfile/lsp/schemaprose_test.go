@@ -247,7 +247,7 @@ func TestAPluginsOwnProseReachesHover(t *testing.T) {
 	assert.Equal(t, comment, fieldDoc(fd),
 		"the sentence hover renders is the plugin author's, byte for byte")
 
-	got := inputDoc(v1.TaskDef{Name: "stand-in", Inputs: md}, "greeting", fd)
+	got := inputDoc(v1.TaskDef{Name: "stand_in", Inputs: md}, "greeting", fd)
 	assert.Contains(t, got, "**`greeting`** · `string`")
 	assert.Contains(t, got, comment)
 }
@@ -267,8 +267,8 @@ func TestATaskWithNoSchemaProseStillHovers(t *testing.T) {
 	require.NotNil(t, fd)
 	assert.Empty(t, fieldDoc(fd), "nothing describes this field, and an invented sentence would be worse than none")
 
-	got := inputDoc(v1.TaskDef{Name: "stand-in", Inputs: md}, "greeting", fd)
+	got := inputDoc(v1.TaskDef{Name: "stand_in", Inputs: md}, "greeting", fd)
 	assert.Contains(t, got, "**`greeting`** · `string`")
-	assert.Contains(t, got, "Input of the `stand-in` task.")
+	assert.Contains(t, got, "Input of the `stand_in` task.")
 	assert.NotContains(t, got, "(undocumented)")
 }

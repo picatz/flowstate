@@ -222,7 +222,7 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 	}
 	setEgressPolicySnapshot(cmd, snapshot)
 
-	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
+	if err := v1.DefaultRegistry().Replace(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for egress policy %s: %w", path, err)
 	}
 

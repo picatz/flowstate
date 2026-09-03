@@ -208,8 +208,8 @@ func TestACatalogLoadedValidatorRefusesWhatTheLaunchingOneRefuses(t *testing.T) 
 	// Into the default registry, which is the one the validator asks. Not
 	// removed afterwards, for the reason the neighbouring plugin tests give: a
 	// name is a plugin's, and a Go test binary is one process per package.
-	require.NoError(t, flowstatev1.DefaultRegistry().Register(launchedDef))
-	require.NoError(t, flowstatev1.DefaultRegistry().Register(rebuilt))
+	require.NoError(t, flowstatev1.DefaultRegistry().Replace(launchedDef))
+	require.NoError(t, flowstatev1.DefaultRegistry().Replace(rebuilt))
 
 	for _, file := range []struct {
 		name   string

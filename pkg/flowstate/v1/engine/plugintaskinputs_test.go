@@ -21,7 +21,7 @@ import (
 // TestPluginTaskInputsLocal in pkg/flowstate/v1/plugintaskinputs_local_test.go
 // is the first caller.
 func TestPluginTaskInputsDurable(t *testing.T) {
-	require.NoError(t, v1.DefaultRegistry().Register(conformance.PluginTaskInputsTaskDef()))
+	require.NoError(t, v1.DefaultRegistry().Replace(conformance.PluginTaskInputsTaskDef()))
 
 	for _, test := range conformance.PluginTaskInputCases() {
 		t.Run(test.Name, func(t *testing.T) {

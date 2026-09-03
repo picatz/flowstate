@@ -622,10 +622,10 @@ func withShippedEgressPosture(t *testing.T) {
 	previous, found := v1.LookupTask("http")
 	require.True(t, found, "this build has no http task to restore")
 
-	require.NoError(t, v1.DefaultRegistry().Register(v1.HTTPTaskDef(v1.DefaultEgressPolicy())))
+	require.NoError(t, v1.DefaultRegistry().Replace(v1.HTTPTaskDef(v1.DefaultEgressPolicy())))
 
 	t.Cleanup(func() {
-		require.NoError(t, v1.DefaultRegistry().Register(previous))
+		require.NoError(t, v1.DefaultRegistry().Replace(previous))
 	})
 }
 

@@ -482,7 +482,7 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 func (h *Host) Register(tasks *flowstatev1.Registry, providers *secrets.Registry) error {
 	if tasks != nil {
 		for _, def := range h.TaskDefs() {
-			if err := tasks.Register(def); err != nil {
+			if err := tasks.Replace(def); err != nil {
 				return fmt.Errorf("plugin: registering task %q: %w", def.Name, err)
 			}
 		}

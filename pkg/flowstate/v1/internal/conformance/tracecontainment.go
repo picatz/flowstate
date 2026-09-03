@@ -54,7 +54,7 @@ const (
 
 	// ContainmentTaskName is the registered task, which is what the task span is
 	// called under either driver.
-	ContainmentTaskName = "trace-containment-failure"
+	ContainmentTaskName = "trace_containment_failure"
 
 	// ContainmentStepID is the step the task runs for.
 	ContainmentStepID = "contained-failure"

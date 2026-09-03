@@ -270,7 +270,7 @@ func (t *Tasks) Install() (uninstall func(), err error) {
 		// this set's own bookkeeping disagreed with what it registered,
 		// which is a defect in this package rather than something an
 		// embedder configured.
-		if err := registry.Register(def); err != nil {
+		if err := registry.Replace(def); err != nil {
 			panic("flowstate/embed: " + err.Error())
 		}
 		installOwners[def.Name] = t
@@ -292,7 +292,7 @@ func (t *Tasks) Install() (uninstall func(), err error) {
 			if s.existed {
 				// Panics for the same reason as above: this is putting back a
 				// definition the registry already accepted once.
-				if err := registry.Register(s.def); err != nil {
+				if err := registry.Replace(s.def); err != nil {
 					panic("flowstate/embed: restoring " + name + ": " + err.Error())
 				}
 				continue

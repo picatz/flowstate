@@ -33,7 +33,7 @@ import (
 // completion order reach an author would be leaking a fact of this shape into
 // some output, and this task states it outright rather than waiting for one to
 // be introduced.
-const orderProbeTask = "dst-order-probe"
+const orderProbeTask = "dst_order_probe"
 
 // probeRegistry returns a registry whose only task answers with its own
 // invocation index, and the func that puts the count back to zero.

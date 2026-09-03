@@ -101,7 +101,7 @@ func TestCheckTaskOutputElementBoundNilAndEmpty(t *testing.T) {
 func TestEvalInScopeRefusesOversizedTaskOutput(t *testing.T) {
 	registry := NewRegistry()
 	require.NoError(t, registry.Register(TaskDef{
-		Name: "oversized-stub",
+		Name: "oversized_stub",
 		Fn: func(ctx context.Context, inputs map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 			return &Node_Outputs{NamedValues: map[string]*Value{
 				"items": NewLiteralList(taskOutputManyItems(maxListElements + 1)...),
@@ -110,11 +110,11 @@ func TestEvalInScopeRefusesOversizedTaskOutput(t *testing.T) {
 	}))
 	ctx := NewContextWithRegistry(context.Background(), registry)
 
-	task := &Task{Name: "oversized-stub"}
+	task := &Task{Name: "oversized_stub"}
 	out, err := task.EvalInScope(ctx, NewScope("", &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.Error(t, err, "a task result past the element bound must be refused")
 	require.Nil(t, out)
-	assert.Contains(t, err.Error(), "oversized-stub")
+	assert.Contains(t, err.Error(), "oversized_stub")
 
 	var taskErr *TaskError
 	require.ErrorAs(t, err, &taskErr)
@@ -128,7 +128,7 @@ func TestEvalInScopeRefusesOversizedTaskOutput(t *testing.T) {
 func TestEvalInScopeAllowsTaskOutputAtBound(t *testing.T) {
 	registry := NewRegistry()
 	require.NoError(t, registry.Register(TaskDef{
-		Name: "at-bound-stub",
+		Name: "at_bound_stub",
 		Fn: func(ctx context.Context, inputs map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 			return &Node_Outputs{NamedValues: map[string]*Value{
 				"items": NewLiteralList(taskOutputManyItems(maxListElements)...),
@@ -137,7 +137,7 @@ func TestEvalInScopeAllowsTaskOutputAtBound(t *testing.T) {
 	}))
 	ctx := NewContextWithRegistry(context.Background(), registry)
 
-	task := &Task{Name: "at-bound-stub"}
+	task := &Task{Name: "at_bound_stub"}
 	out, err := task.EvalInScope(ctx, NewScope("", &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.NoError(t, err)
 	require.NotNil(t, out)

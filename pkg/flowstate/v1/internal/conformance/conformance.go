@@ -261,7 +261,7 @@ func allowLoopback(tb testing.TB) {
 	loopbackExemption.mu.Lock()
 	if loopbackExemption.holders == 0 {
 		loopbackExemption.original, loopbackExemption.existed = registry.Lookup("http")
-		if err := registry.Register(v1.HTTPTaskDef(policy)); err != nil {
+		if err := registry.Replace(v1.HTTPTaskDef(policy)); err != nil {
 			loopbackExemption.mu.Unlock()
 			tb.Fatalf("registering loopback http task: %v", err)
 		}
@@ -277,7 +277,7 @@ func allowLoopback(tb testing.TB) {
 		if loopbackExemption.holders > 0 || !loopbackExemption.existed {
 			return
 		}
-		_ = registry.Register(loopbackExemption.original)
+		_ = registry.Replace(loopbackExemption.original)
 	})
 }
 

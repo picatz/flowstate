@@ -112,12 +112,12 @@ func InstallEgressIdentityPolicy(tb testing.TB) {
 
 	registry := v1.DefaultRegistry()
 	original, existed := registry.Lookup("http")
-	if err := registry.Register(v1.HTTPTaskDef(policy)); err != nil {
+	if err := registry.Replace(v1.HTTPTaskDef(policy)); err != nil {
 		tb.Fatalf("registering the identity-scoped http task: %v", err)
 	}
 	tb.Cleanup(func() {
 		if existed {
-			_ = registry.Register(original)
+			_ = registry.Replace(original)
 		}
 	})
 }
