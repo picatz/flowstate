@@ -1000,6 +1000,16 @@ func NewValue(v any) *Value {
 	case string, int, float64, float32, int64, bool, *expr.Value,
 		int8, int16, int32, uint, uint8, uint16, uint32, uint64:
 		return NewLiteral(val)
+	case []byte:
+		return &Value{
+			Kind: &Value_Literal{
+				Literal: &expr.Value{
+					Kind: &expr.Value_BytesValue{
+						BytesValue: val,
+					},
+				},
+			},
+		}
 	case []any:
 		return NewLiteralList(val...)
 	case error:
