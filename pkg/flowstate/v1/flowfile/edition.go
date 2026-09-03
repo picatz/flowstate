@@ -98,7 +98,7 @@ func checkEdition(declared string) error {
 	}
 	if near := nearestEdition(declared); near != "" {
 		return fmt.Errorf(
-			"edition %q is not one this build knows; did you mean %s? this build knows %s and compiles %s",
+			"edition %q is not one this build knows; did you mean %s? This build knows %s and compiles %s",
 			declared, editionName(near), editionList(knownEditions), editionName(CurrentEdition))
 	}
 	return fmt.Errorf(
