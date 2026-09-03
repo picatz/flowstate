@@ -601,15 +601,21 @@ func TestCommitPushPatchBoundIsReached(t *testing.T) {
 // buffers, never on disk, so there is no scratch directory for a failed
 // attempt to leave anything in. This test is the evidence for that claim
 // instead of a bare assertion of it: a deliberately failing call is run, and
-// the process's own temp directory is checked before and after for any new
-// entry this plugin's own naming might have created.
+// a private temp directory is checked before and after for any new entry
+// this plugin's own naming might have created.
 func TestCommitPushCleansUpOnFailure(t *testing.T) {
+	// Isolate the observation from other processes (#1623): a shared
+	// os.TempDir() can gain entries from unrelated work between the two
+	// ReadDir snapshots, which is a race, not a plugin leak.
+	privateTmp := t.TempDir()
+	t.Setenv("TMPDIR", privateTmp)
+
 	remote := newBareRemote(t)
 	base := seedRemote(t, remote, "main")
 
-	before, err := os.ReadDir(os.TempDir())
+	before, err := os.ReadDir(privateTmp)
 	if err != nil {
-		t.Fatalf("ReadDir(TempDir): %v", err)
+		t.Fatalf("ReadDir(privateTmp): %v", err)
 	}
 
 	_, err = doCommitPush(context.Background(), commitPushParams{
@@ -622,13 +628,13 @@ func TestCommitPushCleansUpOnFailure(t *testing.T) {
 		t.Fatal("a files path of \"../outside.txt\" was accepted; it must be refused")
 	}
 
-	after, err := os.ReadDir(os.TempDir())
+	after, err := os.ReadDir(privateTmp)
 	if err != nil {
-		t.Fatalf("ReadDir(TempDir): %v", err)
+		t.Fatalf("ReadDir(privateTmp): %v", err)
 	}
 	if len(after) > len(before) {
 		t.Fatalf("a failed doCommitPush left %d new entries in %s - this plugin is supposed to touch no filesystem path at all",
-			len(after)-len(before), os.TempDir())
+			len(after)-len(before), privateTmp)
 	}
 }
 
