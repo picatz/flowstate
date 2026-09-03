@@ -1233,16 +1233,14 @@ same module.)
 | --- | --- | --- | --- | --- |
 | `flowstate.plugin.operation.duration` | histogram | s | `flowstate.plugin.name`, `flowstate.plugin.operation`, `flowstate.task.name` (when the operation is task-scoped), `flowstate.plugin.outcome` | Duration of one host-to-plugin operation (`launch`, `start`, `health`, `execute`) |
 | `flowstate.plugin.calls` | counter | — | same as above | One increment per operation, same attribute set as the duration it accompanies |
-| `flowstate.plugin.health.checks` | counter | — | `flowstate.plugin.name`, `flowstate.plugin.health.status` (`serving`, `not serving`, or `unreachable` — `plugin.go:87-99`; `unknown` is the pre-poll default and is never recorded, since an unspecified poll response is mapped to `not serving` before the metric is written) | One increment per health poll result (`plugin.go:353`, `plugin.go:385`) |
-| `flowstate.plugin.restarts` | counter | — | none | One increment per relaunch actually attempted, after the restart budget and backoff both let it through (`plugin.go:732`) |
-| `flowstate.plugin.launch.failures` | counter | — | none | One increment per failed plugin launch (`launch.go:93`) |
-| `flowstate.plugin.protocol.errors` | counter | — | none | One increment when a launch fails specifically on handshake — `ErrHandshake` or `ErrHandshakeTimeout` (`launch.go:96`) |
+| `flowstate.plugin.health.checks` | counter | — | `flowstate.plugin.name`, `flowstate.plugin.health.status` (`serving`, `not serving`, or `unreachable` — `HealthStatus.String`; `unknown` is the pre-poll default and is never recorded, since an unspecified poll response is mapped to `not serving` before the metric is written) | One increment per health poll result (`Plugin.pollHealth`) |
+| `flowstate.plugin.restarts` | counter | — | `flowstate.plugin.name` | One increment per relaunch actually attempted, after the restart budget and backoff both let it through (`Plugin.restart`) |
+| `flowstate.plugin.launch.failures` | counter | — | `flowstate.plugin.name` | One increment per failed plugin launch (`launch`) |
+| `flowstate.plugin.protocol.errors` | counter | — | `flowstate.plugin.name` | One increment when a launch fails specifically on handshake — `ErrHandshake` or `ErrHandshakeTimeout` (`launch`) |
 
-The last three carry no labels at the call site — a launch failure or a
-protocol error happens before a plugin identity is necessarily known, and
-`restarts` is recorded without one either, so none of the three can be
-filtered by plugin name today; only the span each operation opens carries
-`flowstate.plugin.name` regardless of outcome. `flowstate.plugin.name` and
+All three carry `flowstate.plugin.name` at the call site — each records the
+plugin's installed name so an operator can tell which one is restarting or
+failing to launch. `flowstate.plugin.name` and
 `flowstate.task.name` are `ClassConfiguration` labels (bounded by which
 plugins/tasks a deployment installs, not by a caller) and every label passes
 through `pkg/flowstate/v1/metricschema` before reaching an instrument, which
