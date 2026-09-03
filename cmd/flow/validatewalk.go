@@ -358,7 +358,7 @@ func validateTestFile(target validateTarget) flowfile.Diagnostics {
 		return flowfile.Diagnostics{{Message: err.Error()}}
 	}
 
-	if target.path == "" {
+	if target.path == "" || target.data != nil {
 		return nil
 	}
 
