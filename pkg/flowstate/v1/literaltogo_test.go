@@ -5,6 +5,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestLiteralToGoStringKeyedMap is the direction that always worked: a map
@@ -73,6 +74,72 @@ func TestLiteralToGoNonStringKeyFailsClosed(t *testing.T) {
 			}
 			if got != nil {
 				t.Fatalf("LiteralToGo(%s-keyed map) returned a non-nil value %#v alongside its error; a refused conversion must yield nil", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestNewValueLiteralToGoRoundTrip asserts that NewValue(LiteralToGo(v)) == v
+// for every kind LiteralToGo can return, proving the two functions are inverses.
+// The []byte case is the regression from #1442: before the fix, NewValue([]byte)
+// fell through to reflection and produced a list of int64 values.
+func TestNewValueLiteralToGoRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		value *expr.Value
+	}{
+		{"null", &expr.Value{Kind: &expr.Value_NullValue{}}},
+		{"bool", &expr.Value{Kind: &expr.Value_BoolValue{BoolValue: true}}},
+		{"string", &expr.Value{Kind: &expr.Value_StringValue{StringValue: "hello"}}},
+		{"int64", &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 42}}},
+		// uint64 is intentionally asymmetric: NewValue(uint64) converts to
+		// int64 because CEL represents all integers as int64. The value is
+		// preserved; only the wire kind differs.
+		{"uint64", &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: 99}}},
+		{"double", &expr.Value{Kind: &expr.Value_DoubleValue{DoubleValue: 3.14}}},
+		{"bytes", &expr.Value{Kind: &expr.Value_BytesValue{BytesValue: []byte("abc")}}},
+		{"list", &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
+			Values: []*expr.Value{
+				{Kind: &expr.Value_Int64Value{Int64Value: 1}},
+				{Kind: &expr.Value_StringValue{StringValue: "two"}},
+			},
+		}}}},
+		{"map", &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{
+			Entries: []*expr.MapValue_Entry{
+				{Key: str("k"), Value: &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 7}}},
+			},
+		}}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			native, err := v1.LiteralToGo(tc.value)
+			if err != nil {
+				t.Fatalf("LiteralToGo: %v", err)
+			}
+
+			got := v1.NewValue(native)
+			gotLiteral := got.GetLiteral()
+			if gotLiteral == nil {
+				t.Fatalf("NewValue(%T) did not produce a literal value: %v", native, got)
+			}
+
+			if tc.name == "uint64" {
+				// uint64 round-trips through int64 by design; verify the
+				// numeric value is preserved, not the wire kind.
+				if gotLiteral.GetInt64Value() != int64(tc.value.GetUint64Value()) {
+					t.Fatalf("uint64 value not preserved: got %d, want %d",
+						gotLiteral.GetInt64Value(), tc.value.GetUint64Value())
+				}
+				return
+			}
+			if !proto.Equal(gotLiteral, tc.value) {
+				t.Fatalf("round-trip mismatch for %s:\n  LiteralToGo → %T(%v)\n  NewValue    → %v\n  want          %v",
+					tc.name, native, native, gotLiteral, tc.value)
 			}
 		})
 	}
