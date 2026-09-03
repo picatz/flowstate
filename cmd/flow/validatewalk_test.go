@@ -197,3 +197,39 @@ func TestValidateDirectoryWalkDoesNotReadAnOversizedFileWhole(t *testing.T) {
 	require.Contains(t, out, "workflow.yaml")
 	require.NotContains(t, out, "huge.yaml")
 }
+
+// TestValidateReportsMisspelledSignalNameInTestFile is #1443's validate-surface
+// claim: `flow validate` compiles the referenced workflow and checks each
+// scripted signal's name against its declared gates, so a typo is caught before
+// `flow test` rather than passing green with a signal delivered into the void.
+func TestValidateReportsMisspelledSignalNameInTestFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`
+edition: v2026.3
+name: gated
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approve
+      timeout: 10s
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`
+tests:
+  - name: misspelled signal
+    workflow: ./workflow.yaml
+    signals:
+      - name: aprove
+        at: 1s
+        payload: {}
+    expect:
+      outputs: {}
+`), 0o600))
+
+	out, err := validateOutput(t, dir)
+	require.Error(t, err, "output: %s", out)
+	require.Contains(t, out, `"aprove"`)
+	require.Contains(t, out, "approve")
+}
