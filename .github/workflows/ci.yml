@@ -460,11 +460,13 @@ jobs:
 
       - name: Vulnerability scan (plugin modules)
         run: |
+          failed=0
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> govulncheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... )
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... ) || failed=1
           done
+          exit $failed
 
   # Required, as of the end of its 48h advisory window. It landed advisory because
   # the govulncheck lesson generalizes to any newly-added check — a check nobody
@@ -512,11 +514,13 @@ jobs:
 
       - name: Static analysis (plugin modules)
         run: |
+          failed=0
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> staticcheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./... )
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./... ) || failed=1
           done
+          exit $failed
 
   # The real-issuer OIDC check used to live here as a job gated on the auth
   # package being affected. It moved to federation.yml (push to main only)

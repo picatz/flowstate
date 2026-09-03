@@ -782,11 +782,13 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
+          failed=0
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> govulncheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... ) 2>&1 | tee -a govulncheck.log
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... ) 2>&1 | tee -a govulncheck.log || failed=1
           done
+          exit $failed
 
       - name: File an issue for findings
         if: steps.scan.outcome == 'failure' || steps.scan-plugins.outcome == 'failure'
