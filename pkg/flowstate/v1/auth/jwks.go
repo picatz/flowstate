@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -301,7 +302,7 @@ func (ks *keySet) refreshLocked(ctx context.Context, now time.Time) error {
 
 	set, err := fetchJWKS(ctx, ks.client, jwksURL)
 	if err != nil {
-		ks.lastErr = fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, ks.issuer, err)
+		ks.lastErr = issuerUnavailable(ks.issuer, jwksURL, err)
 		return ks.lastErr
 	}
 
@@ -331,12 +332,26 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 
 	jwksURL, err := discoverJWKSURL(ctx, ks.client, ks.issuer)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrIssuerUnavailable, err)
+		discoveryURL := strings.TrimSuffix(ks.issuer, "/") + discoveryPath
+		return "", issuerUnavailable(ks.issuer, discoveryURL, err)
 	}
 
 	ks.jwksURL = jwksURL
 
 	return jwksURL, nil
+}
+
+// issuerUnavailable wraps a fetch error as [ErrIssuerUnavailable]. When the
+// underlying error is a policy denial ([*netpolicy.DenyError]), it returns an
+// [*IssuerBlockedError] instead, so that [PublicReason] and `flow auth check`
+// can distinguish "the egress policy refused this" from "the issuer did not
+// answer".
+func issuerUnavailable(issuer, url string, err error) error {
+	var denied *netpolicy.DenyError
+	if errors.As(err, &denied) {
+		return &IssuerBlockedError{Issuer: issuer, URL: url, Deny: denied}
+	}
+	return fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, issuer, err)
 }
 
 // discoverJWKSURL fetches an issuer's OpenID Provider Metadata and returns the

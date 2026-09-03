@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // Sentinel errors returned by this package. Callers distinguish failures with
@@ -338,6 +340,28 @@ func (e *ClaimMismatchError) Unwrap() error {
 	return ErrClaimMismatch
 }
 
+// IssuerBlockedError reports that fetching an issuer's OpenID Connect
+// discovery document or JSON Web Key Set was refused by the identity egress
+// policy rather than the issuer failing to answer. It wraps
+// [ErrIssuerUnavailable] so existing errors.Is checks still match, but names
+// the URL the policy denied, the rule responsible, and the trust policy's
+// egress: section as the remedy.
+type IssuerBlockedError struct {
+	Issuer string
+	URL    string
+	Deny   *netpolicy.DenyError
+}
+
+func (e *IssuerBlockedError) Error() string {
+	return fmt.Sprintf("%s: issuer %q keys blocked by identity egress policy: %s; "+
+		"configure the trust policy's egress: section to allow this fetch",
+		ErrIssuerUnavailable, e.Issuer, e.Deny)
+}
+
+func (e *IssuerBlockedError) Unwrap() []error {
+	return []error{ErrIssuerUnavailable, e.Deny}
+}
+
 // AmbiguousIssuerError reports a credential that more than one trust policy
 // entry admits. It wraps [ErrAmbiguousIdentity].
 //
@@ -479,6 +503,10 @@ func publicReason(err error) string {
 	case errors.Is(err, ErrClaimMismatch):
 		return "token is not accepted by the trust policy"
 	case errors.Is(err, ErrIssuerUnavailable):
+		var blocked *IssuerBlockedError
+		if errors.As(err, &blocked) {
+			return "issuer keys are blocked by the identity egress policy"
+		}
 		return "issuer keys are temporarily unavailable"
 	case errors.Is(err, ErrInvalidSignature),
 		errors.Is(err, ErrUnknownKey),

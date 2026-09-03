@@ -95,6 +95,12 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 			// policy rows the operator has to make disjoint.
 			return ambiguous
 		}
+		var blocked *auth.IssuerBlockedError
+		if errors.As(err, &blocked) {
+			// A policy denial is deterministic: the operator needs the URL and
+			// rule, not the redacted "temporarily unavailable" that hid it.
+			return blocked
+		}
 		// Other verifier errors can carry verified claim values or parser text.
 		// The public classification is the same redacted vocabulary exposed at
 		// the network boundary and is sufficient to fix the token class.
