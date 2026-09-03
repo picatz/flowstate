@@ -231,6 +231,28 @@ func CallCases() []Case {
 			}},
 		},
 		{
+			// A callee reads the same trigger context its caller does: how the run
+			// started is a fact about the run, not something the caller's scope
+			// resolved. A callee whose output is `${trigger.kind}` must produce the
+			// same value the caller would. (#1422)
+			Name: "a callee reads the caller's trigger context",
+			Workflow: &v1.Workflow{
+				Name:    "call-trigger",
+				Profile: v1.CurrentProfile,
+				Steps: append(
+					[]*v1.Node{callNode("inner", triggerCallee("callee-trigger"), nil)},
+					pins("check", `steps.inner.kind == "schedule"`)...,
+				),
+			},
+			Trigger: v1.NewScheduleTriggerContext("nightly-sweep", "ops@example.com"),
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"inner": {NamedValues: map[string]*v1.Value{
+					"kind": v1.NewLiteral("schedule"),
+				}},
+				"check": {},
+			}},
+		},
+		{
 			// Depth is bounded past what any real composition needs — see
 			// [v1.MaxCallDepth] — and refused rather than left to recurse until the
 			// stack ends the process, for a specification that never passed through
@@ -243,6 +265,20 @@ func CallCases() []Case {
 				Steps:   []*v1.Node{callNode("first", deepCallChain(v1.MaxCallDepth+1), nil)},
 			},
 			ExpectFailure: true,
+		},
+	}
+}
+
+// triggerCallee returns a callee whose single declared output reads
+// `trigger.kind` — the shape the "a callee reads the caller's trigger context"
+// case needs, proving the trigger crosses the call boundary.
+func triggerCallee(name string) *v1.Workflow {
+	return &v1.Workflow{
+		Name:    name,
+		Profile: v1.CurrentProfile,
+		Steps:   []*v1.Node{says("noted", "trigger seen")},
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "kind", Value: v1.NewExpr("trigger.kind")},
 		},
 	}
 }

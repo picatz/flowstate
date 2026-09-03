@@ -2101,7 +2101,11 @@ func TestRunWorkflowCall(t *testing.T) {
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			state := &v1.RunState{Workflow: test.Workflow}
+			if test.Trigger != nil {
+				state.Trigger = test.Trigger
+			}
+			env.ExecuteWorkflow(engine.Run, state)
 			require.True(t, env.IsWorkflowCompleted())
 
 			err := env.GetWorkflowError()
