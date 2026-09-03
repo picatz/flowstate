@@ -1167,15 +1167,19 @@ func (s *taskService) call(
 	scope *flowstatev1.Scope,
 ) (outputs *flowstatev1.Node_Outputs, err error) {
 	secretValues := taskSecretValues(task, inputs)
+	completed := false
 	defer func() {
-		if value := recover(); value != nil {
+		if !completed {
+			value := recover()
 			outputs = nil
 			err = OutcomeUnknown("task %q panicked; outcome unknown", task.Name)
 			s.queuePanicReport(ctx, task.Name, secretValues, value, debug.Stack())
 		}
 	}()
 
-	return task.Fn(ctx, inputs, scope)
+	outputs, err = task.Fn(ctx, inputs, scope)
+	completed = true
+	return outputs, err
 }
 
 func taskSecretValues(task Task, inputs map[string]*flowstatev1.Value) []string {
@@ -1257,6 +1261,9 @@ func printablePanicValue(value any) (text string) {
 			text = fmt.Sprintf("<%T could not be formatted>", value)
 		}
 	}()
+	if b, ok := value.([]byte); ok {
+		return string(b)
+	}
 	return fmt.Sprint(value)
 }
 
