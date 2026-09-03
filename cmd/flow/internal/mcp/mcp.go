@@ -988,7 +988,7 @@ func ToolError(err error) *mcp.CallToolResult {
 	}
 }
 
-// stripCatalogDescriptors zeros the descriptor fields on every TaskDescription
+// StripCatalogDescriptors zeros the descriptor fields on every TaskDescription
 // in a GetCatalogResponse — input_descriptor, input_message, output_descriptor,
 // output_message — so the MCP surface answers with the rendered TaskFields an
 // agent reads, not the base64 FileDescriptorSet bytes it cannot decode.
