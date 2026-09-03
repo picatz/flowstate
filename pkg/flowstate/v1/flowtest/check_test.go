@@ -475,3 +475,30 @@ tests:
 	assert.LessOrEqual(t, strings.Count(message, " = "), flowtest.MaxCheckWitnesses,
 		"witness lines stay bounded")
 }
+
+// TestCheckCanReachTriggerAndRunAddress pins the values postRunScope carries
+// after #1444: trigger.kind and run.workflow_id/run.run_id are reachable in
+// expect.check, so a case can assert on facts about the run itself.
+func TestCheckCanReachTriggerAndRunAddress(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeCheckWorkflow(t, dir)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: run facts are visible to checks
+    workflow: ./workflow.yaml
+    inputs: {region: eu-west-1}
+    expect:
+      check:
+        - trigger.kind == 'manual'
+        - run.workflow_id == 'local'
+        - run.run_id == 'local'
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	c := report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+}
