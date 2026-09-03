@@ -402,12 +402,58 @@ func TestEveryExpressionPositionIsChecked(t *testing.T) {
 			src: "edition: v2026.3\nname: check\nsteps:\n  - id: pause\n" +
 				"    wait_until: ${" + broken + "}\n",
 		},
+		{
+			name: "a signal rule's computed subject",
+			src: "edition: v2026.3\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
+				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
+				"signals:\n  go:\n    allow:\n      - subject: \"${" + broken + "}\"\n        namespace: ns\n",
+		},
+		{
+			name: "a debug rule's computed subject",
+			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
+				"debug:\n  allow:\n    - subject: \"${" + broken + "}\"\n      namespace: ns\n",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
 			assert.Contains(t, strings.Join(diagnosticsFor(t, test.src), "\n"), "nosuchfunc",
 				"an expression in this position is never type-checked")
+		})
+	}
+}
+
+// TestInvalidFormatLiteralInSignalSubjectIsReported is the regression for the
+// P2 finding: a computed signal or debug subject containing an invalid format
+// literal — such as matches('[') — was silently accepted because
+// checkExpressionTypes skipped both slots.
+func TestInvalidFormatLiteralInSignalSubjectIsReported(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "signal subject with invalid regex",
+			src: "edition: v2026.3\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
+				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
+				"signals:\n  go:\n    allow:\n      - subject: \"${inputs.approver.matches('[')}\"\n        namespace: ns\n",
+		},
+		{
+			name: "debug subject with invalid regex",
+			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
+				"debug:\n  allow:\n    - subject: \"${inputs.approver.matches('[')}\"\n      namespace: ns\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reported := diagnosticsFor(t, test.src)
+			require.NotEmpty(t, reported,
+				"an invalid format literal in a computed subject was accepted")
+			assert.Contains(t, strings.Join(reported, "\n"), "invalid matches",
+				"the diagnostic did not name the invalid regex")
 		})
 	}
 }
